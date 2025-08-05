@@ -1,37 +1,19 @@
-# Template repository for Github CI
+# TickLE: Fastest ROS2 middleware optimized for 10Base-T1S
 
-## Usage
-
-Check [.github/workflows/](.github/workflows/)
-It is for basic python+Rust project. Modify by yourself as needed.
-
-Remove some lint-*.yml if you not need on your project
-
-Check [.gitignore](.gitignore) file.
-It is also basic gitignore file for C + Python project.
-Check [This repo][gitignore] to find gitignore for another type
-
-[gitignore]: https://github.com/github/gitignore
-
-
-## Run locally
-
-Run these commands on your demand
+## Compile
 
 ```sh
-cargo check
-cargo fmt
-flake8
-pyright
+$ make
 ```
 
+## Run examples
+```sh
+$ make createns
+$ make runserver     # Launch SetBool service server on ns2 namespace
+$ make runclient     # Launch SetBool service client on ns1 namespace
+$ make runpublisher  # Launch UInt64 topic publisher on ns1 namespace
+$ make runsubscriber # Launch UInt64 topic subscriber on ns2 namespace
+```
 
-## Editor integration
-
-### Vim
-
-Use [ALE](https://github.com/dense-analysis/ale)
-
-### VSCode
-
-It'll automatically detects its settings
+## License
+GPLv3 or proprietary license on request

@@ -19,5 +19,4 @@ jobs:
         uses: tsnlab/check@main
         with:
           python_version: '3.12'
-          rust_version: 'stable'
           github_token: ${{ secrets.GITHUB_TOKEN }}
