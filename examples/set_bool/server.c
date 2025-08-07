@@ -4,7 +4,7 @@
 #include "SetBool.h"
 
 static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest* request,
-                                 struct SetBoolResponse* response) {
+                                struct SetBoolResponse* response) {
     printf("  data: %d\n", request->data);
 
     if (request->data) {

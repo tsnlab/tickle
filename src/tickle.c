@@ -367,7 +367,8 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     struct tt_Node* node = client->node;
 
     // Header and SubmessageHeader
-    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLREQUEST, tt_SUBMESSAGE_ID_ALL);
+    struct tt_SubmessageHeader* submessage_header =
+        start_encode(node, tt_SUBMESSAGE_TYPE_CALLREQUEST, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
         rollback(node, submessage_header);
         return -1;
@@ -742,7 +743,8 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
 
         // Send response
         // Header and SubmessageHeader
-        struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE, header->source);
+        struct tt_SubmessageHeader* submessage_header =
+            start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE, header->source);
         if (submessage_header == NULL) {
             return false;
         }

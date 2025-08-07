@@ -73,7 +73,7 @@ struct tt_Server;
 struct tt_Request;
 
 typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
-                                      struct tt_Response* response);
+                                     struct tt_Response* response);
 
 struct tt_Server { // extends Endpoint
     struct tt_Endpoint super;
@@ -199,7 +199,7 @@ struct tt_Header {
     uint8_t source;  // Sender ID
 } __attribute__((packed));
 
-#define tt_SUBMESSAGE_ID_ALL 0xff 
+#define tt_SUBMESSAGE_ID_ALL 0xff
 
 #define tt_SUBMESSAGE_TYPE_UPDATE 1
 #define tt_SUBMESSAGE_TYPE_DATA 2
@@ -208,7 +208,7 @@ struct tt_Header {
 #define tt_SUBMESSAGE_TYPE_CALLRESPONSE 5
 
 struct tt_SubmessageHeader {
-    uint8_t type;    // 0 for Node update, 2 for Data, 3 for AckNack
+    uint8_t type;     // 0 for Node update, 2 for Data, 3 for AckNack
     uint8_t receiver; // Receiver ID
     uint16_t length; // Body length in 4 bytes including header
 } __attribute__((packed));
@@ -257,7 +257,7 @@ struct tt_CallResponseHeader {
     uint32_t id;         // endpoint id
     uint16_t seq_no;     // sequence number
     uint8_t retry;       // retry count from server side
-    int8_t return_code; // return code
+    int8_t return_code;  // return code
     // type + name
     // CDR
 } __attribute__((packed));
