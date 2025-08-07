@@ -2,7 +2,7 @@
 
 #include "SetBool.h"
 
-static void set_bool_callback(struct tt_Client* client, int32_t return_code, struct SetBoolResponse* response) {
+static void set_bool_callback(struct tt_Client* client, int8_t return_code, struct SetBoolResponse* response) {
     printf("  return_code: %d\n", return_code);
     if (response != NULL) {
         printf("  response: %d, %s\n", response->success, response->message);
@@ -38,7 +38,7 @@ int main(int argc, char* argv) {
 
     tt_Node_poll(&node);
 
-    tt_Node_free(&node);
+    tt_Node_destroy(&node);
 
     return 0;
 }

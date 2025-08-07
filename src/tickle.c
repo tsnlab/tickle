@@ -1,7 +1,7 @@
 #include <hal.h>
 #include <tickle.h>
 
-static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type) {
+static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type, uint8_t receiver) {
     if (node->tx_tail + sizeof(struct tt_SubmessageHeader) >= node->tx_size) {
         printf("Lack of tx buffer\n");
         return NULL;
@@ -11,6 +11,7 @@ static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t ty
     node->tx_tail += sizeof(struct tt_SubmessageHeader);
 
     submessage_header->type = type;
+    submessage_header->receiver = receiver;
     submessage_header->length = 0;
 }
 
@@ -366,7 +367,7 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     struct tt_Node* node = client->node;
 
     // Header and SubmessageHeader
-    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLREQUEST);
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLREQUEST, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
         rollback(node, submessage_header);
         return -1;
@@ -409,12 +410,40 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     return 0;
 }
 
-int32_t tt_Publisher_pub(struct tt_Publisher* pub, struct tt_Data* data) {
+int32_t tt_Client_destroy(struct tt_Client* client) {
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
+
+    for (int i = 0; i < client->node->endpoint_count; i++) {
+        if (client->node->endpoints[i] == endpoint) {
+            client->node->endpoints[i] = NULL;
+            client->node->last_modified = tt_get_ns();
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+int32_t tt_Server_destroy(struct tt_Server* server) {
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
+
+    for (int i = 0; i < server->node->endpoint_count; i++) {
+        if (server->node->endpoints[i] == endpoint) {
+            server->node->endpoints[i] = NULL;
+            server->node->last_modified = tt_get_ns();
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Node* node = pub->node;
 
     // Header and SubmessageHeader
-    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA);
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
         rollback(node, submessage_header);
         return -1;
@@ -455,9 +484,37 @@ int32_t tt_Publisher_pub(struct tt_Publisher* pub, struct tt_Data* data) {
     return 0;
 }
 
+int32_t tt_Publisher_destroy(struct tt_Publisher* pub) {
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
+
+    for (int i = 0; i < pub->node->endpoint_count; i++) {
+        if (pub->node->endpoints[i] == endpoint) {
+            pub->node->endpoints[i] = NULL;
+            pub->node->last_modified = tt_get_ns();
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
+int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
+
+    for (int i = 0; i < sub->node->endpoint_count; i++) {
+        if (sub->node->endpoints[i] == endpoint) {
+            sub->node->endpoints[i] = NULL;
+            sub->node->last_modified = tt_get_ns();
+            return 0;
+        }
+    }
+
+    return -1;
+}
+
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     // Header and SubmessageHeader
-    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE);
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
         printf("Lack of tx_buffer\n");
         goto done;
@@ -677,7 +734,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
                                                   tt_is_native_endian(header));
 
         uint8_t response[service->response_size];
-        int32_t return_code = server->callback(server, (struct tt_Request*)request, (struct tt_Response*)response);
+        int8_t return_code = server->callback(server, (struct tt_Request*)request, (struct tt_Response*)response);
 
         service->request_free((struct tt_Request*)request);
 
@@ -685,7 +742,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
 
         // Send response
         // Header and SubmessageHeader
-        struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE);
+        struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE, header->source);
         if (submessage_header == NULL) {
             return false;
         }
@@ -700,7 +757,6 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
         call_response_header->id = endpoint->id;
         call_response_header->seq_no = callrequest_header->seq_no;
         call_response_header->retry = 0;
-        call_response_header->destination = header->source;
         call_response_header->return_code = return_code;
 
         // CallRequestBody
@@ -745,12 +801,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     printf("  id: %08x\n", callresponse_header->id);
     printf("  seq_no: %d\n", callresponse_header->seq_no);
     printf("  retry: %d\n", callresponse_header->retry);
-    printf("  destination: %d\n", callresponse_header->destination);
     printf("  return_code: %d\n", callresponse_header->return_code);
-
-    if (callresponse_header->destination != node->id) {
-        return true;
-    }
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_CLIENT, callresponse_header->id);
     if (endpoint != NULL) {
@@ -828,6 +879,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, int32_t head, 
         }
 
         printf("  submessage->type: %d\n", submessage_header->type);
+        printf("  submessage->receiver: %d\n", submessage_header->receiver);
         printf("  submessage->length: %d / %ld\n", submessage_header->length,
                tail - head + sizeof(struct tt_SubmessageHeader));
 
@@ -840,37 +892,39 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, int32_t head, 
             return false;
         }
 
-        switch (submessage_header->type) {
-        case tt_SUBMESSAGE_TYPE_UPDATE:
-            if (!process_update(node, header, buffer, head,
-                                head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                printf("  ERROR on update\n");
+        if (submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) {
+            switch (submessage_header->type) {
+            case tt_SUBMESSAGE_TYPE_UPDATE:
+                if (!process_update(node, header, buffer, head,
+                                    head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
+                    printf("  ERROR on update\n");
+                }
+                break;
+            case tt_SUBMESSAGE_TYPE_DATA:
+                if (!process_data(node, header, buffer, head,
+                                  head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
+                    printf("  ERROR on data\n");
+                }
+                break;
+            case tt_SUBMESSAGE_TYPE_ACKNACK:
+                printf("  Not supported submessage type: %02x\n", submessage_header->type);
+                return false;
+            case tt_SUBMESSAGE_TYPE_CALLREQUEST:
+                if (!process_callrequest(node, header, buffer, head,
+                                         head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
+                    printf("  ERROR on call request\n");
+                }
+                break;
+            case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
+                if (!process_callresponse(node, header, buffer, head,
+                                          head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
+                    printf("  ERROR on call response\n");
+                }
+                break;
+            default:
+                printf("  Illegal submessage type: %d, len: %02x\n", submessage_header->type, tail - head);
+                return false;
             }
-            break;
-        case tt_SUBMESSAGE_TYPE_DATA:
-            if (!process_data(node, header, buffer, head,
-                              head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                printf("  ERROR on data\n");
-            }
-            break;
-        case tt_SUBMESSAGE_TYPE_ACKNACK:
-            printf("  Not supported submessage type: %02x\n", submessage_header->type);
-            return false;
-        case tt_SUBMESSAGE_TYPE_CALLREQUEST:
-            if (!process_callrequest(node, header, buffer, head,
-                                     head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                printf("  ERROR on call request\n");
-            }
-            break;
-        case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
-            if (!process_callresponse(node, header, buffer, head,
-                                      head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                printf("  ERROR on call response\n");
-            }
-            break;
-        default:
-            printf("  Illegal submessage type: %d, len: %02x\n", submessage_header->type, tail - head);
-            return false;
         }
 
         head += submessage_header->length - sizeof(struct tt_SubmessageHeader);
@@ -916,7 +970,20 @@ int32_t tt_Node_poll(struct tt_Node* node) {
     return 0;
 }
 
-int32_t tt_Node_free(struct tt_Node* node) {
+int32_t tt_Node_destroy(struct tt_Node* node) {
+    uint64_t time = tt_get_ns();
+
+    for (int i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        node->endpoints[i] = NULL;
+
+        if (endpoint != NULL && (endpoint->kind & tt_KIND_SENDER) == tt_KIND_SENDER) {
+            node->last_modified = time;
+        }
+    }
+
+    node_update(node, time, NULL);
+
     tt_close(node);
 
     return 0;

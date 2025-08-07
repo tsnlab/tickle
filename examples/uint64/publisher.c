@@ -25,14 +25,14 @@ int main(int argc, char* argv) {
     }
 
     struct UInt64Data data = {.data = 0xdeadbeef};
-    ret = tt_Publisher_pub(&pub, (struct tt_Data*)&data);
+    ret = tt_Publisher_publish(&pub, (struct tt_Data*)&data);
     if (ret < 0) {
         printf("Cannot publish: %d\n", ret);
     }
 
     tt_Node_poll(&node);
 
-    tt_Node_free(&node);
+    tt_Node_destroy(&node);
 
     return 0;
 }

@@ -32,7 +32,7 @@ int main(int argc, char* argv) {
 
     tt_Node_poll(&node);
 
-    tt_Node_free(&node);
+    tt_Node_destroy(&node);
 
     return 0;
 }

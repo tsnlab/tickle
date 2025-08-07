@@ -3,7 +3,7 @@
 
 #include "SetBool.h"
 
-static int32_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest* request,
+static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest* request,
                                  struct SetBoolResponse* response) {
     printf("  data: %d\n", request->data);
 
@@ -42,7 +42,7 @@ int main(int argc, char* argv) {
 
     tt_Node_poll(&node);
 
-    tt_Node_free(&node);
+    tt_Node_destroy(&node);
 
     return 0;
 }

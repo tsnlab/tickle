@@ -7,10 +7,12 @@
 #define tt_KIND_NONE 0x00
 #define tt_KIND_TOPIC 0x01
 #define tt_KIND_SERVICE 0x02
-#define tt_KIND_TOPIC_PUBLISHER (0x10 | tt_KIND_TOPIC)
-#define tt_KIND_TOPIC_SUBSCRIBER (0x20 | tt_KIND_TOPIC)
-#define tt_KIND_SERVICE_CLIENT (0x10 | tt_KIND_SERVICE)
-#define tt_KIND_SERVICE_SERVER (0x20 | tt_KIND_SERVICE)
+#define tt_KIND_SENDER 0x10
+#define tt_KIND_RECEIVER 0x20
+#define tt_KIND_TOPIC_SUBSCRIBER (tt_KIND_RECEIVER | tt_KIND_TOPIC)
+#define tt_KIND_TOPIC_PUBLISHER (tt_KIND_SENDER | tt_KIND_TOPIC)
+#define tt_KIND_SERVICE_CLIENT (tt_KIND_RECEIVER | tt_KIND_SERVICE)
+#define tt_KIND_SERVICE_SERVER (tt_KIND_SENDER | tt_KIND_SERVICE)
 
 struct tt_Endpoint;
 struct tt_UpdateHeader;
@@ -53,7 +55,7 @@ struct tt_Service;
 struct tt_Client;
 struct tt_Response;
 
-typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int32_t return_code, struct tt_Response* response);
+typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code, struct tt_Response* response);
 
 struct tt_Client { // extends Endpoint
     struct tt_Endpoint super;
@@ -70,7 +72,7 @@ struct tt_Client { // extends Endpoint
 struct tt_Server;
 struct tt_Request;
 
-typedef int32_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
+typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
                                       struct tt_Response* response);
 
 struct tt_Server { // extends Endpoint
@@ -174,10 +176,17 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
                                   const char* name, tt_SUBSCRIBER_CALLBACK callback);
 
 int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
-int32_t tt_Publisher_pub(struct tt_Publisher* pub, struct tt_Data* data);
+int32_t tt_Client_destroy(struct tt_Client* client);
+
+int32_t tt_Server_destroy(struct tt_Server* server);
+
+int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
+int32_t tt_Publisher_destroy(struct tt_Publisher* pub);
+
+int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
 int32_t tt_Node_poll(struct tt_Node* node);
-int32_t tt_Node_free(struct tt_Node* node);
+int32_t tt_Node_destroy(struct tt_Node* node);
 
 #define tt_VERSION 1
 #define tt_PROTOCOL_UPDATE 0
@@ -190,7 +199,7 @@ struct tt_Header {
     uint8_t source;  // Sender ID
 } __attribute__((packed));
 
-#define tt_SUBMESSAGE_ID_ALL 0
+#define tt_SUBMESSAGE_ID_ALL 0xff 
 
 #define tt_SUBMESSAGE_TYPE_UPDATE 1
 #define tt_SUBMESSAGE_TYPE_DATA 2
@@ -199,8 +208,8 @@ struct tt_Header {
 #define tt_SUBMESSAGE_TYPE_CALLRESPONSE 5
 
 struct tt_SubmessageHeader {
-    uint8_t type; // 0 for Node update, 2 for Data, 3 for AckNack
-    uint8_t padding;
+    uint8_t type;    // 0 for Node update, 2 for Data, 3 for AckNack
+    uint8_t receiver; // Receiver ID
     uint16_t length; // Body length in 4 bytes including header
 } __attribute__((packed));
 
@@ -248,8 +257,7 @@ struct tt_CallResponseHeader {
     uint32_t id;         // endpoint id
     uint16_t seq_no;     // sequence number
     uint8_t retry;       // retry count from server side
-    uint8_t destination; // Receiver ID
-    int32_t return_code; // return code
+    int8_t return_code; // return code
     // type + name
     // CDR
 } __attribute__((packed));
