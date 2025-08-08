@@ -388,7 +388,7 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_CallRequestHeader* callrequest_header =
         (struct tt_CallRequestHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
-    if (++callrequest_header->retry > tt_CALL_RETRY_COUNT) {
+    if (++callrequest_header->retry > client->service->call_retry_count) {
         client->callback(client, 0, NULL); // No response from server
 
         _tt_free(client->cache);
@@ -403,8 +403,13 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
 
         end_encode(node, buf, false);
 
-        uint32_t retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
-        retry_interval = retry_interval + (retry_interval >> 1); // latency * 1.5
+        uint32_t retry_interval;
+        if (client->service->call_retry_interval == 0) {
+            retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
+            retry_interval = retry_interval + (retry_interval >> 1); // latency * 1.5
+        } else {
+            retry_interval = client->service->call_retry_interval;
+        }
 
         if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
             printf("Cannot schedule call_retry\n");
@@ -476,8 +481,13 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     client->cache_time = tt_get_ns();
     client->seq_no++;
 
-    uint32_t retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
-    retry_interval = retry_interval + retry_interval >> 2; // latency * 1.5
+    uint32_t retry_interval;
+    if (client->service->call_retry_interval == 0) {
+        retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
+        retry_interval = retry_interval + (retry_interval >> 1); // latency * 1.5
+    } else {
+        retry_interval = client->service->call_retry_interval;
+    }
 
     if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
         printf("Cannot schedule call_retry\n");

@@ -117,8 +117,8 @@ struct tt_Service {
     tt_RESPONSE_FREE response_free;
 
     // QoS
-    uint32_t call_retry_interval;
-    uint32_t call_retry_count;
+    uint32_t call_retry_interval; // 0 means auto
+    uint32_t call_retry_count;    // 0 means tt_CALL_RETRY_COUNT
 };
 
 struct tt_Topic;
