@@ -87,8 +87,7 @@ static bool flush_tx(struct tt_Node* node, int32_t len) {
 static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush) {
     // Set submessage header length
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
-    size_t rem = length % 4;
-    size_t roundup = rem > 0 ? 4 - rem : 0;
+    size_t roundup = ROUNDUP(length) - length;
 
     if (node->tx_tail + roundup <= tt_MAX_BUFFER_LENGTH) { // tail in below the buffer
         submessage_header->length = length + roundup;

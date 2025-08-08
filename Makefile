@@ -29,7 +29,10 @@ publisher:  examples/uint64/UInt64.c examples/uint64/publisher.c libtickle.a
 subscriber: examples/uint64/UInt64.c examples/uint64/subscriber.c libtickle.a
 	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber.c -L. -ltickle $(CFLAGS)
 
-.PHONY: clean createns deletens run
+.PHONY: lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
+
+lint:
+	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} \;
 
 createns:
 # Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
