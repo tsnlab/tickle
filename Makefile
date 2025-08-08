@@ -74,6 +74,12 @@ runpublisher: publisher
 runsubscriber: subscriber
 	sudo ip netns exec ns2 ./subscriber
 
+dump1:
+	sudo ip netns exec ns1 tcpdump -l -xxx -i veth1
+
+dump2:
+	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
+
 clean:
 	rm -rf $(OBJ)/*
 	rm -f libtickle.a
@@ -81,25 +87,3 @@ clean:
 	rm -f server
 	rm -f publisher
 	rm -f subscriber
-
-c_reatens:
-	# Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
-	sudo ip netns add serverns  # create namespace
-	sudo ip link add veth0 type veth peer name veth1  # create cable
-	sudo ip link set veth0 netns serverns  # attach cable
-	sudo ip link set veth1 netns 1  # attach cable to default
-	sudo ip addr add 192.168.10.2/24 dev veth1  # set ip
-	sudo ip -n serverns addr add 192.168.10.1/24 dev veth0  # set ip
-	@echo "Host IP"
-	sudo ip addr  # check ip and arp
-	@echo "Server NS IP"
-	sudo ip netns exec serverns ip addr  # check ip and arp
-	@echo "Host route"
-	sudo ip route
-	@echo "Host route"
-	sudo ip netns exec serverns ip route
-	# bring up interface
-	sudo ip link set veth1 up
-	sudo ip -n serverns link set veth0 up
-	ping -c 1 192.168.10.1
-	sudo ip netns exec serverns ping -c 1 192.168.10.2

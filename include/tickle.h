@@ -54,6 +54,7 @@ struct tt_Endpoint {
 struct tt_Service;
 struct tt_Client;
 struct tt_Response;
+struct tt_SubmessageHeader;
 
 typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code, struct tt_Response* response);
 
@@ -64,9 +65,8 @@ struct tt_Client { // extends Endpoint
     tt_CLIENT_CALLBACK callback;
 
     // transcation
-    bool is_on_call;
+    struct tt_SubmessageHeader* cache; // Last call cache
     uint16_t seq_no;
-    uint8_t retry;
 };
 
 struct tt_Server;
@@ -80,6 +80,8 @@ struct tt_Server { // extends Endpoint
     struct tt_Node* node;
     struct tt_Service* service;
     tt_SERVER_CALLBACK callback;
+
+    struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT];
 };
 
 struct tt_Request {};
@@ -161,6 +163,7 @@ struct tt_Topic {
 uint32_t tt_hash_id(const char* type, const char* name);
 struct tt_Header;
 bool tt_is_native_endian(struct tt_Header* header);
+uint64_t tt_get_ns();
 
 /**
  * @return 0 - succeed
@@ -174,6 +177,8 @@ int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub,
                                  const char* name);
 int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                   const char* name, tt_SUBSCRIBER_CALLBACK callback);
+bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
+                      void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
 
 int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
 int32_t tt_Client_destroy(struct tt_Client* client);
@@ -210,7 +215,7 @@ struct tt_Header {
 struct tt_SubmessageHeader {
     uint8_t type;     // 0 for Node update, 2 for Data, 3 for AckNack
     uint8_t receiver; // Receiver ID
-    uint16_t length; // Body length in 4 bytes including header
+    uint16_t length;  // Body length in 4 bytes including header
 } __attribute__((packed));
 
 struct tt_UpdateHeader {
@@ -254,10 +259,10 @@ struct tt_CallRequestHeader {
 } __attribute__((packed));
 
 struct tt_CallResponseHeader {
-    uint32_t id;         // endpoint id
-    uint16_t seq_no;     // sequence number
-    uint8_t retry;       // retry count from server side
-    int8_t return_code;  // return code
+    uint32_t id;        // endpoint id
+    uint16_t seq_no;    // sequence number
+    uint8_t retry;      // retry count from server side
+    int8_t return_code; // return code
     // type + name
     // CDR
 } __attribute__((packed));

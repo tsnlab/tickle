@@ -14,7 +14,6 @@
 #define _tt_memcpy(dest, src, n) memcpy((dest), (src), (n))
 #define _tt_memmove(dest, src, n) memmove((dest), (src), (n))
 #define _tt_free(ptr) free((ptr))
-uint64_t tt_get_ns();
 
 struct tt_Node;
 int32_t tt_get_node_id();

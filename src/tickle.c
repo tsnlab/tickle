@@ -1,6 +1,9 @@
 #include <hal.h>
 #include <tickle.h>
 
+#define ALIGN(n) ((n + 4 - 1) & ~(4 - 1))
+#define ROUNDUP(n) ALIGN((n) + 4 - 1)
+
 static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type, uint8_t receiver) {
     if (node->tx_tail + sizeof(struct tt_SubmessageHeader) >= node->tx_size) {
         printf("Lack of tx buffer\n");
@@ -165,8 +168,8 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     return NULL;
 }
 
-static bool push_scheduler(struct tt_Node* node, uint64_t time,
-                           void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
+bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
+                      void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
     if (node->scheduler_tail + 1 >= tt_MAX_SCHEDULER_LENGTH) {
         return false;
     }
@@ -287,14 +290,22 @@ int32_t tt_Node_create(struct tt_Node* node) {
     uint64_t rem = basetime % tt_NODE_CYCLE;
     basetime = basetime - rem + tt_NODE_CYCLE;
 
-    push_scheduler(node, basetime, node_update, NULL);
-    push_scheduler(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL);
+    if (!tt_Node_schedule(node, basetime, node_update, NULL)) {
+        printf("Cannot schedule node_update\n");
+        return -1;
+    }
+
+    if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
+        printf("Cannot schedule node_flush\n");
+        return -1;
+    }
 
     return 0;
 }
 
 int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
                               const char* name, tt_CLIENT_CALLBACK callback) {
+    // TODO: Check dup
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     endpoint->kind = tt_KIND_SERVICE_CLIENT;
     endpoint->id = tt_hash_id(service->name, name);
@@ -302,9 +313,8 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
     client->node = node;
     client->service = service;
     client->callback = callback;
-    client->is_on_call = false;
+    client->cache = NULL;
     client->seq_no = 0;
-    client->retry = 0;
 
     node->endpoints[node->endpoint_count++] = endpoint;
 
@@ -313,6 +323,7 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
 
 int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
                               const char* name, tt_SERVER_CALLBACK callback) {
+    // TODO: Check dup
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
     endpoint->kind = tt_KIND_SERVICE_SERVER;
     endpoint->id = tt_hash_id(service->name, name);
@@ -320,6 +331,10 @@ int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, st
     server->node = node;
     server->service = service;
     server->callback = callback;
+
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        server->cache[i] = NULL;
+    }
 
     node->endpoints[node->endpoint_count++] = endpoint;
     node->last_modified = tt_get_ns();
@@ -329,6 +344,7 @@ int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, st
 
 int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
                                  const char* name) {
+    // TODO: Check dup
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     endpoint->kind = tt_KIND_TOPIC_PUBLISHER;
     endpoint->id = tt_hash_id(topic->name, name);
@@ -345,6 +361,7 @@ int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub,
 
 int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                   const char* name, tt_SUBSCRIBER_CALLBACK callback) {
+    // TODO: Check dup
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     endpoint->kind = tt_KIND_TOPIC_SUBSCRIBER;
     endpoint->id = tt_hash_id(topic->name, name);
@@ -358,8 +375,41 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
     return 0;
 }
 
+static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
+    struct tt_Client* client = param;
+
+    struct tt_SubmessageHeader* submessage_header = client->cache;
+    if (submessage_header == NULL) {
+        // Already respond.
+        return;
+    }
+
+    struct tt_CallRequestHeader* callrequest_header =
+        (struct tt_CallRequestHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
+
+    if (++callrequest_header->retry > tt_CALL_RETRY_COUNT) {
+        client->callback(client, 0, NULL); // No response from server
+
+        _tt_free(client->cache);
+        client->cache = NULL;
+    } else {
+        void* buf = encode(node, submessage_header->length);
+        if (buf == NULL) {
+            return;
+        }
+
+        _tt_memcpy(buf, submessage_header, submessage_header->length);
+
+        end_encode(node, buf, false);
+
+        if (!tt_Node_schedule(node, tt_get_ns() + tt_CALL_RETRY_INTERVAL, call_retry, client)) {
+            printf("Cannot schedule call_retry\n");
+        }
+    }
+}
+
 int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
-    if (client->is_on_call) {
+    if (client->cache != NULL) {
         return -3; // waiting response
     }
 
@@ -382,7 +432,7 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     }
 
     callrequest_header->id = endpoint->id;
-    callrequest_header->seq_no = client->seq_no + 1;
+    callrequest_header->seq_no = client->seq_no;
     callrequest_header->retry = 0;
 
     // CallRequestBody
@@ -399,14 +449,32 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
         return -2;
     }
 
-    if (!end_encode(node, submessage_header, false)) {
+    // Make cache
+    size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+    struct tt_SubmessageHeader* cache = _tt_malloc(length);
+    if (cache == NULL) {
+        printf("Out of memory\n");
         rollback(node, submessage_header);
         return -3;
     }
 
-    client->is_on_call = true;
+    _tt_memcpy(cache, submessage_header, length);
+    cache->length = length;
+
+    // Flush tx
+    if (!end_encode(node, submessage_header, false)) {
+        _tt_free(cache);
+        rollback(node, submessage_header);
+        return -3;
+    }
+
+    client->cache = cache;
     client->seq_no++;
-    client->retry = 0;
+
+    if (!tt_Node_schedule(node, tt_get_ns() + tt_CALL_RETRY_INTERVAL, call_retry, client)) {
+        printf("Cannot schedule call_retry\n");
+        return -1;
+    }
 
     return 0;
 }
@@ -590,7 +658,9 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     }
 
 done:
-    push_scheduler(node, time + tt_NODE_UPDATE_INTERVAL, node_update, NULL);
+    if (!tt_Node_schedule(node, time + tt_NODE_UPDATE_INTERVAL, node_update, NULL)) {
+        printf("Cannot schedule node_update\n");
+    }
 }
 
 static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
@@ -598,7 +668,9 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
         printf("Cannot flush tx_buffer\n");
     }
 
-    push_scheduler(node, time + tt_NODE_TX_INTERVAL, node_flush, NULL);
+    if (!tt_Node_schedule(node, time + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
+        printf("Cannot schedule node_flush\n");
+    }
 }
 
 static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, int32_t head,
@@ -708,6 +780,98 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     return true;
 }
 
+static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] != NULL) {
+            struct tt_SubmessageHeader* submessage_header = server->cache[i];
+            struct tt_CallResponseHeader* callresponse_header =
+                (struct tt_CallResponseHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
+
+            if (submessage_header->receiver == receiver && callresponse_header->seq_no == seq_no) {
+                return submessage_header;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+struct _ServerCacheClean {
+    struct tt_Server* server;
+    struct tt_SubmessageHeader* cache;
+};
+
+static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param) {
+    struct _ServerCacheClean* clean = param;
+
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (clean->server->cache[i] == clean->cache) {
+            clean->server->cache[i] = NULL;
+            _tt_free(clean->cache);
+            break;
+        }
+    }
+
+    _tt_free(clean);
+}
+
+static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header,
+                             uint8_t receiver) {
+    size_t length = ROUNDUP((uintptr_t)server->node->tx_buffer + server->node->tx_tail - (uintptr_t)submessage_header);
+
+    struct tt_SubmessageHeader* cache = _tt_malloc(length);
+    if (cache == NULL) {
+        printf("Out of memory: %ld\n", length);
+        return false;
+    }
+
+    _tt_memcpy(cache, submessage_header, length);
+    cache->length = length;
+
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] != NULL) {
+            struct tt_SubmessageHeader* submessage_header = server->cache[i];
+            struct tt_CallResponseHeader* callresponse_header =
+                (struct tt_CallResponseHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
+
+            if (submessage_header->receiver == receiver) {
+                _tt_free(server->cache[i]);
+                server->cache[i] = NULL;
+            }
+        }
+
+        if (cache != NULL && server->cache[i] == NULL) {
+            struct tt_CallResponseHeader* callresponse_header =
+                (struct tt_CallResponseHeader*)((void*)cache + sizeof(struct tt_SubmessageHeader));
+            server->cache[i] = cache;
+
+            struct _ServerCacheClean* clean = _tt_malloc(sizeof(struct _ServerCacheClean));
+            if (clean == NULL) {
+                printf("Out of memory\n");
+                return false;
+            }
+
+            clean->server = server;
+            clean->cache = cache;
+
+            if (!tt_Node_schedule(server->node, tt_get_ns() + tt_CALL_RETRY_INTERVAL * (tt_CALL_RETRY_COUNT + 1),
+                                  server_cache_clean, clean)) {
+                printf("Cannot schedule server_cache_clean\n");
+                return false;
+            }
+
+            cache = NULL;
+        }
+    }
+
+    if (cache != NULL) {
+        _tt_free(cache);
+        return false;
+    } else {
+        return true;
+    }
+}
+
 static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, int32_t head,
                                 int32_t tail) {
     int32_t length = tail - head;
@@ -726,65 +890,90 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_SERVER, callrequest_header->id);
     if (endpoint != NULL) {
-        // Callback
         struct tt_Server* server = (struct tt_Server*)endpoint;
         struct tt_Service* service = server->service;
 
-        uint8_t request[service->request_size];
-        int32_t decoded = service->request_decode((struct tt_Request*)request, buffer + head, tail - head,
-                                                  tt_is_native_endian(header));
-
-        uint8_t response[service->response_size];
-        int8_t return_code = server->callback(server, (struct tt_Request*)request, (struct tt_Response*)response);
-
-        service->request_free((struct tt_Request*)request);
-
-        printf("  return_code: %d\n", return_code);
-
-        // Send response
-        // Header and SubmessageHeader
+        // Check cache
         struct tt_SubmessageHeader* submessage_header =
-            start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE, header->source);
-        if (submessage_header == NULL) {
-            return false;
-        }
+            get_server_cache(server, header->source, callrequest_header->seq_no);
+        if (submessage_header != NULL) {
+            struct tt_CallResponseHeader* callresponse_header =
+                (void*)submessage_header + sizeof(struct tt_SubmessageHeader);
+            callresponse_header->retry++;
 
-        // CallResponseHeader
-        struct tt_CallResponseHeader* call_response_header = encode(node, sizeof(struct tt_CallResponseHeader));
-        if (call_response_header == NULL) {
-            rollback(node, submessage_header);
-            return false;
-        }
+            void* buf = encode(node, submessage_header->length);
 
-        call_response_header->id = endpoint->id;
-        call_response_header->seq_no = callrequest_header->seq_no;
-        call_response_header->retry = 0;
-        call_response_header->return_code = return_code;
+            if (buf == NULL) {
+                printf("  Cannot retry reponse\n");
+                return false;
+            }
 
-        // CallRequestBody
-        if (return_code == 0) {
-            int32_t cdr_len = service->response_encode_size((struct tt_Response*)response);
-            void* cdr = encode(node, cdr_len);
-            if (cdr == NULL) {
+            _tt_memcpy(buf, submessage_header, submessage_header->length);
+
+            submessage_header = buf;
+        } else {
+            // Callback
+            uint8_t request[service->request_size];
+            int32_t decoded = service->request_decode((struct tt_Request*)request, buffer + head, tail - head,
+                                                      tt_is_native_endian(header));
+
+            uint8_t response[service->response_size];
+            int8_t return_code = server->callback(server, (struct tt_Request*)request, (struct tt_Response*)response);
+
+            service->request_free((struct tt_Request*)request);
+
+            printf("  return_code: %d\n", return_code);
+
+            // Send response
+            // Header and SubmessageHeader
+            submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE, header->source);
+            if (submessage_header == NULL) {
+                return false;
+            }
+
+            // CallResponseHeader
+            struct tt_CallResponseHeader* call_response_header = encode(node, sizeof(struct tt_CallResponseHeader));
+            if (call_response_header == NULL) {
                 rollback(node, submessage_header);
                 return false;
             }
 
-            int32_t encoded_len = service->response_encode((struct tt_Response*)response, cdr, cdr_len);
-            service->response_free((struct tt_Response*)response);
+            call_response_header->id = endpoint->id;
+            call_response_header->seq_no = callrequest_header->seq_no;
+            call_response_header->retry = 0;
+            call_response_header->return_code = return_code;
 
-            if (encoded_len < 0) {
+            // CallRequestBody
+            if (return_code == 0) {
+                int32_t cdr_len = service->response_encode_size((struct tt_Response*)response);
+                void* cdr = encode(node, cdr_len);
+                if (cdr == NULL) {
+                    rollback(node, submessage_header);
+                    return false;
+                }
+
+                int32_t encoded_len = service->response_encode((struct tt_Response*)response, cdr, cdr_len);
+                service->response_free((struct tt_Response*)response);
+
+                if (encoded_len < 0) {
+                    rollback(node, submessage_header);
+                    return false;
+                }
+            }
+
+            // Cache submessage header before flush
+            if (!set_server_cache(server, submessage_header, header->source)) {
                 rollback(node, submessage_header);
+                printf("Cannot cache callresponse: Out of cache\n");
                 return false;
             }
         }
 
+        // Flush
         if (!end_encode(node, submessage_header, false)) {
             rollback(node, submessage_header);
             return false;
         }
-
-        return true;
     }
 
     return true;
@@ -824,6 +1013,9 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 
             response = (struct tt_Response*)response_buffer;
         }
+
+        _tt_free(client->cache);
+        client->cache = NULL;
 
         client->callback(client, callresponse_header->return_code, response);
 
