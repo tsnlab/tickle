@@ -65,8 +65,12 @@ struct tt_Client { // extends Endpoint
     tt_CLIENT_CALLBACK callback;
 
     // transcation
-    struct tt_SubmessageHeader* cache; // Last call cache
     uint16_t seq_no;
+
+    // Cache
+    struct tt_SubmessageHeader* cache; // Last call cache
+    uint64_t cache_time;               // Cache time
+    uint32_t latency;                  // Call latency
 };
 
 struct tt_Server;
@@ -111,6 +115,10 @@ struct tt_Service {
     tt_RESPONSE_ENCODE response_encode;
     tt_RESPONSE_DECODE response_decode;
     tt_RESPONSE_FREE response_free;
+
+    // QoS
+    uint32_t call_retry_interval;
+    uint32_t call_retry_count;
 };
 
 struct tt_Topic;

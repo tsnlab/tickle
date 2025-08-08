@@ -52,7 +52,9 @@ int main(int argc, char* argv) {
         printf("Cannot call: %d\n", ret);
     }
 
-    tt_Node_schedule(&node, tt_get_ns() + 3000000000ULL, call, &client);
+    tt_Node_schedule(&node, tt_get_ns() + tt_SECOND, call, &client);
+    tt_Node_schedule(&node, tt_get_ns() + 2 * tt_SECOND, call, &client);
+    tt_Node_schedule(&node, tt_get_ns() + 3 * tt_SECOND, call, &client);
 
     tt_Node_poll(&node);
 

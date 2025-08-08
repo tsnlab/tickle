@@ -4,13 +4,14 @@
 #define tt_MILLISECOND 1000000ULL
 #define tt_MICROSECOND 1000ULL
 
-#define tt_NODE_CYCLE tt_MILLISECOND              // nanosecond
-#define tt_NODE_UPDATE_INTERVAL 10 * tt_SECOND    // nanoseond  TODO: Temporary value for debugging
-#define tt_NODE_TX_INTERVAL tt_MILLISECOND        // nanoseond
-#define tt_RELIABLE_DEADLINE 0                    // nanosecond, 0 is auto
-#define tt_RELIABLE_RETRY 3                       // count
-#define tt_CALL_RETRY_INTERVAL 5 * tt_MILLISECOND // nanosecond
-#define tt_CALL_RETRY_COUNT 3                     // count
+#define tt_NODE_CYCLE tt_MILLISECOND                   // nanosecond
+#define tt_NODE_UPDATE_INTERVAL 10 * tt_SECOND         // nanoseond  TODO: Temporary value for debugging
+#define tt_NODE_TX_INTERVAL tt_MILLISECOND             // nanoseond
+#define tt_RELIABLE_DEADLINE 0                         // nanosecond, 0 is auto
+#define tt_RELIABLE_RETRY 3                            // count
+#define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
+#define tt_CALL_RETRY_COUNT 3                          // count
+#define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
 
 #define tt_MAX_ENDPOINT_COUNT 256    // Maximum number of endpoints (data or services)
 #define tt_MAX_NAME_LENGTH 32        // Maximum length of endpoint name

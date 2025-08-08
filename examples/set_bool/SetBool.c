@@ -16,6 +16,8 @@ struct tt_Service SetBoolService = {
     .response_encode = (tt_RESPONSE_ENCODE)SetBoolResponse_encode,
     .response_decode = (tt_RESPONSE_DECODE)SetBoolResponse_decode,
     .response_free = (tt_RESPONSE_FREE)SetBoolResponse_free,
+    .call_retry_interval = 0, // 0 means auto
+    .call_retry_count = 3,
 };
 
 int32_t SetBoolRequest_encode_size(struct SetBoolRequest* request) {

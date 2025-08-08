@@ -1,8 +1,8 @@
 #include <hal.h>
 #include <tickle.h>
 
-#define ALIGN(n) ((n + 4 - 1) & ~(4 - 1))
-#define ROUNDUP(n) ALIGN((n) + 4 - 1)
+#define ALIGN(n) ((n + 4 - 1) & ~(4 - 1)) // 4 bytes alignment
+#define ROUNDUP(n) ALIGN((n) + 4 - 1)     // 4 bytes roundup
 
 static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type, uint8_t receiver) {
     if (node->tx_tail + sizeof(struct tt_SubmessageHeader) >= node->tx_size) {
@@ -312,8 +312,10 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
     client->node = node;
     client->service = service;
     client->callback = callback;
-    client->cache = NULL;
     client->seq_no = 0;
+    client->cache = NULL;
+    client->cache_time = 0;
+    client->latency = 0;
 
     node->endpoints[node->endpoint_count++] = endpoint;
 
@@ -401,7 +403,10 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
 
         end_encode(node, buf, false);
 
-        if (!tt_Node_schedule(node, tt_get_ns() + tt_CALL_RETRY_INTERVAL, call_retry, client)) {
+        uint32_t retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
+        retry_interval = retry_interval + (retry_interval >> 1); // latency * 1.5
+
+        if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
             printf("Cannot schedule call_retry\n");
         }
     }
@@ -468,9 +473,13 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     }
 
     client->cache = cache;
+    client->cache_time = tt_get_ns();
     client->seq_no++;
 
-    if (!tt_Node_schedule(node, tt_get_ns() + tt_CALL_RETRY_INTERVAL, call_retry, client)) {
+    uint32_t retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
+    retry_interval = retry_interval + retry_interval >> 2; // latency * 1.5
+
+    if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
         printf("Cannot schedule call_retry\n");
         return -1;
     }
@@ -853,8 +862,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
             clean->server = server;
             clean->cache = cache;
 
-            if (!tt_Node_schedule(server->node, tt_get_ns() + tt_CALL_RETRY_INTERVAL * (tt_CALL_RETRY_COUNT + 1),
-                                  server_cache_clean, clean)) {
+            if (!tt_Node_schedule(server->node, tt_get_ns() + tt_SERVER_CACHE_TIMEOUT, server_cache_clean, clean)) {
                 printf("Cannot schedule server_cache_clean\n");
                 return false;
             }
@@ -997,6 +1005,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     if (endpoint != NULL) {
         struct tt_Client* client = (struct tt_Client*)endpoint;
         struct tt_Service* service = client->service;
+        uint32_t latency = client->cache_time - tt_get_ns();
 
         struct tt_Response* response = NULL;
         uint8_t response_buffer[service->response_size];
@@ -1015,6 +1024,14 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 
         _tt_free(client->cache);
         client->cache = NULL;
+
+        if (client->latency == 0) {
+            client->latency = latency;
+        } else {
+            // Latency moving average
+            // client->latency * 0.875 + latency * 0.125
+            client->latency = client->latency >> 1 + client->latency >> 2 + client->latency >> 3 + latency >> 3;
+        }
 
         client->callback(client, callresponse_header->return_code, response);
 
