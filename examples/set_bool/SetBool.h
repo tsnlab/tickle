@@ -1,7 +1,7 @@
 // Generated code
 #pragma oncde
 
-#include <tickle.h>
+#include <tickle/tickle.h>
 
 struct SetBoolRequest {
     bool data;

@@ -15,6 +15,15 @@
 #define _tt_memmove(dest, src, n) memmove((dest), (src), (n))
 #define _tt_free(ptr) free((ptr))
 
+enum tickle_error {
+    tt_ERROR_NONE = 0,
+    tt_CANNOT_CREATE_SOCK = -3,
+    tt_CANNOT_SET_REUSEADDR = -4,
+    tt_CANNOT_SET_BROADCAST = -5,
+    tt_CANNOT_SET_TIMEOUT = -6,
+    tt_CANNOT_BIND_SOCKET = -7,
+};
+
 struct tt_Node;
 int32_t tt_get_node_id();
 int32_t tt_bind(struct tt_Node* node);
