@@ -4,16 +4,24 @@ CheckOptions:
     value: CamelCase
   - key: readability-identifier-naming.StructCase
     value: lower_case
+  - key: readability-identifier-naming.StructIgnoredRegexp
+    value: '^tt_.*'
   - key: readability-identifier-naming.EnumCase
     value: lower_case
   - key: readability-identifier-naming.EnumConstantCase
     value: UPPER_CASE
+  - key: readability-identifier-naming.EnumConstantIgnoredRegexp
+    value: '^tt_.*'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
+  - key: readability-identifier-naming.TypedefIgnoredRegexp
+    value: '^tt_.*'
   - key: readability-identifier-naming.VariableCase
     value: lower_case
   - key: readability-identifier-naming.GlobalVariableCase
     value: lower_case
+  - key: readability-identifier-naming.GlobalVariableIgnoredRegexp
+    value: '^_?tt_.*'
   - key: readability-identifier-naming.ConstantCase
     value: lower_case
   - key: readability-identifier-naming.MemberCase
@@ -23,13 +31,13 @@ CheckOptions:
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
   - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
-    value: '^DEBUG$'
+    value: '^DEBUG$|^tt_.*'
   - key: readability-identifier-length.IgnoredParameterNames
-    value: '^(ip|ts|[abijkpqr])$'
+    value: '^(id|ip|ts|[abijkpqr])$'
   - key: readability-identifier-length.IgnoredVariableNames
-    value: '^(ip|ts|[A-Zijkpqr])$'
+    value: '^(id|ip|ts|[A-Zijkpqr])$'
   - key: readability-identifier-naming.LocalVariableIgnoredRegexp
-    value: '^(ip|ts|[A-Zijkpqr])$'
+    value: '^(id|ip|ts|[A-Zijkpqr])$'
   - key: readability-magic-numbers.IgnoredIntegerValues
     value: '1;2;3;4;5;8;10;16;24;32;255'
   - key: misc-include-header.MissingIncludes
