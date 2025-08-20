@@ -15,6 +15,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v2
 
+      - name: Install build packages
+        run: |
+          sudo apt update
+          sudo apt install bear
+
+      - name: Generate compile_commands.json
+        run: |
+          bear -- make all
+
       - name: Check all
         uses: tsnlab/check@main
         with:

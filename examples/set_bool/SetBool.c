@@ -2,7 +2,7 @@
 
 #include "SetBool.h"
 
-#include <hal.h>
+#include <tickle/hal.h>
 
 struct tt_Service SetBoolService = {
     .name = "SetBoolService",

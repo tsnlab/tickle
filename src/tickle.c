@@ -1,8 +1,15 @@
-#include <hal.h>
-#include <tickle.h>
+#include <stdint.h>
+#include <stdio.h>
 
-#define ALIGN(n) ((n + 4 - 1) & ~(4 - 1)) // 4 bytes alignment
+#include "consts.h"
+#include <tickle/config.h>
+#include <tickle/hal.h>
+#include <tickle/tickle.h>
+
+#define ALIGN(n) (((n) + 4 - 1) & ~(4 - 1)) // 4 bytes alignment
 #define ROUNDUP(n) ALIGN((n) + 4 - 1)     // 4 bytes roundup
+
+#define UNUSED(x) (void)(x)
 
 static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type, uint8_t receiver) {
     if (node->tx_tail + sizeof(struct tt_SubmessageHeader) >= node->tx_size) {
@@ -51,11 +58,11 @@ static bool encode_string(struct tt_Node* node, const char* str) {
     return true;
 }
 
-static void* rollback(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header) {
+static void rollback(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header) {
     node->tx_tail = (uintptr_t)submessage_header - (uintptr_t)node->tx_buffer;
 }
 
-static bool flush_tx(struct tt_Node* node, int32_t len) {
+static bool flush_tx(struct tt_Node* node, uint32_t len) {
     // Check at least 1 submessage is contained
     if (len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
         return true; // Nothing to flush
@@ -105,7 +112,7 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     // Case 1: Immediate flush when is_flush is true
     // case 2: Flush when tx_tail exceeds tt_MAX_BUFFER_LENGTH
     if (is_flush) {
-        int32_t len;
+        uint32_t len;
         if (node->tx_tail > tt_MAX_BUFFER_LENGTH) {
             len = node->tx_tail;
         } else {
@@ -122,7 +129,9 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     return true;
 }
 
-static void* decode(struct tt_Node* node, uint8_t* buffer, int32_t* head, int32_t tail, int32_t length) {
+static void* decode(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint32_t length) {
+    UNUSED(node);
+
     if (*head + length > tail) {
         return NULL;
     }
@@ -134,8 +143,10 @@ static void* decode(struct tt_Node* node, uint8_t* buffer, int32_t* head, int32_
     return p;
 }
 
-static bool decode_string(struct tt_Node* node, uint8_t* buffer, int32_t* head, int32_t tail, uint16_t* str_len,
+static bool decode_string(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint16_t* str_len,
                           char** str) {
+    UNUSED(node);
+
     if (*head + sizeof(uint16_t) > tail) {
         return false;
     }
@@ -149,7 +160,7 @@ static bool decode_string(struct tt_Node* node, uint8_t* buffer, int32_t* head, 
         return false;
     }
 
-    *str = buffer + *head;
+    *str = (char*)(buffer + *head);
 
     *head += *str_len;
 
@@ -218,10 +229,10 @@ uint32_t tt_hash_id(const char* type, const char* name) {
         hash += ((const uint32_t*)type)[i];
     }
 
-    int rest = type_len % sizeof(uint32_t);
+    size_t rest = type_len % sizeof(uint32_t);
     if (rest > 0) {
         uint32_t tail = 0;
-        int offset = count * sizeof(uint32_t);
+        size_t offset = count * sizeof(uint32_t);
         _tt_memcpy(&tail, type + offset, rest);
         hash += tail;
     }
@@ -234,7 +245,7 @@ uint32_t tt_hash_id(const char* type, const char* name) {
     rest = name_len % sizeof(uint32_t);
     if (rest > 0) {
         uint32_t tail = 0;
-        int offset = count * sizeof(uint32_t);
+        size_t offset = count * sizeof(uint32_t);
         _tt_memcpy(&tail, name + offset, rest);
         hash += tail;
     }
@@ -263,7 +274,7 @@ int32_t tt_Node_create(struct tt_Node* node) {
         node->updates[i] = NULL;
     }
 
-    memset(node->tx_buffer, 0, tt_MAX_BUFFER_LENGTH * 2);
+    memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
 
@@ -377,6 +388,8 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
 }
 
 static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(time);
+
     struct tt_Client* client = param;
 
     struct tt_SubmessageHeader* submessage_header = client->cache;
@@ -600,6 +613,8 @@ int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
 }
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(param);
+
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
@@ -627,7 +642,6 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
         case tt_KIND_TOPIC_PUBLISHER:
             type = ((struct tt_Publisher*)endpoint)->topic->name;
         case tt_KIND_TOPIC_SUBSCRIBER:
-            continue;
         case tt_KIND_SERVICE_CLIENT:
             continue;
         case tt_KIND_SERVICE_SERVER:
@@ -682,6 +696,8 @@ done:
 }
 
 static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(param);
+
     if (!flush_tx(node, node->tx_tail)) {
         printf("Cannot flush tx_buffer\n");
     }
@@ -691,9 +707,9 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
-static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, int32_t head,
-                           int32_t tail) {
-    int32_t length = tail - head;
+static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                           uint32_t tail) {
+    uint32_t length = tail - head;
 
     struct tt_UpdateHeader* update_header = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateHeader));
     if (update_header == NULL) {
@@ -765,8 +781,8 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     return true;
 }
 
-static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, int32_t head, int32_t tail) {
-    int32_t length = tail - head;
+static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail) {
+    uint32_t length = tail - head;
 
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
@@ -814,13 +830,16 @@ static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, ui
     return NULL;
 }
 
-struct _ServerCacheClean {
+struct server_cache_clean_config {
     struct tt_Server* server;
     struct tt_SubmessageHeader* cache;
 };
 
 static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param) {
-    struct _ServerCacheClean* clean = param;
+    UNUSED(node);
+    UNUSED(time);
+
+    struct server_cache_clean_config* clean = param;
 
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (clean->server->cache[i] == clean->cache) {
@@ -863,7 +882,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
                 (struct tt_CallResponseHeader*)((void*)cache + sizeof(struct tt_SubmessageHeader));
             server->cache[i] = cache;
 
-            struct _ServerCacheClean* clean = _tt_malloc(sizeof(struct _ServerCacheClean));
+            struct server_cache_clean_config* clean = _tt_malloc(sizeof(struct server_cache_clean_config));
             if (clean == NULL) {
                 printf("Out of memory\n");
                 return false;
@@ -884,14 +903,16 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     if (cache != NULL) {
         _tt_free(cache);
         return false;
-    } else {
-        return true;
     }
+
+    return true;
 }
 
-static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, int32_t head,
-                                int32_t tail) {
-    int32_t length = tail - head;
+static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                                uint32_t tail) {
+    UNUSED(node);
+
+    uint32_t length = tail - head;
 
     struct tt_CallRequestHeader* callrequest_header =
         decode(node, buffer, &head, tail, sizeof(struct tt_CallRequestHeader));
@@ -996,8 +1017,8 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     return true;
 }
 
-static bool process_callresponse(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, int32_t head,
-                                 int32_t tail) {
+static bool process_callresponse(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                                 uint32_t tail) {
     struct tt_CallResponseHeader* callresponse_header =
         decode(node, buffer, &head, tail, sizeof(struct tt_CallResponseHeader));
     if (callresponse_header == NULL) {
@@ -1040,7 +1061,8 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
         } else {
             // Latency moving average
             // client->latency * 0.875 + latency * 0.125
-            client->latency = client->latency >> 1 + client->latency >> 2 + client->latency >> 3 + latency >> 3;
+            // client->latency = (client->latency >> 1) + (client->latency >> 2) + (client->latency >> 3) + (latency >> 3);
+            client->latency = (client->latency - (client->latency >> 3)) + (latency >> 3);
         }
 
         client->callback(client, callresponse_header->return_code, response);
@@ -1055,7 +1077,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     return true;
 }
 
-static bool process_packet(struct tt_Node* node, uint8_t* buffer, int32_t head, int32_t tail) {
+static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail) {
     // Decode header
     struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
     if (header == NULL) {
@@ -1168,7 +1190,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
             break;
         } else {
             printf("Process packet from addr: %d.%d.%d.%d:%d len: %d\n", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-                   (ip >> 8) & 0xff, (ip >> 0) & 0xff, port, len);
+                   (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
 
             if (!process_packet(node, buffer, 0, len)) {
                 printf("Cannot process packet\n");

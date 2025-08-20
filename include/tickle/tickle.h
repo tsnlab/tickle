@@ -1,8 +1,8 @@
 #pragma once
 
-#include <config.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <tickle/config.h>
 
 #define tt_KIND_NONE 0x00
 #define tt_KIND_TOPIC 0x01
@@ -34,8 +34,8 @@ struct tt_Node {
     struct tt_UpdateHeader* updates[tt_MAX_ENDPOINT_COUNT];
 
     uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
-    int32_t tx_tail;
-    int32_t tx_size;
+    uint32_t tx_tail;
+    uint32_t tx_size;
 
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
@@ -93,13 +93,13 @@ struct tt_Request {};
 struct tt_Response {};
 
 typedef int32_t (*tt_REQUEST_ENCODE_SIZE)(struct tt_Request* request);
-typedef int32_t (*tt_REQUEST_ENCODE)(struct tt_Request* request, uint8_t* payload, const int32_t len);
-typedef int32_t (*tt_REQUEST_DECODE)(struct tt_Request* request, const uint8_t* payload, const int32_t len,
+typedef int32_t (*tt_REQUEST_ENCODE)(struct tt_Request* request, uint8_t* payload, const uint32_t len);
+typedef int32_t (*tt_REQUEST_DECODE)(struct tt_Request* request, const uint8_t* payload, const uint32_t len,
                                      bool is_native_endian);
 typedef void (*tt_REQUEST_FREE)(struct tt_Request* request);
 typedef int32_t (*tt_RESPONSE_ENCODE_SIZE)(struct tt_Response* response);
-typedef int32_t (*tt_RESPONSE_ENCODE)(struct tt_Response* response, uint8_t* payload, const int32_t len);
-typedef int32_t (*tt_RESPONSE_DECODE)(struct tt_Response* response, const uint8_t* payload, const int32_t len,
+typedef int32_t (*tt_RESPONSE_ENCODE)(struct tt_Response* response, uint8_t* payload, const uint32_t len);
+typedef int32_t (*tt_RESPONSE_DECODE)(struct tt_Response* response, const uint8_t* payload, const uint32_t len,
                                       bool is_native_endian);
 typedef void (*tt_RESPONSE_FREE)(struct tt_Response* response);
 
@@ -149,8 +149,8 @@ struct tt_Subscriber { // extends Endpoint
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
-typedef int32_t (*tt_DATA_ENCODE)(struct tt_Data* data, uint8_t* payload, const int32_t len);
-typedef int32_t (*tt_DATA_DECODE)(struct tt_Data* data, const uint8_t* payload, const int32_t len,
+typedef int32_t (*tt_DATA_ENCODE)(struct tt_Data* data, uint8_t* payload, const uint32_t len);
+typedef int32_t (*tt_DATA_DECODE)(struct tt_Data* data, const uint8_t* payload, const uint32_t len,
                                   bool is_native_endian);
 typedef void (*tt_DATA_FREE)(struct tt_Data* data);
 

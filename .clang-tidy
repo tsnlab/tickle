@@ -25,10 +25,12 @@ CheckOptions:
   - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
     value: '^DEBUG$'
   - key: readability-identifier-length.IgnoredParameterNames
-    value: '^[abijkpqr]$'
+    value: '^(ip|ts|[abijkpqr])$'
   - key: readability-identifier-length.IgnoredVariableNames
-    value: '^[A-Zijkpqr]$'
+    value: '^(ip|ts|[A-Zijkpqr])$'
   - key: readability-identifier-naming.LocalVariableIgnoredRegexp
-    value: '^[A-Zijkpqr]$'
+    value: '^(ip|ts|[A-Zijkpqr])$'
   - key: readability-magic-numbers.IgnoredIntegerValues
-    value: '1;2;3;4;5'
+    value: '1;2;3;4;5;8;10;16;24;32;255'
+  - key: misc-include-header.MissingIncludes
+    value: false
