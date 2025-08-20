@@ -171,6 +171,7 @@ struct tt_Topic {
 uint32_t tt_hash_id(const char* type, const char* name);
 struct tt_Header;
 bool tt_is_native_endian(struct tt_Header* header);
+bool tt_is_reverse_endian(struct tt_Header* header);
 uint64_t tt_get_ns();
 
 /**
