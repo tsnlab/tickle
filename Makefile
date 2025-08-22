@@ -11,7 +11,9 @@ OBJ=obj
 
 all: libtickle.a client server
 
-OBJS = $(patsubst %,$(OBJ)/%,tickle.o hal.o)
+# Automatically find all .c files in src directory
+SRC_FILES = $(wildcard $(SRC)/*.c)
+OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
 
 $(OBJ)/%.o: $(SRC)/%.c
 	$(CC) -c -o $@ $< $(CFLAGS)

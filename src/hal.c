@@ -14,6 +14,7 @@
 #include <tickle/tickle.h>
 
 #include "consts.h"
+#include "log.h"
 
 #define SEC_NS 1000000000ULL
 
@@ -46,7 +47,8 @@ int32_t tt_get_node_id() {
 
     struct ifaddrs* ifaddr = ifaddrs;
     while (ifaddr != NULL) {
-        if (ifaddr->ifa_addr->sa_family == AF_INET && ifaddr->ifa_netmask->sa_family == AF_INET) {
+        if (ifaddr->ifa_addr != NULL && ifaddr->ifa_netmask != NULL &&
+            ifaddr->ifa_addr->sa_family == AF_INET && ifaddr->ifa_netmask->sa_family == AF_INET) {
             uint32_t addr = ((struct sockaddr_in*)ifaddr->ifa_addr)->sin_addr.s_addr;
             uint32_t netmask = ((struct sockaddr_in*)ifaddr->ifa_netmask)->sin_addr.s_addr;
 
@@ -98,7 +100,7 @@ int32_t tt_bind(struct tt_Node* node) {
     addr.sin_port = htons(_tt_CONFIG.port);
 
     if (bind(node->sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
-        printf("Cannot binding socket: %s:%d\n", _tt_CONFIG.addr, _tt_CONFIG.port);
+        TT_LOG_ERROR("Cannot binding socket: %s:%d", _tt_CONFIG.addr, _tt_CONFIG.port);
         perror("Cannot binding socket\n");
         return tt_CANNOT_BIND_SOCKET;
     }
