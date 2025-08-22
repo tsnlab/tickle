@@ -9,8 +9,7 @@
 #include "consts.h"
 #include "log.h"
 
-#define ALIGN(n) (((n) + 4 - 1) & ~(4 - 1)) // 4 bytes alignment
-#define ROUNDUP(n) ALIGN((n) + 4 - 1)       // 4 bytes roundup
+// Memory alignment macros moved to hal.h
 
 #define UNUSED(x) (void)(x)
 
@@ -36,30 +35,14 @@ static void* encode(struct tt_Node* node, uint32_t len) {
         return NULL;
     }
 
-    void* buf = node->tx_buffer + node->tx_tail;
-    node->tx_tail += len;
-
-    return buf;
+    return tt_encode_buffer(node->tx_buffer, &node->tx_tail, len);
 }
 
 static bool encode_string(struct tt_Node* node, const char* str) {
-    size_t str_len = _tt_strnlen(str, tt_MAX_STRING_LENGTH) + 1; // including '\0'
-
-    if (str_len < 0) {
+    if (!tt_encode_string(node->tx_buffer, &node->tx_tail, node->tx_size, str)) {
+        printf("Lack of tx buffer\n");
         return false;
     }
-
-    if (node->tx_tail + sizeof(uint16_t) + str_len >= node->tx_size) {
-        TT_LOG_ERROR("Lack of tx buffer");
-        return NULL;
-    }
-
-    *(uint16_t*)(node->tx_buffer + node->tx_tail) = str_len;
-    node->tx_tail += sizeof(uint16_t);
-
-    _tt_memcpy(node->tx_buffer + node->tx_tail, str, str_len);
-    node->tx_tail += str_len;
-
     return true;
 }
 
@@ -136,38 +119,17 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
 
 static void* decode(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint32_t length) {
     UNUSED(node);
-
-    if (*head + length > tail) {
-        return NULL;
-    }
-
-    void* p = buffer + *head;
-
-    *head += length;
-
-    return p;
+    return tt_decode_buffer(buffer, head, tail, length);
 }
 
 static bool decode_string(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint16_t* str_len,
                           char** str) {
     UNUSED(node);
 
-    if (*head + sizeof(uint16_t) > tail) {
-        return false;
-    }
-
-    *str_len = *(uint16_t*)(buffer + *head);
-
-    *head += sizeof(uint16_t);
-
-    if (*head + *str_len > tail) {
+    if (!tt_decode_string(buffer, head, tail, str_len, str)) {
         TT_LOG_ERROR("Too big string length: %d + %d > %d", *head, *str_len, tail);
         return false;
     }
-
-    *str = (char*)(buffer + *head);
-
-    *head += *str_len;
 
     return true;
 }
@@ -221,50 +183,9 @@ static void pop_scheduler(struct tt_Node* node) {
     node->scheduler_tail--;
 }
 
-uint32_t tt_hash_id(const char* type, const char* name) {
-    uint8_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH);
-    uint8_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH);
+// Hash function moved to hal.c
 
-    uint32_t hash = 0;
-    ((uint8_t*)&hash)[1] = type_len;
-    ((uint8_t*)&hash)[3] = name_len;
-
-    int count = (int)(type_len / sizeof(uint32_t));
-    for (int i = 0; i < count; i++) {
-        hash += ((const uint32_t*)type)[i];
-    }
-
-    size_t rest = type_len % sizeof(uint32_t);
-    if (rest > 0) {
-        uint32_t tail = 0;
-        size_t offset = count * sizeof(uint32_t);
-        _tt_memcpy(&tail, type + offset, rest);
-        hash += tail;
-    }
-
-    count = (int)(name_len / sizeof(uint32_t));
-    for (int i = 0; i < count; i++) {
-        hash += ((const uint32_t*)name)[i];
-    }
-
-    rest = name_len % sizeof(uint32_t);
-    if (rest > 0) {
-        uint32_t tail = 0;
-        size_t offset = count * sizeof(uint32_t);
-        _tt_memcpy(&tail, name + offset, rest);
-        hash += tail;
-    }
-
-    return hash;
-}
-
-bool tt_is_native_endian(struct tt_Header* header) {
-    return *((uint16_t*)header->magic) == (((uint16_t)'T' << 8) | 'K');
-}
-
-bool tt_is_reverse_endian(struct tt_Header* header) {
-    return *((uint16_t*)header->magic) == (((uint16_t)'K' << 8) | 'T');
-}
+// Endian checking functions moved to hal.c
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
