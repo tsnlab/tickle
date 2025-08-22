@@ -1,5 +1,5 @@
 // Generated code
-#pragma oncde
+#pragma once
 
 #include <tickle/tickle.h>
 
