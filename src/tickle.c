@@ -63,8 +63,7 @@ static bool flush_tx(struct tt_Node* node, uint32_t len) {
     }
 
     struct tt_Header* header = (struct tt_Header*)node->tx_buffer;
-    header->magic[0] = 'K';
-    header->magic[1] = 'T';
+    header->magic_value = NATIVE_MAGIC_VALUE;
     header->version = tt_VERSION;
     header->source = node->id;
 

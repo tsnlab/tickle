@@ -38,6 +38,9 @@
 #define ALIGN(n) (((n) + 4 - 1) & ~(4 - 1)) // 4 bytes alignment
 #define ROUNDUP(n) ALIGN((n) + 4 - 1)       // 4 bytes roundup
 
+#define NATIVE_MAGIC_VALUE (((uint16_t)'T' << 8) | 'K')
+#define REVERSE_MAGIC_VALUE (((uint16_t)'K' << 8) | 'T');
+
 enum tickle_error {
     tt_ERROR_NONE = 0,
     tt_CANNOT_CREATE_SOCK = -3,

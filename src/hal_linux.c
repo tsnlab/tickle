@@ -27,11 +27,11 @@ struct _tt_Config _tt_CONFIG = {
 
 // Endian checking functions
 bool tt_is_native_endian(struct tt_Header* header) {
-    return *((uint16_t*)header->magic) == (((uint16_t)'T' << 8) | 'K');
+    return header->magic_value == NATIVE_MAGIC_VALUE;
 }
 
 bool tt_is_reverse_endian(struct tt_Header* header) {
-    return *((uint16_t*)header->magic) == (((uint16_t)'K' << 8) | 'T');
+    return header->magic_value == REVERSE_MAGIC_VALUE;
 }
 
 // Hash function
