@@ -60,8 +60,7 @@ static bool flush_tx(struct tt_Node* node, uint32_t len) {
     }
 
     struct tt_Header* header = (struct tt_Header*)node->tx_buffer;
-    header->magic[0] = 'K';
-    header->magic[1] = 'T';
+    header->magic_value = NATIVE_MAGIC_VALUE;
     header->version = tt_VERSION;
     header->source = node->id;
 
@@ -1019,11 +1018,12 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     } else if (tt_is_reverse_endian(header)) {
         is_native_endian = false;
     } else {
-        printf("  Illegal magic: \"%1$c%2$c\" (%1$02x, %2$02x)\n", header->magic[0], header->magic[1]);
+        printf("  Illegal magic: 0x%04x\n", header->magic_value);
         return false;
     }
 
-    printf("  magic: %c%c\n", header->magic[0], header->magic[1]);
+    printf("  magic: 0x%04x (%c%c)\n", header->magic_value, 
+           header->magic[0], header->magic[1]);
 
     // Accept higher version while ignoring reserved field. But not lower version.
     if (header->version < tt_VERSION) {
