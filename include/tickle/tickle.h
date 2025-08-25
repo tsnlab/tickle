@@ -2,7 +2,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
 #include <tickle/config.h>
+#include <tickle/hal.h>
 
 #define tt_KIND_NONE 0x00
 #define tt_KIND_TOPIC 0x01
@@ -40,9 +42,7 @@ struct tt_Node {
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
 
-#ifdef __linux__
-    int sock;
-#endif /* __linux __ */
+    struct tt_hal hal;
 };
 
 struct tt_Endpoint {

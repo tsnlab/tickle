@@ -6,14 +6,32 @@ CFLAGS=-I$(INCLUDE) -O0 -g
 SRC=src
 OBJ=obj
 
+# Platform detection
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+    PLATFORM := linux
+else ifeq ($(UNAME_S),Darwin)
+    PLATFORM := macos
+else ifeq ($(UNAME_S),FreeBSD)
+    PLATFORM := freebsd
+else ifeq ($(OS),Windows_NT)
+    PLATFORM := windows
+else
+    PLATFORM := unknown
+endif
+
+# HAL source file based on platform
+HAL_SRC = $(SRC)/hal_$(PLATFORM).c
+
+# Automatically find all .c files in src directory, excluding hal.c files
+SRC_FILES = $(filter-out $(SRC)/hal_%.c, $(wildcard $(SRC)/*.c))
+# Add platform-specific HAL file
+SRC_FILES += $(HAL_SRC)
+OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
 
 .PHONY: all lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
 
 all: libtickle.a client server
-
-# Automatically find all .c files in src directory
-SRC_FILES = $(wildcard $(SRC)/*.c)
-OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
 
 $(OBJ)/%.o: $(SRC)/%.c
 	$(CC) -c -o $@ $< $(CFLAGS)

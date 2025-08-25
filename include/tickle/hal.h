@@ -1,10 +1,28 @@
 #pragma once
 
-#include <stdbool.h>
 #include <byteswap.h>
 #include <malloc.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+
+// Platform detection macros
+#if defined(__linux__)
+#define TT_PLATFORM_LINUX
+#define TT_PLATFORM_NAME "linux"
+#elif defined(__APPLE__) && defined(__MACH__)
+#define TT_PLATFORM_MACOS
+#define TT_PLATFORM_NAME "macos"
+#elif defined(_WIN32) || defined(_WIN64)
+#define TT_PLATFORM_WINDOWS
+#define TT_PLATFORM_NAME "windows"
+#elif defined(__FreeBSD__)
+#define TT_PLATFORM_FREEBSD
+#define TT_PLATFORM_NAME "freebsd"
+#else
+#define TT_PLATFORM_UNKNOWN
+#define TT_PLATFORM_NAME "unknown"
+#endif
 
 #define _tt_bswap_16(x) bswap_16((x))
 #define _tt_bswap_32(x) bswap_32((x))
@@ -31,6 +49,22 @@ enum tickle_error {
 
 struct tt_Node;
 struct tt_Header;
+
+// Platform-specific HAL structure inclusion
+#ifdef TT_PLATFORM_LINUX
+#include <tickle/hal_linux.h>
+#elif defined(TT_PLATFORM_MACOS)
+#include <tickle/hal_macos.h>
+#elif defined(TT_PLATFORM_WINDOWS)
+#include <tickle/hal_windows.h>
+#elif defined(TT_PLATFORM_FREEBSD)
+#include <tickle/hal_freebsd.h>
+#else
+// Generic fallback for unknown platforms
+struct tt_hal {
+    int sock;
+};
+#endif
 
 // Endian checking functions
 bool tt_is_native_endian(struct tt_Header* header);
