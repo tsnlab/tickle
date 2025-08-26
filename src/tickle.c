@@ -39,7 +39,7 @@ static void* encode(struct tt_Node* node, uint32_t len) {
 
 static bool encode_string(struct tt_Node* node, const char* str) {
     if (!tt_encode_string(node->tx_buffer, &node->tx_tail, node->tx_size, str)) {
-        printf("Lack of tx buffer\n");
+        TT_LOG_ERROR("Lack of tx buffer");
         return false;
     }
     return true;
