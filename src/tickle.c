@@ -7,9 +7,8 @@
 #include <tickle/tickle.h>
 
 #include "consts.h"
+#include "encoding.h"
 #include "log.h"
-
-// Memory alignment macros moved to hal.h
 
 #define UNUSED(x) (void)(x)
 
@@ -181,10 +180,6 @@ static void pop_scheduler(struct tt_Node* node) {
     _tt_memmove(&node->scheduler[0], &node->scheduler[1], sizeof(struct tt_TCB) * (node->scheduler_tail - 1));
     node->scheduler_tail--;
 }
-
-// Hash function moved to hal.c
-
-// Endian checking functions moved to hal.c
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
