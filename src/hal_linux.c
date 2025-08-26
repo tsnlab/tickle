@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <ifaddrs.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -93,9 +94,7 @@ void* tt_decode_buffer(void* buffer, uint32_t* head, uint32_t tail, uint32_t len
 bool tt_encode_string(void* buffer, uint32_t* tail, uint32_t buffer_size, const char* str) {
     size_t str_len = _tt_strnlen(str, tt_MAX_STRING_LENGTH) + 1; // including '\0'
 
-    if (str_len < 0) {
-        return false;
-    }
+    // str_len always >= 0
 
     if (*tail + sizeof(uint16_t) + str_len >= buffer_size) {
         return false;
@@ -211,7 +210,9 @@ int32_t tt_bind(struct tt_Node* node) {
 }
 
 void tt_close(struct tt_Node* node) {
-    close(node->hal.sock);
+    if (close(node->hal.sock) == -1) {
+        TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
+    }
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
