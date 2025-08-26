@@ -10,14 +10,8 @@ OBJ=obj
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     PLATFORM := linux
-else ifeq ($(UNAME_S),Darwin)
-    PLATFORM := macos
-else ifeq ($(UNAME_S),FreeBSD)
-    PLATFORM := freebsd
-else ifeq ($(OS),Windows_NT)
-    PLATFORM := windows
 else
-    PLATFORM := unknown
+    PLATFORM := generic
 endif
 
 # HAL source file based on platform

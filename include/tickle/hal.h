@@ -10,18 +10,9 @@
 #if defined(__linux__)
 #define TT_PLATFORM_LINUX
 #define TT_PLATFORM_NAME "linux"
-#elif defined(__APPLE__) && defined(__MACH__)
-#define TT_PLATFORM_MACOS
-#define TT_PLATFORM_NAME "macos"
-#elif defined(_WIN32) || defined(_WIN64)
-#define TT_PLATFORM_WINDOWS
-#define TT_PLATFORM_NAME "windows"
-#elif defined(__FreeBSD__)
-#define TT_PLATFORM_FREEBSD
-#define TT_PLATFORM_NAME "freebsd"
 #else
-#define TT_PLATFORM_UNKNOWN
-#define TT_PLATFORM_NAME "unknown"
+#define TT_PLATFORM_GENERIC
+#define TT_PLATFORM_NAME "generic"
 #endif
 
 #define _tt_bswap_16(x) bswap_16((x))
@@ -56,17 +47,8 @@ struct tt_Header;
 // Platform-specific HAL structure inclusion
 #ifdef TT_PLATFORM_LINUX
 #include <tickle/hal_linux.h>
-#elif defined(TT_PLATFORM_MACOS)
-#include <tickle/hal_macos.h>
-#elif defined(TT_PLATFORM_WINDOWS)
-#include <tickle/hal_windows.h>
-#elif defined(TT_PLATFORM_FREEBSD)
-#include <tickle/hal_freebsd.h>
-#else
-// Generic fallback for unknown platforms
-struct tt_hal {
-    int sock;
-};
+#elif defined(TT_PLATFORM_GENERIC)
+#include <tickle/hal_generic.h>
 #endif
 
 // Endian checking functions
