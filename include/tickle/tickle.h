@@ -2,7 +2,9 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
 #include <tickle/config.h>
+#include <tickle/hal.h>
 
 #define tt_KIND_NONE 0x00
 #define tt_KIND_TOPIC 0x01
@@ -40,9 +42,7 @@ struct tt_Node {
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
 
-#ifdef __linux__
-    int sock;
-#endif /* __linux __ */
+    struct tt_hal hal;
 };
 
 struct tt_Endpoint {
@@ -208,7 +208,10 @@ int32_t tt_Node_destroy(struct tt_Node* node);
 #define tt_PROTOCOL_ACKNACK 2
 
 struct tt_Header {
-    char magic[2];   // "TK" for big endian, "KT" for little endian
+    union {
+        char magic[2]; // "TK" for big endian, "KT" for little endian
+        uint16_t magic_value;
+    };
     uint8_t version; // protocol version
     uint8_t source;  // Sender ID
 } __attribute__((packed));

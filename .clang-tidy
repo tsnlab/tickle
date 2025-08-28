@@ -31,7 +31,7 @@ CheckOptions:
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
   - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
-    value: '^DEBUG$|^tt_.*'
+    value: '^DEBUG$|^_?tt_.*'
   - key: readability-identifier-length.IgnoredParameterNames
     value: '^(id|ip|ts|[abijkpqr])$'
   - key: readability-identifier-length.IgnoredVariableNames

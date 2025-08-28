@@ -1,4 +1,4 @@
-#include <bits/time.h>
+#include <errno.h>
 #include <ifaddrs.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -6,9 +6,9 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#include <bits/time.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
@@ -47,8 +47,8 @@ int32_t tt_get_node_id() {
 
     struct ifaddrs* ifaddr = ifaddrs;
     while (ifaddr != NULL) {
-        if (ifaddr->ifa_addr != NULL && ifaddr->ifa_netmask != NULL &&
-            ifaddr->ifa_addr->sa_family == AF_INET && ifaddr->ifa_netmask->sa_family == AF_INET) {
+        if (ifaddr->ifa_addr != NULL && ifaddr->ifa_netmask != NULL && ifaddr->ifa_addr->sa_family == AF_INET &&
+            ifaddr->ifa_netmask->sa_family == AF_INET) {
             uint32_t addr = ((struct sockaddr_in*)ifaddr->ifa_addr)->sin_addr.s_addr;
             uint32_t netmask = ((struct sockaddr_in*)ifaddr->ifa_netmask)->sin_addr.s_addr;
 
@@ -67,20 +67,20 @@ int32_t tt_get_node_id() {
 }
 
 int32_t tt_bind(struct tt_Node* node) {
-    node->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (node->sock < 0) {
+    node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (node->hal.sock < 0) {
         perror("Cannot create UDP socket");
         return tt_CANNOT_CREATE_SOCK;
     }
 
     int optval = 1;
-    if (setsockopt(node->sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
+    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket reuseaddr");
         return tt_CANNOT_SET_REUSEADDR;
     }
 
     optval = 1;
-    if (setsockopt(node->sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
+    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket broadcast");
         return tt_CANNOT_SET_BROADCAST;
     }
@@ -89,7 +89,7 @@ int32_t tt_bind(struct tt_Node* node) {
     timeout.tv_sec = 0;
     timeout.tv_usec = TIMEOUT_IN_MICROSECONDS;
 
-    if (setsockopt(node->sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
+    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
         perror("Cannot set socket receive timeout");
         return tt_CANNOT_SET_TIMEOUT;
     }
@@ -99,7 +99,7 @@ int32_t tt_bind(struct tt_Node* node) {
     addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
     addr.sin_port = htons(_tt_CONFIG.port);
 
-    if (bind(node->sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
+    if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
         TT_LOG_ERROR("Cannot binding socket: %s:%d", _tt_CONFIG.addr, _tt_CONFIG.port);
         perror("Cannot binding socket\n");
         return tt_CANNOT_BIND_SOCKET;
@@ -109,7 +109,9 @@ int32_t tt_bind(struct tt_Node* node) {
 }
 
 void tt_close(struct tt_Node* node) {
-    close(node->sock);
+    if (close(node->hal.sock) == -1) {
+        TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
+    }
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
@@ -118,14 +120,14 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
     addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
     addr.sin_port = htons(_tt_CONFIG.port);
 
-    return (int32_t)sendto(node->sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+    return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
 }
 
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct sockaddr_in addr;
     int addr_len = sizeof(struct sockaddr_in);
 
-    int32_t ret = (int32_t)recvfrom(node->sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
+    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
