@@ -16,6 +16,7 @@
 #include "rmw/rmw.h"
 #include "rmw/error_handling.h"
 #include "rcutils/error_handling.h"
+#include "rcutils/logging_macros.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -33,16 +34,20 @@ rmw_create_node(
 
   if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
     RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    RCUTILS_LOG_ERROR("Implementation identifier mismatch. Expected: %s, Got: %s", 
+                      RMW_TICKLE_IDENTIFIER, context->implementation_identifier);
     return NULL;
   }
 
   if (strlen(name) == 0) {
     RMW_SET_ERROR_MSG("Node name cannot be empty");
+    RCUTILS_LOG_ERROR("Node name is empty");
     return NULL;
   }
 
   if (strlen(namespace_) == 0) {
     RMW_SET_ERROR_MSG("Node namespace cannot be empty");
+    RCUTILS_LOG_ERROR("Node namespace is empty");
     return NULL;
   }
 
@@ -50,6 +55,7 @@ rmw_create_node(
   rmw_tickle_node_t * tickle_node = malloc(sizeof(rmw_tickle_node_t));
   if (tickle_node == NULL) {
     RMW_SET_ERROR_MSG("Failed to allocate memory for node");
+    RCUTILS_LOG_ERROR("Failed to allocate memory for TickLE node");
     return NULL;
   }
 
@@ -61,6 +67,7 @@ rmw_create_node(
   if (rmw_node == NULL) {
     free(tickle_node);
     RMW_SET_ERROR_MSG("Failed to allocate memory for RMW node");
+    RCUTILS_LOG_ERROR("Failed to allocate memory for RMW node");
     return NULL;
   }
 
@@ -72,7 +79,7 @@ rmw_create_node(
   // Initialize TickLE node (placeholder - actual implementation would go here)
   // tt_Node_init(&tickle_node->tickle_node, ...);
 
-  printf("Created TickLE node: %s%s\n", namespace_, name);
+  RCUTILS_LOG_INFO("Created TickLE node: %s%s", namespace_, name);
 
   return rmw_node;
 }
@@ -96,7 +103,7 @@ rmw_destroy_node(rmw_node_t * node)
 
   free(node);
 
-  printf("Destroyed TickLE node: %s%s\n", node->namespace_, node->name);
+  RCUTILS_LOG_INFO("Destroyed TickLE node: %s%s", node->namespace_, node->name);
 
   return RMW_RET_OK;
 }
@@ -114,6 +121,6 @@ rmw_node_get_graph_guard_condition(
 
   // For now, we don't support graph guard conditions in TickLE
   // This is a placeholder implementation that returns NULL
-  printf("rmw_node_get_graph_guard_condition: function not implemented for TickLE\n");
+  RCUTILS_LOG_DEBUG("rmw_node_get_graph_guard_condition: function not implemented for TickLE");
   return NULL;
 }
