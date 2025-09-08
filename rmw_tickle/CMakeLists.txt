@@ -26,6 +26,22 @@ add_library(rmw_tickle SHARED
   src/rmw_tickle_c/rmw_features.c
   src/rmw_tickle_c/rmw_node.c
   src/rmw_tickle_c/rmw_event.c
+  src/rmw_tickle_c/rmw_qos.c
+  src/rmw_tickle_c/rmw_count.c
+  src/rmw_tickle_c/rmw_gid.c
+  src/rmw_tickle_c/rmw_service.c
+  src/rmw_tickle_c/rmw_logging.c
+  src/rmw_tickle_c/rmw_topic_info.c
+  src/rmw_tickle_c/rmw_qos_check.c
+  src/rmw_tickle_c/rmw_network_flow.c
+  src/rmw_tickle_c/rmw_publisher.c
+  src/rmw_tickle_c/rmw_subscription.c
+  src/rmw_tickle_c/rmw_client.c
+  src/rmw_tickle_c/rmw_serialize.c
+  src/rmw_tickle_c/rmw_guard_condition.c
+  src/rmw_tickle_c/rmw_wait_set.c
+  src/rmw_tickle_c/rmw_event_handling.c
+  src/rmw_tickle_c/rmw_node_names.c
 )
 
 # Link libraries

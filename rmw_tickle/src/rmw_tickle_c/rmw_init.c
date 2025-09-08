@@ -1,5 +1,6 @@
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rmw/rmw.h"
+#include "rmw/error_handling.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 
