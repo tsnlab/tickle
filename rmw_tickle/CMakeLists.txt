@@ -23,6 +23,9 @@ add_library(rmw_tickle SHARED
   src/rmw_tickle_c/rmw_get_implementation_identifier.c
   src/rmw_tickle_c/rmw_get_serialization_format.c
   src/rmw_tickle_c/identifiers.c
+  src/rmw_tickle_c/rmw_features.c
+  src/rmw_tickle_c/rmw_node.c
+  src/rmw_tickle_c/rmw_event.c
 )
 
 # Link libraries
