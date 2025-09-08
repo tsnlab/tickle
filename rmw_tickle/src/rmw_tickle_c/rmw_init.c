@@ -1,6 +1,7 @@
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rmw/rmw.h"
 #include "rcutils/error_handling.h"
+#include "rcutils/strdup.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -30,17 +31,59 @@ rmw_ret_t
 rmw_init_options_fini(rmw_init_options_t * init_options)
 {
   puts("HELLO rmw_init_options_fini!!!!!!!!!!!!!");
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(init_options, RMW_RET_INVALID_ARGUMENT);
+  rcutils_allocator_t * allocator = &init_options->allocator;
+  RCUTILS_CHECK_ALLOCATOR(allocator, return RMW_RET_INVALID_ARGUMENT);
+  if (strcmp(init_options->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+  return RMW_RET_OK;
+}
+
+rmw_ret_t
+rmw_init_options_copy(
+  const rmw_init_options_t * src,
+  rmw_init_options_t * dst)
+{
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(src, RMW_RET_INVALID_ARGUMENT);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(dst, RMW_RET_INVALID_ARGUMENT);
+  
+  if (strcmp(src->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+  
+  if (NULL != dst->implementation_identifier) {
+    RMW_SET_ERROR_MSG("expected zero-initialized dst");
+    return RMW_RET_INVALID_ARGUMENT;
+  }
+  
+  // Copy the basic structure
+  memcpy(dst, src, sizeof(rmw_init_options_t));
+  
+  // Copy the enclave string if it exists
+  if (src->enclave != NULL) {
+    dst->enclave = rcutils_strdup(src->enclave, src->allocator);
+    if (NULL == dst->enclave) {
+      return RMW_RET_BAD_ALLOC;
+    }
+  } else {
+    dst->enclave = NULL;
+  }
+  
   return RMW_RET_OK;
 }
 
 rmw_ret_t
 rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
 {
+  puts("HELLO rmw_init!!!!!!!!!!!!!");
   RCUTILS_CHECK_ARGUMENT_FOR_NULL(options, RMW_RET_INVALID_ARGUMENT);
   RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
   if (strcmp(options->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_UROS_TRACE_ERROR("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+    RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
 
@@ -48,7 +91,6 @@ rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
   context->implementation_identifier = RMW_TICKLE_IDENTIFIER;
   context->options = *options;
 
-  puts("HELLO!!!!!!!!!!!!!");
 
   return RMW_RET_OK;
 }
@@ -59,7 +101,7 @@ rmw_shutdown(rmw_context_t * context)
   RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
   if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_UROS_TRACE_ERROR("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+    RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
 
@@ -72,7 +114,7 @@ rmw_context_fini(rmw_context_t * context)
   RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
   if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_UROS_TRACE_ERROR("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+    RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
 
