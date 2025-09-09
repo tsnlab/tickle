@@ -47,6 +47,7 @@ subscriber: examples/uint64/UInt64.c examples/uint64/subscriber.c libtickle.a
 
 lint:
 	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} \;
+	find . -name '*.[ch]' -exec clang-tidy {} \;
 
 createns:
 # Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f

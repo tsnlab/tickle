@@ -102,12 +102,14 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
         return -1;
     }
 
-    if (memcpy(payload, response->message, message_length) != NULL) {
-        payload += message_length;
-        encoded += message_length;
-    } else {
-        return -2;
+    // Check if message is valid before copying
+    if (response->message == NULL) {
+        return -3; // Invalid message pointer
     }
+
+    memcpy(payload, response->message, message_length);
+    payload += message_length;
+    encoded += message_length;
 
     return encoded;
 }
@@ -134,6 +136,11 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
     uint16_t message_length = *(uint16_t*)payload;
     if (!is_native_endian) {
         message_length = _tt_bswap_16(message_length);
+    }
+
+    // Validate message length
+    if (message_length == 0 || message_length > tt_MAX_STRING_LENGTH) {
+        return -2; // Invalid message length
     }
 
     decoded += sizeof(uint16_t);
