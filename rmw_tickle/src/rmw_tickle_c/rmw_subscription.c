@@ -49,14 +49,54 @@ rmw_create_subscription(
   const rmw_qos_profile_t * qos_policies,
   const rmw_subscription_options_t * subscription_options)
 {
-  (void)node;
-  (void)type_support;
-  (void)topic_name;
-  (void)qos_policies;
-  (void)subscription_options;
-  
-  RCUTILS_LOG_DEBUG("rmw_create_subscription: function not implemented for TickLE");
-  return NULL;
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(type_support, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos_policies, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription_options, NULL);
+
+  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return NULL;
+  }
+
+  // Allocate memory for the subscription
+  rmw_tickle_subscriber_t * tickle_subscriber = malloc(sizeof(rmw_tickle_subscriber_t));
+  if (tickle_subscriber == NULL) {
+    RMW_SET_ERROR_MSG("Failed to allocate memory for subscription");
+    return NULL;
+  }
+
+  // Initialize the subscription structure
+  memset(tickle_subscriber, 0, sizeof(rmw_tickle_subscriber_t));
+
+  // Set up the RMW subscription structure (embedded in tickle_subscriber)
+  rmw_subscription_t * rmw_subscription = &tickle_subscriber->rmw_subscription;
+
+  rmw_subscription->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+  rmw_subscription->data = tickle_subscriber;
+  rmw_subscription->topic_name = topic_name;
+  rmw_subscription->options = *subscription_options;
+  rmw_subscription->can_loan_messages = false;
+
+  // Store node and type support references
+  tickle_subscriber->node = (rmw_tickle_node_t *)node->data;
+  tickle_subscriber->type_support = type_support;
+
+  // Initialize TickLE subscriber
+  // TODO: Implement actual TickLE subscriber creation
+  // int32_t result = tt_Node_create_subscriber(&tickle_subscriber->node->tickle_node, 
+  //                                           &tickle_subscriber->tickle_subscriber, 
+  //                                           topic, topic_name, callback);
+  // if (result != 0) {
+  //   free(tickle_subscriber);
+  //   RMW_SET_ERROR_MSG("Failed to create TickLE subscriber");
+  //   return NULL;
+  // }
+
+  RCUTILS_LOG_INFO("Created TickLE subscription for topic: %s", topic_name);
+
+  return rmw_subscription;
 }
 
 rmw_ret_t
@@ -64,11 +104,29 @@ rmw_destroy_subscription(
   rmw_node_t * node,
   rmw_subscription_t * subscription)
 {
-  (void)node;
-  (void)subscription;
-  
-  RCUTILS_LOG_DEBUG("rmw_destroy_subscription: function not implemented for TickLE");
-  return RMW_RET_UNSUPPORTED;
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+
+  if (strcmp(subscription->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+
+  rmw_tickle_subscriber_t * tickle_subscriber = (rmw_tickle_subscriber_t *)subscription->data;
+  if (tickle_subscriber != NULL) {
+    // Destroy TickLE subscriber
+    // TODO: Implement actual TickLE subscriber destruction
+    // int32_t result = tt_Subscriber_destroy(&tickle_subscriber->tickle_subscriber);
+    // if (result != 0) {
+    //   RCUTILS_LOG_WARN("Failed to destroy TickLE subscriber, error code: %d", result);
+    // }
+    
+    free(tickle_subscriber);
+  }
+
+  RCUTILS_LOG_INFO("Destroyed TickLE subscription for topic: %s", subscription->topic_name);
+
+  return RMW_RET_OK;
 }
 
 rmw_ret_t

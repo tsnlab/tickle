@@ -57,6 +57,7 @@ typedef struct rmw_tickle_publisher_t
 // TickLE specific subscriber data
 typedef struct rmw_tickle_subscriber_t
 {
+  rmw_subscription_t rmw_subscription;  // RMW subscription structure (must be first)
   struct tt_Subscriber tickle_subscriber;
   rmw_tickle_node_t * node;
   const rosidl_message_type_support_t * type_support;
@@ -81,6 +82,7 @@ typedef struct rmw_tickle_service_t
 // TickLE specific guard condition data
 typedef struct rmw_tickle_guard_condition_t
 {
+  rmw_guard_condition_t rmw_guard_condition;  // RMW guard condition structure (must be first)
   bool has_triggered;
   rcutils_allocator_t allocator;
 } rmw_tickle_guard_condition_t;
