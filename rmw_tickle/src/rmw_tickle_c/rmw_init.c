@@ -91,6 +91,23 @@ rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
   context->instance_id = 0;
   context->implementation_identifier = RMW_TICKLE_IDENTIFIER;
   context->options = *options;
+  
+  // Allocate and initialize context implementation
+  rmw_tickle_context_impl_t * impl = (rmw_tickle_context_impl_t *)options->allocator.allocate(
+    sizeof(rmw_tickle_context_impl_t), options->allocator.state);
+  if (impl == NULL) {
+    RMW_SET_ERROR_MSG("Failed to allocate context implementation");
+    return RMW_RET_BAD_ALLOC;
+  }
+  
+  // Initialize the context implementation
+  memset(impl, 0, sizeof(rmw_tickle_context_impl_t));
+  
+  // Initialize graph guard condition
+  impl->graph_guard_condition.implementation_identifier = RMW_TICKLE_IDENTIFIER;
+  impl->graph_guard_condition.data = NULL;
+  
+  context->impl = impl;
 
 
   return RMW_RET_OK;
@@ -117,6 +134,12 @@ rmw_context_fini(rmw_context_t * context)
   if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
     RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+
+  // Free the context implementation
+  if (context->impl != NULL) {
+    context->options.allocator.deallocate(context->impl, context->options.allocator.state);
+    context->impl = NULL;
   }
 
   // Finalize the init options

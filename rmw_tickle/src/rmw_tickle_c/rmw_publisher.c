@@ -49,14 +49,54 @@ rmw_create_publisher(
   const rmw_qos_profile_t * qos_policies,
   const rmw_publisher_options_t * publisher_options)
 {
-  (void)node;
-  (void)type_support;
-  (void)topic_name;
-  (void)qos_policies;
-  (void)publisher_options;
-  
-  RCUTILS_LOG_DEBUG("rmw_create_publisher: function not implemented for TickLE");
-  return NULL;
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(type_support, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos_policies, NULL);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher_options, NULL);
+
+  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return NULL;
+  }
+
+  // Allocate memory for the publisher
+  rmw_tickle_publisher_t * tickle_publisher = malloc(sizeof(rmw_tickle_publisher_t));
+  if (tickle_publisher == NULL) {
+    RMW_SET_ERROR_MSG("Failed to allocate memory for publisher");
+    return NULL;
+  }
+
+  // Initialize the publisher structure
+  memset(tickle_publisher, 0, sizeof(rmw_tickle_publisher_t));
+
+  // Set up the RMW publisher structure (embedded in tickle_publisher)
+  rmw_publisher_t * rmw_publisher = &tickle_publisher->rmw_publisher;
+
+  rmw_publisher->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+  rmw_publisher->data = tickle_publisher;
+  rmw_publisher->topic_name = topic_name;
+  rmw_publisher->options = *publisher_options;
+  rmw_publisher->can_loan_messages = false;
+
+  // Store node and type support references
+  tickle_publisher->node = (rmw_tickle_node_t *)node->data;
+  tickle_publisher->type_support = type_support;
+
+  // Initialize TickLE publisher
+  // TODO: Implement actual TickLE publisher creation
+  // int32_t result = tt_Node_create_publisher(&tickle_publisher->node->tickle_node, 
+  //                                          &tickle_publisher->tickle_publisher, 
+  //                                          topic, topic_name);
+  // if (result != 0) {
+  //   free(tickle_publisher);
+  //   RMW_SET_ERROR_MSG("Failed to create TickLE publisher");
+  //   return NULL;
+  // }
+
+  RCUTILS_LOG_INFO("Created TickLE publisher for topic: %s", topic_name);
+
+  return rmw_publisher;
 }
 
 rmw_ret_t
@@ -64,11 +104,29 @@ rmw_destroy_publisher(
   rmw_node_t * node,
   rmw_publisher_t * publisher)
 {
-  (void)node;
-  (void)publisher;
-  
-  RCUTILS_LOG_DEBUG("rmw_destroy_publisher: function not implemented for TickLE");
-  return RMW_RET_UNSUPPORTED;
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+
+  if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+
+  rmw_tickle_publisher_t * tickle_publisher = (rmw_tickle_publisher_t *)publisher->data;
+  if (tickle_publisher != NULL) {
+    // Destroy TickLE publisher
+    // TODO: Implement actual TickLE publisher destruction
+    // int32_t result = tt_Publisher_destroy(&tickle_publisher->tickle_publisher);
+    // if (result != 0) {
+    //   RCUTILS_LOG_WARN("Failed to destroy TickLE publisher, error code: %d", result);
+    // }
+    
+    free(tickle_publisher);
+  }
+
+  RCUTILS_LOG_INFO("Destroyed TickLE publisher for topic: %s", publisher->topic_name);
+
+  return RMW_RET_OK;
 }
 
 rmw_ret_t

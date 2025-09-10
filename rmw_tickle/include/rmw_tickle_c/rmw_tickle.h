@@ -1,5 +1,4 @@
-#ifndef RMW_TICKLE__RMW_TICKLE_H_
-#define RMW_TICKLE__RMW_TICKLE_H_
+#pragma once
 
 #include <tickle/tickle.h>
 
@@ -23,6 +22,16 @@ extern "C"
 extern const char * const rmw_tickle_identifier;
 extern const char * const rmw_tickle_serialization_format;
 
+// TickLE context implementation
+typedef struct rmw_tickle_context_impl_t
+{
+  // Graph guard condition for node discovery
+  rmw_guard_condition_t graph_guard_condition;
+  // Placeholder for TickLE context data
+  // This can be extended with TickLE-specific context information
+  int dummy;  // Temporary field to avoid empty struct
+} rmw_tickle_context_impl_t;
+
 // RMW implementation functions
 const char * rmw_get_implementation_identifier(void);
 rmw_init_options_t rmw_get_zero_initialized_init_options(void);
@@ -30,13 +39,16 @@ rmw_init_options_t rmw_get_zero_initialized_init_options(void);
 // TickLE specific node data
 typedef struct rmw_tickle_node_t
 {
+  rmw_node_t rmw_node;        // RMW node structure (must be first)
   struct tt_Node tickle_node;
   rcutils_allocator_t allocator;
+  const rmw_context_t * context;  // Store context reference
 } rmw_tickle_node_t;
 
 // TickLE specific publisher data
 typedef struct rmw_tickle_publisher_t
 {
+  rmw_publisher_t rmw_publisher;  // RMW publisher structure (must be first)
   struct tt_Publisher tickle_publisher;
   rmw_tickle_node_t * node;
   const rosidl_message_type_support_t * type_support;
@@ -84,5 +96,3 @@ typedef struct rmw_tickle_wait_set_t
 #ifdef __cplusplus
 }
 #endif
-
-#endif  // RMW_TICKLE__RMW_TICKLE_H_

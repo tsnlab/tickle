@@ -57,9 +57,13 @@ ament_target_dependencies(rmw_tickle
   rosidl_typesupport_cpp
 )
 
-# Link with pthread only (tickle library removed for now)
+# Set include directories for the target
+target_include_directories(rmw_tickle PRIVATE ../include)
+
+# Link with pthread and tickle library
 target_link_libraries(rmw_tickle
   pthread
+  ${CMAKE_CURRENT_SOURCE_DIR}/../libtickle.a
 )
 
 # Install
