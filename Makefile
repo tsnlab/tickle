@@ -1,7 +1,7 @@
 INCLUDE=include
 CC=gcc
 AR=ar
-CFLAGS=-I$(INCLUDE) -O0 -g
+CFLAGS=-I$(INCLUDE) -O0 -g -fPIC
 
 SRC=src
 OBJ=obj
