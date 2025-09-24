@@ -58,8 +58,7 @@ RUN bash -c "cd /workspace/rmw_tickle && source /opt/ros/jazzy/setup.bash && exp
 # Source the workspace
 RUN echo "source /workspace/rmw_tickle/install/setup.bash" >> /root/.bashrc
 
-# Set environment variables
-ENV RMW_IMPLEMENTATION=rmw_tickle
+# Set environment variables (RMW_IMPLEMENTATION will be set at runtime)
 ENV ROS_DOMAIN_ID=0
 ENV LD_LIBRARY_PATH=/workspace:$LD_LIBRARY_PATH
 
@@ -72,6 +71,9 @@ source /opt/ros/jazzy/setup.bash\n\
 \n\
 # Set library path\n\
 export LD_LIBRARY_PATH=/workspace:$LD_LIBRARY_PATH\n\
+\n\
+# Set RMW implementation to tickle at runtime\n\
+export RMW_IMPLEMENTATION=rmw_tickle\n\
 \n\
 # Source the workspace\n\
 if [ -f "/workspace/rmw_tickle/install/setup.bash" ]; then\n\

@@ -11,9 +11,26 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
+    environment:
+      - RMW_IMPLEMENTATION=  # Unset RMW_IMPLEMENTATION for build
     command: bash -c "make clean && make && cd rmw_tickle && colcon build --packages-select rmw_tickle"
     networks:
       - tickle-network
+
+  # Build test nodes
+  test-builder:
+    image: rmw-tickle:latest
+    container_name: tickle-test-builder
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - RMW_IMPLEMENTATION=  # Unset RMW_IMPLEMENTATION for build
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash -c "cd /workspace && colcon build --packages-select tickle_rmw_test"
 
   # Test environment with network namespaces simulation
   rmw-tickle-test:
