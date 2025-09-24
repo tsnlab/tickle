@@ -2,7 +2,7 @@
 
 #include "UInt64.h"
 
-#include <hal.h>
+#include "tickle/hal.h"
 
 struct tt_Topic UInt64Topic = {
     .name = "UInt64Topic",
