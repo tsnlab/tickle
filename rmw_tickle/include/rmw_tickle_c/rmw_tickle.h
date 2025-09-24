@@ -66,6 +66,7 @@ typedef struct rmw_tickle_subscriber_t
 // TickLE specific client data
 typedef struct rmw_tickle_client_t
 {
+  rmw_client_t rmw_client;  // RMW client structure (must be first)
   struct tt_Client tickle_client;
   rmw_tickle_node_t * node;
   const rosidl_service_type_support_t * type_support;
@@ -74,6 +75,7 @@ typedef struct rmw_tickle_client_t
 // TickLE specific service data
 typedef struct rmw_tickle_service_t
 {
+  rmw_service_t rmw_service;  // RMW service structure (must be first)
   struct tt_Server tickle_server;
   rmw_tickle_node_t * node;
   const rosidl_service_type_support_t * type_support;
