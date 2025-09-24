@@ -12,65 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <rmw/allocators.h>
-#include <rmw/rmw.h>
-#include <rmw/error_handling.h>
 #include <rcutils/logging_macros.h>
+#include <rmw/allocators.h>
+#include <rmw/error_handling.h>
+#include <rmw/rmw.h>
 
 #include "rmw_tickle_c/rmw_tickle.h"
 
-rmw_ret_t
-rmw_subscription_set_on_new_message_callback(
-  rmw_subscription_t * subscription,
-  rmw_event_callback_t callback,
-  const void * user_data)
-{
-  (void)subscription;
-  (void)callback;
-  (void)user_data;
+rmw_ret_t rmw_subscription_set_on_new_message_callback(rmw_subscription_t* subscription, rmw_event_callback_t callback,
+                                                       const void* user_data) {
+    (void)subscription;
+    (void)callback;
+    (void)user_data;
 
-  RCUTILS_LOG_DEBUG("rmw_subscription_set_on_new_message_callback: Callbacks not supported in TickLE");
-  return RMW_RET_UNSUPPORTED;
+    RCUTILS_LOG_DEBUG("rmw_subscription_set_on_new_message_callback: Callbacks not supported in TickLE");
+    return RMW_RET_UNSUPPORTED;
 }
 
-rmw_ret_t
-rmw_service_set_on_new_request_callback(
-  rmw_service_t * service,
-  rmw_event_callback_t callback,
-  const void * user_data)
-{
-  (void)service;
-  (void)callback;
-  (void)user_data;
+rmw_ret_t rmw_service_set_on_new_request_callback(rmw_service_t* service, rmw_event_callback_t callback,
+                                                  const void* user_data) {
+    (void)service;
+    (void)callback;
+    (void)user_data;
 
-  RCUTILS_LOG_DEBUG("rmw_service_set_on_new_request_callback: Callbacks not supported in TickLE");
-  return RMW_RET_UNSUPPORTED;
+    RCUTILS_LOG_DEBUG("rmw_service_set_on_new_request_callback: Callbacks not supported in TickLE");
+    return RMW_RET_UNSUPPORTED;
 }
 
-rmw_ret_t
-rmw_client_set_on_new_response_callback(
-  rmw_client_t * client,
-  rmw_event_callback_t callback,
-  const void * user_data)
-{
-  (void)client;
-  (void)callback;
-  (void)user_data;
+rmw_ret_t rmw_client_set_on_new_response_callback(rmw_client_t* client, rmw_event_callback_t callback,
+                                                  const void* user_data) {
+    (void)client;
+    (void)callback;
+    (void)user_data;
 
-  RCUTILS_LOG_DEBUG("rmw_client_set_on_new_response_callback: Callbacks not supported in TickLE");
-  return RMW_RET_UNSUPPORTED;
+    RCUTILS_LOG_DEBUG("rmw_client_set_on_new_response_callback: Callbacks not supported in TickLE");
+    return RMW_RET_UNSUPPORTED;
 }
 
-rmw_ret_t
-rmw_event_set_callback(
-  rmw_event_t * event,
-  rmw_event_callback_t callback,
-  const void * user_data)
-{
-  (void)event;
-  (void)callback;
-  (void)user_data;
+rmw_ret_t rmw_event_set_callback(rmw_event_t* event, rmw_event_callback_t callback, const void* user_data) {
+    (void)event;
+    (void)callback;
+    (void)user_data;
 
-  RCUTILS_LOG_DEBUG("rmw_event_set_callback: Events not supported in TickLE");
-  return RMW_RET_UNSUPPORTED;
+    RCUTILS_LOG_DEBUG("rmw_event_set_callback: Events not supported in TickLE");
+    return RMW_RET_UNSUPPORTED;
 }

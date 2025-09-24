@@ -12,19 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "rmw_tickle_c/rmw_tickle.h"
-#include "rmw/rmw.h"
-#include "rmw/error_handling.h"
-#include "rcutils/error_handling.h"
-
 #include <stdio.h>
 
-rmw_ret_t
-rmw_set_log_severity(
-  rmw_log_severity_t severity)
-{
-  // For now, we don't have log severity control in TickLE
-  (void)severity;
-  printf("rmw_set_log_severity: function not implemented for TickLE\n");
-  return RMW_RET_UNSUPPORTED;
+#include "rcutils/error_handling.h"
+#include "rmw/error_handling.h"
+#include "rmw/rmw.h"
+#include "rmw_tickle_c/rmw_tickle.h"
+
+rmw_ret_t rmw_set_log_severity(rmw_log_severity_t severity) {
+    // For now, we don't have log severity control in TickLE
+    (void)severity;
+    printf("rmw_set_log_severity: function not implemented for TickLE\n");
+    return RMW_RET_UNSUPPORTED;
 }

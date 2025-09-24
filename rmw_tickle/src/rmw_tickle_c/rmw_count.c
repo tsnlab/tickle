@@ -12,93 +12,73 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "rmw_tickle_c/rmw_tickle.h"
-#include "rmw/rmw.h"
-#include "rmw/error_handling.h"
-#include "rcutils/error_handling.h"
-
 #include <stdio.h>
 
-rmw_ret_t
-rmw_count_subscribers(
-  const rmw_node_t * node,
-  const char * topic_name,
-  size_t * count)
-{
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
+#include "rcutils/error_handling.h"
+#include "rmw/error_handling.h"
+#include "rmw/rmw.h"
+#include "rmw_tickle_c/rmw_tickle.h"
 
-  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
-    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
-  }
+rmw_ret_t rmw_count_subscribers(const rmw_node_t* node, const char* topic_name, size_t* count) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
 
-  // For now, we don't have subscriber counting in TickLE
-  *count = 0;
-  printf("rmw_count_subscribers: returning 0 (not implemented for TickLE)\n");
-  return RMW_RET_OK;
+    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    // For now, we don't have subscriber counting in TickLE
+    *count = 0;
+    printf("rmw_count_subscribers: returning 0 (not implemented for TickLE)\n");
+    return RMW_RET_OK;
 }
 
-rmw_ret_t
-rmw_count_publishers(
-  const rmw_node_t * node,
-  const char * topic_name,
-  size_t * count)
-{
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
+rmw_ret_t rmw_count_publishers(const rmw_node_t* node, const char* topic_name, size_t* count) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
 
-  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
-    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
-  }
+    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
 
-  // For now, we don't have publisher counting in TickLE
-  *count = 0;
-  printf("rmw_count_publishers: returning 0 (not implemented for TickLE)\n");
-  return RMW_RET_OK;
+    // For now, we don't have publisher counting in TickLE
+    *count = 0;
+    printf("rmw_count_publishers: returning 0 (not implemented for TickLE)\n");
+    return RMW_RET_OK;
 }
 
-rmw_ret_t
-rmw_count_clients(
-  const rmw_node_t * node,
-  const char * service_name,
-  size_t * count)
-{
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(service_name, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
+rmw_ret_t rmw_count_clients(const rmw_node_t* node, const char* service_name, size_t* count) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(service_name, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
 
-  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
-    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
-  }
+    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
 
-  // For now, we don't have client counting in TickLE
-  *count = 0;
-  printf("rmw_count_clients: returning 0 (not implemented for TickLE)\n");
-  return RMW_RET_OK;
+    // For now, we don't have client counting in TickLE
+    *count = 0;
+    printf("rmw_count_clients: returning 0 (not implemented for TickLE)\n");
+    return RMW_RET_OK;
 }
 
-rmw_ret_t
-rmw_count_services(
-  const rmw_node_t * node,
-  const char * service_name,
-  size_t * count)
-{
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(service_name, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
+rmw_ret_t rmw_count_services(const rmw_node_t* node, const char* service_name, size_t* count) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(service_name, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
 
-  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
-    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
-  }
+    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
 
-  // For now, we don't have service counting in TickLE
-  *count = 0;
-  printf("rmw_count_services: returning 0 (not implemented for TickLE)\n");
-  return RMW_RET_OK;
+    // For now, we don't have service counting in TickLE
+    *count = 0;
+    printf("rmw_count_services: returning 0 (not implemented for TickLE)\n");
+    return RMW_RET_OK;
 }

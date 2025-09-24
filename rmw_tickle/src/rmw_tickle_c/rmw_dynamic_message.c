@@ -12,49 +12,41 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <rmw/allocators.h>
-#include <rmw/rmw.h>
-#include <rmw/error_handling.h>
 #include <rcutils/logging_macros.h>
+#include <rmw/allocators.h>
+#include <rmw/error_handling.h>
+#include <rmw/rmw.h>
 
 #include "rmw_tickle_c/rmw_tickle.h"
 
-rmw_ret_t
-rmw_take_dynamic_message(
-  const rmw_subscription_t * subscription,
-  rosidl_dynamic_typesupport_dynamic_data_t * dynamic_message,
-  bool * taken,
-  rmw_subscription_allocation_t * allocation)
-{
-  (void)subscription;
-  (void)dynamic_message;
-  (void)allocation;
+rmw_ret_t rmw_take_dynamic_message(const rmw_subscription_t* subscription,
+                                   rosidl_dynamic_typesupport_dynamic_data_t* dynamic_message, bool* taken,
+                                   rmw_subscription_allocation_t* allocation) {
+    (void)subscription;
+    (void)dynamic_message;
+    (void)allocation;
 
-  if (taken != NULL) {
-    *taken = false;
-  }
+    if (taken != NULL) {
+        *taken = false;
+    }
 
-  RCUTILS_LOG_DEBUG("rmw_take_dynamic_message: Dynamic messages not supported in TickLE");
-  return RMW_RET_UNSUPPORTED;
+    RCUTILS_LOG_DEBUG("rmw_take_dynamic_message: Dynamic messages not supported in TickLE");
+    return RMW_RET_UNSUPPORTED;
 }
 
-rmw_ret_t
-rmw_take_dynamic_message_with_info(
-  const rmw_subscription_t * subscription,
-  rosidl_dynamic_typesupport_dynamic_data_t * dynamic_message,
-  bool * taken,
-  rmw_message_info_t * message_info,
-  rmw_subscription_allocation_t * allocation)
-{
-  (void)subscription;
-  (void)dynamic_message;
-  (void)message_info;
-  (void)allocation;
+rmw_ret_t rmw_take_dynamic_message_with_info(const rmw_subscription_t* subscription,
+                                             rosidl_dynamic_typesupport_dynamic_data_t* dynamic_message, bool* taken,
+                                             rmw_message_info_t* message_info,
+                                             rmw_subscription_allocation_t* allocation) {
+    (void)subscription;
+    (void)dynamic_message;
+    (void)message_info;
+    (void)allocation;
 
-  if (taken != NULL) {
-    *taken = false;
-  }
+    if (taken != NULL) {
+        *taken = false;
+    }
 
-  RCUTILS_LOG_DEBUG("rmw_take_dynamic_message_with_info: Dynamic messages not supported in TickLE");
-  return RMW_RET_UNSUPPORTED;
+    RCUTILS_LOG_DEBUG("rmw_take_dynamic_message_with_info: Dynamic messages not supported in TickLE");
+    return RMW_RET_UNSUPPORTED;
 }

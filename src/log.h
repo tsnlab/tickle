@@ -1,17 +1,10 @@
 #pragma once
 
-#include <stdio.h>
 #include <stdarg.h>
-#include <time.h>
+#include <stdio.h>
 
 // Log levels
-typedef enum {
-    TT_LOG_DEBUG = 0,
-    TT_LOG_INFO = 1,
-    TT_LOG_WARNING = 2,
-    TT_LOG_ERROR = 3,
-    TT_LOG_NONE = 4
-} tt_LogLevel;
+typedef enum { TT_LOG_DEBUG = 0, TT_LOG_INFO = 1, TT_LOG_WARNING = 2, TT_LOG_ERROR = 3, TT_LOG_NONE = 4 } tt_LogLevel;
 
 // Log configuration
 extern tt_LogLevel tt_current_log_level;

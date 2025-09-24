@@ -12,22 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <rcutils/logging_macros.h>
 #include <rmw/allocators.h>
 #include <rmw/rmw.h>
-#include <rcutils/logging_macros.h>
 
 #include "rmw_tickle_c/rmw_tickle.h"
 
-rmw_ret_t
-rmw_take_event(
-  const rmw_event_t * event_handle,
-  void * event_info,
-  bool * taken)
-{
-  (void)event_handle;
-  (void)event_info;
-  (void)taken;
-  
-  RCUTILS_LOG_DEBUG("rmw_take_event: function not implemented for TickLE");
-  return RMW_RET_UNSUPPORTED;
+rmw_ret_t rmw_take_event(const rmw_event_t* event_handle, void* event_info, bool* taken) {
+    (void)event_handle;
+    (void)event_info;
+    (void)taken;
+
+    RCUTILS_LOG_DEBUG("rmw_take_event: function not implemented for TickLE");
+    return RMW_RET_UNSUPPORTED;
 }

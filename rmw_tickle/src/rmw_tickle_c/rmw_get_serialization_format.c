@@ -14,8 +14,6 @@
 
 #include <rmw_tickle_c/rmw_tickle.h>
 
-const char *
-rmw_get_serialization_format()
-{
-  return rmw_tickle_serialization_format;
+const char* rmw_get_serialization_format() {
+    return rmw_tickle_serialization_format;
 }

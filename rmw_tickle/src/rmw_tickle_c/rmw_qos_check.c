@@ -12,29 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "rmw_tickle_c/rmw_tickle.h"
-#include "rmw/rmw.h"
-#include "rmw/error_handling.h"
-#include "rcutils/error_handling.h"
-
 #include <stdio.h>
 
-rmw_ret_t
-rmw_qos_profile_check_compatible(
-  const rmw_qos_profile_t publisher_profile __attribute__((unused)),
-  const rmw_qos_profile_t subscription_profile __attribute__((unused)),
-  rmw_qos_compatibility_type_t * compatibility,
-  char * reason,
-  size_t reason_size)
-{
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(compatibility, RMW_RET_INVALID_ARGUMENT);
-  RCUTILS_CHECK_ARGUMENT_FOR_NULL(reason, RMW_RET_INVALID_ARGUMENT);
+#include "rcutils/error_handling.h"
+#include "rmw/error_handling.h"
+#include "rmw/rmw.h"
+#include "rmw_tickle_c/rmw_tickle.h"
 
-  // For now, we don't have QoS compatibility checking in TickLE
-  // Assume they are compatible
-  *compatibility = RMW_QOS_COMPATIBILITY_OK;
-  snprintf(reason, reason_size, "QoS compatibility check not implemented for TickLE");
+rmw_ret_t rmw_qos_profile_check_compatible(const rmw_qos_profile_t publisher_profile __attribute__((unused)),
+                                           const rmw_qos_profile_t subscription_profile __attribute__((unused)),
+                                           rmw_qos_compatibility_type_t* compatibility, char* reason,
+                                           size_t reason_size) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(compatibility, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(reason, RMW_RET_INVALID_ARGUMENT);
 
-  printf("rmw_qos_profile_check_compatible: returning compatible (not implemented for TickLE)\n");
-  return RMW_RET_OK;
+    // For now, we don't have QoS compatibility checking in TickLE
+    // Assume they are compatible
+    *compatibility = RMW_QOS_COMPATIBILITY_OK;
+    snprintf(reason, reason_size, "QoS compatibility check not implemented for TickLE");
+
+    printf("rmw_qos_profile_check_compatible: returning compatible (not implemented for TickLE)\n");
+    return RMW_RET_OK;
 }

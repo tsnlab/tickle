@@ -12,101 +12,83 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "rmw_tickle_c/rmw_tickle.h"
-#include "rmw/rmw.h"
-#include "rmw/names_and_types.h"
-#include "rmw/error_handling.h"
-#include "rcutils/error_handling.h"
-#include "rcutils/allocator.h"
-
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdint.h>
 
-rmw_ret_t
-rmw_get_service_names_and_types_by_node(
-  const rmw_node_t * node,
-  rcutils_allocator_t * allocator,
-  const char * node_name,
-  const char * node_namespace,
-  rmw_names_and_types_t * service_names_and_types)
-{
-  (void)node_name;      // Not used in current implementation
-  (void)node_namespace; // Not used in current implementation
+#include "rcutils/allocator.h"
+#include "rcutils/error_handling.h"
+#include "rmw/error_handling.h"
+#include "rmw/names_and_types.h"
+#include "rmw/rmw.h"
+#include "rmw_tickle_c/rmw_tickle.h"
 
-  // Perform RMW checks
-  RMW_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
-    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
-  }
-  RCUTILS_CHECK_ALLOCATOR_WITH_MSG(
-    allocator, "Allocator argument is invalid",
-    return RMW_RET_INVALID_ARGUMENT);
+rmw_ret_t rmw_get_service_names_and_types_by_node(const rmw_node_t* node, rcutils_allocator_t* allocator,
+                                                  const char* node_name, const char* node_namespace,
+                                                  rmw_names_and_types_t* service_names_and_types) {
+    (void)node_name;      // Not used in current implementation
+    (void)node_namespace; // Not used in current implementation
 
-  if (RMW_RET_OK != rmw_names_and_types_check_zero(service_names_and_types)) {
-    return RMW_RET_INVALID_ARGUMENT;
-  }
+    // Perform RMW checks
+    RMW_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RCUTILS_CHECK_ALLOCATOR_WITH_MSG(allocator, "Allocator argument is invalid", return RMW_RET_INVALID_ARGUMENT);
 
-  rmw_tickle_node_t * tickle_node = (rmw_tickle_node_t *)node->data;
-  if (tickle_node == NULL) {
-    RMW_SET_ERROR_MSG("TickLE node data is NULL");
-    return RMW_RET_ERROR;
-  }
+    if (RMW_RET_OK != rmw_names_and_types_check_zero(service_names_and_types)) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
 
-  // For now, return empty service list
-  // In a real implementation, we would enumerate services from TickLE discovery
-  if (RCUTILS_RET_OK != rmw_names_and_types_init(
-      service_names_and_types, 0, allocator))
-  {
-    RMW_SET_ERROR_MSG("Failed to initialize service_names_and_types string array");
-    return RMW_RET_ERROR;
-  }
+    rmw_tickle_node_t* tickle_node = (rmw_tickle_node_t*)node->data;
+    if (tickle_node == NULL) {
+        RMW_SET_ERROR_MSG("TickLE node data is NULL");
+        return RMW_RET_ERROR;
+    }
 
-  printf("rmw_get_service_names_and_types_by_node: function not fully implemented for TickLE\n");
-  return RMW_RET_OK;
+    // For now, return empty service list
+    // In a real implementation, we would enumerate services from TickLE discovery
+    if (RCUTILS_RET_OK != rmw_names_and_types_init(service_names_and_types, 0, allocator)) {
+        RMW_SET_ERROR_MSG("Failed to initialize service_names_and_types string array");
+        return RMW_RET_ERROR;
+    }
+
+    printf("rmw_get_service_names_and_types_by_node: function not fully implemented for TickLE\n");
+    return RMW_RET_OK;
 }
 
-rmw_ret_t
-rmw_get_client_names_and_types_by_node(
-  const rmw_node_t * node,
-  rcutils_allocator_t * allocator,
-  const char * node_name,
-  const char * node_namespace,
-  rmw_names_and_types_t * service_names_and_types)
-{
-  (void)node_name;      // Not used in current implementation
-  (void)node_namespace; // Not used in current implementation
+rmw_ret_t rmw_get_client_names_and_types_by_node(const rmw_node_t* node, rcutils_allocator_t* allocator,
+                                                 const char* node_name, const char* node_namespace,
+                                                 rmw_names_and_types_t* service_names_and_types) {
+    (void)node_name;      // Not used in current implementation
+    (void)node_namespace; // Not used in current implementation
 
-  // Perform RMW checks
-  RMW_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
-    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
-    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
-  }
-  RCUTILS_CHECK_ALLOCATOR_WITH_MSG(
-    allocator, "Allocator argument is invalid",
-    return RMW_RET_INVALID_ARGUMENT);
+    // Perform RMW checks
+    RMW_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
+    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RCUTILS_CHECK_ALLOCATOR_WITH_MSG(allocator, "Allocator argument is invalid", return RMW_RET_INVALID_ARGUMENT);
 
-  if (RMW_RET_OK != rmw_names_and_types_check_zero(service_names_and_types)) {
-    return RMW_RET_INVALID_ARGUMENT;
-  }
+    if (RMW_RET_OK != rmw_names_and_types_check_zero(service_names_and_types)) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
 
-  rmw_tickle_node_t * tickle_node = (rmw_tickle_node_t *)node->data;
-  if (tickle_node == NULL) {
-    RMW_SET_ERROR_MSG("TickLE node data is NULL");
-    return RMW_RET_ERROR;
-  }
+    rmw_tickle_node_t* tickle_node = (rmw_tickle_node_t*)node->data;
+    if (tickle_node == NULL) {
+        RMW_SET_ERROR_MSG("TickLE node data is NULL");
+        return RMW_RET_ERROR;
+    }
 
-  // For now, return empty service list
-  // In a real implementation, we would enumerate client services from TickLE discovery
-  if (RCUTILS_RET_OK != rmw_names_and_types_init(
-      service_names_and_types, 0, allocator))
-  {
-    RMW_SET_ERROR_MSG("Failed to initialize service_names_and_types string array");
-    return RMW_RET_ERROR;
-  }
+    // For now, return empty service list
+    // In a real implementation, we would enumerate client services from TickLE discovery
+    if (RCUTILS_RET_OK != rmw_names_and_types_init(service_names_and_types, 0, allocator)) {
+        RMW_SET_ERROR_MSG("Failed to initialize service_names_and_types string array");
+        return RMW_RET_ERROR;
+    }
 
-  printf("rmw_get_client_names_and_types_by_node: function not fully implemented for TickLE\n");
-  return RMW_RET_OK;
+    printf("rmw_get_client_names_and_types_by_node: function not fully implemented for TickLE\n");
+    return RMW_RET_OK;
 }

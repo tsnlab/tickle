@@ -14,8 +14,6 @@
 
 #include <rmw_tickle_c/rmw_tickle.h>
 
-const char *
-rmw_get_implementation_identifier()
-{
-  return rmw_tickle_identifier;
+const char* rmw_get_implementation_identifier() {
+    return rmw_tickle_identifier;
 }

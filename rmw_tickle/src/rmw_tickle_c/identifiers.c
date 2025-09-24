@@ -14,5 +14,5 @@
 
 #include <rmw_tickle_c/rmw_tickle.h>
 
-const char * const rmw_tickle_identifier = RMW_TICKLE_IDENTIFIER;
-const char * const rmw_tickle_serialization_format = RMW_TICKLE_SERIALIZATION_FORMAT;
+const char* const rmw_tickle_identifier = RMW_TICKLE_IDENTIFIER;
+const char* const rmw_tickle_serialization_format = RMW_TICKLE_SERIALIZATION_FORMAT;

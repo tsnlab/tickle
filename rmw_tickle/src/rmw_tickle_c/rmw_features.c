@@ -14,21 +14,18 @@
 
 #include <rmw/features.h>
 
-bool
-rmw_feature_supported(
-  rmw_feature_t feature)
-{
-  bool ret = false;
-  switch (feature) {
+bool rmw_feature_supported(rmw_feature_t feature) {
+    bool ret = false;
+    switch (feature) {
     case RMW_FEATURE_MESSAGE_INFO_PUBLICATION_SEQUENCE_NUMBER:
-      ret = false;
-      break;
+        ret = false;
+        break;
     case RMW_FEATURE_MESSAGE_INFO_RECEPTION_SEQUENCE_NUMBER:
-      ret = false;
-      break;
+        ret = false;
+        break;
     default:
-      break;
-  }
+        break;
+    }
 
-  return ret;
+    return ret;
 }

@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 

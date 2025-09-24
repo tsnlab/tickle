@@ -1,6 +1,9 @@
+#include "encoding.h"
+
+#include <stdint.h>
+
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
-#include "encoding.h"
 
 // Endian checking functions
 bool tt_is_native_endian(struct tt_Header* header) {
