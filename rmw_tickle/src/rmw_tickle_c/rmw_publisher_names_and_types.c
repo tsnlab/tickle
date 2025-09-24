@@ -38,10 +38,10 @@ rmw_get_publisher_names_and_types_by_node(
 
   // Perform RMW checks
   RMW_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  RMW_CHECK_TYPE_IDENTIFIERS_MATCH(
-    node->implementation_identifier,
-    RMW_TICKLE_IDENTIFIER,
-    RMW_RET_INCORRECT_RMW_IMPLEMENTATION);
+  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
   RCUTILS_CHECK_ALLOCATOR_WITH_MSG(
     allocator, "Allocator argument is invalid",
     return RMW_RET_INVALID_ARGUMENT);
@@ -58,7 +58,7 @@ rmw_get_publisher_names_and_types_by_node(
 
   // For now, return empty topic list
   // In a real implementation, we would enumerate publisher topics from TickLE discovery
-  if (RCUTILS_RET_OK != rcutils_string_array_init(
+  if (RCUTILS_RET_OK != rmw_names_and_types_init(
       topic_names_and_types, 0, allocator))
   {
     RMW_SET_ERROR_MSG("Failed to initialize topic_names_and_types string array");
@@ -84,10 +84,10 @@ rmw_get_subscriber_names_and_types_by_node(
 
   // Perform RMW checks
   RMW_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  RMW_CHECK_TYPE_IDENTIFIERS_MATCH(
-    node->implementation_identifier,
-    RMW_TICKLE_IDENTIFIER,
-    RMW_RET_INCORRECT_RMW_IMPLEMENTATION);
+  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
   RCUTILS_CHECK_ALLOCATOR_WITH_MSG(
     allocator, "Allocator argument is invalid",
     return RMW_RET_INVALID_ARGUMENT);
@@ -104,7 +104,7 @@ rmw_get_subscriber_names_and_types_by_node(
 
   // For now, return empty topic list
   // In a real implementation, we would enumerate subscriber topics from TickLE discovery
-  if (RCUTILS_RET_OK != rcutils_string_array_init(
+  if (RCUTILS_RET_OK != rmw_names_and_types_init(
       topic_names_and_types, 0, allocator))
   {
     RMW_SET_ERROR_MSG("Failed to initialize topic_names_and_types string array");

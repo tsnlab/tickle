@@ -34,15 +34,13 @@ rmw_get_node_names(
 {
   // Perform RMW checks
   RMW_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-  RMW_CHECK_TYPE_IDENTIFIERS_MATCH(
-    node->implementation_identifier,
-    RMW_TICKLE_IDENTIFIER,
-    RMW_RET_INCORRECT_RMW_IMPLEMENTATION);
-  
-  if (RMW_RET_OK != rmw_check_zero_rmw_string_array(node_names)) {
-    return RMW_RET_INVALID_ARGUMENT;
+  if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
-  if (RMW_RET_OK != rmw_check_zero_rmw_string_array(node_namespaces)) {
+
+  if (node_names == NULL || node_namespaces == NULL) {
+    RMW_SET_ERROR_MSG("node_names or node_namespaces is NULL");
     return RMW_RET_INVALID_ARGUMENT;
   }
 
@@ -68,7 +66,7 @@ rmw_get_node_names(
     RMW_SET_ERROR_MSG("Failed to initialize node_names string array");
     return RMW_RET_ERROR;
   }
-  
+
   if (RCUTILS_RET_OK != rcutils_string_array_init(
       node_namespaces, discovered_node_count, &allocator))
   {
@@ -90,7 +88,7 @@ rmw_get_node_names(
     // actual node names and namespaces from the discovered entities
     char node_name[32];
     char node_namespace[32];
-    
+
     snprintf(node_name, sizeof(node_name), "tickle_node_%d", i);
     snprintf(node_namespace, sizeof(node_namespace), "/");
 
@@ -104,8 +102,8 @@ rmw_get_node_names(
         allocator.deallocate(node_names->data[j], allocator.state);
         allocator.deallocate(node_namespaces->data[j], allocator.state);
       }
-      rcutils_string_array_fini(node_names);
-      rcutils_string_array_fini(node_namespaces);
+      (void)rcutils_string_array_fini(node_names);
+      (void)rcutils_string_array_fini(node_namespaces);
       RMW_SET_ERROR_MSG("Failed to allocate memory for node name");
       return RMW_RET_ERROR;
     }
@@ -122,8 +120,8 @@ rmw_get_node_names(
         allocator.deallocate(node_names->data[j], allocator.state);
         allocator.deallocate(node_namespaces->data[j], allocator.state);
       }
-      rcutils_string_array_fini(node_names);
-      rcutils_string_array_fini(node_namespaces);
+      (void)rcutils_string_array_fini(node_names);
+      (void)rcutils_string_array_fini(node_namespaces);
       RMW_SET_ERROR_MSG("Failed to allocate memory for node namespace");
       return RMW_RET_ERROR;
     }

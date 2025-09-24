@@ -14,6 +14,7 @@
 
 #include <rmw/allocators.h>
 #include <rmw/rmw.h>
+#include <rmw/error_handling.h>
 #include <rcutils/logging_macros.h>
 
 #include "rmw_tickle_c/rmw_tickle.h"

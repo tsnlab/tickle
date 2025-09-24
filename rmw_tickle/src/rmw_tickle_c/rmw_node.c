@@ -34,7 +34,7 @@ rmw_create_node(
 
   if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
     RMW_SET_ERROR_MSG("Implementation identifiers does not match");
-    RCUTILS_LOG_ERROR("Implementation identifier mismatch. Expected: %s, Got: %s", 
+    RCUTILS_LOG_ERROR("Implementation identifier mismatch. Expected: %s, Got: %s",
                       RMW_TICKLE_IDENTIFIER, context->implementation_identifier);
     return NULL;
   }
@@ -61,19 +61,25 @@ rmw_create_node(
 
   // Initialize the TickLE node structure
   memset(tickle_node, 0, sizeof(rmw_tickle_node_t));
-  
+
   // Initialize allocator
   tickle_node->allocator = rcutils_get_default_allocator();
-  
+
   // Store context reference (cast to impl type)
-  tickle_node->context = (rmw_tickle_context_impl_t *)context->impl;
-  
+  tickle_node->context = (const rmw_context_t *)context;
+
   // Set up the RMW node structure (embedded in tickle_node)
   rmw_node_t * rmw_node = &tickle_node->rmw_node;
 
   rmw_node->implementation_identifier = RMW_TICKLE_IDENTIFIER;
   rmw_node->data = tickle_node;
   rmw_node->name = name;           // Direct pointer to input string
+
+  // Ensure namespace starts with '/'
+  if (namespace_[0] != '/') {
+    // This should not happen as ROS2 should provide absolute namespaces
+    RCUTILS_LOG_WARN("Namespace '%s' does not start with '/', this may cause issues", namespace_);
+  }
   rmw_node->namespace_ = namespace_; // Direct pointer to input string
 
   // Initialize TickLE node
@@ -110,8 +116,8 @@ rmw_destroy_node(rmw_node_t * node)
     free(tickle_node);
   }
 
-  RCUTILS_LOG_INFO("Destroyed TickLE node: %s%s", 
-                   node->namespace_ ? node->namespace_ : "", 
+  RCUTILS_LOG_INFO("Destroyed TickLE node: %s%s",
+                   node->namespace_ ? node->namespace_ : "",
                    node->name ? node->name : "");
 
   return RMW_RET_OK;
@@ -134,11 +140,12 @@ rmw_node_get_graph_guard_condition(
     return NULL;
   }
 
-  rmw_tickle_context_impl_t * context = tickle_node->context;
+  const rmw_context_t * context = tickle_node->context;
   if (context == NULL) {
     RMW_SET_ERROR_MSG("Context is null");
     return NULL;
   }
 
-  return &context->graph_guard_condition;
+  rmw_tickle_context_impl_t * context_impl = (rmw_tickle_context_impl_t *)context->impl;
+  return &context_impl->graph_guard_condition;
 }

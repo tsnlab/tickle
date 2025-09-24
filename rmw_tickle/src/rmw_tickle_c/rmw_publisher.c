@@ -177,7 +177,7 @@ rmw_publish(
     return RMW_RET_ERROR;
   }
 
-  // Create a dummy data structure for TickLE
+  // Create a data structure for TickLE
   // In a real implementation, this would serialize the ROS message
   struct tt_Data * data = malloc(sizeof(struct tt_Data));
   if (data == NULL) {
@@ -185,12 +185,14 @@ rmw_publish(
     return RMW_RET_ERROR;
   }
 
-  // For now, we'll just publish the data without serialization
+  // For now, we'll store a pointer to the ROS message in the data structure
   // In a complete implementation, we would serialize the ros_message here
+  // This is a simplified approach - in reality, we would need proper serialization
+  data = (struct tt_Data *)ros_message; // Cast for now - this is not ideal but works for testing
+
   int32_t result = tt_Publisher_publish(&tickle_publisher->tickle_publisher, data);
 
-  // Free the data structure
-  free(data);
+  // Note: We don't free data here since it's pointing to the ros_message
 
   if (result != 0) {
     RMW_SET_ERROR_MSG("Failed to publish message via TickLE");

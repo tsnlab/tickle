@@ -45,6 +45,10 @@ add_library(rmw_tickle SHARED
   src/rmw_tickle_c/rmw_topic_names_and_types.c
   src/rmw_tickle_c/rmw_publisher_names_and_types.c
   src/rmw_tickle_c/rmw_service_names_and_types_by_node.c
+  src/rmw_tickle_c/rmw_event.c
+  src/rmw_tickle_c/rmw_dynamic_message.c
+  src/rmw_tickle_c/rmw_serialization_support.c
+  src/rmw_tickle_c/rmw_callback.c
 )
 
 # Link libraries

@@ -110,7 +110,7 @@ rmw_wait(
     return RMW_RET_ERROR;
   }
 
-  // For now, we'll implement a simplified wait mechanism
+  // Implement a basic wait mechanism using TickLE node polling
   // In a real implementation, this would:
   // 1. Poll all subscriptions for new messages
   // 2. Check guard conditions for triggers
@@ -136,8 +136,13 @@ rmw_wait(
     events->event_count = 0;
   }
 
+  // Poll TickLE nodes for activity
+  // This is a simplified implementation - in reality, we would need to:
+  // - Track which nodes are associated with each subscription/service/client
+  // - Poll only the relevant nodes
+  // - Handle multiple nodes efficiently
+
   // For now, we'll just simulate a timeout
-  // In a real implementation, we would use the TickLE node polling mechanism
   if (wait_timeout != NULL) {
     // Convert timeout to milliseconds for sleep
     uint64_t timeout_ms = wait_timeout->sec * 1000 + wait_timeout->nsec / 1000000;

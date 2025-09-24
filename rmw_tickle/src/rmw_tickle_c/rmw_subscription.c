@@ -183,17 +183,22 @@ rmw_take(
     return RMW_RET_ERROR;
   }
 
+  // Poll the TickLE node for incoming messages
+  // In a real implementation, this would check for new messages from the network
+  int32_t poll_result = tt_Node_poll(&tickle_subscriber->node->tickle_node);
+
   // For now, we'll simulate message reception
-  // In a real implementation, this would poll the TickLE node for incoming messages
-  // and deserialize them into the ros_message buffer
+  // In a real implementation, we would:
+  // 1. Check if any messages match this subscription's topic
+  // 2. Deserialize the message data into ros_message
+  // 3. Handle message ordering and QoS
 
-  // Check if there are any messages available
-  // This is a simplified implementation - in reality, we would need to:
-  // 1. Poll the TickLE node for new messages
-  // 2. Check if any messages match this subscription's topic
-  // 3. Deserialize the message data into ros_message
+  // This is a simplified implementation - we'll just return no message available for now
+  // In a complete implementation, we would need to:
+  // - Implement proper message queuing
+  // - Handle message deserialization
+  // - Support different QoS policies
 
-  // For now, we'll just return no message available
   *taken = false;
 
   RCUTILS_LOG_DEBUG("rmw_take: No messages available (simplified implementation)");

@@ -21,8 +21,8 @@
 
 rmw_ret_t
 rmw_qos_profile_check_compatible(
-  const rmw_qos_profile_t publisher_profile,
-  const rmw_qos_profile_t subscription_profile,
+  const rmw_qos_profile_t publisher_profile __attribute__((unused)),
+  const rmw_qos_profile_t subscription_profile __attribute__((unused)),
   rmw_qos_compatibility_type_t * compatibility,
   char * reason,
   size_t reason_size)
@@ -34,7 +34,7 @@ rmw_qos_profile_check_compatible(
   // Assume they are compatible
   *compatibility = RMW_QOS_COMPATIBILITY_OK;
   snprintf(reason, reason_size, "QoS compatibility check not implemented for TickLE");
-  
+
   printf("rmw_qos_profile_check_compatible: returning compatible (not implemented for TickLE)\n");
   return RMW_RET_OK;
 }

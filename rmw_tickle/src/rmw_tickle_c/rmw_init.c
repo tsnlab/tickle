@@ -21,7 +21,7 @@ rmw_init_options_init(rmw_init_options_t * init_options, rcutils_allocator_t all
   init_options->enclave = NULL;
   init_options->allocator = allocator;
   init_options->impl = NULL;
-  
+
   // Set the implementation identifier
   init_options->implementation_identifier = RMW_TICKLE_IDENTIFIER;
 
@@ -49,20 +49,20 @@ rmw_init_options_copy(
 {
   RCUTILS_CHECK_ARGUMENT_FOR_NULL(src, RMW_RET_INVALID_ARGUMENT);
   RCUTILS_CHECK_ARGUMENT_FOR_NULL(dst, RMW_RET_INVALID_ARGUMENT);
-  
+
   if (strcmp(src->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
     RMW_SET_ERROR_MSG("Implementation identifiers does not match");
     return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
   }
-  
+
   if (NULL != dst->implementation_identifier) {
     RMW_SET_ERROR_MSG("expected zero-initialized dst");
     return RMW_RET_INVALID_ARGUMENT;
   }
-  
+
   // Copy the basic structure
   memcpy(dst, src, sizeof(rmw_init_options_t));
-  
+
   // Copy the enclave string if it exists
   if (src->enclave != NULL) {
     dst->enclave = rcutils_strdup(src->enclave, src->allocator);
@@ -72,7 +72,7 @@ rmw_init_options_copy(
   } else {
     dst->enclave = NULL;
   }
-  
+
   return RMW_RET_OK;
 }
 
@@ -91,7 +91,7 @@ rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
   context->instance_id = 0;
   context->implementation_identifier = RMW_TICKLE_IDENTIFIER;
   context->options = *options;
-  
+
   // Allocate and initialize context implementation
   rmw_tickle_context_impl_t * impl = (rmw_tickle_context_impl_t *)options->allocator.allocate(
     sizeof(rmw_tickle_context_impl_t), options->allocator.state);
@@ -99,15 +99,15 @@ rmw_init(const rmw_init_options_t * options, rmw_context_t * context)
     RMW_SET_ERROR_MSG("Failed to allocate context implementation");
     return RMW_RET_BAD_ALLOC;
   }
-  
+
   // Initialize the context implementation
   memset(impl, 0, sizeof(rmw_tickle_context_impl_t));
-  
+
   // Initialize graph guard condition
   impl->graph_guard_condition.implementation_identifier = RMW_TICKLE_IDENTIFIER;
   impl->graph_guard_condition.data = NULL;
-  
-  context->impl = impl;
+
+  context->impl = (rmw_context_impl_t *)impl;
 
 
   return RMW_RET_OK;
