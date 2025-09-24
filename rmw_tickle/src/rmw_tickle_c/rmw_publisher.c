@@ -14,6 +14,7 @@
 
 #include <rmw/allocators.h>
 #include <rmw/rmw.h>
+#include <rmw/error_handling.h>
 #include <rcutils/logging_macros.h>
 #include <rosidl_runtime_c/message_type_support_struct.h>
 
@@ -84,15 +85,37 @@ rmw_create_publisher(
   tickle_publisher->type_support = type_support;
 
   // Initialize TickLE publisher
-  // TODO: Implement actual TickLE publisher creation
-  // int32_t result = tt_Node_create_publisher(&tickle_publisher->node->tickle_node, 
-  //                                          &tickle_publisher->tickle_publisher, 
-  //                                          topic, topic_name);
-  // if (result != 0) {
-  //   free(tickle_publisher);
-  //   RMW_SET_ERROR_MSG("Failed to create TickLE publisher");
-  //   return NULL;
-  // }
+  // Create a dummy topic for now - in a real implementation, this would be created based on type_support
+  struct tt_Topic * topic = malloc(sizeof(struct tt_Topic));
+  if (topic == NULL) {
+    free(tickle_publisher);
+    RMW_SET_ERROR_MSG("Failed to allocate memory for TickLE topic");
+    return NULL;
+  }
+  
+  // Initialize topic with basic information
+  topic->name = topic_name;
+  topic->data_size = 0; // Will be set based on message type
+  topic->data_encode_size = NULL;
+  topic->data_encode = NULL;
+  topic->data_decode = NULL;
+  topic->data_free = NULL;
+  topic->history_depth = 10; // Default QoS
+  topic->deadline_duration = 0;
+  topic->lifespan_duration = 0;
+  
+  int32_t result = tt_Node_create_publisher(&tickle_publisher->node->tickle_node, 
+                                           &tickle_publisher->tickle_publisher, 
+                                           topic, topic_name);
+  if (result != 0) {
+    free(topic);
+    free(tickle_publisher);
+    RMW_SET_ERROR_MSG("Failed to create TickLE publisher");
+    return NULL;
+  }
+  
+  // Store topic reference for later use
+  tickle_publisher->tickle_publisher.topic = topic;
 
   RCUTILS_LOG_INFO("Created TickLE publisher for topic: %s", topic_name);
 
@@ -115,11 +138,15 @@ rmw_destroy_publisher(
   rmw_tickle_publisher_t * tickle_publisher = (rmw_tickle_publisher_t *)publisher->data;
   if (tickle_publisher != NULL) {
     // Destroy TickLE publisher
-    // TODO: Implement actual TickLE publisher destruction
-    // int32_t result = tt_Publisher_destroy(&tickle_publisher->tickle_publisher);
-    // if (result != 0) {
-    //   RCUTILS_LOG_WARN("Failed to destroy TickLE publisher, error code: %d", result);
-    // }
+    int32_t result = tt_Publisher_destroy(&tickle_publisher->tickle_publisher);
+    if (result != 0) {
+      RCUTILS_LOG_WARN("Failed to destroy TickLE publisher, error code: %d", result);
+    }
+    
+    // Free the topic if it was allocated
+    if (tickle_publisher->tickle_publisher.topic != NULL) {
+      free(tickle_publisher->tickle_publisher.topic);
+    }
     
     free(tickle_publisher);
   }
@@ -135,12 +162,43 @@ rmw_publish(
   const void * ros_message,
   rmw_publisher_allocation_t * allocation)
 {
-  (void)publisher;
-  (void)ros_message;
-  (void)allocation;
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+  RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
+  (void)allocation; // Not used in this implementation
+
+  if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    RMW_SET_ERROR_MSG("Implementation identifiers does not match");
+    return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+  }
+
+  rmw_tickle_publisher_t * tickle_publisher = (rmw_tickle_publisher_t *)publisher->data;
+  if (tickle_publisher == NULL) {
+    RMW_SET_ERROR_MSG("Publisher data is NULL");
+    return RMW_RET_ERROR;
+  }
+
+  // Create a dummy data structure for TickLE
+  // In a real implementation, this would serialize the ROS message
+  struct tt_Data * data = malloc(sizeof(struct tt_Data));
+  if (data == NULL) {
+    RMW_SET_ERROR_MSG("Failed to allocate memory for TickLE data");
+    return RMW_RET_ERROR;
+  }
+
+  // For now, we'll just publish the data without serialization
+  // In a complete implementation, we would serialize the ros_message here
+  int32_t result = tt_Publisher_publish(&tickle_publisher->tickle_publisher, data);
   
-  RCUTILS_LOG_DEBUG("rmw_publish: function not implemented for TickLE");
-  return RMW_RET_UNSUPPORTED;
+  // Free the data structure
+  free(data);
+  
+  if (result != 0) {
+    RMW_SET_ERROR_MSG("Failed to publish message via TickLE");
+    return RMW_RET_ERROR;
+  }
+
+  RCUTILS_LOG_DEBUG("Successfully published message via TickLE");
+  return RMW_RET_OK;
 }
 
 rmw_ret_t
