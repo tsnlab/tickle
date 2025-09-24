@@ -208,6 +208,10 @@ rmw_tickle/build/
 rmw_tickle/install/
 rmw_tickle/log/
 
+# Root level build artifacts
+install/
+log/
+
 # Docker artifacts
 .dockerignore
 
