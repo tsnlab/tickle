@@ -79,7 +79,7 @@ rmw_destroy_wait_set(rmw_wait_set_t * wait_set)
     if (tickle_wait_set->guard_conditions != NULL) {
       rmw_free(tickle_wait_set->guard_conditions);
     }
-    
+
     rmw_free(tickle_wait_set);
   }
 

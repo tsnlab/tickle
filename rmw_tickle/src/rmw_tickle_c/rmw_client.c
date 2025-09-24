@@ -66,7 +66,7 @@ rmw_create_client(
     RMW_SET_ERROR_MSG("Failed to allocate memory for TickLE service");
     return NULL;
   }
-  
+
   // Initialize service with basic information
   service->name = service_name;
   service->request_size = 0; // Will be set based on message type
@@ -81,13 +81,13 @@ rmw_create_client(
   service->response_free = NULL;
   service->call_retry_interval = 0;
   service->call_retry_count = 0;
-  
+
   // Create a dummy callback for now
   // In a real implementation, this would handle incoming service responses
   tt_CLIENT_CALLBACK callback = NULL; // We'll handle responses in rmw_take_response instead
-  
-  int32_t result = tt_Node_create_client(&tickle_client->node->tickle_node, 
-                                        &tickle_client->tickle_client, 
+
+  int32_t result = tt_Node_create_client(&tickle_client->node->tickle_node,
+                                        &tickle_client->tickle_client,
                                         service, service_name, callback);
   if (result != 0) {
     free(service);
@@ -95,7 +95,7 @@ rmw_create_client(
     RMW_SET_ERROR_MSG("Failed to create TickLE client");
     return NULL;
   }
-  
+
   // Store service reference for later use
   tickle_client->tickle_client.service = service;
 
@@ -123,12 +123,12 @@ rmw_destroy_client(
     if (result != 0) {
       RCUTILS_LOG_WARN("Failed to destroy TickLE client, error code: %d", result);
     }
-    
+
     // Free the service if it was allocated
     if (tickle_client->tickle_client.service != NULL) {
       free(tickle_client->tickle_client.service);
     }
-    
+
     free(tickle_client);
   }
 
@@ -160,7 +160,7 @@ rmw_send_request(
   // For now, we'll simulate request sending
   // In a real implementation, this would serialize the ros_request
   // and send it to the service using the TickLE API
-  
+
   // Create a dummy request structure for TickLE
   // In a real implementation, this would serialize the ROS request
   struct tt_Request * request = malloc(sizeof(struct tt_Request));
@@ -172,13 +172,13 @@ rmw_send_request(
   // For now, we'll just simulate sending the request
   // In a complete implementation, we would serialize the ros_request here
   // and use the TickLE API to send it to the service
-  
+
   // Set a dummy sequence ID
   *sequence_id = 1;
-  
+
   // Free the request structure
   free(request);
-  
+
   RCUTILS_LOG_DEBUG("Successfully sent service request via TickLE (simplified implementation)");
   return RMW_RET_OK;
 }
@@ -209,16 +209,16 @@ rmw_take_response(
   // For now, we'll simulate response reception
   // In a real implementation, this would poll the TickLE node for incoming service responses
   // and deserialize them into the ros_response buffer
-  
+
   // Check if there are any responses available
   // This is a simplified implementation - in reality, we would need to:
   // 1. Poll the TickLE node for new service responses
   // 2. Check if any responses match this client
   // 3. Deserialize the response data into ros_response
-  
+
   // For now, we'll just return no response available
   *taken = false;
-  
+
   RCUTILS_LOG_DEBUG("rmw_take_response: No responses available (simplified implementation)");
   return RMW_RET_OK;
 }

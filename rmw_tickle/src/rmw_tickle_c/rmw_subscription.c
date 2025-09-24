@@ -92,7 +92,7 @@ rmw_create_subscription(
     RMW_SET_ERROR_MSG("Failed to allocate memory for TickLE topic");
     return NULL;
   }
-  
+
   // Initialize topic with basic information
   topic->name = topic_name;
   topic->data_size = 0; // Will be set based on message type
@@ -103,13 +103,13 @@ rmw_create_subscription(
   topic->history_depth = 10; // Default QoS
   topic->deadline_duration = 0;
   topic->lifespan_duration = 0;
-  
+
   // Create a dummy callback for now
   // In a real implementation, this would handle incoming messages
   tt_SUBSCRIBER_CALLBACK callback = NULL; // We'll handle messages in rmw_take instead
-  
-  int32_t result = tt_Node_create_subscriber(&tickle_subscriber->node->tickle_node, 
-                                           &tickle_subscriber->tickle_subscriber, 
+
+  int32_t result = tt_Node_create_subscriber(&tickle_subscriber->node->tickle_node,
+                                           &tickle_subscriber->tickle_subscriber,
                                            topic, topic_name, callback);
   if (result != 0) {
     free(topic);
@@ -117,7 +117,7 @@ rmw_create_subscription(
     RMW_SET_ERROR_MSG("Failed to create TickLE subscriber");
     return NULL;
   }
-  
+
   // Store topic reference for later use
   tickle_subscriber->tickle_subscriber.topic = topic;
 
@@ -146,12 +146,12 @@ rmw_destroy_subscription(
     if (result != 0) {
       RCUTILS_LOG_WARN("Failed to destroy TickLE subscriber, error code: %d", result);
     }
-    
+
     // Free the topic if it was allocated
     if (tickle_subscriber->tickle_subscriber.topic != NULL) {
       free(tickle_subscriber->tickle_subscriber.topic);
     }
-    
+
     free(tickle_subscriber);
   }
 
@@ -186,16 +186,16 @@ rmw_take(
   // For now, we'll simulate message reception
   // In a real implementation, this would poll the TickLE node for incoming messages
   // and deserialize them into the ros_message buffer
-  
+
   // Check if there are any messages available
   // This is a simplified implementation - in reality, we would need to:
   // 1. Poll the TickLE node for new messages
   // 2. Check if any messages match this subscription's topic
   // 3. Deserialize the message data into ros_message
-  
+
   // For now, we'll just return no message available
   *taken = false;
-  
+
   RCUTILS_LOG_DEBUG("rmw_take: No messages available (simplified implementation)");
   return RMW_RET_OK;
 }
@@ -213,7 +213,7 @@ rmw_take_with_info(
   (void)taken;
   (void)message_info;
   (void)allocation;
-  
+
   RCUTILS_LOG_DEBUG("rmw_take_with_info: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -228,11 +228,11 @@ rmw_take_serialized_message(
   (void)subscription;
   (void)serialized_message;
   (void)allocation;
-  
+
   if (taken != NULL) {
     *taken = false;
   }
-  
+
   RCUTILS_LOG_DEBUG("rmw_take_serialized_message: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -250,7 +250,7 @@ rmw_take_serialized_message_with_info(
   (void)taken;
   (void)message_info;
   (void)allocation;
-  
+
   RCUTILS_LOG_DEBUG("rmw_take_serialized_message_with_info: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -266,7 +266,7 @@ rmw_take_loaned_message(
   (void)ros_message;
   (void)taken;
   (void)allocation;
-  
+
   RCUTILS_LOG_DEBUG("rmw_take_loaned_message: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -284,7 +284,7 @@ rmw_take_loaned_message_with_info(
   (void)taken;
   (void)message_info;
   (void)allocation;
-  
+
   RCUTILS_LOG_DEBUG("rmw_take_loaned_message_with_info: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -296,7 +296,7 @@ rmw_return_loaned_message_from_subscription(
 {
   (void)subscription;
   (void)loaned_message;
-  
+
   RCUTILS_LOG_DEBUG("rmw_return_loaned_message_from_subscription: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -308,7 +308,7 @@ rmw_subscription_count_matched_publishers(
 {
   (void)subscription;
   (void)publisher_count;
-  
+
   RCUTILS_LOG_DEBUG("rmw_subscription_count_matched_publishers: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -322,7 +322,7 @@ rmw_subscription_event_init(
   (void)event;
   (void)subscription;
   (void)event_type;
-  
+
   RCUTILS_LOG_DEBUG("rmw_subscription_event_init: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -334,7 +334,7 @@ rmw_subscription_set_content_filter(
 {
   (void)subscription;
   (void)options;
-  
+
   RCUTILS_LOG_DEBUG("rmw_subscription_set_content_filter: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -348,7 +348,7 @@ rmw_subscription_get_content_filter(
   (void)subscription;
   (void)allocator;
   (void)options;
-  
+
   RCUTILS_LOG_DEBUG("rmw_subscription_get_content_filter: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }

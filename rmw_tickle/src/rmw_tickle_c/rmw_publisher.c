@@ -92,7 +92,7 @@ rmw_create_publisher(
     RMW_SET_ERROR_MSG("Failed to allocate memory for TickLE topic");
     return NULL;
   }
-  
+
   // Initialize topic with basic information
   topic->name = topic_name;
   topic->data_size = 0; // Will be set based on message type
@@ -103,9 +103,9 @@ rmw_create_publisher(
   topic->history_depth = 10; // Default QoS
   topic->deadline_duration = 0;
   topic->lifespan_duration = 0;
-  
-  int32_t result = tt_Node_create_publisher(&tickle_publisher->node->tickle_node, 
-                                           &tickle_publisher->tickle_publisher, 
+
+  int32_t result = tt_Node_create_publisher(&tickle_publisher->node->tickle_node,
+                                           &tickle_publisher->tickle_publisher,
                                            topic, topic_name);
   if (result != 0) {
     free(topic);
@@ -113,7 +113,7 @@ rmw_create_publisher(
     RMW_SET_ERROR_MSG("Failed to create TickLE publisher");
     return NULL;
   }
-  
+
   // Store topic reference for later use
   tickle_publisher->tickle_publisher.topic = topic;
 
@@ -142,12 +142,12 @@ rmw_destroy_publisher(
     if (result != 0) {
       RCUTILS_LOG_WARN("Failed to destroy TickLE publisher, error code: %d", result);
     }
-    
+
     // Free the topic if it was allocated
     if (tickle_publisher->tickle_publisher.topic != NULL) {
       free(tickle_publisher->tickle_publisher.topic);
     }
-    
+
     free(tickle_publisher);
   }
 
@@ -188,10 +188,10 @@ rmw_publish(
   // For now, we'll just publish the data without serialization
   // In a complete implementation, we would serialize the ros_message here
   int32_t result = tt_Publisher_publish(&tickle_publisher->tickle_publisher, data);
-  
+
   // Free the data structure
   free(data);
-  
+
   if (result != 0) {
     RMW_SET_ERROR_MSG("Failed to publish message via TickLE");
     return RMW_RET_ERROR;
@@ -210,7 +210,7 @@ rmw_publish_loaned_message(
   (void)publisher;
   (void)ros_message;
   (void)allocation;
-  
+
   RCUTILS_LOG_DEBUG("rmw_publish_loaned_message: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -224,7 +224,7 @@ rmw_publish_serialized_message(
   (void)publisher;
   (void)serialized_message;
   (void)allocation;
-  
+
   RCUTILS_LOG_DEBUG("rmw_publish_serialized_message: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -238,7 +238,7 @@ rmw_borrow_loaned_message(
   (void)publisher;
   (void)type_support;
   (void)ros_message;
-  
+
   RCUTILS_LOG_DEBUG("rmw_borrow_loaned_message: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -250,7 +250,7 @@ rmw_return_loaned_message_from_publisher(
 {
   (void)publisher;
   (void)loaned_message;
-  
+
   RCUTILS_LOG_DEBUG("rmw_return_loaned_message_from_publisher: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -262,7 +262,7 @@ rmw_publisher_count_matched_subscriptions(
 {
   (void)publisher;
   (void)subscription_count;
-  
+
   RCUTILS_LOG_DEBUG("rmw_publisher_count_matched_subscriptions: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -276,7 +276,7 @@ rmw_publisher_event_init(
   (void)event;
   (void)publisher;
   (void)event_type;
-  
+
   RCUTILS_LOG_DEBUG("rmw_publisher_event_init: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -286,7 +286,7 @@ rmw_publisher_assert_liveliness(
   const rmw_publisher_t * publisher)
 {
   (void)publisher;
-  
+
   RCUTILS_LOG_DEBUG("rmw_publisher_assert_liveliness: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }
@@ -298,7 +298,7 @@ rmw_publisher_wait_for_all_acked(
 {
   (void)publisher;
   (void)wait_timeout;
-  
+
   RCUTILS_LOG_DEBUG("rmw_publisher_wait_for_all_acked: function not implemented for TickLE");
   return RMW_RET_UNSUPPORTED;
 }

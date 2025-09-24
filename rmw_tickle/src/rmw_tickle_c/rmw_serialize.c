@@ -37,25 +37,25 @@ rmw_serialize(
 
   // For now, we'll use a simplified serialization approach
   // In a real implementation, we would use the proper ROS2 CDR serialization
-  
+
   // Calculate the size needed for serialization
   // This is a placeholder - in reality, we would use the type support to get the actual size
   size_t message_size = 1024; // Placeholder size
-  
+
   // Allocate memory for the serialized message
   serialized_message->buffer = rmw_allocate(message_size);
   if (serialized_message->buffer == NULL) {
     RMW_SET_ERROR_MSG("Failed to allocate memory for serialized message");
     return RMW_RET_ERROR;
   }
-  
+
   serialized_message->buffer_length = message_size;
   serialized_message->buffer_capacity = message_size;
-  
+
   // For now, we'll just copy the message data as-is
   // In a real implementation, we would use proper CDR serialization
   memcpy(serialized_message->buffer, ros_message, message_size);
-  
+
   RCUTILS_LOG_DEBUG("Successfully serialized message (simplified implementation)");
   return RMW_RET_OK;
 }
@@ -78,16 +78,16 @@ rmw_deserialize(
 
   // For now, we'll use a simplified deserialization approach
   // In a real implementation, we would use the proper ROS2 CDR deserialization
-  
+
   // Copy the serialized data back to the message
   // This is a placeholder - in reality, we would use proper CDR deserialization
   size_t copy_size = serialized_message->buffer_length;
   if (copy_size > 1024) { // Safety check
     copy_size = 1024;
   }
-  
+
   memcpy(ros_message, serialized_message->buffer, copy_size);
-  
+
   RCUTILS_LOG_DEBUG("Successfully deserialized message (simplified implementation)");
   return RMW_RET_OK;
 }
@@ -105,7 +105,8 @@ rmw_get_serialized_message_size(
   // For now, we'll return a placeholder size
   // In a real implementation, we would use the type support to calculate the actual size
   *size = 1024; // Placeholder size
-  
+
   RCUTILS_LOG_DEBUG("Returned serialized message size: %zu (simplified implementation)", *size);
   return RMW_RET_OK;
 }
+
