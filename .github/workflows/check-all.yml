@@ -13,16 +13,41 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Install build packages
         run: |
           sudo apt update
-          sudo apt install bear
+          sudo apt install -y \
+            bear \
+            clang-format \
+            clang-tidy \
+            python3-pip \
+            software-properties-common
+
+      - name: Install ROS2 Jazzy
+        run: |
+          sudo add-apt-repository universe
+          sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+          sudo apt update
+          sudo apt install -y \
+            ros-jazzy-desktop \
+            python3-colcon-common-extensions \
+            python3-rosdep \
+            python3-vcstool
 
       - name: Generate compile_commands.json
         run: |
+          source /opt/ros/jazzy/setup.bash
+          bear -- make clean
           bear -- make all
+          cd rmw_tickle
+          colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cp build/rmw_tickle/compile_commands.json ../
+          source install/setup.bash
+          cd ..
+          colcon build --packages-select tickle_rmw_test --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Check all
         uses: tsnlab/check@main

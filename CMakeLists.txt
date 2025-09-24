@@ -5,6 +5,7 @@ project(tickle_rmw_test)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(rmw_tickle REQUIRED)
 
 # Add executable
 add_executable(tickle_test_node test_tickle_rmw.cpp)
@@ -24,6 +25,7 @@ install(TARGETS tickle_test_node
 ament_export_dependencies(
   rclcpp
   std_msgs
+  rmw_tickle
 )
 
 ament_package()
