@@ -25,7 +25,7 @@ OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
 
 .PHONY: all lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
 
-all: libtickle.a client server
+all: libtickle.a client server publisher subscriber
 
 $(OBJ)/%.o: $(SRC)/%.c
 	$(CC) -c -o $@ $< $(CFLAGS)

@@ -1,0 +1,137 @@
+version: '3.8'
+
+services:
+  # Build service for rmw_tickle
+  rmw-tickle-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rmw-tickle:latest
+    container_name: rmw-tickle-builder
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: bash -c "make clean && make && cd rmw_tickle && colcon build --packages-select rmw_tickle"
+    networks:
+      - tickle-network
+
+  # Test environment with network namespaces simulation
+  rmw-tickle-test:
+    image: rmw-tickle:latest
+    container_name: rmw-tickle-test
+    privileged: true  # Required for network namespace operations
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - RMW_IMPLEMENTATION=rmw_tickle
+      - ROS_DOMAIN_ID=0
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash
+
+  # Publisher node (simulating ns1)
+  publisher:
+    image: rmw-tickle:latest
+    container_name: tickle-publisher
+    privileged: true
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - RMW_IMPLEMENTATION=rmw_tickle
+      - ROS_DOMAIN_ID=0
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash -c "source /workspace/rmw_tickle/install/setup.bash && make runpublisher"
+
+  # Subscriber node (simulating ns2)
+  subscriber:
+    image: rmw-tickle:latest
+    container_name: tickle-subscriber
+    privileged: true
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - RMW_IMPLEMENTATION=rmw_tickle
+      - ROS_DOMAIN_ID=0
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash -c "source /workspace/rmw_tickle/install/setup.bash && make runsubscriber"
+
+  # Service client (simulating ns1)
+  client:
+    image: rmw-tickle:latest
+    container_name: tickle-client
+    privileged: true
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - RMW_IMPLEMENTATION=rmw_tickle
+      - ROS_DOMAIN_ID=0
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash -c "source /workspace/rmw_tickle/install/setup.bash && make runclient"
+
+  # Service server (simulating ns2)
+  server:
+    image: rmw-tickle:latest
+    container_name: tickle-server
+    privileged: true
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      - RMW_IMPLEMENTATION=rmw_tickle
+      - ROS_DOMAIN_ID=0
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash -c "source /workspace/rmw_tickle/install/setup.bash && make runserver"
+
+  # ROS2 demo nodes for testing
+  talker:
+    image: rmw-tickle:latest
+    container_name: tickle-talker
+    volumes:
+      - .:/workspace
+    environment:
+      - RMW_IMPLEMENTATION=rmw_tickle
+      - ROS_DOMAIN_ID=0
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash -c "source /workspace/rmw_tickle/install/setup.bash && ros2 run demo_nodes_cpp talker"
+
+  listener:
+    image: rmw-tickle:latest
+    container_name: tickle-listener
+    volumes:
+      - .:/workspace
+    environment:
+      - RMW_IMPLEMENTATION=rmw_tickle
+      - ROS_DOMAIN_ID=0
+    networks:
+      - tickle-network
+    depends_on:
+      - rmw-tickle-builder
+    command: bash -c "source /workspace/rmw_tickle/install/setup.bash && ros2 run demo_nodes_cpp listener"
+
+networks:
+  tickle-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

@@ -190,3 +190,42 @@ dmypy.json
 cython_debug/
 
 compile_commands.json
+
+# TickLE specific generated files
+# Build artifacts
+build/
+libtickle.a
+libtickle.so
+
+# Executable examples
+client
+server
+publisher
+subscriber
+
+# ROS2 build artifacts
+rmw_tickle/build/
+rmw_tickle/install/
+rmw_tickle/log/
+
+# Docker artifacts
+.dockerignore
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+log/
+
+# Temporary files
+*.tmp
+*.temp
