@@ -92,6 +92,7 @@ typedef struct rmw_tickle_guard_condition_t
 // TickLE specific wait set data
 typedef struct rmw_tickle_wait_set_t
 {
+  rmw_wait_set_t rmw_wait_set;  // RMW wait set structure (must be first)
   rmw_tickle_guard_condition_t ** guard_conditions;
   size_t guard_condition_count;
   rcutils_allocator_t allocator;
