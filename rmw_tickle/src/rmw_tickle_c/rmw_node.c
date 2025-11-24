@@ -19,11 +19,13 @@
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/logging_macros.h"
+#include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/rmw.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 
 rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char* namespace_) {
+    _tt_CONFIG.broadcast = "192.168.10.255";
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, NULL);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(name, NULL);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(namespace_, NULL);
@@ -69,14 +71,14 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
 
     rmw_node->implementation_identifier = RMW_TICKLE_IDENTIFIER;
     rmw_node->data = tickle_node;
-    rmw_node->name = name; // Direct pointer to input string
+    rmw_node->name = rcutils_strdup(name, tickle_node->allocator);
 
     // Ensure namespace starts with '/'
     if (namespace_[0] != '/') {
         // This should not happen as ROS2 should provide absolute namespaces
         RCUTILS_LOG_WARN("Namespace '%s' does not start with '/', this may cause issues", namespace_);
     }
-    rmw_node->namespace_ = namespace_; // Direct pointer to input string
+    rmw_node->namespace_ = rcutils_strdup(namespace_, tickle_node->allocator);
 
     // Initialize TickLE node
     int32_t result = tt_Node_create(&tickle_node->tickle_node);
@@ -107,6 +109,10 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
         if (result != 0) {
             RCUTILS_LOG_WARN("Failed to destroy TickLE node, error code: %d", result);
         }
+
+        tickle_node->allocator.deallocate(node->name, tickle_node->allocator.state);
+        tickle_node->allocator.deallocate(node->namespace_, tickle_node->allocator.state);
+
         free(tickle_node);
     }
 

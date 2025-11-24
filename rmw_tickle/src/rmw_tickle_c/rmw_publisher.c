@@ -15,13 +15,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 
+#include <rcutils/allocator.h>
 #include <rcutils/logging_macros.h>
+#include <rcutils/strdup.h>
 #include <rmw/allocators.h>
 #include <rmw/error_handling.h>
 #include <rmw/rmw.h>
 #include <rosidl_runtime_c/message_type_support_struct.h>
 
 #include "rmw_tickle_c/rmw_tickle.h"
+
+#include "__TEMP__messages.h"
 
 rmw_ret_t rmw_init_publisher_allocation(const rosidl_message_type_support_t* type_support,
                                         const rosidl_runtime_c__Sequence__bound* message_bounds,
@@ -53,6 +57,8 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
 
+    rmw_tickle_node_t* tickle_node = (rmw_tickle_node_t*)node->data;
+
     // Allocate memory for the publisher
     rmw_tickle_publisher_t* tickle_publisher = malloc(sizeof(rmw_tickle_publisher_t));
     if (tickle_publisher == NULL) {
@@ -68,7 +74,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
 
     rmw_publisher->implementation_identifier = RMW_TICKLE_IDENTIFIER;
     rmw_publisher->data = tickle_publisher;
-    rmw_publisher->topic_name = topic_name;
+    rmw_publisher->topic_name = rcutils_strdup(topic_name, tickle_node->allocator);
     rmw_publisher->options = *publisher_options;
     rmw_publisher->can_loan_messages = false;
 
@@ -77,7 +83,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     tickle_publisher->type_support = type_support;
 
     // Initialize TickLE publisher
-    // Create a dummy topic for now - in a real implementation, this would be created based on type_support
+    // TODO: Create a dummy topic for now - in a real implementation, this would be created based on type_support
     struct tt_Topic* topic = malloc(sizeof(struct tt_Topic));
     if (topic == NULL) {
         free(tickle_publisher);
@@ -86,12 +92,12 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     }
 
     // Initialize topic with basic information
-    topic->name = topic_name;
-    topic->data_size = 0; // Will be set based on message type
-    topic->data_encode_size = NULL;
-    topic->data_encode = NULL;
-    topic->data_decode = NULL;
-    topic->data_free = NULL;
+    topic->name = rcutils_strdup(topic_name, tickle_node->allocator);
+    topic->data_size = sizeof(struct StringData);
+    topic->data_encode_size = (tt_DATA_ENCODE_SIZE)StringData_encode_size;
+    topic->data_encode = (tt_DATA_ENCODE)StringData_encode;
+    topic->data_decode = (tt_DATA_DECODE)StringData_decode;
+    topic->data_free = (tt_DATA_FREE)StringData_free;
     topic->history_depth = 10; // Default QoS
     topic->deadline_duration = 0;
     topic->lifespan_duration = 0;
@@ -122,6 +128,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
+    rmw_tickle_node_t* tickle_node = (rmw_tickle_node_t*)node->data;
     rmw_tickle_publisher_t* tickle_publisher = (rmw_tickle_publisher_t*)publisher->data;
     if (tickle_publisher != NULL) {
         // Destroy TickLE publisher
@@ -130,8 +137,11 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
             RCUTILS_LOG_WARN("Failed to destroy TickLE publisher, error code: %d", result);
         }
 
+        tickle_node->allocator.deallocate(publisher->topic_name, tickle_node->allocator.state);
+
         // Free the topic if it was allocated
         if (tickle_publisher->tickle_publisher.topic != NULL) {
+            tickle_node->allocator.deallocate(tickle_publisher->tickle_publisher.topic->name, tickle_node->allocator.state);
             free(tickle_publisher->tickle_publisher.topic);
         }
 
@@ -158,6 +168,12 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     if (tickle_publisher == NULL) {
         RMW_SET_ERROR_MSG("Publisher data is NULL");
         return RMW_RET_ERROR;
+    }
+
+    if (strcmp(tickle_publisher->tickle_publisher.topic->name, "/parameter_events") == 0 ||
+        strcmp(tickle_publisher->tickle_publisher.topic->name, "/rosout") == 0) {
+        // TODO: Any kind of message should be published
+        return RMW_RET_OK;
     }
 
     // Create a data structure for TickLE

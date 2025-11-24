@@ -202,6 +202,8 @@ int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 int32_t tt_Node_poll(struct tt_Node* node);
 int32_t tt_Node_destroy(struct tt_Node* node);
 
+int32_t __TEMP__tt_receive_packet(struct tt_Node* node, struct tt_Data* data, int32_t buffer_len);
+
 #define tt_VERSION 1
 #define tt_PROTOCOL_UPDATE 0
 #define tt_PROTOCOL_DATA 1

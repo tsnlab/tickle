@@ -49,6 +49,7 @@ add_library(rmw_tickle SHARED
   src/rmw_tickle_c/rmw_dynamic_message.c
   src/rmw_tickle_c/rmw_serialization_support.c
   src/rmw_tickle_c/rmw_callback.c
+  src/rmw_tickle_c/__TEMP__messages.c
 )
 
 # Link libraries

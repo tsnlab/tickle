@@ -112,7 +112,8 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
 
     // Initialize all arrays to indicate no items are ready
     if (subscriptions != NULL) {
-        subscriptions->subscriber_count = 0;
+        // TODO: There should be a way to check if there are any subscriptions that are ready to be taken
+        return RMW_RET_OK;
     }
     if (guard_conditions != NULL) {
         guard_conditions->guard_condition_count = 0;
@@ -143,6 +144,5 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
         }
     }
 
-    RCUTILS_LOG_DEBUG("rmw_wait: Timeout reached (simplified implementation)");
     return RMW_RET_TIMEOUT;
 }
