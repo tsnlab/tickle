@@ -1,0 +1,3 @@
+source;share/rmw_tickle/environment/ament_prefix_path.sh
+source;share/rmw_tickle/environment/library_path.sh
+source;share/rmw_tickle/environment/path.sh
