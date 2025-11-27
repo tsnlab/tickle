@@ -97,6 +97,8 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
 
     context->impl = (rmw_context_impl_t*)impl;
 
+    _tt_CONFIG.broadcast = "192.168.10.255";
+
     return RMW_RET_OK;
 }
 

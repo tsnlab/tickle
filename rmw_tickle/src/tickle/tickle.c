@@ -187,7 +187,6 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 int32_t tt_Node_create(struct tt_Node* node) {
     node->id = 0;
     node->endpoint_count = 0;
-    tt_log_init(TT_LOG_DEBUG, stdout);
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         node->endpoints[i] = NULL;
@@ -505,6 +504,7 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     }
 
     pub->seq_no++;
+    tt_log_debug("Published message via TickLE: %s\n", pub->topic->name);
 
     return 0;
 }
@@ -1295,7 +1295,6 @@ int32_t __TEMP__tt_receive_packet(struct tt_Node* node, struct tt_Data* data, in
     uint16_t port = 0;
     int32_t len = tt_receive(node, buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
     int32_t processed_len = 0;
-    printk("tickle: receiving\n");
 
     if (len == -1) {      // Timeout
         return len;

@@ -25,7 +25,6 @@
 #include "rmw_tickle_c/rmw_tickle.h"
 
 rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char* namespace_) {
-    _tt_CONFIG.broadcast = "192.168.10.255";
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, NULL);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(name, NULL);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(namespace_, NULL);

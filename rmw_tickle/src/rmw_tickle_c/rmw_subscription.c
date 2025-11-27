@@ -93,14 +93,23 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
 
     // Initialize topic with basic information
     topic->name = rcutils_strdup(topic_name, tickle_node->allocator);
-    topic->data_size = sizeof(struct StringData);
-    topic->data_encode_size = (tt_DATA_ENCODE_SIZE)StringData_encode_size;
-    topic->data_encode = (tt_DATA_ENCODE)StringData_encode;
-    topic->data_decode = (tt_DATA_DECODE)StringData_decode;
-    topic->data_free = (tt_DATA_FREE)StringData_free;
     topic->history_depth = 10; // Default QoS
     topic->deadline_duration = 0;
     topic->lifespan_duration = 0;
+
+    if ((strcmp(topic_name, "/microROS/ping") == 0) || (strcmp(topic_name, "/microROS/pong") == 0)) {
+        topic->data_size = sizeof(struct HeaderData);
+        topic->data_encode_size = (tt_DATA_ENCODE_SIZE)HeaderData_encode_size;
+        topic->data_encode = (tt_DATA_ENCODE)HeaderData_encode;
+        topic->data_decode = (tt_DATA_DECODE)HeaderData_decode;
+        topic->data_free = (tt_DATA_FREE)HeaderData_free;
+    } else if (strcmp(topic_name, "/chatter") == 0) {
+        topic->data_size = sizeof(struct StringData);
+        topic->data_encode_size = (tt_DATA_ENCODE_SIZE)StringData_encode_size;
+        topic->data_encode = (tt_DATA_ENCODE)StringData_encode;
+        topic->data_decode = (tt_DATA_DECODE)StringData_decode;
+        topic->data_free = (tt_DATA_FREE)StringData_free;
+    }
 
     // Create a dummy callback for now
     // In a real implementation, this would handle incoming messages
