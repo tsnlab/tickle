@@ -7,11 +7,9 @@ endif()
 
 # Find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_ros REQUIRED)
 find_package(rmw REQUIRED)
 find_package(rcutils REQUIRED)
-find_package(rosidl_runtime_c REQUIRED)
-find_package(rosidl_typesupport_interface REQUIRED)
-find_package(rosidl_typesupport_c REQUIRED)
 
 # if(NOT DEFINED ENV{TICKLE_PATH} OR "$ENV{TICKLE_PATH}" STREQUAL "")
 #   message(FATAL_ERROR "Environment variable TICKLE_PATH is not set or is empty.")
@@ -64,8 +62,6 @@ ament_target_dependencies(rmw_tickle
   rmw
   rcutils
   rosidl_runtime_c
-  rosidl_typesupport_interface
-  rosidl_typesupport_c
 )
 
 # Set include directories for the target
@@ -95,11 +91,9 @@ ament_export_dependencies(
   rmw
   rcutils
   rosidl_runtime_c
-  rosidl_typesupport_interface
-  rosidl_typesupport_c
 )
 
-register_rmw_implementation("c:rosidl_typesupport_c")
+register_rmw_implementation("c:rosidl_typesupport_c:rosidl_typesupport_introspection_c")
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
