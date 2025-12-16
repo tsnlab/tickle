@@ -17,7 +17,6 @@
 #include <rmw/error_handling.h>
 #include <rmw/rmw.h>
 #include <rosidl_runtime_c/message_type_support_struct.h>
-#include <rosidl_typesupport_c/message_type_support_dispatch.h>
 
 #include "rmw_tickle_c/rmw_tickle.h"
 
