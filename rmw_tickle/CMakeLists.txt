@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.8)
-project(rmw_tickle)
+project(rmw_tickle VERSION 0.0.1 LANGUAGES C)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -94,7 +94,10 @@ ament_export_dependencies(
   rmw
   rcutils
   rosidl_runtime_c
+  rosidl_typesupport_introspection_c
 )
+
+configure_rmw_library(${PROJECT_NAME})
 
 register_rmw_implementation("c:rosidl_typesupport_introspection_c")
 
