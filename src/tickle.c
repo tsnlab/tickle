@@ -965,7 +965,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 
     struct tt_Client* client = (struct tt_Client*)endpoint;
     struct tt_Service* service = client->service;
-    uint32_t latency = client->cache_time - tt_get_ns();
+    uint32_t latency = tt_get_ns() - client->cache_time;
 
     struct tt_Response* response = NULL;
     uint8_t response_buffer[service->response_size];
