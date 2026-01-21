@@ -1,0 +1,31 @@
+#include "{{ msg_name }}.h"
+
+#include <tickle/hal.h>
+
+struct tt_Topic {{ msg_name }}Topic = {
+    .name = "{{ msg_name }}Topic",
+    .data_size = sizeof(struct {{ msg_name }}Data),
+    .data_encode_size = (tt_DATA_ENCODE_SIZE){{ msg_name }}Data_encode_size,
+    .data_encode = (tt_DATA_ENCODE){{ msg_name }}Data_encode,
+    .data_decode = (tt_DATA_DECODE){{ msg_name }}Data_decode,
+    .data_free = (tt_DATA_FREE){{ msg_name }}Data_free,
+};
+
+int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data) {
+    return;
+}
+
+int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len) {
+    int32_t encoded = 0;
+
+    return encoded;
+}
+
+int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
+    int32_t decoded = 0;
+
+    return decoded;
+}
+
+void {{ msg_name }}Data_free(struct {{ msg_name }}Data* data) {
+}

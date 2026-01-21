@@ -1,0 +1,16 @@
+#pragma once
+
+#include <tickle/tickle.h>
+
+struct {{ msg_name }}Data {
+{% for field in fields %}
+    {{ field.type_name }} {{ field.name }};
+{% endfor %}
+};
+
+extern struct tt_Topic {{ msg_name }}Topic;
+
+int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data);
+int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len);
+int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+void {{ msg_name }}Data_free(struct {{ msg_name }}Data* data);
