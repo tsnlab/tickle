@@ -13,6 +13,7 @@ def generate_source_file(spec: MsgSpec, filename: str):
     template = env.get_template("preprocessor.c.jinja")
     source_file = template.render(
         msg_name=spec.msg_name,
+        fields=spec.fields,
     )
     with open(filename, "w", encoding="utf-8") as f:
         f.write(source_file)

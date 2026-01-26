@@ -12,17 +12,45 @@ struct tt_Topic {{ msg_name }}Topic = {
 };
 
 int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data) {
-    return;
+    return
+    {%- for field in fields %}
+        {%- if field != fields[0] %} +{% endif %}
+ sizeof(data->{{ field.name }}) 
+    {%- endfor %};
 }
 
 int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len) {
     int32_t encoded = 0;
+
+    {% for field in fields %}
+    // encode - {{ field.type_name }} {{ field.name }}
+    if (encoded + sizeof({{ field.type_name }}) > len) {
+        return -1;
+    }
+
+    *(uint64_t*)payload = data->data;
+
+    encoded += sizeof({{ field.type_name }});
+    payload += sizeof({{ field.type_name }});
+    {% endfor %}
 
     return encoded;
 }
 
 int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
     int32_t decoded = 0;
+
+    {% for field in fields %}
+    // decode - {{ field.type_name }} {{ field.name }}
+    if (encoded + sizeof({{ field.type_name }}) > len) {
+        return -1;
+    }
+
+    *(uint64_t*)payload = data->data;
+
+    encoded += sizeof({{ field.type_name }});
+    payload += sizeof({{ field.type_name }});
+    {% endfor %}
 
     return decoded;
 }
