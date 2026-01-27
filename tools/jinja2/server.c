@@ -1,0 +1,47 @@
+#include <stdio.h>
+#include <string.h>
+
+#include "Example.h"
+
+int main(int argc, char* argv) {
+    // _tt_CONFIG.addr = "192.168.10.1";
+    _tt_CONFIG.broadcast = "192.168.10.255";
+
+    struct tt_Node node;
+    int32_t ret = tt_Node_create(&node);
+    if (ret != 0) {
+        printf("Cannot create node: %d\n", ret);
+        return ret;
+    }
+
+    printf("Node created(#%d)\n", node.id);
+
+    struct tt_Publisher pub;
+
+    ret = tt_Node_create_publisher(&node, &pub, &ExampleTopic, "example_topic");
+    if (ret != 0) {
+        printf("Cannot create server: %d\n", ret);
+        return ret;
+    }
+
+    struct ExampleData data;
+    int dummy_data = 0xdeadbeef;
+
+    for (int i = 0; i < sizeof(data); i += 4) {
+        memcpy(&data + i, &dummy_data, 4); 
+    }
+    if (sizeof(data) % 4 != 0) {
+        memcpy(&data + sizeof(data) - (sizeof(data) % 4), &dummy_data, sizeof(data) % 4);
+    }
+
+    ret = tt_Publisher_publish(&pub, (struct tt_Data*)&data);
+    if (ret < 0) {
+        printf("Cannot publish: %d\n", ret);
+    }
+
+    tt_Node_poll(&node);
+
+    tt_Node_destroy(&node);
+
+    return 0;
+}

@@ -1,3 +1,11 @@
 bool data1
-uint32 data2
+uint32[5] data2
+uint16[<=13] data2
 float64 data3
+string<=4 s1
+string[] s2
+string<=5[] s3
+string[<=3] s4
+string[3] s5
+string<=99[<=3] s6
+string<=99[3] s7

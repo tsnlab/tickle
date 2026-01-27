@@ -22,36 +22,39 @@ int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data) {
 int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len) {
     int32_t encoded = 0;
 
-    {% for field in fields %}
+{% for field in fields %}
     // encode - {{ field.type_name }} {{ field.name }}
     if (encoded + sizeof({{ field.type_name }}) > len) {
         return -1;
     }
-
-    *(uint64_t*)payload = data->data;
-
+{# *({{ field.type_name }}*)payload = data->{{field.name}}; #}
+    memcpy(payload, &data->{{ field.name }}, sizeof({{ field.type_name }}));
     encoded += sizeof({{ field.type_name }});
     payload += sizeof({{ field.type_name }});
-    {% endfor %}
 
+{% endfor %}
     return encoded;
 }
 
 int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
     int32_t decoded = 0;
 
-    {% for field in fields %}
-    // decode - {{ field.type_name }} {{ field.name }}
-    if (encoded + sizeof({{ field.type_name }}) > len) {
+    /*
+    NOTE: 1. is this function allowed to return error?
+          2. misaligned dereferencing
+    if (len < {{ msg_name }}Data_encode_size(data)) {
         return -1;
     }
+    */
 
-    *(uint64_t*)payload = data->data;
-
-    encoded += sizeof({{ field.type_name }});
+{% for field in fields %}
+    // decode - {{ field.type_name }} {{ field.name }}
+    memcpy(&data->{{ field.name }}, payload, sizeof({{ field.type_name }}));
+{# data->{{ field.name }} = *({{field.type_name}}*)payload; #}
+    decoded += sizeof({{ field.type_name }});
     payload += sizeof({{ field.type_name }});
-    {% endfor %}
 
+{% endfor %}
     return decoded;
 }
 

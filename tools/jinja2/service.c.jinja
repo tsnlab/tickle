@@ -1,0 +1,69 @@
+#include "{{ msg_name }}.h"
+
+#include <tickle/hal.h>
+
+struct tt_Topic {{ msg_name }}Topic = {
+    .name = "{{ msg_name }}Service",
+    .request_size = sizeof(struct {{ msg_name }}Request),
+    .response_size = sizeof(struct {{ msg_name }}Response),
+    .request_encode_size = (tt_REQUEST_ENCODE_SIZE){{ msg_name }}Request_encode_size,
+    .request_encode = (tt_REQUEST_ENCODE){{ msg_name }}Request_encode,
+    .request_decode = (tt_REQUEST_DECODE){{ msg_name }}Request_decode,
+    .request_free = (tt_REQUEST_FREE){{ msg_name }}Request_free,
+    .response_encode_size = (tt_RESPONSE_ENCODE_SIZE){{ msg_name }}Response_encode_size,
+    .response_encode = (tt_RESPONSE_ENCODE){{ msg_name }}Response_encode,
+    .response_decode = (tt_RESPONSE_DECODE){{ msg_name }}Response_decode,
+    .response_free = (tt_RESPONSE_FREE){{ msg_name }}Response_free,
+    .call_retry_interval = 0, // 0 means auto
+    .call_retry_count = 3,
+};
+
+int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data) {
+    return
+    {%- for field in fields %}
+        {%- if field != fields[0] %} +{% endif %}
+ sizeof(data->{{ field.name }}) 
+    {%- endfor %};
+}
+
+int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len) {
+    int32_t encoded = 0;
+
+{% for field in fields %}
+    // encode - {{ field.type_name }} {{ field.name }}
+    if (encoded + sizeof({{ field.type_name }}) > len) {
+        return -1;
+    }
+{# *({{ field.type_name }}*)payload = data->{{field.name}}; #}
+    memcpy(payload, &data->{{ field.name }}, sizeof({{ field.type_name }}));
+    encoded += sizeof({{ field.type_name }});
+    payload += sizeof({{ field.type_name }});
+
+{% endfor %}
+    return encoded;
+}
+
+int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
+    int32_t decoded = 0;
+
+    /*
+    NOTE: 1. is this function allowed to return error?
+          2. misaligned dereferencing
+    if (len < {{ msg_name }}Data_encode_size(data)) {
+        return -1;
+    }
+    */
+
+{% for field in fields %}
+    // decode - {{ field.type_name }} {{ field.name }}
+    memcpy(&data->{{ field.name }}, payload, sizeof({{ field.type_name }}));
+{# data->{{ field.name }} = *({{field.type_name}}*)payload; #}
+    decoded += sizeof({{ field.type_name }});
+    payload += sizeof({{ field.type_name }});
+
+{% endfor %}
+    return decoded;
+}
+
+void {{ msg_name }}Data_free(struct {{ msg_name }}Data* data) {
+}
