@@ -1,7 +1,9 @@
+import sys
+
+from pathlib import Path
 from rosidl_adapter import convert_to_idl
 from rosidl_parser.parser import parse_idl_file
 import rosidl_parser.definition as rosdef
-from pathlib import Path
 
 class TypeError(Exception):
     pass
@@ -36,12 +38,15 @@ def get_fieldtype(typeInfo: rosdef.AbstractType):
 
 
 
-def parse_msg():
-    pkg_path = Path("/home/harim/ros2_rolling/src/tutorial_interfaces")
+def parse_msg(path_arg, msg_arg):
+    pkg_path = Path(path_arg)
     if pkg_path.is_dir() == False:
-        print(f"Given path is not a directory: {pkg_path}")
+        print(f"Path is not a directory: {pkg_path}")
         return 1
-    msg_filename = Path("ManyTypes.msg")
+    if pkg_path.is_absolute() == False:
+        print(f"Path is not absolute: {pkg_path}")
+        return 1
+    msg_filename = Path(msg_arg)
     idl_filename = Path(convert_to_idl(pkg_path / "msg", pkg_path.stem, msg_filename, pkg_path))
 
     locator = rosdef.IdlLocator(pkg_path, idl_filename)
@@ -57,5 +62,8 @@ def parse_msg():
         print(f"include={include.locator}")
 
 if __name__ == "__main__":
-    parse_msg()
+    if len(sys.argv) != 3:
+        print(f"Usage: {sys.argv[0]}  package_path  msg_file_name")
+    else:
+        parse_msg(sys.argv[1], sys.argv[2])
 
