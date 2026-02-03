@@ -1,8 +1,13 @@
-from dataclasses import dataclass
-from typing import List, Optional
-import re
 import sys
 
+from typing import List, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from rosidl_adapter import convert_to_idl
+from rosidl_parser.parser import parse_idl_file
+import rosidl_parser.definition as rosdef
+
+TEST = False
 
 TYPE_DICT = { # ROS2 type name to C type name
     "bool": "bool",
@@ -22,124 +27,133 @@ TYPE_DICT = { # ROS2 type name to C type name
     "wstring": "uint16_t*",
 }
 
-LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_<=\[\]]*)\s+([A-Za-z][A-Za-z0-9_]*)$") # <type> <name>
-TYPE_RE = re.compile(r"([A-Za-z][A-Za-z0-9_]*)(<=([0-9]+))?(\[(<=)?([0-9]+)\])?")
-# 1st capture group: type name
-# 2nd capture group: (bounded) number of characters only for string type
-# 3th capture group: number of characters,
-#                    if 3rd and 4rd group does not exists, number of character is dynamic.
-#                    if only 4rd group exists, number of character is fixed.
-#                    if both group exists, number of character is bounded.
-# 4th capture group: (bounded) number of element that has type from 1st capture group.
-# 5th capture group: bound notation "<="
-# 6th capture group: number of elements
-
 @dataclass
 class Field:
     type_name: str
     name: str
     size: int
-    capacity: int
     string_size: int | None
-    string_capacity: int | None
     debug: str | None
-
-    def __init__(self, type_name: str = "", name: str = "", size: int = 0, capacity: int = 0):
+    def __init__(self, type_name="", name="", size=0, string_size=None, debug=None):
         self.type_name = type_name
         self.name = name
         self.size = size
-        self.capacity = capacity
-        self.string_size = None
-        self.string_capacity = None
+        self.string_size = string_size
+        self.debug = debug
+
 
 @dataclass
-class MsgSpec:
-    msg_name: str
+class Message:
     fields: List[Field]
+    def __init__(self, fields=[]):
+        self.fields = fields
+
+@dataclass
+class Content:
+    name: str
+    messages: List[Message]
+    includes: List[str]
 
 
 class MsgParseError(ValueError):
     pass
 
-def parse_type_token(type_token: str) -> Optional[Field]:
-    field = Field()
-    m = TYPE_RE.match(type_token)
+class TypeError(Exception):
+    pass
 
-    if not m:
-        return None
-
-    # NOTE: should string be null-terminated, or given size, or other option?
-    type_name = m.group(1)
-    field.type_name = type_name
-    # if it's array
-    if m.group(4) != None:
-        # only "<=" exists: invalid
-        if m.group(5) != None and m.group(6) == None:
-            return None
-        # both size and "<=" exists: bounded
-        if m.group(5) != None:
-            field.size = 0
-            field.capacity = 0
-        # both "<=" and number doesn't exist: unbounded
-        elif m.group(6) == None:
-            field.size = 0
-            field.capacity = -1
-        # only size exists: fixed
+def get_field(typeInfo: rosdef.AbstractType) -> Field:
+    if isinstance(typeInfo, rosdef.AbstractNestableType):
+        if isinstance(typeInfo, rosdef.BasicType):
+            typename = TYPE_DICT[typeInfo.typename]
+            return Field(type_name=typename)
+        elif isinstance(typeInfo, rosdef.NamedType):
+            return Field(type_name=f"struct {typeInfo.name}")
+        elif isinstance(typeInfo, rosdef.NamespacedType):
+            return Field(type_name=f"struct {'_'.join(typeInfo.namespaced_name())}")
+        elif isinstance(typeInfo, rosdef.BoundedString):
+            return Field(type_name="char*", string_size=typeInfo.maximum_size)
+        elif isinstance(typeInfo, rosdef.UnboundedString):
+            return Field(type_name="char*", string_size=-1)
+        elif isinstance(typeInfo, rosdef.BoundedWString):
+            return Field(type_name="uint16_t*", string_size=typeInfo.maximum_size)
+        elif isinstance(typeInfo, rosdef.UnboundedWString):
+            return Field(type_name="uint16_t*", string_size=-1)
         else:
-            field.size = int(m.group(6))
-            field.capacity = field.size
-
-    # if it's string type
-    if type_name == "string":
-        if m.group(2) != None:
-            field.string_size = int(m.group(4))
-            field.string_capacity = field.string_size
+            raise TypeError(f"Unhandled type \"{type(typeInfo)}\"")
+    elif isinstance(typeInfo, rosdef.AbstractNestedType):
+        if isinstance(typeInfo, rosdef.Array):
+            nested_field = get_field(typeInfo.value_type)
+            nested_field.size = typeInfo.size
+            return nested_field
+        elif isinstance(typeInfo, rosdef.BoundedSequence):
+            nested_field = get_field(typeInfo.value_type)
+            nested_field.size = typeInfo.maximum_size
+            return nested_field
+        elif isinstance(typeInfo, rosdef.UnboundedSequence):
+            nested_field = get_field(typeInfo.value_type)
+            nested_field.size = 0
+            return nested_field
         else:
-            field.string_size = 0
-            field.string_capacity = -1
+            raise TypeError(f"Unhandled type \"{type(typeInfo)}\"")
 
-    return field
+def read_message(ros_message: rosdef.Message) -> Message:
+    message = Message()
+    for member in ros_message.structure.members:
+        field = get_field(member.type)
+        field.name = member.name
+        message.fields.append(field)
+        print(f"name={field.name:<10}\ntype={field.type_name}\n")
+    return message
 
-def parse_msg_text(msg_name: str, text: str) -> MsgSpec:
-    # TODO: Validate field names
-    fields: List[Field] = []
+def read_service(ros_service: rosdef.Service) -> Content:
+    content = Content(name="", messages=[], includes=[])
+    print(f"request message")
+    content.messages.append(read_message(ros_service.request_message))
+    print(f"response message")
+    content.messages.append(read_message(ros_service.response_message))
+    return content
 
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
+def parse_msg(path_arg: str, msg_arg: str) -> Content:
+    pkg_path = Path(path_arg)
+    if pkg_path.is_dir() == False:
+        print(f"Path is not a directory: {pkg_path}")
+        sys.exit(1)
+    if pkg_path.is_absolute() == False:
+        pkg_path = pkg_path.resolve()
+    pkg_name = pkg_path.stem
+    msg_filename = Path(msg_arg)
+    suffix = msg_filename.suffix.lstrip(".")
+    if suffix != "msg" and suffix != "srv":
+        print(f"Invalid file type: {msg_filename} is not a .msg/.srv file")
+        sys.exit(1)
+    idl_filename = Path(convert_to_idl(pkg_path / suffix, pkg_name, msg_filename, pkg_path))
 
-        m = LINE_RE.match(line)
-        if not m:
-            raise MsgParseError(
-                    f"Line {lineno}: invalid format: \"{line}\""
-            )
+    locator = rosdef.IdlLocator(pkg_path, idl_filename)
+    idl_file = parse_idl_file(locator)
+    msg_name = msg_arg.replace(f".{suffix}", "")
+    content = Content(name=msg_name, messages=[], includes=[])
+    if suffix == "msg":
+        message = idl_file.content.get_elements_of_type(rosdef.Message)[0]
+        print(f"namespace={get_field(message.structure.namespaced_type).type_name}\n")
+        content.messages.append(read_message(message))
+    elif suffix == "srv":
+        service = idl_file.content.get_elements_of_type(rosdef.Service)[0]
+        print(f"namespace={get_field(service.namespaced_type)}\n")
+        content = read_service(service)
+    includes = idl_file.content.get_elements_of_type(rosdef.Include)
+    for include in includes:
+        include_path = include.locator.replace("idl", "h")
+        content.includes.append(include_path)
+        print(f"include={include_path}")
+    return content
 
-        type_token, field_name = m.group(1), m.group(2)
-        field = parse_type_token(type_token)
-        if not field:
-            raise MsgParseError(
-                f"Line {lineno}: unsupported type {type_token!r}"
-            )
-        field.debug = line
-        field.name = field_name
-        fields.append(field)
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print(f"Usage: python3 {sys.argv[0]}  package_path  msg_file")
+        print(f"    package_path        path to a ROS package directory")
+        print(f"    msg_file            ROS2 message/service definition file (.msg, .srv)")
+        print(f"                        in package_path/msg/ or package_path/srv/")
+    else:
+        TEST = True
+        parse_msg(sys.argv[1], sys.argv[2])
 
-    return MsgSpec(msg_name=msg_name, fields=fields)
-
-
-def parse_msg_file(filename: str, encoding: str = "utf-8") -> Optional[MsgSpec]:
-    msg_name = filename.split("/")[-1].split(".")[0]
-    if not msg_name[0].isupper():
-        print(f"Invalid message name: {msg_name} must be camel case")
-        return None
-
-    try:
-        with open(filename, "r", encoding=encoding) as f:
-            return parse_msg_text(msg_name, f.read())
-    except FileNotFoundError:
-        print(f"File not found: {filename}")
-        return None
-    except MsgParseError as e:
-        print(f"Error parsing message file: {e}")
-        return None

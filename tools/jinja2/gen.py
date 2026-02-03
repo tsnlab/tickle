@@ -1,7 +1,8 @@
 import sys
 from jinja2 import Environment, FileSystemLoader
 from typing import List
-from parser import MsgSpec, parse_msg_file
+# from parser import MsgSpec, parse_msg_file
+from parse_msg import parse_msg
 
 TOPIC_PP_SOURCE = "topic.c.jinja"
 TOPIC_PP_HEADER = "topic.h.jinja"
@@ -37,22 +38,22 @@ def generate_test_files(spec: MsgSpec):
 
 def main(argv: List[str] = sys.argv):
     # TODO: Add argument parser
-    if len(argv) != 2:
-        print(f"Usage: {argv[0]} <msg_file>")
+    if len(argv) != 3:
+        print(f"Usage: {argv[0]} <package_path> <msg_file>")
         sys.exit(1)
 
-    filename = argv[1]
+    pkg_path = argv[1]
+    filename = argv[2]
     if not filename.endswith(".msg"):
         print(f"Invalid file type: {filename} is not a .msg file")
         sys.exit(1)
 
-    spec = parse_msg_file(filename)
+    spec = parse_msg(pkg_path, filename)
     if spec is None:
         sys.exit(1)
 
     generate_preprocessor(spec)
     generate_test_files(spec)
-
 
 if __name__ == "__main__":
     main()

@@ -2,9 +2,29 @@
 
 #include <tickle/tickle.h>
 
+{% for include in includes %}
+#include "{{ include }}"
+{% endfor %}
+
 struct {{ msg_name }}Data {
-{% for field in fields %}
-    {{ field.type_name }} {{ field.name }};
+{% for field in message.fields %}
+{% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
+    {{ field.type_name }} {{ field.name }}
+    {%- if field.size == -1 -%}
+        []
+    {%- elif field.size != 0 -%}
+        [{{ field.size }}]
+    {%- endif -%}
+;
+{% else %}
+    {{ field.type_name }} {{ field.name }}
+    {%- if field.size == -1 -%}
+        [];
+    {%- elif field.size != 0 -%}
+        [{{ field.size }}]
+    {%- endif -%}
+;
+{% endif %}
 {% endfor %}
 };
 
