@@ -4,9 +4,11 @@
 
 {% for include in includes %}
 #include "{{ include }}"
-{% endfor %}
+{% if loop.last %}
 
-struct {{ msg_name }}Data {
+{% endif %}
+{% endfor %}
+struct {{ message.prefix }}{{ msg_name }} {
 {% for field in message.fields %}
 {% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
     {{ field.type_name }} {{ field.name }}
