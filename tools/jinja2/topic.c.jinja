@@ -1,9 +1,18 @@
-#include "{{ msg_name }}.h"
+{% macro get_field_size(field) -%}
+{% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
+_tt_strnlen(data->{{ field.name }}, tt_MAX_STRING_LENGTH) + 1
+{%- elif field.nested %}
+{{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size(data->{{ field.name }})
+{%- else %}
+sizeof(data->{{ field.name }})
+{%- endif %}
+{%- endmacro %}
+#include "msg/{{ msg_name }}.h"
 
 #include <tickle/hal.h>
 
-struct tt_Topic {{ msg_name }}Topic = {
-    .name = "{{ msg_name }}Topic",
+struct tt_Topic {{ msg_unique_name }}Topic = {
+    .name = "{{ msg_unique_name }}Topic",
     .data_size = sizeof(struct {{ msg_name }}Data),
     .data_encode_size = (tt_DATA_ENCODE_SIZE){{ msg_name }}Data_encode_size,
     .data_encode = (tt_DATA_ENCODE){{ msg_name }}Data_encode,
@@ -11,24 +20,35 @@ struct tt_Topic {{ msg_name }}Topic = {
     .data_free = (tt_DATA_FREE){{ msg_name }}Data_free,
 };
 
-int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data) {
+typedef struct {{ msg_unique_name }}Data {{ msg_name }}Data;
+
+int32_t {{ msg_name }}Data_encode_size({{ msg_name }}Data* data) {
     return
-    {%- for field in fields %}
-        {%- if field != fields[0] %} +{% endif %}
- sizeof(data->{{ field.name }}) 
-    {%- endfor %};
+{%- for field in message.fields -%}
+{%- if loop.first %}
+
+{%- else %}
+        +
+{%- endif %}
+ {{ get_field_size(field) }}
+{%- if loop.last -%}
+;
+{% else %}
+
+{% endif %}
+{% endfor %}
 }
 
-int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len) {
+int32_t {{ msg_name }}Data_encode({{ msg_name }}Data* data, uint8_t* payload, const int32_t len) {
     int32_t encoded = 0;
 
-{% for field in fields %}
-    // encode - {{ field.type_name }} {{ field.name }}
-    if (encoded + sizeof({{ field.type_name }}) > len) {
+    if ({{ msg_name }}Data_encode_size(data) > len) {
         return -1;
     }
+{% for field in message.fields %}
+    // encode - {{ field.type_name }} {{ field.name }}
 {# *({{ field.type_name }}*)payload = data->{{field.name}}; #}
-    memcpy(payload, &data->{{ field.name }}, sizeof({{ field.type_name }}));
+    _tt_memcpy(payload, &data->{{ field.name }}, sizeof({{ field.type_name }}));
     encoded += sizeof({{ field.type_name }});
     payload += sizeof({{ field.type_name }});
 
@@ -36,20 +56,20 @@ int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payl
     return encoded;
 }
 
-int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
+int32_t {{ msg_name }}Data_decode({{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
     int32_t decoded = 0;
 
     /*
     NOTE: 1. is this function allowed to return error?
-          2. misaligned dereferencing
+          2. using memcpy to avoid misaligned dereferencing
+    */
     if (len < {{ msg_name }}Data_encode_size(data)) {
         return -1;
     }
-    */
 
-{% for field in fields %}
+{% for field in message.fields %}
     // decode - {{ field.type_name }} {{ field.name }}
-    memcpy(&data->{{ field.name }}, payload, sizeof({{ field.type_name }}));
+    _tt_memcpy(&data->{{ field.name }}, payload, sizeof({{ field.type_name }}));
 {# data->{{ field.name }} = *({{field.type_name}}*)payload; #}
     decoded += sizeof({{ field.type_name }});
     payload += sizeof({{ field.type_name }});
@@ -58,5 +78,5 @@ int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t
     return decoded;
 }
 
-void {{ msg_name }}Data_free(struct {{ msg_name }}Data* data) {
+void {{ msg_name }}Data_free({{ msg_name }}Data* data) {
 }

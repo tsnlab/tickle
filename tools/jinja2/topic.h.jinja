@@ -8,7 +8,7 @@
 
 {% endif %}
 {% endfor %}
-struct {{ message.prefix }}{{ msg_name }} {
+struct {{ msg_unique_name }}Data {
 {% for field in message.fields %}
 {% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
     {{ field.type_name }} {{ field.name }}
@@ -21,7 +21,7 @@ struct {{ message.prefix }}{{ msg_name }} {
 {% else %}
     {{ field.type_name }} {{ field.name }}
     {%- if field.size == -1 -%}
-        [];
+        []
     {%- elif field.size != 0 -%}
         [{{ field.size }}]
     {%- endif -%}
@@ -30,9 +30,14 @@ struct {{ message.prefix }}{{ msg_name }} {
 {% endfor %}
 };
 
-extern struct tt_Topic {{ msg_name }}Topic;
+extern struct tt_Topic {{ msg_unique_name }}Topic;
+{% for field in message.fields if field.nested %}
+extern struct tt_Topic {{ field.type_name | replace("struct ", "", 1) }}Topic;
+{% endfor %}
 
-int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data);
-int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len);
-int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
-void {{ msg_name }}Data_free(struct {{ msg_name }}Data* data);
+/* NOTE: remove to avoid name collision
+int32_t {{ msg_name }}Data_encode_size(struct {{ msg_unique_name }}Data* data);
+int32_t {{ msg_name }}Data_encode(struct {{ msg_unique_name }}Data* data, uint8_t* payload, const int32_t len);
+int32_t {{ msg_name }}Data_decode(struct {{ msg_unique_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+void {{ msg_name }}Data_free(struct {{ msg_unique_name }}Data* data);
+*/

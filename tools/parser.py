@@ -1,12 +1,12 @@
 import sys
 import rosidl_parser.definition as rosdef
 
-from typing import List, Optional
-from dataclasses import dataclass
-from pathlib import Path
 from rosidl_adapter import convert_to_idl
 from rosidl_parser.parser import parse_idl_file
+from typing import List, Optional
+from pathlib import Path
 from generator import setup_directory, generate_topic_preprocessor
+from parser_types import Content, Message, Field
 
 TEST = False
 
@@ -28,36 +28,6 @@ TYPE_DICT = { # IDL type name to C type name
     "wstring": "uint16_t*",
 }
 
-@dataclass
-class Field:
-    type_name: str
-    name: str
-    size: int
-    string_size: int | None
-    debug: str | None
-    def __init__(self, type_name="", name="", size=0, string_size=None, debug=None):
-        self.type_name = type_name
-        self.name = name
-        self.size = size
-        self.string_size = string_size
-        self.debug = debug
-
-
-@dataclass
-class Message:
-    prefix: str
-    fields: List[Field]
-    def __init__(self, prefix="", fields=[]):
-        self.prefix = prefix
-        self.fields = fields
-
-@dataclass
-class Content:
-    name: str
-    messages: List[Message]
-    includes: List[str]
-
-
 class MsgParseError(ValueError):
     pass
 
@@ -70,9 +40,10 @@ def get_field(typeInfo: rosdef.AbstractType, prefix: str = "") -> Field:
             typename = TYPE_DICT[typeInfo.typename]
             return Field(type_name=typename)
         elif isinstance(typeInfo, rosdef.NamedType):
-            return Field(type_name=f"struct {prefix}{typeInfo.name}")
+            print(f"NamedType={typeInfo.name}")
+            return Field(type_name=f"struct {prefix}{typeInfo.name}", named=True)
         elif isinstance(typeInfo, rosdef.NamespacedType):
-            return Field(type_name=f"struct {'__'.join(typeInfo.namespaced_name())}")
+            return Field(type_name=f"struct {'__'.join(typeInfo.namespaced_name())}", named=True)
         elif isinstance(typeInfo, rosdef.BoundedString):
             return Field(type_name="char*", string_size=typeInfo.maximum_size)
         elif isinstance(typeInfo, rosdef.UnboundedString):
@@ -87,17 +58,17 @@ def get_field(typeInfo: rosdef.AbstractType, prefix: str = "") -> Field:
         if isinstance(typeInfo, rosdef.Array):
             nested_field = get_field(typeInfo.value_type)
             nested_field.size = typeInfo.size
-            return nested_field
         elif isinstance(typeInfo, rosdef.BoundedSequence):
             nested_field = get_field(typeInfo.value_type)
             nested_field.size = typeInfo.maximum_size
-            return nested_field
         elif isinstance(typeInfo, rosdef.UnboundedSequence):
             nested_field = get_field(typeInfo.value_type)
-            nested_field.size = 0
-            return nested_field
+            nested_field.size = -1
         else:
             raise TypeError(f"Unhandled type \"{type(typeInfo)}\"")
+        if nested_field.string_size != 0:
+            raise TypeError(f"Handling array of string is not implemented yet")
+        return nested_field
 
 def read_message(ros_message: rosdef.Message) -> Message:
     namedtype_prefix = "__".join(ros_message.structure.namespaced_type.namespaced_name()[0:2]) + "__"
@@ -121,18 +92,19 @@ def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include):
 
     # check if header file exists
     if header_path.exists() == True:
-        print(f"Header found: {header_path}\n")
-        return
+        print(f"\nHeader found: {header_path}")
+    else:
+        print(f"\nHeader not found: {header_path}")
     msg_base_path = msg_path.parents[0]
     external_msg_path = (msg_base_path / idl_path.stem).with_suffix(".msg")
     if external_msg_path.exists() == True:
         print(f".msg found: {external_msg_path}")
         external_pkg_path = idl_path.parents[1]
-#       setup_directory(external_pkg_path, external_msg_path)
-#       content = parse_msg(external_pkg_path, external_msg_path)
-#       generate_topic_preprocessor(pkg_path, content)
-        print(f"            header file is created in {""}\n")
-
+        setup_directory(external_pkg_path, external_msg_path)
+        print(f"external_pkg_path={external_pkg_path}")
+        print(f"external_msg_path={external_msg_path}")
+        content = parse_msg(external_pkg_path, external_msg_path)
+        generate_topic_preprocessor(external_pkg_path, content)
     else:
         print(f"Warning: Header is not found: {idl_path.stem}.h in {idl_path.parents[0]}")
         print(f"         Use below command to generate header file that {msg_path.name} requires")
