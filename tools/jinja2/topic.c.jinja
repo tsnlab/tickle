@@ -1,19 +1,25 @@
 {% macro get_field_size(field) -%}
+{% if field.size > 0 %}{{ field.size }} * {% endif %}
 {% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
 _tt_strnlen(data->{{ field.name }}, tt_MAX_STRING_LENGTH) + 1
-{%- elif field.nested %}
-{{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size(data->{{ field.name }})
+{%- elif field.named %}
+{{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size({{ field.type_name }})
 {%- else %}
-sizeof(data->{{ field.name }})
+sizeof({{ field.type_name }})
 {%- endif %}
 {%- endmacro %}
 #include "msg/{{ msg_name }}.h"
 
 #include <tickle/hal.h>
 
+int32_t {{ msg_name }}Data_encode_size(struct {{ msg_unique_name }}Data* data);
+int32_t {{ msg_name }}Data_encode(struct {{ msg_unique_name }}Data* data, uint8_t* payload, const int32_t len);
+int32_t {{ msg_name }}Data_decode(struct {{ msg_unique_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+void {{ msg_name }}Data_free(struct {{ msg_unique_name }}Data* data);
+
 struct tt_Topic {{ msg_unique_name }}Topic = {
     .name = "{{ msg_unique_name }}Topic",
-    .data_size = sizeof(struct {{ msg_name }}Data),
+    .data_size = sizeof(struct {{ msg_unique_name }}Data),
     .data_encode_size = (tt_DATA_ENCODE_SIZE){{ msg_name }}Data_encode_size,
     .data_encode = (tt_DATA_ENCODE){{ msg_name }}Data_encode,
     .data_decode = (tt_DATA_DECODE){{ msg_name }}Data_decode,
@@ -48,7 +54,7 @@ int32_t {{ msg_name }}Data_encode({{ msg_name }}Data* data, uint8_t* payload, co
 {% for field in message.fields %}
     // encode - {{ field.type_name }} {{ field.name }}
 {# *({{ field.type_name }}*)payload = data->{{field.name}}; #}
-    _tt_memcpy(payload, &data->{{ field.name }}, sizeof({{ field.type_name }}));
+    _tt_memcpy(payload, &data->{{ field.name }}, {{ get_field_size(field) }});
     encoded += sizeof({{ field.type_name }});
     payload += sizeof({{ field.type_name }});
 
@@ -63,13 +69,13 @@ int32_t {{ msg_name }}Data_decode({{ msg_name }}Data* data, const uint8_t* paylo
     NOTE: 1. is this function allowed to return error?
           2. using memcpy to avoid misaligned dereferencing
     */
-    if (len < {{ msg_name }}Data_encode_size(data)) {
+    if ({{ msg_name }}Data_encode_size(data) > len) {
         return -1;
     }
 
 {% for field in message.fields %}
     // decode - {{ field.type_name }} {{ field.name }}
-    _tt_memcpy(&data->{{ field.name }}, payload, sizeof({{ field.type_name }}));
+    _tt_memcpy(&data->{{ field.name }}, payload, {{ get_field_size(field) }});
 {# data->{{ field.name }} = *({{field.type_name}}*)payload; #}
     decoded += sizeof({{ field.type_name }});
     payload += sizeof({{ field.type_name }});

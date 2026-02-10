@@ -1,0 +1,26 @@
+SUB			:=	subscriber
+PUB			:=	publisher
+
+CC			:=	gcc
+CFLAGS	:=	-I../../include -I.
+LDFLAGS	:=	-L../..
+LDLIBS	:=	-ltickle
+
+all: $(SUB) $(PUB)
+	cp $^ ../..
+
+$(PUB): {{ pub }} {{ preprocessor }}
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+$(SUB): {{ sub }} {{ preprocessor }}
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+fclean:
+	$(RM)	$(SUB) $(PUB)
+
+clean: fclean
+
+re: clean
+	$(MAKE) all
+
+.PHONY: all run clean
