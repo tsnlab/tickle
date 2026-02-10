@@ -98,6 +98,10 @@ dump1:
 dump2:
 	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
 
+%.msg:
+	export STEM=$(shell echo $(@) | cut -d '.' -f 1 | tr '[:upper:]' '[:lower:]'); \
+	python3 tools/main.py examples/$${STEM} examples/$(@)
+
 clean:
 	rm -rf $(OBJ)/*
 	rm -f libtickle.a
