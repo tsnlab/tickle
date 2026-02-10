@@ -14,7 +14,7 @@ def generate(pkg_path: Path, msg_path: Path):
     content = parse_msg(pkg_path, msg_path)
     if suffix == "msg":
         gen.generate_topic_preprocessor(pkg_path, content)
-        gen.generate_topic_demo(pkg_path, content)
+        gen.generate_topic_tester(pkg_path, content)
     elif suffix == "srv":
         assert False, "srv file processing is not implemented yet"
         gen.generate_service_preprocessor(pkg_path, content)

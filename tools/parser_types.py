@@ -22,9 +22,12 @@ class Field:
 class Message:
     prefix: str
     fields: List[Field]
-    def __init__(self, prefix="", fields=[]):
+    def __init__(self, prefix="", fields=None):
         self.prefix = prefix
-        self.fields = fields
+        if fields == None:
+            self.fields = []
+        else:
+            self.fields = fields
 
 @dataclass
 class Content:

@@ -7,6 +7,7 @@ from jinja2 import Environment, FileSystemLoader
 from typing import List
 from parser_types import Content, Message, Field
 
+TOPIC_MAKEFILE = "Makefile.jinja"
 TOPIC_PP_SOURCE = "topic.c.jinja"
 TOPIC_PP_HEADER = "topic.h.jinja"
 TOPIC_PUBLISHER = "topic_publisher.c.jinja"
@@ -48,7 +49,7 @@ def generate_topic_preprocessor(path: Path, content: Content):
     with open(f"{path}/msg/{msg_name}.h", "w", encoding="utf-8") as f:
         f.write(header_content)
 
-def generate_topic_demo(path: Path, content: Content):
+def generate_topic_tester(path: Path, content: Content):
     jinja2_env = Environment(
         loader=FileSystemLoader("./tools/jinja2"),
         trim_blocks=True,
@@ -61,6 +62,7 @@ def generate_topic_demo(path: Path, content: Content):
     pub_content = pub_template.render(
         msg_name = content.name,
         msg_unique_name = message.prefix + content.name,
+        message = message,
     )
     with open(f"{path}/{msg_name}_pub.c", "w", encoding="utf-8") as f:
         f.write(pub_content)
@@ -68,10 +70,18 @@ def generate_topic_demo(path: Path, content: Content):
     sub_content = sub_template.render(
         msg_name = content.name,
         msg_unique_name = message.prefix + content.name,
+        message = message,
     )
-    with open(f"{path}/{msg_name}_sub.h", "w", encoding="utf-8") as f:
+    with open(f"{path}/{msg_name}_sub.c", "w", encoding="utf-8") as f:
         f.write(sub_content)
-
+    make_template = jinja2_env.get_template(TOPIC_MAKEFILE)
+    make_content = make_template.render(
+        preprocessor = f"{content.name}.c",
+        pub = f"{content.name}_pub.c",
+        sub = f"{content.name}_sub.c",
+    )
+    with open(f"{path}/Makefile", "w", encoding="utf-8") as f:
+        f.write(make_content)
 
 def generate_service_preprocessor(content: Content):
     assert False, "service preprocessor is not implemented yet"

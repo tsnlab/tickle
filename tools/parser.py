@@ -8,7 +8,7 @@ from pathlib import Path
 from generator import setup_directory, generate_topic_preprocessor
 from parser_types import Content, Message, Field
 
-TEST = False
+TEST = True
 
 TYPE_DICT = { # IDL type name to C type name
     "boolean": "bool",
@@ -72,7 +72,7 @@ def get_field(typeInfo: rosdef.AbstractType, prefix: str = "") -> Field:
 
 def read_message(ros_message: rosdef.Message) -> Message:
     namedtype_prefix = "__".join(ros_message.structure.namespaced_type.namespaced_name()[0:2]) + "__"
-    message = Message()
+    message = Message(fields=[])
     message.prefix = namedtype_prefix
     for member in ros_message.structure.members:
         field = get_field(member.type, namedtype_prefix)
@@ -90,7 +90,6 @@ def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include):
     idl_path = pkg_path.parents[0] / path.locator
     header_path = idl_path.with_suffix(".h")
 
-    # check if header file exists
     if header_path.exists() == True:
         print(f"\nHeader found: {header_path}")
     else:
@@ -101,8 +100,6 @@ def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include):
         print(f".msg found: {external_msg_path}")
         external_pkg_path = idl_path.parents[1]
         setup_directory(external_pkg_path, external_msg_path)
-        print(f"external_pkg_path={external_pkg_path}")
-        print(f"external_msg_path={external_msg_path}")
         content = parse_msg(external_pkg_path, external_msg_path)
         generate_topic_preprocessor(external_pkg_path, content)
     else:
@@ -139,6 +136,5 @@ if __name__ == "__main__":
         print(f"    msg_file            ROS2 message/service definition file (.msg, .srv)")
         print(f"                        in package_path/msg/ or package_path/srv/")
     else:
-        TEST = True
         parse_msg(sys.argv[1], sys.argv[2])
 
