@@ -99,8 +99,9 @@ dump2:
 	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
 
 %.msg:
-	export STEM=$(shell echo $(@) | cut -d '.' -f 1 | tr '[:upper:]' '[:lower:]'); \
-	python3 tools/main.py examples/$${STEM} examples/$(@)
+	@export STEM=$(shell echo $(@) | cut -d '.' -f 1 | tr '[:upper:]' '[:lower:]'); \
+	python3 tools/main.py examples/$${STEM} examples/$(@); \
+	$(MAKE) -C examples/$${STEM}
 
 clean:
 	rm -rf $(OBJ)/*

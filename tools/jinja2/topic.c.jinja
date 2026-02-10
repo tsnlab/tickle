@@ -1,7 +1,9 @@
 {% macro get_field_size(field) -%}
 {% if field.size > 0 %}{{ field.size }} * {% endif %}
 {% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
-_tt_strnlen(data->{{ field.name }}, tt_MAX_STRING_LENGTH) + 1
+{{ field.string_size }} * sizeof({{ field.type_name | replace("*", "", 1) }})
+{#- dynamic length string requires buffer allocation when decoding -#}
+{#- _tt_strnlen(data->{{ field.name }}, tt_MAX_STRING_LENGTH) + 1 -#}
 {%- elif field.named %}
 {{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size({{ field.type_name }})
 {%- else %}
@@ -55,8 +57,8 @@ int32_t {{ msg_name }}Data_encode({{ msg_name }}Data* data, uint8_t* payload, co
     // encode - {{ field.type_name }} {{ field.name }}
 {# *({{ field.type_name }}*)payload = data->{{field.name}}; #}
     _tt_memcpy(payload, &data->{{ field.name }}, {{ get_field_size(field) }});
-    encoded += sizeof({{ field.type_name }});
-    payload += sizeof({{ field.type_name }});
+    encoded += {{ get_field_size(field) }};
+    payload += {{ get_field_size(field) }};
 
 {% endfor %}
     return encoded;
@@ -76,9 +78,8 @@ int32_t {{ msg_name }}Data_decode({{ msg_name }}Data* data, const uint8_t* paylo
 {% for field in message.fields %}
     // decode - {{ field.type_name }} {{ field.name }}
     _tt_memcpy(&data->{{ field.name }}, payload, {{ get_field_size(field) }});
-{# data->{{ field.name }} = *({{field.type_name}}*)payload; #}
-    decoded += sizeof({{ field.type_name }});
-    payload += sizeof({{ field.type_name }});
+    decoded += {{ get_field_size(field) }};
+    payload += {{ get_field_size(field) }};
 
 {% endfor %}
     return decoded;

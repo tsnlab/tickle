@@ -46,12 +46,12 @@ def get_field(typeInfo: rosdef.AbstractType, prefix: str = "") -> Field:
             return Field(type_name=f"struct {'__'.join(typeInfo.namespaced_name())}", named=True)
         elif isinstance(typeInfo, rosdef.BoundedString):
             return Field(type_name="char*", string_size=typeInfo.maximum_size)
-        elif isinstance(typeInfo, rosdef.UnboundedString):
-            return Field(type_name="char*", string_size=-1)
+#       elif isinstance(typeInfo, rosdef.UnboundedString):
+#           return Field(type_name="char*", string_size=-1)
         elif isinstance(typeInfo, rosdef.BoundedWString):
             return Field(type_name="uint16_t*", string_size=typeInfo.maximum_size)
-        elif isinstance(typeInfo, rosdef.UnboundedWString):
-            return Field(type_name="uint16_t*", string_size=-1)
+#       elif isinstance(typeInfo, rosdef.UnboundedWString):
+#           return Field(type_name="uint16_t*", string_size=-1)
         else:
             raise TypeError(f"Unhandled type \"{type(typeInfo)}\"")
     elif isinstance(typeInfo, rosdef.AbstractNestedType):
