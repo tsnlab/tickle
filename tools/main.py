@@ -1,4 +1,5 @@
 import sys
+import argparse
 import generator as gen
 
 from pathlib import Path
@@ -20,17 +21,21 @@ def generate(pkg_path: Path, msg_path: Path):
             gen.generate_message_tester(pkg_path, content)
     elif suffix == "srv":
         gen.generate_service_preprocessor(pkg_path, content)
+        if TEST == True:
+            gen.generate_service_tester(pkg_path, content)
 
 def main(argv: List[str] = sys.argv):
-    # TODO: Add argument parser
-    if len(argv) != 3:
-        print(f"Usage: python3 {argv[0]}  package_path  msg_file")
-        print(f"    package_path        path to a ROS package directory")
-        print(f"    msg_file            ROS2 message/service definition file(.msg, .srv)")
-        sys.exit(1)
-
-    pkg_path = Path(argv[1]).resolve()
-    msg_path = Path(argv[2]).resolve()
+    arg_parser = argparse.ArgumentParser(
+        prog=f"{argv[0]}",
+        description="ROS2 Typesupport generator",
+    )
+    arg_parser.add_argument('-e', '--example', action='store_const', const=False)
+    arg_parser.add_argument('package_path', help="path to a ROS package directory")
+    arg_parser.add_argument('message_file', help="ROS2 message/service definition file(.msg, .srv)")
+    args = arg_parser.parse_args()
+    TEST = args.example
+    pkg_path = Path(args.package_path).resolve()
+    msg_path = Path(args.message_file).resolve()
     generate(pkg_path, msg_path)
 
 if __name__ == "__main__":
