@@ -1,3 +1,4 @@
+{% import 'macro.jinja' as macro %}
 #pragma once
 
 #include <tickle/tickle.h>
@@ -8,28 +9,7 @@
 
 {% endif %}
 {% endfor %}
-struct {{ msg_unique_name }}Data {
-{% for field in message.fields %}
-{% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
-    {{ field.type_name | replace("*", "", 1) }} {{ field.name }}
-    {%- if field.size == -1 -%}
-        []
-    {%- elif field.size != 0 -%}
-        [{{ field.size }}]
-    {%- endif -%}
-    [{{ field.string_size }}]
-;
-{% else %}
-    {{ field.type_name }}{% if field.named %}Data{% endif %} {{ field.name }}
-    {%- if field.size == -1 -%}
-        []
-    {%- elif field.size != 0 -%}
-        [{{ field.size }}]
-    {%- endif -%}
-;
-{% endif %}
-{% endfor %}
-};
+{{ macro.create_message_struct("Data", msg_unique_name, message) }}
 
 extern struct tt_Topic {{ msg_unique_name }}Topic;
 {% for field in message.fields if field.named %}

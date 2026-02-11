@@ -1,16 +1,15 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include "{{ msg_name }}.h"
+#include "srv/{{ srv_name }}.h"
 
-static void {{ msg_name | lower }}_callback(struct tt_Client* client, int8_t return_code, struct {{ msg_name }}Response* response) {
+static void {{ srv_name | lower }}_callback(struct tt_Client* client, int8_t return_code, struct {{ srv_unique_name }}Response* response) {
     if (return_code == 0 && response == NULL) {
         printf("  Server not found\n");
     } else if (return_code != 0) {
         printf("  Error, return_code: %d\n", return_code);
     } else {
         printf("  return_code: %d\n", return_code);
-        printf("  response: %d, %s\n", response->success, response->message);
     }
 }
 
@@ -18,7 +17,7 @@ static void call(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_Client* client = param;
 
     printf("Second call\n");
-    struct {{ msg_name }}Request request = {.data = false};
+    struct {{ srv_unique_name }}Request request;
     int32_t ret = tt_Client_call(client, (struct tt_Request*)&request);
     if (ret < 0) {
         printf("Cannot call: %d\n", ret);
@@ -39,14 +38,14 @@ int main(int argc, char* argv) {
 
     struct tt_Client client;
 
-    ret = tt_Node_create_client(&node, &client, &{{ msg_name }}Service, "{{ msg_name | lower }}_server",
-                                (tt_CLIENT_CALLBACK){{ msg_name | lower }}_callback);
+    ret = tt_Node_create_client(&node, &client, &{{ srv_unique_name }}, "{{ srv_name | lower }}_server",
+                                (tt_CLIENT_CALLBACK){{ srv_name | lower }}_callback);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);
         return ret;
     }
 
-    struct {{ msg_name }}Request request = {.data = true};
+    struct {{ srv_unique_name }}Request request;
     ret = tt_Client_call(&client, (struct tt_Request*)&request);
     if (ret < 0) {
         printf("Cannot call: %d\n", ret);

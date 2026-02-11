@@ -1,16 +1,22 @@
+{% import 'macro.jinja' as macro %}
 #pragma once
 
 #include <tickle/tickle.h>
 
-struct {{ msg_name }}Data {
-{% for field in fields %}
-    {{ field.type_name }} {{ field.name }};
+{% for include in includes %}
+#include "{{ include }}"
+{% if loop.last %}
+
+{% endif %}
 {% endfor %}
-};
+{{ macro.create_message_struct("Request", srv_unique_name, request) }}
 
-extern struct tt_Topic {{ msg_name }}Topic;
+{{ macro.create_message_struct("Response", srv_unique_name, response) }}
 
-int32_t {{ msg_name }}Data_encode_size(struct {{ msg_name }}Data* data);
-int32_t {{ msg_name }}Data_encode(struct {{ msg_name }}Data* data, uint8_t* payload, const int32_t len);
-int32_t {{ msg_name }}Data_decode(struct {{ msg_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
-void {{ msg_name }}Data_free(struct {{ msg_name }}Data* data);
+extern struct tt_Service {{ srv_unique_name }}Service;
+{% for field in request.fields if field.named %}
+extern struct tt_Topic {{ field.type_name | replace("struct ", "", 1) }}Topic;
+{% endfor %}
+{% for field in response.fields if field.named %}
+extern struct tt_Topic {{ field.type_name | replace("struct ", "", 1) }}Topic;
+{% endfor %}

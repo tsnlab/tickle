@@ -1,20 +1,10 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "{{ msg_name }}.h"
+#include "srv/{{ srv_name }}.h"
 
-static int8_t {{ msg_name | lower }}_callback(struct tt_Server* server, struct {{ msg_name }}Request* request,
-                                struct {{ msg_name }}Response* response) {
-    printf("  data: %d\n", request->data);
-
-    if (request->data) {
-        response->success = true;
-        response->message = "Succeed";
-    } else {
-        response->success = false;
-        response->message = "Failed";
-    }
-
+static int8_t {{ srv_name | lower }}_callback(struct tt_Server* server, struct {{ srv_unique_name }}Request* request,
+                                struct {{ srv_unique_name }}Response* response) {
     return 0;
 }
 
@@ -33,8 +23,8 @@ int main(int argc, char* argv) {
 
     struct tt_Server server;
 
-    ret = tt_Node_create_server(&node, &server, &{{ msg_name }}Service, "{{ msg_name | lower }}_server",
-                                (tt_SERVER_CALLBACK){{ msg_name | lower }}_callback);
+    ret = tt_Node_create_server(&node, &server, &{{ srv_unique_name }}, "{{ srv_name | lower }}_server",
+                                (tt_SERVER_CALLBACK){{ srv_name | lower }}_callback);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);
         return ret;
