@@ -103,6 +103,11 @@ dump2:
 	python3 tools/main.py examples/$${STEM} examples/$(@); \
 	$(MAKE) -C examples/$${STEM}
 
+%.srv:
+	@export STEM=$(shell echo $(@) | cut -d '.' -f 1 | tr '[:upper:]' '[:lower:]'); \
+	python3 tools/main.py examples/$${STEM} examples/$(@); \
+	$(MAKE) -C examples/$${STEM}
+
 clean:
 	rm -rf $(OBJ)/*
 	rm -f libtickle.a

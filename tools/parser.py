@@ -8,8 +8,6 @@ from pathlib import Path
 from generator import setup_directory, generate_message_preprocessor
 from parser_types import Content, Message, Field
 
-TEST = True
-
 TYPE_DICT = { # IDL type name to C type name
     "boolean": "bool",
     "byte": "uint8_t",
@@ -27,9 +25,6 @@ TYPE_DICT = { # IDL type name to C type name
     "string": "char*",
     "wstring": "uint16_t*",
 }
-
-class MsgParseError(ValueError):
-    pass
 
 class TypeError(Exception):
     pass
@@ -80,8 +75,7 @@ def read_message(ros_message: rosdef.Message) -> Message:
         message.fields.append(field)
     return message
 
-def read_service(ros_service: rosdef.Service) -> Content:
-    content = Content(name="", messages=[], includes=[])
+def read_service(content: Content, ros_service: rosdef.Service) -> Content:
     content.messages.append(read_message(ros_service.request_message))
     content.messages.append(read_message(ros_service.response_message))
     return content
@@ -121,7 +115,7 @@ def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
     elif suffix == "srv":
         service = idl_file.content.get_elements_of_type(rosdef.Service)[0]
         # TODO: add namedtype_prefix for service
-        content = read_service(service)
+        content = read_service(content, service)
     includes = idl_file.content.get_elements_of_type(rosdef.Include)
     for include in includes:
         parse_external_msg(pkg_path, msg_path, include)
@@ -137,4 +131,3 @@ if __name__ == "__main__":
         print(f"                        in package_path/msg/ or package_path/srv/")
     else:
         parse_msg(sys.argv[1], sys.argv[2])
-

@@ -19,7 +19,6 @@ def generate(pkg_path: Path, msg_path: Path):
         if TEST == True:
             gen.generate_message_tester(pkg_path, content)
     elif suffix == "srv":
-        assert False, "srv file processing is not implemented yet"
         gen.generate_service_preprocessor(pkg_path, content)
 
 def main(argv: List[str] = sys.argv):
