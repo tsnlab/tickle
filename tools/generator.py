@@ -7,20 +7,20 @@ from jinja2 import Environment, FileSystemLoader
 from typing import List
 from parser_types import Content, Message, Field
 
-TOPIC_MAKEFILE = "Makefile.jinja"
-TOPIC_PP_SOURCE = "topic.c.jinja"
-TOPIC_PP_HEADER = "topic.h.jinja"
-TOPIC_PUBLISHER = "topic_publisher.c.jinja"
-TOPIC_SUBSCRIBER = "topic_subscriber.c.jinja"
-SERVICE_PP_SOURCE = "service.c.jinja"
-SERVICE_PP_HEADER = "service.h.jinja"
+MESSAGE_MAKEFILE = "Makefile.jinja"
+MESSAGE_PP_SOURCE = "message_preprocessor.c.jinja"
+MESSAGE_PP_HEADER = "message_preprocessor.h.jinja"
+MESSAGE_PUBLISHER = "message_publisher.c.jinja"
+MESSAGE_SUBSCRIBER = "message_subscriber.c.jinja"
+SERVICE_PP_SOURCE = "service_preprocessor.c.jinja"
+SERVICE_PP_HEADER = "service_preprocessor.h.jinja"
 SERVICE_SERVER = "service_server.c.jinja"
 SERVICE_CLIENT = "service_client.c.jinja"
 
 class TypeError(Exception):
     pass
 
-def generate_topic_preprocessor(path: Path, content: Content):
+def generate_message_preprocessor(path: Path, content: Content):
     jinja2_env = Environment(
         loader=FileSystemLoader("./tools/jinja2"),
         trim_blocks=True,
@@ -31,7 +31,7 @@ def generate_topic_preprocessor(path: Path, content: Content):
     message = messages[0]
     # TODO: include header
     includes = content.includes
-    source_template = jinja2_env.get_template(TOPIC_PP_SOURCE)
+    source_template = jinja2_env.get_template(MESSAGE_PP_SOURCE)
     source_content = source_template.render(
         msg_name = content.name,
         msg_unique_name = message.prefix + content.name,
@@ -39,7 +39,7 @@ def generate_topic_preprocessor(path: Path, content: Content):
     )
     with open(f"{path}/{msg_name}.c", "w", encoding="utf-8") as f:
         f.write(source_content)
-    header_template = jinja2_env.get_template(TOPIC_PP_HEADER)
+    header_template = jinja2_env.get_template(MESSAGE_PP_HEADER)
     header_content = header_template.render(
         msg_name = content.name,
         msg_unique_name = message.prefix + content.name,
@@ -49,7 +49,7 @@ def generate_topic_preprocessor(path: Path, content: Content):
     with open(f"{path}/msg/{msg_name}.h", "w", encoding="utf-8") as f:
         f.write(header_content)
 
-def generate_topic_tester(path: Path, content: Content):
+def generate_message_tester(path: Path, content: Content):
     jinja2_env = Environment(
         loader=FileSystemLoader("./tools/jinja2"),
         trim_blocks=True,
@@ -58,7 +58,7 @@ def generate_topic_tester(path: Path, content: Content):
     messages = content.messages
     assert len(messages) == 1, "Number of message object is supposed to be one"
     message = messages[0]
-    pub_template = jinja2_env.get_template(TOPIC_PUBLISHER)
+    pub_template = jinja2_env.get_template(MESSAGE_PUBLISHER)
     pub_content = pub_template.render(
         msg_name = content.name,
         msg_unique_name = message.prefix + content.name,
@@ -66,7 +66,7 @@ def generate_topic_tester(path: Path, content: Content):
     )
     with open(f"{path}/{msg_name}_pub.c", "w", encoding="utf-8") as f:
         f.write(pub_content)
-    sub_template = jinja2_env.get_template(TOPIC_SUBSCRIBER)
+    sub_template = jinja2_env.get_template(MESSAGE_SUBSCRIBER)
     sub_content = sub_template.render(
         msg_name = content.name,
         msg_unique_name = message.prefix + content.name,
@@ -74,7 +74,7 @@ def generate_topic_tester(path: Path, content: Content):
     )
     with open(f"{path}/{msg_name}_sub.c", "w", encoding="utf-8") as f:
         f.write(sub_content)
-    make_template = jinja2_env.get_template(TOPIC_MAKEFILE)
+    make_template = jinja2_env.get_template(MESSAGE_MAKEFILE)
     make_content = make_template.render(
         preprocessor = f"{content.name}.c",
         pub = f"{content.name}_pub.c",

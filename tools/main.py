@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import List
 from parser import parse_msg
 
+TEST = False
+
 def generate(pkg_path: Path, msg_path: Path):
     suffix = msg_path.suffix.lstrip(".")
     if suffix != "msg" and suffix != "srv":
@@ -13,8 +15,9 @@ def generate(pkg_path: Path, msg_path: Path):
     gen.setup_directory(pkg_path, msg_path)
     content = parse_msg(pkg_path, msg_path)
     if suffix == "msg":
-        gen.generate_topic_preprocessor(pkg_path, content)
-        gen.generate_topic_tester(pkg_path, content)
+        gen.generate_message_preprocessor(pkg_path, content)
+        if TEST == True:
+            gen.generate_message_tester(pkg_path, content)
     elif suffix == "srv":
         assert False, "srv file processing is not implemented yet"
         gen.generate_service_preprocessor(pkg_path, content)

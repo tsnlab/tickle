@@ -5,7 +5,7 @@ from rosidl_adapter import convert_to_idl
 from rosidl_parser.parser import parse_idl_file
 from typing import List, Optional
 from pathlib import Path
-from generator import setup_directory, generate_topic_preprocessor
+from generator import setup_directory, generate_message_preprocessor
 from parser_types import Content, Message, Field
 
 TEST = True
@@ -101,7 +101,7 @@ def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include):
         external_pkg_path = idl_path.parents[1]
         setup_directory(external_pkg_path, external_msg_path)
         content = parse_msg(external_pkg_path, external_msg_path)
-        generate_topic_preprocessor(external_pkg_path, content)
+        generate_message_preprocessor(external_pkg_path, content)
     else:
         print(f"Warning: Header is not found: {idl_path.stem}.h in {idl_path.parents[0]}")
         print(f"         Use below command to generate header file that {msg_path.name} requires")
