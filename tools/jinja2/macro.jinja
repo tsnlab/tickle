@@ -11,6 +11,24 @@ sizeof({{ field.type_name }})
 {%- endif %}
 {%- endmacro %}
 
+
+{% macro create_sequence_struct(element_type, size) -%}
+    struct {
+        {{ element_type }}
+{%- if size < 1 -%}
+    *
+{%- endif %}
+ data
+{%- if size > 0 -%}
+[{{ size }}]
+{%- endif -%};
+{%- if size < 1 -%}
+        uint16_t  size;
+{%- endif -%}
+    }
+{%- endmacro %}
+
+
 {% macro create_message_preprocessor(message_type, message_name, message) -%}
 int32_t {{ message_name }}{{ message_type }}_encode_size({{ message_name }}{{ message_type }}* data) {
     return
@@ -67,6 +85,7 @@ int32_t {{ message_name }}{{ message_type }}_decode({{ message_name }}{{ message
 void {{ message_name }}{{ message_type }}_free({{ message_name }}{{ message_type }}* data) {
 }
 {%- endmacro %}
+
 
 {% macro create_message_struct(message_type, message_name, message) -%}
 struct {{ message_name }}{{ message_type }} {
