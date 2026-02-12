@@ -23,7 +23,7 @@ int main(int argc, char* argv) {
 
     struct tt_Server server;
 
-    ret = tt_Node_create_server(&node, &server, &{{ srv_unique_name }}, "{{ srv_name | lower }}_server",
+    ret = tt_Node_create_server(&node, &server, &{{ srv_unique_name }}Service, "{{ srv_name | lower }}_server",
                                 (tt_SERVER_CALLBACK){{ srv_name | lower }}_callback);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);

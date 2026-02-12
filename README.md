@@ -18,6 +18,7 @@ $ make runsubscriber # Launch UInt64 topic subscriber on ns2 namespace
 ## Run topic example with custom ROS2 message
 ### Install dependancy packages
 ```
+$ python3 -m pip install jinja2
 $ python3 -m pip install ros-rosidl-adapter
 $ python3 -m pip install ros-rosidl-parser
 ```

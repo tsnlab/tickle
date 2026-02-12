@@ -13,11 +13,17 @@ static void {{ srv_name | lower }}_callback(struct tt_Client* client, int8_t ret
     }
 }
 
+static void set_request(struct {{ srv_unique_name }}Request* request) {
+    *request = (struct {{ srv_unique_name }}Request){};
+    // assign members of request
+}
+
 static void call(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_Client* client = param;
-
-    printf("Second call\n");
     struct {{ srv_unique_name }}Request request;
+
+    set_request(&request);
+    printf("Second call\n");
     int32_t ret = tt_Client_call(client, (struct tt_Request*)&request);
     if (ret < 0) {
         printf("Cannot call: %d\n", ret);
@@ -38,7 +44,7 @@ int main(int argc, char* argv) {
 
     struct tt_Client client;
 
-    ret = tt_Node_create_client(&node, &client, &{{ srv_unique_name }}, "{{ srv_name | lower }}_server",
+    ret = tt_Node_create_client(&node, &client, &{{ srv_unique_name }}Service, "{{ srv_name | lower }}_server",
                                 (tt_CLIENT_CALLBACK){{ srv_name | lower }}_callback);
     if (ret != 0) {
         printf("Cannot create server: %d\n", ret);
@@ -46,6 +52,7 @@ int main(int argc, char* argv) {
     }
 
     struct {{ srv_unique_name }}Request request;
+    set_request(&request);
     ret = tt_Client_call(&client, (struct tt_Request*)&request);
     if (ret < 0) {
         printf("Cannot call: %d\n", ret);

@@ -29,10 +29,12 @@ def main(argv: List[str] = sys.argv):
         prog=f"{argv[0]}",
         description="ROS2 Typesupport generator",
     )
-    arg_parser.add_argument('-e', '--example', action='store_const', const=False)
+    arg_parser.add_argument('-e', '--example', action='store_const', const=True)
     arg_parser.add_argument('package_path', help="path to a ROS package directory")
     arg_parser.add_argument('message_file', help="ROS2 message/service definition file(.msg, .srv)")
     args = arg_parser.parse_args()
+    print(f"args.example={args.example}")
+    global TEST
     TEST = args.example
     pkg_path = Path(args.package_path).resolve()
     msg_path = Path(args.message_file).resolve()

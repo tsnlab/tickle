@@ -141,7 +141,6 @@ def generate_service_tester(path: Path, content: Content):
     with open(f"{path}/Makefile", "w", encoding="utf-8") as f:
         f.write(makefile_content)
 
-
 def setup_directory(pkg_path: Path, msg_path: Path):
     if msg_path.is_file() == False:
         print(f"msg_file is not a file: {msg_path}")
