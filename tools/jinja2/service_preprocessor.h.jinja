@@ -14,9 +14,3 @@
 {{ macro.create_message_struct("Response", srv_unique_name, response) }}
 
 extern struct tt_Service {{ srv_unique_name }}Service;
-{% for field in request.fields if field.named %}
-extern struct tt_Topic {{ field.type_name | replace("struct ", "", 1) }}Topic;
-{% endfor %}
-{% for field in response.fields if field.named %}
-extern struct tt_Topic {{ field.type_name | replace("struct ", "", 1) }}Topic;
-{% endfor %}

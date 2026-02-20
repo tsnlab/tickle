@@ -7,7 +7,7 @@ from jinja2 import Environment, FileSystemLoader
 from typing import List
 from parser_types import Content, Message, Field
 
-MESSAGE_MAKEFILE = "Makefile.message.jinja"
+MAKEFILE_TEMPLATE = "Makefile.jinja"
 MESSAGE_PP_SOURCE = "message_preprocessor.c.jinja"
 MESSAGE_PP_HEADER = "message_preprocessor.h.jinja"
 MESSAGE_PUBLISHER = "message_publisher.c.jinja"
@@ -35,6 +35,7 @@ def generate_message_preprocessor(path: Path, content: Content):
         msg_name = msg_name,
         msg_unique_name = message.prefix + content.name,
         message = message,
+        content = content,
     )
     with open(f"{path}/{msg_name}.c", "w", encoding="utf-8") as f:
         f.write(source_content)
@@ -69,11 +70,20 @@ def generate_message_tester(path: Path, content: Content):
     )
     with open(f"{path}/{msg_name}_sub.c", "w", encoding="utf-8") as f:
         f.write(sub_content)
-    makefile_template = jinja2_env.get_template(MESSAGE_MAKEFILE)
+    external_sources = []
+    for include in content.includes:
+        external_path = Path(include)
+        assert len(external_path.parts) == 3, f"Include path must be <package>/msg/<msg name>.h, but {include}"
+        external_path = f"{external_path.parts[0]}/{external_path.parts[-1].replace(".h", ".c")}"
+        external_sources.append(external_path)
+    makefile_template = jinja2_env.get_template(MAKEFILE_TEMPLATE)
     makefile_content = makefile_template.render(
         preprocessor = f"{msg_name}.c",
-        pub = f"{msg_name}_pub.c",
-        sub = f"{msg_name}_sub.c",
+        target1 = "publisher",
+        target2 = "subscriber",
+        source1 = f"{msg_name}_pub.c",
+        source2 = f"{msg_name}_sub.c",
+        external_sources = external_sources,
     )
     with open(f"{path}/Makefile", "w", encoding="utf-8") as f:
         f.write(makefile_content)
@@ -89,10 +99,10 @@ def generate_service_preprocessor(path: Path, content: Content):
     source_template = jinja2_env.get_template(SERVICE_PP_SOURCE)
     source_content = source_template.render(
         srv_name = srv_name,
-        # TODO: change code to use content.prefix instead of request.prefix 
         srv_unique_name = request.prefix + content.name,
         request = request,
         response = response,
+        content = content,
     )
     with open(f"{path}/{srv_name}.c", "w", encoding="utf-8") as f:
         f.write(source_content)
@@ -132,11 +142,20 @@ def generate_service_tester(path: Path, content: Content):
     )
     with open(f"{path}/{srv_name}_client.c", "w", encoding="utf-8") as f:
         f.write(client_content)
-    makefile_template = jinja2_env.get_template(SERVICE_MAKEFILE)
+    external_sources = []
+    for include in content.includes:
+        external_path = Path(include)
+        assert len(external_path.parts) == 3, f"Include path must be <package>/msg/<msg name>.h, but {include}"
+        external_path = f"{external_path.parts[0]}/{external_path.parts[-1].replace(".h", ".c")}"
+        external_sources.append(external_path)
+    makefile_template = jinja2_env.get_template(MAKEFILE_TEMPLATE)
     makefile_content = makefile_template.render(
         preprocessor = f"{srv_name}.c",
-        server = f"{srv_name}_server.c",
-        client = f"{srv_name}_client.c",
+        target1 = "server",
+        target2 = "cilent",
+        source1 = f"{srv_name}_server.c",
+        source2 = f"{srv_name}_client.c",
+        external_sources = external_sources,
     )
     with open(f"{path}/Makefile", "w", encoding="utf-8") as f:
         f.write(makefile_content)

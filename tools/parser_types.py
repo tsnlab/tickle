@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Set, Optional
 
 @dataclass
 class Field:
@@ -32,6 +32,7 @@ class Message:
 @dataclass
 class Content:
     name: str
+    pkg_name: str
     messages: List[Message]
-    includes: List[str]
+    includes: Set[str]
 

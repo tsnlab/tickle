@@ -5,7 +5,7 @@
 {#- dynamic length string requires buffer allocation when decoding -#}
 {#- _tt_strnlen(data->{{ field.name }}, tt_MAX_STRING_LENGTH) + 1 -#}
 {%- elif field.named %}
-{{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size({{ field.type_name }})
+{{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size((struct tt_Data*)&data->{{ field.name }})
 {%- else %}
 sizeof({{ field.type_name }})
 {%- endif %}
@@ -84,7 +84,7 @@ int32_t {{ message_name }}{{ message_type }}_decode({{ message_name }}{{ message
 
 void {{ message_name }}{{ message_type }}_free({{ message_name }}{{ message_type }}* data) {
 }
-{%- endmacro %}
+{% endmacro %}
 
 
 {% macro create_message_struct(message_type, message_name, message) -%}

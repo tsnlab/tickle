@@ -12,6 +12,3 @@
 {{ macro.create_message_struct("Data", msg_unique_name, message) }}
 
 extern struct tt_Topic {{ msg_unique_name }}Topic;
-{% for field in message.fields if field.named %}
-extern struct tt_Topic {{ field.type_name | replace("struct ", "", 1) }}Topic;
-{% endfor %}

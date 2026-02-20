@@ -1,0 +1,25 @@
+CC			:=	gcc
+CFLAGS	:=	-I../../include -I..
+LDFLAGS	:=	-L../..
+LDLIBS	:=	-ltickle
+
+all: {{ target1 }} {{ target2 }}
+	cp $^ ../..
+
+{{ target1 }}: {{ source1 }} {{ preprocessor }}
+{%- for external_source in external_sources %} ../{{ external_source }}{% endfor +%}
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+{{ target2 }}: {{ source2 }} {{ preprocessor }}
+{%- for external_source in external_sources %} ../{{ external_source }}{% endfor +%}
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+fclean:
+	$(RM)	$({{ target1 }}) $({{ target2 }})
+
+clean: fclean
+
+re: clean
+	$(MAKE) all
+
+.PHONY: all run clean

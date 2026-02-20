@@ -80,7 +80,7 @@ def read_service(content: Content, ros_service: rosdef.Service) -> Content:
     content.messages.append(read_message(ros_service.response_message))
     return content
 
-def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include):
+def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include) -> Optional[Content]:
     idl_path = pkg_path.parents[0] / path.locator
     header_path = idl_path.with_suffix(".h")
 
@@ -96,10 +96,12 @@ def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include):
         setup_directory(external_pkg_path, external_msg_path)
         content = parse_msg(external_pkg_path, external_msg_path)
         generate_message_preprocessor(external_pkg_path, content)
+        return content
     else:
         print(f"Warning: Header is not found: {idl_path.stem}.h in {idl_path.parents[0]}")
         print(f"         Use below command to generate header file that {msg_path.name} requires")
         print(f"         python3 {sys.argv[0]} {str(idl_path.parents[1])} <path>/{idl_path.stem}.msg\n")
+        return None
 
 def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
     pkg_name = pkg_path.stem
@@ -108,7 +110,7 @@ def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
     idl_filename = Path(convert_to_idl(pkg_path / suffix, pkg_name, Path(msg_path.name), pkg_path))
     locator = rosdef.IdlLocator(pkg_path, idl_filename)
     idl_file = parse_idl_file(locator)
-    content = Content(name=msg_name, messages=[], includes=[])
+    content = Content(name=msg_name, pkg_name=pkg_name, messages=[], includes=set())
     if suffix == "msg":
         message = idl_file.content.get_elements_of_type(rosdef.Message)[0]
         content.messages.append(read_message(message))
@@ -118,9 +120,10 @@ def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
         content = read_service(content, service)
     includes = idl_file.content.get_elements_of_type(rosdef.Include)
     for include in includes:
-        parse_external_msg(pkg_path, msg_path, include)
+        child_content = parse_external_msg(pkg_path, msg_path, include)
+        content.includes.update(child_content.includes)
         include_path = include.locator.replace("idl", "h")
-        content.includes.append(include_path)
+        content.includes.add(include_path)
     return content
 
 if __name__ == "__main__":
