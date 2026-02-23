@@ -3,15 +3,15 @@
 
 #include <tickle/hal.h>
 
-int32_t {{ srv_name }}Request_encode_size(struct {{ srv_unique_name }}Request* data);
-int32_t {{ srv_name }}Request_encode(struct {{ srv_unique_name }}Request* data, uint8_t* payload, const int32_t len);
-int32_t {{ srv_name }}Request_decode(struct {{ srv_unique_name }}Request* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
-void {{ srv_name }}Request_free(struct {{ srv_unique_name }}Request* data);
+static int32_t {{ srv_name }}Request_encode_size(struct {{ srv_unique_name }}Request* data);
+static int32_t {{ srv_name }}Request_encode(struct {{ srv_unique_name }}Request* data, uint8_t* payload, const int32_t len);
+static int32_t {{ srv_name }}Request_decode(struct {{ srv_unique_name }}Request* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+static void {{ srv_name }}Request_free(struct {{ srv_unique_name }}Request* data);
 
-int32_t {{ srv_name }}Response_encode_size(struct {{ srv_unique_name }}Response* data);
-int32_t {{ srv_name }}Response_encode(struct {{ srv_unique_name }}Response* data, uint8_t* payload, const int32_t len);
-int32_t {{ srv_name }}Response_decode(struct {{ srv_unique_name }}Response* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
-void {{ srv_name }}Response_free(struct {{ srv_unique_name }}Response* data);
+static int32_t {{ srv_name }}Response_encode_size(struct {{ srv_unique_name }}Response* data);
+static int32_t {{ srv_name }}Response_encode(struct {{ srv_unique_name }}Response* data, uint8_t* payload, const int32_t len);
+static int32_t {{ srv_name }}Response_decode(struct {{ srv_unique_name }}Response* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+static void {{ srv_name }}Response_free(struct {{ srv_unique_name }}Response* data);
 
 struct tt_Service {{ srv_unique_name }}Service = {
     .name = "{{ srv_unique_name }}Service",

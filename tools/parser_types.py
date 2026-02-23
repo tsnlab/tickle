@@ -34,5 +34,6 @@ class Content:
     name: str
     pkg_name: str
     messages: List[Message]
-    includes: Set[str]
+    external_sources: Set[str]
+    include_paths: List[str]
 

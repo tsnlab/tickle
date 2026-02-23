@@ -15,7 +15,7 @@ all: {{ target1 }} {{ target2 }}
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LDLIBS)
 
 fclean:
-	$(RM)	$({{ target1 }}) $({{ target2 }})
+	$(RM)	{{ target1 }} {{ target2 }}
 
 clean: fclean
 

@@ -3,10 +3,10 @@
 
 #include <tickle/hal.h>
 
-int32_t {{ msg_name }}Data_encode_size(struct {{ msg_unique_name }}Data* data);
-int32_t {{ msg_name }}Data_encode(struct {{ msg_unique_name }}Data* data, uint8_t* payload, const int32_t len);
-int32_t {{ msg_name }}Data_decode(struct {{ msg_unique_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
-void {{ msg_name }}Data_free(struct {{ msg_unique_name }}Data* data);
+static int32_t {{ msg_name }}Data_encode_size(struct {{ msg_unique_name }}Data* data);
+static int32_t {{ msg_name }}Data_encode(struct {{ msg_unique_name }}Data* data, uint8_t* payload, const int32_t len);
+static int32_t {{ msg_name }}Data_decode(struct {{ msg_unique_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+static void {{ msg_name }}Data_free(struct {{ msg_unique_name }}Data* data);
 
 struct tt_Topic {{ msg_unique_name }}Topic = {
     .name = "{{ msg_unique_name }}Topic",

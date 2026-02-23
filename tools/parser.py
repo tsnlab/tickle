@@ -3,7 +3,7 @@ import rosidl_parser.definition as rosdef
 
 from rosidl_adapter import convert_to_idl
 from rosidl_parser.parser import parse_idl_file
-from typing import List, Optional
+from typing import List, Set, Optional
 from pathlib import Path
 from generator import setup_directory, generate_message_preprocessor
 from parser_types import Content, Message, Field
@@ -110,7 +110,7 @@ def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
     idl_filename = Path(convert_to_idl(pkg_path / suffix, pkg_name, Path(msg_path.name), pkg_path))
     locator = rosdef.IdlLocator(pkg_path, idl_filename)
     idl_file = parse_idl_file(locator)
-    content = Content(name=msg_name, pkg_name=pkg_name, messages=[], includes=set())
+    content = Content(name=msg_name, pkg_name=pkg_name, messages=[], include_paths=[], external_sources=set())
     if suffix == "msg":
         message = idl_file.content.get_elements_of_type(rosdef.Message)[0]
         content.messages.append(read_message(message))
@@ -120,10 +120,16 @@ def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
         content = read_service(content, service)
     includes = idl_file.content.get_elements_of_type(rosdef.Include)
     for include in includes:
+        external_source = Path(include.locator)
+        assert len(external_source.parts) == 3, f"Include path must be <package>/msg/<msg name>.h, but \"{include}\""
+        external_source = f"{external_source.parts[0]}/{external_source.parts[-1].replace(".idl", ".c")}"
+
         child_content = parse_external_msg(pkg_path, msg_path, include)
-        content.includes.update(child_content.includes)
+        content.external_sources.update(child_content.external_sources)
+        content.external_sources.add(external_source)
+
         include_path = include.locator.replace("idl", "h")
-        content.includes.add(include_path)
+        content.include_paths.append(include_path)
     return content
 
 if __name__ == "__main__":
