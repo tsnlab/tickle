@@ -101,7 +101,7 @@ def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include) -> 
         print(f"Warning: Header is not found: {idl_path.stem}.h in {idl_path.parents[0]}")
         print(f"         Use below command to generate header file that {msg_path.name} requires")
         print(f"         python3 {sys.argv[0]} {str(idl_path.parents[1])} <path>/{idl_path.stem}.msg\n")
-        return None
+        sys.exit(1)
 
 def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
     pkg_name = pkg_path.stem
@@ -116,7 +116,6 @@ def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
         content.messages.append(read_message(message))
     elif suffix == "srv":
         service = idl_file.content.get_elements_of_type(rosdef.Service)[0]
-        # TODO: add namedtype_prefix for service
         content = read_service(content, service)
     includes = idl_file.content.get_elements_of_type(rosdef.Include)
     for include in includes:

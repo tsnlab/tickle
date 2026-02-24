@@ -28,7 +28,6 @@ def generate_message_preprocessor(path: Path, content: Content):
     messages = content.messages
     assert len(messages) == 1, "Number of message object is supposed to be one"
     message = messages[0]
-    # TODO: include header
     source_template = jinja2_env.get_template(MESSAGE_PP_SOURCE)
     source_content = source_template.render(
         msg_name = msg_name,
@@ -87,7 +86,6 @@ def generate_service_preprocessor(path: Path, content: Content):
     assert len(messages) == 2, "Number of message object is supposed to be 2"
     request = messages[0]
     response = messages[1]
-    # TODO: include header
     source_template = jinja2_env.get_template(SERVICE_PP_SOURCE)
     source_content = source_template.render(
         srv_name = srv_name,
@@ -115,7 +113,6 @@ def generate_service_tester(path: Path, content: Content):
     assert len(messages) == 2, "Number of message object is supposed to be 2"
     request = messages[0]
     response = messages[1]
-    # TODO: include header
     server_template = jinja2_env.get_template(SERVICE_SERVER)
     server_content = server_template.render(
         srv_name = srv_name,
