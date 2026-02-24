@@ -1,16 +1,26 @@
-{% macro encode_field(field) -%}
+{% macro process_field(type, field) -%}
 {% if field.named %}
-{{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode((struct tt_Data*)&data->{{ field.name }}, payload, {{ get_field_size(field) }});
+{% if field.size > 0 %}
+    size = {{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size((struct tt_Data*)&data->{{ field.name }}[0]);
+    for (int32_t i = 0; i < {{ field.size }}; ++i) {
+        ret = {{ field.type_name | replace("struct ", "", 1) }}Topic.data_{{ type }}((struct tt_Data*)&data->{{ field.name }}[i], payload, size{%- if type == "decode" -%}, is_native_endian{%- endif -%});
+        {{ type }}d += ret;
+        payload += ret;
+    }
 {% else %}
-_tt_memcpy(&data->{{ field.name }}, payload, {{ get_field_size(field) }});
+    ret = {{ field.type_name | replace("struct ", "", 1) }}Topic.data_{{ type }}((struct tt_Data*)&data->{{ field.name }}, payload, {{ get_field_size(field) }}{%- if type == "decode" -%}, is_native_endian{%- endif -%});
+    {{ type }}d += ret;
+    payload += ret;
 {% endif %}
-{%- endmacro -%}
-
-{% macro decode_field(field) -%}
-{% if field.named %}
-{{ field.type_name | replace("struct ", "", 1) }}Topic.data_decode((struct tt_Data*)&data->{{ field.name }}, payload, {{ get_field_size(field) }}, is_native_endian);
 {% else %}
-_tt_memcpy(&data->{{ field.name }}, payload, {{ get_field_size(field) }});
+{% if type == "encode" %}
+    _tt_memcpy(payload, &data->{{ field.name }}, {{ get_field_size(field) }});
+{% elif type == "decode" %}
+    _tt_memcpy(&data->{{ field.name }}, payload, {{ get_field_size(field) }});
+{% else %}
+{% endif %}
+    {{ type }}d += {{ get_field_size(field) }};
+    payload += {{ get_field_size(field) }};
 {% endif %}
 {%- endmacro -%}
 
@@ -25,7 +35,7 @@ _tt_memcpy(&data->{{ field.name }}, payload, {{ get_field_size(field) }});
 {%- else %}
 sizeof({{ field.type_name }})
 {%- endif %}
-{%- endmacro %}
+{%- endmacro -%}
 
 
 {% macro create_sequence_struct(element_type, size) -%}
@@ -65,6 +75,8 @@ int32_t {{ message_name }}{{ message_type }}_encode_size({{ message_name }}{{ me
 
 int32_t {{ message_name }}{{ message_type }}_encode({{ message_name }}{{ message_type }}* data, uint8_t* payload, const int32_t len) {
     int32_t encoded = 0;
+    int32_t ret;
+    int32_t size;
 
     if ({{ message_name }}{{ message_type }}_encode_size(data) > len) {
         return -1;
@@ -72,16 +84,15 @@ int32_t {{ message_name }}{{ message_type }}_encode({{ message_name }}{{ message
 {% for field in message.fields %}
     // encode - {{ field.type_name }} {{ field.name }}
 {# *({{ field.type_name }}*)payload = data->{{field.name}}; #}
-    {{ encode_field(field) }}
-    encoded += {{ get_field_size(field) }};
-    payload += {{ get_field_size(field) }};
-
+{{ process_field("encode", field) }}
 {% endfor %}
     return encoded;
 }
 
 int32_t {{ message_name }}{{ message_type }}_decode({{ message_name }}{{ message_type }}* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
     int32_t decoded = 0;
+    int32_t ret;
+    int32_t size;
 
     if ({{ message_name }}{{ message_type }}_encode_size(data) > len) {
         return -1;
@@ -90,10 +101,7 @@ int32_t {{ message_name }}{{ message_type }}_decode({{ message_name }}{{ message
     // NOTE: using memcpy to avoid misaligned dereferencing
 {% for field in message.fields %}
     // decode - {{ field.type_name }} {{ field.name }}
-    {{ decode_field(field) }}
-    decoded += {{ get_field_size(field) }};
-    payload += {{ get_field_size(field) }};
-
+{{ process_field("decode", field) }}
 {% endfor %}
     return decoded;
 }
