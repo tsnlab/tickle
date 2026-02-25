@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 TSN Lab
 import sys
 import argparse
 import generator as gen
@@ -27,7 +29,7 @@ def generate(pkg_path: Path, msg_path: Path):
 def main(argv: List[str] = sys.argv):
     arg_parser = argparse.ArgumentParser(
         prog=f"{argv[0]}",
-        description="ROS2 Typesupport generator",
+        description="Typesupport generator for TickLE and rmw_tickle",
     )
     arg_parser.add_argument('-e', '--example', action='store_const', const=True)
     arg_parser.add_argument('package_path', help="path to a ROS package directory")
