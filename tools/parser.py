@@ -1,12 +1,17 @@
-from dataclasses import dataclass
-from typing import List
-import re
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 TSN Lab
 import sys
-from template import *
+import rosidl_parser.definition as rosdef
 
+from rosidl_adapter import convert_to_idl
+from rosidl_parser.parser import parse_idl_file
+from typing import List, Set, Optional
+from pathlib import Path
+from generator import setup_directory, generate_message_preprocessor
+from parser_types import Content, Message, Field
 
-TYPE_DICT = { # ROS2 type name to C type name
-    "bool": "bool",
+TYPE_DICT = { # IDL type name to C type name
+    "boolean": "bool",
     "byte": "uint8_t",
     "char": "char",
     "int8": "int8_t",
@@ -17,71 +22,122 @@ TYPE_DICT = { # ROS2 type name to C type name
     "uint32": "uint32_t",
     "int64": "int64_t",
     "uint64": "uint64_t",
-    "float32": "float",
-    "float64": "double",
+    "float": "float",
+    "double": "double",
     "string": "char*",
     "wstring": "uint16_t*",
 }
 
-
-LINE_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*)\s+([A-Za-z][A-Za-z0-9_]*)$") # <type> <name>
-
-
-@dataclass
-class Field:
-    type_name: str
-    name: str
-
-
-@dataclass
-class MsgSpec:
-    msg_name: str
-    fields: List[Field]
-
-
-class MsgParseError(ValueError):
+class TypeError(Exception):
     pass
 
+def get_field(typeInfo: rosdef.AbstractType, prefix: str = "") -> Field:
+    if isinstance(typeInfo, rosdef.AbstractNestableType):
+        if isinstance(typeInfo, rosdef.BasicType):
+            typename = TYPE_DICT[typeInfo.typename]
+            return Field(type_name=typename)
+        elif isinstance(typeInfo, rosdef.NamedType):
+            print(f"NamedType={typeInfo.name}")
+            return Field(type_name=f"struct {prefix}{typeInfo.name}", named=True)
+        elif isinstance(typeInfo, rosdef.NamespacedType):
+            return Field(type_name=f"struct {'__'.join(typeInfo.namespaced_name())}", named=True)
+        elif isinstance(typeInfo, rosdef.BoundedString):
+            return Field(type_name="char*", string_size=typeInfo.maximum_size)
+#       elif isinstance(typeInfo, rosdef.UnboundedString):
+#           return Field(type_name="char*", string_size=-1)
+        elif isinstance(typeInfo, rosdef.BoundedWString):
+            return Field(type_name="uint16_t*", string_size=typeInfo.maximum_size)
+#       elif isinstance(typeInfo, rosdef.UnboundedWString):
+#           return Field(type_name="uint16_t*", string_size=-1)
+        else:
+            raise TypeError(f"Unhandled type \"{type(typeInfo)}\"")
+    elif isinstance(typeInfo, rosdef.AbstractNestedType):
+        if isinstance(typeInfo, rosdef.Array):
+            nested_field = get_field(typeInfo.value_type)
+            nested_field.size = typeInfo.size
+        elif isinstance(typeInfo, rosdef.BoundedSequence):
+            nested_field = get_field(typeInfo.value_type)
+            nested_field.size = typeInfo.maximum_size
+        elif isinstance(typeInfo, rosdef.UnboundedSequence):
+            nested_field = get_field(typeInfo.value_type)
+            nested_field.size = -1
+        else:
+            raise TypeError(f"Unhandled type \"{type(typeInfo)}\"")
+        if nested_field.string_size != 0:
+            raise TypeError(f"Handling array of string is not implemented yet")
+        return nested_field
 
-def parse_msg_text(msg_name: str, text: str) -> MsgSpec:
-    # TODO: Validate field names
-    fields: List[Field] = []
+def read_message(ros_message: rosdef.Message) -> Message:
+    namedtype_prefix = "__".join(ros_message.structure.namespaced_type.namespaced_name()[0:2]) + "__"
+    message = Message(fields=[])
+    message.prefix = namedtype_prefix
+    for member in ros_message.structure.members:
+        field = get_field(member.type, namedtype_prefix)
+        field.name = member.name
+        message.fields.append(field)
+    return message
 
-    for lineno, line in enumerate(text.splitlines(), start=1):
-        line = line.strip()
-        if not line:
-            continue
+def read_service(content: Content, ros_service: rosdef.Service) -> Content:
+    content.messages.append(read_message(ros_service.request_message))
+    content.messages.append(read_message(ros_service.response_message))
+    return content
 
-        m = LINE_RE.match(line)
-        if not m:
-            raise MsgParseError(
-                f"Line {lineno}: invalid format"
-            )
+def parse_external_msg(pkg_path: Path, msg_path: Path, path: rosdef.Include) -> Optional[Content]:
+    idl_path = pkg_path.parents[0] / path.locator
+    header_path = idl_path.with_suffix(".h")
 
-        type_name, field_name = m.group(1), m.group(2)
+    if header_path.exists() == True:
+        print(f"\nHeader found: {header_path}")
+    else:
+        print(f"\nHeader not found: {header_path}")
+    msg_base_path = msg_path.parents[0]
+    external_msg_path = (msg_base_path / idl_path.stem).with_suffix(".msg")
+    if external_msg_path.exists() == True:
+        print(f".msg found: {external_msg_path}")
+        external_pkg_path = idl_path.parents[1]
+        setup_directory(external_pkg_path, external_msg_path)
+        content = parse_msg(external_pkg_path, external_msg_path)
+        generate_message_preprocessor(external_pkg_path, content)
+        return content
+    else:
+        print(f"Warning: Header is not found: {idl_path.stem}.h in {idl_path.parents[0]}")
+        print(f"         Use below command to generate header file that {msg_path.name} requires")
+        print(f"         python3 {sys.argv[0]} {str(idl_path.parents[1])} <path>/{idl_path.stem}.msg\n")
+        sys.exit(1)
 
-        if type_name not in TYPE_DICT.keys():
-            raise MsgParseError(
-                f"Line {lineno}: unsupported type {type_name!r}"
-            )
+def parse_msg(pkg_path: Path, msg_path: Path) -> Content:
+    pkg_name = pkg_path.stem
+    msg_name = msg_path.stem
+    suffix = msg_path.suffix.lstrip(".")
+    idl_filename = Path(convert_to_idl(pkg_path / suffix, pkg_name, Path(msg_path.name), pkg_path))
+    locator = rosdef.IdlLocator(pkg_path, idl_filename)
+    idl_file = parse_idl_file(locator)
+    content = Content(name=msg_name, pkg_name=pkg_name, messages=[], include_paths=[], external_sources=set())
+    if suffix == "msg":
+        message = idl_file.content.get_elements_of_type(rosdef.Message)[0]
+        content.messages.append(read_message(message))
+    elif suffix == "srv":
+        service = idl_file.content.get_elements_of_type(rosdef.Service)[0]
+        content = read_service(content, service)
+    includes = idl_file.content.get_elements_of_type(rosdef.Include)
+    for include in includes:
+        external_source = Path(include.locator)
+        assert len(external_source.parts) == 3, f"Include path must be <package>/msg/<msg name>.h, but \"{include}\""
+        external_source = f"{external_source.parts[0]}/{external_source.parts[-1].replace(".idl", ".c")}"
 
-        fields.append(Field(type_name=TYPE_DICT[type_name], name=field_name))
+        child_content = parse_external_msg(pkg_path, msg_path, include)
+        content.external_sources.update(child_content.external_sources)
+        content.external_sources.add(external_source)
 
-    return MsgSpec(msg_name=msg_name, fields=fields)
+        include_path = include.locator.replace("idl", "h")
+        content.include_paths.append(include_path)
+    return content
 
-
-def parse_msg_file(filename: str, encoding: str = "utf-8") -> MsgSpec:
-    msg_name = filename.split("/")[-1].split(".")[0]
-    if not msg_name[0].isupper():
-        print(f"Invalid message name: {msg_name} must be camel case")
-        return None
-
-    try:
-        with open(filename, "r", encoding=encoding) as f:
-            return parse_msg_text(msg_name, f.read())
-    except FileNotFoundError:
-        print(f"File not found: {filename}")
-        return None
-    except MsgParseError as e:
-        print(f"Error parsing message file: {e}")
-        return None
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print(f"Usage: python3 {sys.argv[0]}  package_path  msg_file")
+        print(f"    package_path        path to a ROS package directory")
+        print(f"    msg_file            ROS2 message/service definition file (.msg, .srv)")
+        print(f"                        in package_path/msg/ or package_path/srv/")
+    else:
+        parse_msg(sys.argv[1], sys.argv[2])

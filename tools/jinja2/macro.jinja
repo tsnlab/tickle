@@ -1,0 +1,135 @@
+{% macro process_field(type, field) -%}
+{% if field.named %}
+{% if field.size > 0 %}
+    size = {{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size((struct tt_Data*)&data->{{ field.name }}[0]);
+    for (int32_t i = 0; i < {{ field.size }}; ++i) {
+        ret = {{ field.type_name | replace("struct ", "", 1) }}Topic.data_{{ type }}((struct tt_Data*)&data->{{ field.name }}[i], payload, size{%- if type == "decode" -%}, is_native_endian{%- endif -%});
+        {{ type }}d += ret;
+        payload += ret;
+    }
+{% else %}
+    ret = {{ field.type_name | replace("struct ", "", 1) }}Topic.data_{{ type }}((struct tt_Data*)&data->{{ field.name }}, payload, {{ get_field_size(field) }}{%- if type == "decode" -%}, is_native_endian{%- endif -%});
+    {{ type }}d += ret;
+    payload += ret;
+{% endif %}
+{% else %}
+{% if type == "encode" %}
+    _tt_memcpy(payload, &data->{{ field.name }}, {{ get_field_size(field) }});
+{% elif type == "decode" %}
+    _tt_memcpy(&data->{{ field.name }}, payload, {{ get_field_size(field) }});
+{% else %}
+{% endif %}
+    {{ type }}d += {{ get_field_size(field) }};
+    payload += {{ get_field_size(field) }};
+{% endif %}
+{%- endmacro -%}
+
+{% macro get_field_size(field) -%}
+{% if field.size > 0 %}{{ field.size }} * {% endif %}
+{% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
+{{ field.string_size }} * sizeof({{ field.type_name | replace("*", "", 1) }})
+{#- dynamic length string requires buffer allocation when decoding -#}
+{#- _tt_strnlen(data->{{ field.name }}, tt_MAX_STRING_LENGTH) + 1 -#}
+{%- elif field.named %}
+{{ field.type_name | replace("struct ", "", 1) }}Topic.data_encode_size((struct tt_Data*)&data->{{ field.name }})
+{%- else %}
+sizeof({{ field.type_name }})
+{%- endif %}
+{%- endmacro -%}
+
+
+{% macro create_sequence_struct(element_type, size) -%}
+    struct {
+        {{ element_type }}
+{%- if size < 1 -%}
+    *
+{%- endif %}
+ data
+{%- if size > 0 -%}
+[{{ size }}]
+{%- endif -%};
+{%- if size < 1 -%}
+        uint16_t  size;
+{%- endif -%}
+    }
+{%- endmacro %}
+
+
+{% macro create_message_preprocessor(message_type, message_name, message) -%}
+int32_t {{ message_name }}{{ message_type }}_encode_size({{ message_name }}{{ message_type }}* data) {
+    return
+{%- for field in message.fields -%}
+{%- if loop.first %}
+{{ " " }}
+{%- else %}
+{{ "           " }}
+{%- endif %}
+{{ get_field_size(field) }}
+{%- if loop.last -%}
+;
+{% else %}
+ +
+{% endif %}
+{% endfor %}
+}
+
+int32_t {{ message_name }}{{ message_type }}_encode({{ message_name }}{{ message_type }}* data, uint8_t* payload, const int32_t len) {
+    int32_t encoded = 0;
+    int32_t ret;
+    int32_t size;
+
+    if ({{ message_name }}{{ message_type }}_encode_size(data) > len) {
+        return -1;
+    }
+{% for field in message.fields %}
+    // encode - {{ field.type_name }} {{ field.name }}
+{# *({{ field.type_name }}*)payload = data->{{field.name}}; #}
+{{ process_field("encode", field) }}
+{% endfor %}
+    return encoded;
+}
+
+int32_t {{ message_name }}{{ message_type }}_decode({{ message_name }}{{ message_type }}* data, const uint8_t* payload, const int32_t len, bool is_native_endian) {
+    int32_t decoded = 0;
+    int32_t ret;
+    int32_t size;
+
+    if ({{ message_name }}{{ message_type }}_encode_size(data) > len) {
+        return -1;
+    }
+
+    // NOTE: using memcpy to avoid misaligned dereferencing
+{% for field in message.fields %}
+    // decode - {{ field.type_name }} {{ field.name }}
+{{ process_field("decode", field) }}
+{% endfor %}
+    return decoded;
+}
+
+void {{ message_name }}{{ message_type }}_free({{ message_name }}{{ message_type }}* data) {
+}
+{% endmacro %}
+
+
+{% macro create_message_struct(message_type, message_name, message) -%}
+struct {{ message_name }}{{ message_type }} {
+{% for field in message.fields %}
+{% if field.type_name == "char*" or field.type_name == "uint16_t*" %}
+    {{ field.type_name | replace("*", "", 1) }} {{ field.name }}
+    {%- if field.size == -1 -%}
+        []
+    {%- elif field.size != 0 -%}
+        [{{ field.size }}]
+    {%- endif -%}
+    [{{ field.string_size }}];
+{% else %}
+    {{ field.type_name }}{% if field.named %}Data{% endif %} {{ field.name }}
+    {%- if field.size == -1 -%}
+        []
+    {%- elif field.size != 0 -%}
+        [{{ field.size }}]
+    {%- endif -%};
+{% endif %}
+{% endfor %}
+};
+{%- endmacro %}
