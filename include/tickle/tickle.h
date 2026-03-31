@@ -201,6 +201,7 @@ int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
 int32_t tt_Node_poll(struct tt_Node* node);
 int32_t tt_Node_destroy(struct tt_Node* node);
+int32_t tt_Node_flush(struct tt_Node* node);
 
 #define tt_VERSION 1
 #define tt_PROTOCOL_UPDATE 0
