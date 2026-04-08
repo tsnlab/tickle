@@ -1,0 +1,16 @@
+{% import 'macro.jinja' as macro %}
+#pragma once
+
+#include <tickle/tickle.h>
+
+{% for include in includes %}
+#include "{{ include }}"
+{% if loop.last %}
+
+{% endif %}
+{% endfor %}
+{{ macro.create_message_struct("Request", srv_unique_name, request) }}
+
+{{ macro.create_message_struct("Response", srv_unique_name, response) }}
+
+extern struct tt_Service {{ srv_unique_name }}Service;

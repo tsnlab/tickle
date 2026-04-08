@@ -52,14 +52,11 @@ If you use TickLE with ROS 2, it supports all types.
 Install message file converter and parser.
 
 
-To install dependencies run either
+To install dependencies,
 ```
 pip install ros-rosidl-adapter ros-rosidl-parser
 ```
-or
-```
-sudo apt-get install ros-jazzy-rosidl-adapter ros-jazzy-rosidl-parser
-```
+Use poetry or venv to manage python environment.
 
 #### Generate Header files
 Before proceeding, create `.msg` file like
@@ -87,6 +84,10 @@ examples/test/msg/Simple.msg
 ```
 
 ## Example Code
+Move `test` directory and create example code.
+```
+cd examples/test
+```
 **publisher.c**
 ```
 #include <stdio.h>
@@ -196,9 +197,8 @@ int main(void) {
 }
 ```
 
-### Build example
+### Build example code
 ```
-cd examples/test
 gcc subscriber.c Simple.c -o subscriber -ltickle -I.. -I../../include -L../..
 gcc publisher.c Simple.c -o publisher -ltickle -I.. -I../../include -L../..
 ```
@@ -207,7 +207,28 @@ gcc publisher.c Simple.c -o publisher -ltickle -I.. -I../../include -L../..
 ```
 sudo ip netns exec ns1 ./publisher
 ```
+Publisher node output, `node_id` and `time` value can differ.
+```
+[2026-04-08 13:51:41] [INFO] node_id=1
+[2026-04-08 13:51:41] [INFO] Node open at 8282
+published time=1775623902
+published time=1775623903
+published time=1775623904
+published time=1775623905
+...
+```
+
 #### Subscriber
+Open a new terminal and run
 ```
 sudo ip netns exec ns2 ./subscriber
+```
+Subscriber node output, `node_id`, `time` and `seq` value can differ.
+```
+[2026-04-08 13:51:48] [INFO] node_id=2
+[2026-04-08 13:51:48] [INFO] Node open at 8282
+seq=00008 time=1775623909
+seq=00009 time=1775623910
+seq=00010 time=1775623911
+seq=00011 time=1775623912
 ```

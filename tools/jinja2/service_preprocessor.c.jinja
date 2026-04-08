@@ -1,0 +1,36 @@
+{% import 'macro.jinja' as macro %}
+#include "{{ content.pkg_name }}/srv/{{ srv_name }}.h"
+
+#include <tickle/hal.h>
+
+static int32_t {{ srv_name }}Request_encode_size(struct {{ srv_unique_name }}Request* data);
+static int32_t {{ srv_name }}Request_encode(struct {{ srv_unique_name }}Request* data, uint8_t* payload, const int32_t len);
+static int32_t {{ srv_name }}Request_decode(struct {{ srv_unique_name }}Request* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+static void {{ srv_name }}Request_free(struct {{ srv_unique_name }}Request* data);
+
+static int32_t {{ srv_name }}Response_encode_size(struct {{ srv_unique_name }}Response* data);
+static int32_t {{ srv_name }}Response_encode(struct {{ srv_unique_name }}Response* data, uint8_t* payload, const int32_t len);
+static int32_t {{ srv_name }}Response_decode(struct {{ srv_unique_name }}Response* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+static void {{ srv_name }}Response_free(struct {{ srv_unique_name }}Response* data);
+
+struct tt_Service {{ srv_unique_name }}Service = {
+    .name = "{{ srv_unique_name }}Service",
+    .request_size = sizeof(struct {{ srv_unique_name }}Request),
+    .response_size = sizeof(struct {{ srv_unique_name }}Response),
+    .request_encode_size = (tt_REQUEST_ENCODE_SIZE){{ srv_name }}Request_encode_size,
+    .request_encode = (tt_REQUEST_ENCODE){{ srv_name }}Request_encode,
+    .request_decode = (tt_REQUEST_DECODE){{ srv_name }}Request_decode,
+    .request_free = (tt_REQUEST_FREE){{ srv_name }}Request_free,
+    .response_encode_size = (tt_RESPONSE_ENCODE_SIZE){{ srv_name }}Response_encode_size,
+    .response_encode = (tt_RESPONSE_ENCODE){{ srv_name }}Response_encode,
+    .response_decode = (tt_RESPONSE_DECODE){{ srv_name }}Response_decode,
+    .response_free = (tt_RESPONSE_FREE){{ srv_name }}Response_free,
+    .call_retry_interval = 0, // 0 means auto
+    .call_retry_count = 3,
+};
+
+typedef struct {{ srv_unique_name }}Request {{ srv_name }}Request;
+typedef struct {{ srv_unique_name }}Response {{ srv_name }}Response;
+
+{{ macro.create_message_preprocessor("Request", srv_name, request) }}
+{{ macro.create_message_preprocessor("Response", srv_name, response) }}

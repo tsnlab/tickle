@@ -1,0 +1,22 @@
+{% import 'macro.jinja' as macro %}
+#include "{{ content.pkg_name }}/msg/{{ msg_name }}.h"
+
+#include <tickle/hal.h>
+
+static int32_t {{ msg_name }}Data_encode_size(struct {{ msg_unique_name }}Data* data);
+static int32_t {{ msg_name }}Data_encode(struct {{ msg_unique_name }}Data* data, uint8_t* payload, const int32_t len);
+static int32_t {{ msg_name }}Data_decode(struct {{ msg_unique_name }}Data* data, const uint8_t* payload, const int32_t len, bool is_native_endian);
+static void {{ msg_name }}Data_free(struct {{ msg_unique_name }}Data* data);
+
+struct tt_Topic {{ msg_unique_name }}Topic = {
+    .name = "{{ msg_unique_name }}Topic",
+    .data_size = sizeof(struct {{ msg_unique_name }}Data),
+    .data_encode_size = (tt_DATA_ENCODE_SIZE){{ msg_name }}Data_encode_size,
+    .data_encode = (tt_DATA_ENCODE){{ msg_name }}Data_encode,
+    .data_decode = (tt_DATA_DECODE){{ msg_name }}Data_decode,
+    .data_free = (tt_DATA_FREE){{ msg_name }}Data_free,
+};
+
+typedef struct {{ msg_unique_name }}Data {{ msg_name }}Data;
+
+{{ macro.create_message_preprocessor("Data", msg_name, message) }}
