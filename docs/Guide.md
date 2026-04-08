@@ -207,7 +207,7 @@ gcc publisher.c Simple.c -o publisher -ltickle -I.. -I../../include -L../..
 ```
 sudo ip netns exec ns1 ./publisher
 ```
-Publisher node output, `node_id` and `time` value can differ.
+Publisher node output:
 ```
 [2026-04-08 13:51:41] [INFO] node_id=1
 [2026-04-08 13:51:41] [INFO] Node open at 8282
@@ -223,7 +223,7 @@ Open a new terminal and run
 ```
 sudo ip netns exec ns2 ./subscriber
 ```
-Subscriber node output, `node_id`, `time` and `seq` value can differ.
+Subscriber node output:
 ```
 [2026-04-08 13:51:48] [INFO] node_id=2
 [2026-04-08 13:51:48] [INFO] Node open at 8282
@@ -232,3 +232,4 @@ seq=00009 time=1775623910
 seq=00010 time=1775623911
 seq=00011 time=1775623912
 ```
+They must have different `node_id`. Check if `time` values are equal.
