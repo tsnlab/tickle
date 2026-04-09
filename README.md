@@ -1,50 +1,83 @@
-# TickLE: Fastest ROS2 middleware optimized for 10Base-T1S
+# TickLE
+TickLE is fastest ROS2 middleware optimized for 10Base-T1S.
 
-## Compile
+## Features
+- Topic (Pub/Sub)
+- Service (server/client)
+- ROS 2 interface (`.msg`/`.srv`)
 
-```sh
-$ make
+## Installation
+### TickLE Library
+Build library
+```bash
+make
 ```
+### Preprocessor dependencies
+Install ROS 2 message interface parser. 
+```bash
+pip install ros-rosidl-adapter ros-rosidl-parser
+```
+Use poetry or venv to manage python virtual environment.
 
-## Run examples
-```sh
-$ make createns
-$ make runserver     # Launch SetBool service server on ns2 namespace
-$ make runclient     # Launch SetBool service client on ns1 namespace
-$ make runpublisher  # Launch UInt64 topic publisher on ns1 namespace
-$ make runsubscriber # Launch UInt64 topic subscriber on ns2 namespace
-```
+## Usage example
 
-## Run topic example with custom ROS2 message
-### Install dependancy packages
+### Preprocessor
+Preprocessor handles tasks related to message such as serialization/deserialization and provides header files that application references.
+
+
+#### Create `.msg` file
+Preprocessor is generated from message definition file(`.msg`).
 ```
-$ python3 -m pip install jinja2
-$ python3 -m pip install ros-rosidl-adapter
-$ python3 -m pip install ros-rosidl-parser
-```
-### Create `msg` file
-```
-$ cat << EOF > examples/Message.msg
-uint16      header
-uint32[10]  body
+cat > examples/MyMessage.msg << EOF
+uint8 header
+uint64 body
 EOF
 ```
-### Generate preprocessor
+For details of `.msg`, refer to [ROS 2 interface](https://docs.ros.org/en/foxy/Concepts/About-ROS-Interfaces.html).
+
+#### Generate preprocessor
+```bash
+python3 tools/main.py examples/my_app examples/MyMessage.msg
 ```
-$ make Message.msg
+Files created:
 ```
-### List of generated files
-Base directory is automatically generated according to name of `.msg` file. It is `message` in this example.
+examples/my_app/MyMessage.c
+examples/my_app/msg/MyMessage.h
 ```
-examples/message/Makefile
-examples/message/Message.c      # preprocessor source
-examples/message/msg/Message.h  # preprocessor header
-examples/message/Message_pub.c  # publisher
-examples/message/Message_sub.c  # subscriber
+
+### Example code
+- [publisher.c](examples/my_app/publisher.c)
+- [subscriber.c](examples/my_app/subscriber.c)
+
+#### Build
+```bash
+cd examples/my_app
+gcc subscriber.c MyMessage.c -o subscriber -ltickle -I.. -I../../include -L../..
+gcc publisher.c MyMessage.c -o publisher -ltickle -I.. -I../../include -L../..
 ```
-Modify default publisher/subscriber code as needed.
+
+### Network namespace
+By default, network namespaces are required for TickLE nodes to work.
+To create the network namespaces,
+```bash
+make -C../.. createns
+```
+To remove,
+```bash
+make -C../.. deletens
+```
+
 ### Run
-Refer to [__Run examples__](#run-examples) above.
+#### Publisher
+```bash
+sudo ip netns exec ns1 ./publisher
+```
+
+#### Subscriber
+Open a new terminal and run
+```bash
+sudo ip netns exec ns2 ./subscriber
+```
 
 ## License
 GPLv3 or proprietary license on request
