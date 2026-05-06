@@ -143,6 +143,17 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     return NULL;
 }
 
+/*
+ * tt_Node_schedule - schedule a function
+ * @node: owner of scheduler
+ * @time: POSIX time in nanoseconds
+ * @function: funtion to be called
+ * @param: parameter passed to the function
+ *
+ * Schedule a function to be called after certain amount of time.
+ *
+ * Return: false if scheduler is full, true else.
+ */
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
     if (node->scheduler_tail + 1 >= tt_MAX_SCHEDULER_LENGTH) {
@@ -306,12 +317,26 @@ int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub,
     pub->topic = topic;
     pub->seq_no = 0;
 
-    add_endpoint(node, endpoint);
+    if (add_endpoint(node, endpoint) != 0) {
+        return -1;
+    }
     node->last_modified = tt_get_ns();
 
     return 0;
 }
 
+/*
+ * tt_Node_create_subscriber - create new subscriber
+ * @node: owner node
+ * @sub: memory address of subscriber struct to be initialized
+ * @topic: topic struct to subscribe
+ * @name: name of the subscriber
+ * @callback: a function to be called whenever subscribed message arrives
+ *
+ * Create new subscriber and store it to endpoint list of the owner node.
+ *
+ * Return: -1 if there is no space for new endpoint, 0 else.
+ */
 int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                   const char* name, tt_SUBSCRIBER_CALLBACK callback) {
     // TODO: Check dup
