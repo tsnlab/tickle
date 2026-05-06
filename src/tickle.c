@@ -1175,7 +1175,7 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
 }
 
 static bool process_data2(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                         uint32_t tail, struct tt_Data* data, int32_t* processed_len) {
+                         uint32_t tail, struct tt_Data* data, int32_t* processed_len, uint64_t* timestamp) {
     uint32_t length = tail - head;
 
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
@@ -1188,6 +1188,8 @@ static bool process_data2(struct tt_Node* node, struct tt_Header* header, uint8_
     TT_LOG_DEBUG("  id: %08x", data_header->id);
     TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
     TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
+
+    *timestamp = data_header->timestamp;
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->id);
     if (endpoint != NULL) {
@@ -1202,18 +1204,15 @@ static bool process_data2(struct tt_Node* node, struct tt_Header* header, uint8_
 
         TT_LOG_DEBUG("decoded=%d", decoded);
         *processed_len = decoded;
-        // sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
-
-        // topic->data_free((struct tt_Data*)data);
 
         return true;
     }
     TT_LOG_DEBUG("could not find endpoint");
 
-    return true;
+    return false;
 }
 
-static bool process_packet2(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail, struct tt_Data* data, int32_t* processed_len) {
+static bool process_packet2(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail, struct tt_Data* data, int32_t* processed_len, uint64_t* timestamp) {
     // Decode header
     struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
     if (header == NULL) {
@@ -1282,7 +1281,7 @@ static bool process_packet2(struct tt_Node* node, uint8_t* buffer, uint32_t head
             // need immediate return after process_data2
             case tt_SUBMESSAGE_TYPE_DATA:
                 if (!process_data2(node, header, buffer, head,
-                                  head + submessage_header->length - sizeof(struct tt_SubmessageHeader), data, processed_len)) {
+                                  head + submessage_header->length - sizeof(struct tt_SubmessageHeader), data, processed_len, timestamp)) {
                     TT_LOG_ERROR("ERROR on data");
                 }
                 break;
@@ -1313,7 +1312,7 @@ static bool process_packet2(struct tt_Node* node, uint8_t* buffer, uint32_t head
     return true;
 }
 
-int32_t __TEMP__tt_receive_packet(struct tt_Node* node, struct tt_Data* data, int32_t buffer_len) {
+int32_t __TEMP__tt_receive_packet(struct tt_Node* node, struct tt_Data* data, int32_t buffer_len, uint64_t* timestamp) {
     uint8_t buffer[tt_MAX_BUFFER_LENGTH];
 
     uint32_t ip = 0;
@@ -1328,7 +1327,7 @@ int32_t __TEMP__tt_receive_packet(struct tt_Node* node, struct tt_Data* data, in
         return len;
     }
 
-    if (!process_packet2(node, buffer, 0, len, data, &processed_len)) {
+    if (!process_packet2(node, buffer, 0, len, data, &processed_len, timestamp)) {
         TT_LOG_ERROR("Cannot process packet");
         return -1;
     }
