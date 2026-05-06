@@ -67,11 +67,13 @@ createns:
 	sudo ip -n ns2 link set veth2 up
 # NS1 info
 	@echo "# Namespace #1"
+	sudo ip netns exec ns1 ip link set dev lo up
 	sudo ip netns exec ns1 ip addr
 	sudo ip netns exec ns1 ip route
 	sudo ip netns exec ns1 ping -c 1 192.168.10.2
 # NS2 info
 	@echo "\n# Namespace #2"
+	sudo ip netns exec ns2 ip link set dev lo up
 	sudo ip netns exec ns2 ip addr
 	sudo ip netns exec ns2 ip route
 	sudo ip netns exec ns2 ping -c 1 192.168.10.1
