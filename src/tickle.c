@@ -252,17 +252,21 @@ int32_t tt_Node_create(struct tt_Node* node) {
     return 0;
 }
 
-static void add_endpoint(struct tt_Node* node, struct tt_Endpoint* ep) {
+static int32_t add_endpoint(struct tt_Node* node, struct tt_Endpoint* ep) {
     uint32_t ep_count = node->endpoint_count;
     struct tt_Endpoint** eps = node->endpoints;
 
     for (int i = 0; i < ep_count; ++i) {
         if (eps[i] == NULL) {
             eps[i] = ep;
-            return;
+            return 0;
         }
     }
+    if (node->endpoint_count == tt_MAX_ENDPOINT_COUNT) {
+        return -1;
+    }
     eps[node->endpoint_count++] = ep;
+    return 0;
 }
 
 int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
@@ -280,7 +284,9 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
     client->cache_time = 0;
     client->latency = 0;
 
-    add_endpoint(node, endpoint);
+    if (add_endpoint(node, endpoint) != 0) {
+        return -1;
+    }
 
     return 0;
 }
@@ -300,7 +306,9 @@ int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, st
         server->cache[i] = NULL;
     }
 
-    add_endpoint(node, endpoint);
+    if (add_endpoint(node, endpoint) != 0) {
+        return -1;
+    }
     node->last_modified = tt_get_ns();
 
     return 0;
@@ -348,7 +356,9 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
     sub->topic = topic;
     sub->callback = callback;
 
-    add_endpoint(node, endpoint);
+    if (add_endpoint(node, endpoint) != 0) {
+        return -1;
+    }
 
     return 0;
 }
