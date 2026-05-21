@@ -198,7 +198,7 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 int32_t tt_Node_create(struct tt_Node* node) {
     node->id = 0;
     node->endpoint_count = 0;
-    tt_log_init(TT_LOG_DEBUG, stderr);
+    tt_log_init(TT_LOG_INFO, stderr);
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         node->endpoints[i] = NULL;
@@ -778,13 +778,13 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->id);
     if (endpoint != NULL) {
-        // Callback
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
         struct tt_Topic* topic = sub->topic;
-
         uint8_t data[topic->data_size];
-        int32_t decoded =
-            topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
+        int32_t decoded;
+
+        memset(data, 0, topic->data_size);
+        decoded = topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
         sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
 
         topic->data_free((struct tt_Data*)data);
@@ -1177,7 +1177,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
                 TT_LOG_ERROR("Cannot process packet");
             }
         }
-        tt_Node_run_scheduler(node);
+        tt_Node_peek_scheduler(node);
     }
 
     return 0;
@@ -1202,171 +1202,7 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
     return 0;
 }
 
-static bool process_data2(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                         uint32_t tail, struct tt_Data* data, int32_t* processed_len, uint64_t* timestamp) {
-    uint32_t length = tail - head;
-
-    struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
-    if (data_header == NULL) {
-        TT_LOG_ERROR("  Illegal DataHeader");
-        return false;
-    }
-
-    TT_LOG_DEBUG("  Data");
-    TT_LOG_DEBUG("  id: %08x", data_header->id);
-    TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
-    TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
-
-    *timestamp = data_header->timestamp;
-
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->id);
-    if (endpoint != NULL) {
-        // Callback
-        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-        struct tt_Topic* topic = sub->topic;
-
-        TT_LOG_DEBUG("len=%d", tail - head);
-        // uint8_t data[topic->data_size];
-        int32_t decoded =
-            topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
-
-        TT_LOG_DEBUG("decoded=%d", decoded);
-        *processed_len = decoded;
-
-        return true;
-    }
-    TT_LOG_DEBUG("could not find endpoint");
-
-    return false;
-}
-
-static bool process_packet2(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail, struct tt_Data* data, int32_t* processed_len, uint64_t* timestamp) {
-    // Decode header
-    struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
-    if (header == NULL) {
-        TT_LOG_ERROR("RX buffer underflow");
-        return false;
-    }
-    bool is_native_endian = false;
-    if (tt_is_native_endian(header)) {
-        is_native_endian = true;
-    } else if (tt_is_reverse_endian(header)) {
-        is_native_endian = false;
-    } else {
-        TT_LOG_ERROR("Illegal magic: 0x%04x", header->magic_value);
-        return false;
-    }
-
-    TT_LOG_DEBUG("magic: 0x%04x (%c%c)", header->magic_value, header->magic[0], header->magic[1]);
-
-    // Accept higher version while ignoring ignoring reserved field. But not lower version.
-    if (header->version < tt_VERSION) {
-        TT_LOG_ERROR("Illegal version: %d < %d", header->version, tt_VERSION);
-        return false;
-    }
-
-    // Self sent message
-    if (header->source == node->id) {
-        TT_LOG_DEBUG("Self sent packet");
-        // NOTE: if a node has pub/sub endpoints for same topic, the subscriber will not receive data.
-        return true;
-    }
-    TT_LOG_DEBUG("header->source: %d", header->source);
-
-    // Parse submessage
-    while (true) {
-        // Decode submessage header
-        struct tt_SubmessageHeader* submessage_header =
-            decode(node, buffer, &head, tail, sizeof(struct tt_SubmessageHeader));
-        if (submessage_header == NULL) {
-            TT_LOG_DEBUG("End of submessage: %d", tail - head);
-            break;
-        }
-
-        TT_LOG_DEBUG("submessage->type: %d", submessage_header->type);
-        TT_LOG_DEBUG("submessage->receiver: %d", submessage_header->receiver);
-        TT_LOG_DEBUG("submessage->length: %d / %ld", submessage_header->length,
-                     tail - head + sizeof(struct tt_SubmessageHeader));
-
-        // Decode submessage body
-        if (submessage_header->length < sizeof(struct tt_SubmessageHeader) ||
-            submessage_header->length > tail - head + sizeof(struct tt_SubmessageHeader)) {
-            TT_LOG_ERROR("Illegal submessage length: %d < %ld || %d > %ld", submessage_header->length,
-                         sizeof(struct tt_SubmessageHeader), submessage_header->length,
-                         tail - head + sizeof(struct tt_SubmessageHeader));
-            return false;
-        }
-
-        if (submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) {
-            switch (submessage_header->type) {
-            case tt_SUBMESSAGE_TYPE_UPDATE:
-                if (!process_update(node, header, buffer, head,
-                                    head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                    TT_LOG_ERROR("ERROR on update");
-                }
-                break;
-            // NOTE: If there are multiple data-type submessages, only last data is returned.
-            // need immediate return after process_data2
-            case tt_SUBMESSAGE_TYPE_DATA:
-                if (!process_data2(node, header, buffer, head,
-                                  head + submessage_header->length - sizeof(struct tt_SubmessageHeader), data, processed_len, timestamp)) {
-                    TT_LOG_ERROR("ERROR on data");
-                }
-                break;
-            case tt_SUBMESSAGE_TYPE_ACKNACK:
-                TT_LOG_ERROR("Not supported submessage type: %02x", submessage_header->type);
-                return false;
-            case tt_SUBMESSAGE_TYPE_CALLREQUEST:
-                if (!process_callrequest(node, header, buffer, head,
-                                         head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                    TT_LOG_ERROR("ERROR on call request");
-                }
-                break;
-            case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
-                if (!process_callresponse(node, header, buffer, head,
-                                          head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                    TT_LOG_ERROR("ERROR on call response");
-                }
-                break;
-            default:
-                TT_LOG_ERROR("Illegal submessage type: %d, len: %02x", submessage_header->type, tail - head);
-                return false;
-            }
-        }
-
-        head += submessage_header->length - sizeof(struct tt_SubmessageHeader);
-    }
-
-    return true;
-}
-
-int32_t __TEMP__tt_receive_packet(struct tt_Node* node, struct tt_Data* data, int32_t buffer_len, uint64_t* timestamp) {
-    uint8_t buffer[tt_MAX_BUFFER_LENGTH];
-
-    uint32_t ip = 0;
-    uint16_t port = 0;
-    int32_t len = tt_receive(node, buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
-    int32_t processed_len = 0;
-
-    if (len == -1) {      // Timeout
-        return len;
-    } else if (len < 0) { // I/O error
-        perror("Cannot receive data");
-        return len;
-    }
-
-    if (!process_packet2(node, buffer, 0, len, data, &processed_len, timestamp)) {
-        TT_LOG_ERROR("Cannot process packet");
-        return -1;
-    }
-    if (processed_len == 0) {
-        return -2;
-    }
-
-    return processed_len;
-}
-
-int32_t tt_Node_receive_packet(struct tt_Node* node, uint8* buffer, uint16_t buffer_size) {
+int32_t tt_Node_receive_packet(struct tt_Node* node, uint8_t* buffer, uint16_t buffer_size) {
     uint32_t ip = 0;
     uint16_t port = 0;
     int32_t len = tt_receive(node, buffer, buffer_size, &ip, &port);
@@ -1384,7 +1220,7 @@ int32_t tt_Node_receive_packet(struct tt_Node* node, uint8* buffer, uint16_t buf
     return 0;
 }
 
-void tt_Node_run_scheduler(struct tt_Node* node) {
+void tt_Node_peek_scheduler(struct tt_Node* node) {
     uint64_t time = tt_get_ns();
     struct tt_TCB* tcb = peek_scheduler(node);
 
