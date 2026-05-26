@@ -12,6 +12,10 @@
 
 #define UNUSED(x) (void)(x)
 
+static uint32_t calculate_latency(uint64_t start, uint64_t end) {
+    return end > start ? (uint32_t)(end - start) : 0;
+}
+
 static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type, uint8_t receiver) {
     if (node->tx_tail + sizeof(struct tt_SubmessageHeader) >= node->tx_size) {
         TT_LOG_ERROR("Lack of tx buffer");
@@ -965,7 +969,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 
     struct tt_Client* client = (struct tt_Client*)endpoint;
     struct tt_Service* service = client->service;
-    uint32_t latency = client->cache_time - tt_get_ns();
+    uint32_t latency = calculate_latency(client->cache_time, tt_get_ns());
 
     struct tt_Response* response = NULL;
     uint8_t response_buffer[service->response_size];
