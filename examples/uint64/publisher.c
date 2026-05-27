@@ -1,9 +1,13 @@
 #include <stdio.h>
-#include <string.h>
 
 #include "UInt64.h"
 
-int main(int argc, char* argv) {
+// This file relies on transitive includes provided by UInt64.h and tickle headers.
+// NOLINTBEGIN(misc-include-cleaner)
+
+int main(int argc, char** argv) {
+    (void)argc; // NOLINT(misc-unused-parameters)
+    (void)argv; // NOLINT(misc-unused-parameters)
     // _tt_CONFIG.addr = "192.168.10.1";
     _tt_CONFIG.broadcast = "192.168.10.255";
 
@@ -24,7 +28,8 @@ int main(int argc, char* argv) {
         return ret;
     }
 
-    struct UInt64Data data = {.data = 0xdeadbeef};
+    const uint64_t example_data = 0xdeadbeef;
+    struct UInt64Data data = {.data = example_data};
     ret = tt_Publisher_publish(&pub, (struct tt_Data*)&data);
     if (ret < 0) {
         printf("Cannot publish: %d\n", ret);
@@ -36,3 +41,5 @@ int main(int argc, char* argv) {
 
     return 0;
 }
+
+// NOLINTEND(misc-include-cleaner)

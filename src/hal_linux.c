@@ -13,6 +13,9 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
+// This implementation relies on the socket and network headers included above.
+// NOLINTBEGIN(misc-include-cleaner)
+
 #include "consts.h"
 #include "log.h"
 
@@ -134,3 +137,5 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 
     return ret;
 }
+
+// NOLINTEND(misc-include-cleaner)

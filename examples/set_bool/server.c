@@ -1,10 +1,15 @@
 #include <stdio.h>
-#include <string.h>
+
+#include <tickle/tickle.h>
 
 #include "SetBool.h"
 
+// This file relies on transitive includes provided by SetBool.h and tickle headers.
+// NOLINTBEGIN(misc-include-cleaner)
+
 static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest* request,
                                 struct SetBoolResponse* response) {
+    (void)server; // NOLINT(misc-unused-parameters)
     printf("  data: %d\n", request->data);
 
     if (request->data) {
@@ -18,7 +23,9 @@ static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest*
     return 0;
 }
 
-int main(int argc, char* argv) {
+int main(int argc, char** argv) {
+    (void)argc; // NOLINT(misc-unused-parameters)
+    (void)argv; // NOLINT(misc-unused-parameters)
     // _tt_CONFIG.addr = "192.168.10.1";
     _tt_CONFIG.broadcast = "192.168.10.255";
 
@@ -46,3 +53,5 @@ int main(int argc, char* argv) {
 
     return 0;
 }
+
+// NOLINTEND(misc-include-cleaner)

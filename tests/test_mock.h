@@ -4,11 +4,11 @@
 // Tests can override the exported state variables after test_mock_reset().
 
 #include <stdbool.h>
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
-#include <tickle/config.h>
-#include <tickle/tickle.h>
+#include <tickle/config.h> // NOLINT(misc-include-cleaner)
+#include <tickle/tickle.h> // NOLINT(misc-include-cleaner)
 
 // Define mock HAL symbols in one test binary so tickle.c can be included directly.
 #ifdef TEST_MOCK_DEFINE_STORAGE

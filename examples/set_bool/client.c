@@ -1,9 +1,14 @@
 #include <stdio.h>
-#include <unistd.h>
+
+#include <tickle/tickle.h>
 
 #include "SetBool.h"
 
+// This file relies on transitive includes provided by SetBool.h and tickle headers.
+// NOLINTBEGIN(misc-include-cleaner)
+
 static void set_bool_callback(struct tt_Client* client, int8_t return_code, struct SetBoolResponse* response) {
+    (void)client; // NOLINT(misc-unused-parameters)
     if (return_code == 0 && response == NULL) {
         printf("  Server not found\n");
     } else if (return_code != 0) {
@@ -15,6 +20,8 @@ static void set_bool_callback(struct tt_Client* client, int8_t return_code, stru
 }
 
 static void call(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node; // NOLINT(misc-unused-parameters)
+    (void)time; // NOLINT(misc-unused-parameters)
     struct tt_Client* client = param;
 
     printf("Second call\n");
@@ -25,7 +32,9 @@ static void call(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
-int main(int argc, char* argv) {
+int main(int argc, char** argv) {
+    (void)argc; // NOLINT(misc-unused-parameters)
+    (void)argv; // NOLINT(misc-unused-parameters)
     _tt_CONFIG.broadcast = "192.168.10.255";
 
     struct tt_Node node;
@@ -53,8 +62,8 @@ int main(int argc, char* argv) {
     }
 
     tt_Node_schedule(&node, tt_get_ns() + tt_SECOND, call, &client);
-    tt_Node_schedule(&node, tt_get_ns() + 2 * tt_SECOND, call, &client);
-    tt_Node_schedule(&node, tt_get_ns() + 3 * tt_SECOND, call, &client);
+    tt_Node_schedule(&node, tt_get_ns() + (2 * tt_SECOND), call, &client);
+    tt_Node_schedule(&node, tt_get_ns() + (3 * tt_SECOND), call, &client);
 
     tt_Node_poll(&node);
 
@@ -62,3 +71,5 @@ int main(int argc, char* argv) {
 
     return 0;
 }
+
+// NOLINTEND(misc-include-cleaner)

@@ -1,10 +1,10 @@
 #pragma once
 
 #include <byteswap.h>
-#include <malloc.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
+#include <stdlib.h>
+#include <string.h> // NOLINT(misc-include-cleaner)
 
 // Platform detection macros
 #if defined(__linux__)
@@ -46,9 +46,9 @@ struct tt_Header;
 
 // Platform-specific HAL structure inclusion
 #ifdef TT_PLATFORM_LINUX
-#include <tickle/hal_linux.h>
+#include <tickle/hal_linux.h> // NOLINT(misc-include-cleaner)
 #elif defined(TT_PLATFORM_GENERIC)
-#include <tickle/hal_generic.h>
+#include <tickle/hal_generic.h> // NOLINT(misc-include-cleaner)
 #endif
 
 // Network functions
