@@ -1,7 +1,7 @@
 // Generated code
-#pragma oncde
+#pragma once
 
-#include <tickle.h>
+#include <tickle/tickle.h>
 
 struct UInt64Data {
     uint64_t data;
