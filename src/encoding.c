@@ -1,6 +1,10 @@
+#include "encoding.h"
+
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
-#include "encoding.h"
+
+// This implementation relies on transitive includes from <tickle/hal.h> and <tickle/tickle.h>.
+// NOLINTBEGIN(misc-include-cleaner)
 
 // Endian checking functions
 bool tt_is_native_endian(struct tt_Header* header) {
@@ -102,3 +106,5 @@ bool tt_decode_string(void* buffer, uint32_t* head, uint32_t tail, uint16_t* str
 
     return true;
 }
+
+// NOLINTEND(misc-include-cleaner)

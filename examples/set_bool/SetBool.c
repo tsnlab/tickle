@@ -3,6 +3,10 @@
 #include "SetBool.h"
 
 #include <tickle/hal.h>
+#include <tickle/tickle.h>
+
+// This generated implementation relies on transitive includes provided by SetBool.h.
+// NOLINTBEGIN(misc-include-cleaner)
 
 struct tt_Service SetBoolService = {
     .name = "SetBoolService",
@@ -21,10 +25,11 @@ struct tt_Service SetBoolService = {
 };
 
 int32_t SetBoolRequest_encode_size(struct SetBoolRequest* request) {
+    (void)request;       // NOLINT(misc-unused-parameters)
     return sizeof(bool); // encode data
 }
 
-int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, const int32_t len) {
+int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, int32_t len) {
     int32_t encoded = 0;
 
     // encode data
@@ -40,8 +45,9 @@ int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, 
     return encoded;
 }
 
-int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* payload, const int32_t len,
+int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* payload, int32_t len,
                               bool is_native_endian) {
+    (void)is_native_endian; // NOLINT(misc-unused-parameters)
     int32_t decoded = 0;
 
     // decode data
@@ -58,16 +64,17 @@ int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* pay
 }
 
 void SetBoolRequest_free(struct SetBoolRequest* request) {
+    (void)request; // NOLINT(misc-unused-parameters)
     // Do nothing
 }
 
 int32_t SetBoolResponse_encode_size(struct SetBoolResponse* response) {
-    return sizeof(bool) +                                            // encode success
-           sizeof(uint16_t) +                                        // encode message length
-           _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1; // encode message
+    return (int32_t)(sizeof(bool) +                                             // encode success
+                     sizeof(uint16_t) +                                         // encode message length
+                     _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1); // encode message
 }
 
-int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payload, const int32_t len) {
+int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payload, int32_t len) {
     int32_t encoded = 0;
 
     // encode success
@@ -88,8 +95,6 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
     uint16_t message_length = _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1; // including '\0'
     if (message_length > tt_MAX_STRING_LENGTH) {
         return -2;
-    } else {
-        ; // Do nothing
     }
 
     *(uint16_t*)payload = message_length;
@@ -114,7 +119,7 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
     return encoded;
 }
 
-int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* payload, const int32_t len,
+int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* payload, int32_t len,
                                bool is_native_endian) {
     int32_t decoded = 0;
 
@@ -162,3 +167,4 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
 void SetBoolResponse_free(struct SetBoolResponse* response) {
     // Do nothing
 }
+// NOLINTEND(misc-include-cleaner)

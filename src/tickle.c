@@ -681,7 +681,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 
     int entity_count = update_header->entity_count;
 
-    for (int i = 0; i < entity_count && head + sizeof(struct tt_UpdateEntity) + 2 * sizeof(uint16_t) < tail; i++) {
+    for (int i = 0; i < entity_count && head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateEntity));
 
         TT_LOG_DEBUG("  update_entity->id = %08x", update_entity->id);
@@ -1006,6 +1006,38 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     return true;
 }
 
+static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                               uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header) {
+    switch (submessage_header->type) {
+    case tt_SUBMESSAGE_TYPE_UPDATE:
+        if (!process_update(node, header, buffer, head, body_tail)) {
+            TT_LOG_ERROR("ERROR on update");
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_DATA:
+        if (!process_data(node, header, buffer, head, body_tail)) {
+            TT_LOG_ERROR("ERROR on data");
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_ACKNACK:
+        TT_LOG_ERROR("Not supported submessage type: %02x", submessage_header->type);
+        return false;
+    case tt_SUBMESSAGE_TYPE_CALLREQUEST:
+        if (!process_callrequest(node, header, buffer, head, body_tail)) {
+            TT_LOG_ERROR("ERROR on call request");
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
+        if (!process_callresponse(node, header, buffer, head, body_tail)) {
+            TT_LOG_ERROR("ERROR on call response");
+        }
+        return true;
+    default:
+        TT_LOG_ERROR("Illegal submessage type: %d, len: %02x", submessage_header->type, body_tail - head);
+        return false;
+    }
+}
+
 static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail) {
     // Decode header
     struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
@@ -1063,39 +1095,10 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
             return false;
         }
 
-        if (submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) {
-            switch (submessage_header->type) {
-            case tt_SUBMESSAGE_TYPE_UPDATE:
-                if (!process_update(node, header, buffer, head,
-                                    head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                    TT_LOG_ERROR("ERROR on update");
-                }
-                break;
-            case tt_SUBMESSAGE_TYPE_DATA:
-                if (!process_data(node, header, buffer, head,
-                                  head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                    TT_LOG_ERROR("ERROR on data");
-                }
-                break;
-            case tt_SUBMESSAGE_TYPE_ACKNACK:
-                TT_LOG_ERROR("Not supported submessage type: %02x", submessage_header->type);
-                return false;
-            case tt_SUBMESSAGE_TYPE_CALLREQUEST:
-                if (!process_callrequest(node, header, buffer, head,
-                                         head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                    TT_LOG_ERROR("ERROR on call request");
-                }
-                break;
-            case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
-                if (!process_callresponse(node, header, buffer, head,
-                                          head + submessage_header->length - sizeof(struct tt_SubmessageHeader))) {
-                    TT_LOG_ERROR("ERROR on call response");
-                }
-                break;
-            default:
-                TT_LOG_ERROR("Illegal submessage type: %d, len: %02x", submessage_header->type, tail - head);
-                return false;
-            }
+        const uint32_t body_tail = head + submessage_header->length - sizeof(struct tt_SubmessageHeader);
+        if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
+            !process_submessage(node, header, buffer, head, body_tail, submessage_header)) {
+            return false;
         }
 
         head += submessage_header->length - sizeof(struct tt_SubmessageHeader);

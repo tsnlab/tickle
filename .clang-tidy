@@ -1,11 +1,13 @@
 Checks: '-*,misc-*,modernize-*,-modernize-macro-to-enum,performance-*,readability-*,bugprone-*,-bugprone-easily-swappable-parameters,llvm-include-order'
 CheckOptions:
+  - key: bugprone-reserved-identifier.AllowedIdentifiers
+    value: '^_tt_.*'
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   - key: readability-identifier-naming.StructCase
     value: lower_case
   - key: readability-identifier-naming.StructIgnoredRegexp
-    value: '^tt_.*'
+    value: '^_?tt_.*|^(SetBool|UInt64).*'
   - key: readability-identifier-naming.EnumCase
     value: lower_case
   - key: readability-identifier-naming.EnumConstantCase
@@ -14,6 +16,8 @@ CheckOptions:
     value: '^tt_.*'
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: '^tt_.*|^(SetBool|UInt64).*'
   - key: readability-identifier-naming.TypedefIgnoredRegexp
     value: '^tt_.*'
   - key: readability-identifier-naming.VariableCase
@@ -21,7 +25,7 @@ CheckOptions:
   - key: readability-identifier-naming.GlobalVariableCase
     value: lower_case
   - key: readability-identifier-naming.GlobalVariableIgnoredRegexp
-    value: '^_?tt_.*'
+    value: '^_?tt_.*|^(SetBool|UInt64).*'
   - key: readability-identifier-naming.ConstantCase
     value: lower_case
   - key: readability-identifier-naming.MemberCase
