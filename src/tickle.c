@@ -12,6 +12,14 @@
 
 #define UNUSED(x) (void)(x)
 
+static tt_lock_state_t lock_endpoints(struct tt_Node* node) {
+    return tt_lock(&node->endpoint_lock);
+}
+
+static void unlock_endpoints(struct tt_Node* node, tt_lock_state_t state) {
+    tt_unlock(&node->endpoint_lock, state);
+}
+
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
 }
@@ -136,15 +144,67 @@ static bool decode_string(struct tt_Node* node, uint8_t* buffer, uint32_t* head,
     return true;
 }
 
-static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t id) {
-    for (int i = 0; i < node->endpoint_count; i++) {
+static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id) {
+    tt_lock_state_t state = lock_endpoints(node);
+
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
-        if (endpoint->kind == kind && endpoint->id == id) {
+        if (endpoint == NULL) {
+            continue;
+        }
+        if ((endpoint->kind == kind) && (endpoint->id == endpoint_id)) {
+            unlock_endpoints(node, state);
             return endpoint;
         }
     }
 
+    unlock_endpoints(node, state);
     return NULL;
+}
+
+static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
+    tt_lock_state_t state = lock_endpoints(node);
+
+    if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
+        uint32_t endpoint_count = node->endpoint_count;
+        unlock_endpoints(node, state);
+        TT_LOG_ERROR("Too many endpoints: %u", endpoint_count);
+        return tt_TOO_MANY_ENDPOINTS;
+    }
+
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* current = node->endpoints[i];
+        if ((current != NULL) && (current->kind == endpoint->kind) && (current->id == endpoint->id)) {
+            unlock_endpoints(node, state);
+            TT_LOG_ERROR("Duplicate endpoint kind=%u id=%u", endpoint->kind, endpoint->id);
+            return tt_DUPLICATE_ENDPOINT;
+        }
+    }
+
+    node->endpoints[node->endpoint_count++] = endpoint;
+    unlock_endpoints(node, state);
+
+    return tt_ERROR_NONE;
+}
+
+static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
+    tt_lock_state_t state = lock_endpoints(node);
+
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        if (node->endpoints[i] == endpoint) {
+            node->endpoint_count--;
+            if (i < node->endpoint_count) {
+                _tt_memmove(&node->endpoints[i], &node->endpoints[i + 1],
+                            sizeof(struct tt_Endpoint*) * (node->endpoint_count - i));
+            }
+            node->endpoints[node->endpoint_count] = NULL;
+            unlock_endpoints(node, state);
+            return true;
+        }
+    }
+
+    unlock_endpoints(node, state);
+    return false;
 }
 
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
@@ -189,7 +249,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 
 int32_t tt_Node_create(struct tt_Node* node) {
-    node->id = 0;
+    node->id = tt_NODE_ID_INVALID;
     node->endpoint_count = 0;
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
@@ -209,15 +269,19 @@ int32_t tt_Node_create(struct tt_Node* node) {
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
 
+    tt_lock_init(&node->endpoint_lock);
+
     node->id = tt_get_node_id();
 
-    if (node->id == 0) {
-        TT_LOG_ERROR("Cannot get node id from IP address");
+    if (node->id == tt_NODE_ID_INVALID || node->id == tt_NODE_ID_BROADCAST) {
+        TT_LOG_ERROR("Invalid node id: %u", node->id);
+        tt_lock_deinit(&node->endpoint_lock);
         return -2;
     }
 
     if (tt_bind(node) != 0) {
         TT_LOG_ERROR("Cannot bind");
+        tt_lock_deinit(&node->endpoint_lock);
         return -3;
     }
 
@@ -230,11 +294,15 @@ int32_t tt_Node_create(struct tt_Node* node) {
 
     if (!tt_Node_schedule(node, basetime, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
+        tt_close(node);
+        tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
 
     if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
+        tt_close(node);
+        tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
 
@@ -242,12 +310,12 @@ int32_t tt_Node_create(struct tt_Node* node) {
 }
 
 int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                              const char* name, tt_CLIENT_CALLBACK callback) {
-    // TODO: Check dup
+                              const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     endpoint->kind = tt_KIND_SERVICE_CLIENT;
-    endpoint->id = tt_hash_id(service->name, name);
-    endpoint->name = name;
+    endpoint->id = tt_hash_id(service->name, endpoint_name);
+    endpoint->topic_id = 0;
+    endpoint->name = endpoint_name;
     client->node = node;
     client->service = service;
     client->callback = callback;
@@ -256,18 +324,22 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
     client->cache_time = 0;
     client->latency = 0;
 
-    node->endpoints[node->endpoint_count++] = endpoint;
+    int32_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_ERROR_NONE) {
+        return result;
+    }
 
     return 0;
 }
 
 int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                              const char* name, tt_SERVER_CALLBACK callback) {
-    // TODO: Check dup
+                              const char* endpoint_name, tt_SERVER_CALLBACK callback) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
     endpoint->kind = tt_KIND_SERVICE_SERVER;
-    endpoint->id = tt_hash_id(service->name, name);
-    endpoint->name = name;
+    endpoint->id = tt_hash_id(service->name, endpoint_name);
+    // Service endpoints are not topic-based, so no topic routing identifier.
+    endpoint->topic_id = 0;
+    endpoint->name = endpoint_name;
     server->node = node;
     server->service = service;
     server->callback = callback;
@@ -276,41 +348,54 @@ int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, st
         server->cache[i] = NULL;
     }
 
-    node->endpoints[node->endpoint_count++] = endpoint;
+    int32_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_ERROR_NONE) {
+        return result;
+    }
     node->last_modified = tt_get_ns();
 
     return 0;
 }
 
 int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                 const char* name) {
-    // TODO: Check dup
+                                 const char* endpoint_name) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     endpoint->kind = tt_KIND_TOPIC_PUBLISHER;
-    endpoint->id = tt_hash_id(topic->name, name);
-    endpoint->name = name;
+    // Unique endpoint identity used for duplicate detection and endpoint lookup.
+    endpoint->id = tt_hash_id(topic->name, endpoint_name);
+    // Topic routing identity shared by all publishers/subscribers of the same topic.
+    endpoint->topic_id = tt_hash_id(topic->name, topic->name);
+    endpoint->name = endpoint_name;
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
 
-    node->endpoints[node->endpoint_count++] = endpoint;
+    int32_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_ERROR_NONE) {
+        return result;
+    }
     node->last_modified = tt_get_ns();
 
     return 0;
 }
 
 int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                  const char* name, tt_SUBSCRIBER_CALLBACK callback) {
-    // TODO: Check dup
+                                  const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     endpoint->kind = tt_KIND_TOPIC_SUBSCRIBER;
-    endpoint->id = tt_hash_id(topic->name, name);
-    endpoint->name = name;
+    // Unique endpoint identity used for duplicate detection and endpoint lookup.
+    endpoint->id = tt_hash_id(topic->name, endpoint_name);
+    // Topic routing identity shared by all publishers/subscribers of the same topic.
+    endpoint->topic_id = tt_hash_id(topic->name, topic->name);
+    endpoint->name = endpoint_name;
     sub->node = node;
     sub->topic = topic;
     sub->callback = callback;
 
-    node->endpoints[node->endpoint_count++] = endpoint;
+    int32_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_ERROR_NONE) {
+        return result;
+    }
 
     return 0;
 }
@@ -381,7 +466,7 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
         return -1;
     }
 
-    callrequest_header->id = endpoint->id;
+    callrequest_header->endpoint_id = endpoint->id;
     callrequest_header->seq_no = client->seq_no;
     callrequest_header->retry = 0;
 
@@ -441,12 +526,9 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 int32_t tt_Client_destroy(struct tt_Client* client) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
 
-    for (int i = 0; i < client->node->endpoint_count; i++) {
-        if (client->node->endpoints[i] == endpoint) {
-            client->node->endpoints[i] = NULL;
-            client->node->last_modified = tt_get_ns();
-            return 0;
-        }
+    if (remove_endpoint_from_node(client->node, endpoint)) {
+        client->node->last_modified = tt_get_ns();
+        return 0;
     }
 
     return -1;
@@ -455,12 +537,9 @@ int32_t tt_Client_destroy(struct tt_Client* client) {
 int32_t tt_Server_destroy(struct tt_Server* server) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
 
-    for (int i = 0; i < server->node->endpoint_count; i++) {
-        if (server->node->endpoints[i] == endpoint) {
-            server->node->endpoints[i] = NULL;
-            server->node->last_modified = tt_get_ns();
-            return 0;
-        }
+    if (remove_endpoint_from_node(server->node, endpoint)) {
+        server->node->last_modified = tt_get_ns();
+        return 0;
     }
 
     return -1;
@@ -484,7 +563,9 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return -1;
     }
 
-    data_header->id = endpoint->id;
+    // The embedded endpoint metadata (`endpoint`) caches the shared topic routing id.
+    // Data fan-out is routed by topic, not by the publisher endpoint identity.
+    data_header->topic_id = pub->endpoint.topic_id;
     data_header->seq_no = pub->seq_no + 1;
     data_header->timestamp = tt_get_ns();
 
@@ -515,12 +596,9 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 int32_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
 
-    for (int i = 0; i < pub->node->endpoint_count; i++) {
-        if (pub->node->endpoints[i] == endpoint) {
-            pub->node->endpoints[i] = NULL;
-            pub->node->last_modified = tt_get_ns();
-            return 0;
-        }
+    if (remove_endpoint_from_node(pub->node, endpoint)) {
+        pub->node->last_modified = tt_get_ns();
+        return 0;
     }
 
     return -1;
@@ -529,12 +607,9 @@ int32_t tt_Publisher_destroy(struct tt_Publisher* pub) {
 int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
 
-    for (int i = 0; i < sub->node->endpoint_count; i++) {
-        if (sub->node->endpoints[i] == endpoint) {
-            sub->node->endpoints[i] = NULL;
-            sub->node->last_modified = tt_get_ns();
-            return 0;
-        }
+    if (remove_endpoint_from_node(sub->node, endpoint)) {
+        sub->node->last_modified = tt_get_ns();
+        return 0;
     }
 
     return -1;
@@ -560,9 +635,20 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     update_header->last_modified = node->last_modified;
     update_header->entity_count = 0;
 
+    struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
+    tt_lock_state_t state = lock_endpoints(node);
+    uint32_t endpoint_count = node->endpoint_count;
+    for (uint32_t i = 0; i < endpoint_count; i++) {
+        endpoints[i] = node->endpoints[i];
+    }
+    unlock_endpoints(node, state);
+
     uint8_t entity_count = 0;
-    for (int i = 0; i < node->endpoint_count; i++) {
-        struct tt_Endpoint* endpoint = node->endpoints[i];
+    for (uint32_t i = 0; i < endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = endpoints[i];
+        if (endpoint == NULL) {
+            continue;
+        }
 
         const char* type;
 
@@ -588,7 +674,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
             goto done;
         }
 
-        update_entity->id = endpoint->id;
+        update_entity->endpoint_id = endpoint->id;
         update_entity->kind = endpoint->kind;
 
         if (!encode_string(node, type)) {
@@ -604,7 +690,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
         }
 
         if (++entity_count == UINT8_MAX) {
-            TT_LOG_WARNING("Maximum update entity: endpoint index: %d, endpoint count: %d", i, node->endpoint_count);
+            TT_LOG_WARNING("Maximum update entity: endpoint index: %u, endpoint count: %u", i, endpoint_count);
             break;
         }
     }
@@ -648,8 +734,8 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     TT_LOG_DEBUG("  update->last_modified = %lu", update_header->last_modified);
     TT_LOG_DEBUG("  update->entity_count = %u", update_header->entity_count);
 
-    if (node->updates[header->source] != NULL &&
-        node->updates[header->source]->last_modified == update_header->last_modified) {
+    if ((node->updates[header->source] != NULL) &&
+        (node->updates[header->source]->last_modified == update_header->last_modified)) {
         return true;
     }
 
@@ -684,7 +770,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     for (int i = 0; i < entity_count && head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateEntity));
 
-        TT_LOG_DEBUG("  update_entity->id = %08x", update_entity->id);
+        TT_LOG_DEBUG("  update_entity->endpoint_id = %08x", update_entity->endpoint_id);
         TT_LOG_DEBUG("  update_entity->kind = %d", update_entity->kind);
 
         uint16_t type_len = 0;
@@ -720,14 +806,28 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     }
 
     TT_LOG_DEBUG("  Data");
-    TT_LOG_DEBUG("  id: %08x", data_header->id);
+    TT_LOG_DEBUG("  topic_id: %08x", data_header->topic_id);
     TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
     TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->id);
-    if (endpoint != NULL) {
-        // Callback
-        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    struct tt_Subscriber* subscribers[tt_MAX_ENDPOINT_COUNT];
+    uint32_t subscriber_count = 0;
+
+    tt_lock_state_t state = lock_endpoints(node);
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        // Match subscribers by the shared topic routing id carried in the data header.
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER ||
+            endpoint->topic_id != data_header->topic_id) {
+            continue;
+        }
+
+        subscribers[subscriber_count++] = (struct tt_Subscriber*)endpoint;
+    }
+    unlock_endpoints(node, state);
+
+    for (uint32_t i = 0; i < subscriber_count; i++) {
+        struct tt_Subscriber* sub = subscribers[i];
         struct tt_Topic* topic = sub->topic;
 
         uint8_t data[topic->data_size];
@@ -736,8 +836,6 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
         sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
 
         topic->data_free((struct tt_Data*)data);
-
-        return true;
     }
 
     return true;
@@ -750,7 +848,7 @@ static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, ui
             struct tt_CallResponseHeader* callresponse_header =
                 (struct tt_CallResponseHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
-            if (submessage_header->receiver == receiver && callresponse_header->seq_no == seq_no) {
+            if ((submessage_header->receiver == receiver) && (callresponse_header->seq_no == seq_no)) {
                 return submessage_header;
             }
         }
@@ -806,7 +904,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
             }
         }
 
-        if (cache != NULL && server->cache[i] == NULL) {
+        if ((cache != NULL) && (server->cache[i] == NULL)) {
             struct tt_CallResponseHeader* callresponse_header =
                 (struct tt_CallResponseHeader*)((void*)cache + sizeof(struct tt_SubmessageHeader));
             server->cache[i] = cache;
@@ -851,11 +949,11 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     }
 
     TT_LOG_DEBUG("CallRequest");
-    TT_LOG_DEBUG("  id: %08x", callrequest_header->id);
+    TT_LOG_DEBUG("  id: %08x", callrequest_header->endpoint_id);
     TT_LOG_DEBUG("  seq_no: %d", callrequest_header->seq_no);
     TT_LOG_DEBUG("  retry: %d", callrequest_header->retry);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_SERVER, callrequest_header->id);
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_SERVER, callrequest_header->endpoint_id);
     if (endpoint == NULL) {
         return true;
     }
@@ -908,7 +1006,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
             return false;
         }
 
-        call_response_header->id = endpoint->id;
+        call_response_header->endpoint_id = endpoint->id;
         call_response_header->seq_no = callrequest_header->seq_no;
         call_response_header->retry = 0;
         call_response_header->return_code = return_code;
@@ -957,12 +1055,12 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     }
 
     TT_LOG_DEBUG("CallResponse");
-    TT_LOG_DEBUG("  id: %08x", callresponse_header->id);
+    TT_LOG_DEBUG("  id: %08x", callresponse_header->endpoint_id);
     TT_LOG_DEBUG("  seq_no: %d", callresponse_header->seq_no);
     TT_LOG_DEBUG("  retry: %d", callresponse_header->retry);
     TT_LOG_DEBUG("  return_code: %d", callresponse_header->return_code);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_CLIENT, callresponse_header->id);
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_CLIENT, callresponse_header->endpoint_id);
     if (endpoint == NULL) {
         return true;
     }
@@ -1133,7 +1231,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
         uint64_t time = tt_get_ns();
         struct tt_TCB* tcb = peek_scheduler(node);
 
-        if (tcb != NULL && tcb->time <= time) {
+        if ((tcb != NULL) && (tcb->time <= time)) {
             tcb->function(node, time, tcb->param);
             pop_scheduler(node);
         }
@@ -1145,18 +1243,22 @@ int32_t tt_Node_poll(struct tt_Node* node) {
 int32_t tt_Node_destroy(struct tt_Node* node) {
     uint64_t time = tt_get_ns();
 
-    for (int i = 0; i < node->endpoint_count; i++) {
+    tt_lock_state_t state = lock_endpoints(node);
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         node->endpoints[i] = NULL;
 
-        if (endpoint != NULL && (endpoint->kind & tt_KIND_SENDER) == tt_KIND_SENDER) {
+        if ((endpoint != NULL) && ((endpoint->kind & tt_KIND_SENDER) == tt_KIND_SENDER)) {
             node->last_modified = time;
         }
     }
+    node->endpoint_count = 0;
+    unlock_endpoints(node, state);
 
     node_update(node, time, NULL);
 
     tt_close(node);
+    tt_lock_deinit(&node->endpoint_lock);
 
     return 0;
 }

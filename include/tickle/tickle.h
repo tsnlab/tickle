@@ -42,6 +42,8 @@ struct tt_Node {
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
 
+    tt_lock_t endpoint_lock;
+
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_generic.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
@@ -49,7 +51,8 @@ struct tt_Node {
 
 struct tt_Endpoint {
     uint8_t kind;
-    uint32_t id; // hash(type + name)
+    uint32_t id;       // hash(endpoint kind + endpoint name)
+    uint32_t topic_id; // shared topic routing id for publisher/subscriber fan-out
     const char* name;
 };
 
@@ -60,8 +63,8 @@ struct tt_SubmessageHeader;
 
 typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code, struct tt_Response* response);
 
-struct tt_Client { // extends Endpoint
-    struct tt_Endpoint super;
+struct tt_Client { // embeds endpoint metadata
+    struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Service* service;
     tt_CLIENT_CALLBACK callback;
@@ -81,8 +84,8 @@ struct tt_Request;
 typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
                                      struct tt_Response* response);
 
-struct tt_Server { // extends Endpoint
-    struct tt_Endpoint super;
+struct tt_Server { // embeds endpoint metadata
+    struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Service* service;
     tt_SERVER_CALLBACK callback;
@@ -127,8 +130,8 @@ struct tt_Topic;
 
 struct tt_Data {};
 
-struct tt_Publisher { // extends Endpoint
-    struct tt_Endpoint super;
+struct tt_Publisher { // embeds endpoint metadata
+    struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Topic* topic;
 
@@ -140,8 +143,8 @@ struct tt_Subscriber;
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                        struct tt_Data* data);
 
-struct tt_Subscriber { // extends Endpoint
-    struct tt_Endpoint super;
+struct tt_Subscriber { // embeds endpoint metadata
+    struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Topic* topic;
     tt_SUBSCRIBER_CALLBACK callback;
@@ -181,13 +184,13 @@ uint64_t tt_get_ns();
  */
 int32_t tt_Node_create(struct tt_Node* node);
 int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                              const char* name, tt_CLIENT_CALLBACK callback);
+                              const char* endpoint_name, tt_CLIENT_CALLBACK callback);
 int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                              const char* name, tt_SERVER_CALLBACK callback);
+                              const char* endpoint_name, tt_SERVER_CALLBACK callback);
 int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                 const char* name);
+                                 const char* endpoint_name);
 int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                  const char* name, tt_SUBSCRIBER_CALLBACK callback);
+                                  const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
 
@@ -241,7 +244,7 @@ struct tt_UpdateHeader {
 } __attribute__((packed));
 
 struct tt_UpdateEntity {
-    uint32_t id; // endpoint id: hash(type + name)
+    uint32_t endpoint_id; // hash(endpoint kind + endpoint name)
     uint8_t kind;
     /* Dynamically allocated
     uint16_t type_len;
@@ -252,7 +255,7 @@ struct tt_UpdateEntity {
 } __attribute__((packed));
 
 struct tt_DataHeader {
-    uint32_t id; // endpoint id
+    uint32_t topic_id; // topic routing identity
     uint32_t seq_no;
     uint64_t timestamp;
     // type + name
@@ -266,17 +269,17 @@ struct tt_AckNackHeader {
 } __attribute__((packed));
 
 struct tt_CallRequestHeader {
-    uint32_t id;     // endpoint id
-    uint16_t seq_no; // sequence number
-    uint8_t retry;   // retry count from client side
+    uint32_t endpoint_id; // endpoint id for service server lookup
+    uint16_t seq_no;      // sequence number
+    uint8_t retry;        // retry count from client side
     // CDR
 } __attribute__((packed));
 
 struct tt_CallResponseHeader {
-    uint32_t id;        // endpoint id
-    uint16_t seq_no;    // sequence number
-    uint8_t retry;      // retry count from server side
-    int8_t return_code; // return code
+    uint32_t endpoint_id; // endpoint id for client routing
+    uint16_t seq_no;      // sequence number
+    uint8_t retry;        // retry count from server side
+    int8_t return_code;   // return code
     // type + name
     // CDR
 } __attribute__((packed));
