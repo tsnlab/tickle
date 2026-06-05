@@ -7,6 +7,7 @@
 #include <tickle/tickle.h>
 
 static const uint32_t k_test_endpoint_id = 0x1234;
+static const uint64_t k_test_data_timestamp = 1234;
 static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id);
 static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint);
 static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* endpoint);
@@ -145,6 +146,22 @@ static void test_find_endpoint_locks_endpoint_registry(void) {
     EXPECT_TRUE(test_mock_last_lock == &node.endpoint_lock);
 }
 
+static void expect_endpoint_registry_shifted_after_middle_remove(const struct tt_Node* node,
+                                                                 const struct tt_Endpoint* endpoint1,
+                                                                 const struct tt_Endpoint* endpoint3) {
+    EXPECT_EQ_U32(2, node->endpoint_count);
+    EXPECT_TRUE(node->endpoints[0] == endpoint1);
+    EXPECT_TRUE(node->endpoints[1] == endpoint3);
+    EXPECT_TRUE(node->endpoints[2] == NULL);
+}
+
+static void expect_endpoint_registry_lock_used(const struct tt_Node* node) {
+    EXPECT_EQ_U32(1, test_mock_lock_count);
+    EXPECT_EQ_U32(1, test_mock_unlock_count);
+    EXPECT_EQ_U32(0, test_mock_lock_depth);
+    EXPECT_TRUE(test_mock_last_lock == &node->endpoint_lock);
+}
+
 static void test_remove_endpoint_from_node_locks_and_shifts_endpoint_registry(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
@@ -161,14 +178,8 @@ static void test_remove_endpoint_from_node_locks_and_shifts_endpoint_registry(vo
     test_mock_reset();
 
     EXPECT_TRUE(remove_endpoint_from_node(&node, &endpoint2));
-    EXPECT_EQ_U32(2, node.endpoint_count);
-    EXPECT_TRUE(node.endpoints[0] == &endpoint1);
-    EXPECT_TRUE(node.endpoints[1] == &endpoint3);
-    EXPECT_TRUE(node.endpoints[2] == NULL);
-    EXPECT_EQ_U32(1, test_mock_lock_count);
-    EXPECT_EQ_U32(1, test_mock_unlock_count);
-    EXPECT_EQ_U32(0, test_mock_lock_depth);
-    EXPECT_TRUE(test_mock_last_lock == &node.endpoint_lock);
+    expect_endpoint_registry_shifted_after_middle_remove(&node, &endpoint1, &endpoint3);
+    expect_endpoint_registry_lock_used(&node);
 }
 
 static void test_tt_node_create_cleans_up_endpoint_lock_on_invalid_node_id(void) {
@@ -333,7 +344,7 @@ static int32_t test_data_decode(struct tt_Data* data, const uint8_t* payload, co
                                 bool is_native_endian) {
     (void)is_native_endian;
     _tt_memcpy(data, payload, len);
-    return len;
+    return (int32_t)len;
 }
 
 static void test_data_free(struct tt_Data* data) {
@@ -455,6 +466,11 @@ static void test_tt_node_create_subscriber_allows_multiple_endpoints_same_topic(
     EXPECT_TRUE(node.endpoints[1] == (struct tt_Endpoint*)&sub2);
 }
 
+static void expect_two_subscribers_dispatched(void) {
+    EXPECT_TRUE(g_sub1_invocations == 1);
+    EXPECT_TRUE(g_sub2_invocations == 1);
+}
+
 static void test_process_data_dispatches_same_topic_to_multiple_subscribers(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
@@ -489,7 +505,7 @@ static void test_process_data_dispatches_same_topic_to_multiple_subscribers(void
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)buffer;
     data_header->topic_id = tt_hash_id(topic.name, topic.name);
     data_header->seq_no = 1;
-    data_header->timestamp = 1234;
+    data_header->timestamp = k_test_data_timestamp;
     buffer[sizeof(struct tt_DataHeader) + 0] = 0x01;
     buffer[sizeof(struct tt_DataHeader) + 1] = 0x02;
     buffer[sizeof(struct tt_DataHeader) + 2] = 0x03;
@@ -500,14 +516,10 @@ static void test_process_data_dispatches_same_topic_to_multiple_subscribers(void
     header.version = tt_VERSION;
     header.source = 0;
 
-    bool ok = process_data(&node, &header, buffer, 0, sizeof(buffer));
-    EXPECT_TRUE(ok);
-    EXPECT_TRUE(g_sub1_invocations == 1);
-    EXPECT_TRUE(g_sub2_invocations == 1);
-    EXPECT_EQ_U32(1, test_mock_lock_count);
-    EXPECT_EQ_U32(1, test_mock_unlock_count);
-    EXPECT_EQ_U32(0, test_mock_lock_depth);
-    EXPECT_TRUE(test_mock_last_lock == &node.endpoint_lock);
+    bool process_ok = process_data(&node, &header, buffer, 0, sizeof(buffer));
+    EXPECT_TRUE(process_ok);
+    expect_two_subscribers_dispatched();
+    expect_endpoint_registry_lock_used(&node);
 }
 
 static void test_create_functions_return_too_many_when_endpoint_limit_reached(void) {

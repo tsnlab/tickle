@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <tickle/config.h> // NOLINT(misc-include-cleaner)
+#include <tickle/hal.h>    // NOLINT(misc-include-cleaner)
 #include <tickle/tickle.h> // NOLINT(misc-include-cleaner)
 
 // Define mock HAL symbols in one test binary so tickle.c can be included directly.

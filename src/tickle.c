@@ -194,7 +194,7 @@ static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* 
         if (node->endpoints[i] == endpoint) {
             node->endpoint_count--;
             if (i < node->endpoint_count) {
-                _tt_memmove(&node->endpoints[i], &node->endpoints[i + 1],
+                _tt_memmove((void*)&node->endpoints[i], (const void*)&node->endpoints[i + 1],
                             sizeof(struct tt_Endpoint*) * (node->endpoint_count - i));
             }
             node->endpoints[node->endpoint_count] = NULL;

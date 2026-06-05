@@ -4,11 +4,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h> // NOLINT(misc-include-cleaner)
-
 #if defined(__linux__)
-#include <pthread.h>
+#include <pthread.h> // NOLINT(misc-include-cleaner)
 #endif
+#include <string.h> // NOLINT(misc-include-cleaner)
 
 // Platform detection macros
 #if defined(__linux__)
@@ -51,11 +50,10 @@ struct tt_Node;
 struct tt_Header;
 
 #ifdef TT_PLATFORM_LINUX
-typedef pthread_mutex_t tt_lock_t;
+typedef pthread_mutex_t tt_lock_t; // NOLINT(misc-include-cleaner)
 #else
 typedef int tt_lock_t;
 #endif
-typedef uintptr_t tt_lock_state_t;
 
 // Platform-specific HAL structure inclusion
 #ifdef TT_PLATFORM_LINUX
@@ -63,6 +61,8 @@ typedef uintptr_t tt_lock_state_t;
 #elif defined(TT_PLATFORM_GENERIC)
 #include <tickle/hal_generic.h> // NOLINT(misc-include-cleaner)
 #endif
+
+typedef uintptr_t tt_lock_state_t;
 
 // Network functions
 void tt_lock_init(tt_lock_t* lock);
