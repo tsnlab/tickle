@@ -813,6 +813,8 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     struct tt_Subscriber* subscribers[tt_MAX_ENDPOINT_COUNT];
     uint32_t subscriber_count = 0;
 
+    // Snapshot matching subscribers while the endpoint registry is protected.
+    // Callbacks run after unlock so user code can create or remove endpoints without deadlocking.
     tt_lock_state_t state = lock_endpoints(node);
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
