@@ -36,6 +36,34 @@ uint64_t tt_get_ns() {
     return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
 }
 
+void tt_lock_init(tt_lock_t* lock) {
+    if (pthread_mutex_init(lock, NULL) != 0) {
+        perror("Cannot initialize node lock");
+    }
+}
+
+void tt_lock_deinit(tt_lock_t* lock) {
+    if (pthread_mutex_destroy(lock) != 0) {
+        perror("Cannot destroy node lock");
+    }
+}
+
+tt_lock_state_t tt_lock(tt_lock_t* lock) {
+    if (pthread_mutex_lock(lock) != 0) {
+        perror("Cannot lock node mutex");
+    }
+
+    return 0;
+}
+
+void tt_unlock(tt_lock_t* lock, tt_lock_state_t state) {
+    UNUSED(state);
+
+    if (pthread_mutex_unlock(lock) != 0) {
+        perror("Cannot unlock node mutex");
+    }
+}
+
 int32_t tt_get_node_id() {
     // Get unique node ID in the network using IP address x.x.x.id
     uint32_t broadcast_ip = inet_addr(_tt_CONFIG.broadcast);

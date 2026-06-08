@@ -4,6 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#if defined(__linux__)
+#include <pthread.h> // NOLINT(misc-include-cleaner)
+#endif
 #include <string.h> // NOLINT(misc-include-cleaner)
 
 // Platform detection macros
@@ -33,16 +36,24 @@
 #define REVERSE_MAGIC_VALUE (((uint16_t)'K' << 8) | 'T')
 
 enum tickle_error {
-    tt_ERROR_NONE = 0,
-    tt_CANNOT_CREATE_SOCK = -3,
-    tt_CANNOT_SET_REUSEADDR = -4,
-    tt_CANNOT_SET_BROADCAST = -5,
-    tt_CANNOT_SET_TIMEOUT = -6,
-    tt_CANNOT_BIND_SOCKET = -7,
+    tt_ERROR_NONE = 0,            // No error
+    tt_CANNOT_CREATE_SOCK = -3,   // Failed to create the underlying socket
+    tt_CANNOT_SET_REUSEADDR = -4, // Failed to enable socket address reuse
+    tt_CANNOT_SET_BROADCAST = -5, // Failed to enable broadcast on the socket
+    tt_CANNOT_SET_TIMEOUT = -6,   // Failed to configure socket timeout
+    tt_CANNOT_BIND_SOCKET = -7,   // Failed to bind socket to local address/port
+    tt_TOO_MANY_ENDPOINTS = -8,   // Node already has maximum endpoints registered
+    tt_DUPLICATE_ENDPOINT = -9,   // Endpoint kind+id already exists in node registry
 };
 
 struct tt_Node;
 struct tt_Header;
+
+#ifdef TT_PLATFORM_LINUX
+typedef pthread_mutex_t tt_lock_t; // NOLINT(misc-include-cleaner)
+#else
+typedef int tt_lock_t;
+#endif
 
 // Platform-specific HAL structure inclusion
 #ifdef TT_PLATFORM_LINUX
@@ -51,7 +62,13 @@ struct tt_Header;
 #include <tickle/hal_generic.h> // NOLINT(misc-include-cleaner)
 #endif
 
+typedef uintptr_t tt_lock_state_t;
+
 // Network functions
+void tt_lock_init(tt_lock_t* lock);
+void tt_lock_deinit(tt_lock_t* lock);
+tt_lock_state_t tt_lock(tt_lock_t* lock);
+void tt_unlock(tt_lock_t* lock, tt_lock_state_t state);
 int32_t tt_get_node_id();
 int32_t tt_bind(struct tt_Node* node);
 void tt_close(struct tt_Node* node);

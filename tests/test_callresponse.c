@@ -45,8 +45,8 @@ static void test_callresponse_updates_latency_from_cache_time_to_now(void) {
 
     struct tt_Client client;
     memset(&client, 0, sizeof(client));
-    client.super.kind = tt_KIND_SERVICE_CLIENT;
-    client.super.id = test_client_id;
+    client.endpoint.kind = tt_KIND_SERVICE_CLIENT;
+    client.endpoint.id = test_client_id;
     client.service = &service;
     client.callback = test_client_callback;
     client.cache = malloc(1);
@@ -65,7 +65,7 @@ static void test_callresponse_updates_latency_from_cache_time_to_now(void) {
 
     struct tt_CallResponseHeader response_header;
     memset(&response_header, 0, sizeof(response_header));
-    response_header.id = client.super.id;
+    response_header.endpoint_id = client.endpoint.id;
     response_header.seq_no = test_response_seq_no;
     response_header.return_code = (int8_t)test_return_code;
 

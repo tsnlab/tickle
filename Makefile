@@ -21,6 +21,8 @@ COVERAGE_FILES=$(foreach test,$(TEST_NAMES),$(TEST_OBJ)/$(test)-$(test).gcno)
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     PLATFORM := linux
+    CFLAGS += -pthread
+    LDFLAGS += -pthread
 else
     PLATFORM := generic
 endif
@@ -79,16 +81,16 @@ coverage-report:
 	mv *.gcov $(COVERAGE_DIR)/
 
 client:  examples/set_bool/SetBool.c examples/set_bool/client.c libtickle.a
-	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/client.c -L. -ltickle $(CFLAGS)
+	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/client.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
 
 server: examples/set_bool/SetBool.c examples/set_bool/server.c libtickle.a
-	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/server.c -L. -ltickle $(CFLAGS)
+	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/server.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
 
 publisher:  examples/uint64/UInt64.c examples/uint64/publisher.c libtickle.a
-	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/publisher.c -L. -ltickle $(CFLAGS)
+	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/publisher.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
 
 subscriber: examples/uint64/UInt64.c examples/uint64/subscriber.c libtickle.a
-	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber.c -L. -ltickle $(CFLAGS)
+	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
 
 lint:
 	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} \;
