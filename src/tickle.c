@@ -162,6 +162,62 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     return NULL;
 }
 
+static bool update_string_equals(const char* value, uint16_t value_len, const char* expected) {
+    if ((value == NULL) || (expected == NULL) || (value_len == 0)) {
+        return false;
+    }
+
+    size_t expected_len = strnlen(expected, tt_MAX_NAME_LENGTH);
+    if (expected_len + 1 != value_len) {
+        return false;
+    }
+
+    return memcmp(value, expected, value_len) == 0;
+}
+
+bool tt_Node_find_remote_endpoint(struct tt_Node* node, uint8_t remote_id, uint8_t kind, const char* type,
+                                  const char* name, uint32_t* endpoint_id) {
+    if ((node == NULL) || (type == NULL) || (name == NULL) || (endpoint_id == NULL)) {
+        return false;
+    }
+
+    struct tt_RemoteNode* remote = &node->remotes[remote_id];
+    if ((remote->update == NULL) || (remote->update_length < sizeof(struct tt_UpdateHeader))) {
+        return false;
+    }
+
+    uint8_t* buffer = (uint8_t*)remote->update;
+    uint32_t head = sizeof(struct tt_UpdateHeader);
+    uint32_t tail = remote->update_length;
+
+    for (uint32_t i = 0; i < remote->update->entity_count; i++) {
+        struct tt_UpdateEntity* update_entity = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateEntity));
+        if (update_entity == NULL) {
+            return false;
+        }
+
+        uint16_t type_len = 0;
+        char* update_type = NULL;
+        if (!decode_string(node, buffer, &head, tail, &type_len, &update_type)) {
+            return false;
+        }
+
+        uint16_t name_len = 0;
+        char* update_name = NULL;
+        if (!decode_string(node, buffer, &head, tail, &name_len, &update_name)) {
+            return false;
+        }
+
+        if ((update_entity->kind == kind) && update_string_equals(update_type, type_len, type) &&
+            update_string_equals(update_name, name_len, name)) {
+            *endpoint_id = update_entity->endpoint_id;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
     tt_lock_state_t state = lock_endpoints(node);
 
@@ -259,7 +315,10 @@ int32_t tt_Node_create(struct tt_Node* node) {
     node->last_modified = 0;
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        node->updates[i] = NULL;
+        node->remotes[i].last_seen = 0;
+        node->remotes[i].last_modified = 0;
+        node->remotes[i].update = NULL;
+        node->remotes[i].update_length = 0;
     }
 
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
@@ -615,6 +674,24 @@ int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     return -1;
 }
 
+struct update_entity_snapshot {
+    uint32_t endpoint_id;
+    uint8_t kind;
+    char type[tt_MAX_NAME_LENGTH + 1];
+    char name[tt_MAX_NAME_LENGTH + 1];
+};
+
+static void copy_update_entity_string(char* dest, const char* src) {
+    if (src == NULL) {
+        dest[0] = '\0';
+        return;
+    }
+
+    size_t length = _tt_strnlen(src, tt_MAX_NAME_LENGTH);
+    _tt_memcpy(dest, src, length);
+    dest[length] = '\0';
+}
+
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
@@ -632,29 +709,25 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
         goto done;
     }
 
-    update_header->last_modified = node->last_modified;
     update_header->entity_count = 0;
 
-    struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
+    struct update_entity_snapshot entities[tt_MAX_ENDPOINT_COUNT];
+    uint8_t entity_count = 0;
+
     tt_lock_state_t state = lock_endpoints(node);
     uint32_t endpoint_count = node->endpoint_count;
     for (uint32_t i = 0; i < endpoint_count; i++) {
-        endpoints[i] = node->endpoints[i];
-    }
-    unlock_endpoints(node, state);
-
-    uint8_t entity_count = 0;
-    for (uint32_t i = 0; i < endpoint_count; i++) {
-        struct tt_Endpoint* endpoint = endpoints[i];
+        struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL) {
             continue;
         }
 
-        const char* type;
+        const char* type = NULL;
 
         switch (endpoint->kind) {
         case tt_KIND_TOPIC_PUBLISHER:
             type = ((struct tt_Publisher*)endpoint)->topic->name;
+            break;
         case tt_KIND_TOPIC_SUBSCRIBER:
         case tt_KIND_SERVICE_CLIENT:
             continue;
@@ -662,11 +735,25 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
             type = ((struct tt_Server*)endpoint)->service->name;
             break;
         default:
+            unlock_endpoints(node, state);
             rollback(node, submessage_header);
             TT_LOG_ERROR("Illegal endpoint kind: %d", endpoint->kind);
             goto done;
         }
 
+        entities[entity_count].endpoint_id = endpoint->id;
+        entities[entity_count].kind = endpoint->kind;
+        copy_update_entity_string(entities[entity_count].type, type);
+        copy_update_entity_string(entities[entity_count].name, endpoint->name);
+
+        if (++entity_count == UINT8_MAX) {
+            TT_LOG_WARNING("Maximum update entity: endpoint index: %u, endpoint count: %u", i, endpoint_count);
+            break;
+        }
+    }
+    unlock_endpoints(node, state);
+
+    for (uint8_t i = 0; i < entity_count; i++) {
         struct tt_UpdateEntity* update_entity = encode(node, sizeof(struct tt_UpdateEntity));
         if (update_entity == NULL) {
             TT_LOG_ERROR("Lack of tx_buffer");
@@ -674,28 +761,24 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
             goto done;
         }
 
-        update_entity->endpoint_id = endpoint->id;
-        update_entity->kind = endpoint->kind;
+        update_entity->endpoint_id = entities[i].endpoint_id;
+        update_entity->kind = entities[i].kind;
 
-        if (!encode_string(node, type)) {
+        if (!encode_string(node, entities[i].type)) {
             TT_LOG_ERROR("Lack of tx_buffer");
             rollback(node, submessage_header);
             goto done;
         }
 
-        if (!encode_string(node, endpoint->name)) {
+        if (!encode_string(node, entities[i].name)) {
             TT_LOG_ERROR("Lack of tx_buffer");
             rollback(node, submessage_header);
             goto done;
-        }
-
-        if (++entity_count == UINT8_MAX) {
-            TT_LOG_WARNING("Maximum update entity: endpoint index: %u, endpoint count: %u", i, endpoint_count);
-            break;
         }
     }
 
     update_header->entity_count = entity_count;
+    update_header->last_modified = tt_get_ns();
 
     if (!end_encode(node, submessage_header, false)) {
         TT_LOG_ERROR("Lack of tx_buffer");
@@ -734,8 +817,11 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     TT_LOG_DEBUG("  update->last_modified = %lu", update_header->last_modified);
     TT_LOG_DEBUG("  update->entity_count = %u", update_header->entity_count);
 
-    if ((node->updates[header->source] != NULL) &&
-        (node->updates[header->source]->last_modified == update_header->last_modified)) {
+    struct tt_RemoteNode* remote = &node->remotes[header->source];
+    remote->last_seen = tt_get_ns();
+    remote->last_modified = update_header->last_modified;
+
+    if ((remote->update != NULL) && (remote->update->last_modified == update_header->last_modified)) {
         return true;
     }
 
@@ -747,28 +833,14 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 
     _tt_memcpy(new_update, update_header, length);
 
-    // Update
-    /*
-    struct tt_UpdateHeader* old_update = node->updates[header->source];
-    void* old_p = (void*)old_update + sizeof(struct tt_UpdateHeader);
-    struct tt_UpdateEntity* old_entity = old_p;
-    int old_entity_count = old_update->entity_count;
-    int old_entity_id = -1;
-
-    void* new_p = (void*)new_update + sizeof(struct tt_UpdateHeader);
-    struct tt_UpdateEntity* new_entity = new_p;
-    int new_entity_count = new_update->entity_count;
-    int new_entity_id = -1;
-
-    while (true) {
-
-    }
-    */
-
     int entity_count = update_header->entity_count;
 
-    for (int i = 0; i < entity_count && head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
+    for (int i = 0; i < entity_count; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateEntity));
+        if (update_entity == NULL) {
+            TT_LOG_ERROR("Illegal UpdateEntity");
+            goto fail;
+        }
 
         TT_LOG_DEBUG("  update_entity->endpoint_id = %08x", update_entity->endpoint_id);
         TT_LOG_DEBUG("  update_entity->kind = %d", update_entity->kind);
@@ -777,7 +849,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
         char* type = NULL;
         if (!decode_string(node, buffer, &head, tail, &type_len, &type)) {
             TT_LOG_ERROR("Cannot decode type");
-            return false;
+            goto fail;
         }
 
         TT_LOG_DEBUG("  update_entity->type: (%d)\"%s\"", type_len, type);
@@ -786,13 +858,21 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
         char* name = NULL;
         if (!decode_string(node, buffer, &head, tail, &name_len, &name)) {
             TT_LOG_ERROR("Cannot decode name");
-            return false;
+            goto fail;
         }
 
         TT_LOG_DEBUG("  update_entity->name: (%d)\"%s\"", name_len, name);
     }
 
+    struct tt_UpdateHeader* old_update = remote->update;
+    remote->update = new_update;
+    remote->update_length = length;
+    _tt_free(old_update);
     return true;
+
+fail:
+    _tt_free(new_update);
+    return false;
 }
 
 static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
@@ -1256,6 +1336,14 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
     }
     node->endpoint_count = 0;
     unlock_endpoints(node, state);
+
+    for (uint32_t i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        _tt_free(node->remotes[i].update);
+        node->remotes[i].update = NULL;
+        node->remotes[i].last_seen = 0;
+        node->remotes[i].last_modified = 0;
+        node->remotes[i].update_length = 0;
+    }
 
     node_update(node, time, NULL);
 
