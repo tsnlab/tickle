@@ -171,46 +171,6 @@ static void test_process_update_keeps_cached_update_when_last_modified_matches(v
     node.remotes[header.source].update = NULL;
 }
 
-static void test_find_remote_endpoint_uses_cached_update_type_and_name(void) {
-    struct tt_Node node;
-    memset(&node, 0, sizeof(node));
-
-    struct tt_Header header;
-    memset(&header, 0, sizeof(header));
-    header.source = k_test_update_source;
-
-    uint8_t update_buffer[tt_MAX_NAME_LENGTH * 4];
-    uint32_t update_length = build_test_update_payload(update_buffer, k_test_new_update_last_modified,
-                                                       k_test_new_update_endpoint_id, "service", "server");
-
-    test_mock_now = k_test_update_last_seen;
-    EXPECT_TRUE(process_update(&node, &header, update_buffer, 0, update_length));
-
-    uint32_t endpoint_id = 0;
-
-    EXPECT_TRUE(
-        tt_Node_find_remote_endpoint(&node, header.source, tt_KIND_SERVICE_SERVER, "service", "server", &endpoint_id));
-    EXPECT_EQ_U32(k_test_new_update_endpoint_id, endpoint_id);
-
-    endpoint_id = 0;
-    EXPECT_TRUE(
-        !tt_Node_find_remote_endpoint(&node, header.source, tt_KIND_SERVICE_SERVER, "service", "other", &endpoint_id));
-    EXPECT_EQ_U32(0, endpoint_id);
-
-    _tt_free(node.remotes[header.source].update);
-    node.remotes[header.source].update = NULL;
-}
-
-static void test_find_remote_endpoint_returns_false_without_cached_update(void) {
-    struct tt_Node node;
-    memset(&node, 0, sizeof(node));
-
-    uint32_t endpoint_id = 0;
-    EXPECT_TRUE(!tt_Node_find_remote_endpoint(&node, k_test_update_source, tt_KIND_SERVICE_SERVER, "service", "server",
-                                              &endpoint_id));
-    EXPECT_EQ_U32(0, endpoint_id);
-}
-
 static void test_tt_node_destroy_clears_cached_updates(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
@@ -240,8 +200,6 @@ int main(void) {
     test_node_update_encodes_topic_publisher_entity();
     test_process_update_replaces_cached_update_when_last_modified_changes();
     test_process_update_keeps_cached_update_when_last_modified_matches();
-    test_find_remote_endpoint_uses_cached_update_type_and_name();
-    test_find_remote_endpoint_returns_false_without_cached_update();
     test_tt_node_destroy_clears_cached_updates();
 
     if (test_result() != 0) {

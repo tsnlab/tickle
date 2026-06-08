@@ -162,62 +162,6 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     return NULL;
 }
 
-static bool update_string_equals(const char* value, uint16_t value_len, const char* expected) {
-    if ((value == NULL) || (expected == NULL) || (value_len == 0)) {
-        return false;
-    }
-
-    size_t expected_len = strnlen(expected, tt_MAX_NAME_LENGTH);
-    if (expected_len + 1 != value_len) {
-        return false;
-    }
-
-    return memcmp(value, expected, value_len) == 0;
-}
-
-bool tt_Node_find_remote_endpoint(struct tt_Node* node, uint8_t remote_id, uint8_t kind, const char* type,
-                                  const char* name, uint32_t* endpoint_id) {
-    if ((node == NULL) || (type == NULL) || (name == NULL) || (endpoint_id == NULL)) {
-        return false;
-    }
-
-    struct tt_RemoteNode* remote = &node->remotes[remote_id];
-    if ((remote->update == NULL) || (remote->update_length < sizeof(struct tt_UpdateHeader))) {
-        return false;
-    }
-
-    uint8_t* buffer = (uint8_t*)remote->update;
-    uint32_t head = sizeof(struct tt_UpdateHeader);
-    uint32_t tail = remote->update_length;
-
-    for (uint32_t i = 0; i < remote->update->entity_count; i++) {
-        struct tt_UpdateEntity* update_entity = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateEntity));
-        if (update_entity == NULL) {
-            return false;
-        }
-
-        uint16_t type_len = 0;
-        char* update_type = NULL;
-        if (!decode_string(node, buffer, &head, tail, &type_len, &update_type)) {
-            return false;
-        }
-
-        uint16_t name_len = 0;
-        char* update_name = NULL;
-        if (!decode_string(node, buffer, &head, tail, &name_len, &update_name)) {
-            return false;
-        }
-
-        if ((update_entity->kind == kind) && update_string_equals(update_type, type_len, type) &&
-            update_string_equals(update_name, name_len, name)) {
-            *endpoint_id = update_entity->endpoint_id;
-            return true;
-        }
-    }
-
-    return false;
-}
-
 static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
     tt_lock_state_t state = lock_endpoints(node);
 
@@ -687,6 +631,7 @@ static void copy_update_entity_string(char* dest, const char* src) {
         return;
     }
 
+    // Keep the snapshot bounded and NUL-terminated for later encoding.
     size_t length = _tt_strnlen(src, tt_MAX_NAME_LENGTH);
     _tt_memcpy(dest, src, length);
     dest[length] = '\0';
@@ -714,6 +659,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     struct update_entity_snapshot entities[tt_MAX_ENDPOINT_COUNT];
     uint8_t entity_count = 0;
 
+    // Snapshot endpoint metadata while locked, then encode without holding the lock.
     tt_lock_state_t state = lock_endpoints(node);
     uint32_t endpoint_count = node->endpoint_count;
     for (uint32_t i = 0; i < endpoint_count; i++) {

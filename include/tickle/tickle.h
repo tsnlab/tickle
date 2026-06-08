@@ -22,12 +22,12 @@ struct tt_Node;
 
 // Per-remote-node state learned from UPDATE messages. This is used to
 // check liveliness from the receiver's local clock and to keep the latest
-// discovery snapshot advertised by each remote sender.
+// endpoint snapshot advertised by each remote sender.
 struct tt_RemoteNode {
     uint64_t last_seen;             // Receiver-local timestamp of the last update message
-    uint64_t last_modified;         // Remote timestamp used for update message and discovery freshness
-    struct tt_UpdateHeader* update; // Cached discovery payload received from this remote node
-    uint32_t update_length;         // Length of the cached discovery payload
+    uint64_t last_modified;         // Remote timestamp used for update message freshness
+    struct tt_UpdateHeader* update; // Cached update payload received from this remote node
+    uint32_t update_length;         // Length of the cached update payload
 };
 
 // Task Control Block
@@ -203,8 +203,6 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
-bool tt_Node_find_remote_endpoint(struct tt_Node* node, uint8_t remote_id, uint8_t kind, const char* type,
-                                  const char* name, uint32_t* endpoint_id);
 
 int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
 int32_t tt_Client_destroy(struct tt_Client* client);
@@ -248,11 +246,9 @@ struct tt_SubmessageHeader {
 } __attribute__((packed));
 
 // Update messages advertise sender liveliness and carry a snapshot
-// of discoverable endpoints. Each entity includes endpoint_id, kind, type,
-// and name so discovery code can resolve remote endpoints by identity or by
-// human-readable service/topic metadata.
+// of endpoints for peers to cache alongside update freshness metadata.
 struct tt_UpdateHeader {
-    uint64_t last_modified; // Sender-local timestamp used for update message and discovery freshness
+    uint64_t last_modified; // Sender-local timestamp used for update message freshness
     uint8_t entity_count;
     /* Dynamically allocated
     struct tt_UpdateEntity entities[];
@@ -263,9 +259,7 @@ struct tt_UpdateEntity {
     uint32_t endpoint_id; // hash(endpoint kind + endpoint name)
     uint8_t kind;
     /* Dynamically allocated
-    type and name describe the remote endpoint for discovery/introspection.
-    They are parsed by tt_Node_find_remote_endpoint(). Liveliness still uses
-    update timestamps and last_seen instead.
+    type and name describe the remote endpoint carried in the update snapshot.
     uint16_t type_len;
     char type[];
     uint16_t name_len;
