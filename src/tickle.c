@@ -799,34 +799,20 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
     TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
 
-    struct tt_Subscriber* subscribers[tt_MAX_ENDPOINT_COUNT];
-    uint32_t subscriber_count = 0;
-
-    // Snapshot matching subscribers while the endpoint registry is protected.
-    // Callbacks run after unlock so user code can create or remove endpoints without deadlocking.
-    tt_lock_state_t state = lock_endpoints(node);
-    for (uint32_t i = 0; i < node->endpoint_count; i++) {
-        struct tt_Endpoint* endpoint = node->endpoints[i];
-        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER ||
-            endpoint->id != data_header->endpoint_id) {
-            continue;
-        }
-
-        subscribers[subscriber_count++] = (struct tt_Subscriber*)endpoint;
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->endpoint_id);
+    if (endpoint == NULL) {
+        return true;
     }
-    unlock_endpoints(node, state);
 
-    for (uint32_t i = 0; i < subscriber_count; i++) {
-        struct tt_Subscriber* sub = subscribers[i];
-        struct tt_Topic* topic = sub->topic;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    struct tt_Topic* topic = sub->topic;
 
-        uint8_t data[topic->data_size];
-        int32_t decoded =
-            topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
-        sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
+    uint8_t data[topic->data_size];
+    int32_t decoded =
+        topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
+    sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
 
-        topic->data_free((struct tt_Data*)data);
-    }
+    topic->data_free((struct tt_Data*)data);
 
     return true;
 }
