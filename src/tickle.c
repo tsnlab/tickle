@@ -747,24 +747,6 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 
     _tt_memcpy(new_update, update_header, length);
 
-    // Update
-    /*
-    struct tt_UpdateHeader* old_update = node->updates[header->source];
-    void* old_p = (void*)old_update + sizeof(struct tt_UpdateHeader);
-    struct tt_UpdateEntity* old_entity = old_p;
-    int old_entity_count = old_update->entity_count;
-    int old_entity_id = -1;
-
-    void* new_p = (void*)new_update + sizeof(struct tt_UpdateHeader);
-    struct tt_UpdateEntity* new_entity = new_p;
-    int new_entity_count = new_update->entity_count;
-    int new_entity_id = -1;
-
-    while (true) {
-
-    }
-    */
-
     int entity_count = update_header->entity_count;
 
     for (int i = 0; i < entity_count && head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
@@ -777,6 +759,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
         char* type = NULL;
         if (!decode_string(node, buffer, &head, tail, &type_len, &type)) {
             TT_LOG_ERROR("Cannot decode type");
+            _tt_free(new_update);
             return false;
         }
 
@@ -786,11 +769,15 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
         char* name = NULL;
         if (!decode_string(node, buffer, &head, tail, &name_len, &name)) {
             TT_LOG_ERROR("Cannot decode name");
+            _tt_free(new_update);
             return false;
         }
 
         TT_LOG_DEBUG("  update_entity->name: (%d)\"%s\"", name_len, name);
     }
+
+    _tt_free(node->updates[header->source]);
+    node->updates[header->source] = new_update;
 
     return true;
 }
@@ -1258,6 +1245,11 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
     unlock_endpoints(node, state);
 
     node_update(node, time, NULL);
+
+    for (uint32_t i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        _tt_free(node->updates[i]);
+        node->updates[i] = NULL;
+    }
 
     tt_close(node);
     tt_lock_deinit(&node->endpoint_lock);
