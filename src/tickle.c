@@ -314,7 +314,6 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     endpoint->kind = tt_KIND_SERVICE_CLIENT;
     endpoint->id = tt_hash_id(service->name, endpoint_name);
-    endpoint->topic_id = 0;
     endpoint->name = endpoint_name;
     client->node = node;
     client->service = service;
@@ -337,8 +336,6 @@ int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, st
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
     endpoint->kind = tt_KIND_SERVICE_SERVER;
     endpoint->id = tt_hash_id(service->name, endpoint_name);
-    // Service endpoints are not topic-based, so no topic routing identifier.
-    endpoint->topic_id = 0;
     endpoint->name = endpoint_name;
     server->node = node;
     server->service = service;
@@ -361,10 +358,7 @@ int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub,
                                  const char* endpoint_name) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     endpoint->kind = tt_KIND_TOPIC_PUBLISHER;
-    // Unique endpoint identity used for duplicate detection and endpoint lookup.
     endpoint->id = tt_hash_id(topic->name, endpoint_name);
-    // Topic routing identity shared by all publishers/subscribers of the same topic.
-    endpoint->topic_id = tt_hash_id(topic->name, topic->name);
     endpoint->name = endpoint_name;
     pub->node = node;
     pub->topic = topic;
@@ -383,10 +377,7 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     endpoint->kind = tt_KIND_TOPIC_SUBSCRIBER;
-    // Unique endpoint identity used for duplicate detection and endpoint lookup.
     endpoint->id = tt_hash_id(topic->name, endpoint_name);
-    // Topic routing identity shared by all publishers/subscribers of the same topic.
-    endpoint->topic_id = tt_hash_id(topic->name, topic->name);
     endpoint->name = endpoint_name;
     sub->node = node;
     sub->topic = topic;
@@ -563,9 +554,7 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return -1;
     }
 
-    // The embedded endpoint metadata (`endpoint`) caches the shared topic routing id.
-    // Data fan-out is routed by topic, not by the publisher endpoint identity.
-    data_header->topic_id = pub->endpoint.topic_id;
+    data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
     data_header->timestamp = tt_get_ns();
 
@@ -806,7 +795,7 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     }
 
     TT_LOG_DEBUG("  Data");
-    TT_LOG_DEBUG("  topic_id: %08x", data_header->topic_id);
+    TT_LOG_DEBUG("  endpoint_id: %08x", data_header->endpoint_id);
     TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
     TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
 
@@ -818,9 +807,8 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     tt_lock_state_t state = lock_endpoints(node);
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
-        // Match subscribers by the shared topic routing id carried in the data header.
         if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER ||
-            endpoint->topic_id != data_header->topic_id) {
+            endpoint->id != data_header->endpoint_id) {
             continue;
         }
 

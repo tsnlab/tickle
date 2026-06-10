@@ -283,6 +283,25 @@ static void test_tt_node_create_publisher_allows_multiple_endpoints_same_topic(v
     EXPECT_TRUE(node.endpoints[1] == (struct tt_Endpoint*)&pub2);
 }
 
+static void test_tt_node_create_publisher_duplicate_name_same_topic_returns_duplicate_endpoint(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+
+    struct tt_Topic topic;
+    memset(&topic, 0, sizeof(topic));
+    topic.name = "topic";
+
+    struct tt_Publisher pub1;
+    memset(&pub1, 0, sizeof(pub1));
+    struct tt_Publisher pub2;
+    memset(&pub2, 0, sizeof(pub2));
+
+    EXPECT_TRUE(tt_Node_create_publisher(&node, &pub1, &topic, "publisher") == tt_ERROR_NONE);
+    EXPECT_TRUE(tt_Node_create_publisher(&node, &pub2, &topic, "publisher") == tt_DUPLICATE_ENDPOINT);
+    EXPECT_EQ_U32(1, node.endpoint_count);
+    EXPECT_TRUE(node.endpoints[0] == (struct tt_Endpoint*)&pub1);
+}
+
 static void test_tt_node_create_client_duplicate_returns_duplicate_endpoint(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
@@ -466,12 +485,31 @@ static void test_tt_node_create_subscriber_allows_multiple_endpoints_same_topic(
     EXPECT_TRUE(node.endpoints[1] == (struct tt_Endpoint*)&sub2);
 }
 
-static void expect_two_subscribers_dispatched(void) {
-    EXPECT_TRUE(g_sub1_invocations == 1);
-    EXPECT_TRUE(g_sub2_invocations == 1);
+static void test_tt_node_create_subscriber_duplicate_name_same_topic_returns_duplicate_endpoint(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+
+    struct tt_Topic topic;
+    memset(&topic, 0, sizeof(topic));
+    topic.name = "topic";
+
+    struct tt_Subscriber sub1;
+    memset(&sub1, 0, sizeof(sub1));
+    struct tt_Subscriber sub2;
+    memset(&sub2, 0, sizeof(sub2));
+
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub1, &topic, "subscriber", NULL) == tt_ERROR_NONE);
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub2, &topic, "subscriber", NULL) == tt_DUPLICATE_ENDPOINT);
+    EXPECT_EQ_U32(1, node.endpoint_count);
+    EXPECT_TRUE(node.endpoints[0] == (struct tt_Endpoint*)&sub1);
 }
 
-static void test_process_data_dispatches_same_topic_to_multiple_subscribers(void) {
+static void expect_only_first_subscriber_dispatched(void) {
+    EXPECT_TRUE(g_sub1_invocations == 1);
+    EXPECT_TRUE(g_sub2_invocations == 0);
+}
+
+static void test_process_data_dispatches_matching_endpoint_to_subscriber(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
 
@@ -503,7 +541,7 @@ static void test_process_data_dispatches_same_topic_to_multiple_subscribers(void
 
     uint8_t buffer[sizeof(struct tt_DataHeader) + 4];
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)buffer;
-    data_header->topic_id = tt_hash_id(topic.name, topic.name);
+    data_header->endpoint_id = tt_hash_id(topic.name, "subscriber1");
     data_header->seq_no = 1;
     data_header->timestamp = k_test_data_timestamp;
     buffer[sizeof(struct tt_DataHeader) + 0] = 0x01;
@@ -518,7 +556,7 @@ static void test_process_data_dispatches_same_topic_to_multiple_subscribers(void
 
     bool process_ok = process_data(&node, &header, buffer, 0, sizeof(buffer));
     EXPECT_TRUE(process_ok);
-    expect_two_subscribers_dispatched();
+    expect_only_first_subscriber_dispatched();
     expect_endpoint_registry_lock_used(&node);
 }
 
@@ -570,9 +608,11 @@ int main(void) {
     test_tt_node_create_server_duplicate_returns_duplicate_endpoint();
     test_tt_node_create_publisher_adds_endpoint();
     test_tt_node_create_publisher_allows_multiple_endpoints_same_topic();
+    test_tt_node_create_publisher_duplicate_name_same_topic_returns_duplicate_endpoint();
     test_tt_node_create_subscriber_adds_endpoint();
     test_tt_node_create_subscriber_allows_multiple_endpoints_same_topic();
-    test_process_data_dispatches_same_topic_to_multiple_subscribers();
+    test_tt_node_create_subscriber_duplicate_name_same_topic_returns_duplicate_endpoint();
+    test_process_data_dispatches_matching_endpoint_to_subscriber();
     test_process_callrequest_finds_correct_service_server_endpoint();
     test_create_functions_return_too_many_when_endpoint_limit_reached();
 

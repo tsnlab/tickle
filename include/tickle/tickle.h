@@ -51,8 +51,7 @@ struct tt_Node {
 
 struct tt_Endpoint {
     uint8_t kind;
-    uint32_t id;       // hash(endpoint kind + endpoint name)
-    uint32_t topic_id; // shared topic routing id for publisher/subscriber fan-out
+    uint32_t id; // hash(topic/service name + endpoint name)
     const char* name;
 };
 
@@ -244,7 +243,7 @@ struct tt_UpdateHeader {
 } __attribute__((packed));
 
 struct tt_UpdateEntity {
-    uint32_t endpoint_id; // hash(endpoint kind + endpoint name)
+    uint32_t endpoint_id; // hash(topic/service name + endpoint name)
     uint8_t kind;
     /* Dynamically allocated
     uint16_t type_len;
@@ -255,7 +254,7 @@ struct tt_UpdateEntity {
 } __attribute__((packed));
 
 struct tt_DataHeader {
-    uint32_t topic_id; // topic routing identity
+    uint32_t endpoint_id; // endpoint id for subscriber lookup
     uint32_t seq_no;
     uint64_t timestamp;
     // type + name
