@@ -6,10 +6,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "encoding.h"
-
-static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                           uint32_t tail);
+#include "../src/encoding.h"
 
 // This file owns the shared test assertion state for this test binary.
 #define TEST_COMMON_DEFINE_STORAGE
@@ -18,6 +15,13 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 // This file owns the HAL/time mocks used by the included tickle.c implementation.
 #define TEST_MOCK_DEFINE_STORAGE
 #include "test_mock.h" // NOLINT(misc-include-cleaner)
+
+// Include the implementation to exercise static update helpers directly.
+// NOLINTNEXTLINE(bugprone-suspicious-include)
+#include "../src/tickle.c"
+
+// Test assertion macros and protocol constants intentionally trip these clang-tidy checks.
+// NOLINTBEGIN(readability-function-cognitive-complexity,readability-magic-numbers,performance-no-int-to-ptr)
 
 static uint32_t write_update_buffer(uint8_t* buffer, uint32_t buffer_size, uint64_t last_modified, uint32_t endpoint_id,
                                     uint8_t kind, const char* type, const char* name) {
@@ -61,6 +65,36 @@ static void expect_cached_update_entity(struct tt_UpdateHeader* update, uint64_t
     uint16_t name_len = *(uint16_t*)cursor;
     cursor += sizeof(name_len);
     char* name = (char*)cursor;
+    EXPECT_EQ_U32(_tt_strnlen(expected_name, tt_MAX_STRING_LENGTH) + 1, name_len);
+    EXPECT_TRUE(_tt_strncmp(name, expected_name, name_len) == 0);
+}
+
+static void expect_encoded_update_entity(uint8_t* buffer, uint32_t* head, uint32_t tail, uint32_t endpoint_id,
+                                         uint8_t kind, const char* expected_type, const char* expected_name) {
+    struct tt_UpdateEntity* entity = tt_decode_buffer(buffer, head, tail, sizeof(*entity));
+    EXPECT_TRUE(entity != NULL);
+    if (entity == NULL) {
+        return;
+    }
+
+    EXPECT_EQ_U32(endpoint_id, entity->endpoint_id);
+    EXPECT_EQ_U32(kind, entity->kind);
+
+    uint16_t type_len = 0;
+    char* type = NULL;
+    EXPECT_TRUE(tt_decode_string(buffer, head, tail, &type_len, &type));
+    if (type == NULL) {
+        return;
+    }
+    EXPECT_EQ_U32(_tt_strnlen(expected_type, tt_MAX_STRING_LENGTH) + 1, type_len);
+    EXPECT_TRUE(_tt_strncmp(type, expected_type, type_len) == 0);
+
+    uint16_t name_len = 0;
+    char* name = NULL;
+    EXPECT_TRUE(tt_decode_string(buffer, head, tail, &name_len, &name));
+    if (name == NULL) {
+        return;
+    }
     EXPECT_EQ_U32(_tt_strnlen(expected_name, tt_MAX_STRING_LENGTH) + 1, name_len);
     EXPECT_TRUE(_tt_strncmp(name, expected_name, name_len) == 0);
 }
@@ -120,12 +154,77 @@ static void test_process_update_replaces_cached_update_without_losing_existing_o
     node.updates[header.source] = NULL;
 }
 
-// Include the implementation to exercise static process_update directly.
-// NOLINTNEXTLINE(bugprone-suspicious-include)
-#include "../src/tickle.c"
+static void test_node_update_encodes_all_endpoint_kinds_with_last_modified(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    test_mock_now = 10;
+    EXPECT_TRUE(tt_Node_create(&node) == 0);
+
+    struct tt_Service service = {.name = "service"};
+    struct tt_Topic topic = {.name = "topic"};
+    struct tt_Client client;
+    struct tt_Server server;
+    struct tt_Publisher publisher;
+    struct tt_Subscriber subscriber;
+
+    test_mock_now = 100;
+    EXPECT_TRUE(tt_Node_create_client(&node, &client, &service, "client", NULL) == 0);
+    EXPECT_TRUE(node.last_modified == 100);
+
+    test_mock_now = 200;
+    EXPECT_TRUE(tt_Node_create_server(&node, &server, &service, "server", NULL) == 0);
+    EXPECT_TRUE(node.last_modified == 200);
+
+    test_mock_now = 300;
+    EXPECT_TRUE(tt_Node_create_publisher(&node, &publisher, &topic, "publisher") == 0);
+    EXPECT_TRUE(node.last_modified == 300);
+
+    test_mock_now = 400;
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &subscriber, &topic, "subscriber", NULL) == 0);
+    EXPECT_TRUE(node.last_modified == 400);
+
+    uint32_t tx_start = node.tx_tail;
+    node_update(&node, 1000, NULL);
+    EXPECT_TRUE(node.tx_tail > tx_start);
+
+    uint32_t head = sizeof(struct tt_Header);
+    struct tt_SubmessageHeader* submessage_header =
+        tt_decode_buffer(node.tx_buffer, &head, node.tx_tail, sizeof(*submessage_header));
+    EXPECT_TRUE(submessage_header != NULL);
+    if (submessage_header == NULL) {
+        return;
+    }
+
+    EXPECT_EQ_U32(tt_SUBMESSAGE_TYPE_UPDATE, submessage_header->type);
+    EXPECT_EQ_U32(tt_SUBMESSAGE_ID_ALL, submessage_header->receiver);
+
+    uint32_t update_tail = sizeof(struct tt_Header) + submessage_header->length;
+    struct tt_UpdateHeader* update_header =
+        tt_decode_buffer(node.tx_buffer, &head, update_tail, sizeof(*update_header));
+    EXPECT_TRUE(update_header != NULL);
+    if (update_header == NULL) {
+        return;
+    }
+
+    EXPECT_TRUE(update_header->last_modified == 400);
+    EXPECT_EQ_U32(4, update_header->entity_count);
+
+    expect_encoded_update_entity(node.tx_buffer, &head, update_tail, client.endpoint.id, tt_KIND_SERVICE_CLIENT,
+                                 "service", "client");
+    expect_encoded_update_entity(node.tx_buffer, &head, update_tail, server.endpoint.id, tt_KIND_SERVICE_SERVER,
+                                 "service", "server");
+    expect_encoded_update_entity(node.tx_buffer, &head, update_tail, publisher.endpoint.id, tt_KIND_TOPIC_PUBLISHER,
+                                 "topic", "publisher");
+    expect_encoded_update_entity(node.tx_buffer, &head, update_tail, subscriber.endpoint.id, tt_KIND_TOPIC_SUBSCRIBER,
+                                 "topic", "subscriber");
+}
+
+// NOLINTEND(readability-function-cognitive-complexity,readability-magic-numbers,performance-no-int-to-ptr)
 
 int main(void) {
     test_process_update_replaces_cached_update_without_losing_existing_on_error();
+    test_node_update_encodes_all_endpoint_kinds_with_last_modified();
 
     if (test_result() != 0) {
         return 1;

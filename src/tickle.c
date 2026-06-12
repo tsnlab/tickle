@@ -207,6 +207,21 @@ static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* 
     return false;
 }
 
+static const char* endpoint_type_name(struct tt_Endpoint* endpoint) {
+    switch (endpoint->kind) {
+    case tt_KIND_TOPIC_PUBLISHER:
+        return ((struct tt_Publisher*)endpoint)->topic->name;
+    case tt_KIND_TOPIC_SUBSCRIBER:
+        return ((struct tt_Subscriber*)endpoint)->topic->name;
+    case tt_KIND_SERVICE_CLIENT:
+        return ((struct tt_Client*)endpoint)->service->name;
+    case tt_KIND_SERVICE_SERVER:
+        return ((struct tt_Server*)endpoint)->service->name;
+    default:
+        return NULL;
+    }
+}
+
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
     if (node->scheduler_tail + 1 >= tt_MAX_SCHEDULER_LENGTH) {
@@ -329,6 +344,8 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
         return result;
     }
 
+    node->last_modified = tt_get_ns();
+
     return 0;
 }
 
@@ -352,6 +369,7 @@ int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, st
     if (result != tt_ERROR_NONE) {
         return result;
     }
+
     node->last_modified = tt_get_ns();
 
     return 0;
@@ -374,6 +392,7 @@ int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub,
     if (result != tt_ERROR_NONE) {
         return result;
     }
+
     node->last_modified = tt_get_ns();
 
     return 0;
@@ -396,6 +415,8 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
     if (result != tt_ERROR_NONE) {
         return result;
     }
+
+    node->last_modified = tt_get_ns();
 
     return 0;
 }
@@ -650,18 +671,8 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
             continue;
         }
 
-        const char* type;
-
-        switch (endpoint->kind) {
-        case tt_KIND_TOPIC_PUBLISHER:
-            type = ((struct tt_Publisher*)endpoint)->topic->name;
-        case tt_KIND_TOPIC_SUBSCRIBER:
-        case tt_KIND_SERVICE_CLIENT:
-            continue;
-        case tt_KIND_SERVICE_SERVER:
-            type = ((struct tt_Server*)endpoint)->service->name;
-            break;
-        default:
+        const char* type = endpoint_type_name(endpoint);
+        if (type == NULL) {
             rollback(node, submessage_header);
             TT_LOG_ERROR("Illegal endpoint kind: %d", endpoint->kind);
             goto done;
