@@ -3,6 +3,8 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
+#include "log.h"
+
 // This implementation relies on transitive includes from <tickle/hal.h> and <tickle/tickle.h>.
 // NOLINTBEGIN(misc-include-cleaner)
 
@@ -17,8 +19,15 @@ bool tt_is_reverse_endian(struct tt_Header* header) {
 
 // Hash function
 uint32_t tt_hash_id(const char* type, const char* name) {
-    uint8_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH);
-    uint8_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH);
+    uint8_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH + 1);
+    uint8_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH + 1);
+
+    if (type_len > tt_MAX_NAME_LENGTH) {
+        TT_LOG_ERROR("Length of \"%s\" exceeds maximum string length %u.", type, tt_MAX_NAME_LENGTH);
+    }
+    if (name_len > tt_MAX_NAME_LENGTH) {
+        TT_LOG_ERROR("Length of \"%s\" exceeds maximum string length %u.", name, tt_MAX_NAME_LENGTH);
+    }
 
     uint32_t hash = 0;
     ((uint8_t*)&hash)[1] = type_len;
