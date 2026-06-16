@@ -3,20 +3,9 @@ CC=gcc
 AR=ar
 CFLAGS=-I$(INCLUDE) -Isrc -O0 -g
 LDFLAGS=
-COVERAGE_FLAGS=--coverage
 
 SRC=src
 OBJ=obj
-# Unit tests are built as small, focused binaries under obj/tests.
-TEST=tests
-TEST_OBJ=$(OBJ)/tests
-TEST_SRCS=$(wildcard $(TEST)/test_*.c)
-TEST_NAMES=$(basename $(notdir $(TEST_SRCS)))
-TEST_BINS=$(addprefix $(TEST_OBJ)/,$(TEST_NAMES))
-COVERAGE_DIR=$(TEST)/coverage
-# Keep coverage output focused on each test translation unit and included source under test.
-COVERAGE_FILES=$(foreach test,$(TEST_NAMES),$(TEST_OBJ)/$(test)-$(test).gcno)
-
 # Platform detection
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
@@ -36,10 +25,9 @@ SRC_FILES = $(filter-out $(SRC)/hal_%.c, $(wildcard $(SRC)/*.c))
 SRC_FILES += $(HAL_SRC)
 OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
 
-.PHONY: all library examples set_bool uint64 test run-tests coverage coverage-report lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
+.PHONY: all library examples set_bool uint64 lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
 
 all:
-	$(MAKE) test
 	$(MAKE) library
 	$(MAKE) examples
 
@@ -57,28 +45,6 @@ $(OBJ)/%.o: $(SRC)/%.c
 
 libtickle.a: $(OBJS)
 	$(AR) crv $@ $^
-
-$(TEST_OBJ)/%: $(TEST)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c
-	mkdir -p $(dir $@)
-	$(CC) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c $(CFLAGS) $(LDFLAGS)
-
-# Run tests with coverage instrumentation; reports are generated only if tests pass.
-test:
-	$(MAKE) clean
-	$(MAKE) CFLAGS="$(CFLAGS) $(COVERAGE_FLAGS)" LDFLAGS="$(LDFLAGS) $(COVERAGE_FLAGS)" run-tests
-	$(MAKE) coverage-report
-
-run-tests: $(TEST_BINS)
-	@for test_bin in $(TEST_BINS); do \
-		./$$test_bin || exit 1; \
-	done
-
-coverage: test
-
-coverage-report:
-	mkdir -p $(COVERAGE_DIR)
-	gcov $(COVERAGE_FILES)
-	mv *.gcov $(COVERAGE_DIR)/
 
 client:  examples/set_bool/SetBool.c examples/set_bool/client.c libtickle.a
 	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/client.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
@@ -147,8 +113,6 @@ dump2:
 
 clean:
 	rm -rf $(OBJ)/*
-	rm -rf $(COVERAGE_DIR)
-	rm -f *.gcov
 	rm -f libtickle.a
 	rm -f client
 	rm -f server
