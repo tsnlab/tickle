@@ -1238,3 +1238,205 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
 
     return 0;
 }
+
+// below are simplified implementation of API functions for ROS 2 integration test.
+// every function must be replaced by complete implementation later.
+
+#include <poll.h>
+#include <tickle/temporary_api.h>
+
+static bool temp_process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                         uint32_t tail, void* destination_buffer, uint64_t* timestamp) {
+    uint32_t length = tail - head;
+
+    struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
+    if (data_header == NULL) {
+        TT_LOG_ERROR("  Illegal DataHeader");
+        return false;
+    }
+
+    TT_LOG_DEBUG("  Data");
+    TT_LOG_DEBUG("  endpoint_id: %08x", data_header->endpoint_id);
+    TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
+    TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
+
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->endpoint_id);
+    if (endpoint == NULL) {
+        return true;
+    }
+
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    struct tt_Topic* topic = sub->topic;
+
+    int32_t decoded =
+        topic->data_decode((struct tt_Data*)destination_buffer, buffer + head, tail - head, tt_is_native_endian(header));
+
+    *timestamp = data_header->timestamp;
+    return true;
+}
+
+static bool temp_process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                               uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header, void* destination_buffer, uint64_t* timestamp) {
+    switch (submessage_header->type) {
+    case tt_SUBMESSAGE_TYPE_UPDATE:
+        if (!process_update(node, header, buffer, head, body_tail)) {
+            TT_LOG_ERROR("ERROR on update");
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_DATA:
+        if (!temp_process_data(node, header, buffer, head, body_tail, destination_buffer, timestamp)) {
+            TT_LOG_ERROR("ERROR on data");
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_ACKNACK:
+        TT_LOG_ERROR("Not supported submessage type: %02x", submessage_header->type);
+        return false;
+    case tt_SUBMESSAGE_TYPE_CALLREQUEST:
+        if (!process_callrequest(node, header, buffer, head, body_tail)) {
+            TT_LOG_ERROR("ERROR on call request");
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
+        if (!process_callresponse(node, header, buffer, head, body_tail)) {
+            TT_LOG_ERROR("ERROR on call response");
+        }
+        return true;
+    default:
+        TT_LOG_ERROR("Illegal submessage type: %d, len: %02x", submessage_header->type, body_tail - head);
+        return false;
+    }
+}
+
+static bool temp_process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail, void* destination_buffer, uint64_t* timestamp) {
+    // Decode header
+    struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
+    if (header == NULL) {
+        TT_LOG_ERROR("RX buffer underflow");
+        return false;
+    }
+
+    bool is_native_endian = false;
+    if (tt_is_native_endian(header)) {
+        is_native_endian = true;
+    } else if (tt_is_reverse_endian(header)) {
+        is_native_endian = false;
+    } else {
+        TT_LOG_ERROR("Illegal magic: 0x%04x", header->magic_value);
+        return false;
+    }
+
+    TT_LOG_DEBUG("magic: 0x%04x (%c%c)", header->magic_value, header->magic[0], header->magic[1]);
+
+    // Accept higher version while ignoring ignoring reserved field. But not lower version.
+    if (header->version < tt_VERSION) {
+        TT_LOG_ERROR("Illegal version: %d < %d", header->version, tt_VERSION);
+        return false;
+    }
+
+    // Self sent message
+    if (header->source == node->id) {
+        TT_LOG_DEBUG("Self sent packet");
+        return false;
+    }
+    TT_LOG_DEBUG("header->source: %d", header->source);
+
+    // Parse submessage
+    while (true) {
+        // Decode submessage header
+        struct tt_SubmessageHeader* submessage_header =
+            decode(node, buffer, &head, tail, sizeof(struct tt_SubmessageHeader));
+        if (submessage_header == NULL) {
+            TT_LOG_DEBUG("End of submessage: %d", tail - head);
+            break;
+        }
+
+        TT_LOG_DEBUG("submessage->type: %d", submessage_header->type);
+        TT_LOG_DEBUG("submessage->receiver: %d", submessage_header->receiver);
+        TT_LOG_DEBUG("submessage->length: %d / %ld", submessage_header->length,
+                     tail - head + sizeof(struct tt_SubmessageHeader));
+
+        // Decode submessage body
+        if (submessage_header->length < sizeof(struct tt_SubmessageHeader) ||
+            submessage_header->length > tail - head + sizeof(struct tt_SubmessageHeader)) {
+            TT_LOG_ERROR("Illegal submessage length: %d < %ld || %d > %ld", submessage_header->length,
+                         sizeof(struct tt_SubmessageHeader), submessage_header->length,
+                         tail - head + sizeof(struct tt_SubmessageHeader));
+            return false;
+        }
+
+        const uint32_t body_tail = head + submessage_header->length - sizeof(struct tt_SubmessageHeader);
+        if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
+            !temp_process_submessage(node, header, buffer, head, body_tail, submessage_header, destination_buffer, timestamp)) {
+
+            return false;
+        }
+        if (submessage_header->type == tt_SUBMESSAGE_TYPE_DATA) {
+            return true;
+        }
+
+        head += submessage_header->length - sizeof(struct tt_SubmessageHeader);
+    }
+
+    return false;
+}
+
+int32_t temp_tt_Subscriber_take(struct tt_Subscriber* subscriber, void* destination_buffer, uint64_t* timestamp) {
+    uint8_t buffer[tt_MAX_BUFFER_LENGTH];
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t len = tt_receive(subscriber->node, buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+
+    if (len == -1) { // Timeout
+        return -1;
+    }
+    if (len < 0) {   // I/O error
+        perror("Cannot receive data");
+        return -1;
+    }
+    TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
+                 (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
+
+    if (temp_process_packet(subscriber->node, buffer, 0, len, destination_buffer, timestamp) == false) {
+        return -1;
+    }
+    return 0;
+}
+
+int32_t temp_tt_Node_poll(struct tt_Node* node, uint64_t timeout_ns) {
+    struct pollfd recv_fd = {
+        .fd = node->hal.sock,
+        .events = POLLIN,
+        .revents = 0,
+    };
+    int nevents;
+
+    nevents = poll(&recv_fd, 1, (int)(timeout_ns / tt_MILLISECOND));
+    if (nevents < 0) {
+        TT_LOG_ERROR("Failed to poll recv socket");
+        return -1;
+    }
+
+    // Scheduled task
+    uint64_t time = tt_get_ns();
+    struct tt_TCB* tcb = peek_scheduler(node);
+
+    if ((tcb != NULL) && (tcb->time <= time)) {
+        tcb->function(node, time, tcb->param);
+        pop_scheduler(node);
+    }
+
+    return nevents;
+}
+
+int32_t temp_tt_Publisher_publish_flush(struct tt_Publisher* pub, struct tt_Data* data) {
+    int ret;
+
+    ret = tt_Publisher_publish(pub, data);
+    if (ret < 0) {
+        return ret;
+    }
+    if (flush_tx(pub->node, pub->node->tx_tail) == false) {
+        return -1;
+    }
+    return 0;
+}
