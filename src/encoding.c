@@ -23,10 +23,10 @@ uint32_t tt_hash_id(const char* type, const char* name) {
     uint8_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH + 1);
 
     if (type_len > tt_MAX_NAME_LENGTH) {
-        TT_LOG_ERROR("Length of \"%s\" exceeds maximum string length %u.", type, tt_MAX_NAME_LENGTH);
+        TT_LOG_WARNING("Length of \"%s\" exceeds maximum string length %u.", type, tt_MAX_NAME_LENGTH);
     }
     if (name_len > tt_MAX_NAME_LENGTH) {
-        TT_LOG_ERROR("Length of \"%s\" exceeds maximum string length %u.", name, tt_MAX_NAME_LENGTH);
+        TT_LOG_WARNING("Length of \"%s\" exceeds maximum string length %u.", name, tt_MAX_NAME_LENGTH);
     }
 
     uint32_t hash = 0;
