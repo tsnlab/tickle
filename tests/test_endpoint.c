@@ -6,12 +6,18 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
+#include "../src/rx_buffer_mgmt.h"
+
 static const uint32_t k_test_endpoint_id = 0x1234;
 static const uint64_t k_test_data_timestamp = 1234;
+static const uint8_t k_test_payload[] = {0x11, 0x22, 0x33, 0x44};
+static const uint8_t k_second_test_payload[] = {0xaa, 0xbb, 0xcc, 0xdd};
 static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id);
 static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint);
 static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* endpoint);
-static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail);
+static bool process_data(struct tt_Node* node, struct tt_Header* header, struct tt_RxBuffer* rx_buffer, uint8_t* buffer,
+                         uint32_t head, uint32_t tail);
+static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer);
 static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                 uint32_t tail);
 
@@ -190,8 +196,8 @@ static void test_tt_node_create_cleans_up_endpoint_lock_on_invalid_node_id(void)
     test_mock_node_id = tt_NODE_ID_INVALID;
 
     EXPECT_TRUE(tt_Node_create(&node) == -2);
-    EXPECT_EQ_U32(1, test_mock_lock_init_count);
-    EXPECT_EQ_U32(1, test_mock_lock_deinit_count);
+    EXPECT_EQ_U32(2, test_mock_lock_init_count);
+    EXPECT_EQ_U32(2, test_mock_lock_deinit_count);
     EXPECT_TRUE(test_mock_last_lock == &node.endpoint_lock);
 }
 
@@ -340,13 +346,14 @@ static void test_tt_node_create_server_duplicate_returns_duplicate_endpoint(void
 
 static int g_sub1_invocations;
 static int g_sub2_invocations;
+static uint8_t g_sub1_first_byte;
 
 static void test_subscriber_callback1(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                       struct tt_Data* data) {
     (void)subscriber;
     (void)time;
     (void)seq_no;
-    (void)data;
+    g_sub1_first_byte = ((uint8_t*)data)[0];
     g_sub1_invocations++;
 }
 
@@ -364,6 +371,33 @@ static int32_t test_data_decode(struct tt_Data* data, const uint8_t* payload, co
     (void)is_native_endian;
     _tt_memcpy(data, payload, len);
     return (int32_t)len;
+}
+
+struct test_string_data {
+    uint16_t len;
+    char value[1];
+};
+
+static int32_t test_empty_string_decode(struct tt_Data* data, const uint8_t* payload, const uint32_t len,
+                                        bool is_native_endian) {
+    if (len < sizeof(uint16_t)) {
+        return -1;
+    }
+
+    uint16_t wire_len = *(const uint16_t*)payload;
+    if (!is_native_endian) {
+        wire_len = _tt_bswap_16(wire_len);
+    }
+
+    if (wire_len == 0 || len < sizeof(uint16_t) + wire_len) {
+        return -1;
+    }
+
+    struct test_string_data* string_data = (struct test_string_data*)data;
+    string_data->len = wire_len - 1; // Exclude trailing '\0' from decoded content length.
+    string_data->value[0] = (char)payload[sizeof(uint16_t)];
+
+    return string_data->len;
 }
 
 static void test_data_free(struct tt_Data* data) {
@@ -537,6 +571,7 @@ static void test_process_data_dispatches_matching_endpoint_to_subscriber(void) {
 
     g_sub1_invocations = 0;
     g_sub2_invocations = 0;
+    g_sub1_first_byte = 0;
     test_mock_reset();
 
     uint8_t buffer[sizeof(struct tt_DataHeader) + 4];
@@ -554,8 +589,13 @@ static void test_process_data_dispatches_matching_endpoint_to_subscriber(void) {
     header.version = tt_VERSION;
     header.source = 0;
 
-    bool process_ok = process_data(&node, &header, buffer, 0, sizeof(buffer));
+    struct tt_RxBuffer rx_buffer;
+    memset(&rx_buffer, 0, sizeof(rx_buffer));
+
+    bool process_ok = process_data(&node, &header, &rx_buffer, buffer, 0, sizeof(buffer));
     EXPECT_TRUE(process_ok);
+    EXPECT_EQ_U32(0, (uint32_t)rx_buffer.remaining_topic_count);
+    EXPECT_EQ_U32(0x01, g_sub1_first_byte);
     expect_only_first_subscriber_dispatched();
     expect_endpoint_registry_lock_used(&node);
 }
@@ -588,6 +628,279 @@ static void test_create_functions_return_too_many_when_endpoint_limit_reached(vo
     EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub, &topic, "subscriber", NULL) == tt_TOO_MANY_ENDPOINTS);
 }
 
+static void write_test_rx_header(struct tt_RxBuffer* rx_buffer) {
+    struct tt_Header* header = (struct tt_Header*)rx_buffer->rx_data;
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = 1;
+    rx_buffer->len = sizeof(struct tt_Header);
+}
+
+static void append_test_data_submessage(struct tt_RxBuffer* rx_buffer, uint32_t endpoint_id, uint16_t seq_no,
+                                        const uint8_t* payload, uint32_t payload_len) {
+    uint32_t head = rx_buffer->len;
+
+    struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)(rx_buffer->rx_data + head);
+    submessage_header->type = tt_SUBMESSAGE_TYPE_DATA;
+    submessage_header->receiver = tt_SUBMESSAGE_ID_ALL;
+    submessage_header->length = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + payload_len;
+    head += sizeof(struct tt_SubmessageHeader);
+
+    struct tt_DataHeader* data_header = (struct tt_DataHeader*)(rx_buffer->rx_data + head);
+    data_header->endpoint_id = endpoint_id;
+    data_header->seq_no = seq_no;
+    data_header->timestamp = k_test_data_timestamp;
+    head += sizeof(struct tt_DataHeader);
+
+    _tt_memcpy(rx_buffer->rx_data + head, payload, payload_len);
+    rx_buffer->len = head + payload_len;
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static void test_subscriber_take_decodes_buffered_topic_and_removes_submessage(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 2;
+
+    struct tt_Topic topic;
+    memset(&topic, 0, sizeof(topic));
+    topic.name = "topic";
+    topic.data_size = 4;
+    topic.data_decode = test_data_decode;
+    topic.data_free = test_data_free;
+
+    struct tt_Subscriber sub;
+    memset(&sub, 0, sizeof(sub));
+
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub, &topic, "subscriber", NULL) == tt_ERROR_NONE);
+
+    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    EXPECT_TRUE(rx_buffer != NULL);
+    memset(rx_buffer, 0, sizeof(*rx_buffer));
+
+    write_test_rx_header(rx_buffer);
+    append_test_data_submessage(rx_buffer, tt_hash_id(topic.name, "subscriber"), 1, k_test_payload,
+                                sizeof(k_test_payload));
+
+    EXPECT_TRUE(process_packet(&node, rx_buffer));
+    EXPECT_TRUE(node.rx_buffer_list != NULL);
+    EXPECT_EQ_U32(1, (uint32_t)node.rx_buffer_list->remaining_topic_count);
+
+    uint8_t recv_data[sizeof(k_test_payload)] = {0};
+    EXPECT_TRUE(tt_Subscriber_take(&sub, recv_data) == sizeof(k_test_payload));
+    for (uint32_t i = 0; i < sizeof(k_test_payload); i++) {
+        EXPECT_EQ_U32(k_test_payload[i], recv_data[i]);
+    }
+    EXPECT_TRUE(node.rx_buffer_list == NULL);
+}
+
+static void test_process_packet_frees_rx_buffer_when_data_has_no_subscriber(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 2;
+
+    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    EXPECT_TRUE(rx_buffer != NULL);
+    memset(rx_buffer, 0, sizeof(*rx_buffer));
+
+    write_test_rx_header(rx_buffer);
+    append_test_data_submessage(rx_buffer, tt_hash_id("topic", "missing_subscriber"), 1, k_test_payload,
+                                sizeof(k_test_payload));
+
+    EXPECT_TRUE(process_packet(&node, rx_buffer));
+    EXPECT_TRUE(node.rx_buffer_list == NULL);
+    EXPECT_EQ_U32(0, node.rx_buffer_count);
+}
+
+static void test_subscriber_take_returns_minus_one_when_no_matching_data_exists(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 2;
+
+    struct tt_Topic topic;
+    memset(&topic, 0, sizeof(topic));
+    topic.name = "topic";
+    topic.data_size = sizeof(k_test_payload);
+    topic.data_decode = test_data_decode;
+    topic.data_free = test_data_free;
+
+    struct tt_Subscriber sub;
+    memset(&sub, 0, sizeof(sub));
+
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub, &topic, "subscriber", NULL) == tt_ERROR_NONE);
+
+    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    EXPECT_TRUE(rx_buffer != NULL);
+    memset(rx_buffer, 0, sizeof(*rx_buffer));
+
+    write_test_rx_header(rx_buffer);
+    append_test_data_submessage(rx_buffer, tt_hash_id(topic.name, "other_subscriber"), 1, k_test_payload,
+                                sizeof(k_test_payload));
+    rx_buffer->remaining_topic_count = 1;
+    tt_rx_buffer_list_append(&node, rx_buffer);
+
+    uint8_t recv_data[sizeof(k_test_payload)] = {0};
+    EXPECT_TRUE(tt_Subscriber_take(&sub, recv_data) == -1);
+    EXPECT_TRUE(node.rx_buffer_list != NULL);
+    EXPECT_EQ_U32(1, (uint32_t)node.rx_buffer_list->remaining_topic_count);
+
+    tt_rx_buffer_list_clear(&node);
+}
+
+static void test_subscriber_take_allows_zero_length_decoded_data(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 2;
+
+    struct tt_Topic topic;
+    memset(&topic, 0, sizeof(topic));
+    topic.name = "topic";
+    topic.data_size = 1;
+    topic.data_decode = test_data_decode;
+    topic.data_free = test_data_free;
+
+    struct tt_Subscriber sub;
+    memset(&sub, 0, sizeof(sub));
+
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub, &topic, "subscriber", NULL) == tt_ERROR_NONE);
+
+    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    EXPECT_TRUE(rx_buffer != NULL);
+    memset(rx_buffer, 0, sizeof(*rx_buffer));
+
+    write_test_rx_header(rx_buffer);
+    append_test_data_submessage(rx_buffer, tt_hash_id(topic.name, "subscriber"), 1, k_test_payload, 0);
+
+    EXPECT_TRUE(process_packet(&node, rx_buffer));
+    EXPECT_TRUE(node.rx_buffer_list != NULL);
+    EXPECT_EQ_U32(1, (uint32_t)node.rx_buffer_list->remaining_topic_count);
+
+    uint8_t recv_data[1] = {0xff};
+    EXPECT_TRUE(tt_Subscriber_take(&sub, recv_data) == 0);
+    EXPECT_TRUE(node.rx_buffer_list == NULL);
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static void test_subscriber_take_allows_zero_length_decoded_string(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 2;
+
+    struct tt_Topic topic;
+    memset(&topic, 0, sizeof(topic));
+    topic.name = "string_topic";
+    topic.data_size = sizeof(struct test_string_data);
+    topic.data_decode = test_empty_string_decode;
+    topic.data_free = test_data_free;
+
+    struct tt_Subscriber sub;
+    memset(&sub, 0, sizeof(sub));
+
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub, &topic, "subscriber", NULL) == tt_ERROR_NONE);
+
+    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    EXPECT_TRUE(rx_buffer != NULL);
+    memset(rx_buffer, 0, sizeof(*rx_buffer));
+
+    uint8_t empty_string_payload[sizeof(uint16_t) + 1] = {0};
+    uint16_t wire_len = 1; // Only the trailing '\0' is present.
+    _tt_memcpy(empty_string_payload, &wire_len, sizeof(wire_len));
+
+    write_test_rx_header(rx_buffer);
+    append_test_data_submessage(rx_buffer, tt_hash_id(topic.name, "subscriber"), 1, empty_string_payload,
+                                sizeof(empty_string_payload));
+
+    EXPECT_TRUE(process_packet(&node, rx_buffer));
+    EXPECT_TRUE(node.rx_buffer_list != NULL);
+    EXPECT_EQ_U32(1, (uint32_t)node.rx_buffer_list->remaining_topic_count);
+
+    struct test_string_data recv_data;
+    memset(&recv_data, 0xff, sizeof(recv_data));
+    EXPECT_TRUE(tt_Subscriber_take(&sub, &recv_data) == 0);
+    EXPECT_EQ_U32(0, recv_data.len);
+    EXPECT_EQ_U32(0, (uint8_t)recv_data.value[0]);
+    EXPECT_TRUE(node.rx_buffer_list == NULL);
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
+static void test_subscriber_take_shifts_next_submessage_without_changing_content(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 2;
+
+    struct tt_Topic topic;
+    memset(&topic, 0, sizeof(topic));
+    topic.name = "topic";
+    topic.data_size = sizeof(k_test_payload);
+    topic.data_decode = test_data_decode;
+    topic.data_free = test_data_free;
+
+    struct tt_Subscriber sub;
+    memset(&sub, 0, sizeof(sub));
+
+    EXPECT_TRUE(tt_Node_create_subscriber(&node, &sub, &topic, "subscriber", NULL) == tt_ERROR_NONE);
+
+    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    EXPECT_TRUE(rx_buffer != NULL);
+    memset(rx_buffer, 0, sizeof(*rx_buffer));
+
+    uint32_t endpoint_id = tt_hash_id(topic.name, "subscriber");
+    write_test_rx_header(rx_buffer);
+    append_test_data_submessage(rx_buffer, endpoint_id, 1, k_test_payload, sizeof(k_test_payload));
+    append_test_data_submessage(rx_buffer, endpoint_id, 2, k_second_test_payload, sizeof(k_second_test_payload));
+
+    const uint32_t original_len = rx_buffer->len;
+    EXPECT_TRUE(process_packet(&node, rx_buffer));
+    EXPECT_EQ_U32(2, (uint32_t)node.rx_buffer_list->remaining_topic_count);
+
+    uint8_t recv_data[sizeof(k_test_payload)] = {0};
+    EXPECT_TRUE(tt_Subscriber_take(&sub, recv_data) == sizeof(k_test_payload));
+    for (uint32_t i = 0; i < sizeof(k_test_payload); i++) {
+        EXPECT_EQ_U32(k_test_payload[i], recv_data[i]);
+    }
+    EXPECT_TRUE(node.rx_buffer_list != NULL);
+    EXPECT_EQ_U32(1, (uint32_t)node.rx_buffer_list->remaining_topic_count);
+    EXPECT_EQ_U32(original_len -
+                      (sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + sizeof(k_test_payload)),
+                  node.rx_buffer_list->len);
+
+    memset(recv_data, 0, sizeof(recv_data));
+    EXPECT_TRUE(tt_Subscriber_take(&sub, recv_data) == sizeof(k_second_test_payload));
+    for (uint32_t i = 0; i < sizeof(k_second_test_payload); i++) {
+        EXPECT_EQ_U32(k_second_test_payload[i], recv_data[i]);
+    }
+    EXPECT_TRUE(node.rx_buffer_list == NULL);
+}
+
+static void test_append_rx_buffer_drops_oldest_when_queue_is_full(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+
+    for (uint32_t i = 0; i < tt_MAX_RX_BUFFER_COUNT + 1; i++) {
+        struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+        EXPECT_TRUE(rx_buffer != NULL);
+        memset(rx_buffer, 0, sizeof(*rx_buffer));
+        rx_buffer->len = i;
+        tt_rx_buffer_list_append(&node, rx_buffer);
+    }
+
+    EXPECT_EQ_U32(tt_MAX_RX_BUFFER_COUNT, node.rx_buffer_count);
+    EXPECT_TRUE(node.rx_buffer_list != NULL);
+    EXPECT_EQ_U32(1, node.rx_buffer_list->len);
+
+    uint32_t count = 0;
+    struct tt_RxBuffer* rx_buffer = node.rx_buffer_list;
+    while (rx_buffer != NULL) {
+        count++;
+        rx_buffer = rx_buffer->next_buffer;
+    }
+    EXPECT_EQ_U32(tt_MAX_RX_BUFFER_COUNT, count);
+
+    tt_rx_buffer_list_clear(&node);
+    EXPECT_TRUE(node.rx_buffer_list == NULL);
+    EXPECT_EQ_U32(0, node.rx_buffer_count);
+}
+
 // Include the implementation to exercise static helper and create functions directly.
 // NOLINTNEXTLINE(bugprone-suspicious-include)
 #include "../src/tickle.c"
@@ -615,6 +928,13 @@ int main(void) {
     test_process_data_dispatches_matching_endpoint_to_subscriber();
     test_process_callrequest_finds_correct_service_server_endpoint();
     test_create_functions_return_too_many_when_endpoint_limit_reached();
+    test_subscriber_take_decodes_buffered_topic_and_removes_submessage();
+    test_process_packet_frees_rx_buffer_when_data_has_no_subscriber();
+    test_subscriber_take_returns_minus_one_when_no_matching_data_exists();
+    test_subscriber_take_allows_zero_length_decoded_data();
+    test_subscriber_take_allows_zero_length_decoded_string();
+    test_subscriber_take_shifts_next_submessage_without_changing_content();
+    test_append_rx_buffer_drops_oldest_when_queue_is_full();
 
     if (test_result() != 0) {
         return 1;

@@ -25,6 +25,7 @@
 #define tt_NODE_ID_BROADCAST 0xff
 #define tt_MAX_SCHEDULER_LENGTH 128  // Scheduling queue
 #define tt_MAX_SERVER_CACHE_COUNT 64 // >= # of client
+#define tt_MAX_RX_BUFFER_COUNT 256   // Maximum queued RX buffers
 
 #define _tt_NODE_ADDRESS "0.0.0.0"
 #define _tt_NODE_PORT 8282

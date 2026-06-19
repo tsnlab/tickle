@@ -9,6 +9,7 @@
 #include "consts.h"
 #include "encoding.h"
 #include "log.h"
+#include "rx_buffer_mgmt.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -270,17 +271,20 @@ int32_t tt_Node_create(struct tt_Node* node) {
     node->scheduler_tail = 0;
 
     tt_lock_init(&node->endpoint_lock);
+    tt_rx_buffer_list_init(node);
 
     node->id = tt_get_node_id();
 
     if (node->id == tt_NODE_ID_INVALID || node->id == tt_NODE_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
+        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -2;
     }
 
     if (tt_bind(node) != 0) {
         TT_LOG_ERROR("Cannot bind");
+        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -3;
     }
@@ -295,6 +299,7 @@ int32_t tt_Node_create(struct tt_Node* node) {
     if (!tt_Node_schedule(node, basetime, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
         tt_close(node);
+        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
@@ -302,6 +307,7 @@ int32_t tt_Node_create(struct tt_Node* node) {
     if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
         tt_close(node);
+        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
@@ -784,10 +790,11 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     return true;
 }
 
-static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                         uint32_t tail) {
-    uint32_t length = tail - head;
-
+static bool process_data(struct tt_Node* node, struct tt_Header* header, struct tt_RxBuffer* rx_buffer, uint8_t* buffer,
+                         uint32_t head, uint32_t tail) {
+    // DATA delivery has two paths:
+    // - callback subscribers are decoded immediately and receive stack-owned data.
+    // - callback-less subscribers keep the encoded DATA in rx_buffer for later take().
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
         TT_LOG_ERROR("  Illegal DataHeader");
@@ -801,18 +808,31 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->endpoint_id);
     if (endpoint == NULL) {
+        // No local subscriber owns this endpoint id, so this DATA submessage is
+        // ignored and does not contribute to remaining_topic_count.
         return true;
     }
 
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-    struct tt_Topic* topic = sub->topic;
+    if (sub->callback != NULL) {
+        // Preserve the original push-style behavior: decode now, invoke the
+        // callback with decoded topic data, then release decoded resources.
+        struct tt_Topic* topic = sub->topic;
+        uint8_t data[topic->data_size];
+        int32_t decoded =
+            topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
+        if (decoded < 0) {
+            TT_LOG_ERROR("Cannot decode data: %d", decoded);
+            return false;
+        }
 
-    uint8_t data[topic->data_size];
-    int32_t decoded =
-        topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
-    sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
-
-    topic->data_free((struct tt_Data*)data);
+        sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
+        topic->data_free((struct tt_Data*)data);
+    } else {
+        // Pull-style subscriber: leave this submessage encoded inside the
+        // owning rx_buffer. tt_Subscriber_take() will decode and remove it.
+        rx_buffer->remaining_topic_count++;
+    }
 
     return true;
 }
@@ -1080,8 +1100,9 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     return true;
 }
 
-static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                               uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header) {
+static bool process_submessage(struct tt_Node* node, struct tt_Header* header, struct tt_RxBuffer* rx_buffer,
+                               uint8_t* buffer, uint32_t head, uint32_t body_tail,
+                               const struct tt_SubmessageHeader* submessage_header) {
     switch (submessage_header->type) {
     case tt_SUBMESSAGE_TYPE_UPDATE:
         if (!process_update(node, header, buffer, head, body_tail)) {
@@ -1089,7 +1110,7 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         }
         return true;
     case tt_SUBMESSAGE_TYPE_DATA:
-        if (!process_data(node, header, buffer, head, body_tail)) {
+        if (!process_data(node, header, rx_buffer, buffer, head, body_tail)) {
             TT_LOG_ERROR("ERROR on data");
         }
         return true;
@@ -1112,21 +1133,24 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     }
 }
 
-static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail) {
+// Consumes rx_buffer. After this function returns, the buffer has either been
+// freed or handed over to node->rx_buffer_list for later tt_Subscriber_take().
+static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer) {
+    uint8_t* buffer = rx_buffer->rx_data;
+    uint32_t head = 0;
+    uint32_t tail = rx_buffer->len;
+
     // Decode header
     struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
     if (header == NULL) {
         TT_LOG_ERROR("RX buffer underflow");
+        _tt_free(rx_buffer);
         return false;
     }
 
-    bool is_native_endian = false;
-    if (tt_is_native_endian(header)) {
-        is_native_endian = true;
-    } else if (tt_is_reverse_endian(header)) {
-        is_native_endian = false;
-    } else {
+    if (!tt_is_native_endian(header) && !tt_is_reverse_endian(header)) {
         TT_LOG_ERROR("Illegal magic: 0x%04x", header->magic_value);
+        _tt_free(rx_buffer);
         return false;
     }
 
@@ -1135,17 +1159,20 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     // Accept higher version while ignoring ignoring reserved field. But not lower version.
     if (header->version < tt_VERSION) {
         TT_LOG_ERROR("Illegal version: %d < %d", header->version, tt_VERSION);
+        _tt_free(rx_buffer);
         return false;
     }
 
     // Self sent message
     if (header->source == node->id) {
         TT_LOG_DEBUG("Self sent packet");
+        _tt_free(rx_buffer);
         return true;
     }
     TT_LOG_DEBUG("header->source: %d", header->source);
 
-    // Parse submessage
+    // Parse each submessage in place. DATA submessages for subscribers without
+    // callbacks are left encoded in this rx_buffer and counted for lazy take().
     while (true) {
         // Decode submessage header
         struct tt_SubmessageHeader* submessage_header =
@@ -1166,53 +1193,95 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
             TT_LOG_ERROR("Illegal submessage length: %d < %ld || %d > %ld", submessage_header->length,
                          sizeof(struct tt_SubmessageHeader), submessage_header->length,
                          tail - head + sizeof(struct tt_SubmessageHeader));
+            _tt_free(rx_buffer);
             return false;
         }
 
         const uint32_t body_tail = head + submessage_header->length - sizeof(struct tt_SubmessageHeader);
         if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
-            !process_submessage(node, header, buffer, head, body_tail, submessage_header)) {
+            !process_submessage(node, header, rx_buffer, buffer, head, body_tail, submessage_header)) {
+            _tt_free(rx_buffer);
             return false;
         }
 
         head += submessage_header->length - sizeof(struct tt_SubmessageHeader);
     }
 
+    // No pending topic data remains in this packet, so the wire buffer can be
+    // released immediately. Otherwise rx_buffer_mgmt owns it from here.
+    if (rx_buffer->remaining_topic_count == 0) {
+        _tt_free(rx_buffer);
+    } else {
+        tt_rx_buffer_list_append(node, rx_buffer);
+    }
+
     return true;
 }
 
-int32_t tt_Node_poll(struct tt_Node* node) {
-    uint8_t buffer[tt_MAX_BUFFER_LENGTH];
+int32_t tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer) {
+    if (subscriber == NULL || recv_topic_data_buffer == NULL) {
+        return -1;
+    }
 
-    while (1) {
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        int32_t len = tt_receive(node, buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+    struct tt_Node* node = subscriber->node;
+    struct tt_Topic* topic = subscriber->topic;
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)subscriber;
 
-        if (len == -1) {      // Timeout
-            ;                 // Do nothing
-        } else if (len < 0) { // I/O error
-            perror("Cannot receive data");
-            break;
-        } else {
-            TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-                         (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
+    // The rx buffer module finds the oldest matching encoded DATA submessage,
+    // decodes it into the caller's buffer, and removes it from the pending list.
+    return tt_rx_buffer_take_topic(node, endpoint->id, topic->data_decode, recv_topic_data_buffer);
+}
 
-            if (!process_packet(node, buffer, 0, len)) {
-                TT_LOG_ERROR("Cannot process packet");
-            }
-        }
-
-        // Scheduled task
+static void process_scheduled_tasks(struct tt_Node* node) {
+    while (true) {
         uint64_t time = tt_get_ns();
         struct tt_TCB* tcb = peek_scheduler(node);
 
-        if ((tcb != NULL) && (tcb->time <= time)) {
-            tcb->function(node, time, tcb->param);
-            pop_scheduler(node);
+        if ((tcb == NULL) || (tcb->time > time)) {
+            break;
+        }
+
+        tcb->function(node, time, tcb->param);
+        pop_scheduler(node);
+    }
+}
+
+int32_t tt_Node_poll(struct tt_Node* node) {
+    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    if (rx_buffer == NULL) {
+        TT_LOG_ERROR("Out of memory");
+        return -1;
+    }
+
+    rx_buffer->remaining_topic_count = 0;
+    rx_buffer->len = 0;
+    rx_buffer->next_buffer = NULL;
+
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t len = tt_receive(node, rx_buffer->rx_data, tt_MAX_BUFFER_LENGTH, &ip, &port);
+
+    if (len == -1) { // Timeout
+        _tt_free(rx_buffer);
+    } else if (len < 0) { // I/O error
+        _tt_free(rx_buffer);
+        perror("Cannot receive data");
+        process_scheduled_tasks(node);
+        return len;
+    } else {
+        rx_buffer->len = len;
+
+        TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
+                     (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
+
+        // process_packet() consumes rx_buffer even on failure; do not free or
+        // access rx_buffer after this call.
+        if (!process_packet(node, rx_buffer)) {
+            TT_LOG_ERROR("Cannot process packet");
         }
     }
 
+    process_scheduled_tasks(node);
     return 0;
 }
 
@@ -1232,6 +1301,13 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
     unlock_endpoints(node, state);
 
     node_update(node, time, NULL);
+
+    for (uint32_t i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        _tt_free(node->updates[i]);
+        node->updates[i] = NULL;
+    }
+
+    tt_rx_buffer_list_deinit(node);
 
     tt_close(node);
     tt_lock_deinit(&node->endpoint_lock);

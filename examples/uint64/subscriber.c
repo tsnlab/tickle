@@ -9,6 +9,7 @@
 static void uint64_data_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no,
                                  struct UInt64Data* data) {
     (void)sub; // NOLINT(misc-unused-parameters)
+
     printf("  timestamp: %ld\n", timestamp);
     printf("  seq_no: %d\n", seq_no);
     printf("  data->data: %lx\n", data->data);
@@ -37,7 +38,9 @@ int main(int argc, char** argv) {
         return ret;
     }
 
-    tt_Node_poll(&node);
+    while (tt_Node_poll(&node) == 0) {
+        // Application owns the poll loop; subscriber data is delivered by callback.
+    }
 
     tt_Node_destroy(&node);
 
