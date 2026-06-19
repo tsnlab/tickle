@@ -47,7 +47,9 @@ int main(int argc, char** argv) {
         return ret;
     }
 
-    tt_Node_poll(&node);
+    while (tt_Node_poll(&node) == 0) {
+        // Application owns the poll loop; service requests are delivered by callback.
+    }
 
     tt_Node_destroy(&node);
 

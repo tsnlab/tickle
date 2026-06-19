@@ -1,6 +1,8 @@
 INCLUDE=include
 CC=gcc
 AR=ar
+CLANG_FORMAT ?= clang-format-19
+CLANG_TIDY ?= clang-tidy-19
 CFLAGS=-I$(INCLUDE) -Isrc -O0 -g
 LDFLAGS=
 
@@ -25,7 +27,7 @@ SRC_FILES = $(filter-out $(SRC)/hal_%.c, $(wildcard $(SRC)/*.c))
 SRC_FILES += $(HAL_SRC)
 OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
 
-.PHONY: all library examples set_bool uint64 lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
+.PHONY: all library examples set_bool uint64 lint createns deletens runclient runserver runpublisher runsubscriber runpublisher_compound runsubscriber_compound dump1 dump2 clean
 
 all:
 	$(MAKE) library
@@ -37,7 +39,7 @@ examples: set_bool uint64
 
 set_bool: client server
 
-uint64: publisher subscriber
+uint64: publisher subscriber publisher_compound subscriber_compound
 
 $(OBJ)/%.o: $(SRC)/%.c
 	mkdir -p $(dir $@)
@@ -58,9 +60,15 @@ publisher:  examples/uint64/UInt64.c examples/uint64/publisher.c libtickle.a
 subscriber: examples/uint64/UInt64.c examples/uint64/subscriber.c libtickle.a
 	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
 
+publisher_compound:  examples/uint64/UInt64.c examples/uint64/publisher_compound.c libtickle.a
+	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/publisher_compound.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
+
+subscriber_compound: examples/uint64/UInt64.c examples/uint64/subscriber_compound.c libtickle.a
+	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber_compound.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
+
 lint:
-	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} \;
-	find . -name '*.[ch]' -exec clang-tidy {} \;
+	find . -name '*.[ch]' -exec $(CLANG_FORMAT) --dry-run --Werror {} \;
+	find . -name '*.[ch]' -exec $(CLANG_TIDY) {} \;
 
 createns:
 # Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
@@ -105,6 +113,12 @@ runpublisher: publisher
 runsubscriber: subscriber
 	sudo ip netns exec ns2 ./subscriber
 
+runpublisher_compound: publisher_compound
+	sudo ip netns exec ns1 ./publisher_compound
+
+runsubscriber_compound: subscriber_compound
+	sudo ip netns exec ns2 ./subscriber_compound
+
 dump1:
 	sudo ip netns exec ns1 tcpdump -l -xxx -i veth1
 
@@ -118,3 +132,5 @@ clean:
 	rm -f server
 	rm -f publisher
 	rm -f subscriber
+	rm -f publisher_compound
+	rm -f subscriber_compound

@@ -65,7 +65,9 @@ int main(int argc, char** argv) {
     tt_Node_schedule(&node, tt_get_ns() + (2 * tt_SECOND), call, &client);
     tt_Node_schedule(&node, tt_get_ns() + (3 * tt_SECOND), call, &client);
 
-    tt_Node_poll(&node);
+    while (tt_Node_poll(&node) == 0) {
+        // Application owns the poll loop; service responses are delivered by callback.
+    }
 
     tt_Node_destroy(&node);
 
