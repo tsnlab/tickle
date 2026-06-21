@@ -14,7 +14,7 @@
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
 
 #define tt_MAX_ENDPOINT_COUNT 256  // Maximum number of endpoints (data or services)
-#define tt_MAX_NAME_LENGTH 32      // Maximum length of endpoint name
+#define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name
 #define tt_MAX_STRING_LENGTH 65535 // Maximum length of string
 #define tt_MAX_BUFFER_LENGTH 1480  // TX buffer size
 
