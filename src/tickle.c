@@ -588,6 +588,19 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     return 0;
 }
 
+int32_t tt_Publisher_publish_flush(struct tt_Publisher* pub, struct tt_Data* data) {
+    int32_t result;
+
+    result = tt_Publisher_publish(pub, data);
+    if (result < 0) {
+        return result;
+    }
+    if (flush_tx(pub->node, pub->node->tx_tail) == false) {
+        return -1;
+    }
+    return 0;
+}
+
 int32_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
 
