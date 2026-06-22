@@ -211,6 +211,7 @@ int32_t tt_Client_destroy(struct tt_Client* client);
 int32_t tt_Server_destroy(struct tt_Server* server);
 
 int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
+int32_t tt_Publisher_publish_flush(struct tt_Publisher* pub, struct tt_Data* data);
 int32_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
 int32_t tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer);
