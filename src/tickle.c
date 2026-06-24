@@ -407,6 +407,9 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
     sub->node = node;
     sub->topic = topic;
     sub->callback = callback;
+    // No DATA is takable until polling receives DATA for a callback-less
+    // subscriber and leaves it encoded in the RX buffer list.
+    sub->rx_data_count = 0;
 
     int32_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_ERROR_NONE) {
@@ -841,8 +844,10 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, struct 
         topic->data_free((struct tt_Data*)data);
     } else {
         // Pull-style subscriber: leave this submessage encoded inside the
-        // owning rx_buffer. tt_Subscriber_take() will decode and remove it.
+        // owning rx_buffer. rx_data_count mirrors the number of encoded DATA
+        // submessages that tt_Subscriber_take() can still consume.
         rx_buffer->remaining_topic_count++;
+        sub->rx_data_count++;
     }
 
     return true;
@@ -1204,6 +1209,7 @@ static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer) 
             TT_LOG_ERROR("Illegal submessage length: %d < %ld || %d > %ld", submessage_header->length,
                          sizeof(struct tt_SubmessageHeader), submessage_header->length,
                          tail - head + sizeof(struct tt_SubmessageHeader));
+            tt_rx_buffer_drop_topic_counts(node, rx_buffer);
             _tt_free(rx_buffer);
             return false;
         }
@@ -1211,6 +1217,7 @@ static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer) 
         const uint32_t body_tail = head + submessage_header->length - sizeof(struct tt_SubmessageHeader);
         if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
             !process_submessage(node, header, rx_buffer, buffer, head, body_tail, submessage_header)) {
+            tt_rx_buffer_drop_topic_counts(node, rx_buffer);
             _tt_free(rx_buffer);
             return false;
         }
@@ -1229,18 +1236,18 @@ static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer) 
     return true;
 }
 
-int32_t tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer) {
+bool tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer, uint64_t* timestamp) {
     if (subscriber == NULL || recv_topic_data_buffer == NULL) {
-        return -1;
+        return false;
     }
-
-    struct tt_Node* node = subscriber->node;
-    struct tt_Topic* topic = subscriber->topic;
-    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)subscriber;
 
     // The rx buffer module finds the oldest matching encoded DATA submessage,
     // decodes it into the caller's buffer, and removes it from the pending list.
-    return tt_rx_buffer_take_topic(node, endpoint->id, topic->data_decode, recv_topic_data_buffer);
+    return tt_rx_buffer_take_topic(subscriber, recv_topic_data_buffer, timestamp);
+}
+
+uint32_t tt_Subscriber_get_takable_count(const struct tt_Subscriber* subscriber) {
+    return tt_rx_buffer_get_takable_count(subscriber);
 }
 
 static void process_scheduled_tasks(struct tt_Node* node) {

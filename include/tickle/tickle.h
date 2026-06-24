@@ -162,6 +162,11 @@ struct tt_Subscriber { // embeds endpoint metadata
 
     // transcation
     uint16_t seq_no;
+
+    // Cached count of encoded DATA submessages queued for pull-style delivery.
+    // Only callback-less subscribers can accumulate this count; callback
+    // subscribers receive DATA immediately during polling.
+    uint32_t rx_data_count;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -214,7 +219,11 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
 int32_t tt_Publisher_publish_flush(struct tt_Publisher* pub, struct tt_Data* data);
 int32_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
-int32_t tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer);
+// Returns the number of pending DATA submessages that can be consumed with
+// tt_Subscriber_take(). Returns 0 for NULL subscribers and callback-based
+// subscribers, because callback delivery does not leave DATA available to take.
+uint32_t tt_Subscriber_get_takable_count(const struct tt_Subscriber* subscriber);
+bool tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer, uint64_t* timestamp);
 int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
 int32_t tt_Node_poll(struct tt_Node* node);

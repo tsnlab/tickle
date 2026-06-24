@@ -11,7 +11,8 @@
 // Compound subscriber example:
 // - Creates two callback-less subscribers for the same UInt64 topic with
 //   different endpoint names.
-// - Calls tt_Subscriber_take() after each poll to pull matching DATA submessages.
+// - Drains tt_Subscriber_get_takable_count() messages after each poll with
+//   tt_Subscriber_take(), including the DATA timestamp returned by take.
 // - Prints rx_buffer_list state before and after each take so compound packet
 //   consumption is visible.
 
@@ -30,12 +31,33 @@ static void print_rx_buffer_state(struct tt_Node* node, const char* phase, uint6
 
 static bool take_and_print(struct tt_Subscriber* sub, const char* label, uint64_t poll_count) {
     struct UInt64Data data;
-    int32_t ret = tt_Subscriber_take(sub, &data);
-    if (ret >= 0) {
-        printf("[poll %" PRIu64 "] take %s: data=%" PRIx64 ", decoded=%d bytes\n", poll_count, label, data.data, ret);
+    uint64_t timestamp = 0;
+    if (tt_Subscriber_take(sub, &data, &timestamp)) {
+        printf("[poll %" PRIu64 "] take %s: data=%" PRIx64 ", timestamp=%" PRIu64 "\n", poll_count, label, data.data,
+               timestamp);
         return true;
     }
     return false;
+}
+
+static bool drain_takable_and_print(struct tt_Subscriber* sub, const char* label, uint64_t poll_count) {
+    uint32_t takable_count = tt_Subscriber_get_takable_count(sub);
+    if (takable_count == 0) {
+        return false;
+    }
+
+    printf("[poll %" PRIu64 "] %s takable_count=%" PRIu32 "\n", poll_count, label, takable_count);
+    for (uint32_t i = 0; i < takable_count; i++) {
+        if (!take_and_print(sub, label, poll_count)) {
+            printf("[poll %" PRIu64 "] take %s failed at %" PRIu32 "/%" PRIu32 "\n", poll_count, label, i + 1,
+                   takable_count);
+            break;
+        }
+    }
+
+    printf("[poll %" PRIu64 "] %s remaining_takable_count=%" PRIu32 "\n", poll_count, label,
+           tt_Subscriber_get_takable_count(sub));
+    return true;
 }
 
 int main(int argc, char** argv) {
@@ -72,10 +94,10 @@ int main(int argc, char** argv) {
         if (node.rx_buffer_count > 0) {
             print_rx_buffer_state(&node, "before take", poll_count);
         }
-        if (take_and_print(&sub_a, "uint64_compound_a", poll_count)) {
+        if (drain_takable_and_print(&sub_a, "uint64_compound_a", poll_count)) {
             print_rx_buffer_state(&node, "after take uint64_compound_a", poll_count);
         }
-        if (take_and_print(&sub_b, "uint64_compound_b", poll_count)) {
+        if (drain_takable_and_print(&sub_b, "uint64_compound_b", poll_count)) {
             print_rx_buffer_state(&node, "after take uint64_compound_b", poll_count);
         }
     }
