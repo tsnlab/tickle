@@ -175,7 +175,7 @@ void tt_rx_buffer_drop_topic_counts(struct tt_Node* node, struct tt_RxBuffer* rx
     const uint32_t pending_count = (uint32_t)rx_buffer->remaining_topic_count;
 
     struct tt_Header* header = retrieve_header(buffer, &head, tail, sizeof(struct tt_Header));
-    if (header == NULL || get_packet_endian(header, &(bool){false}) == TAKE_TOPIC_ERROR) {
+    if (header == NULL || get_packet_endian(header, &(bool) {false}) == TAKE_TOPIC_ERROR) {
         return;
     }
 
@@ -228,9 +228,9 @@ uint32_t tt_rx_buffer_get_takable_count(const struct tt_Subscriber* subscriber) 
 // Called only while rx_buffer_lock is held. Consumes one DATA submessage when it
 // matches subscriber; otherwise reports that this submessage is not the target.
 static enum take_topic_result take_data_submessage_locked(struct tt_Subscriber* subscriber,
-                                                          struct tt_RxBuffer** rx_buffer_ptr,
-                                                          uint32_t submessage_start, bool is_native_endian,
-                                                          void* recv_topic_data_buffer, uint64_t* timestamp) {
+                                                          struct tt_RxBuffer** rx_buffer_ptr, uint32_t submessage_start,
+                                                          bool is_native_endian, void* recv_topic_data_buffer,
+                                                          uint64_t* timestamp) {
     struct tt_Node* node = subscriber->node;
     struct tt_Topic* topic = subscriber->topic;
     const uint32_t endpoint_id = subscriber->endpoint.id;
@@ -251,9 +251,8 @@ static enum take_topic_result take_data_submessage_locked(struct tt_Subscriber* 
 
     // Decode lazily at take time. The original wire buffer must remain unchanged
     // until decoding succeeds.
-    int32_t decoded =
-        topic->data_decode((struct tt_Data*)recv_topic_data_buffer, buffer + data_head, body_tail - data_head,
-                           is_native_endian);
+    int32_t decoded = topic->data_decode((struct tt_Data*)recv_topic_data_buffer, buffer + data_head,
+                                         body_tail - data_head, is_native_endian);
     if (decoded < 0) {
         return TAKE_TOPIC_ERROR;
     }
