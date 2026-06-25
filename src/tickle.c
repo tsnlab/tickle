@@ -13,6 +13,11 @@
 
 #define UNUSED(x) (void)(x)
 
+// Cached between tt_Node_poll() calls so timeout-only polling does not repeat
+// malloc/free. When data is received, process_packet() consumes the buffer and
+// this pointer is cleared.
+static struct tt_RxBuffer* cached_rx_buffer = NULL;
+
 static tt_lock_state_t lock_endpoints(struct tt_Node* node) {
     return tt_lock(&node->endpoint_lock);
 }
@@ -1265,11 +1270,17 @@ static void process_scheduled_tasks(struct tt_Node* node) {
 }
 
 int32_t tt_Node_poll(struct tt_Node* node) {
-    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    struct tt_RxBuffer* rx_buffer = cached_rx_buffer;
+    if (cached_rx_buffer == NULL) {
+        rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+    }
+
     if (rx_buffer == NULL) {
         TT_LOG_ERROR("Out of memory");
         return -1;
     }
+
+    cached_rx_buffer = rx_buffer;
 
     rx_buffer->remaining_topic_count = 0;
     rx_buffer->len = 0;
@@ -1280,9 +1291,10 @@ int32_t tt_Node_poll(struct tt_Node* node) {
     int32_t len = tt_receive(node, rx_buffer->rx_data, tt_MAX_BUFFER_LENGTH, &ip, &port);
 
     if (len == -1) { // Timeout
-        _tt_free(rx_buffer);
+        // Keep rx_buffer cached for the next poll when no data is available.
     } else if (len < 0) { // I/O error
         _tt_free(rx_buffer);
+        cached_rx_buffer = NULL;
         perror("Cannot receive data");
         process_scheduled_tasks(node);
         return len;
@@ -1294,6 +1306,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
 
         // process_packet() consumes rx_buffer even on failure; do not free or
         // access rx_buffer after this call.
+        cached_rx_buffer = NULL;
         if (!process_packet(node, rx_buffer)) {
             TT_LOG_ERROR("Cannot process packet");
         }
@@ -1305,6 +1318,9 @@ int32_t tt_Node_poll(struct tt_Node* node) {
 
 int32_t tt_Node_destroy(struct tt_Node* node) {
     uint64_t time = tt_get_ns();
+
+    _tt_free(cached_rx_buffer);
+    cached_rx_buffer = NULL;
 
     tt_lock_state_t state = lock_endpoints(node);
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
