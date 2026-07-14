@@ -17,16 +17,8 @@
 #define tt_KIND_SERVICE_SERVER (tt_KIND_SENDER | tt_KIND_SERVICE)
 
 struct tt_Endpoint;
-struct tt_RxBuffer;
 struct tt_UpdateHeader;
 struct tt_Node;
-
-struct tt_RxBuffer {
-    int32_t remaining_topic_count;
-    uint32_t len;
-    uint8_t rx_data[tt_MAX_BUFFER_LENGTH];
-    struct tt_RxBuffer* next_buffer;
-};
 
 // Task Control Block
 struct tt_TCB {
@@ -50,11 +42,7 @@ struct tt_Node {
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
 
-    struct tt_RxBuffer* rx_buffer_list;
-    uint32_t rx_buffer_count;
-
     tt_lock_t endpoint_lock;
-    tt_lock_t rx_buffer_lock;
 
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_generic.h>).
@@ -154,6 +142,14 @@ struct tt_Subscriber;
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                        struct tt_Data* data);
 
+struct tt_ring_buffer {
+    uint8_t* data;
+    uint32_t  elem_size;
+    uint32_t  capacity;
+    uint32_t  write_end;
+    uint32_t  read_end;
+};
+
 struct tt_Subscriber { // embeds endpoint metadata
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
@@ -163,10 +159,10 @@ struct tt_Subscriber { // embeds endpoint metadata
     // transcation
     uint16_t seq_no;
 
-    // Cached count of encoded DATA submessages queued for pull-style delivery.
-    // Only callback-less subscribers can accumulate this count; callback
-    // subscribers receive DATA immediately during polling.
-    uint32_t rx_data_count;
+    // encoded DATA submessages queued for pull-style delivery.
+    // Only callback-less subscribers can accumulate this;
+    // callback subscribers receive DATA immediately during polling.
+    struct tt_ring_buffer rx_queue;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);

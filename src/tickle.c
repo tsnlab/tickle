@@ -6,10 +6,10 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
+#include "ring_buffer.h"
 #include "consts.h"
 #include "encoding.h"
 #include "log.h"
-#include "rx_buffer_mgmt.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -286,20 +286,17 @@ int32_t tt_Node_create(struct tt_Node* node) {
     node->scheduler_tail = 0;
 
     tt_lock_init(&node->endpoint_lock);
-    tt_rx_buffer_list_init(node);
 
     node->id = tt_get_node_id();
 
     if (node->id == tt_NODE_ID_INVALID || node->id == tt_NODE_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
-        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -2;
     }
 
     if (tt_bind(node) != 0) {
         TT_LOG_ERROR("Cannot bind");
-        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -3;
     }
@@ -314,7 +311,6 @@ int32_t tt_Node_create(struct tt_Node* node) {
     if (!tt_Node_schedule(node, basetime, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
         tt_close(node);
-        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
@@ -322,7 +318,6 @@ int32_t tt_Node_create(struct tt_Node* node) {
     if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
         tt_close(node);
-        tt_rx_buffer_list_deinit(node);
         tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
@@ -409,7 +404,7 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
     sub->callback = callback;
     // No DATA is takable until polling receives DATA for a callback-less
     // subscriber and leaves it encoded in the RX buffer list.
-    sub->rx_data_count = 0;
+    ring_buffer_init(&sub->rx_queue, sizeof(struct rx_data_buffer), tt_DEFAULT_HISTORY_DEPTH);
 
     int32_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_ERROR_NONE) {
@@ -804,7 +799,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     return true;
 }
 
-static bool process_data(struct tt_Node* node, struct tt_Header* header, struct tt_RxBuffer* rx_buffer, uint8_t* buffer,
+static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer,
                          uint32_t head, uint32_t tail) {
     // DATA delivery has two paths:
     // - callback subscribers are decoded immediately and receive stack-owned data.
@@ -822,8 +817,6 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, struct 
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->endpoint_id);
     if (endpoint == NULL) {
-        // No local subscriber owns this endpoint id, so this DATA submessage is
-        // ignored and does not contribute to remaining_topic_count.
         return true;
     }
 
@@ -846,8 +839,21 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, struct 
         // Pull-style subscriber: leave this submessage encoded inside the
         // owning rx_buffer. rx_data_count mirrors the number of encoded DATA
         // submessages that tt_Subscriber_take() can still consume.
-        rx_buffer->remaining_topic_count++;
-        sub->rx_data_count++;
+        // TODO: allocate memory and push to subscriber's rx buffer queue
+        struct rx_data_buffer data_buffer;
+
+        data_buffer.data = _tt_malloc(tail - head);
+        if (data_buffer.data == NULL) {
+            TT_LOG_ERROR("Cannot alloc rx data buffer. size: %u", tail - head);
+            return false;
+        }
+        data_buffer.len = tail - head;
+        data_buffer.is_native_endian = tt_is_native_endian(header);
+        _tt_memcpy((void*)data_buffer.data, buffer + head, tail - head);
+        if (ring_buffer_push(&sub->rx_queue, (void*)&data_buffer) < 0) {
+            TT_LOG_WARNING("Rx queue is full");
+            return false;
+        }
     }
 
     return true;
@@ -1116,8 +1122,8 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     return true;
 }
 
-static bool process_submessage(struct tt_Node* node, struct tt_Header* header, struct tt_RxBuffer* rx_buffer,
-                               uint8_t* buffer, uint32_t head, uint32_t body_tail,
+static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer,
+                               uint32_t head, uint32_t body_tail,
                                const struct tt_SubmessageHeader* submessage_header) {
     switch (submessage_header->type) {
     case tt_SUBMESSAGE_TYPE_UPDATE:
@@ -1126,7 +1132,7 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, s
         }
         return true;
     case tt_SUBMESSAGE_TYPE_DATA:
-        if (!process_data(node, header, rx_buffer, buffer, head, body_tail)) {
+        if (!process_data(node, header, buffer, head, body_tail)) {
             TT_LOG_ERROR("ERROR on data");
         }
         return true;
@@ -1149,24 +1155,16 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, s
     }
 }
 
-// Consumes rx_buffer. After this function returns, the buffer has either been
-// freed or handed over to node->rx_buffer_list for later tt_Subscriber_take().
-static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer) {
-    uint8_t* buffer = rx_buffer->rx_data;
-    uint32_t head = 0;
-    uint32_t tail = rx_buffer->len;
-
+static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail) {
     // Decode header
     struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
     if (header == NULL) {
         TT_LOG_ERROR("RX buffer underflow");
-        _tt_free(rx_buffer);
         return false;
     }
 
     if (!tt_is_native_endian(header) && !tt_is_reverse_endian(header)) {
         TT_LOG_ERROR("Illegal magic: 0x%04x", header->magic_value);
-        _tt_free(rx_buffer);
         return false;
     }
 
@@ -1175,14 +1173,12 @@ static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer) 
     // Accept higher version while ignoring ignoring reserved field. But not lower version.
     if (header->version < tt_VERSION) {
         TT_LOG_ERROR("Illegal version: %d < %d", header->version, tt_VERSION);
-        _tt_free(rx_buffer);
         return false;
     }
 
     // Self sent message
     if (header->source == node->id) {
         TT_LOG_DEBUG("Self sent packet");
-        _tt_free(rx_buffer);
         return true;
     }
     TT_LOG_DEBUG("header->source: %d", header->source);
@@ -1209,45 +1205,37 @@ static bool process_packet(struct tt_Node* node, struct tt_RxBuffer* rx_buffer) 
             TT_LOG_ERROR("Illegal submessage length: %d < %ld || %d > %ld", submessage_header->length,
                          sizeof(struct tt_SubmessageHeader), submessage_header->length,
                          tail - head + sizeof(struct tt_SubmessageHeader));
-            tt_rx_buffer_drop_topic_counts(node, rx_buffer);
-            _tt_free(rx_buffer);
             return false;
         }
 
         const uint32_t body_tail = head + submessage_header->length - sizeof(struct tt_SubmessageHeader);
+        // NOTE: submessage_header->length does not include header size according to end_encode()
         if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
-            !process_submessage(node, header, rx_buffer, buffer, head, body_tail, submessage_header)) {
-            tt_rx_buffer_drop_topic_counts(node, rx_buffer);
-            _tt_free(rx_buffer);
+            !process_submessage(node, header, buffer, head, body_tail, submessage_header)) {
             return false;
         }
 
         head += submessage_header->length - sizeof(struct tt_SubmessageHeader);
     }
-
-    // No pending topic data remains in this packet, so the wire buffer can be
-    // released immediately. Otherwise rx_buffer_mgmt owns it from here.
-    if (rx_buffer->remaining_topic_count == 0) {
-        _tt_free(rx_buffer);
-    } else {
-        tt_rx_buffer_list_append(node, rx_buffer);
-    }
-
     return true;
 }
 
 bool tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer, uint64_t* timestamp) {
+    struct rx_data_buffer data_buffer;
+
     if (subscriber == NULL || recv_topic_data_buffer == NULL) {
         return false;
     }
-
-    // The rx buffer module finds the oldest matching encoded DATA submessage,
-    // decodes it into the caller's buffer, and removes it from the pending list.
-    return tt_rx_buffer_take_topic(subscriber, recv_topic_data_buffer, timestamp);
+    if (ring_buffer_pop(&subscriber->rx_queue, &data_buffer) < 0) {
+        return false;
+    }
+    subscriber->topic->data_decode(recv_topic_data_buffer, data_buffer.data, data_buffer.len, data_buffer.is_native_endian);
+    _tt_free(data_buffer.data);
+    return true;
 }
 
 uint32_t tt_Subscriber_get_takable_count(const struct tt_Subscriber* subscriber) {
-    return tt_rx_buffer_get_takable_count(subscriber);
+    return ring_buffer_size(&subscriber->rx_queue);
 }
 
 static void process_scheduled_tasks(struct tt_Node* node) {
@@ -1265,36 +1253,21 @@ static void process_scheduled_tasks(struct tt_Node* node) {
 }
 
 int32_t tt_Node_poll(struct tt_Node* node) {
-    struct tt_RxBuffer* rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
-    if (rx_buffer == NULL) {
-        TT_LOG_ERROR("Out of memory");
-        return -1;
-    }
-
-    rx_buffer->remaining_topic_count = 0;
-    rx_buffer->len = 0;
-    rx_buffer->next_buffer = NULL;
-
+    uint8_t recv_buffer[tt_MAX_BUFFER_LENGTH] = {0, };
     uint32_t ip = 0;
     uint16_t port = 0;
-    int32_t len = tt_receive(node, rx_buffer->rx_data, tt_MAX_BUFFER_LENGTH, &ip, &port);
+    int32_t len = tt_receive(node, recv_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
 
     if (len == -1) { // Timeout
-        _tt_free(rx_buffer);
     } else if (len < 0) { // I/O error
-        _tt_free(rx_buffer);
         perror("Cannot receive data");
         process_scheduled_tasks(node);
         return len;
     } else {
-        rx_buffer->len = len;
-
         TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                      (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
 
-        // process_packet() consumes rx_buffer even on failure; do not free or
-        // access rx_buffer after this call.
-        if (!process_packet(node, rx_buffer)) {
+        if (!process_packet(node, recv_buffer, 0, len)) {
             TT_LOG_ERROR("Cannot process packet");
         }
     }
@@ -1324,8 +1297,6 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
         _tt_free(node->updates[i]);
         node->updates[i] = NULL;
     }
-
-    tt_rx_buffer_list_deinit(node);
 
     tt_close(node);
     tt_lock_deinit(&node->endpoint_lock);
