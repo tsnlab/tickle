@@ -1,0 +1,4 @@
+struct evaluate_rtt
+{
+    octet payload[8];
+};
