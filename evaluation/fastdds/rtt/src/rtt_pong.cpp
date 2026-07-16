@@ -17,6 +17,8 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <condition_variable>
+#include <queue>
 #include <thread>
 
 #include <fastdds/dds/domain/DomainParticipant.hpp>
@@ -33,9 +35,15 @@
 
 using namespace eprosima::fastdds::dds;
 
+std::condition_variable cv;
+std::mutex cv_mutex;
+
 class PongNode
 {
 private:
+    
+    std::queue<uint64_t> seqnum_queue_;
+    evaluate_rtt pong_rtt_;
 
     DomainParticipant* participant_;
 
@@ -45,7 +53,8 @@ private:
     DataWriter* pong_writer_;
     DataReader* ping_reader_;
 
-    Topic* rtt_topic_;
+    Topic* ping_topic_;
+    Topic* pong_topic_;
 
     TypeSupport rtt_type_;
 
@@ -91,8 +100,8 @@ private:
     {
     public:
 
-        SubListener(DataWriter* pong_writer)
-            : pong_writer_(pong_writer)
+        SubListener(std::queue<uint64_t>& seqnum_queue)
+            : seqnum_queue_(seqnum_queue)
         {
         }
 
@@ -110,6 +119,8 @@ private:
             }
             else if (info.current_count_change == -1)
             {
+                std::lock_guard<std::mutex> lock(cv_mutex);
+                seqnum_queue_ = std::queue<uint64_t>();
                 std::cout << "Subscriber unmatched." << std::endl;
             }
             else
@@ -128,12 +139,15 @@ private:
             {
                 if (info.valid_data)
                 {
-                    pong_writer_->write(&ping_rtt_);
+                    std::lock_guard<std::mutex> lock(cv_mutex);
+
+                    uint64_t sequence_number = *reinterpret_cast<uint64_t*>(ping_rtt_.payload().data());
+                    seqnum_queue_.push(sequence_number);
+                    cv.notify_all();
                 }
             }
         }
-
-        DataWriter* pong_writer_;
+        std::queue<uint64_t>& seqnum_queue_;
         evaluate_rtt ping_rtt_;
 
     }
@@ -147,9 +161,10 @@ public:
         , ping_subscriber_(nullptr)
         , pong_writer_(nullptr)
         , ping_reader_(nullptr)
-        , rtt_topic_(nullptr)
+        , ping_topic_(nullptr)
+        , pong_topic_(nullptr)
         , rtt_type_(new evaluate_rttPubSubType())
-        , ping_listener_(pong_writer_)
+        , ping_listener_(seqnum_queue_)
     {
     }
 
@@ -167,9 +182,13 @@ public:
         {
             participant_->delete_publisher(pong_publisher_);
         }
-        if (rtt_topic_ != nullptr)
+        if (ping_topic_ != nullptr)
         {
-            participant_->delete_topic(rtt_topic_);
+            participant_->delete_topic(ping_topic_);
+        }
+        if (pong_topic_ != nullptr)
+        {
+            participant_->delete_topic(pong_topic_);
         }
         if (ping_subscriber_ != nullptr)
         {
@@ -194,9 +213,16 @@ public:
         rtt_type_.register_type(participant_);
 
         // Create the subscriptions Topic
-        rtt_topic_ = participant_->create_topic("RttTopic", "evaluate_rtt", TOPIC_QOS_DEFAULT); // TODO: BE QoS
+        TopicQos topic_qos;
 
-        if (rtt_topic_ == nullptr)
+        topic_qos.reliability().kind = ReliabilityQosPolicyKind::BEST_EFFORT_RELIABILITY_QOS;
+        topic_qos.durability().kind = DurabilityQosPolicyKind::VOLATILE_DURABILITY_QOS;
+        topic_qos.history().kind = HistoryQosPolicyKind::KEEP_LAST_HISTORY_QOS;
+        topic_qos.history().depth = 1;
+        ping_topic_ = participant_->create_topic("PingTopic", "evaluate_rtt", topic_qos); // TODO: BE QoS
+        pong_topic_ = participant_->create_topic("PongTopic", "evaluate_rtt", topic_qos); // TODO: BE QoS
+
+        if (ping_topic_ == nullptr || pong_topic_ == nullptr)
         {
             return false;
         }
@@ -210,7 +236,7 @@ public:
         }
 
         // Create the DataWriter
-        pong_writer_ = pong_publisher_->create_datawriter(rtt_topic_, DATAWRITER_QOS_DEFAULT, &pong_listener_);
+        pong_writer_ = pong_publisher_->create_datawriter(pong_topic_, DATAWRITER_QOS_DEFAULT, &pong_listener_);
 
         if (pong_writer_ == nullptr)
         {
@@ -226,7 +252,7 @@ public:
         }
 
         // Create the DataReader
-        ping_reader_ = ping_subscriber_->create_datareader(rtt_topic_, DATAREADER_QOS_DEFAULT, &ping_listener_);
+        ping_reader_ = ping_subscriber_->create_datareader(ping_topic_, DATAREADER_QOS_DEFAULT, &ping_listener_);
 
         if (ping_reader_ == nullptr)
         {
@@ -237,28 +263,34 @@ public:
     }
 
     //!Run the pong publisher and ping subscriber
-    void run(
-            uint32_t samples)
+    void run()
     {
         while (true)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::unique_lock<std::mutex> lock(cv_mutex);
+
+            cv.wait(lock);
+            while (seqnum_queue_.size() > 0)
+            {
+                uint64_t seqnum = seqnum_queue_.front();
+
+                seqnum_queue_.pop();
+                *reinterpret_cast<uint64_t*>(pong_rtt_.payload().data()) = seqnum;
+                pong_writer_->write(&pong_rtt_);
+            }
         }
     }
 
 };
 
-int main(
-        int argc,
-        char** argv)
+int main(int argc, char** argv)
 {
     std::cout << "Starting subscriber." << std::endl;
-    uint32_t samples = 10;
 
     PongNode* mysub = new PongNode();
     if (mysub->init())
     {
-        mysub->run(samples);
+        mysub->run();
     }
 
     delete mysub;

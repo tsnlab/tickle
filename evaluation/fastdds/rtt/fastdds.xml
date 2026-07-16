@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<dds xmlns="http://eprosima.com">
+    <profiles>
+        <participant profile_name="disable_shm_profile" is_default_profile="true">
+            <rtps>
+                <!-- This tells Fast DDS not to load the default SHM + UDP setup -->
+                <useBuiltinTransports>false</useBuiltinTransports>
+                <!-- Explicitly define only the UDP transport -->
+                <userTransports>
+                    <transport_id>udp_transport</transport_id>
+                </userTransports>
+            </rtps>
+        </participant>
+
+        <!-- Define the UDP transport configuration referenced above -->
+        <transport_descriptors>
+            <transport_descriptor>
+                <transport_id>udp_transport</transport_id>
+                <type>UDPv4</type>
+            </transport_descriptor>
+        </transport_descriptors>
+    </profiles>
+</dds>

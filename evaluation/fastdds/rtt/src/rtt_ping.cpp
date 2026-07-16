@@ -35,8 +35,12 @@
 
 using namespace eprosima::fastdds::dds;
 
-std::ofstream csv_output_;
+static std::ofstream csv_output;
+static std::mutex logging_lock;
+static std::mutex timestamp_map_lock;
 
+static const uint32_t default_interval_ms = 500;
+static const uint32_t default_count = 10;
 
 class PingNode
 {
@@ -45,8 +49,7 @@ private:
     using timestamp_t = clock_t::time_point;
     using time_diff_t = std::chrono::duration<uint64_t, std::nano>;
 
-    const time_diff_t ttl_ = time_diff_t(1000000000);
-
+    const time_diff_t ttl_ = std::chrono::seconds(1);
     evaluate_rtt ping_rtt_;
 
     DomainParticipant* participant_;
@@ -57,10 +60,13 @@ private:
     DataWriter* ping_writer_;
     DataReader* pong_reader_;
 
-    Topic* rtt_topic_;
+    Topic* ping_topic_;
+    Topic* pong_topic_;
     TypeSupport rtt_type_;
 
-    std::chrono::milliseconds cumulative_time_ms_;
+    std::atomic_uint count_;
+    std::atomic_int stop_;
+    uint64_t loss_count_;
 
     class PubListener : public DataWriterListener
     {
@@ -76,23 +82,23 @@ private:
         }
 
         void on_publication_matched(
-                DataWriter*,
+                DataWriter* /*writer*/,
                 const PublicationMatchedStatus& info) override
         {
             if (info.current_count_change == 1)
             {
                 matched_ = info.total_count;
-                std::cout << "Publisher matched." << std::endl;
+                std::cout << "Publisher matched.\n";
             }
             else if (info.current_count_change == -1)
             {
                 matched_ = info.total_count;
-                std::cout << "Publisher unmatched." << std::endl;
+                std::cout << "Publisher unmatched.\n";
             }
             else
             {
                 std::cout << info.current_count_change
-                        << " is not a valid value for PublicationMatchedStatus current count change." << std::endl;
+                        << " is not a valid value for PublicationMatchedStatus current count change.\n";
             }
         }
 
@@ -105,7 +111,8 @@ private:
     public:
 
         SubListener()
-            : samples_(0)
+            : rtt_sum_(0)
+            , samples_per_sec_(0)
         {
         }
 
@@ -114,21 +121,21 @@ private:
         }
 
         void on_subscription_matched(
-                DataReader*,
+                DataReader* /*reader*/,
                 const SubscriptionMatchedStatus& info) override
         {
             if (info.current_count_change == 1)
             {
-                std::cout << "Subscriber matched." << std::endl;
+                std::cout << "Subscriber matched.\n";
             }
             else if (info.current_count_change == -1)
             {
-                std::cout << "Subscriber unmatched." << std::endl;
+                std::cout << "Subscriber unmatched.\n";
             }
             else
             {
                 std::cout << info.current_count_change
-                          << " is not a valid value for SubscriptionMatchedStatus current count change" << std::endl;
+                          << " is not a valid value for SubscriptionMatchedStatus current count change\n";
             }
         }
 
@@ -136,23 +143,38 @@ private:
         void on_data_available(
                 DataReader* reader) override
         {
+            timestamp_t now = clock_t::now();
             SampleInfo info;
+
             if (reader->take_next_sample(&pong_rtt_, &info) == eprosima::fastdds::dds::RETCODE_OK)
             {
-                if (info.valid_data)
+                if (!info.valid_data)
                 {
-                    uint64_t sequence_number;
-                    timestamp_t old_timestamp;
-                    std::chrono::steady_clock::duration rtt;
-                    
-                    sequence_number = *reinterpret_cast<uint64_t*>(pong_rtt_.payload().data());
-                    old_timestamp = timestamp_map_.at(sequence_number);
-                    rtt = std::chrono::steady_clock::now() - old_timestamp;
-                    timestamp_map_.erase(sequence_number);
-                    samples_++;
-                    samples_per_sec++;
-                    rtt_sum_ += rtt;
+                    std::cout << "Received invalid data\n";
+                    return;
                 }
+                uint64_t seqnum;
+                timestamp_t old_timestamp;
+                std::chrono::steady_clock::duration rtt;
+
+                seqnum = *reinterpret_cast<uint64_t*>(pong_rtt_.payload().data());
+                timestamp_map_lock.lock();
+                if (timestamp_map_.count(seqnum) == 0)
+                {
+                    return;
+                }
+                old_timestamp = timestamp_map_[seqnum];
+                rtt = now - old_timestamp;
+                timestamp_map_.erase(seqnum);
+                timestamp_map_lock.unlock();
+                logging_lock.lock();
+                rtt_sum_ += rtt;
+                samples_per_sec_++;
+                logging_lock.unlock();
+                csv_output << seqnum << ", ";
+                csv_output << old_timestamp.time_since_epoch().count() << ", ";
+                csv_output << rtt.count() << '\n';
+
             }
         }
 
@@ -160,8 +182,7 @@ private:
         std::map<uint64_t, timestamp_t> timestamp_map_;
         time_diff_t rtt_sum_;
 
-        std::atomic_int samples_;
-        std::atomic_int samples_per_sec;
+        uint32_t samples_per_sec_;
 
     }
     pong_listener_;
@@ -174,9 +195,11 @@ public:
         , pong_subscriber_(nullptr)
         , ping_writer_(nullptr)
         , pong_reader_(nullptr)
-        , rtt_topic_(nullptr)
+        , ping_topic_(nullptr)
+        , pong_topic_(nullptr)
         , rtt_type_(new evaluate_rttPubSubType())
-        , cumulative_time_ms_(0)
+        , stop_(0)
+        , loss_count_(0)
     {
     }
 
@@ -194,9 +217,13 @@ public:
         {
             participant_->delete_publisher(ping_publisher_);
         }
-        if (rtt_topic_ != nullptr)
+        if (ping_topic_ != nullptr)
         {
-            participant_->delete_topic(rtt_topic_);
+            participant_->delete_topic(ping_topic_);
+        }
+        if (pong_topic_ != nullptr)
+        {
+            participant_->delete_topic(pong_topic_);
         }
         if (pong_subscriber_ != nullptr)
         {
@@ -221,9 +248,16 @@ public:
         rtt_type_.register_type(participant_);
 
         // Create the ping publications Topic
-        rtt_topic_ = participant_->create_topic("RttTopic", "evaluate_rtt", TOPIC_QOS_DEFAULT);
+        TopicQos topic_qos;
 
-        if (rtt_topic_ == nullptr)
+        topic_qos.reliability().kind = ReliabilityQosPolicyKind::BEST_EFFORT_RELIABILITY_QOS;
+        topic_qos.durability().kind = DurabilityQosPolicyKind::VOLATILE_DURABILITY_QOS;
+        topic_qos.history().kind = HistoryQosPolicyKind::KEEP_LAST_HISTORY_QOS;
+        topic_qos.history().depth = 1;
+        ping_topic_ = participant_->create_topic("PingTopic", "evaluate_rtt", topic_qos);
+        pong_topic_ = participant_->create_topic("PongTopic", "evaluate_rtt", topic_qos);
+
+        if (ping_topic_ == nullptr || ping_topic_ == nullptr)
         {
             return false;
         }
@@ -237,7 +271,7 @@ public:
         }
 
         // Create the DataWriter
-        ping_writer_ = ping_publisher_->create_datawriter(rtt_topic_, DATAWRITER_QOS_DEFAULT, &ping_listener_);
+        ping_writer_ = ping_publisher_->create_datawriter(ping_topic_, DATAWRITER_QOS_DEFAULT, &ping_listener_);
 
         if (ping_writer_ == nullptr)
         {
@@ -253,7 +287,7 @@ public:
         }
 
         // Create the DataReader
-        pong_reader_ = pong_subscriber_->create_datareader(rtt_topic_, DATAREADER_QOS_DEFAULT, &pong_listener_);
+        pong_reader_ = pong_subscriber_->create_datareader(pong_topic_, DATAREADER_QOS_DEFAULT, &pong_listener_);
 
         if (pong_reader_ == nullptr)
         {
@@ -264,67 +298,121 @@ public:
         return true;
     }
 
-    //!Send a ping
+    void log_rtt(std::atomic_int& samples_sent_per_sec)
+    {
+        std::chrono::duration<double, std::milli> rtt_sum;
+
+        logging_lock.lock();
+        rtt_sum = pong_listener_.rtt_sum_;
+        pong_listener_.rtt_sum_ = std::chrono::nanoseconds(0);
+        logging_lock.unlock();
+        if (pong_listener_.samples_per_sec_ == 0)
+        {
+            std::cout << "avg_rtt=0";
+        }
+        else
+        {
+            std::cout << "avg_rtt=" << rtt_sum.count() / pong_listener_.samples_per_sec_;
+        }
+        std::cout << "  received=" << pong_listener_.samples_per_sec_;
+        std::cout << "  loss=" << loss_count_;
+        std::cout << '\n';
+
+        pong_listener_.samples_per_sec_ = 0;
+        samples_sent_per_sec = 0;
+    }
+
+    void monitor_timestamp()
+    {
+        std::lock_guard<std::mutex> lock(timestamp_map_lock);
+
+        while (!pong_listener_.timestamp_map_.empty())
+        {
+            timestamp_t now = clock_t::now();
+            auto entry = pong_listener_.timestamp_map_.begin();
+            time_diff_t diff = now - entry->second;
+            if (diff > ttl_)
+            {
+                ++loss_count_;
+                pong_listener_.timestamp_map_.erase(entry->first);
+                continue;
+            }
+            break;
+        }
+        if (count_ == 0 && pong_listener_.timestamp_map_.empty())
+        {
+            stop_ = 1;
+        }
+    }
+
     bool publish_ping()
     {
-        if (ping_listener_.matched_ > 0)
-        {
-            uint64_t* current_sequence_number = reinterpret_cast<uint64_t*>(ping_rtt_.payload().data());
+        static uint64_t seqnum = 0;
 
-            pong_listener_.timestamp_map_[*current_sequence_number++] = clock_t::now();
-            ping_writer_->write(&ping_rtt_);
-            return true;
+        if (ping_listener_.matched_ < 1)
+        {
+            return false;
         }
-        return false;
+
+        *reinterpret_cast<uint64_t*>(ping_rtt_.payload().data()) = seqnum;
+        timestamp_map_lock.lock();
+        pong_listener_.timestamp_map_[seqnum] = clock_t::now();
+        timestamp_map_lock.unlock();
+        ping_writer_->write(&ping_rtt_);
+        ++seqnum;
+        return true;
     }
 
     //!Run the ping publisher and pong subscriber
-    void run(
-            uint32_t samples, uint32_t interval_ms)
+    void run(uint32_t count, uint32_t interval_ms)
     {
-        std::chrono::seconds cumulative_time_s(0);
-        uint64_t samples_sent_per_sec = 0;
+        std::chrono::milliseconds interval(interval_ms);
+        std::atomic_int samples_sent_per_sec(0);
 
-        while (true)
+        count_ = count;
+        // periodically update timestamp_map
+        // discard ping if it reaches TTL
+        std::thread ts_update_trd([this]()
         {
-            timestamp_t current_timestamp;
+            const std::chrono::milliseconds update_interval(100);
+            while (!stop_)
+            {
+                auto now = clock_t::now();
+                auto next_wake = now + update_interval;
+                monitor_timestamp();
+                std::this_thread::sleep_until(next_wake);
+            }
+        });
 
-            if (publish_ping())
+        // log statistics per 1 second
+        std::thread log_trd([this, &samples_sent_per_sec]()
+        {
+            const std::chrono::milliseconds log_interval(1000);
+            while (!stop_)
             {
-                samples_sent_per_sec++;
+                auto now = clock_t::now();
+                auto next_wake = now + log_interval;
+                log_rtt(samples_sent_per_sec);
+                std::this_thread::sleep_until(next_wake);
             }
-            current_timestamp = clock_t::now();
-            // actual interval = interval_ms + write overhead
-            std::chrono::milliseconds interval(interval_ms);
-            cumulative_time_ms_ += interval;
-            std::chrono::seconds current_s = std::chrono::duration_cast<std::chrono::seconds>(cumulative_time_ms_);
-            if (current_s > cumulative_time_s)
-            {
-                cumulative_time_s = current_s;
-                std::cout << "avg_rtt=" << static_cast<double>(pong_listener_.rtt_sum_.count()) / pong_listener_.samples_per_sec;
-                std::cout << "  received=" << pong_listener_.samples_per_sec;
-                std::cout << "  loss=" << samples_sent_per_sec - pong_listener_.samples_per_sec;
-                std::cout << '\n';
-                pong_listener_.samples_per_sec = 0;
-                pong_listener_.rtt_sum_ = std::chrono::nanoseconds(0);
-                samples_sent_per_sec = 0;
-                while (true)
-                {
-                    auto entry = pong_listener_.timestamp_map_.begin();
-                    if (entry->second - current_timestamp > ttl_)
-                    {
-                        pong_listener_.timestamp_map_.erase(entry->first);
-                        continue;
-                    }
-                    break;
-                }
+            log_rtt(samples_sent_per_sec);
+        });
+
+        // publish ping message
+        while (count_ > 0)
+        {
+            auto now = clock_t::now();
+            auto next_wake = now + interval;
+
+            if (publish_ping()) {
+                ++samples_sent_per_sec;
+                --count_;
             }
-            std::this_thread::sleep_for(interval); // TODO: more accurate interval
-            if (pong_listener_.timestamp_map_.empty())
-            {
-                break;
-            }
+            std::this_thread::sleep_until(next_wake);
         }
+
+        ts_update_trd.join();
+        log_trd.join();
     }
 };
 
@@ -332,22 +420,44 @@ int main(
         int argc,
         char** argv)
 {
-    uint64_t interval_ms = 1000;
-    uint64_t count = 1000;
-    PingNode* ping_node = new PingNode();
+    // get command line arguments
+    uint64_t interval_ms = default_interval_ms;
+    uint64_t count = default_count;
+    int opt;
+
+    while ((opt = getopt(argc, argv, "i:c:")) != -1) {
+         switch (opt) {
+         case 'i':
+             interval_ms = atoi(optarg);
+             break;
+         case 'c':
+             count = atoi(optarg);
+             break;
+         default:
+             fprintf(stderr, "Usage: %s [-i interval_ms] [-c count]\n",
+                     argv[0]);
+             exit(1);
+         }
+    }
+
+    // initialize object for csv file
     std::string csv_filename;
     std::strstream sstream;
 
     sstream << "rtt_fastdds";
     sstream << "_i" << interval_ms << "_s8" << "_c" << count << ".csv";
     sstream >> csv_filename;
-    csv_output_.open(csv_filename);
+    csv_output.open(csv_filename);
+    csv_output << "count, timestamp_ns, rtt_ns\n";
+
+
+    // run DDS
+    PingNode* ping_node = new PingNode();
 
     if(ping_node->init())
     {
         ping_node->run(count, interval_ms);
     }
-
     delete ping_node;
     return 0;
 }

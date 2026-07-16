@@ -78,9 +78,17 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 # directory name may be diff
 ### TickLE
 
 ### FastDDS
+#### Build
 ```bash
-cd fastdds/lib
-colcon build --paths ../rtt --packages-select rtt
+source fastdds/lib/install/setup.$(basename ${SHELL})
+cd fastdds/rtt
+cmake -S . -B src
+```
+#### Run
+Run ping & pong application in separate terminal.
+```bash
+bash run_ping.sh [-i interval_ms] [-c count]
+bash run_pong.sh
 ```
 
 ### CycloneDDS
