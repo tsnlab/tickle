@@ -22,6 +22,7 @@ zenoh-pico/
 
 ### TickLE
 - branch: ([]())
+- Installation guide: []()
 
 ### FastDDS
 - branch: master([dd66ef2aff7230c7d39862dc7384402b88156d6f](https://github.com/eProsima/Fast-DDS/tree/dd66ef2aff7230c7d39862dc7384402b88156d6f))
@@ -68,7 +69,21 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 # directory name may be diff
 ```
 
 ### CycloneDDS
-- commit or branch
+- branch: master([2c9b5cb4aaff1d0ffd32314853f5afaf1448189b](https://github.com/eclipse-cyclonedds/cyclonedds/tree/2c9b5cb4aaff1d0ffd32314853f5afaf1448189b))
+- Installation guide: [Installation](https://cyclonedds.io/docs/cyclonedds/latest/installation/installation.html)
+#### Installation guide summary
+```bash
+cd cyclonedds
+sudo apt-get install git cmake gcc
+git clone https://github.com/eclipse-cyclonedds/cyclonedds.git 
+cd cyclonedds
+mkdir build
+cd build
+cmake -DCMAKE_INSTALL_PREFIX=$PWD/../../lib -DBUILD_EXAMPLES=ON ..
+cmake --build .
+cmake --build . --target install
+```
+
 
 ### Zenoh-pico
 - commit or branch
