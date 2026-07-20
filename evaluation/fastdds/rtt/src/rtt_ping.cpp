@@ -17,7 +17,7 @@
 #include <chrono>
 #include <fstream>
 #include <map>
-#include <strstream>
+#include <sstream>
 #include <thread>
 #include <unistd.h>
 
@@ -158,15 +158,16 @@ private:
                 std::chrono::steady_clock::duration rtt;
 
                 seqnum = *reinterpret_cast<uint64_t*>(pong_rtt_.payload().data());
-                timestamp_map_lock.lock();
-                if (timestamp_map_.count(seqnum) == 0)
                 {
-                    return;
+                    std::lock_guard<std::mutex> lock(timestamp_map_lock);
+                    if (timestamp_map_.count(seqnum) == 0)
+                    {
+                        return;
+                    }
+                    old_timestamp = timestamp_map_[seqnum];
+                    rtt = now - old_timestamp;
+                    timestamp_map_.erase(seqnum);
                 }
-                old_timestamp = timestamp_map_[seqnum];
-                rtt = now - old_timestamp;
-                timestamp_map_.erase(seqnum);
-                timestamp_map_lock.unlock();
                 logging_lock.lock();
                 rtt_sum_ += rtt;
                 samples_per_sec_++;
@@ -257,7 +258,7 @@ public:
         ping_topic_ = participant_->create_topic("PingTopic", "evaluate_rtt", topic_qos);
         pong_topic_ = participant_->create_topic("PongTopic", "evaluate_rtt", topic_qos);
 
-        if (ping_topic_ == nullptr || ping_topic_ == nullptr)
+        if (ping_topic_ == nullptr || pong_topic_ == nullptr)
         {
             return false;
         }
@@ -442,7 +443,7 @@ int main(
 
     // initialize object for csv file
     std::string csv_filename;
-    std::strstream sstream;
+    std::stringstream sstream;
 
     sstream << "rtt_fastdds";
     sstream << "_i" << interval_ms << "_s8" << "_c" << count << ".csv";
