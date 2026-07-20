@@ -1285,6 +1285,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
     if (len == -1) { // Timeout
     } else if (len < 0) { // I/O error
         _tt_free(rx_buffer);
+        rx_buffer = NULL;
         perror("Cannot receive data");
         process_scheduled_tasks(node);
         return len;
