@@ -6,10 +6,10 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "ring_buffer.h"
 #include "consts.h"
 #include "encoding.h"
 #include "log.h"
+#include "ring_buffer.h"
 
 #define UNUSED(x) (void)(x)
 
@@ -639,6 +639,11 @@ int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
         return 0;
     }
 
+    struct rx_data_buffer data_buffer;
+    while (ring_buffer_pop(&sub->rx_queue, &data_buffer) == 0) {
+        _tt_free(data_buffer.data);
+    }
+    ring_buffer_destroy(&sub->rx_queue);
     return -1;
 }
 

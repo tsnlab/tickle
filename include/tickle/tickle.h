@@ -144,10 +144,10 @@ typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_
 
 struct tt_ring_buffer {
     uint8_t* data;
-    uint32_t  elem_size;
-    uint32_t  capacity;
-    uint32_t  write_end;
-    uint32_t  read_end;
+    uint32_t elem_size;
+    uint32_t capacity;
+    uint32_t write_end;
+    uint32_t read_end;
 };
 
 struct tt_Subscriber { // embeds endpoint metadata
