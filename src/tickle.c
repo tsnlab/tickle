@@ -1287,7 +1287,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
     uint16_t port = 0;
     int32_t len = tt_receive(node, rx_buffer->rx_data, tt_MAX_BUFFER_LENGTH, &ip, &port);
 
-    if (len == -1) { // Timeout
+    if (len == -1) {      // Timeout
     } else if (len < 0) { // I/O error
         _tt_free(rx_buffer);
         rx_buffer = NULL;
