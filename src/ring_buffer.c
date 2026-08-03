@@ -1,11 +1,16 @@
-#include <stddef.h>
-#include <string.h>
-#include <tickle/tickle.h>
-
 #include "ring_buffer.h"
 
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <tickle/hal.h>
+#include <tickle/tickle.h>
+
 struct tt_ring_buffer ring_buffer_create(uint32_t elem_size, uint32_t capacity) {
-    struct tt_ring_buffer buffer = {0,};
+    struct tt_ring_buffer buffer = {
+        0,
+    };
     ring_buffer_init(&buffer, elem_size, capacity);
     return buffer;
 }
@@ -27,7 +32,9 @@ int32_t ring_buffer_init(struct tt_ring_buffer* buffer, uint32_t elem_size, uint
 
 void ring_buffer_destroy(struct tt_ring_buffer* buffer) {
     _tt_free(buffer->data);
-    *buffer = (struct tt_ring_buffer){0, };
+    *buffer = (struct tt_ring_buffer) {
+        0,
+    };
 }
 
 // read_end is inclusive, write_end is exclusive index

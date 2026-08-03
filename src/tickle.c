@@ -809,8 +809,8 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     return true;
 }
 
-static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer,
-                         uint32_t head, uint32_t tail) {
+static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                         uint32_t tail) {
     // DATA delivery has two paths:
     // - callback subscribers are decoded immediately and receive stack-owned data.
     // - callback-less subscribers keep the encoded DATA in rx_buffer for later take().
@@ -1132,9 +1132,8 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     return true;
 }
 
-static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer,
-                               uint32_t head, uint32_t body_tail,
-                               const struct tt_SubmessageHeader* submessage_header) {
+static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                               uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header) {
     switch (submessage_header->type) {
     case tt_SUBMESSAGE_TYPE_UPDATE:
         if (!process_update(node, header, buffer, head, body_tail)) {
@@ -1233,13 +1232,15 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
 bool tt_Subscriber_take(struct tt_Subscriber* subscriber, void* recv_topic_data_buffer, uint64_t* timestamp) {
     struct rx_data_buffer data_buffer;
 
+    *timestamp = 0;
     if (subscriber == NULL || recv_topic_data_buffer == NULL) {
         return false;
     }
     if (ring_buffer_pop(&subscriber->rx_queue, &data_buffer) < 0) {
         return false;
     }
-    subscriber->topic->data_decode(recv_topic_data_buffer, data_buffer.data, data_buffer.len, data_buffer.is_native_endian);
+    subscriber->topic->data_decode(recv_topic_data_buffer, data_buffer.data, data_buffer.len,
+                                   data_buffer.is_native_endian);
     _tt_free(data_buffer.data);
     return true;
 }
@@ -1263,12 +1264,14 @@ static void process_scheduled_tasks(struct tt_Node* node) {
 }
 
 int32_t tt_Node_poll(struct tt_Node* node) {
-    uint8_t recv_buffer[tt_MAX_BUFFER_LENGTH] = {0, };
+    uint8_t recv_buffer[tt_MAX_BUFFER_LENGTH] = {
+        0,
+    };
     uint32_t ip = 0;
     uint16_t port = 0;
     int32_t len = tt_receive(node, recv_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
 
-    if (len == -1) { // Timeout
+    if (len == -1) {      // Timeout
     } else if (len < 0) { // I/O error
         perror("Cannot receive data");
         process_scheduled_tasks(node);

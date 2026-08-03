@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 #include <tickle/tickle.h>
 
 struct rx_data_buffer {
