@@ -13,6 +13,11 @@
 
 #define UNUSED(x) (void)(x)
 
+// Cached between tt_Node_poll() calls so timeout-only polling does not repeat
+// malloc/free. When data is received, process_packet() consumes the buffer and
+// this pointer is cleared.
+static struct tt_RxBuffer* cached_rx_buffer = NULL;
+
 static tt_lock_state_t lock_endpoints(struct tt_Node* node) {
     return tt_lock(&node->endpoint_lock);
 }
@@ -1297,6 +1302,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
 
         // process_packet() consumes rx_buffer even on failure; do not free or
         // access rx_buffer after this call.
+        cached_rx_buffer = NULL;
         if (!process_packet(node, rx_buffer)) {
             TT_LOG_ERROR("Cannot process packet");
         }
@@ -1309,6 +1315,9 @@ int32_t tt_Node_poll(struct tt_Node* node) {
 
 int32_t tt_Node_destroy(struct tt_Node* node) {
     uint64_t time = tt_get_ns();
+
+    _tt_free(cached_rx_buffer);
+    cached_rx_buffer = NULL;
 
     tt_lock_state_t state = lock_endpoints(node);
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
