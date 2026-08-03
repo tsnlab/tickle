@@ -17,6 +17,7 @@
 #define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name
 #define tt_MAX_STRING_LENGTH 65535 // Maximum length of string
 #define tt_MAX_BUFFER_LENGTH 1480  // TX buffer size
+#define tt_DEFAULT_HISTORY_DEPTH 1
 
 // Node ID values are the last byte of the IPv4 address on the local network.
 // Valid node IDs are 1..254, because 0 is reserved for invalid/unassigned and
