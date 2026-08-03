@@ -1270,31 +1270,27 @@ static void process_scheduled_tasks(struct tt_Node* node) {
 }
 
 int32_t tt_Node_poll(struct tt_Node* node) {
-    struct tt_RxBuffer* rx_buffer = cached_rx_buffer;
-    if (cached_rx_buffer == NULL) {
-        rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
-    }
+    static struct tt_RxBuffer* rx_buffer = NULL;
 
     if (rx_buffer == NULL) {
-        TT_LOG_ERROR("Out of memory");
-        return -1;
+        rx_buffer = _tt_malloc(sizeof(struct tt_RxBuffer));
+        if (rx_buffer == NULL) {
+            TT_LOG_ERROR("Out of memory");
+            return -1;
+        }
+        rx_buffer->remaining_topic_count = 0;
+        rx_buffer->len = 0;
+        rx_buffer->next_buffer = NULL;
     }
-
-    cached_rx_buffer = rx_buffer;
-
-    rx_buffer->remaining_topic_count = 0;
-    rx_buffer->len = 0;
-    rx_buffer->next_buffer = NULL;
 
     uint32_t ip = 0;
     uint16_t port = 0;
     int32_t len = tt_receive(node, rx_buffer->rx_data, tt_MAX_BUFFER_LENGTH, &ip, &port);
 
-    if (len == -1) { // Timeout
-        // Keep rx_buffer cached for the next poll when no data is available.
+    if (len == -1) {      // Timeout
     } else if (len < 0) { // I/O error
         _tt_free(rx_buffer);
-        cached_rx_buffer = NULL;
+        rx_buffer = NULL;
         perror("Cannot receive data");
         process_scheduled_tasks(node);
         return len;
@@ -1310,6 +1306,7 @@ int32_t tt_Node_poll(struct tt_Node* node) {
         if (!process_packet(node, rx_buffer)) {
             TT_LOG_ERROR("Cannot process packet");
         }
+        rx_buffer = NULL;
     }
 
     process_scheduled_tasks(node);
