@@ -12,14 +12,6 @@
 
 #define UNUSED(x) (void)(x)
 
-static tt_lock_state_t lock_endpoints(struct tt_Node* node) {
-    return tt_lock(&node->endpoint_lock);
-}
-
-static void unlock_endpoints(struct tt_Node* node, tt_lock_state_t state) {
-    tt_unlock(&node->endpoint_lock, state);
-}
-
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
 }
@@ -145,29 +137,22 @@ static bool decode_string(struct tt_Node* node, uint8_t* buffer, uint32_t* head,
 }
 
 static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id) {
-    tt_lock_state_t state = lock_endpoints(node);
-
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL) {
             continue;
         }
         if ((endpoint->kind == kind) && (endpoint->id == endpoint_id)) {
-            unlock_endpoints(node, state);
             return endpoint;
         }
     }
 
-    unlock_endpoints(node, state);
     return NULL;
 }
 
 static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
-    tt_lock_state_t state = lock_endpoints(node);
-
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
-        unlock_endpoints(node, state);
         TT_LOG_ERROR("Too many endpoints: %u", endpoint_count);
         return tt_TOO_MANY_ENDPOINTS;
     }
@@ -175,21 +160,17 @@ static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* en
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* current = node->endpoints[i];
         if ((current != NULL) && (current->kind == endpoint->kind) && (current->id == endpoint->id)) {
-            unlock_endpoints(node, state);
             TT_LOG_ERROR("Duplicate endpoint kind=%u id=%u", endpoint->kind, endpoint->id);
             return tt_DUPLICATE_ENDPOINT;
         }
     }
 
     node->endpoints[node->endpoint_count++] = endpoint;
-    unlock_endpoints(node, state);
 
     return tt_ERROR_NONE;
 }
 
 static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
-    tt_lock_state_t state = lock_endpoints(node);
-
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         if (node->endpoints[i] == endpoint) {
             node->endpoint_count--;
@@ -198,12 +179,10 @@ static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* 
                             sizeof(struct tt_Endpoint*) * (node->endpoint_count - i));
             }
             node->endpoints[node->endpoint_count] = NULL;
-            unlock_endpoints(node, state);
             return true;
         }
     }
 
-    unlock_endpoints(node, state);
     return false;
 }
 
@@ -284,19 +263,15 @@ int32_t tt_Node_create(struct tt_Node* node) {
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
 
-    tt_lock_init(&node->endpoint_lock);
-
     node->id = tt_get_node_id();
 
     if (node->id == tt_NODE_ID_INVALID || node->id == tt_NODE_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
-        tt_lock_deinit(&node->endpoint_lock);
         return -2;
     }
 
     if (tt_bind(node) != 0) {
         TT_LOG_ERROR("Cannot bind");
-        tt_lock_deinit(&node->endpoint_lock);
         return -3;
     }
 
@@ -310,14 +285,12 @@ int32_t tt_Node_create(struct tt_Node* node) {
     if (!tt_Node_schedule(node, basetime, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
         tt_close(node);
-        tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
 
     if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
         tt_close(node);
-        tt_lock_deinit(&node->endpoint_lock);
         return -1;
     }
 
@@ -646,12 +619,10 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     update_header->entity_count = 0;
 
     struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
-    tt_lock_state_t state = lock_endpoints(node);
     uint32_t endpoint_count = node->endpoint_count;
     for (uint32_t i = 0; i < endpoint_count; i++) {
         endpoints[i] = node->endpoints[i];
     }
-    unlock_endpoints(node, state);
 
     uint8_t entity_count = 0;
     for (uint32_t i = 0; i < endpoint_count; i++) {
@@ -1217,7 +1188,6 @@ int32_t tt_Node_poll(struct tt_Node* node) {
 int32_t tt_Node_destroy(struct tt_Node* node) {
     uint64_t time = tt_get_ns();
 
-    tt_lock_state_t state = lock_endpoints(node);
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         node->endpoints[i] = NULL;
@@ -1227,7 +1197,6 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
         }
     }
     node->endpoint_count = 0;
-    unlock_endpoints(node, state);
 
     node_update(node, time, NULL);
 
@@ -1237,7 +1206,6 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
     }
 
     tt_close(node);
-    tt_lock_deinit(&node->endpoint_lock);
 
     return 0;
 }

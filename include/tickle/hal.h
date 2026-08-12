@@ -49,12 +49,6 @@ enum tickle_error {
 struct tt_Node;
 struct tt_Header;
 
-#ifdef TT_PLATFORM_LINUX
-typedef pthread_mutex_t tt_lock_t; // NOLINT(misc-include-cleaner)
-#else
-typedef int tt_lock_t;
-#endif
-
 // Platform-specific HAL structure inclusion
 #ifdef TT_PLATFORM_LINUX
 #include <tickle/hal_linux.h> // NOLINT(misc-include-cleaner)
@@ -62,13 +56,7 @@ typedef int tt_lock_t;
 #include <tickle/hal_generic.h> // NOLINT(misc-include-cleaner)
 #endif
 
-typedef uintptr_t tt_lock_state_t;
-
 // Network functions
-void tt_lock_init(tt_lock_t* lock);
-void tt_lock_deinit(tt_lock_t* lock);
-tt_lock_state_t tt_lock(tt_lock_t* lock);
-void tt_unlock(tt_lock_t* lock, tt_lock_state_t state);
 int32_t tt_get_node_id();
 int32_t tt_bind(struct tt_Node* node);
 void tt_close(struct tt_Node* node);

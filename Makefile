@@ -10,8 +10,6 @@ OBJ=obj
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     PLATFORM := linux
-    CFLAGS += -pthread
-    LDFLAGS += -pthread
 else
     PLATFORM := generic
 endif

@@ -42,8 +42,6 @@ struct tt_Node {
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
 
-    tt_lock_t endpoint_lock;
-
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_generic.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
