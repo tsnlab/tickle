@@ -49,8 +49,8 @@ static bool encode_string(struct tt_Node* node, const char* str) {
     return true;
 }
 
-static void rollback(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header) {
-    node->tx_tail = (uintptr_t)submessage_header - (uintptr_t)node->tx_buffer;
+static void rollback(struct tt_Node* node, uint32_t old_tx_tail) {
+    node->tx_tail = old_tx_tail;
 }
 
 static bool flush_tx(struct tt_Node* node, uint32_t len) {
@@ -435,19 +435,20 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     struct tt_Node* node = client->node;
+    uint32_t old_tx_tail = node->tx_tail;
 
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header =
         start_encode(node, tt_SUBMESSAGE_TYPE_CALLREQUEST, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -1;
     }
 
     // CallRequestHeader
     struct tt_CallRequestHeader* callrequest_header = encode(node, sizeof(struct tt_CallRequestHeader));
     if (callrequest_header == NULL) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -1;
     }
 
@@ -459,13 +460,13 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     int32_t cdr_len = client->service->request_encode_size(request);
     void* cdr = encode(node, cdr_len);
     if (cdr == NULL) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -1;
     }
 
     int32_t encoded_len = client->service->request_encode(request, cdr, cdr_len);
     if (encoded_len < 0) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -2;
     }
 
@@ -474,7 +475,7 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     struct tt_SubmessageHeader* cache = _tt_malloc(length);
     if (cache == NULL) {
         TT_LOG_ERROR("Out of memory");
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -3;
     }
 
@@ -484,7 +485,7 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     // Flush tx
     if (!end_encode(node, submessage_header, false)) {
         _tt_free(cache);
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -3;
     }
 
@@ -533,18 +534,19 @@ int32_t tt_Server_destroy(struct tt_Server* server) {
 int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Node* node = pub->node;
+    uint32_t old_tx_tail = node->tx_tail;
 
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -1;
     }
 
     // CallRequestHeader
     struct tt_DataHeader* data_header = encode(node, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -1;
     }
 
@@ -556,18 +558,18 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     int32_t cdr_len = pub->topic->data_encode_size(data);
     void* cdr = encode(node, cdr_len);
     if (cdr == NULL) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -1;
     }
 
     int32_t encoded_len = pub->topic->data_encode(data, cdr, cdr_len);
     if (encoded_len < 0) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -2;
     }
 
     if (!end_encode(node, submessage_header, false)) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return -3;
     }
 
@@ -601,6 +603,8 @@ int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
+    uint32_t old_tx_tail = node->tx_tail;
+
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
@@ -611,7 +615,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_UpdateHeader* update_header = encode(node, sizeof(struct tt_UpdateHeader));
     if (update_header == NULL) {
         TT_LOG_ERROR("Lack of tx_buffer");
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         goto done;
     }
 
@@ -633,7 +637,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 
         const char* type = endpoint_type_name(endpoint);
         if (type == NULL) {
-            rollback(node, submessage_header);
+            rollback(node, old_tx_tail);
             TT_LOG_ERROR("Illegal endpoint kind: %d", endpoint->kind);
             goto done;
         }
@@ -641,7 +645,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
         struct tt_UpdateEntity* update_entity = encode(node, sizeof(struct tt_UpdateEntity));
         if (update_entity == NULL) {
             TT_LOG_ERROR("Lack of tx_buffer");
-            rollback(node, submessage_header);
+            rollback(node, old_tx_tail);
             goto done;
         }
 
@@ -650,13 +654,13 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 
         if (!encode_string(node, type)) {
             TT_LOG_ERROR("Lack of tx_buffer");
-            rollback(node, submessage_header);
+            rollback(node, old_tx_tail);
             goto done;
         }
 
         if (!encode_string(node, endpoint->name)) {
             TT_LOG_ERROR("Lack of tx_buffer");
-            rollback(node, submessage_header);
+            rollback(node, old_tx_tail);
             goto done;
         }
 
@@ -670,7 +674,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 
     if (!end_encode(node, submessage_header, false)) {
         TT_LOG_ERROR("Lack of tx_buffer");
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         goto done;
     }
 
@@ -909,6 +913,8 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     // Check cache
     struct tt_SubmessageHeader* submessage_header =
         get_server_cache(server, header->source, callrequest_header->seq_no);
+    uint32_t old_tx_tail = node->tx_tail;
+
     if (submessage_header != NULL) {
         struct tt_CallResponseHeader* callresponse_header =
             (void*)submessage_header + sizeof(struct tt_SubmessageHeader);
@@ -947,7 +953,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
         // CallResponseHeader
         struct tt_CallResponseHeader* call_response_header = encode(node, sizeof(struct tt_CallResponseHeader));
         if (call_response_header == NULL) {
-            rollback(node, submessage_header);
+            rollback(node, old_tx_tail);
             return false;
         }
 
@@ -961,7 +967,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
             int32_t cdr_len = service->response_encode_size((struct tt_Response*)response);
             void* cdr = encode(node, cdr_len);
             if (cdr == NULL) {
-                rollback(node, submessage_header);
+                rollback(node, old_tx_tail);
                 return false;
             }
 
@@ -969,14 +975,14 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
             service->response_free((struct tt_Response*)response);
 
             if (encoded_len < 0) {
-                rollback(node, submessage_header);
+                rollback(node, old_tx_tail);
                 return false;
             }
         }
 
         // Cache submessage header before flush
         if (!set_server_cache(server, submessage_header, header->source)) {
-            rollback(node, submessage_header);
+            rollback(node, old_tx_tail);
             TT_LOG_ERROR("Cannot cache callresponse: Out of cache");
             return false;
         }
@@ -984,7 +990,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
 
     // Flush
     if (!end_encode(node, submessage_header, false)) {
-        rollback(node, submessage_header);
+        rollback(node, old_tx_tail);
         return false;
     }
     return true;
