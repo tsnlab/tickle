@@ -60,7 +60,7 @@ struct tt_SubmessageHeader;
 
 typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code, struct tt_Response* response);
 
-struct tt_Client { // embeds endpoint metadata
+struct tt_Client { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Service* service;
@@ -81,7 +81,7 @@ struct tt_Request;
 typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
                                      struct tt_Response* response);
 
-struct tt_Server { // embeds endpoint metadata
+struct tt_Server { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Service* service;
@@ -127,7 +127,7 @@ struct tt_Topic;
 
 struct tt_Data {};
 
-struct tt_Publisher { // embeds endpoint metadata
+struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Topic* topic;
@@ -140,7 +140,7 @@ struct tt_Subscriber;
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                        struct tt_Data* data);
 
-struct tt_Subscriber { // embeds endpoint metadata
+struct tt_Subscriber { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Topic* topic;
