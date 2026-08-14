@@ -404,27 +404,31 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
 
         _tt_free(client->cache);
         client->cache = NULL;
-    } else {
-        void* buf = encode(node, submessage_header->length);
-        if (buf == NULL) {
-            return;
-        }
+        return;
+    }
 
+    void* buf = encode(node, submessage_header->length);
+    if (buf != NULL) {
         _tt_memcpy(buf, submessage_header, submessage_header->length);
-
         end_encode(node, buf, false);
+    } else {
+        TT_LOG_WARNING("Lack of tx buffer, will retry call_retry later");
+    }
 
-        uint32_t retry_interval;
-        if (client->service->call_retry_interval == 0) {
-            retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
-            retry_interval = retry_interval + (retry_interval >> 1); // latency * 1.5
-        } else {
-            retry_interval = client->service->call_retry_interval;
-        }
+    uint32_t retry_interval;
+    if (client->service->call_retry_interval == 0) {
+        retry_interval = client->latency == 0 ? tt_CALL_RETRY_INTERVAL : client->latency;
+        retry_interval = retry_interval + (retry_interval >> 1); // latency * 1.5
+    } else {
+        retry_interval = client->service->call_retry_interval;
+    }
 
-        if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
-            TT_LOG_ERROR("Cannot schedule call_retry");
-        }
+    if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
+        TT_LOG_ERROR("Cannot schedule call_retry");
+        client->callback(client, 0, NULL); // Cannot guarantee further retry
+
+        _tt_free(client->cache);
+        client->cache = NULL;
     }
 }
 
@@ -503,6 +507,8 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 
     if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
+        _tt_free(client->cache);
+        client->cache = NULL;
         return -1;
     }
 

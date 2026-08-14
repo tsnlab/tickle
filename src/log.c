@@ -58,7 +58,7 @@ void tt_log_internal(tt_LogLevel level, const char* level_str, const char* forma
     vfprintf(output, format, args);
 
     // Ensure newline at the end
-    if (format[strlen(format) - 1] != '\n') {
+    if (format[0] != '\0' && format[strlen(format) - 1] != '\n') {
         fprintf(output, "\n");
     }
 
