@@ -19,12 +19,13 @@ bool tt_is_reverse_endian(struct tt_Header* header) {
 
 // Hash function
 uint32_t tt_hash_id(const char* type, const char* name) {
-    uint8_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH + 1);
-    uint8_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH + 1);
+    ssize_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH + 1);
+    ssize_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH + 1);
 
     if (type_len > tt_MAX_NAME_LENGTH) {
         TT_LOG_WARNING("Length of \"%s\" exceeds maximum string length %u.", type, tt_MAX_NAME_LENGTH);
     }
+
     if (name_len > tt_MAX_NAME_LENGTH) {
         TT_LOG_WARNING("Length of \"%s\" exceeds maximum string length %u.", name, tt_MAX_NAME_LENGTH);
     }

@@ -128,7 +128,7 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
 
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct sockaddr_in addr;
-    int addr_len = sizeof(struct sockaddr_in);
+    socklen_t addr_len = sizeof(struct sockaddr_in);
 
     int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 

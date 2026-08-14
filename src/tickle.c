@@ -759,8 +759,6 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 
 static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                          uint32_t tail) {
-    uint32_t length = tail - head;
-
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
         TT_LOG_ERROR("  Illegal DataHeader");
@@ -849,8 +847,6 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] != NULL) {
             struct tt_SubmessageHeader* submessage_header = server->cache[i];
-            struct tt_CallResponseHeader* callresponse_header =
-                (struct tt_CallResponseHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
             if (submessage_header->receiver == receiver) {
                 _tt_free(server->cache[i]);
@@ -859,8 +855,6 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
         }
 
         if ((cache != NULL) && (server->cache[i] == NULL)) {
-            struct tt_CallResponseHeader* callresponse_header =
-                (struct tt_CallResponseHeader*)((void*)cache + sizeof(struct tt_SubmessageHeader));
             server->cache[i] = cache;
 
             struct server_cache_clean_config* clean = _tt_malloc(sizeof(struct server_cache_clean_config));
@@ -892,8 +886,6 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
 static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                 uint32_t tail) {
     UNUSED(node);
-
-    uint32_t length = tail - head;
 
     struct tt_CallRequestHeader* callrequest_header =
         decode(node, buffer, &head, tail, sizeof(struct tt_CallRequestHeader));
@@ -1105,12 +1097,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
         return false;
     }
 
-    bool is_native_endian = false;
-    if (tt_is_native_endian(header)) {
-        is_native_endian = true;
-    } else if (tt_is_reverse_endian(header)) {
-        is_native_endian = false;
-    } else {
+    if (!tt_is_native_endian(header) && !tt_is_reverse_endian(header)) {
         TT_LOG_ERROR("Illegal magic: 0x%04x", header->magic_value);
         return false;
     }
