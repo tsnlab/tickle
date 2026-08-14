@@ -783,10 +783,15 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     uint8_t data[topic->data_size];
     int32_t decoded =
         topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
+
+    if (decoded < 0) {
+        TT_LOG_WARNING("Cannot decode data for endpoint_id: %08x, seq_no: %d", data_header->endpoint_id,
+                       data_header->seq_no);
+        return false;
+    }
+
     sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
-
     topic->data_free((struct tt_Data*)data);
-
     return true;
 }
 
@@ -933,8 +938,13 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     } else {
         // Callback
         uint8_t request[service->request_size];
-        uint32_t decoded = service->request_decode((struct tt_Request*)request, buffer + head, tail - head,
-                                                   tt_is_native_endian(header));
+        int32_t decoded = service->request_decode((struct tt_Request*)request, buffer + head, tail - head,
+                                                  tt_is_native_endian(header));
+
+        if (decoded < 0) {
+            TT_LOG_WARNING("Cannot decode request: %d", decoded);
+            return false;
+        }
 
         uint8_t response[service->response_size];
         int8_t return_code = server->callback(server, (struct tt_Request*)request, (struct tt_Response*)response);
