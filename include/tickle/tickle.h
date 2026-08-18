@@ -188,29 +188,29 @@ bool tt_is_reverse_endian(struct tt_Header* header);
 uint64_t tt_get_ns();
 
 /**
- * @return 0 - succeed
+ * @return tt_RET_OK - succeed
  */
-int32_t tt_Node_create(struct tt_Node* node);
-int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                              const char* endpoint_name, tt_CLIENT_CALLBACK callback);
-int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                              const char* endpoint_name, tt_SERVER_CALLBACK callback);
-int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                 const char* endpoint_name);
-int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                  const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
+tt_ret_t tt_Node_create(struct tt_Node* node);
+tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                               const char* endpoint_name, tt_CLIENT_CALLBACK callback);
+tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                               const char* endpoint_name, tt_SERVER_CALLBACK callback);
+tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                  const char* endpoint_name);
+tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
 
-int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
-int32_t tt_Client_destroy(struct tt_Client* client);
+tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
+tt_ret_t tt_Client_destroy(struct tt_Client* client);
 
-int32_t tt_Server_destroy(struct tt_Server* server);
+tt_ret_t tt_Server_destroy(struct tt_Server* server);
 
-int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
-int32_t tt_Publisher_destroy(struct tt_Publisher* pub);
+tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
+tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
-int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
+tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
 /**
  * @node node to poll

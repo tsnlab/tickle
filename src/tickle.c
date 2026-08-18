@@ -242,7 +242,7 @@ static void pop_scheduler(struct tt_Node* node) {
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 
-int32_t tt_Node_create(struct tt_Node* node) {
+tt_ret_t tt_Node_create(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
     node->endpoint_count = 0;
 
@@ -298,11 +298,11 @@ int32_t tt_Node_create(struct tt_Node* node) {
         return -1;
     }
 
-    return 0;
+    return tt_RET_OK;
 }
 
-int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                              const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                               const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     endpoint->kind = tt_KIND_SERVICE_CLIENT;
     endpoint->id = tt_hash_id(service->name, endpoint_name);
@@ -322,11 +322,11 @@ int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, st
 
     node->last_modified = tt_get_ns();
 
-    return 0;
+    return tt_RET_OK;
 }
 
-int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                              const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                               const char* endpoint_name, tt_SERVER_CALLBACK callback) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
     endpoint->kind = tt_KIND_SERVICE_SERVER;
     endpoint->id = tt_hash_id(service->name, endpoint_name);
@@ -346,11 +346,11 @@ int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, st
 
     node->last_modified = tt_get_ns();
 
-    return 0;
+    return tt_RET_OK;
 }
 
-int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                 const char* endpoint_name) {
+tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                  const char* endpoint_name) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     endpoint->kind = tt_KIND_TOPIC_PUBLISHER;
     endpoint->id = tt_hash_id(topic->name, endpoint_name);
@@ -366,11 +366,11 @@ int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub,
 
     node->last_modified = tt_get_ns();
 
-    return 0;
+    return tt_RET_OK;
 }
 
-int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                  const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     endpoint->kind = tt_KIND_TOPIC_SUBSCRIBER;
     endpoint->id = tt_hash_id(topic->name, endpoint_name);
@@ -386,7 +386,7 @@ int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* su
 
     node->last_modified = tt_get_ns();
 
-    return 0;
+    return tt_RET_OK;
 }
 
 static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
@@ -436,7 +436,7 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
-int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
+tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     if (client->cache != NULL) {
         return -3; // waiting response
     }
@@ -516,32 +516,32 @@ int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
         return -1;
     }
 
-    return 0;
+    return tt_RET_OK;
 }
 
-int32_t tt_Client_destroy(struct tt_Client* client) {
+tt_ret_t tt_Client_destroy(struct tt_Client* client) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
 
     if (remove_endpoint_from_node(client->node, endpoint)) {
         client->node->last_modified = tt_get_ns();
-        return 0;
+        return tt_RET_OK;
     }
 
     return -1;
 }
 
-int32_t tt_Server_destroy(struct tt_Server* server) {
+tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
 
     if (remove_endpoint_from_node(server->node, endpoint)) {
         server->node->last_modified = tt_get_ns();
-        return 0;
+        return tt_RET_OK;
     }
 
     return -1;
 }
 
-int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
+tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Node* node = pub->node;
     uint32_t old_tx_tail = node->tx_tail;
@@ -585,26 +585,26 @@ int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 
     pub->seq_no++;
 
-    return 0;
+    return tt_RET_OK;
 }
 
-int32_t tt_Publisher_destroy(struct tt_Publisher* pub) {
+tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
 
     if (remove_endpoint_from_node(pub->node, endpoint)) {
         pub->node->last_modified = tt_get_ns();
-        return 0;
+        return tt_RET_OK;
     }
 
     return -1;
 }
 
-int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
+tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
 
     if (remove_endpoint_from_node(sub->node, endpoint)) {
         sub->node->last_modified = tt_get_ns();
-        return 0;
+        return tt_RET_OK;
     }
 
     return -1;
