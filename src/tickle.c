@@ -260,6 +260,10 @@ int32_t tt_Node_create(struct tt_Node* node) {
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
 
+    memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
+    node->rx_tail = 0;
+    node->rx_size = tt_MAX_BUFFER_LENGTH * 2;
+
     memset(node->scheduler, 0, sizeof(struct tt_TCB) * tt_MAX_SCHEDULER_LENGTH);
     node->scheduler_tail = 0;
 
@@ -1160,8 +1164,6 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
 }
 
 tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
-    uint8_t buffer[tt_MAX_BUFFER_LENGTH];
-
     // Set default timeout
     if (timeout < 0) {
         timeout = tt_RECEIVE_TIMEOUT;
@@ -1185,17 +1187,19 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
 
             uint32_t ip = 0;
             uint16_t port = 0;
-            int32_t len = tt_receive(node, buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
+            int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 
             if (len == -1) {      // Timeout
                 return tt_RET_TIMEOUT;
             } else if (len < 0) { // I/O error
                 return tt_RET_IO_ERROR;
             } else {
+                node->rx_tail = (uint32_t)len;
+
                 TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                              (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
 
-                if (!process_packet(node, buffer, 0, len)) {
+                if (!process_packet(node, node->rx_buffer, 0, len)) {
                     TT_LOG_ERROR("Cannot process packet");
                     return tt_RET_PROTOCOL_ERROR;
                 }
