@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     _tt_CONFIG.broadcast = "192.168.10.255";
 
     struct tt_Node node;
-    int32_t ret = tt_Node_create(&node);
+    tt_ret_t ret = tt_Node_create(&node);
     if (ret != 0) {
         printf("Cannot create node: %d\n", ret);
         return ret;
@@ -37,9 +37,13 @@ int main(int argc, char** argv) {
         return ret;
     }
 
-    tt_Node_poll(&node);
+    ret = tt_RET_OK;
+    while (ret == tt_RET_OK || ret == tt_RET_TIMEOUT) {
+        ret = tt_Node_poll(&node, -1);
+    }
 
     tt_Node_destroy(&node);
+    printf("Node destroyed(#%d): %d\n", node.id, ret);
 
     return 0;
 }

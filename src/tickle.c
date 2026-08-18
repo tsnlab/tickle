@@ -1159,42 +1159,60 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     return true;
 }
 
-int32_t tt_Node_poll(struct tt_Node* node) {
+tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     uint8_t buffer[tt_MAX_BUFFER_LENGTH];
 
-    while (1) {
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        int32_t len = tt_receive(node, buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+    // Set default timeout
+    if (timeout < 0) {
+        timeout = tt_RECEIVE_TIMEOUT;
+    }
 
-        if (len == -1) {      // Timeout
-            ;                 // Do nothing
-        } else if (len < 0) { // I/O error
-            perror("Cannot receive data");
-            break;
-        } else {
-            TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-                         (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
-
-            if (!process_packet(node, buffer, 0, len)) {
-                TT_LOG_ERROR("Cannot process packet");
-            }
-        }
-
-        // Scheduled task
-        uint64_t time = tt_get_ns();
+    uint64_t base = tt_get_ns();
+    uint64_t time = base;
+    while (timeout > 0) {
         struct tt_TCB* tcb = peek_scheduler(node);
 
-        if ((tcb != NULL) && (tcb->time <= time)) {
+        if (tcb != NULL && tcb->time <= time) {
+            // Run scheduler first
             tcb->function(node, time, tcb->param);
             pop_scheduler(node);
+        } else {
+            // Run network I/O next
+            int64_t rest = timeout;
+            if (tcb != NULL && tcb->time - time < timeout) {
+                rest = tcb->time - time;
+            }
+
+            uint32_t ip = 0;
+            uint16_t port = 0;
+            int32_t len = tt_receive(node, buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
+
+            if (len == -1) {      // Timeout
+                return tt_RET_TIMEOUT;
+            } else if (len < 0) { // I/O error
+                return tt_RET_IO_ERROR;
+            } else {
+                TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
+                             (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
+
+                if (!process_packet(node, buffer, 0, len)) {
+                    TT_LOG_ERROR("Cannot process packet");
+                    return tt_RET_PROTOCOL_ERROR;
+                }
+
+                return tt_RET_OK;
+            }
         }
     }
 
-    return 0;
+    uint64_t new_time = tt_get_ns();
+    timeout -= new_time - time;
+    time = new_time;
+
+    return tt_RET_OK;
 }
 
-int32_t tt_Node_destroy(struct tt_Node* node) {
+tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     uint64_t time = tt_get_ns();
 
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
@@ -1216,5 +1234,5 @@ int32_t tt_Node_destroy(struct tt_Node* node) {
 
     tt_close(node);
 
-    return 0;
+    return tt_RET_OK;
 }

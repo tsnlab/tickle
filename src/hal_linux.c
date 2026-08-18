@@ -90,7 +90,8 @@ int32_t tt_bind(struct tt_Node* node) {
 
     struct timeval timeout;
     timeout.tv_sec = 0;
-    timeout.tv_usec = TIMEOUT_IN_MICROSECONDS;
+    timeout.tv_usec = tt_RECEIVE_TIMEOUT / 1000;  // nano to micro
+    node->hal.receive_timeout = tt_RECEIVE_TIMEOUT;
 
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
         perror("Cannot set socket receive timeout");
@@ -126,9 +127,22 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
     return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
 }
 
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
+
+    if (timeout >= 0 && node->hal.receive_timeout != timeout) {
+        struct timeval tval;
+        tval.tv_sec = timeout / 1000000000LL;
+        tval.tv_usec = (timeout % 1000000000LL) / 1000LL;  // nano to micro
+        uint64_t old_timeout = node->hal.receive_timeout;
+        node->hal.receive_timeout = timeout;
+
+        if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tval, sizeof(struct timeval)) < 0) {
+            TT_LOG_WARNING("Cannot set timeout: %lu to %lu", old_timeout, timeout);
+            node->hal.receive_timeout = old_timeout;
+        }
+    }
 
     int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 

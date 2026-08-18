@@ -16,6 +16,13 @@
 #define tt_KIND_SERVICE_CLIENT (tt_KIND_RECEIVER | tt_KIND_SERVICE)
 #define tt_KIND_SERVICE_SERVER (tt_KIND_SENDER | tt_KIND_SERVICE)
 
+typedef enum _tt_ret_t {
+    tt_RET_OK = 0,
+    tt_RET_TIMEOUT = -1,
+    tt_RET_IO_ERROR = -2,
+    tt_RET_PROTOCOL_ERROR = -3
+} tt_ret_t;
+
 struct tt_Endpoint;
 struct tt_UpdateHeader;
 struct tt_Node;
@@ -38,6 +45,10 @@ struct tt_Node {
     uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t tx_tail;
     uint32_t tx_size;
+
+    uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
+    uint32_t rx_tail;
+    uint32_t rx_size;
 
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
@@ -201,8 +212,13 @@ int32_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
 int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
-int32_t tt_Node_poll(struct tt_Node* node);
-int32_t tt_Node_destroy(struct tt_Node* node);
+/**
+ * @node node to poll
+ * @timeout wait timeout in nanoseconds
+ * @return tt_ret_t
+ */
+tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
+tt_ret_t tt_Node_destroy(struct tt_Node* node);
 
 #define tt_VERSION 1
 #define tt_PROTOCOL_UPDATE 0

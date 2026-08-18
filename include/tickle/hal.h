@@ -61,4 +61,8 @@ int32_t tt_get_node_id();
 int32_t tt_bind(struct tt_Node* node);
 void tt_close(struct tt_Node* node);
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len);
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port);
+/**
+ * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
+ * @return received bytes, -1 for timeout, other negative values for I/O error
+ */
+int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout);
