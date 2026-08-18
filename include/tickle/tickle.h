@@ -16,13 +16,6 @@
 #define tt_KIND_SERVICE_CLIENT (tt_KIND_RECEIVER | tt_KIND_SERVICE)
 #define tt_KIND_SERVICE_SERVER (tt_KIND_SENDER | tt_KIND_SERVICE)
 
-typedef enum _tt_ret_t {
-    tt_RET_OK = 0,
-    tt_RET_TIMEOUT = -1,
-    tt_RET_IO_ERROR = -2,
-    tt_RET_PROTOCOL_ERROR = -3
-} tt_ret_t;
-
 struct tt_Endpoint;
 struct tt_UpdateHeader;
 struct tt_Node;

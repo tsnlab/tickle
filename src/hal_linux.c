@@ -69,23 +69,23 @@ int32_t tt_get_node_id() {
     return node_id;
 }
 
-int32_t tt_bind(struct tt_Node* node) {
+tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
         perror("Cannot create UDP socket");
-        return tt_CANNOT_CREATE_SOCK;
+        return tt_RET_IO_ERROR;
     }
 
     int optval = 1;
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket reuseaddr");
-        return tt_CANNOT_SET_REUSEADDR;
+        return tt_RET_IO_ERROR;
     }
 
     optval = 1;
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket broadcast");
-        return tt_CANNOT_SET_BROADCAST;
+        return tt_RET_IO_ERROR;
     }
 
     struct timeval timeout;
@@ -95,7 +95,7 @@ int32_t tt_bind(struct tt_Node* node) {
 
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
         perror("Cannot set socket receive timeout");
-        return tt_CANNOT_SET_TIMEOUT;
+        return tt_RET_IO_ERROR;
     }
 
     struct sockaddr_in addr;
@@ -106,10 +106,10 @@ int32_t tt_bind(struct tt_Node* node) {
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
         TT_LOG_ERROR("Cannot binding socket: %s:%d", _tt_CONFIG.addr, _tt_CONFIG.port);
         perror("Cannot binding socket\n");
-        return tt_CANNOT_BIND_SOCKET;
+        return tt_RET_IO_ERROR;
     }
 
-    return 0;
+    return tt_RET_OK;
 }
 
 void tt_close(struct tt_Node* node) {

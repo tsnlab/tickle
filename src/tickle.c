@@ -150,24 +150,24 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     return NULL;
 }
 
-static int32_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
+static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
         TT_LOG_ERROR("Too many endpoints: %u", endpoint_count);
-        return tt_TOO_MANY_ENDPOINTS;
+        return tt_RET_OUT_OF_BUFFER;
     }
 
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* current = node->endpoints[i];
         if ((current != NULL) && (current->kind == endpoint->kind) && (current->id == endpoint->id)) {
             TT_LOG_ERROR("Duplicate endpoint kind=%u id=%u", endpoint->kind, endpoint->id);
-            return tt_DUPLICATE_ENDPOINT;
+            return tt_RET_IILEGAL_ENDPOINT_ID;
         }
     }
 
     node->endpoints[node->endpoint_count++] = endpoint;
 
-    return tt_ERROR_NONE;
+    return tt_RET_OK;
 }
 
 static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
@@ -271,12 +271,12 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
 
     if (node->id == tt_NODE_ID_INVALID || node->id == tt_NODE_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
-        return -2;
+        return tt_RET_IILEGAL_NODE_ID;
     }
 
-    if (tt_bind(node) != 0) {
+    if (tt_bind(node) != tt_RET_OK) {
         TT_LOG_ERROR("Cannot bind");
-        return -3;
+        return tt_RET_IO_ERROR;
     }
 
     TT_LOG_INFO("Node open at %d", _tt_CONFIG.port);
@@ -289,13 +289,13 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
     if (!tt_Node_schedule(node, basetime, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
         tt_close(node);
-        return -1;
+        return tt_RET_OUT_OF_SCHEDULE;
     }
 
     if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
         tt_close(node);
-        return -1;
+        return tt_RET_OUT_OF_SCHEDULE;
     }
 
     return tt_RET_OK;
@@ -315,8 +315,8 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
     client->cache_time = 0;
     client->latency = 0;
 
-    int32_t result = add_endpoint_to_node(node, endpoint);
-    if (result != tt_ERROR_NONE) {
+    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_RET_OK) {
         return result;
     }
 
@@ -339,8 +339,8 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
         server->cache[i] = NULL;
     }
 
-    int32_t result = add_endpoint_to_node(node, endpoint);
-    if (result != tt_ERROR_NONE) {
+    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_RET_OK) {
         return result;
     }
 
@@ -359,8 +359,8 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->topic = topic;
     pub->seq_no = 0;
 
-    int32_t result = add_endpoint_to_node(node, endpoint);
-    if (result != tt_ERROR_NONE) {
+    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_RET_OK) {
         return result;
     }
 
@@ -379,8 +379,8 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->topic = topic;
     sub->callback = callback;
 
-    int32_t result = add_endpoint_to_node(node, endpoint);
-    if (result != tt_ERROR_NONE) {
+    tt_ret_t result = add_endpoint_to_node(node, endpoint);
+    if (result != tt_RET_OK) {
         return result;
     }
 
@@ -438,7 +438,7 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
 
 tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     if (client->cache != NULL) {
-        return -3; // waiting response
+        return tt_RET_ILLEGAL_STATUS; // waiting response
     }
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
@@ -450,14 +450,14 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
         start_encode(node, tt_SUBMESSAGE_TYPE_CALLREQUEST, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
         rollback(node, old_tx_tail);
-        return -1;
+        return tt_RET_OUT_OF_BUFFER;
     }
 
     // CallRequestHeader
     struct tt_CallRequestHeader* callrequest_header = encode(node, sizeof(struct tt_CallRequestHeader));
     if (callrequest_header == NULL) {
         rollback(node, old_tx_tail);
-        return -1;
+        return tt_RET_OUT_OF_BUFFER;
     }
 
     callrequest_header->endpoint_id = endpoint->id;
@@ -469,13 +469,13 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     void* cdr = encode(node, cdr_len);
     if (cdr == NULL) {
         rollback(node, old_tx_tail);
-        return -1;
+        return tt_RET_OUT_OF_BUFFER;
     }
 
     int32_t encoded_len = client->service->request_encode(request, cdr, cdr_len);
     if (encoded_len < 0) {
         rollback(node, old_tx_tail);
-        return -2;
+        return tt_RET_PROTOCOL_ERROR;
     }
 
     // Make cache
@@ -484,7 +484,7 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     if (cache == NULL) {
         TT_LOG_ERROR("Out of memory");
         rollback(node, old_tx_tail);
-        return -3;
+        return tt_RET_OUT_OF_MEMORY;
     }
 
     _tt_memcpy(cache, submessage_header, length);
@@ -494,7 +494,7 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     if (!end_encode(node, submessage_header, false)) {
         _tt_free(cache);
         rollback(node, old_tx_tail);
-        return -3;
+        return tt_RET_IO_ERROR;
     }
 
     client->cache = cache;
@@ -513,7 +513,7 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         _tt_free(client->cache);
         client->cache = NULL;
-        return -1;
+        return tt_RET_OUT_OF_SCHEDULE;
     }
 
     return tt_RET_OK;
@@ -527,7 +527,7 @@ tt_ret_t tt_Client_destroy(struct tt_Client* client) {
         return tt_RET_OK;
     }
 
-    return -1;
+    return tt_RET_IILEGAL_ENDPOINT_ID;
 }
 
 tt_ret_t tt_Server_destroy(struct tt_Server* server) {
@@ -538,7 +538,7 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
         return tt_RET_OK;
     }
 
-    return -1;
+    return tt_RET_IILEGAL_ENDPOINT_ID;
 }
 
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
@@ -550,14 +550,14 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
         rollback(node, old_tx_tail);
-        return -1;
+        return tt_RET_OUT_OF_BUFFER;
     }
 
     // CallRequestHeader
     struct tt_DataHeader* data_header = encode(node, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
         rollback(node, old_tx_tail);
-        return -1;
+        return tt_RET_OUT_OF_BUFFER;
     }
 
     data_header->endpoint_id = endpoint->id;
@@ -569,18 +569,18 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     void* cdr = encode(node, cdr_len);
     if (cdr == NULL) {
         rollback(node, old_tx_tail);
-        return -1;
+        return tt_RET_OUT_OF_BUFFER;
     }
 
     int32_t encoded_len = pub->topic->data_encode(data, cdr, cdr_len);
     if (encoded_len < 0) {
         rollback(node, old_tx_tail);
-        return -2;
+        return tt_RET_PROTOCOL_ERROR;
     }
 
     if (!end_encode(node, submessage_header, false)) {
         rollback(node, old_tx_tail);
-        return -3;
+        return tt_RET_IO_ERROR;
     }
 
     pub->seq_no++;
@@ -596,7 +596,7 @@ tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
         return tt_RET_OK;
     }
 
-    return -1;
+    return tt_RET_IILEGAL_ENDPOINT_ID;
 }
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
@@ -607,7 +607,7 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
         return tt_RET_OK;
     }
 
-    return -1;
+    return tt_RET_IILEGAL_ENDPOINT_ID;
 }
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
