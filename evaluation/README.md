@@ -76,9 +76,8 @@ export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 # directory name may be diff
 cd cyclonedds
 sudo apt-get install git cmake gcc
 git clone https://github.com/eclipse-cyclonedds/cyclonedds.git 
-cd cyclonedds
-mkdir build
-cd build
+mkdir cyclonedds/build
+cd cyclonedds/build
 cmake -DCMAKE_INSTALL_PREFIX=$PWD/../../lib -DBUILD_EXAMPLES=ON ..
 cmake --build .
 cmake --build . --target install
@@ -107,4 +106,10 @@ bash run_pong.sh
 ```
 
 ### CycloneDDS
+#### Build
+```bash
+cd cyclonedds/rtt
+cmake . -DCMAKE_PREFIX_PATH=$PWD/../lib
+cmake --build .
+```
 

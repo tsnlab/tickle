@@ -1,230 +1,145 @@
 #include "dds/dds.h"
-#include "dds/ddsrt/misc.h"
 #include "rtt.h"
+
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <signal.h>
-#include <stdlib.h>
 
-static dds_entity_t waitSet;
-#define MAX_SAMPLES 10
+/* Keep the DDS topic/type choices in one place. */
+#define RTT_TOPIC_NAME "rtt_topic"
+#define RTT_TYPE rttModule_DataType
+#define RTT_TYPE_DESCRIPTOR rttModule_DataType_desc
+#define RTT_TYPE_FREE rttModule_DataType_free
 
-/* Forward declarations */
-static dds_entity_t prepare_dds(dds_entity_t *writer, dds_entity_t *reader, dds_entity_t *readCond, dds_listener_t *listener);
-static void finalize_dds(dds_entity_t participant, rttModule_DataType data[MAX_SAMPLES]);
+#define PING_PARTITION "ping"
+#define PONG_PARTITION "pong"
+#define MAX_SAMPLES 16
 
-#ifdef _WIN32
-#include <windows.h>
-static bool CtrlHandler (DWORD fdwCtrlType)
+static volatile sig_atomic_t keep_running = 1;
+
+static void handle_signal(int signal_number)
 {
-  (void)fdwCtrlType;
-  dds_waitset_set_trigger (waitSet, true);
-  return true; //Don't let other handlers handle this key
-}
-#elif !DDSRT_WITH_FREERTOS && !__ZEPHYR__
-static void CtrlHandler (int sig)
-{
-  (void)sig;
-  dds_waitset_set_trigger (waitSet, true);
-}
-#endif
-
-static rttModule_DataType data[MAX_SAMPLES];
-static void * samples[MAX_SAMPLES];
-static dds_sample_info_t info[MAX_SAMPLES];
-
-static dds_entity_t participant;
-static dds_entity_t reader;
-static dds_entity_t writer;
-static dds_entity_t readCond;
-
-static void data_available(dds_entity_t rd, void *arg)
-{
-  int status, samplecount;
-  (void)arg;
-  samplecount = dds_take (rd, samples, info, MAX_SAMPLES, MAX_SAMPLES);
-  if (samplecount < 0)
-    DDS_FATAL("dds_take: %s\n", dds_strretcode(-samplecount));
-  for (int j = 0; !dds_triggered (waitSet) && j < samplecount; j++)
-  {
-    /* If writer has been disposed terminate pong */
-
-    if (info[j].instance_state == DDS_NOT_ALIVE_DISPOSED_INSTANCE_STATE)
-    {
-      printf ("Received termination request. Terminating.\n");
-      dds_waitset_set_trigger (waitSet, true);
-      break;
-    }
-    else if (info[j].valid_data)
-    {
-      /* If sample is valid, send it back to ping */
-      rttModule_DataType * valid_sample = &data[j];
-      status = dds_write_ts (writer, valid_sample, info[j].source_timestamp);
-      if (status < 0)
-        DDS_FATAL("dds_write_ts: %d\n", -status);
-    }
-  }
+  (void)signal_number;
+  keep_running = 0;
 }
 
-int main (int argc, char *argv[])
+static dds_entity_t create_topic(dds_entity_t participant)
 {
-  dds_duration_t waitTimeout = DDS_INFINITY;
-  unsigned int i;
-  int status;
-  dds_attach_t wsresults[1];
-  size_t wsresultsize = 1U;
+  dds_qos_t *qos = dds_create_qos();
+  dds_entity_t topic;
 
-  dds_listener_t *listener = NULL;
-  bool use_listener = false;
-  int argidx = 1;
+  dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(10));
+  topic = dds_create_topic(participant, &RTT_TYPE_DESCRIPTOR, RTT_TOPIC_NAME, qos, NULL);
+  dds_delete_qos(qos);
+  if (topic < 0)
+    DDS_FATAL("dds_create_topic: %s\n", dds_strretcode(-topic));
+  return topic;
+}
 
-  if (argc > argidx && strcmp(argv[argidx], "-l") == 0)
-  {
-    argidx++;
-    use_listener = true;
-  }
+static dds_entity_t create_writer(dds_entity_t participant, dds_entity_t topic)
+{
+  const char *partitions[] = {PONG_PARTITION};
+  dds_qos_t *qos = dds_create_qos();
+  dds_entity_t publisher;
+  dds_entity_t writer;
 
-  /* Register handler for Ctrl-C */
+  dds_qset_partition(qos, 1, partitions);
+  publisher = dds_create_publisher(participant, qos, NULL);
+  dds_delete_qos(qos);
+  if (publisher < 0)
+    DDS_FATAL("dds_create_publisher: %s\n", dds_strretcode(-publisher));
 
-#ifdef _WIN32
-  DDSRT_WARNING_GNUC_OFF(cast-function-type)
-  SetConsoleCtrlHandler ((PHANDLER_ROUTINE)CtrlHandler, TRUE);
-  DDSRT_WARNING_GNUC_ON(cast-function-type)
-#elif !DDSRT_WITH_FREERTOS && !__ZEPHYR__
-  struct sigaction sat, oldAction;
-  sat.sa_handler = CtrlHandler;
-  sigemptyset (&sat.sa_mask);
-  sat.sa_flags = 0;
-  sigaction (SIGINT, &sat, &oldAction);
-#endif
+  writer = dds_create_writer(publisher, topic, NULL, NULL);
+  if (writer < 0)
+    DDS_FATAL("dds_create_writer: %s\n", dds_strretcode(-writer));
+  return writer;
+}
 
-  /* Initialize sample data */
-  memset (data, 0, sizeof (data));
-  for (i = 0; i < MAX_SAMPLES; i++)
-  {
-    samples[i] = &data[i];
-  }
+static dds_entity_t create_reader(dds_entity_t participant, dds_entity_t topic)
+{
+  const char *partitions[] = {PING_PARTITION};
+  dds_qos_t *qos = dds_create_qos();
+  dds_entity_t subscriber;
+  dds_entity_t reader;
 
-  participant = dds_create_participant (DDS_DOMAIN_DEFAULT, NULL, NULL);
+  dds_qset_partition(qos, 1, partitions);
+  subscriber = dds_create_subscriber(participant, qos, NULL);
+  dds_delete_qos(qos);
+  if (subscriber < 0)
+    DDS_FATAL("dds_create_subscriber: %s\n", dds_strretcode(-subscriber));
+
+  reader = dds_create_reader(subscriber, topic, NULL, NULL);
+  if (reader < 0)
+    DDS_FATAL("dds_create_reader: %s\n", dds_strretcode(-reader));
+  return reader;
+}
+
+int main(void)
+{
+  RTT_TYPE received[MAX_SAMPLES] = {0};
+  void *samples[MAX_SAMPLES];
+  dds_sample_info_t sample_info[MAX_SAMPLES];
+  dds_entity_t participant;
+  dds_entity_t topic;
+  dds_entity_t writer;
+  dds_entity_t reader;
+  dds_entity_t condition;
+  dds_entity_t waitset;
+  dds_attach_t attachments[1];
+
+  for (size_t i = 0; i < MAX_SAMPLES; i++)
+    samples[i] = &received[i];
+
+  signal(SIGINT, handle_signal);
+  signal(SIGTERM, handle_signal);
+
+  participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
   if (participant < 0)
     DDS_FATAL("dds_create_participant: %s\n", dds_strretcode(-participant));
 
-  if (use_listener)
-  {
-    listener = dds_create_listener(NULL);
-    dds_lset_data_available(listener, data_available);
-  }
+  topic = create_topic(participant);
+  reader = create_reader(participant, topic);
+  writer = create_writer(participant, topic);
+  condition = dds_create_readcondition(reader, DDS_ANY_STATE);
+  if (condition < 0)
+    DDS_FATAL("dds_create_readcondition: %s\n", dds_strretcode(-condition));
 
-  (void)prepare_dds(&writer, &reader, &readCond, listener);
+  waitset = dds_create_waitset(participant);
+  if (waitset < 0)
+    DDS_FATAL("dds_create_waitset: %s\n", dds_strretcode(-waitset));
+  const dds_return_t attach_status = dds_waitset_attach(waitset, condition, reader);
+  if (attach_status < 0)
+    DDS_FATAL("dds_waitset_attach: %s\n", dds_strretcode(-attach_status));
 
-  while (!dds_triggered (waitSet))
-  {
-    /* Wait for a sample from ping */
+  printf("Waiting for pings; press Ctrl-C to stop.\n");
+  fflush(stdout);
 
-    status = dds_waitset_wait (waitSet, wsresults, wsresultsize, waitTimeout);
-    if (status < 0)
-      DDS_FATAL("dds_waitset_wait: %s\n", dds_strretcode(-status));
+  while (keep_running) {
+    const int wait_status = dds_waitset_wait(waitset, attachments, 1, DDS_MSECS(100));
+    if (wait_status < 0)
+      DDS_FATAL("dds_waitset_wait: %s\n", dds_strretcode(-wait_status));
+    if (wait_status == 0)
+      continue;
 
-    /* Take samples */
-    if (listener == NULL) {
-      data_available (reader, 0);
+    const int sample_count = dds_take(reader, samples, sample_info, MAX_SAMPLES, MAX_SAMPLES);
+    if (sample_count < 0)
+      DDS_FATAL("dds_take: %s\n", dds_strretcode(-sample_count));
+
+    for (int i = 0; i < sample_count; i++) {
+      if (!sample_info[i].valid_data)
+        continue;
+
+      const dds_return_t write_status = dds_write(writer, &received[i]);
+      if (write_status < 0)
+        DDS_FATAL("dds_write: %s\n", dds_strretcode(-write_status));
     }
   }
 
-#ifdef _WIN32
-  SetConsoleCtrlHandler (0, FALSE);
-#elif !DDSRT_WITH_FREERTOS && !__ZEPHYR__
-  sigaction (SIGINT, &oldAction, 0);
-#endif
-
-  /* Clean up */
-  finalize_dds(participant, data);
-
+  for (size_t i = 0; i < MAX_SAMPLES; i++)
+    RTT_TYPE_FREE(&received[i], DDS_FREE_CONTENTS);
+  const dds_return_t delete_status = dds_delete(participant);
+  if (delete_status < 0)
+    DDS_FATAL("dds_delete: %s\n", dds_strretcode(-delete_status));
   return EXIT_SUCCESS;
-}
-
-static void finalize_dds(dds_entity_t pp, rttModule_DataType xs[MAX_SAMPLES])
-{
-  dds_return_t status;
-  status = dds_delete (pp);
-  if (status < 0)
-    DDS_FATAL("dds_delete: %s\n", dds_strretcode(-status));
-  for (unsigned int i = 0; i < MAX_SAMPLES; i++)
-  {
-    rttModule_DataType_free (&xs[i], DDS_FREE_CONTENTS);
-  }
-}
-
-static dds_entity_t prepare_dds(dds_entity_t *wr, dds_entity_t *rd, dds_entity_t *rdcond, dds_listener_t *rdlist)
-{
-  const char *pubPartitions[] = { "pong" };
-  const char *subPartitions[] = { "ping" };
-  dds_qos_t *qos;
-  dds_entity_t subscriber;
-  dds_entity_t publisher;
-  dds_entity_t topic;
-  dds_return_t status;
-
-  /* A DDS Topic is created for our sample type on the domain participant. */
-
-  qos = dds_create_qos ();
-  dds_qset_reliability (qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(10));
-  topic = dds_create_topic (participant, &rttModule_DataType_desc, "rtt_topic", qos, NULL);
-  if (topic < 0)
-    DDS_FATAL("dds_create_topic: %s\n", dds_strretcode(-topic));
-  dds_delete_qos (qos);
-
-  /* A DDS Publisher is created on the domain participant. */
-
-  qos = dds_create_qos ();
-  dds_qset_partition (qos, 1, pubPartitions);
-
-  publisher = dds_create_publisher (participant, qos, NULL);
-  if (publisher < 0)
-    DDS_FATAL("dds_create_publisher: %s\n", dds_strretcode(-publisher));
-  dds_delete_qos (qos);
-
-  /* A DDS DataWriter is created on the Publisher & Topic with a modififed Qos. */
-
-  qos = dds_create_qos ();
-  dds_qset_writer_data_lifecycle (qos, false);
-  *wr = dds_create_writer (publisher, topic, qos, NULL);
-  if (*wr < 0)
-    DDS_FATAL("dds_create_writer: %s\n", dds_strretcode(-*wr));
-  dds_delete_qos (qos);
-
-  /* A DDS Subscriber is created on the domain participant. */
-
-  qos = dds_create_qos ();
-  dds_qset_partition (qos, 1, subPartitions);
-
-  subscriber = dds_create_subscriber (participant, qos, NULL);
-  if (subscriber < 0)
-    DDS_FATAL("dds_create_subscriber: %s\n", dds_strretcode(-subscriber));
-  dds_delete_qos (qos);
-
-  /* A DDS DataReader is created on the Subscriber & Topic with a modified QoS. */
-
-  *rd = dds_create_reader (subscriber, topic, NULL, rdlist);
-  if (*rd < 0)
-    DDS_FATAL("dds_create_reader: %s\n", dds_strretcode(-*rd));
-
-  waitSet = dds_create_waitset (participant);
-  if (rdlist == NULL) {
-    *rdcond = dds_create_readcondition (*rd, DDS_ANY_STATE);
-    status = dds_waitset_attach (waitSet, *rdcond, *rd);
-    if (status < 0)
-      DDS_FATAL("dds_waitset_attach: %s\n", dds_strretcode(-status));
-  } else {
-    *rdcond = 0;
-  }
-  status = dds_waitset_attach (waitSet, waitSet, waitSet);
-  if (status < 0)
-    DDS_FATAL("dds_waitset_attach: %s\n", dds_strretcode(-status));
-
-  printf ("Waiting for samples from ping to send back...\n");
-  fflush (stdout);
-
-  return participant;
 }

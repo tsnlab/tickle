@@ -1,502 +1,332 @@
 #include "dds/dds.h"
-#include "dds/ddsrt/misc.h"
 #include "rtt.h"
+
+#include <errno.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
-#include <inttypes.h>
 
-#define TIME_STATS_SIZE_INCREMENT 50000
-#define MAX_SAMPLES 100
-#define US_IN_ONE_SEC 1000000LL
+/* Keep the DDS topic/type choices in one place. */
+#define RTT_TOPIC_NAME "rtt_topic"
+#define RTT_TYPE rttModule_DataType
+#define RTT_TYPE_DESCRIPTOR rttModule_DataType_desc
+#define RTT_TYPE_FREE rttModule_DataType_free
 
-/* Forward declaration */
+#define PING_PARTITION "ping"
+#define PONG_PARTITION "pong"
+#define MAX_SAMPLES 16
+#define PENDING_PINGS 1024
+#define SEQUENCE_SIZE 8
 
-static dds_entity_t prepare_dds(dds_entity_t *writer, dds_entity_t *reader, dds_entity_t *readCond, dds_listener_t *listener);
-static void finalize_dds(dds_entity_t participant);
+typedef struct pending_ping {
+    uint64_t sequence;
+    dds_time_t sent_at;
+    bool valid;
+} pending_ping_t;
 
-typedef struct ExampleTimeStats
+static void usage(const char *program)
 {
-  dds_time_t * values;
-  unsigned long valuesSize;
-  unsigned long valuesMax;
-  double average;
-  dds_time_t min;
-  dds_time_t max;
-  unsigned long count;
-} ExampleTimeStats;
-
-static void exampleInitTimeStats (ExampleTimeStats *stats)
-{
-  stats->values = (dds_time_t*) malloc (TIME_STATS_SIZE_INCREMENT * sizeof (dds_time_t));
-  stats->valuesSize = 0;
-  stats->valuesMax = TIME_STATS_SIZE_INCREMENT;
-  stats->average = 0;
-  stats->min = 0;
-  stats->max = 0;
-  stats->count = 0;
+    fprintf(stderr, "Usage: %s -i <interval_ms> -c <count>\n", program);
 }
 
-static void exampleResetTimeStats (ExampleTimeStats *stats)
+static bool parse_uint64(const char *text, uint64_t *value)
 {
-  memset (stats->values, 0, stats->valuesMax * sizeof (dds_time_t));
-  stats->valuesSize = 0;
-  stats->average = 0;
-  stats->min = 0;
-  stats->max = 0;
-  stats->count = 0;
+    char *end;
+    unsigned long long parsed;
+
+    if (*text == '\0' || *text == '-')
+        return false;
+    errno = 0;
+    parsed = strtoull(text, &end, 10);
+    if (errno != 0 || *end != '\0')
+        return false;
+    *value = (uint64_t)parsed;
+    return true;
 }
 
-static void exampleDeleteTimeStats (ExampleTimeStats *stats)
+static void encode_sequence(uint8_t payload[SEQUENCE_SIZE], uint64_t sequence)
 {
-  free (stats->values);
+    for (size_t i = 0; i < SEQUENCE_SIZE; i++)
+        payload[i] = (uint8_t)(sequence >> (i * 8));
 }
 
-static void exampleAddTimingToTimeStats (ExampleTimeStats *stats, dds_time_t timing)
+static uint64_t decode_sequence(const uint8_t payload[SEQUENCE_SIZE])
 {
-  if (stats->valuesSize > stats->valuesMax)
-  {
-    dds_time_t * temp = (dds_time_t*) realloc (stats->values, (stats->valuesMax + TIME_STATS_SIZE_INCREMENT) * sizeof (dds_time_t));
-    stats->values = temp;
-    stats->valuesMax += TIME_STATS_SIZE_INCREMENT;
-  }
-  if (stats->values != NULL && stats->valuesSize < stats->valuesMax)
-  {
-    stats->values[stats->valuesSize++] = timing;
-  }
-  stats->average = ((double)stats->count * stats->average + (double)timing) / (double)(stats->count + 1);
-  stats->min = (stats->count == 0 || timing < stats->min) ? timing : stats->min;
-  stats->max = (stats->count == 0 || timing > stats->max) ? timing : stats->max;
-  stats->count++;
+    uint64_t sequence = 0;
+
+    for (size_t i = 0; i < SEQUENCE_SIZE; i++)
+        sequence |= (uint64_t)payload[i] << (i * 8);
+    return sequence;
 }
 
-static int exampleCompareul (const void* a, const void* b)
+static dds_entity_t create_topic(dds_entity_t participant)
 {
-  dds_time_t ul_a = *((dds_time_t*)a);
-  dds_time_t ul_b = *((dds_time_t*)b);
+    dds_qos_t *qos = dds_create_qos();
+    dds_entity_t topic;
 
-  if (ul_a < ul_b) return -1;
-  if (ul_a > ul_b) return 1;
-  return 0;
+    dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(10));
+    topic = dds_create_topic(participant, &RTT_TYPE_DESCRIPTOR, RTT_TOPIC_NAME, qos, NULL);
+    dds_delete_qos(qos);
+    if (topic < 0)
+        DDS_FATAL("dds_create_topic: %s\n", dds_strretcode(-topic));
+    return topic;
 }
 
-static double exampleGetMedianFromTimeStats (ExampleTimeStats *stats)
+static dds_entity_t create_writer(dds_entity_t participant, dds_entity_t topic)
 {
-  double median = 0.0;
+    const char *partitions[] = {PING_PARTITION};
+    dds_qos_t *qos = dds_create_qos();
+    dds_entity_t publisher;
+    dds_entity_t writer;
 
-  qsort (stats->values, stats->valuesSize, sizeof (dds_time_t), exampleCompareul);
+    dds_qset_partition(qos, 1, partitions);
+    publisher = dds_create_publisher(participant, qos, NULL);
+    dds_delete_qos(qos);
+    if (publisher < 0)
+        DDS_FATAL("dds_create_publisher: %s\n", dds_strretcode(-publisher));
 
-  if (stats->valuesSize % 2 == 0)
-  {
-    median = (double)(stats->values[stats->valuesSize / 2 - 1] + stats->values[stats->valuesSize / 2]) / 2;
-  }
-  else
-  {
-    median = (double)stats->values[stats->valuesSize / 2];
-  }
-
-  return median;
+    writer = dds_create_writer(publisher, topic, NULL, NULL);
+    if (writer < 0)
+        DDS_FATAL("dds_create_writer: %s\n", dds_strretcode(-writer));
+    return writer;
 }
 
-static dds_time_t exampleGet99PercentileFromTimeStats (ExampleTimeStats *stats)
+static dds_entity_t create_reader(dds_entity_t participant, dds_entity_t topic)
 {
-  qsort (stats->values, stats->valuesSize, sizeof (dds_time_t), exampleCompareul);
-  return stats->values[stats->valuesSize - stats->valuesSize / 100];
+    const char *partitions[] = {PONG_PARTITION};
+    dds_qos_t *qos = dds_create_qos();
+    dds_entity_t subscriber;
+    dds_entity_t reader;
+
+    dds_qset_partition(qos, 1, partitions);
+    subscriber = dds_create_subscriber(participant, qos, NULL);
+    dds_delete_qos(qos);
+    if (subscriber < 0)
+        DDS_FATAL("dds_create_subscriber: %s\n", dds_strretcode(-subscriber));
+
+    reader = dds_create_reader(subscriber, topic, NULL, NULL);
+    if (reader < 0)
+        DDS_FATAL("dds_create_reader: %s\n", dds_strretcode(-reader));
+    return reader;
 }
 
-static dds_entity_t waitSet;
-
-#ifdef _WIN32
-#include <windows.h>
-static bool CtrlHandler (DWORD fdwCtrlType)
+static dds_time_t send_ping(
+    dds_entity_t writer,
+    RTT_TYPE *message,
+    pending_ping_t pending[PENDING_PINGS],
+    uint64_t sequence)
 {
-  (void)fdwCtrlType;
-  dds_waitset_set_trigger (waitSet, true);
-  return true; //Don't let other handlers handle this key
-}
-#elif !DDSRT_WITH_FREERTOS && !__ZEPHYR__
-static void CtrlHandler (int sig)
-{
-  (void)sig;
-  dds_waitset_set_trigger (waitSet, true);
-}
-#endif
+    pending_ping_t *entry = &pending[sequence % PENDING_PINGS];
 
-static dds_entity_t writer;
-static dds_entity_t reader;
-static dds_entity_t participant;
-static dds_entity_t readCond;
+    encode_sequence(message->payload._buffer, sequence);
+    entry->sequence = sequence;
+    entry->sent_at = dds_time();
+    entry->valid = true;
 
-static ExampleTimeStats roundTrip;
-static ExampleTimeStats writeAccess;
-static ExampleTimeStats readAccess;
-static ExampleTimeStats roundTripOverall;
-static ExampleTimeStats writeAccessOverall;
-static ExampleTimeStats readAccessOverall;
-
-static rttModule_DataType pub_data;
-static rttModule_DataType sub_data[MAX_SAMPLES];
-static void *samples[MAX_SAMPLES];
-static dds_sample_info_t info[MAX_SAMPLES];
-
-static dds_time_t startTime;
-static dds_time_t preWriteTime;
-static dds_time_t postWriteTime;
-static dds_time_t preTakeTime;
-static dds_time_t postTakeTime;
-static dds_time_t elapsed = 0;
-
-static bool warmUp = true;
-
-static void data_available(dds_entity_t rd, void *arg)
-{
-  dds_time_t difference = 0;
-  int status;
-  (void)arg;
-  /* Take sample and check that it is valid */
-  preTakeTime = dds_time ();
-  status = dds_take (rd, samples, info, MAX_SAMPLES, MAX_SAMPLES);
-  if (status < 0)
-    DDS_FATAL("dds_take: %s\n", dds_strretcode(-status));
-  postTakeTime = dds_time ();
-
-  /* Update stats */
-  difference = (postWriteTime - preWriteTime)/DDS_NSECS_IN_USEC;
-  exampleAddTimingToTimeStats (&writeAccess, difference);
-  exampleAddTimingToTimeStats (&writeAccessOverall, difference);
-
-  difference = (postTakeTime - preTakeTime)/DDS_NSECS_IN_USEC;
-  exampleAddTimingToTimeStats (&readAccess, difference);
-  exampleAddTimingToTimeStats (&readAccessOverall, difference);
-
-  difference = (postTakeTime - info[0].source_timestamp)/DDS_NSECS_IN_USEC;
-  exampleAddTimingToTimeStats (&roundTrip, difference);
-  exampleAddTimingToTimeStats (&roundTripOverall, difference);
-
-  if (!warmUp) {
-    /* Print stats each second */
-    difference = (postTakeTime - startTime)/DDS_NSECS_IN_USEC;
-    if (difference > US_IN_ONE_SEC)
-    {
-      printf("avg_rtt=%lf\n", roundTrip.average);
-      fflush (stdout);
-
-      exampleResetTimeStats (&roundTrip);
-      exampleResetTimeStats (&writeAccess);
-      exampleResetTimeStats (&readAccess);
-      startTime = dds_time ();
-      elapsed++;
-    }
-  }
-
-  preWriteTime = dds_time();
-  status = dds_write_ts (writer, &pub_data, preWriteTime);
-  if (status < 0)
-    DDS_FATAL("dds_write_ts: %s\n", dds_strretcode(-status));
-  postWriteTime = dds_time();
-}
-
-static void usage(void)
-{
-  printf ("Usage (parameters must be supplied in order):\n"
-          "./ping [-l] [payloadSize (bytes, 0 - 100M)] [numSamples (0 = infinite)] [timeOut (seconds, 0 = infinite)]\n"
-          "./ping quit - ping sends a quit signal to pong.\n"
-          "Defaults:\n"
-          "./ping 0 0 0\n");
-  exit(EXIT_FAILURE);
-}
-
-int main (int argc, char *argv[])
-{
-  uint32_t payloadSize = 0;
-  uint64_t numSamples = 0;
-  bool invalidargs = false;
-  dds_time_t timeOut = 0;
-  dds_time_t time;
-  dds_time_t difference = 0;
-
-  dds_attach_t wsresults[1];
-  size_t wsresultsize = 1U;
-  dds_time_t waitTimeout = DDS_SECS (1);
-  unsigned long i;
-  int status;
-
-  dds_listener_t *listener = NULL;
-  bool use_listener = false;
-  int argidx = 1;
-
-  /* poor man's getopt works even on Windows */
-  if (argc > argidx && strcmp(argv[argidx], "-l") == 0)
-  {
-    argidx++;
-    use_listener = true;
-  }
-
-  /* Register handler for Ctrl-C */
-#ifdef _WIN32
-  DDSRT_WARNING_GNUC_OFF(cast-function-type)
-  SetConsoleCtrlHandler ((PHANDLER_ROUTINE)CtrlHandler, TRUE);
-  DDSRT_WARNING_GNUC_ON(cast-function-type)
-#elif !DDSRT_WITH_FREERTOS && !__ZEPHYR__
-  struct sigaction sat, oldAction;
-  sat.sa_handler = CtrlHandler;
-  sigemptyset (&sat.sa_mask);
-  sat.sa_flags = 0;
-  sigaction (SIGINT, &sat, &oldAction);
-#endif
-
-  exampleInitTimeStats (&roundTrip);
-  exampleInitTimeStats (&writeAccess);
-  exampleInitTimeStats (&readAccess);
-  exampleInitTimeStats (&roundTripOverall);
-  exampleInitTimeStats (&writeAccessOverall);
-  exampleInitTimeStats (&readAccessOverall);
-
-  memset (&sub_data, 0, sizeof (sub_data));
-  memset (&pub_data, 0, sizeof (pub_data));
-
-  for (i = 0; i < MAX_SAMPLES; i++)
-  {
-    samples[i] = &sub_data[i];
-  }
-
-  participant = dds_create_participant (DDS_DOMAIN_DEFAULT, NULL, NULL);
-  if (participant < 0)
-    DDS_FATAL("dds_create_participant: %s\n", dds_strretcode(-participant));
-
-  if (use_listener)
-  {
-    listener = dds_create_listener(NULL);
-    dds_lset_data_available(listener, data_available);
-  }
-  prepare_dds(&writer, &reader, &readCond, listener);
-
-  if (argc - argidx == 1 && strcmp (argv[argidx], "quit") == 0)
-  {
-    printf ("Sending termination request.\n");
-    fflush (stdout);
-    /* pong uses a waitset which is triggered by instance disposal, and
-      quits when it fires. */
-    dds_sleepfor (DDS_SECS (1));
-    pub_data.payload._length = 0;
-    pub_data.payload._buffer = NULL;
-    pub_data.payload._release = true;
-    pub_data.payload._maximum = 0;
-    status = dds_writedispose (writer, &pub_data);
+    const dds_return_t status = dds_write(writer, message);
     if (status < 0)
-      DDS_FATAL("dds_writedispose: %s\n", dds_strretcode(-status));
-    dds_sleepfor (DDS_SECS (1));
-    goto done;
-  }
+        DDS_FATAL("dds_write: %s\n", dds_strretcode(-status));
+    return entry->sent_at;
+}
 
-  if (argc - argidx == 0)
-  {
-    invalidargs = true;
-  }
-  if (argc - argidx >= 1)
-  {
-    payloadSize = (uint32_t) atol (argv[argidx]);
+static void print_average(uint64_t rtt_sum_ns, uint64_t received_count)
+{
+    const double average_us = received_count == 0 ? 0.0 :
+        (double)rtt_sum_ns / (double)received_count / (double)DDS_NSECS_IN_USEC;
+    printf("avg_rtt_us=%.3f samples=%" PRIu64 "\n", average_us, received_count);
+    fflush(stdout);
+}
 
-    if (payloadSize > 100 * 1048576)
-    {
-      invalidargs = true;
+int main(int argc, char *argv[])
+{
+    RTT_TYPE received[MAX_SAMPLES] = {0};
+    void *samples[MAX_SAMPLES];
+    dds_sample_info_t sample_info[MAX_SAMPLES];
+    pending_ping_t pending[PENDING_PINGS] = {0};
+    uint8_t payload[SEQUENCE_SIZE];
+    RTT_TYPE ping = {
+        .payload = {
+            ._maximum = SEQUENCE_SIZE,
+            ._length = SEQUENCE_SIZE,
+            ._buffer = payload,
+            ._release = false
+        }
+    };
+    uint64_t interval_ms = 0;
+    uint64_t ping_count = 0;
+    uint64_t sent_count = 0;
+    uint64_t pong_count = 0;
+    uint64_t pending_count = 0;
+    uint64_t next_sequence = 0;
+    uint64_t rtt_sum_ns = 0;
+    uint64_t received_count = 0;
+    bool have_interval = false;
+    bool have_count = false;
+    char *csv_filename;
+    FILE *csv;
+    dds_duration_t interval;
+    dds_time_t next_ping_due;
+    dds_time_t report_started;
+    dds_entity_t participant;
+    dds_entity_t topic;
+    dds_entity_t writer;
+    dds_entity_t reader;
+    dds_entity_t condition;
+    dds_entity_t waitset;
+    dds_attach_t attachments[1];
+
+    for (int i = 1; i < argc; i++) {
+        const char *option;
+        const char *argument;
+
+        if (i + 1 == argc) {
+            usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        option = argv[i];
+        argument = argv[++i];
+        if (strcmp(option, "-i") == 0) {
+            have_interval = parse_uint64(argument, &interval_ms);
+        } else if (strcmp(option, "-c") == 0) {
+            have_count = parse_uint64(argument, &ping_count);
+        } else {
+            usage(argv[0]);
+            return EXIT_FAILURE;
+        }
+        if ((!have_interval && strcmp(option, "-i") == 0) ||
+                (!have_count && strcmp(option, "-c") == 0)) {
+            usage(argv[0]);
+            return EXIT_FAILURE;
+        }
     }
-  }
-  if (argc - argidx >= 2)
-  {
-    numSamples = (uint64_t) atol (argv[argidx+1]);
-  }
-  if (argc - argidx >= 3)
-  {
-    timeOut = atol (argv[argidx+2]);
-  }
-  if (invalidargs || (argc - argidx == 1 && (strcmp (argv[argidx], "-h") == 0 || strcmp (argv[argidx], "--help") == 0)))
-    usage();
-  printf ("# payloadSize: %" PRIu32 " | numSamples: %" PRIu64 " | timeOut: %" PRIi64 "\n\n", payloadSize, numSamples, timeOut);
-  fflush (stdout);
+    if (!have_interval || !have_count || ping_count == 0 ||
+            interval_ms > (uint64_t)INT64_MAX / DDS_NSECS_IN_MSEC) {
+        usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+    interval = (dds_duration_t)interval_ms * DDS_NSECS_IN_MSEC;
 
-  pub_data.payload._length = payloadSize;
-  pub_data.payload._buffer = payloadSize ? dds_alloc (payloadSize) : NULL;
-  pub_data.payload._release = true;
-  pub_data.payload._maximum = 0;
-  for (i = 0; i < payloadSize; i++)
-  {
-    pub_data.payload._buffer[i] = 'a';
-  }
+    const int filename_length = snprintf(
+        NULL, 0, "rtt_cyclonedds_i%" PRIu64 "_s8_c%" PRIu64 ".csv", interval_ms, ping_count);
+    if (filename_length < 0)
+        DDS_FATAL("snprintf failed while creating the CSV filename\n");
+    csv_filename = malloc((size_t)filename_length + 1);
+    if (csv_filename == NULL)
+        DDS_FATAL("malloc failed while creating the CSV filename\n");
+    snprintf(
+        csv_filename, (size_t)filename_length + 1,
+        "rtt_cyclonedds_i%" PRIu64 "_s8_c%" PRIu64 ".csv", interval_ms, ping_count);
+    csv = fopen(csv_filename, "w");
+    if (csv == NULL)
+        DDS_FATAL("fopen(%s): %s\n", csv_filename, strerror(errno));
+    if (fprintf(csv, "count,timestamp_ns,rtt_ns\n") < 0)
+        DDS_FATAL("failed to write CSV header\n");
 
-  startTime = dds_time ();
-  printf ("# Waiting for startup jitter to stabilise\n");
-  fflush (stdout);
-  /* Write a sample that pong can send back */
-  while (!dds_triggered (waitSet) && difference < DDS_SECS(5))
-  {
-    status = dds_waitset_wait (waitSet, wsresults, wsresultsize, waitTimeout);
-    if (status < 0)
-      DDS_FATAL("dds_waitset_wait: %s\n", dds_strretcode(-status));
+    for (size_t i = 0; i < MAX_SAMPLES; i++)
+        samples[i] = &received[i];
 
-    if (status > 0 && listener == NULL) /* data */
-    {
-      status = dds_take (reader, samples, info, MAX_SAMPLES, MAX_SAMPLES);
-      if (status < 0)
-        DDS_FATAL("dds_take: %s\n", dds_strretcode(-status));
+    participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
+    if (participant < 0)
+        DDS_FATAL("dds_create_participant: %s\n", dds_strretcode(-participant));
+
+    topic = create_topic(participant);
+    writer = create_writer(participant, topic);
+    reader = create_reader(participant, topic);
+    condition = dds_create_readcondition(reader, DDS_ANY_STATE);
+    if (condition < 0)
+        DDS_FATAL("dds_create_readcondition: %s\n", dds_strretcode(-condition));
+
+    waitset = dds_create_waitset(participant);
+    if (waitset < 0)
+        DDS_FATAL("dds_create_waitset: %s\n", dds_strretcode(-waitset));
+    const dds_return_t attach_status = dds_waitset_attach(waitset, condition, reader);
+    if (attach_status < 0)
+        DDS_FATAL("dds_waitset_attach: %s\n", dds_strretcode(-attach_status));
+
+    dds_return_t matched_readers;
+    dds_return_t matched_writers;
+    printf("Waiting for ping and pong endpoints to be discovered...\n");
+    fflush(stdout);
+    do {
+        matched_readers = dds_get_matched_subscriptions(writer, NULL, 0);
+        matched_writers = dds_get_matched_publications(reader, NULL, 0);
+        if (matched_readers < 0 || matched_writers < 0)
+            DDS_FATAL("failed to get DDS endpoint matches\n");
+        if (matched_readers == 0 || matched_writers == 0)
+            dds_sleepfor(DDS_MSECS(100));
+    } while (matched_readers == 0 || matched_writers == 0);
+
+    printf("Sending %" PRIu64 " pings every %" PRIu64 " ms.\n", ping_count, interval_ms);
+    report_started = dds_time();
+    next_ping_due = report_started;
+
+    while (pong_count < ping_count) {
+        dds_time_t now = dds_time();
+        if (now - report_started >= DDS_SECS(1)) {
+            print_average(rtt_sum_ns, received_count);
+            rtt_sum_ns = 0;
+            received_count = 0;
+            report_started = now;
+        }
+
+        while (sent_count < ping_count && pending_count < PENDING_PINGS && now >= next_ping_due) {
+            next_ping_due = send_ping(writer, &ping, pending, next_sequence++) + interval;
+            sent_count++;
+            pending_count++;
+            now = dds_time();
+        }
+
+        dds_duration_t wait_timeout = DDS_SECS(1) - (now - report_started);
+        if (sent_count < ping_count && pending_count < PENDING_PINGS &&
+                next_ping_due > now && next_ping_due - now < wait_timeout) {
+            wait_timeout = next_ping_due - now;
+        }
+        const int wait_status = dds_waitset_wait(waitset, attachments, 1, wait_timeout);
+        if (wait_status < 0)
+            DDS_FATAL("dds_waitset_wait: %s\n", dds_strretcode(-wait_status));
+
+        if (wait_status > 0) {
+            const int sample_count = dds_take(reader, samples, sample_info, MAX_SAMPLES, MAX_SAMPLES);
+            if (sample_count < 0)
+                DDS_FATAL("dds_take: %s\n", dds_strretcode(-sample_count));
+
+            for (int i = 0; i < sample_count; i++) {
+                if (!sample_info[i].valid_data || received[i].payload._length != SEQUENCE_SIZE)
+                    continue;
+
+                const uint64_t sequence = decode_sequence(received[i].payload._buffer);
+                pending_ping_t *entry = &pending[sequence % PENDING_PINGS];
+                if (!entry->valid || entry->sequence != sequence)
+                    continue;
+
+                const dds_time_t arrival_timestamp_ns = dds_time();
+                const dds_time_t rtt_ns = arrival_timestamp_ns - entry->sent_at;
+                entry->valid = false;
+                pending_count--;
+                pong_count++;
+                rtt_sum_ns += (uint64_t)rtt_ns;
+                received_count++;
+                if (fprintf(csv, "%" PRIu64 ",%" PRIi64 ",%" PRIi64 "\n",
+                            sequence, (int64_t)arrival_timestamp_ns, (int64_t)rtt_ns) < 0) {
+                    DDS_FATAL("failed to write CSV row\n");
+                }
+            }
+        }
     }
 
-    time = dds_time ();
-    difference = time - startTime;
-  }
-  if (!dds_triggered (waitSet))
-  {
-    warmUp = false;
-    printf("# Warm up complete.\n\n");
-    printf("# Latency measurements (in us)\n");
-    printf("#             Latency [us]                                   Write-access time [us]       Read-access time [us]\n");
-    printf("# Seconds     Count   median      min      99%%      max      Count   median      min      Count   median      min\n");
-    fflush (stdout);
-  }
+    if (received_count != 0)
+        print_average(rtt_sum_ns, received_count);
+    if (fclose(csv) != 0)
+        DDS_FATAL("fclose(%s): %s\n", csv_filename, strerror(errno));
+    free(csv_filename);
 
-  exampleResetTimeStats (&roundTrip);
-  exampleResetTimeStats (&writeAccess);
-  exampleResetTimeStats (&readAccess);
-  startTime = dds_time ();
-  /* Write a sample that pong can send back */
-  preWriteTime = dds_time ();
-  status = dds_write_ts (writer, &pub_data, preWriteTime);
-  if (status < 0)
-    DDS_FATAL("dds_write_ts: %s\n", dds_strretcode(-status));
-  postWriteTime = dds_time ();
-  for (i = 0; !dds_triggered (waitSet) && (!numSamples || i < numSamples) && !(timeOut && elapsed >= timeOut); i++)
-  {
-    status = dds_waitset_wait (waitSet, wsresults, wsresultsize, waitTimeout);
-    if (status < 0)
-      DDS_FATAL("dds_waitset_wait: %s\n", dds_strretcode(-status));
-    if (status != 0 && listener == NULL) {
-      data_available(reader, NULL);
-    }
-  }
-
-  if (!warmUp)
-  {
-    printf
-    (
-      "\n%9s %9lu %8.0f %8" PRIi64 " %8" PRIi64 " %8" PRIi64 " %10lu %8.0f %8" PRIi64 " %10lu %8.0f %8" PRIi64 "\n",
-      "# Overall",
-      roundTripOverall.count,
-      exampleGetMedianFromTimeStats (&roundTripOverall) / 2,
-      roundTripOverall.min / 2,
-      exampleGet99PercentileFromTimeStats (&roundTripOverall) / 2,
-      roundTripOverall.max / 2,
-      writeAccessOverall.count,
-      exampleGetMedianFromTimeStats (&writeAccessOverall),
-      writeAccessOverall.min,
-      readAccessOverall.count,
-      exampleGetMedianFromTimeStats (&readAccessOverall),
-      readAccessOverall.min
-    );
-    fflush (stdout);
-  }
-
-done:
-
-#ifdef _WIN32
-  SetConsoleCtrlHandler (0, FALSE);
-#elif !DDSRT_WITH_FREERTOS && !__ZEPHYR__
-  sigaction (SIGINT, &oldAction, 0);
-#endif
-
-  finalize_dds(participant);
-
-  /* Clean up */
-  exampleDeleteTimeStats (&roundTrip);
-  exampleDeleteTimeStats (&writeAccess);
-  exampleDeleteTimeStats (&readAccess);
-  exampleDeleteTimeStats (&roundTripOverall);
-  exampleDeleteTimeStats (&writeAccessOverall);
-  exampleDeleteTimeStats (&readAccessOverall);
-
-  for (i = 0; i < MAX_SAMPLES; i++)
-  {
-    rttModule_DataType_free (&sub_data[i], DDS_FREE_CONTENTS);
-  }
-  rttModule_DataType_free (&pub_data, DDS_FREE_CONTENTS);
-
-  return EXIT_SUCCESS;
-}
-
-static dds_entity_t prepare_dds(dds_entity_t *wr, dds_entity_t *rd, dds_entity_t *rdcond, dds_listener_t *listener)
-{
-  dds_return_t status;
-  dds_entity_t topic;
-  dds_entity_t publisher;
-  dds_entity_t subscriber;
-
-  const char *pubPartitions[] = { "ping" };
-  const char *subPartitions[] = { "pong" };
-  dds_qos_t *pubQos;
-  dds_qos_t *subQos;
-  dds_qos_t *tQos;
-  dds_qos_t *wQos;
-
-  /* A DDS_Topic is created for our sample type on the domain participant. */
-  tQos = dds_create_qos ();
-  // TODO: Best effort
-  dds_qset_reliability (tQos, DDS_RELIABILITY_RELIABLE, DDS_SECS (10));
-  topic = dds_create_topic (participant, &rttModule_DataType_desc, "rtt_topic", tQos, NULL);
-  if (topic < 0)
-    DDS_FATAL("dds_create_topic: %s\n", dds_strretcode(-topic));
-  dds_delete_qos (tQos);
-
-  /* A DDS_Publisher is created on the domain participant. */
-  pubQos = dds_create_qos ();
-  dds_qset_partition (pubQos, 1, pubPartitions);
-
-  publisher = dds_create_publisher (participant, pubQos, NULL);
-  if (publisher < 0)
-    DDS_FATAL("dds_create_publisher: %s\n", dds_strretcode(-publisher));
-  dds_delete_qos (pubQos);
-
-  /* A DDS_DataWriter is created on the Publisher & Topic with a modified Qos. */
-  wQos = dds_create_qos ();
-  dds_qset_writer_data_lifecycle (wQos, false);
-  *wr = dds_create_writer (publisher, topic, wQos, NULL);
-  if (*wr < 0)
-    DDS_FATAL("dds_create_writer: %s\n", dds_strretcode(-*wr));
-  dds_delete_qos (wQos);
-
-  /* A DDS_Subscriber is created on the domain participant. */
-  subQos = dds_create_qos ();
-
-  dds_qset_partition (subQos, 1, subPartitions);
-
-  subscriber = dds_create_subscriber (participant, subQos, NULL);
-  if (subscriber < 0)
-    DDS_FATAL("dds_create_subscriber: %s\n", dds_strretcode(-subscriber));
-  dds_delete_qos (subQos);
-  /* A DDS_DataReader is created on the Subscriber & Topic with a modified QoS. */
-  *rd = dds_create_reader (subscriber, topic, NULL, listener);
-  if (*rd < 0)
-    DDS_FATAL("dds_create_reader: %s\n", dds_strretcode(-*rd));
-
-  waitSet = dds_create_waitset (participant);
-  if (listener == NULL) {
-    *rdcond = dds_create_readcondition (*rd, DDS_ANY_STATE);
-    status = dds_waitset_attach (waitSet, *rdcond, *rd);
-    if (status < 0)
-      DDS_FATAL("dds_waitset_attach: %s\n", dds_strretcode(-status));
-  } else {
-    *rdcond = 0;
-  }
-  status = dds_waitset_attach (waitSet, waitSet, waitSet);
-  if (status < 0)
-    DDS_FATAL("dds_waitset_attach: %s\n", dds_strretcode(-status));
-
-  return participant;
-}
-
-static void finalize_dds(dds_entity_t ppant)
-{
-  dds_return_t status;
-  status = dds_delete (ppant);
-  if (status < 0)
-    DDS_FATAL("dds_delete: %s\n", dds_strretcode(-status));
+    for (size_t i = 0; i < MAX_SAMPLES; i++)
+        RTT_TYPE_FREE(&received[i], DDS_FREE_CONTENTS);
+    const dds_return_t delete_status = dds_delete(participant);
+    if (delete_status < 0)
+        DDS_FATAL("dds_delete: %s\n", dds_strretcode(-delete_status));
+    return EXIT_SUCCESS;
 }
