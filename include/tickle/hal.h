@@ -4,9 +4,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#ifdef __linux__
-#include <pthread.h> // NOLINT(misc-include-cleaner)
-#endif
 #include <string.h>
 
 // Platform detection macros
