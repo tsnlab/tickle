@@ -1,13 +1,15 @@
+#include <stdint.h>
 #include <stdio.h>
+
+#include <tickle/config.h>
+#include <tickle/hal.h>
+#include <tickle/tickle.h>
 
 #include "UInt64.h"
 
-// This file relies on transitive includes provided by UInt64.h and tickle headers.
-// NOLINTBEGIN(misc-include-cleaner)
-
 int main(int argc, char** argv) {
-    (void)argc; // NOLINT(misc-unused-parameters)
-    (void)argv; // NOLINT(misc-unused-parameters)
+    (void)argc;
+    (void)argv;
     // _tt_CONFIG.addr = "192.168.10.1";
     _tt_CONFIG.broadcast = "192.168.10.255";
 
@@ -45,5 +47,3 @@ int main(int argc, char** argv) {
 
     return 0;
 }
-
-// NOLINTEND(misc-include-cleaner)

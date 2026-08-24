@@ -9,15 +9,15 @@
 
 static void uint64_data_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no,
                                  struct UInt64Data* data) {
-    (void)sub; // NOLINT(misc-unused-parameters)
+    (void)sub;
     printf("  timestamp: %ld\n", timestamp);
     printf("  seq_no: %d\n", seq_no);
     printf("  data->data: %lx\n", data->data);
 }
 
 int main(int argc, char** argv) {
-    (void)argc; // NOLINT(misc-unused-parameters)
-    (void)argv; // NOLINT(misc-unused-parameters)
+    (void)argc;
+    (void)argv;
     _tt_CONFIG.broadcast = "192.168.10.255";
 
     struct tt_Node node;

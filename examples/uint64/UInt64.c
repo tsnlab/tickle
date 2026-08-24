@@ -5,7 +5,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include <tickle/hal.h> // NOLINT(misc-include-cleaner)
 #include <tickle/tickle.h>
 
 struct tt_Topic UInt64Topic = {
@@ -18,12 +17,12 @@ struct tt_Topic UInt64Topic = {
 };
 
 int32_t UInt64Data_encode_size(struct UInt64Data* data) {
-    (void)data;              // NOLINT(misc-unused-parameters)
+    (void)data;
     return sizeof(uint64_t); // encode data
 }
 
 int32_t UInt64Data_encode(struct UInt64Data* data, uint8_t* payload, int32_t len) {
-    (void)data; // NOLINT(misc-unused-parameters)
+    (void)data;
     int32_t encoded = 0;
 
     // encode data
@@ -40,7 +39,7 @@ int32_t UInt64Data_encode(struct UInt64Data* data, uint8_t* payload, int32_t len
 }
 
 int32_t UInt64Data_decode(struct UInt64Data* data, const uint8_t* payload, int32_t len, bool is_native_endian) {
-    (void)is_native_endian; // NOLINT(misc-unused-parameters)
+    (void)is_native_endian;
     int32_t decoded = 0;
 
     // decode data
@@ -57,6 +56,6 @@ int32_t UInt64Data_decode(struct UInt64Data* data, const uint8_t* payload, int32
 }
 
 void UInt64Data_free(struct UInt64Data* data) {
-    (void)data; // NOLINT(misc-unused-parameters)
+    (void)data;
     // Do nothing
 }

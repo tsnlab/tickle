@@ -2,6 +2,7 @@
 #include <ifaddrs.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -12,9 +13,6 @@
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
-
-// This implementation relies on the socket and network headers included above.
-// NOLINTBEGIN(misc-include-cleaner)
 
 #include "consts.h"
 #include "log.h"
@@ -78,22 +76,26 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     }
 
     int optval = 1;
+    // SOL_SOCKET/SO_* live in glibc-private headers; <sys/socket.h> (included above) is the correct public header.
+    // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket reuseaddr");
         return tt_RET_IO_ERROR;
     }
 
     optval = 1;
+    // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket broadcast");
         return tt_RET_IO_ERROR;
     }
 
-    struct timeval timeout;
+    struct timeval timeout; // NOLINT(misc-include-cleaner) -- provided transitively via <sys/socket.h>
     timeout.tv_sec = 0;
     timeout.tv_usec = tt_RECEIVE_TIMEOUT / US_NS; // nano to micro
     node->hal.receive_timeout = tt_RECEIVE_TIMEOUT;
 
+    // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
         perror("Cannot set socket receive timeout");
         return tt_RET_IO_ERROR;
@@ -151,6 +153,8 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     *port = ntohs(addr.sin_port);
 
     if (ret < 0) {
+        // EAGAIN/EWOULDBLOCK live in glibc-private headers; <errno.h> (included above) is the correct public header.
+        // NOLINTNEXTLINE(misc-include-cleaner)
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return -1; // Timeout
         }
@@ -159,5 +163,3 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 
     return ret;
 }
-
-// NOLINTEND(misc-include-cleaner)

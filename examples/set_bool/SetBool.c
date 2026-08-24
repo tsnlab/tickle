@@ -2,11 +2,12 @@
 
 #include "SetBool.h"
 
+#include <stdint.h>
+#include <string.h>
+
+#include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
-
-// This generated implementation relies on transitive includes provided by SetBool.h.
-// NOLINTBEGIN(misc-include-cleaner)
 
 struct tt_Service SetBoolService = {
     .name = "SetBoolService",
@@ -25,7 +26,7 @@ struct tt_Service SetBoolService = {
 };
 
 int32_t SetBoolRequest_encode_size(struct SetBoolRequest* request) {
-    (void)request;       // NOLINT(misc-unused-parameters)
+    (void)request;
     return sizeof(bool); // encode data
 }
 
@@ -47,7 +48,7 @@ int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, 
 
 int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* payload, int32_t len,
                               bool is_native_endian) {
-    (void)is_native_endian; // NOLINT(misc-unused-parameters)
+    (void)is_native_endian;
     int32_t decoded = 0;
 
     // decode data
@@ -64,7 +65,7 @@ int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* pay
 }
 
 void SetBoolRequest_free(struct SetBoolRequest* request) {
-    (void)request; // NOLINT(misc-unused-parameters)
+    (void)request;
     // Do nothing
 }
 
@@ -167,4 +168,3 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
 void SetBoolResponse_free(struct SetBoolResponse* response) {
     // Do nothing
 }
-// NOLINTEND(misc-include-cleaner)

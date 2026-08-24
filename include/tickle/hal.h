@@ -7,7 +7,7 @@
 #ifdef __linux__
 #include <pthread.h> // NOLINT(misc-include-cleaner)
 #endif
-#include <string.h> // NOLINT(misc-include-cleaner)
+#include <string.h>
 
 // Platform detection macros
 #ifdef __linux__

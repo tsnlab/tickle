@@ -1,10 +1,9 @@
 #include "log.h"
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-// This implementation relies on transitive includes from log.h.
-// NOLINTBEGIN(misc-include-cleaner)
 
 // Default log configuration
 tt_LogLevel tt_current_log_level = TT_LOG_INFO;
@@ -92,5 +91,3 @@ void tt_log_error(const char* format, ...) {
     tt_log_internal(TT_LOG_ERROR, log_level_strings[TT_LOG_ERROR], format, args);
     va_end(args);
 }
-
-// NOLINTEND(misc-include-cleaner)
