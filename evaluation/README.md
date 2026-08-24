@@ -6,7 +6,6 @@ Evaluate and compare performance of middlewares.
 * TickLE
 * FastDDS
 * CycloneDDS
-* Zenoh-pico
 
 ## Directory structure
 
@@ -18,7 +17,8 @@ cyclonedds/
 zenoh-pico/
 ```
 
-## Environment
+## Setup environment
+Install middlewares
 
 ### TickLE
 - branch: ([]())
@@ -88,7 +88,7 @@ cmake --build . --target install
 ### Zenoh-pico
 - commit or branch
 
-## Build & Run
+## Build & Run evaluation application
 
 ### TickLE
 
@@ -108,7 +108,3 @@ bash run_pong.sh
 
 ### CycloneDDS
 
-### Zenoh-pico
-
-- build command or script
-- run command or script
