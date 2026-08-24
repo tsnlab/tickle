@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include <tickle/config.h>
+#include <tickle/hal.h>
 #include <tickle/tickle.h>
 
 #include "UInt64.h"

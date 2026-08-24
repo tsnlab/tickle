@@ -4,13 +4,13 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#if defined(__linux__)
+#ifdef __linux__
 #include <pthread.h> // NOLINT(misc-include-cleaner)
 #endif
 #include <string.h> // NOLINT(misc-include-cleaner)
 
 // Platform detection macros
-#if defined(__linux__)
+#ifdef __linux__
 #define TT_PLATFORM_LINUX
 #define TT_PLATFORM_NAME "linux"
 #else
@@ -29,13 +29,13 @@
 #define _tt_free(ptr) free((ptr))
 
 // Memory alignment macros
-#define ALIGN(n) ((n) & ~(4 - 1))      // 4 bytes alignment
-#define ROUNDUP(n) ALIGN((n) + 4 - 1)  // 4 bytes roundup
+#define ALIGN(n) ((n) & ~(4 - 1))     // 4 bytes alignment
+#define ROUNDUP(n) ALIGN((n) + 4 - 1) // 4 bytes roundup
 
 #define NATIVE_MAGIC_VALUE (((uint16_t)'T' << 8) | 'K')
 #define REVERSE_MAGIC_VALUE (((uint16_t)'K' << 8) | 'T')
 
-typedef enum _tt_ret_t {
+typedef enum tt_ret_t {
     tt_RET_OK = 0,
     tt_RET_TIMEOUT = -1,
     tt_RET_IO_ERROR = -2,

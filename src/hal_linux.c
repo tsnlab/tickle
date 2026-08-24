@@ -19,7 +19,8 @@
 #include "consts.h"
 #include "log.h"
 
-#define SEC_NS 1000000000ULL
+#define SEC_NS 1000000000LL
+#define US_NS 1000LL
 
 #define UNUSED(x) (void)(x)
 
@@ -90,7 +91,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
 
     struct timeval timeout;
     timeout.tv_sec = 0;
-    timeout.tv_usec = tt_RECEIVE_TIMEOUT / 1000;  // nano to micro
+    timeout.tv_usec = tt_RECEIVE_TIMEOUT / US_NS; // nano to micro
     node->hal.receive_timeout = tt_RECEIVE_TIMEOUT;
 
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
@@ -133,8 +134,8 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 
     if (timeout >= 0 && node->hal.receive_timeout != timeout) {
         struct timeval tval;
-        tval.tv_sec = timeout / 1000000000LL;
-        tval.tv_usec = (timeout % 1000000000LL) / 1000LL;  // nano to micro
+        tval.tv_sec = timeout / SEC_NS;
+        tval.tv_usec = (timeout % SEC_NS) / US_NS; // nano to micro
         uint64_t old_timeout = node->hal.receive_timeout;
         node->hal.receive_timeout = timeout;
 
@@ -151,10 +152,9 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 
     if (ret < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return -1;  // Timeout
-        } else {
-            return -2;  // I/O error
+            return -1; // Timeout
         }
+        return -2; // I/O error
     }
 
     return ret;
