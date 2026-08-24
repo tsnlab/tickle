@@ -34,6 +34,12 @@
 *.app
 *.i*86
 *.x86_64
+
+# Project build outputs (see Makefile: set_bool/uint64 example binaries)
+/client
+/server
+/publisher
+/subscriber
 *.hex
 
 # Debug files
