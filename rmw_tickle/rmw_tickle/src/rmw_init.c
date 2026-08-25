@@ -7,7 +7,7 @@
 #include "rmw/rmw.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 
-rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_allocator_t allocator) {
+rmw_ret_t rmw_init_options_init(rmw_init_options_t* const init_options, rcutils_allocator_t allocator) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(init_options, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(allocator.allocate, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(allocator.deallocate, RMW_RET_INVALID_ARGUMENT);
@@ -37,7 +37,7 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
     return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_t* dst) {
+rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_t* const dst) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(src, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(dst, RMW_RET_INVALID_ARGUMENT);
 
@@ -67,7 +67,7 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
     return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
+rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const context) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(options, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
@@ -113,7 +113,7 @@ rmw_ret_t rmw_shutdown(rmw_context_t* context) {
     return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_context_fini(rmw_context_t* context) {
+rmw_ret_t rmw_context_fini(rmw_context_t* const context) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
     if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {

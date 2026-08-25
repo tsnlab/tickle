@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
