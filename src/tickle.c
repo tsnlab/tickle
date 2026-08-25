@@ -1173,8 +1173,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
         timeout = tt_RECEIVE_TIMEOUT;
     }
 
-    uint64_t base = tt_get_ns();
-    uint64_t time = base;
+    uint64_t time = tt_get_ns();
     while (timeout > 0) {
         struct tt_TCB* tcb = peek_scheduler(node);
 
@@ -1185,8 +1184,10 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
         } else {
             // Run network I/O next
             int64_t rest = timeout;
+            bool woke_for_scheduler = false;
             if (tcb != NULL && tcb->time - time < timeout) {
                 rest = (int64_t)(tcb->time - time);
+                woke_for_scheduler = true;
             }
 
             uint32_t ip = 0;
@@ -1194,31 +1195,34 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
             int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 
             if (len == -1) { // Timeout
-                return tt_RET_TIMEOUT;
-            }
-            if (len < 0) { // I/O error
+                // A short wait to service a due scheduler entry isn't the caller's real
+                // timeout; keep polling for the remaining budget instead of returning early.
+                if (!woke_for_scheduler) {
+                    return tt_RET_TIMEOUT;
+                }
+            } else if (len < 0) { // I/O error
                 return tt_RET_IO_ERROR;
+            } else {
+                node->rx_tail = (uint32_t)len;
+
+                TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
+                             (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
+
+                if (!process_packet(node, node->rx_buffer, 0, len)) {
+                    TT_LOG_ERROR("Cannot process packet");
+                    return tt_RET_PROTOCOL_ERROR;
+                }
+
+                return tt_RET_OK;
             }
-
-            node->rx_tail = (uint32_t)len;
-
-            TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-                         (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
-
-            if (!process_packet(node, node->rx_buffer, 0, len)) {
-                TT_LOG_ERROR("Cannot process packet");
-                return tt_RET_PROTOCOL_ERROR;
-            }
-
-            return tt_RET_OK;
         }
+
+        uint64_t new_time = tt_get_ns();
+        timeout -= (int64_t)(new_time - time);
+        time = new_time;
     }
 
-    uint64_t new_time = tt_get_ns();
-    timeout -= (int64_t)(new_time - time);
-    time = new_time;
-
-    return tt_RET_OK;
+    return tt_RET_TIMEOUT;
 }
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {
