@@ -163,6 +163,12 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
         return -1;
     }
 
+    // message_length is defined to include the terminating '\0'; reject a payload that
+    // doesn't actually end with one so response->message can be safely treated as a C string.
+    if (payload[message_length - 1] != '\0') {
+        return -2; // Invalid message length
+    }
+
     response->message = (char*)payload;
 
     decoded += message_length;

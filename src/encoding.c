@@ -113,6 +113,12 @@ bool tt_decode_string(void* buffer, uint32_t* head, uint32_t tail, uint16_t* str
         return false;
     }
 
+    // str_len is defined to include the terminating '\0' (see tt_encode_string); reject any
+    // string that doesn't actually end with one so callers can safely treat *str as a C string.
+    if (*str_len == 0 || ((const char*)buffer)[*head + *str_len - 1] != '\0') {
+        return false;
+    }
+
     *str = (char*)((uint8_t*)buffer + *head);
     *head += *str_len;
 
