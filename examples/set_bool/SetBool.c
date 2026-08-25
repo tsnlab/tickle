@@ -70,6 +70,10 @@ void SetBoolRequest_free(struct SetBoolRequest* request) {
 }
 
 int32_t SetBoolResponse_encode_size(struct SetBoolResponse* response) {
+    if (response->message == NULL) {
+        return -3; // Invalid message pointer
+    }
+
     return (int32_t)(sizeof(bool) +                                             // encode success
                      sizeof(uint16_t) +                                         // encode message length
                      _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1); // encode message
@@ -93,12 +97,19 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
         return -1;
     }
 
-    uint16_t message_length = _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1; // including '\0'
+    // Check if message is valid before measuring/copying it
+    if (response->message == NULL) {
+        return -3; // Invalid message pointer
+    }
+
+    // Measure in a wide type first: message_length (incl. '\0') can reach tt_MAX_STRING_LENGTH + 1,
+    // which overflows uint16_t, so this must be validated before narrowing.
+    size_t message_length = _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1; // including '\0'
     if (message_length > tt_MAX_STRING_LENGTH) {
         return -2;
     }
 
-    *(uint16_t*)payload = message_length;
+    *(uint16_t*)payload = (uint16_t)message_length;
 
     encoded += sizeof(uint16_t);
     payload += sizeof(uint16_t);
@@ -108,14 +119,9 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
         return -1;
     }
 
-    // Check if message is valid before copying
-    if (response->message == NULL) {
-        return -3; // Invalid message pointer
-    }
-
     memcpy(payload, response->message, message_length);
     payload += message_length;
-    encoded += message_length;
+    encoded += (int32_t)message_length;
 
     return encoded;
 }
@@ -166,5 +172,6 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
 }
 
 void SetBoolResponse_free(struct SetBoolResponse* response) {
+    (void)response;
     // Do nothing
 }

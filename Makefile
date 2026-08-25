@@ -1,7 +1,7 @@
 INCLUDE=include
 CC=gcc
 AR=ar
-CFLAGS=-I$(INCLUDE) -Isrc -O0 -g
+CFLAGS=-I$(INCLUDE) -Isrc -O0 -g -Wall -Wextra
 LDFLAGS=
 
 SRC=src
@@ -57,8 +57,8 @@ subscriber: examples/uint64/UInt64.c examples/uint64/subscriber.c libtickle.a
 	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
 
 lint:
-	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} \;
-	find . -name '*.[ch]' -exec clang-tidy {} -- -I$(INCLUDE) -I$(SRC) \;
+	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
+	find . -name '*.[ch]' -exec clang-tidy --extra-arg=-I$(INCLUDE) --extra-arg=-I$(SRC) {} +
 
 createns:
 # Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
