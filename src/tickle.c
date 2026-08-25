@@ -856,31 +856,35 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
 
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] != NULL) {
-            struct tt_SubmessageHeader* submessage_header = server->cache[i];
+            struct tt_SubmessageHeader* existing = server->cache[i];
 
-            if (submessage_header->receiver == receiver) {
+            if (existing->receiver == receiver) {
                 _tt_free(server->cache[i]);
                 server->cache[i] = NULL;
             }
         }
 
         if ((cache != NULL) && (server->cache[i] == NULL)) {
-            server->cache[i] = cache;
-
             struct server_cache_clean_config* clean = _tt_malloc(sizeof(struct server_cache_clean_config));
             if (clean == NULL) {
                 TT_LOG_ERROR("Out of memory");
+                _tt_free(cache);
                 return false;
             }
 
             clean->server = server;
             clean->cache = cache;
 
+            // Only publish `cache` into the slot once its cleanup timer is guaranteed to run;
+            // otherwise the slot would hold an entry that never gets freed.
             if (!tt_Node_schedule(server->node, tt_get_ns() + tt_SERVER_CACHE_TIMEOUT, server_cache_clean, clean)) {
                 TT_LOG_ERROR("Cannot schedule server_cache_clean");
+                _tt_free(clean);
+                _tt_free(cache);
                 return false;
             }
 
+            server->cache[i] = cache;
             cache = NULL;
         }
     }
