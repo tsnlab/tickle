@@ -80,6 +80,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket reuseaddr");
+        tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
@@ -87,6 +88,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket broadcast");
+        tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
@@ -98,6 +100,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
         perror("Cannot set socket receive timeout");
+        tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
@@ -109,6 +112,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
         TT_LOG_ERROR("Cannot binding socket: %s:%d", _tt_CONFIG.addr, _tt_CONFIG.port);
         perror("Cannot binding socket\n");
+        tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
