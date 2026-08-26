@@ -226,6 +226,25 @@ bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
     return true;
 }
 
+bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
+                        void* param) {
+    bool removed = false;
+
+    for (int32_t i = 0; i < node->scheduler_tail; i++) {
+        if (node->scheduler[i].function == function && node->scheduler[i].param == param) {
+            node->scheduler_tail--;
+            if (i < node->scheduler_tail) {
+                _tt_memmove(&node->scheduler[i], &node->scheduler[i + 1],
+                            sizeof(struct tt_TCB) * (node->scheduler_tail - i));
+            }
+            removed = true;
+            i--; // Re-check this index: the next entry was just shifted into it.
+        }
+    }
+
+    return removed;
+}
+
 static struct tt_TCB* peek_scheduler(struct tt_Node* node) {
     if (node->scheduler_tail > 0) {
         return &node->scheduler[0];
@@ -241,6 +260,7 @@ static void pop_scheduler(struct tt_Node* node) {
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
+static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param);
 
 tt_ret_t tt_Node_create(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
@@ -337,6 +357,7 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
 
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         server->cache[i] = NULL;
+        server->clean[i] = NULL;
     }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
@@ -526,23 +547,45 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 tt_ret_t tt_Client_destroy(struct tt_Client* client) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
 
-    if (remove_endpoint_from_node(client->node, endpoint)) {
-        client->node->last_modified = tt_get_ns();
-        return tt_RET_OK;
+    if (!remove_endpoint_from_node(client->node, endpoint)) {
+        return tt_RET_IILEGAL_ENDPOINT_ID;
     }
 
-    return tt_RET_IILEGAL_ENDPOINT_ID;
+    if (client->cache != NULL) {
+        // Cancel the pending call_retry before freeing the cache it references, otherwise
+        // that retry later fires on this (possibly freed/reused) client.
+        tt_Node_unschedule(client->node, call_retry, client);
+        _tt_free(client->cache);
+        client->cache = NULL;
+    }
+
+    client->node->last_modified = tt_get_ns();
+
+    return tt_RET_OK;
 }
 
 tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
 
-    if (remove_endpoint_from_node(server->node, endpoint)) {
-        server->node->last_modified = tt_get_ns();
-        return tt_RET_OK;
+    if (!remove_endpoint_from_node(server->node, endpoint)) {
+        return tt_RET_IILEGAL_ENDPOINT_ID;
     }
 
-    return tt_RET_IILEGAL_ENDPOINT_ID;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] != NULL) {
+            // Cancel each pending server_cache_clean before freeing the cache/config it
+            // references, otherwise that timer later fires on this (possibly freed/reused) server.
+            tt_Node_unschedule(server->node, server_cache_clean, server->clean[i]);
+            _tt_free(server->clean[i]);
+            server->clean[i] = NULL;
+            _tt_free(server->cache[i]);
+            server->cache[i] = NULL;
+        }
+    }
+
+    server->node->last_modified = tt_get_ns();
+
+    return tt_RET_OK;
 }
 
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
@@ -837,6 +880,7 @@ static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param)
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (clean->server->cache[i] == clean->cache) {
             clean->server->cache[i] = NULL;
+            clean->server->clean[i] = NULL;
             _tt_free(clean->cache);
             break;
         }
@@ -863,6 +907,12 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
             struct tt_SubmessageHeader* existing = server->cache[i];
 
             if (existing->receiver == receiver) {
+                // Cancel the old entry's cleanup timer before freeing it out from under it:
+                // otherwise that timer later frees whatever cache[i] holds by then, which may
+                // by now be an unrelated entry (or nothing) if this index gets reused.
+                tt_Node_unschedule(server->node, server_cache_clean, server->clean[i]);
+                _tt_free(server->clean[i]);
+                server->clean[i] = NULL;
                 _tt_free(server->cache[i]);
                 server->cache[i] = NULL;
             }
@@ -889,6 +939,7 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
             }
 
             server->cache[i] = cache;
+            server->clean[i] = clean;
             cache = NULL;
         }
     }

@@ -92,6 +92,7 @@ struct tt_Server { // extends endpoint
     tt_SERVER_CALLBACK callback;
 
     struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT];
+    void* clean[tt_MAX_SERVER_CACHE_COUNT]; // Pending server_cache_clean timer config per cache slot, if any
 };
 
 struct tt_Request {};
@@ -194,6 +195,9 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
                                    const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
+// Cancels every pending schedule entry matching (function, param) exactly. Returns true if any were removed.
+bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
+                        void* param);
 
 tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
 tt_ret_t tt_Client_destroy(struct tt_Client* client);
