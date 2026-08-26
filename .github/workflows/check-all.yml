@@ -7,6 +7,8 @@ on:
 jobs:
   check-all:
     runs-on: ubuntu-latest
+    container:
+      image: rostooling/setup-ros-docker:ubuntu-noble-latest
     permissions:
       contents: read
       pull-requests: write
@@ -23,6 +25,12 @@ jobs:
       - name: Generate compile_commands.json
         run: |
           bear -- make all
+          mv compile_commands.json src
+
+      - name: Generate compile_commands.json for rmw_tickle
+        run: |
+          colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          mv build/compile_commands.json rmw_tickle
 
       - name: Check all
         uses: tsnlab/check@main
