@@ -411,10 +411,14 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
         return;
     }
 
+    uint32_t old_tx_tail = node->tx_tail;
     void* buf = encode(node, submessage_header->length);
     if (buf != NULL) {
         _tt_memcpy(buf, submessage_header, submessage_header->length);
-        end_encode(node, buf, false);
+        if (!end_encode(node, buf, false)) {
+            TT_LOG_WARNING("Cannot flush call request retry, will retry later");
+            rollback(node, old_tx_tail);
+        }
     } else {
         TT_LOG_WARNING("Lack of tx buffer, will retry call_retry later");
     }
