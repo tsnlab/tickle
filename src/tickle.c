@@ -1287,8 +1287,29 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         node->endpoints[i] = NULL;
 
-        if ((endpoint != NULL) && ((endpoint->kind & tt_KIND_SENDER) == tt_KIND_SENDER)) {
+        if (endpoint == NULL) {
+            continue;
+        }
+
+        if ((endpoint->kind & tt_KIND_SENDER) == tt_KIND_SENDER) {
             node->last_modified = time;
+        }
+
+        // Free any outstanding client call cache / server response caches directly: the
+        // scheduler entries referencing them are about to be wiped wholesale below anyway,
+        // so there's no need to unschedule them individually here.
+        if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
+            struct tt_Client* client = (struct tt_Client*)endpoint;
+            _tt_free(client->cache);
+            client->cache = NULL;
+        } else if (endpoint->kind == tt_KIND_SERVICE_SERVER) {
+            struct tt_Server* server = (struct tt_Server*)endpoint;
+            for (int j = 0; j < tt_MAX_SERVER_CACHE_COUNT; j++) {
+                _tt_free(server->clean[j]);
+                server->clean[j] = NULL;
+                _tt_free(server->cache[j]);
+                server->cache[j] = NULL;
+            }
         }
     }
     node->endpoint_count = 0;
@@ -1299,6 +1320,11 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
         _tt_free(node->updates[i]);
         node->updates[i] = NULL;
     }
+
+    // The node is fully torn down at this point; drop every pending scheduler entry
+    // (including the node_update/node_flush ones just re-armed above) so nothing later
+    // fires a callback into this now-destroyed node.
+    node->scheduler_tail = 0;
 
     tt_close(node);
 
