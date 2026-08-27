@@ -3,11 +3,19 @@
 ## Build
 
 ```sh
-$ make all      # Run unit tests, build the library, then build all examples
+$ make all      # Build the library, then build all examples
 $ make library  # Build libtickle.a only
-$ make examples # Build all examples without running unit tests
+$ make examples # Build all examples
 $ make set_bool # Build SetBool client/server examples
 $ make uint64   # Build UInt64 publisher/subscriber examples
+```
+
+Add `BUILD_TYPE=release` for an optimized build (`-O2 -DNDEBUG`) instead of the default
+debug build (`-O0 -g`); each mode keeps its own object cache under `obj/<type>/`, so
+switching between them doesn't need a `make clean` in between:
+
+```sh
+$ make all BUILD_TYPE=release
 ```
 
 ## Run examples
