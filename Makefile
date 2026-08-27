@@ -50,22 +50,21 @@ SRC_FILES = $(filter-out $(SRC)/hal_%.c, $(wildcard $(SRC)/*.c))
 SRC_FILES += $(HAL_SRC)
 OBJS = $(patsubst %.c,$(OBJ)/%.o,$(SRC_FILES))
 
-SETBOOL_SRCS = examples/set_bool/SetBool.c
-UINT64_SRCS = examples/uint64/UInt64.c
-SETBOOL_OBJS = $(patsubst %.c,$(OBJ)/%.o,$(SETBOOL_SRCS))
-UINT64_OBJS = $(patsubst %.c,$(OBJ)/%.o,$(UINT64_SRCS))
+# Register each example binary as "<binary-name>:<its directory>". Every other .c file in
+# that same directory (e.g. the generated codec SetBool.c/UInt64.c) is treated as a shared
+# source compiled into that binary too. Adding a new example binary is then a one-line
+# addition here instead of a hand-written target + object list.
+EXAMPLE_BINS := client:examples/set_bool server:examples/set_bool \
+                publisher:examples/uint64 subscriber:examples/uint64
 
-ALL_OBJS = $(OBJS) $(SETBOOL_OBJS) $(UINT64_OBJS) \
-           $(OBJ)/examples/set_bool/client.o $(OBJ)/examples/set_bool/server.o \
-           $(OBJ)/examples/uint64/publisher.o $(OBJ)/examples/uint64/subscriber.o
+# Directories the object rule below needs to exist first, derived from EXAMPLE_BINS so a
+# newly-registered example directory doesn't also need a manual entry here. Order-only
+# prerequisites (see `|` below) so make doesn't try to relink everything just because a
+# sibling .o's mkdir touched the directory's mtime, and so -j doesn't race multiple
+# `mkdir -p` calls against a per-file rule.
+OBJ_DIRS = $(OBJ)/src $(sort $(addprefix $(OBJ)/,$(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))))))
 
-# Directories the object rule below needs to exist first. Order-only prerequisites (see
-# `|` below) so make doesn't try to relink everything just because a sibling .o's mkdir
-# touched the directory's mtime, and so -j doesn't race multiple `mkdir -p` calls against
-# a per-file rule.
-OBJ_DIRS = $(OBJ)/src $(OBJ)/examples/set_bool $(OBJ)/examples/uint64
-
-.PHONY: all library examples set_bool uint64 lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
+.PHONY: all library examples set_bool uint64 lint clean
 
 all:
 	$(MAKE) library
@@ -91,17 +90,26 @@ $(OBJ_DIRS):
 libtickle.a: $(OBJS)
 	$(AR) crv $@ $^
 
-client: $(OBJ)/examples/set_bool/client.o $(SETBOOL_OBJS) libtickle.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/set_bool/client.o $(SETBOOL_OBJS) $(LDLIBS)
+# Generates one target per EXAMPLE_BINS entry: <name>_MAIN is that binary's own source,
+# <name>_SHARED is every other .c file living alongside it in the same directory (minus any
+# OTHER registered binary's main file - two binaries can share a directory, e.g. client.c
+# and server.c both sit in examples/set_bool/), and the link recipe compiles+links exactly
+# those two sets against the library.
+EXAMPLE_MAIN_FILES := $(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin)))/$(word 1,$(subst :, ,$(bin))).c)
 
-server: $(OBJ)/examples/set_bool/server.o $(SETBOOL_OBJS) libtickle.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/set_bool/server.o $(SETBOOL_OBJS) $(LDLIBS)
+ALL_EXAMPLE_OBJS :=
+define EXAMPLE_RULE
+$(1)_MAIN := $(2)/$(1).c
+$(1)_SHARED := $$(filter-out $(EXAMPLE_MAIN_FILES),$$(wildcard $(2)/*.c))
+$(1)_OBJS := $$(patsubst %.c,$(OBJ)/%.o,$$($(1)_MAIN) $$($(1)_SHARED))
+ALL_EXAMPLE_OBJS += $$($(1)_OBJS)
 
-publisher: $(OBJ)/examples/uint64/publisher.o $(UINT64_OBJS) libtickle.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/uint64/publisher.o $(UINT64_OBJS) $(LDLIBS)
+$(1): $$($(1)_OBJS) libtickle.a
+	$$(CC) $$(CFLAGS) $$(LDFLAGS) -o $$@ $$($(1)_OBJS) $$(LDLIBS)
+endef
+$(foreach bin,$(EXAMPLE_BINS),$(eval $(call EXAMPLE_RULE,$(word 1,$(subst :, ,$(bin))),$(word 2,$(subst :, ,$(bin))))))
 
-subscriber: $(OBJ)/examples/uint64/subscriber.o $(UINT64_OBJS) libtickle.a
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/uint64/subscriber.o $(UINT64_OBJS) $(LDLIBS)
+ALL_OBJS = $(OBJS) $(ALL_EXAMPLE_OBJS)
 
 # Pull in the auto-generated per-object dependency files (headers each .o actually used),
 # so changing a header rebuilds everything that includes it. Silently ignored on a clean tree.
@@ -111,54 +119,7 @@ lint:
 	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
 	find . -name '*.[ch]' -exec clang-tidy --extra-arg=-I$(INCLUDE) --extra-arg=-I$(SRC) {} +
 
-createns:
-# Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
-# create namespace
-	sudo ip netns add ns1
-	sudo ip netns add ns2
-# create cable
-	sudo ip link add veth1 type veth peer name veth2
-# attach cable
-	sudo ip link set veth1 netns ns1
-	sudo ip link set veth2 netns ns2
-# set ip
-	sudo ip -n ns1 addr add 192.168.10.1/24 dev veth1
-	sudo ip -n ns2 addr add 192.168.10.2/24 dev veth2
-# bring up interface
-	sudo ip -n ns1 link set veth1 up
-	sudo ip -n ns2 link set veth2 up
-# NS1 info
-	@echo "# Namespace #1"
-	sudo ip netns exec ns1 ip addr
-	sudo ip netns exec ns1 ip route
-	sudo ip netns exec ns1 ping -c 1 192.168.10.2
-# NS2 info
-	@echo "\n# Namespace #2"
-	sudo ip netns exec ns2 ip addr
-	sudo ip netns exec ns2 ip route
-	sudo ip netns exec ns2 ping -c 1 192.168.10.1
-
-deletens:
-	sudo ip netns delete ns1
-	sudo ip netns delete ns2
-
-runclient: client
-	sudo ip netns exec ns1 ./client
-
-runserver: server
-	sudo ip netns exec ns2 ./server
-
-runpublisher: publisher
-	sudo ip netns exec ns1 ./publisher
-
-runsubscriber: subscriber
-	sudo ip netns exec ns2 ./subscriber
-
-dump1:
-	sudo ip netns exec ns1 tcpdump -l -xxx -i veth1
-
-dump2:
-	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
+include netns.mk
 
 clean:
 	# Removes every BUILD_TYPE's objects (obj/debug, obj/release, ...), not just the one
