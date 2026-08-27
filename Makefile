@@ -1,27 +1,54 @@
-INCLUDE=include
-CC=gcc
-AR=ar
-CFLAGS=-I$(INCLUDE) -Isrc -O0 -g -Wall -Wextra
-LDFLAGS=
+INCLUDE = include
+SRC = src
+OBJ = obj
 
-SRC=src
-OBJ=obj
-# Platform detection
+# Toolchain: plain `?=` so these can be overridden from the environment or command line,
+# e.g. `make CC=clang` or `CC=clang make`.
+CC ?= gcc
+AR ?= ar
+
+# CFLAGS is the user's tuning knob (optimization/warnings) and is fully replaceable, e.g.
+# `make CFLAGS=-O2` for a release-style build.
+CFLAGS ?= -O0 -g -Wall -Wextra
+LDFLAGS ?=
+LDLIBS ?=
+
+# CPPFLAGS/LDFLAGS/LDLIBS additions below use `override` so the project's own required
+# flags (include paths, library search path, the library itself) always survive even if
+# the user passes their own CPPFLAGS/LDFLAGS/LDLIBS on the command line.
+override CPPFLAGS += -I$(INCLUDE) -I$(SRC)
+override LDFLAGS += -L.
+override LDLIBS += -ltickle
+
+# Auto-generate per-object .d dependency files so editing a header triggers a rebuild of
+# everything that includes it, instead of silently reusing stale .o files.
+DEPFLAGS = -MMD -MP
+
+# Platform detection (still overridable: `make PLATFORM=generic` forces cross-building)
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
-    PLATFORM := linux
+    PLATFORM ?= linux
 else
-    PLATFORM := generic
+    PLATFORM ?= generic
 endif
 
 # HAL source file based on platform
 HAL_SRC = $(SRC)/hal_$(PLATFORM).c
 
-# Automatically find all .c files in src directory, excluding hal.c files
+# Automatically find all .c files in src directory, excluding hal_*.c files
 SRC_FILES = $(filter-out $(SRC)/hal_%.c, $(wildcard $(SRC)/*.c))
 # Add platform-specific HAL file
 SRC_FILES += $(HAL_SRC)
-OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
+OBJS = $(patsubst %.c,$(OBJ)/%.o,$(SRC_FILES))
+
+SETBOOL_SRCS = examples/set_bool/SetBool.c
+UINT64_SRCS = examples/uint64/UInt64.c
+SETBOOL_OBJS = $(patsubst %.c,$(OBJ)/%.o,$(SETBOOL_SRCS))
+UINT64_OBJS = $(patsubst %.c,$(OBJ)/%.o,$(UINT64_SRCS))
+
+ALL_OBJS = $(OBJS) $(SETBOOL_OBJS) $(UINT64_OBJS) \
+           $(OBJ)/examples/set_bool/client.o $(OBJ)/examples/set_bool/server.o \
+           $(OBJ)/examples/uint64/publisher.o $(OBJ)/examples/uint64/subscriber.o
 
 .PHONY: all library examples set_bool uint64 lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
 
@@ -37,24 +64,30 @@ set_bool: client server
 
 uint64: publisher subscriber
 
-$(OBJ)/%.o: $(SRC)/%.c
+# Generic rule: mirrors every source file's path under $(OBJ)/, so src/tickle.c becomes
+# obj/src/tickle.o and examples/set_bool/SetBool.c becomes obj/examples/set_bool/SetBool.o.
+$(OBJ)/%.o: %.c
 	mkdir -p $(dir $@)
-	$(CC) -c -o $@ $< $(CFLAGS)
+	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -c -o $@ $<
 
 libtickle.a: $(OBJS)
 	$(AR) crv $@ $^
 
-client:  examples/set_bool/SetBool.c examples/set_bool/client.c libtickle.a
-	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/client.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
+client: $(OBJ)/examples/set_bool/client.o $(SETBOOL_OBJS) libtickle.a
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/set_bool/client.o $(SETBOOL_OBJS) $(LDLIBS)
 
-server: examples/set_bool/SetBool.c examples/set_bool/server.c libtickle.a
-	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/server.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
+server: $(OBJ)/examples/set_bool/server.o $(SETBOOL_OBJS) libtickle.a
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/set_bool/server.o $(SETBOOL_OBJS) $(LDLIBS)
 
-publisher:  examples/uint64/UInt64.c examples/uint64/publisher.c libtickle.a
-	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/publisher.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
+publisher: $(OBJ)/examples/uint64/publisher.o $(UINT64_OBJS) libtickle.a
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/uint64/publisher.o $(UINT64_OBJS) $(LDLIBS)
 
-subscriber: examples/uint64/UInt64.c examples/uint64/subscriber.c libtickle.a
-	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
+subscriber: $(OBJ)/examples/uint64/subscriber.o $(UINT64_OBJS) libtickle.a
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJ)/examples/uint64/subscriber.o $(UINT64_OBJS) $(LDLIBS)
+
+# Pull in the auto-generated per-object dependency files (headers each .o actually used),
+# so changing a header rebuilds everything that includes it. Silently ignored on a clean tree.
+-include $(ALL_OBJS:.o=.d)
 
 lint:
 	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
