@@ -1,15 +1,24 @@
 INCLUDE = include
 SRC = src
-OBJ = obj
 
 # Toolchain: plain `?=` so these can be overridden from the environment or command line,
 # e.g. `make CC=clang` or `CC=clang make`.
 CC ?= gcc
 AR ?= ar
 
-# CFLAGS is the user's tuning knob (optimization/warnings) and is fully replaceable, e.g.
-# `make CFLAGS=-O2` for a release-style build.
-CFLAGS ?= -O0 -g -Wall -Wextra
+# BUILD_TYPE picks the default optimization/debug-info level and keeps each mode's objects
+# in their own obj/<type>/ tree, so switching between them doesn't need a `make clean` in
+# between (each mode's own object cache just sits there until you ask for the other one).
+BUILD_TYPE ?= debug
+ifeq ($(BUILD_TYPE),debug)
+    CFLAGS ?= -O0 -g -Wall -Wextra
+else ifeq ($(BUILD_TYPE),release)
+    CFLAGS ?= -O2 -DNDEBUG -Wall -Wextra
+else
+    $(error Unknown BUILD_TYPE '$(BUILD_TYPE)': expected 'debug' or 'release')
+endif
+OBJ = obj/$(BUILD_TYPE)
+
 LDFLAGS ?=
 LDLIBS ?=
 
@@ -50,6 +59,12 @@ ALL_OBJS = $(OBJS) $(SETBOOL_OBJS) $(UINT64_OBJS) \
            $(OBJ)/examples/set_bool/client.o $(OBJ)/examples/set_bool/server.o \
            $(OBJ)/examples/uint64/publisher.o $(OBJ)/examples/uint64/subscriber.o
 
+# Directories the object rule below needs to exist first. Order-only prerequisites (see
+# `|` below) so make doesn't try to relink everything just because a sibling .o's mkdir
+# touched the directory's mtime, and so -j doesn't race multiple `mkdir -p` calls against
+# a per-file rule.
+OBJ_DIRS = $(OBJ)/src $(OBJ)/examples/set_bool $(OBJ)/examples/uint64
+
 .PHONY: all library examples set_bool uint64 lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
 
 all:
@@ -65,10 +80,13 @@ set_bool: client server
 uint64: publisher subscriber
 
 # Generic rule: mirrors every source file's path under $(OBJ)/, so src/tickle.c becomes
-# obj/src/tickle.o and examples/set_bool/SetBool.c becomes obj/examples/set_bool/SetBool.o.
-$(OBJ)/%.o: %.c
-	mkdir -p $(dir $@)
+# obj/<type>/src/tickle.o and examples/set_bool/SetBool.c becomes
+# obj/<type>/examples/set_bool/SetBool.o.
+$(OBJ)/%.o: %.c | $(OBJ_DIRS)
 	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -c -o $@ $<
+
+$(OBJ_DIRS):
+	mkdir -p $@
 
 libtickle.a: $(OBJS)
 	$(AR) crv $@ $^
@@ -143,7 +161,10 @@ dump2:
 	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
 
 clean:
-	rm -rf $(OBJ)/*
+	# Removes every BUILD_TYPE's objects (obj/debug, obj/release, ...), not just the one
+	# currently selected, so switching BUILD_TYPE and running `clean` doesn't leave the
+	# other mode's stale cache behind.
+	rm -rf obj/*/
 	rm -f libtickle.a
 	rm -f client
 	rm -f server
