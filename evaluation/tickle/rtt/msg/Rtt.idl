@@ -1,0 +1,12 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from rtt/Rtt.msg
+// generated code does not contain a copyright notice
+
+
+module rtt {
+  module msg {
+    struct Rtt {
+      uint64 payload;
+    };
+  };
+};
