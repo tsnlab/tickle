@@ -1246,7 +1246,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
             // Run network I/O next
             int64_t rest = timeout;
             bool woke_for_scheduler = false;
-            if (tcb != NULL && tcb->time - time < timeout) {
+            if (tcb != NULL && tcb->time - time < (uint64_t)timeout) {
                 rest = (int64_t)(tcb->time - time);
                 woke_for_scheduler = true;
             }

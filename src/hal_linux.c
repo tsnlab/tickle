@@ -138,7 +138,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
 
-    if (timeout >= 0 && node->hal.receive_timeout != timeout) {
+    if (timeout >= 0 && node->hal.receive_timeout != (uint64_t)timeout) {
         struct timeval tval;
         tval.tv_sec = timeout / SEC_NS;
         tval.tv_usec = (timeout % SEC_NS) / US_NS; // nano to micro

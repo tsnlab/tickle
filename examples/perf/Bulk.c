@@ -21,7 +21,7 @@ int32_t BulkData_encode_size(struct BulkData* data) {
     return (int32_t)(sizeof(uint32_t) + sizeof(uint32_t) + data->size); // seq + size + bytes
 }
 
-int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, int32_t len) {
+int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, uint32_t len) {
     int32_t encoded = 0;
 
     if (encoded + sizeof(uint32_t) > len) {
@@ -54,7 +54,7 @@ int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, int32_t len) {
     return encoded;
 }
 
-int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, int32_t len, bool is_native_endian) {
+int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, uint32_t len, bool is_native_endian) {
     int32_t decoded = 0;
 
     if (decoded + sizeof(uint32_t) > len) {

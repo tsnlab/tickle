@@ -18,12 +18,12 @@ struct PingPongResponse {
 extern struct tt_Service PingPongService;
 
 int32_t PingPongRequest_encode_size(struct PingPongRequest* request);
-int32_t PingPongRequest_encode(struct PingPongRequest* request, uint8_t* payload, int32_t len);
-int32_t PingPongRequest_decode(struct PingPongRequest* request, const uint8_t* payload, int32_t len,
+int32_t PingPongRequest_encode(struct PingPongRequest* request, uint8_t* payload, uint32_t len);
+int32_t PingPongRequest_decode(struct PingPongRequest* request, const uint8_t* payload, uint32_t len,
                                bool is_native_endian);
 void PingPongRequest_free(struct PingPongRequest* request);
 int32_t PingPongResponse_encode_size(struct PingPongResponse* response);
-int32_t PingPongResponse_encode(struct PingPongResponse* response, uint8_t* payload, int32_t len);
-int32_t PingPongResponse_decode(struct PingPongResponse* response, const uint8_t* payload, int32_t len,
+int32_t PingPongResponse_encode(struct PingPongResponse* response, uint8_t* payload, uint32_t len);
+int32_t PingPongResponse_decode(struct PingPongResponse* response, const uint8_t* payload, uint32_t len,
                                 bool is_native_endian);
 void PingPongResponse_free(struct PingPongResponse* response);

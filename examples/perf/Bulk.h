@@ -27,6 +27,6 @@ struct BulkData {
 extern struct tt_Topic BulkTopic;
 
 int32_t BulkData_encode_size(struct BulkData* data);
-int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, int32_t len);
-int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, int32_t len, bool is_native_endian);
+int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, uint32_t len);
+int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
 void BulkData_free(struct BulkData* data);

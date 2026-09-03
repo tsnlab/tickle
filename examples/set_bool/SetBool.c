@@ -30,7 +30,7 @@ int32_t SetBoolRequest_encode_size(struct SetBoolRequest* request) {
     return sizeof(bool); // encode data
 }
 
-int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, int32_t len) {
+int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, uint32_t len) {
     int32_t encoded = 0;
 
     // encode data
@@ -46,7 +46,7 @@ int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, 
     return encoded;
 }
 
-int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* payload, int32_t len,
+int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* payload, uint32_t len,
                               bool is_native_endian) {
     (void)is_native_endian;
     int32_t decoded = 0;
@@ -79,7 +79,7 @@ int32_t SetBoolResponse_encode_size(struct SetBoolResponse* response) {
                      _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1); // encode message
 }
 
-int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payload, int32_t len) {
+int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payload, uint32_t len) {
     int32_t encoded = 0;
 
     // encode success
@@ -126,7 +126,7 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
     return encoded;
 }
 
-int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* payload, int32_t len,
+int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* payload, uint32_t len,
                                bool is_native_endian) {
     int32_t decoded = 0;
 
@@ -150,8 +150,9 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
         message_length = _tt_bswap_16(message_length);
     }
 
-    // Validate message length
-    if (message_length == 0 || message_length > tt_MAX_STRING_LENGTH) {
+    // Validate message length. message_length is uint16_t (max 65535), which can never
+    // exceed tt_MAX_STRING_LENGTH (also 65535), so only the zero-length case is reachable.
+    if (message_length == 0) {
         return -2; // Invalid message length
     }
 
@@ -159,7 +160,7 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
     payload += sizeof(uint16_t);
 
     // decode message
-    if (decoded + message_length > len) {
+    if ((uint32_t)decoded + message_length > len) {
         return -1;
     }
 
