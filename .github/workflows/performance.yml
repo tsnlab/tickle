@@ -1,0 +1,12 @@
+name: Performance Test
+
+on:
+  - workflow_dispatch
+
+jobs:
+  test:
+    runs-on: [self-hosted, tickle-hil]
+
+    steps:
+      - name: Runner smoke test
+        run: hostname && whoami && echo "runner alive"
