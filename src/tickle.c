@@ -85,31 +85,37 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     // Set submessage header length
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
     size_t roundup = ROUNDUP(length) - length;
+    // tx_tail before this submessage was appended - what to flush when it doesn't fit and
+    // has to be deferred to the next buffer instead of going out in this one.
+    uint32_t base = (uint32_t)(node->tx_tail - length);
+
+    // What to flush if is_flush ends up true below: the whole (padded) buffer including this
+    // submessage by default, unless a branch below decides this submessage doesn't fit and
+    // must be deferred, in which case it's overridden to `base` (everything before it).
+    uint32_t flush_len;
 
     if (node->tx_tail + roundup <= tt_MAX_BUFFER_LENGTH) { // tail in below the buffer
         submessage_header->length = length + roundup;
         node->tx_tail += roundup;
+        flush_len = node->tx_tail;
     } else if (node->tx_tail <= tt_MAX_BUFFER_LENGTH &&
                node->tx_tail + roundup > tt_MAX_BUFFER_LENGTH) { // tail exceeds buffer if roundup
         submessage_header->length = length;
         is_flush = true;
-    } else { // tail exceeds buffer
+        flush_len = base;
+    } else { // tail exceeds buffer: this submessage alone (or with roundup) already overshoots
+             // tt_MAX_BUFFER_LENGTH, so it can't go out in this flush either - defer it, same
+             // as the previous case, instead of trying to flush past flush_tx()'s own limit.
         submessage_header->length = length + roundup;
         node->tx_tail += roundup;
         is_flush = true;
+        flush_len = base;
     }
 
     // Case 1: Immediate flush when is_flush is true
     // case 2: Flush when tx_tail exceeds tt_MAX_BUFFER_LENGTH
     if (is_flush) {
-        uint32_t len;
-        if (node->tx_tail > tt_MAX_BUFFER_LENGTH) {
-            len = node->tx_tail;
-        } else {
-            len = node->tx_tail - length;
-        }
-
-        if (!flush_tx(node, len)) {
+        if (!flush_tx(node, flush_len)) {
             return false;
         }
     } else {

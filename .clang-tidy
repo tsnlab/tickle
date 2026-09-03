@@ -7,7 +7,7 @@ CheckOptions:
   - key: readability-identifier-naming.StructCase
     value: lower_case
   - key: readability-identifier-naming.StructIgnoredRegexp
-    value: '^_?tt_.*|^(SetBool|UInt64|Ping).*'
+    value: '^_?tt_.*|^(SetBool|UInt64|Ping|Bulk).*'
   - key: readability-identifier-naming.EnumCase
     value: lower_case
   - key: readability-identifier-naming.EnumConstantCase
@@ -17,7 +17,7 @@ CheckOptions:
   - key: readability-identifier-naming.FunctionCase
     value: lower_case
   - key: readability-identifier-naming.FunctionIgnoredRegexp
-    value: '^tt_.*|^(SetBool|UInt64|Ping).*'
+    value: '^tt_.*|^(SetBool|UInt64|Ping|Bulk).*'
   - key: readability-identifier-naming.TypedefIgnoredRegexp
     value: '^tt_.*'
   - key: readability-identifier-naming.VariableCase
@@ -25,7 +25,7 @@ CheckOptions:
   - key: readability-identifier-naming.GlobalVariableCase
     value: lower_case
   - key: readability-identifier-naming.GlobalVariableIgnoredRegexp
-    value: '^_?tt_.*|^(SetBool|UInt64|Ping).*'
+    value: '^_?tt_.*|^(SetBool|UInt64|Ping|Bulk).*'
   - key: readability-identifier-naming.ConstantCase
     value: lower_case
   - key: readability-identifier-naming.MemberCase

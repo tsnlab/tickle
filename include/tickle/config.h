@@ -17,7 +17,11 @@
 #define tt_MAX_ENDPOINT_COUNT 256  // Maximum number of endpoints (data or services)
 #define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name
 #define tt_MAX_STRING_LENGTH 65535 // Maximum length of string
-#define tt_MAX_BUFFER_LENGTH 1480  // RX/TX buffering size to flush
+// RX/TX buffering size to flush: the largest UDP payload a standard 1500-byte Ethernet MTU
+// can carry without IP fragmentation. 1500 (MTU) - 20 (IPv4 header) - 8 (UDP header) = 1472.
+// Previously 1480, which is 8 bytes *larger* than that limit - a packet in the 1473-1480
+// byte range would pass this check yet still fragment at the IP layer on a standard network.
+#define tt_MAX_BUFFER_LENGTH 1472
 
 // Node ID values are the last byte of the IPv4 address on the local network.
 // Valid node IDs are 1..254, because 0 is reserved for invalid/unassigned and
