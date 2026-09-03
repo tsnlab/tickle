@@ -1,0 +1,2 @@
+export FASTRTPS_DEFAULT_PROFILES_FILE=$(dirname $0)/fastdds.xml
+$(dirname $0)/src/ping $@

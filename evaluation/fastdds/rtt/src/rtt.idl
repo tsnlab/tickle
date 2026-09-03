@@ -1,0 +1,4 @@
+struct evaluate_rtt
+{
+    unsigned long long payload;
+};
