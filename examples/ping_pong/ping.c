@@ -1,0 +1,129 @@
+#include <math.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#include <tickle/config.h>
+#include <tickle/hal.h>
+#include <tickle/tickle.h>
+
+#include "PingPong.h"
+
+static volatile sig_atomic_t g_interrupted = 0;
+
+static void handle_sigint(int sig) {
+    (void)sig;
+    g_interrupted = 1;
+}
+
+static uint32_t seq = 0;
+static uint32_t pending_seq = 0;
+
+static uint64_t transmitted = 0;
+static uint64_t received = 0;
+static double rtt_min_ms = -1.0;
+static double rtt_max_ms = 0.0;
+static double rtt_sum_ms = 0.0;
+static double rtt_sum_sq_ms = 0.0;
+
+static void ping_callback(struct tt_Client* client, int8_t return_code, struct PingPongResponse* response) {
+    (void)client;
+
+    if (return_code == 0 && response == NULL) {
+        printf("Request timeout for icmp_seq=%u (dropped)\n", pending_seq);
+        return;
+    }
+    if (return_code != 0) {
+        printf("Error, return_code: %d (icmp_seq=%u dropped)\n", return_code, pending_seq);
+        return;
+    }
+
+    double rtt_ms = (double)(tt_get_ns() - response->timestamp) / (double)tt_MILLISECOND;
+
+    received++;
+    if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
+        rtt_min_ms = rtt_ms;
+    }
+    if (rtt_ms > rtt_max_ms) {
+        rtt_max_ms = rtt_ms;
+    }
+    rtt_sum_ms += rtt_ms;
+    rtt_sum_sq_ms += rtt_ms * rtt_ms;
+
+    printf("seq=%u time=%.3f ms\n", response->seq, rtt_ms);
+}
+
+static void ping(struct tt_Node* node, uint64_t time, void* param) {
+    struct tt_Client* client = param;
+
+    uint32_t this_seq = seq;
+    struct PingPongRequest request = {.seq = this_seq, .timestamp = tt_get_ns()};
+    tt_ret_t ret = tt_Client_call(client, (struct tt_Request*)&request);
+    if (ret == tt_RET_OK) {
+        seq++;
+        transmitted++;
+        pending_seq = this_seq;
+    } else if (ret == tt_RET_ILLEGAL_STATUS) {
+        printf("Previous ping still awaiting a reply, skipping this interval\n");
+    } else {
+        printf("Cannot send ping: %d\n", ret);
+    }
+
+    tt_Node_schedule(node, time + tt_SECOND, ping, client);
+}
+
+static void print_statistics(uint64_t start_time) {
+    uint64_t lost = transmitted - received;
+    double loss_pct = transmitted > 0 ? (100.0 * (double)lost / (double)transmitted) : 0.0;
+    double elapsed_ms = (double)(tt_get_ns() - start_time) / (double)tt_MILLISECOND;
+
+    printf("\n--- ping statistics ---\n");
+    printf("%llu packets transmitted, %llu received, %.0f%% packet loss, time %.0fms\n",
+           (unsigned long long)transmitted, (unsigned long long)received, loss_pct, elapsed_ms);
+
+    if (received > 0) {
+        double avg = rtt_sum_ms / (double)received;
+        double variance = (rtt_sum_sq_ms / (double)received) - (avg * avg);
+        double mdev = variance > 0.0 ? sqrt(variance) : 0.0;
+        printf("rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms, mdev);
+    }
+}
+
+int main(int argc, char** argv) {
+    (void)argc;
+    (void)argv;
+    _tt_CONFIG.broadcast = "192.168.10.255";
+
+    signal(SIGINT, handle_sigint);
+
+    struct tt_Node node;
+    tt_ret_t ret = tt_Node_create(&node);
+    if (ret != 0) {
+        printf("Cannot create node: %d\n", ret);
+        return ret;
+    }
+
+    printf("Node created(#%d)\n", node.id);
+
+    struct tt_Client client;
+    ret =
+        tt_Node_create_client(&node, &client, &PingPongService, "ping_pong_server", (tt_CLIENT_CALLBACK)ping_callback);
+    if (ret != 0) {
+        printf("Cannot create client: %d\n", ret);
+        return ret;
+    }
+
+    uint64_t start_time = tt_get_ns();
+    tt_Node_schedule(&node, start_time, ping, &client);
+
+    ret = tt_RET_OK;
+    while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+        ret = tt_Node_poll(&node, -1);
+    }
+
+    print_statistics(start_time);
+
+    tt_Node_destroy(&node);
+
+    return 0;
+}

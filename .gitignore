@@ -35,11 +35,13 @@
 *.i*86
 *.x86_64
 
-# Project build outputs (see Makefile: set_bool/uint64 example binaries)
+# Project build outputs (see Makefile: set_bool/uint64/ping_pong example binaries)
 /client
 /server
 /publisher
 /subscriber
+/ping
+/pong
 *.hex
 
 # Debug files

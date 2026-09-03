@@ -27,7 +27,7 @@ LDLIBS ?=
 # the user passes their own CPPFLAGS/LDFLAGS/LDLIBS on the command line.
 override CPPFLAGS += -I$(INCLUDE) -I$(SRC)
 override LDFLAGS += -L.
-override LDLIBS += -ltickle
+override LDLIBS += -ltickle -lm
 
 # Auto-generate per-object .d dependency files so editing a header triggers a rebuild of
 # everything that includes it, instead of silently reusing stale .o files.
@@ -55,7 +55,8 @@ OBJS = $(patsubst %.c,$(OBJ)/%.o,$(SRC_FILES))
 # source compiled into that binary too. Adding a new example binary is then a one-line
 # addition here instead of a hand-written target + object list.
 EXAMPLE_BINS := client:examples/set_bool server:examples/set_bool \
-                publisher:examples/uint64 subscriber:examples/uint64
+                publisher:examples/uint64 subscriber:examples/uint64 \
+                ping:examples/ping_pong pong:examples/ping_pong
 
 # Directories the object rule below needs to exist first, derived from EXAMPLE_BINS so a
 # newly-registered example directory doesn't also need a manual entry here. Order-only
@@ -64,7 +65,7 @@ EXAMPLE_BINS := client:examples/set_bool server:examples/set_bool \
 # `mkdir -p` calls against a per-file rule.
 OBJ_DIRS = $(OBJ)/src $(sort $(addprefix $(OBJ)/,$(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))))))
 
-.PHONY: all library examples set_bool uint64 lint clean
+.PHONY: all library examples set_bool uint64 ping_pong lint clean
 
 all:
 	$(MAKE) library
@@ -72,11 +73,13 @@ all:
 
 library: libtickle.a
 
-examples: set_bool uint64
+examples: set_bool uint64 ping_pong
 
 set_bool: client server
 
 uint64: publisher subscriber
+
+ping_pong: ping pong
 
 # Generic rule: mirrors every source file's path under $(OBJ)/, so src/tickle.c becomes
 # obj/<type>/src/tickle.o and examples/set_bool/SetBool.c becomes
@@ -127,7 +130,4 @@ clean:
 	# other mode's stale cache behind.
 	rm -rf obj/*/
 	rm -f libtickle.a
-	rm -f client
-	rm -f server
-	rm -f publisher
-	rm -f subscriber
+	rm -f $(foreach bin,$(EXAMPLE_BINS),$(word 1,$(subst :, ,$(bin))))

@@ -3,11 +3,12 @@
 ## Build
 
 ```sh
-$ make all      # Build the library, then build all examples
-$ make library  # Build libtickle.a only
-$ make examples # Build all examples
-$ make set_bool # Build SetBool client/server examples
-$ make uint64   # Build UInt64 publisher/subscriber examples
+$ make all       # Build the library, then build all examples
+$ make library   # Build libtickle.a only
+$ make examples  # Build all examples
+$ make set_bool  # Build SetBool client/server examples
+$ make uint64    # Build UInt64 publisher/subscriber examples
+$ make ping_pong # Build the ping/pong latency-measurement example
 ```
 
 Add `BUILD_TYPE=release` for an optimized build (`-O2 -DNDEBUG`) instead of the default
@@ -25,6 +26,8 @@ $ make runserver     # Launch SetBool service server on ns2 namespace
 $ make runclient     # Launch SetBool service client on ns1 namespace
 $ make runpublisher  # Launch UInt64 topic publisher on ns1 namespace
 $ make runsubscriber # Launch UInt64 topic subscriber on ns2 namespace
+$ make runpong       # Launch ping/pong latency responder on ns2 namespace
+$ make runping       # Send a ping every second and print its round-trip time on ns1 namespace
 ```
 
 ## License

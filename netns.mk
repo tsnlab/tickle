@@ -3,7 +3,7 @@
 # Split out of the main Makefile so build logic and this environment-specific tooling don't
 # get tangled together.
 
-.PHONY: createns deletens runclient runserver runpublisher runsubscriber dump1 dump2
+.PHONY: createns deletens runclient runserver runpublisher runsubscriber runping runpong dump1 dump2
 
 createns:
 # Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
@@ -47,6 +47,12 @@ runpublisher: publisher
 
 runsubscriber: subscriber
 	sudo ip netns exec ns2 ./subscriber
+
+runping: ping
+	sudo ip netns exec ns1 ./ping
+
+runpong: pong
+	sudo ip netns exec ns2 ./pong
 
 dump1:
 	sudo ip netns exec ns1 tcpdump -l -xxx -i veth1
