@@ -27,6 +27,13 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
+static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+    g_interrupted = 1;
+}
+
 static struct BulkData bulk = {0}; // static: zero-initialized, reused for every publish
 
 static uint64_t total_sent_msgs = 0;
@@ -63,36 +70,77 @@ static void print_summary(uint64_t start_time) {
 }
 
 static void print_usage(const char* prog) {
-    fprintf(stderr, "Usage: %s [-s message_size_bytes] [-i interval_seconds]\n", prog);
+    fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-s message_size_bytes]\n", prog);
+    fprintf(stderr, "                [-i interval_seconds] [-d duration_seconds]\n");
+    fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
+    fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
+    fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
     fprintf(stderr, "  -s  payload bytes per message (default/max %d: fills one Ethernet frame)\n",
             DEFAULT_MESSAGE_SIZE);
     fprintf(stderr, "  -i  seconds between sends (default %g = as fast as poll() allows)\n", DEFAULT_INTERVAL_SECONDS);
+    fprintf(stderr, "  -d  exit automatically after this many seconds (default 0 = run until Ctrl+C)\n");
 }
 
-int main(int argc, char** argv) {
-    uint32_t message_size = DEFAULT_MESSAGE_SIZE;
-    double interval_s = DEFAULT_INTERVAL_SECONDS;
+struct cli_options {
+    char* broadcast;
+    int port;        // 0 = keep the compiled-in default
+    char* bind_addr; // NULL = keep the compiled-in default
+    uint32_t message_size;
+    double interval_s;
+    double duration_s; // 0 = run until Ctrl+C
+};
+
+// Returns 0 on success, non-zero if argv held an unrecognized/incomplete option.
+static int parse_args(int argc, char** argv, struct cli_options* opts) {
+    opts->broadcast = "192.168.10.255";
+    opts->port = 0;
+    opts->bind_addr = NULL;
+    opts->message_size = DEFAULT_MESSAGE_SIZE;
+    opts->interval_s = DEFAULT_INTERVAL_SECONDS;
+    opts->duration_s = 0.0;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
-            message_size = (uint32_t)strtoul(argv[++i], NULL, 10);
+        if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
+            opts->broadcast = argv[++i];
+        } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
+            opts->port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
+            opts->bind_addr = argv[++i];
+        } else if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) {
+            opts->message_size = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
-            interval_s = strtod(argv[++i], NULL);
+            opts->interval_s = strtod(argv[++i], NULL);
+        } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
+            opts->duration_s = strtod(argv[++i], NULL);
         } else {
-            print_usage(argv[0]);
             return 1;
         }
     }
+    return 0;
+}
 
-    if (message_size > BULK_MAX_PAYLOAD_SIZE) {
-        printf("Requested message size %u exceeds the max %d; clamping.\n", message_size, BULK_MAX_PAYLOAD_SIZE);
-        message_size = BULK_MAX_PAYLOAD_SIZE;
+int main(int argc, char** argv) {
+    struct cli_options opts;
+    if (parse_args(argc, argv, &opts) != 0) {
+        print_usage(argv[0]);
+        return 1;
     }
-    bulk.size = message_size;
 
-    uint64_t send_interval_ns = interval_s > 0.0 ? (uint64_t)(interval_s * (double)tt_SECOND) : 0;
+    if (opts.message_size > BULK_MAX_PAYLOAD_SIZE) {
+        printf("Requested message size %u exceeds the max %d; clamping.\n", opts.message_size, BULK_MAX_PAYLOAD_SIZE);
+        opts.message_size = BULK_MAX_PAYLOAD_SIZE;
+    }
+    bulk.size = opts.message_size;
 
-    _tt_CONFIG.broadcast = "192.168.10.255";
+    uint64_t send_interval_ns = opts.interval_s > 0.0 ? (uint64_t)(opts.interval_s * (double)tt_SECOND) : 0;
+
+    _tt_CONFIG.broadcast = opts.broadcast;
+    if (opts.port != 0) {
+        _tt_CONFIG.port = opts.port;
+    }
+    if (opts.bind_addr != NULL) {
+        _tt_CONFIG.addr = opts.bind_addr;
+    }
 
     signal(SIGINT, handle_sigint);
 
@@ -113,16 +161,21 @@ int main(int argc, char** argv) {
     }
 
     const double bytes_per_mb = 1e6;
-    double target_mbps = interval_s > 0.0 ? ((double)message_size * 8) / bytes_per_mb / interval_s : 0.0;
-    if (interval_s > 0.0) {
-        printf("Sending %u-byte messages every %g sec (target %.3f Mbps)\n", message_size, interval_s, target_mbps);
+    double target_mbps = opts.interval_s > 0.0 ? ((double)opts.message_size * 8) / bytes_per_mb / opts.interval_s : 0.0;
+    if (opts.interval_s > 0.0) {
+        printf("Sending %u-byte messages every %g sec (target %.3f Mbps)\n", opts.message_size, opts.interval_s,
+               target_mbps);
     } else {
-        printf("Sending %u-byte messages as fast as poll() allows\n", message_size);
+        printf("Sending %u-byte messages as fast as poll() allows\n", opts.message_size);
     }
 
     uint64_t start_time = tt_get_ns();
     uint64_t next_send_time = start_time;
     tt_Node_schedule(&node, start_time + tt_SECOND, report, NULL);
+    if (opts.duration_s > 0.0) {
+        tt_Node_schedule(&node, start_time + (uint64_t)(opts.duration_s * (double)tt_SECOND), handle_duration_elapsed,
+                         NULL);
+    }
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
