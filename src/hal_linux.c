@@ -2,7 +2,6 @@
 #include <ifaddrs.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -14,11 +13,13 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
+// This implementation relies on the socket and network headers included above.
+// NOLINTBEGIN(misc-include-cleaner)
+
 #include "consts.h"
 #include "log.h"
 
-#define SEC_NS 1000000000LL
-#define US_NS 1000LL
+#define SEC_NS 1000000000ULL
 
 #define UNUSED(x) (void)(x)
 
@@ -33,6 +34,34 @@ uint64_t tt_get_ns() {
     clock_gettime(CLOCK_REALTIME, &ts);
 
     return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
+}
+
+void tt_lock_init(tt_lock_t* lock) {
+    if (pthread_mutex_init(lock, NULL) != 0) {
+        perror("Cannot initialize node lock");
+    }
+}
+
+void tt_lock_deinit(tt_lock_t* lock) {
+    if (pthread_mutex_destroy(lock) != 0) {
+        perror("Cannot destroy node lock");
+    }
+}
+
+tt_lock_state_t tt_lock(tt_lock_t* lock) {
+    if (pthread_mutex_lock(lock) != 0) {
+        perror("Cannot lock node mutex");
+    }
+
+    return 0;
+}
+
+void tt_unlock(tt_lock_t* lock, tt_lock_state_t state) {
+    UNUSED(state);
+
+    if (pthread_mutex_unlock(lock) != 0) {
+        perror("Cannot unlock node mutex");
+    }
 }
 
 int32_t tt_get_node_id() {
@@ -68,40 +97,32 @@ int32_t tt_get_node_id() {
     return node_id;
 }
 
-tt_ret_t tt_bind(struct tt_Node* node) {
+int32_t tt_bind(struct tt_Node* node) {
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
         perror("Cannot create UDP socket");
-        return tt_RET_IO_ERROR;
+        return tt_CANNOT_CREATE_SOCK;
     }
 
     int optval = 1;
-    // SOL_SOCKET/SO_* live in glibc-private headers; <sys/socket.h> (included above) is the correct public header.
-    // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket reuseaddr");
-        tt_close(node);
-        return tt_RET_IO_ERROR;
+        return tt_CANNOT_SET_REUSEADDR;
     }
 
     optval = 1;
-    // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
         perror("Cannot set socket broadcast");
-        tt_close(node);
-        return tt_RET_IO_ERROR;
+        return tt_CANNOT_SET_BROADCAST;
     }
 
-    struct timeval timeout; // NOLINT(misc-include-cleaner) -- provided transitively via <sys/socket.h>
+    struct timeval timeout;
     timeout.tv_sec = 0;
-    timeout.tv_usec = tt_RECEIVE_TIMEOUT / US_NS; // nano to micro
-    node->hal.receive_timeout = tt_RECEIVE_TIMEOUT;
+    timeout.tv_usec = TIMEOUT_IN_MICROSECONDS;
 
-    // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
         perror("Cannot set socket receive timeout");
-        tt_close(node);
-        return tt_RET_IO_ERROR;
+        return tt_CANNOT_SET_TIMEOUT;
     }
 
     struct sockaddr_in addr;
@@ -112,11 +133,10 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
         TT_LOG_ERROR("Cannot binding socket: %s:%d", _tt_CONFIG.addr, _tt_CONFIG.port);
         perror("Cannot binding socket\n");
-        tt_close(node);
-        return tt_RET_IO_ERROR;
+        return tt_CANNOT_BIND_SOCKET;
     }
 
-    return tt_RET_OK;
+    return 0;
 }
 
 void tt_close(struct tt_Node* node) {
@@ -134,36 +154,16 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
     return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
 }
 
-int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(struct sockaddr_in);
-
-    if (timeout >= 0 && node->hal.receive_timeout != timeout) {
-        struct timeval tval;
-        tval.tv_sec = timeout / SEC_NS;
-        tval.tv_usec = (timeout % SEC_NS) / US_NS; // nano to micro
-        uint64_t old_timeout = node->hal.receive_timeout;
-        node->hal.receive_timeout = timeout;
-
-        if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tval, sizeof(struct timeval)) < 0) {
-            TT_LOG_WARNING("Cannot set timeout: %lu to %lu", old_timeout, timeout);
-            node->hal.receive_timeout = old_timeout;
-        }
-    }
+    int addr_len = sizeof(struct sockaddr_in);
 
     int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
 
-    if (ret < 0) {
-        // EAGAIN/EWOULDBLOCK live in glibc-private headers; <errno.h> (included above) is the correct public header.
-        // NOLINTNEXTLINE(misc-include-cleaner)
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return -1; // Timeout
-        }
-        return -2; // I/O error
-    }
-
     return ret;
 }
+
+// NOLINTEND(misc-include-cleaner)

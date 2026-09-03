@@ -12,12 +12,11 @@
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
-#define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND)      // Network socket default receive timeout
 
 #define tt_MAX_ENDPOINT_COUNT 256  // Maximum number of endpoints (data or services)
 #define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name
 #define tt_MAX_STRING_LENGTH 65535 // Maximum length of string
-#define tt_MAX_BUFFER_LENGTH 1480  // RX/TX buffering size to flush
+#define tt_MAX_BUFFER_LENGTH 1480  // TX buffer size
 
 // Node ID values are the last byte of the IPv4 address on the local network.
 // Valid node IDs are 1..254, because 0 is reserved for invalid/unassigned and

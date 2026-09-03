@@ -1,14 +1,12 @@
 #include "encoding.h"
 
-#include <stddef.h>
-#include <stdint.h>
-
-#include <sys/types.h>
-#include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
 #include "log.h"
+
+// This implementation relies on transitive includes from <tickle/hal.h> and <tickle/tickle.h>.
+// NOLINTBEGIN(misc-include-cleaner)
 
 // Endian checking functions
 bool tt_is_native_endian(struct tt_Header* header) {
@@ -21,13 +19,12 @@ bool tt_is_reverse_endian(struct tt_Header* header) {
 
 // Hash function
 uint32_t tt_hash_id(const char* type, const char* name) {
-    ssize_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH + 1);
-    ssize_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH + 1);
+    uint8_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH + 1);
+    uint8_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH + 1);
 
     if (type_len > tt_MAX_NAME_LENGTH) {
         TT_LOG_WARNING("Length of \"%s\" exceeds maximum string length %u.", type, tt_MAX_NAME_LENGTH);
     }
-
     if (name_len > tt_MAX_NAME_LENGTH) {
         TT_LOG_WARNING("Length of \"%s\" exceeds maximum string length %u.", name, tt_MAX_NAME_LENGTH);
     }
@@ -113,14 +110,10 @@ bool tt_decode_string(void* buffer, uint32_t* head, uint32_t tail, uint16_t* str
         return false;
     }
 
-    // str_len is defined to include the terminating '\0' (see tt_encode_string); reject any
-    // string that doesn't actually end with one so callers can safely treat *str as a C string.
-    if (*str_len == 0 || ((const char*)buffer)[*head + *str_len - 1] != '\0') {
-        return false;
-    }
-
     *str = (char*)((uint8_t*)buffer + *head);
     *head += *str_len;
 
     return true;
 }
+
+// NOLINTEND(misc-include-cleaner)

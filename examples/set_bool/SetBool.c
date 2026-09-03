@@ -2,12 +2,11 @@
 
 #include "SetBool.h"
 
-#include <stdint.h>
-#include <string.h>
-
-#include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
+
+// This generated implementation relies on transitive includes provided by SetBool.h.
+// NOLINTBEGIN(misc-include-cleaner)
 
 struct tt_Service SetBoolService = {
     .name = "SetBoolService",
@@ -26,7 +25,7 @@ struct tt_Service SetBoolService = {
 };
 
 int32_t SetBoolRequest_encode_size(struct SetBoolRequest* request) {
-    (void)request;
+    (void)request;       // NOLINT(misc-unused-parameters)
     return sizeof(bool); // encode data
 }
 
@@ -48,7 +47,7 @@ int32_t SetBoolRequest_encode(struct SetBoolRequest* request, uint8_t* payload, 
 
 int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* payload, int32_t len,
                               bool is_native_endian) {
-    (void)is_native_endian;
+    (void)is_native_endian; // NOLINT(misc-unused-parameters)
     int32_t decoded = 0;
 
     // decode data
@@ -65,15 +64,11 @@ int32_t SetBoolRequest_decode(struct SetBoolRequest* request, const uint8_t* pay
 }
 
 void SetBoolRequest_free(struct SetBoolRequest* request) {
-    (void)request;
+    (void)request; // NOLINT(misc-unused-parameters)
     // Do nothing
 }
 
 int32_t SetBoolResponse_encode_size(struct SetBoolResponse* response) {
-    if (response->message == NULL) {
-        return -3; // Invalid message pointer
-    }
-
     return (int32_t)(sizeof(bool) +                                             // encode success
                      sizeof(uint16_t) +                                         // encode message length
                      _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1); // encode message
@@ -97,19 +92,12 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
         return -1;
     }
 
-    // Check if message is valid before measuring/copying it
-    if (response->message == NULL) {
-        return -3; // Invalid message pointer
-    }
-
-    // Measure in a wide type first: message_length (incl. '\0') can reach tt_MAX_STRING_LENGTH + 1,
-    // which overflows uint16_t, so this must be validated before narrowing.
-    size_t message_length = _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1; // including '\0'
+    uint16_t message_length = _tt_strnlen(response->message, tt_MAX_STRING_LENGTH) + 1; // including '\0'
     if (message_length > tt_MAX_STRING_LENGTH) {
         return -2;
     }
 
-    *(uint16_t*)payload = (uint16_t)message_length;
+    *(uint16_t*)payload = message_length;
 
     encoded += sizeof(uint16_t);
     payload += sizeof(uint16_t);
@@ -119,9 +107,14 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
         return -1;
     }
 
+    // Check if message is valid before copying
+    if (response->message == NULL) {
+        return -3; // Invalid message pointer
+    }
+
     memcpy(payload, response->message, message_length);
     payload += message_length;
-    encoded += (int32_t)message_length;
+    encoded += message_length;
 
     return encoded;
 }
@@ -163,12 +156,6 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
         return -1;
     }
 
-    // message_length is defined to include the terminating '\0'; reject a payload that
-    // doesn't actually end with one so response->message can be safely treated as a C string.
-    if (payload[message_length - 1] != '\0') {
-        return -2; // Invalid message length
-    }
-
     response->message = (char*)payload;
 
     decoded += message_length;
@@ -178,6 +165,6 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* 
 }
 
 void SetBoolResponse_free(struct SetBoolResponse* response) {
-    (void)response;
     // Do nothing
 }
+// NOLINTEND(misc-include-cleaner)

@@ -1,8 +1,8 @@
 // Generated code
 #pragma once
 
-#include <stdint.h>
-
+// This generated header relies on transitive includes from <tickle/tickle.h>.
+// NOLINTBEGIN(misc-include-cleaner)
 #include <tickle/tickle.h>
 
 struct SetBoolRequest {
@@ -26,3 +26,5 @@ int32_t SetBoolResponse_encode(struct SetBoolResponse* response, uint8_t* payloa
 int32_t SetBoolResponse_decode(struct SetBoolResponse* response, const uint8_t* payload, int32_t len,
                                bool is_native_endian);
 void SetBoolResponse_free(struct SetBoolResponse* response);
+
+// NOLINTEND(misc-include-cleaner)

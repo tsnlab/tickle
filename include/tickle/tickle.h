@@ -39,12 +39,10 @@ struct tt_Node {
     uint32_t tx_tail;
     uint32_t tx_size;
 
-    uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
-    uint32_t rx_tail;
-    uint32_t rx_size;
-
     struct tt_TCB scheduler[tt_MAX_SCHEDULER_LENGTH];
     int32_t scheduler_tail;
+
+    tt_lock_t endpoint_lock;
 
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_generic.h>).
@@ -64,7 +62,7 @@ struct tt_SubmessageHeader;
 
 typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code, struct tt_Response* response);
 
-struct tt_Client { // extends endpoint
+struct tt_Client { // embeds endpoint metadata
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Service* service;
@@ -85,14 +83,13 @@ struct tt_Request;
 typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
                                      struct tt_Response* response);
 
-struct tt_Server { // extends endpoint
+struct tt_Server { // embeds endpoint metadata
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Service* service;
     tt_SERVER_CALLBACK callback;
 
     struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT];
-    void* clean[tt_MAX_SERVER_CACHE_COUNT]; // Pending server_cache_clean timer config per cache slot, if any
 };
 
 struct tt_Request {};
@@ -132,7 +129,7 @@ struct tt_Topic;
 
 struct tt_Data {};
 
-struct tt_Publisher { // extends endpoint
+struct tt_Publisher { // embeds endpoint metadata
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Topic* topic;
@@ -145,7 +142,7 @@ struct tt_Subscriber;
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                        struct tt_Data* data);
 
-struct tt_Subscriber { // extends endpoint
+struct tt_Subscriber { // embeds endpoint metadata
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Topic* topic;
@@ -182,40 +179,32 @@ bool tt_is_reverse_endian(struct tt_Header* header);
 uint64_t tt_get_ns();
 
 /**
- * @return tt_RET_OK - succeed
+ * @return 0 - succeed
  */
-tt_ret_t tt_Node_create(struct tt_Node* node);
-tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                               const char* endpoint_name, tt_CLIENT_CALLBACK callback);
-tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                               const char* endpoint_name, tt_SERVER_CALLBACK callback);
-tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                  const char* endpoint_name);
-tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
+int32_t tt_Node_create(struct tt_Node* node);
+int32_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                              const char* endpoint_name, tt_CLIENT_CALLBACK callback);
+int32_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                              const char* endpoint_name, tt_SERVER_CALLBACK callback);
+int32_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                 const char* endpoint_name);
+int32_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                  const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
-// Cancels every pending schedule entry matching (function, param) exactly. Returns true if any were removed.
-bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
-                        void* param);
 
-tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
-tt_ret_t tt_Client_destroy(struct tt_Client* client);
+int32_t tt_Client_call(struct tt_Client* client, struct tt_Request* request);
+int32_t tt_Client_destroy(struct tt_Client* client);
 
-tt_ret_t tt_Server_destroy(struct tt_Server* server);
+int32_t tt_Server_destroy(struct tt_Server* server);
 
-tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
-tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub);
+int32_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data);
+int32_t tt_Publisher_destroy(struct tt_Publisher* pub);
 
-tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
+int32_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
-/**
- * @node node to poll
- * @timeout wait timeout in nanoseconds
- * @return tt_ret_t
- */
-tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
-tt_ret_t tt_Node_destroy(struct tt_Node* node);
+int32_t tt_Node_poll(struct tt_Node* node);
+int32_t tt_Node_destroy(struct tt_Node* node);
 
 #define tt_VERSION 1
 #define tt_PROTOCOL_UPDATE 0
