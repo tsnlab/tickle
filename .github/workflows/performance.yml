@@ -5,9 +5,8 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Debounce: if a newer push lands on main while this run is still sleeping (below),
-# GitHub cancels this run because of cancel-in-progress, so only the latest commit's
-# run ever gets past the sleep and actually touches the hardware.
+# If a newer push lands on main while a run is still going, cancel the older one so
+# only the latest commit's run ever occupies the hardware.
 concurrency:
   group: perf-main
   cancel-in-progress: true
@@ -18,10 +17,6 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Wait for 5 minutes of commit inactivity
-        if: github.event_name == 'push'
-        run: sleep 300
-
       - name: Checkout
         uses: actions/checkout@v4
 
