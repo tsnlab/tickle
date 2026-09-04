@@ -142,6 +142,13 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         struct timeval tval;
         tval.tv_sec = timeout / SEC_NS;
         tval.tv_usec = (timeout % SEC_NS) / US_NS; // nano to micro
+        if (timeout > 0 && tval.tv_sec == 0 && tval.tv_usec == 0) {
+            // A positive sub-microsecond timeout truncates to {0, 0}, but the kernel treats
+            // that as "no timeout" (block forever) for SO_RCVTIMEO, not "return immediately".
+            // Round up to the smallest representable wait so a short-but-nonzero caller
+            // timeout can never turn into an indefinite block.
+            tval.tv_usec = 1;
+        }
         uint64_t old_timeout = node->hal.receive_timeout;
         node->hal.receive_timeout = timeout;
 

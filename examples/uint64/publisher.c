@@ -82,7 +82,11 @@ int main(int argc, char** argv) {
         _tt_CONFIG.addr = bind_addr;
     }
 
-    signal(SIGINT, handle_sigint);
+    // sigaction (not signal()) so SA_RESTART is off: an interrupted blocking recv
+    // returns immediately instead of silently restarting with the same wait.
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
