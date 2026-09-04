@@ -1,12 +1,29 @@
 name: Performance Test
 
 on:
-  - workflow_dispatch
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Debounce: if a newer push lands on main while this run is still sleeping (below),
+# GitHub cancels this run because of cancel-in-progress, so only the latest commit's
+# run ever gets past the sleep and actually touches the hardware.
+concurrency:
+  group: perf-main
+  cancel-in-progress: true
 
 jobs:
   test:
     runs-on: [self-hosted, tickle-hil]
+    timeout-minutes: 20
 
     steps:
-      - name: Runner smoke test
-        run: hostname && whoami && echo "runner alive"
+      - name: Wait for 5 minutes of commit inactivity
+        if: github.event_name == 'push'
+        run: sleep 300
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run hardware-in-the-loop performance tests
+        run: .github/scripts/run_perf.sh
