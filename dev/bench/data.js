@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788773379925,
+  "lastUpdate": 1788773382526,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -324,6 +324,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 803.321,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "824072fb57f3356c542c07d9b0b6a0c4eb1a2069",
+          "message": "Flush RPC request/response immediately instead of waiting on the 1ms tick\n\ntt_Client_call(), call_retry(), and the server's response send all\npassed is_flush=false to end_encode(), so a message with nothing else\nqueued sat in tx_buffer until either it filled up or node_flush()'s\nperiodic tt_NODE_TX_INTERVAL (1ms) tick caught it. That's the right\ndefault for pub/sub (no reason to force a flush per publish when\nbatching is free), but wrong for RPC: the caller is synchronously\nblocked on the reply, so both legs of the round trip were eating up\nto ~1ms of pure batching delay for no benefit.\n\nMeasured on rpi#1/rpi#2 (ping -c 30 -i 0.1): rtt avg 1.451ms -> 0.217ms,\nmdev 0.466ms -> 0.018ms. Throughput (perf_client/perf_server, unaffected\nsince publish still batches) stayed at ~930 Mbps, 0 dropped. Re-ran the\nSIGINT/hang regression checks: 3/3 clean exits both ways.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-07T18:21:52+09:00",
+          "tree_id": "d23d50ec984849fdff26f689f2f07bc4ef0cf3fc",
+          "url": "https://github.com/tsnlab/tickle/commit/824072fb57f3356c542c07d9b0b6a0c4eb1a2069"
+        },
+        "date": 1788773381566,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 909.698,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 798.053,
             "unit": "Mbps"
           }
         ]
