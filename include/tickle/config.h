@@ -13,6 +13,11 @@
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND)      // Network socket default receive timeout
+// Requested SO_SNDBUF/SO_RCVBUF size. The kernel silently clamps this to whatever
+// net.core.[rw]mem_max allows for an unprivileged process, so asking for more than that is
+// harmless - it's cheap insurance against drops under bursty send/receive on systems where the
+// ceiling is higher than the (often small, e.g. 208KB) distro default.
+#define tt_SOCKET_BUFFER_SIZE (1024 * 1024)
 
 #define tt_MAX_ENDPOINT_COUNT 256  // Maximum number of endpoints (data or services)
 #define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name

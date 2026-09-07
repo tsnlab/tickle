@@ -1,9 +1,9 @@
 #pragma once
 
-#include <stdint.h>
+#include <netinet/in.h>
 
 // Linux-specific hardware abstraction layer structure
 struct tt_hal {
     int sock;
-    uint64_t receive_timeout;
+    struct sockaddr_in broadcast_addr; // Precomputed once in tt_bind(), reused by every tt_send()
 };

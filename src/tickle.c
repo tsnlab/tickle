@@ -433,7 +433,6 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
     if (++callrequest_header->retry > client->service->call_retry_count) {
         client->callback(client, 0, NULL); // No response from server
 
-        _tt_free(client->cache);
         client->cache = NULL;
         return;
     }
@@ -462,7 +461,6 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
         TT_LOG_ERROR("Cannot schedule call_retry");
         client->callback(client, 0, NULL); // Cannot guarantee further retry
 
-        _tt_free(client->cache);
         client->cache = NULL;
     }
 }
@@ -509,21 +507,16 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
-    // Make cache
+    // Make cache: copy into the client's own fixed backing buffer instead of malloc'ing one.
+    // tx_buffer is sized tt_MAX_BUFFER_LENGTH * 2 to let one submessage overshoot the flush
+    // limit before being deferred, so cache_buf is sized to match that same worst case.
     size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
-    struct tt_SubmessageHeader* cache = _tt_malloc(length);
-    if (cache == NULL) {
-        TT_LOG_ERROR("Out of memory");
-        rollback(node, old_tx_tail);
-        return tt_RET_OUT_OF_MEMORY;
-    }
-
+    struct tt_SubmessageHeader* cache = (struct tt_SubmessageHeader*)client->cache_buf;
     _tt_memcpy(cache, submessage_header, length);
     cache->length = length;
 
     // Flush tx
     if (!end_encode(node, submessage_header, false)) {
-        _tt_free(cache);
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
@@ -542,7 +535,6 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 
     if (!tt_Node_schedule(node, tt_get_ns() + retry_interval, call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
-        _tt_free(client->cache);
         client->cache = NULL;
         return tt_RET_OUT_OF_SCHEDULE;
     }
@@ -558,10 +550,9 @@ tt_ret_t tt_Client_destroy(struct tt_Client* client) {
     }
 
     if (client->cache != NULL) {
-        // Cancel the pending call_retry before freeing the cache it references, otherwise
+        // Cancel the pending call_retry before clearing the cache it references, otherwise
         // that retry later fires on this (possibly freed/reused) client.
         tt_Node_unschedule(client->node, call_retry, client);
-        _tt_free(client->cache);
         client->cache = NULL;
     }
 
@@ -1112,7 +1103,6 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
         response = (struct tt_Response*)response_buffer;
     }
 
-    _tt_free(client->cache);
     client->cache = NULL;
 
     if (client->latency == 0) {
@@ -1301,12 +1291,12 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
             node->last_modified = time;
         }
 
-        // Free any outstanding client call cache / server response caches directly: the
-        // scheduler entries referencing them are about to be wiped wholesale below anyway,
-        // so there's no need to unschedule them individually here.
+        // Free any outstanding server response caches directly: the scheduler entries
+        // referencing them are about to be wiped wholesale below anyway, so there's no need to
+        // unschedule them individually here. The client call cache is a fixed buffer now (no
+        // malloc/free), so it just needs clearing, not freeing.
         if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
             struct tt_Client* client = (struct tt_Client*)endpoint;
-            _tt_free(client->cache);
             client->cache = NULL;
         } else if (endpoint->kind == tt_KIND_SERVICE_SERVER) {
             struct tt_Server* server = (struct tt_Server*)endpoint;

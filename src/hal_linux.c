@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <ifaddrs.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,7 +8,6 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
-#include <bits/time.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <tickle/config.h>
@@ -18,7 +18,7 @@
 #include "log.h"
 
 #define SEC_NS 1000000000LL
-#define US_NS 1000LL
+#define MS_NS 1000000LL
 
 #define UNUSED(x) (void)(x)
 
@@ -30,6 +30,8 @@ struct _tt_Config _tt_CONFIG = {
 
 uint64_t tt_get_ns() {
     struct timespec ts;
+    // CLOCK_REALTIME lives in a glibc-private header; <time.h> (included above) is the correct public header.
+    // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_REALTIME, &ts);
 
     return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
@@ -92,16 +94,17 @@ tt_ret_t tt_bind(struct tt_Node* node) {
         return tt_RET_IO_ERROR;
     }
 
-    struct timeval timeout; // NOLINT(misc-include-cleaner) -- provided transitively via <sys/socket.h>
-    timeout.tv_sec = 0;
-    timeout.tv_usec = tt_RECEIVE_TIMEOUT / US_NS; // nano to micro
-    node->hal.receive_timeout = tt_RECEIVE_TIMEOUT;
-
+    // Best-effort: the kernel clamps this to net.core.[rw]mem_max for an unprivileged process,
+    // so a failure or a smaller-than-requested result here isn't fatal, just less headroom
+    // against bursty drops.
+    int buffer_size = tt_SOCKET_BUFFER_SIZE;
     // NOLINTNEXTLINE(misc-include-cleaner)
-    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
-        perror("Cannot set socket receive timeout");
-        tt_close(node);
-        return tt_RET_IO_ERROR;
+    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_SNDBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
+        TT_LOG_WARNING("Cannot set socket send buffer size: %s", strerror(errno));
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
+        TT_LOG_WARNING("Cannot set socket receive buffer size: %s", strerror(errno));
     }
 
     struct sockaddr_in addr;
@@ -116,6 +119,12 @@ tt_ret_t tt_bind(struct tt_Node* node) {
         return tt_RET_IO_ERROR;
     }
 
+    // Precompute the broadcast destination once instead of re-parsing _tt_CONFIG.broadcast with
+    // inet_addr() on every single tt_send() call.
+    node->hal.broadcast_addr.sin_family = AF_INET;
+    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
+    node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
+
     return tt_RET_OK;
 }
 
@@ -126,38 +135,42 @@ void tt_close(struct tt_Node* node) {
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
-    addr.sin_port = htons(_tt_CONFIG.port);
-
-    return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+    return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
+                           sizeof(struct sockaddr_in));
 }
 
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(struct sockaddr_in);
-
-    if (timeout >= 0 && node->hal.receive_timeout != (uint64_t)timeout) {
-        struct timeval tval;
-        tval.tv_sec = timeout / SEC_NS;
-        tval.tv_usec = (timeout % SEC_NS) / US_NS; // nano to micro
-        if (timeout > 0 && tval.tv_sec == 0 && tval.tv_usec == 0) {
-            // A positive sub-microsecond timeout truncates to {0, 0}, but the kernel treats
-            // that as "no timeout" (block forever) for SO_RCVTIMEO, not "return immediately".
-            // Round up to the smallest representable wait so a short-but-nonzero caller
-            // timeout can never turn into an indefinite block.
-            tval.tv_usec = 1;
+    // Wait for readability with poll() instead of arming SO_RCVTIMEO via setsockopt() before
+    // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
+    // scheduled event is due next), and re-arming a socket option that often is pure overhead -
+    // poll() just takes the timeout as a plain argument, no socket mutation needed.
+    if (timeout >= 0) {
+        int timeout_ms = (int)(timeout / MS_NS);
+        if (timeout > 0 && timeout_ms == 0) {
+            // Sub-millisecond positive timeouts would round down to 0, which poll() treats as
+            // "don't wait at all" - round up so a short-but-nonzero wait still actually waits.
+            timeout_ms = 1;
         }
-        uint64_t old_timeout = node->hal.receive_timeout;
-        node->hal.receive_timeout = timeout;
 
-        if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tval, sizeof(struct timeval)) < 0) {
-            TT_LOG_WARNING("Cannot set timeout: %lu to %lu", old_timeout, timeout);
-            node->hal.receive_timeout = old_timeout;
+        // struct pollfd/POLLIN/poll() live in a glibc-private header; <poll.h> (included above) is
+        // the correct public header.
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        struct pollfd pfd = {.fd = node->hal.sock, .events = POLLIN, .revents = 0};
+        int poll_ret = poll(&pfd, 1, timeout_ms); // NOLINT(misc-include-cleaner)
+        if (poll_ret == 0) {
+            return -1; // Timeout
+        }
+        if (poll_ret < 0) {
+            // NOLINTNEXTLINE(misc-include-cleaner) -- EINTR lives in the same private header as EAGAIN below
+            if (errno == EINTR) {
+                return -1; // Treat an interrupted wait like a timeout; the caller just polls again
+            }
+            return -2; // I/O error
         }
     }
 
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(struct sockaddr_in);
     int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);

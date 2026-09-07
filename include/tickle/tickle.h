@@ -73,8 +73,10 @@ struct tt_Client { // extends endpoint
     // transcation
     uint16_t seq_no;
 
-    // Cache
-    struct tt_SubmessageHeader* cache; // Last call cache
+    // Cache: fixed-size backing storage for the one outstanding call (tt_Client_call refuses a
+    // second call while one is already pending), so a call/retry cycle never has to malloc/free.
+    uint8_t cache_buf[tt_MAX_BUFFER_LENGTH * 2];
+    struct tt_SubmessageHeader* cache; // NULL when idle, else points into cache_buf
     uint64_t cache_time;               // Cache time
     uint32_t latency;                  // Call latency
 };
