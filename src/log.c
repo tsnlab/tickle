@@ -5,6 +5,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <tickle/log.h>
+
 // Default log configuration
 tt_LogLevel tt_current_log_level = TT_LOG_INFO;
 FILE* tt_log_output = NULL;

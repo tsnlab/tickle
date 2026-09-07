@@ -3,8 +3,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-// Log levels
-typedef enum { TT_LOG_DEBUG = 0, TT_LOG_INFO = 1, TT_LOG_WARNING = 2, TT_LOG_ERROR = 3, TT_LOG_NONE = 4 } tt_LogLevel;
+#include <tickle/log.h> // tt_LogLevel, tt_log_set_level (public API)
 
 // Log configuration
 extern tt_LogLevel tt_current_log_level;
@@ -12,9 +11,6 @@ extern FILE* tt_log_output;
 
 // Initialize logging system
 void tt_log_init(tt_LogLevel level, FILE* output);
-
-// Set log level
-void tt_log_set_level(tt_LogLevel level);
 
 // Set log output
 void tt_log_set_output(FILE* output);

@@ -1,4 +1,5 @@
 #include <signal.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -6,6 +7,7 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "Bulk.h"
@@ -69,9 +71,27 @@ static void print_summary(uint64_t start_time) {
            (unsigned long long)total_sent_msgs, megabytes, elapsed_s, avg_mbps, (unsigned long long)total_buffer_full);
 }
 
+static bool parse_log_level(const char* str, tt_LogLevel* level) {
+    if (strcmp(str, "debug") == 0) {
+        *level = TT_LOG_DEBUG;
+    } else if (strcmp(str, "info") == 0) {
+        *level = TT_LOG_INFO;
+    } else if (strcmp(str, "warning") == 0) {
+        *level = TT_LOG_WARNING;
+    } else if (strcmp(str, "error") == 0) {
+        *level = TT_LOG_ERROR;
+    } else if (strcmp(str, "none") == 0) {
+        *level = TT_LOG_NONE;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-s message_size_bytes]\n", prog);
     fprintf(stderr, "                [-i interval_seconds] [-d duration_seconds]\n");
+    fprintf(stderr, "                [-n topic_name] [-l log_level]\n");
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
@@ -79,6 +99,8 @@ static void print_usage(const char* prog) {
             DEFAULT_MESSAGE_SIZE);
     fprintf(stderr, "  -i  seconds between sends (default %g = as fast as poll() allows)\n", DEFAULT_INTERVAL_SECONDS);
     fprintf(stderr, "  -d  exit automatically after this many seconds (default 0 = run until Ctrl+C)\n");
+    fprintf(stderr, "  -n  topic name to publish on (default bulk_topic)\n");
+    fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
 }
 
 struct cli_options {
@@ -88,6 +110,9 @@ struct cli_options {
     uint32_t message_size;
     double interval_s;
     double duration_s; // 0 = run until Ctrl+C
+    char* topic_name;
+    tt_LogLevel log_level;
+    bool log_level_set;
 };
 
 // Returns 0 on success, non-zero if argv held an unrecognized/incomplete option.
@@ -98,6 +123,9 @@ static int parse_args(int argc, char** argv, struct cli_options* opts) {
     opts->message_size = DEFAULT_MESSAGE_SIZE;
     opts->interval_s = DEFAULT_INTERVAL_SECONDS;
     opts->duration_s = 0.0;
+    opts->topic_name = "bulk_topic";
+    opts->log_level = TT_LOG_INFO;
+    opts->log_level_set = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
@@ -112,6 +140,13 @@ static int parse_args(int argc, char** argv, struct cli_options* opts) {
             opts->interval_s = strtod(argv[++i], NULL);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             opts->duration_s = strtod(argv[++i], NULL);
+        } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+            opts->topic_name = argv[++i];
+        } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) {
+            if (!parse_log_level(argv[++i], &opts->log_level)) {
+                return 1;
+            }
+            opts->log_level_set = true;
         } else {
             return 1;
         }
@@ -141,6 +176,9 @@ int main(int argc, char** argv) {
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
     }
+    if (opts.log_level_set) {
+        tt_log_set_level(opts.log_level);
+    }
 
     // sigaction (not signal()) so SA_RESTART is off: an interrupted blocking recv
     // returns immediately instead of silently restarting with the same wait.
@@ -158,7 +196,7 @@ int main(int argc, char** argv) {
     printf("Node created(#%d)\n", node.id);
 
     struct tt_Publisher pub;
-    ret = tt_Node_create_publisher(&node, &pub, &BulkTopic, "bulk_topic");
+    ret = tt_Node_create_publisher(&node, &pub, &BulkTopic, opts.topic_name);
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
