@@ -44,7 +44,8 @@ update_and_build() {
             set -e
             cd ~/$REMOTE_DIR
             git fetch --quiet origin
-            git checkout --quiet $sha
+            git reset --hard --quiet $sha
+            git clean -fdq
             make clean >/dev/null
             make all -j4
         " > "$LOG_DIR/build_$host.log" 2>&1 &
