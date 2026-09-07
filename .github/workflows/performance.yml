@@ -11,6 +11,9 @@ concurrency:
   group: perf-main
   cancel-in-progress: true
 
+permissions:
+  contents: write # github-action-benchmark pushes result history to gh-pages
+
 jobs:
   test:
     runs-on: [self-hosted, tickle-hil]
@@ -22,3 +25,29 @@ jobs:
 
       - name: Run hardware-in-the-loop performance tests
         run: .github/scripts/run_perf.sh
+
+      - name: Track latency history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Latency (ping/pong)
+          tool: customSmallerIsBetter
+          output-file-path: latency-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: true
+          alert-threshold: "200%"
+
+      - name: Track throughput history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Throughput (perf_client/perf_server)
+          tool: customBiggerIsBetter
+          output-file-path: throughput-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: true
+          alert-threshold: "200%"

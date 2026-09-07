@@ -108,6 +108,34 @@ summarize() {
     } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 }
 
+# Pulls the numbers back out of the example binaries' own stdout and writes them as
+# github-action-benchmark's "custom" JSON format, so a later step can hand them
+# straight to that action without this script knowing anything about benchmark storage.
+write_benchmark_json() {
+    local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps
+
+    rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
+    rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
+    loss_pct=$(grep -oP '\d+(?=% packet loss)' "$LOG_DIR/latency_client.log")
+    send_mbps=$(grep -oP 'avg \K[\d.]+(?= Mbps)' "$LOG_DIR/throughput_client.log")
+    recv_mbps=$(grep -oP 'avg \K[\d.]+(?= Mbps)' "$LOG_DIR/throughput_server.log")
+
+    cat > latency-benchmark.json <<EOF
+[
+  {"name": "rtt avg", "unit": "ms", "value": $rtt_avg},
+  {"name": "rtt mdev", "unit": "ms", "value": $rtt_mdev},
+  {"name": "packet loss", "unit": "%", "value": $loss_pct}
+]
+EOF
+
+    cat > throughput-benchmark.json <<EOF
+[
+  {"name": "send throughput", "unit": "Mbps", "value": $send_mbps},
+  {"name": "recv throughput", "unit": "Mbps", "value": $recv_mbps}
+]
+EOF
+}
+
 update_and_build
 
 run_paired_test "latency" "pong" "ping" "-c $PING_COUNT -i $PING_INTERVAL" \
@@ -117,3 +145,4 @@ run_paired_test "throughput" "perf_server" "perf_client" "-d $PERF_DURATION_SEC"
     "$((PERF_DURATION_SEC + 30))"
 
 summarize
+write_benchmark_json
