@@ -46,3 +46,5 @@ CheckOptions:
     value: '1;2;3;4;5;8;10;16;24;32;255'
   - key: misc-include-header.MissingIncludes
     value: false
+  - key: readability-function-cognitive-complexity.IgnoreMacros
+    value: true

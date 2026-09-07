@@ -24,8 +24,31 @@ void tt_log_error(const char* format, ...);
 // Internal logging function
 void tt_log_internal(tt_LogLevel level, const char* level_str, const char* format, va_list args);
 
-// Convenience macros
-#define TT_LOG_DEBUG(...) tt_log_debug(__VA_ARGS__)
-#define TT_LOG_INFO(...) tt_log_info(__VA_ARGS__)
-#define TT_LOG_WARNING(...) tt_log_warning(__VA_ARGS__)
-#define TT_LOG_ERROR(...) tt_log_error(__VA_ARGS__)
+// Convenience macros. Check the level here, before calling the tt_log_* function, so a
+// suppressed call costs one comparison instead of a function call (with its format-string
+// argument expressions already evaluated) that only then discovers it has nothing to do -
+// these run on the packet-processing hot path, some many times per packet.
+#define TT_LOG_DEBUG(...)                           \
+    do {                                            \
+        if (tt_current_log_level <= TT_LOG_DEBUG) { \
+            tt_log_debug(__VA_ARGS__);              \
+        }                                           \
+    } while (0)
+#define TT_LOG_INFO(...)                           \
+    do {                                           \
+        if (tt_current_log_level <= TT_LOG_INFO) { \
+            tt_log_info(__VA_ARGS__);              \
+        }                                          \
+    } while (0)
+#define TT_LOG_WARNING(...)                           \
+    do {                                              \
+        if (tt_current_log_level <= TT_LOG_WARNING) { \
+            tt_log_warning(__VA_ARGS__);              \
+        }                                             \
+    } while (0)
+#define TT_LOG_ERROR(...)                           \
+    do {                                            \
+        if (tt_current_log_level <= TT_LOG_ERROR) { \
+            tt_log_error(__VA_ARGS__);              \
+        }                                           \
+    } while (0)
