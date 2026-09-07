@@ -43,7 +43,7 @@ int32_t tt_get_node_id() {
 
     struct ifaddrs* ifaddrs;
     if (getifaddrs(&ifaddrs) != 0) {
-        perror("Cannot get network interfaces");
+        TT_LOG_ERROR("Cannot get network interfaces: %s", strerror(errno));
         return -1;
     }
 
@@ -73,7 +73,7 @@ int32_t tt_get_node_id() {
 tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
-        perror("Cannot create UDP socket");
+        TT_LOG_ERROR("Cannot create UDP socket: %s", strerror(errno));
         return tt_RET_IO_ERROR;
     }
 
@@ -81,7 +81,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // SOL_SOCKET/SO_* live in glibc-private headers; <sys/socket.h> (included above) is the correct public header.
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
-        perror("Cannot set socket reuseaddr");
+        TT_LOG_ERROR("Cannot set socket reuseaddr: %s", strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
@@ -89,7 +89,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     optval = 1;
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
-        perror("Cannot set socket broadcast");
+        TT_LOG_ERROR("Cannot set socket broadcast: %s", strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
@@ -113,8 +113,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     addr.sin_port = htons(_tt_CONFIG.port);
 
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot binding socket: %s:%d", _tt_CONFIG.addr, _tt_CONFIG.port);
-        perror("Cannot binding socket\n");
+        TT_LOG_ERROR("Cannot bind socket to %s:%d: %s", _tt_CONFIG.addr, _tt_CONFIG.port, strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }

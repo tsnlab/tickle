@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,7 +19,7 @@ static uint32_t calculate_latency(uint64_t start, uint64_t end) {
 
 static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t type, uint8_t receiver) {
     if (node->tx_tail + sizeof(struct tt_SubmessageHeader) >= node->tx_size) {
-        TT_LOG_ERROR("Lack of tx buffer");
+        TT_LOG_WARNING("Lack of tx buffer");
         return NULL;
     }
 
@@ -34,7 +35,7 @@ static struct tt_SubmessageHeader* start_encode(struct tt_Node* node, uint8_t ty
 
 static void* encode(struct tt_Node* node, uint32_t len) {
     if (node->tx_tail + len >= node->tx_size) {
-        TT_LOG_ERROR("Lack of tx buffer");
+        TT_LOG_WARNING("Lack of tx buffer");
         return NULL;
     }
 
@@ -43,7 +44,7 @@ static void* encode(struct tt_Node* node, uint32_t len) {
 
 static bool encode_string(struct tt_Node* node, const char* str) {
     if (!tt_encode_string(node->tx_buffer, &node->tx_tail, node->tx_size, str)) {
-        TT_LOG_ERROR("Lack of tx buffer");
+        TT_LOG_WARNING("Lack of tx buffer");
         return false;
     }
     return true;
@@ -61,7 +62,7 @@ static bool flush_tx(struct tt_Node* node, uint32_t len) {
 
     // Not possible
     if (len > tt_MAX_BUFFER_LENGTH) {
-        TT_LOG_ERROR("Logic ERROR!!!!");
+        TT_LOG_ERROR("Flush length %u exceeds tt_MAX_BUFFER_LENGTH %d", len, tt_MAX_BUFFER_LENGTH);
         return false;
     }
 
@@ -71,7 +72,7 @@ static bool flush_tx(struct tt_Node* node, uint32_t len) {
     header->source = node->id;
 
     if (tt_send(node, node->tx_buffer, len) < 0) {
-        perror("Cannot send packet");
+        TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
     }
 
@@ -658,16 +659,17 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 
     uint32_t old_tx_tail = node->tx_tail;
 
+    // start_encode()/encode()/encode_string() below already log their own reason when they fail
+    // (e.g. "Lack of tx buffer"), so none of these failure branches log again on top of that.
+
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
-        TT_LOG_ERROR("Lack of tx_buffer");
         goto done;
     }
 
     struct tt_UpdateHeader* update_header = encode(node, sizeof(struct tt_UpdateHeader));
     if (update_header == NULL) {
-        TT_LOG_ERROR("Lack of tx_buffer");
         rollback(node, old_tx_tail);
         goto done;
     }
@@ -697,7 +699,6 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 
         struct tt_UpdateEntity* update_entity = encode(node, sizeof(struct tt_UpdateEntity));
         if (update_entity == NULL) {
-            TT_LOG_ERROR("Lack of tx_buffer");
             rollback(node, old_tx_tail);
             goto done;
         }
@@ -706,13 +707,11 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
         update_entity->kind = endpoint->kind;
 
         if (!encode_string(node, type)) {
-            TT_LOG_ERROR("Lack of tx_buffer");
             rollback(node, old_tx_tail);
             goto done;
         }
 
         if (!encode_string(node, endpoint->name)) {
-            TT_LOG_ERROR("Lack of tx_buffer");
             rollback(node, old_tx_tail);
             goto done;
         }
@@ -726,7 +725,6 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     update_header->entity_count = entity_count;
 
     if (!end_encode(node, submessage_header, false)) {
-        TT_LOG_ERROR("Lack of tx_buffer");
         rollback(node, old_tx_tail);
         goto done;
     }
@@ -740,9 +738,8 @@ done:
 static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
-    if (!flush_tx(node, node->tx_tail)) {
-        TT_LOG_ERROR("Cannot flush tx_buffer");
-    }
+    // flush_tx() already logs its own reason on failure, so nothing to add here.
+    flush_tx(node, node->tx_tail);
 
     if (!tt_Node_schedule(node, time + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
@@ -759,8 +756,9 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
         return false;
     }
 
-    TT_LOG_DEBUG("  update->last_modified = %lu", update_header->last_modified);
-    TT_LOG_DEBUG("  update->entity_count = %u", update_header->entity_count);
+    TT_LOG_DEBUG("Update");
+    TT_LOG_DEBUG("  last_modified: %lu", update_header->last_modified);
+    TT_LOG_DEBUG("  entity_count: %u", update_header->entity_count);
 
     if ((node->updates[header->source] != NULL) &&
         (node->updates[header->source]->last_modified == update_header->last_modified)) {
@@ -769,7 +767,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 
     struct tt_UpdateHeader* new_update = _tt_malloc(length);
     if (new_update == NULL) {
-        TT_LOG_ERROR("Out of memory!");
+        TT_LOG_ERROR("Out of memory");
         return false;
     }
 
@@ -780,8 +778,9 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     for (int i = 0; i < entity_count && head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateEntity));
 
-        TT_LOG_DEBUG("  update_entity->endpoint_id = %08x", update_entity->endpoint_id);
-        TT_LOG_DEBUG("  update_entity->kind = %d", update_entity->kind);
+        TT_LOG_DEBUG("UpdateEntity");
+        TT_LOG_DEBUG("  endpoint_id: %08x", update_entity->endpoint_id);
+        TT_LOG_DEBUG("  kind: %d", update_entity->kind);
 
         uint16_t type_len = 0;
         char* type = NULL;
@@ -791,7 +790,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
             return false;
         }
 
-        TT_LOG_DEBUG("  update_entity->type: (%d)\"%s\"", type_len, type);
+        TT_LOG_DEBUG("  type: (%d)\"%s\"", type_len, type);
 
         uint16_t name_len = 0;
         char* name = NULL;
@@ -801,7 +800,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
             return false;
         }
 
-        TT_LOG_DEBUG("  update_entity->name: (%d)\"%s\"", name_len, name);
+        TT_LOG_DEBUG("  name: (%d)\"%s\"", name_len, name);
     }
 
     _tt_free(node->updates[header->source]);
@@ -814,11 +813,11 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
                          uint32_t tail) {
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
-        TT_LOG_ERROR("  Illegal DataHeader");
+        TT_LOG_ERROR("Illegal DataHeader");
         return false;
     }
 
-    TT_LOG_DEBUG("  Data");
+    TT_LOG_DEBUG("Data");
     TT_LOG_DEBUG("  endpoint_id: %08x", data_header->endpoint_id);
     TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
     TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
@@ -836,8 +835,8 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
         topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
 
     if (decoded < 0) {
-        TT_LOG_WARNING("Cannot decode data for endpoint_id: %08x, seq_no: %d", data_header->endpoint_id,
-                       data_header->seq_no);
+        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %d", data_header->endpoint_id,
+                     data_header->seq_no);
         return false;
     }
 
@@ -936,7 +935,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     }
 
     TT_LOG_DEBUG("CallRequest");
-    TT_LOG_DEBUG("  id: %08x", callrequest_header->endpoint_id);
+    TT_LOG_DEBUG("  endpoint_id: %08x", callrequest_header->endpoint_id);
     TT_LOG_DEBUG("  seq_no: %d", callrequest_header->seq_no);
     TT_LOG_DEBUG("  retry: %d", callrequest_header->retry);
 
@@ -975,7 +974,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
                                                   tt_is_native_endian(header));
 
         if (decoded < 0) {
-            TT_LOG_WARNING("Cannot decode request: %d", decoded);
+            TT_LOG_ERROR("Cannot decode request: %d", decoded);
             return false;
         }
 
@@ -984,7 +983,7 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
 
         service->request_free((struct tt_Request*)request);
 
-        TT_LOG_DEBUG("return_code: %d", return_code);
+        TT_LOG_DEBUG("  return_code: %d", return_code);
 
         // Send response
         // Header and SubmessageHeader
@@ -1023,10 +1022,10 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
             }
         }
 
-        // Cache submessage header before flush
+        // Cache submessage header before flush. set_server_cache() already logs its own reason
+        // on failure, so nothing to add here.
         if (!set_server_cache(server, submessage_header, header->source)) {
             rollback(node, old_tx_tail);
-            TT_LOG_ERROR("Cannot cache callresponse: Out of cache");
             return false;
         }
     }
@@ -1051,7 +1050,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     }
 
     TT_LOG_DEBUG("CallResponse");
-    TT_LOG_DEBUG("  id: %08x", callresponse_header->endpoint_id);
+    TT_LOG_DEBUG("  endpoint_id: %08x", callresponse_header->endpoint_id);
     TT_LOG_DEBUG("  seq_no: %d", callresponse_header->seq_no);
     TT_LOG_DEBUG("  retry: %d", callresponse_header->retry);
     TT_LOG_DEBUG("  return_code: %d", callresponse_header->return_code);
@@ -1101,29 +1100,23 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 
 static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header) {
+    // Each process_X() below already logs its own specific reason on failure, so this switch
+    // doesn't log again on top of that - only the type dispatch itself gets a message here.
     switch (submessage_header->type) {
     case tt_SUBMESSAGE_TYPE_UPDATE:
-        if (!process_update(node, header, buffer, head, body_tail)) {
-            TT_LOG_ERROR("ERROR on update");
-        }
+        process_update(node, header, buffer, head, body_tail);
         return true;
     case tt_SUBMESSAGE_TYPE_DATA:
-        if (!process_data(node, header, buffer, head, body_tail)) {
-            TT_LOG_ERROR("ERROR on data");
-        }
+        process_data(node, header, buffer, head, body_tail);
         return true;
     case tt_SUBMESSAGE_TYPE_ACKNACK:
         TT_LOG_ERROR("Not supported submessage type: %02x", submessage_header->type);
         return false;
     case tt_SUBMESSAGE_TYPE_CALLREQUEST:
-        if (!process_callrequest(node, header, buffer, head, body_tail)) {
-            TT_LOG_ERROR("ERROR on call request");
-        }
+        process_callrequest(node, header, buffer, head, body_tail);
         return true;
     case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
-        if (!process_callresponse(node, header, buffer, head, body_tail)) {
-            TT_LOG_ERROR("ERROR on call response");
-        }
+        process_callresponse(node, header, buffer, head, body_tail);
         return true;
     default:
         TT_LOG_ERROR("Illegal submessage type: %d, len: %02x", submessage_header->type, body_tail - head);
@@ -1157,7 +1150,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
         TT_LOG_DEBUG("Self sent packet");
         return true;
     }
-    TT_LOG_DEBUG("header->source: %d", header->source);
+    TT_LOG_DEBUG("source: %d", header->source);
 
     // Parse submessage
     while (true) {
@@ -1169,10 +1162,9 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
             break;
         }
 
-        TT_LOG_DEBUG("submessage->type: %d", submessage_header->type);
-        TT_LOG_DEBUG("submessage->receiver: %d", submessage_header->receiver);
-        TT_LOG_DEBUG("submessage->length: %d / %ld", submessage_header->length,
-                     tail - head + sizeof(struct tt_SubmessageHeader));
+        TT_LOG_DEBUG("type: %d", submessage_header->type);
+        TT_LOG_DEBUG("receiver: %d", submessage_header->receiver);
+        TT_LOG_DEBUG("length: %d / %ld", submessage_header->length, tail - head + sizeof(struct tt_SubmessageHeader));
 
         // Decode submessage body
         if (submessage_header->length < sizeof(struct tt_SubmessageHeader) ||
