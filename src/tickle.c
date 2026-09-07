@@ -441,7 +441,8 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
     void* buf = encode(node, submessage_header->length);
     if (buf != NULL) {
         _tt_memcpy(buf, submessage_header, submessage_header->length);
-        if (!end_encode(node, buf, false)) {
+        // Flush immediately, same reasoning as the initial call in tt_Client_call().
+        if (!end_encode(node, buf, true)) {
             TT_LOG_WARNING("Cannot flush call request retry, will retry later");
             rollback(node, old_tx_tail);
         }
@@ -515,8 +516,9 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     _tt_memcpy(cache, submessage_header, length);
     cache->length = length;
 
-    // Flush tx
-    if (!end_encode(node, submessage_header, false)) {
+    // Flush tx immediately: an RPC caller is synchronously waiting on the reply, so this can't
+    // sit batched until node_flush()'s next 1ms tick like a pub/sub publish reasonably can.
+    if (!end_encode(node, submessage_header, true)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
@@ -1056,8 +1058,10 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
         }
     }
 
-    // Flush
-    if (!end_encode(node, submessage_header, false)) {
+    // Flush immediately: the client on the other end is synchronously waiting on this response
+    // (or already retrying because it hasn't seen one yet), so it can't sit batched until
+    // node_flush()'s next 1ms tick like a pub/sub publish reasonably can.
+    if (!end_encode(node, submessage_header, true)) {
         rollback(node, old_tx_tail);
         return false;
     }
