@@ -267,6 +267,7 @@ static void pop_scheduler(struct tt_Node* node) {
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param);
+static void clear_server_cache_slot(struct tt_Server* server, int slot);
 
 tt_ret_t tt_Node_create(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
@@ -363,7 +364,7 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
 
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         server->cache[i] = NULL;
-        server->clean[i] = NULL;
+        server->clean_scheduled[i] = false;
     }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
@@ -572,13 +573,9 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
 
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         if (server->cache[i] != NULL) {
-            // Cancel each pending server_cache_clean before freeing the cache/config it
-            // references, otherwise that timer later fires on this (possibly freed/reused) server.
-            tt_Node_unschedule(server->node, server_cache_clean, server->clean[i]);
-            _tt_free(server->clean[i]);
-            server->clean[i] = NULL;
-            _tt_free(server->cache[i]);
-            server->cache[i] = NULL;
+            // Cancel each pending server_cache_clean before clearing the slot it references,
+            // otherwise that timer later fires on this (possibly freed/reused) server.
+            clear_server_cache_slot(server, i);
         }
     }
 
@@ -865,88 +862,64 @@ static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, ui
     return NULL;
 }
 
-struct server_cache_clean_config {
-    struct tt_Server* server;
-    struct tt_SubmessageHeader* cache;
-};
+// Cancels slot i's cleanup timer (if any) and frees it up for reuse. The timer must be
+// cancelled before the slot is reused, otherwise it later fires and clears whatever
+// unrelated entry ends up occupying the slot by then.
+static void clear_server_cache_slot(struct tt_Server* server, int slot) {
+    if (server->clean_scheduled[slot]) {
+        tt_Node_unschedule(server->node, server_cache_clean, &server->clean_config[slot]);
+        server->clean_scheduled[slot] = false;
+    }
+    server->cache[slot] = NULL;
+}
 
 static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(node);
     UNUSED(time);
 
     struct server_cache_clean_config* clean = param;
-
-    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (clean->server->cache[i] == clean->cache) {
-            clean->server->cache[i] = NULL;
-            clean->server->clean[i] = NULL;
-            _tt_free(clean->cache);
-            break;
-        }
-    }
-
-    _tt_free(clean);
+    clean->server->cache[clean->slot] = NULL;
+    clean->server->clean_scheduled[clean->slot] = false;
 }
 
 static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeader* submessage_header,
                              uint8_t receiver) {
     size_t length = ROUNDUP((uintptr_t)server->node->tx_buffer + server->node->tx_tail - (uintptr_t)submessage_header);
 
-    struct tt_SubmessageHeader* cache = _tt_malloc(length);
-    if (cache == NULL) {
-        TT_LOG_ERROR("Out of memory: %ld", length);
+    int free_slot = -1;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] != NULL && server->cache[i]->receiver == receiver) {
+            clear_server_cache_slot(server, i);
+        }
+
+        if (free_slot < 0 && server->cache[i] == NULL) {
+            free_slot = i;
+        }
+    }
+
+    if (free_slot < 0) {
+        TT_LOG_ERROR("Out of server cache slots");
         return false;
     }
 
+    // Copy into this slot's own fixed buffer instead of malloc'ing one.
+    struct tt_SubmessageHeader* cache = (struct tt_SubmessageHeader*)server->cache_buf[free_slot];
     _tt_memcpy(cache, submessage_header, length);
     cache->length = length;
 
-    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
-        if (server->cache[i] != NULL) {
-            struct tt_SubmessageHeader* existing = server->cache[i];
+    server->clean_config[free_slot].server = server;
+    server->clean_config[free_slot].slot = free_slot;
 
-            if (existing->receiver == receiver) {
-                // Cancel the old entry's cleanup timer before freeing it out from under it:
-                // otherwise that timer later frees whatever cache[i] holds by then, which may
-                // by now be an unrelated entry (or nothing) if this index gets reused.
-                tt_Node_unschedule(server->node, server_cache_clean, server->clean[i]);
-                _tt_free(server->clean[i]);
-                server->clean[i] = NULL;
-                _tt_free(server->cache[i]);
-                server->cache[i] = NULL;
-            }
-        }
-
-        if ((cache != NULL) && (server->cache[i] == NULL)) {
-            struct server_cache_clean_config* clean = _tt_malloc(sizeof(struct server_cache_clean_config));
-            if (clean == NULL) {
-                TT_LOG_ERROR("Out of memory");
-                _tt_free(cache);
-                return false;
-            }
-
-            clean->server = server;
-            clean->cache = cache;
-
-            // Only publish `cache` into the slot once its cleanup timer is guaranteed to run;
-            // otherwise the slot would hold an entry that never gets freed.
-            if (!tt_Node_schedule(server->node, tt_get_ns() + tt_SERVER_CACHE_TIMEOUT, server_cache_clean, clean)) {
-                TT_LOG_ERROR("Cannot schedule server_cache_clean");
-                _tt_free(clean);
-                _tt_free(cache);
-                return false;
-            }
-
-            server->cache[i] = cache;
-            server->clean[i] = clean;
-            cache = NULL;
-        }
-    }
-
-    if (cache != NULL) {
-        _tt_free(cache);
+    // Only publish `cache` into the slot once its cleanup timer is guaranteed to run;
+    // otherwise the slot would hold an entry that never gets cleared.
+    if (!tt_Node_schedule(server->node, tt_get_ns() + tt_SERVER_CACHE_TIMEOUT, server_cache_clean,
+                          &server->clean_config[free_slot])) {
+        TT_LOG_ERROR("Cannot schedule server_cache_clean");
         return false;
     }
+
+    server->clean_scheduled[free_slot] = true;
+    server->cache[free_slot] = cache;
 
     return true;
 }
@@ -1295,20 +1268,18 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
             node->last_modified = time;
         }
 
-        // Free any outstanding server response caches directly: the scheduler entries
-        // referencing them are about to be wiped wholesale below anyway, so there's no need to
-        // unschedule them individually here. The client call cache is a fixed buffer now (no
-        // malloc/free), so it just needs clearing, not freeing.
+        // Both the client call cache and server response caches are fixed buffers now (no
+        // malloc/free), so this just needs clearing. The scheduler entries referencing them are
+        // about to be wiped wholesale below anyway, so there's no need to unschedule them
+        // individually here.
         if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
             struct tt_Client* client = (struct tt_Client*)endpoint;
             client->cache = NULL;
         } else if (endpoint->kind == tt_KIND_SERVICE_SERVER) {
             struct tt_Server* server = (struct tt_Server*)endpoint;
             for (int j = 0; j < tt_MAX_SERVER_CACHE_COUNT; j++) {
-                _tt_free(server->clean[j]);
-                server->clean[j] = NULL;
-                _tt_free(server->cache[j]);
                 server->cache[j] = NULL;
+                server->clean_scheduled[j] = false;
             }
         }
     }

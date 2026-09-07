@@ -87,14 +87,25 @@ struct tt_Request;
 typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
                                      struct tt_Response* response);
 
+// Identifies which server/slot a scheduled server_cache_clean timer belongs to. Embedded (one
+// per slot) in struct tt_Server so scheduling that timer never needs a malloc either.
+struct server_cache_clean_config {
+    struct tt_Server* server;
+    int slot;
+};
+
 struct tt_Server { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
     struct tt_Service* service;
     tt_SERVER_CALLBACK callback;
 
-    struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT];
-    void* clean[tt_MAX_SERVER_CACHE_COUNT]; // Pending server_cache_clean timer config per cache slot, if any
+    // Fixed backing storage for cached responses (resent as-is if a client retries before
+    // seeing one), so caching a response never has to malloc/free on the RPC hot path.
+    uint8_t cache_buf[tt_MAX_SERVER_CACHE_COUNT][tt_MAX_BUFFER_LENGTH * 2];
+    struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT]; // NULL when slot i is unused
+    struct server_cache_clean_config clean_config[tt_MAX_SERVER_CACHE_COUNT];
+    bool clean_scheduled[tt_MAX_SERVER_CACHE_COUNT]; // Whether clean_config[i]'s timer is pending
 };
 
 struct tt_Request {};
