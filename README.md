@@ -33,7 +33,32 @@ $ make runperf_server # Launch the perf_server (receiver) on ns2 namespace
 $ make runperf_client # Send perf_client data sized to fill an Ethernet frame on ns1 namespace
 ```
 
-`perf_client` takes two flags to control what it sends, on top of `make runperf_client`'s defaults:
+### Command-line options
+
+Every example binary accepts the same interface-configuration flags, on top of the
+compiled-in defaults `make run*` relies on:
+
+- `-b` broadcast address (default `192.168.10.255`)
+- `-p` UDP port (default: compiled-in `tt_NODE_PORT`)
+- `-a` bind address (default: compiled-in `tt_NODE_ADDRESS`)
+- `-n` topic/service name to rendezvous on (default: each example's own hardcoded name, e.g.
+  `bulk_topic`, `set_bool_server`) - pass the same `-n` on both sides if you override it, or
+  they won't find each other
+- `-l` log level: `debug|info|warning|error|none` (default `info`)
+
+Senders (`ping`, `client`, `publisher`, `perf_client`) additionally take:
+
+- `-c` stop after this many sends (default `0` = run until Ctrl+C)
+- `-i` seconds between sends (default `1`, except `perf_client` - see below)
+
+Receivers (`pong`, `server`, `subscriber`, `perf_server`) additionally take:
+
+- `-d` exit automatically after this many seconds (default `0` = run until Ctrl+C)
+
+`-c`/`-d` exist mainly so a script (e.g. CI) can run a binary without it hanging forever
+waiting on a peer that never shows up.
+
+`perf_client` takes two more flags to control what it sends:
 
 ```sh
 $ ./perf_client [-s message_size_bytes] [-i interval_seconds]
@@ -88,12 +113,35 @@ $ ./perf_client -i 0.0011776
 ```
 
 `tt_Node_poll()`'s own call overhead sets a ceiling on how many times per second `perf_client`'s
-loop can even check whether a send is due, independent of `-i` - in this environment it idles
-at roughly 500 calls/sec (~2ms/call) rather than the library's 1ms `tt_NODE_TX_INTERVAL` would
-suggest, so a requested `-i` much smaller than ~2ms won't be hit exactly (it'll just behave
-like `-i 0`). `perf_client`'s interval reports and final summary always show the throughput it
-actually achieved, not just what `-s`/`-i` imply; a `-i` well above ~2ms (e.g. `0.01`) is
+loop can even check whether a send is due, independent of `-i`. `tt_receive()` waits for
+readability with `poll()` rather than blocking on `recvfrom()` with `SO_RCVTIMEO`, so an idle
+wait is capped at a real 1ms (`tt_NODE_TX_INTERVAL`) rather than the ~2ms an older,
+`SO_RCVTIMEO`-based implementation measured on this hardware regardless of the requested
+timeout. In practice it's usually faster than that worst case: `perf_client` also receives its
+own broadcast echo, so most `tt_Node_poll()` calls return as soon as that arrives instead of
+waiting out the full 1ms - measured at roughly 1,860 calls/sec (~0.54ms/call) with small
+messages on this network. A requested `-i` much smaller than that won't be hit exactly (it'll
+just behave like `-i 0`). `perf_client`'s interval reports and final summary always show the
+throughput it actually achieved, not just what `-s`/`-i` imply; a `-i` well above ~1ms (e.g. `0.01`) is
 paced accurately since it's comfortably larger than that ceiling.
+
+## Continuous performance testing
+
+Every push to `main` runs a hardware-in-the-loop latency and throughput test on two real
+Raspberry Pi boards connected by an Ethernet link (`rpi#1` as client/sender, `rpi#2` as
+server/receiver), via a self-hosted GitHub Actions runner:
+
+- [`.github/workflows/performance.yml`](.github/workflows/performance.yml) - triggers on push
+  to `main` (immediately - no debounce) or manually via `workflow_dispatch`; a newer push
+  cancels an in-progress run for an older one instead of queuing both
+- [`.github/scripts/run_perf.sh`](.github/scripts/run_perf.sh) - checks out the exact commit
+  being tested on both Pis, builds, runs `ping`/`pong` for latency and
+  `perf_client`/`perf_server` for throughput (using the `-c`/`-d` flags above so a run can never
+  hang waiting on a peer), and writes the results to the job summary
+
+Results are tracked over time and charted at **<https://tsnlab.github.io/tickle/dev/bench/>**;
+the workflow fails if latency more than doubles, or throughput drops to less than half, versus
+the last recorded run (`alert-threshold: "200%"` on each `github-action-benchmark` step).
 
 ## License
 GPLv3 or proprietary license on request
