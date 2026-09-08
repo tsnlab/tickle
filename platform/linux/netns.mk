@@ -1,13 +1,15 @@
 # Local dev/test helpers: run the example binaries across two Linux network namespaces
 # connected by a veth pair, to exercise UDP broadcast without needing real network hardware.
-# Split out of the main Makefile so build logic and this environment-specific tooling don't
-# get tangled together - included from there (`include platform/linux/netns.mk`) rather than
-# invoked as its own standalone Makefile the way platform/freertos/Makefile is, since (unlike
-# FreeRTOS) there's no separate toolchain/target here that would need its own invocation; the
-# runX/createns/etc. recipes below still run with the repo root as their working directory
-# (wherever `make` itself was invoked from), regardless of which included .mk file defines them.
+# Split out of platform/linux/Makefile so build logic and this environment-specific tooling don't
+# get tangled together - included from there (`include netns.mk`, same directory) rather than
+# invoked as its own standalone Makefile, since there's no separate toolchain/target here that
+# would need its own invocation. The runX targets' `./client` etc. resolve correctly because the
+# binaries they depend on (client, ...) are built right here in platform/linux/ too now.
+#
+# test-linux itself (running platform/linux/test.sh, which does createns/run/assert/deletens
+# automatically) is defined at the repo root, not here - see that Makefile's own comment.
 
-.PHONY: createns deletens runclient runserver runpublisher runsubscriber runping runpong runperf_client runperf_server dump1 dump2 test-linux
+.PHONY: createns deletens runclient runserver runpublisher runsubscriber runping runpong runperf_client runperf_server dump1 dump2
 
 createns:
 # Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
@@ -69,10 +71,3 @@ dump1:
 
 dump2:
 	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
-
-# Automated (createns/run ping+pong/assert/deletens), unlike the manual runX targets above -
-# see platform/linux/test.sh. Named for the platform under test (matches examples/linux/), not
-# the mechanism - see test-freertos (top-level Makefile, platform/freertos/test.sh) for the same
-# naming choice on the other platform.
-test-linux:
-	platform/linux/test.sh

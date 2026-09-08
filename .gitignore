@@ -1,6 +1,11 @@
-# Build output directory (obj/<debug|release>/...), including extension-less binaries in
-# obj/tests/ that the *.o/*.d patterns below don't happen to match
-/obj/
+# Build output directory (platform/linux/obj/<debug|release>/...), including extension-less
+# binaries in obj/tests/ that the *.o/*.d patterns below don't happen to match. Lives under
+# platform/linux/ (not the repo root) now that Linux's build is treated as one platform among
+# others, matching platform/freertos/'s own obj-*/ - see platform/linux/Makefile.
+# platform/linux/obj/.gitkeep (keeping this otherwise-generated directory present in git) stays
+# tracked regardless, same as it did under the old bare /obj/ pattern - gitignore doesn't untrack
+# files already in the index.
+/platform/linux/obj/
 
 # platform/freertos's own cross-build output: per-(ROLE,NODE_ID) obj dirs and ELF/map files (see
 # its Makefile), the pcaps `make run`/test.sh capture via -object filter-dump, and test.sh's own
@@ -58,15 +63,16 @@
 *.idb
 *.pdb
 
-# Project build outputs (see Makefile: set_bool/uint64/ping_pong/perf example binaries)
-/client
-/server
-/publisher
-/subscriber
-/ping
-/pong
-/perf_client
-/perf_server
+# Project build outputs (see platform/linux/Makefile: set_bool/uint64/ping_pong/perf example
+# binaries, built there now rather than at the repo root)
+/platform/linux/client
+/platform/linux/server
+/platform/linux/publisher
+/platform/linux/subscriber
+/platform/linux/ping
+/platform/linux/pong
+/platform/linux/perf_client
+/platform/linux/perf_server
 
 # clang-tidy's compilation database, when generated locally (e.g. `bear -- make all`, as
 # check-all.yml does in CI) - a local build-path artifact, not something to commit.

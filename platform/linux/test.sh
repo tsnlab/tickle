@@ -19,16 +19,14 @@
 # send path, which ping/pong's always-immediately-flushed tt_Client_call() never reaches at all -
 # see examples/freertos/uint64/main_publisher.c's file-level comment (same reasoning, different HAL).
 #
-# Unlike platform/freertos/test.sh (fully self-contained: its own Makefile builds and its own
-# QEMU-launched ELFs run entirely within platform/freertos/), the binaries this test runs are
-# built by the top-level Makefile and land at the repo root - so this script reaches up to ../..
-# for both the build and the built binaries, while still keeping its own working files (logs)
-# local to this directory.
+# Fully self-contained, like platform/freertos/test.sh: platform/linux/Makefile builds the
+# binaries this test runs right here in platform/linux/, so - unlike before Linux's own Makefile
+# moved to live alongside this script - there's no need to reach up to the repo root for either
+# the build or the built binaries.
 
 set -u
 cd "$(dirname "$0")"
 
-ROOT=../..
 MIN_COUNT=5
 
 # Runs one real round trip: $sender (foreground, bounded via $sender_args - typically -c/-i) on
@@ -59,13 +57,13 @@ run_round_trip() {
     # backgrounded process attached to the invoking terminal's stdin is a latent SIGTTIN/
     # job-control hazard (see platform/freertos/test.sh's own fix for the concrete failure mode
     # this avoids) - cheap to rule out.
-    sudo ip netns exec ns2 "$ROOT/$receiver" -d 15 </dev/null >"$receiver.log" 2>&1 &
+    sudo ip netns exec ns2 "./$receiver" -d 15 </dev/null >"$receiver.log" 2>&1 &
     receiver_pid=$!
 
     sleep 1
 
     # shellcheck disable=SC2086 - sender_args is a deliberately unquoted, space-separated flag list
-    sudo ip netns exec ns1 "$ROOT/$sender" $sender_args </dev/null >"$sender.log" 2>&1
+    sudo ip netns exec ns1 "./$sender" $sender_args </dev/null >"$sender.log" 2>&1
     sender_status=$?
 
     wait "$receiver_pid" 2>/dev/null
@@ -102,10 +100,10 @@ run_round_trip() {
 # creating fresh ones - createns/deletens themselves aren't safe to call twice in a row.
 sudo ip netns delete ns1 >/dev/null 2>&1
 sudo ip netns delete ns2 >/dev/null 2>&1
-make -C "$ROOT" createns
+make createns
 
-make -C "$ROOT" ping_pong
-make -C "$ROOT" uint64
+make ping_pong
+make uint64
 
 status=0
 # pong.c never logs per-request - but a "seq=N time=X ms" line in ping's own log can only appear
@@ -117,6 +115,6 @@ run_round_trip ping "-c 20 -i 0.2" pong '^seq=' '' || status=1
 # subscriber.log, the receiver this time.
 run_round_trip publisher "-c 20 -i 0.2" subscriber '' '  seq_no:' || status=1
 
-make -C "$ROOT" deletens
+make deletens
 
 exit $status

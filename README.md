@@ -60,9 +60,14 @@ $ make ping_pong  # Build the ping/pong latency-measurement example
 $ make perf       # Build the perf_client/perf_server throughput example
 ```
 
+These all work from the repo root, but actually build in (and place `libtickle.a` and every
+example binary into) [`platform/linux/`](platform/linux/Makefile) - the root `Makefile` is just a
+thin forwarding shim to it, matching how `platform/freertos/` owns the FreeRTOS build. Run
+examples from there, e.g. `./platform/linux/ping` or `cd platform/linux && ./ping`.
+
 Add `BUILD_TYPE=release` for an optimized build (`-O2 -DNDEBUG`) instead of the default
-debug build (`-O0 -g`); each mode keeps its own object cache under `obj/<type>/`, so
-switching between them doesn't need a `make clean` in between:
+debug build (`-O0 -g`); each mode keeps its own object cache under `platform/linux/obj/<type>/`,
+so switching between them doesn't need a `make clean` in between:
 
 ```sh
 $ make all BUILD_TYPE=release
