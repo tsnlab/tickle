@@ -32,6 +32,17 @@ switching between them doesn't need a `make clean` in between:
 $ make all BUILD_TYPE=release
 ```
 
+## Tests
+
+```sh
+$ make test
+```
+
+Each `tests/test_*.c` is a small, framework-free, whitebox unit test: it `#include`s
+`src/tickle.c` directly (to reach its `static` functions) and links against a mock HAL
+(`tests/test_mock.h`) instead of `hal_linux.c`, so it runs with no real sockets/network and no
+timing dependency. `make test` builds and runs every one, stopping at the first failure.
+
 ## Run examples
 ```sh
 $ make createns

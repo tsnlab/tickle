@@ -1,0 +1,8 @@
+InheritParentConfig: true
+Checks: '-readability-magic-numbers,-misc-include-cleaner'
+# readability-magic-numbers: test fixture values (sentinel IDs, arbitrary timestamps) don't
+# benefit from being named constants - the point is that their exact value doesn't matter.
+# misc-include-cleaner: every test .c #includes ../src/tickle.c directly (whitebox, to reach
+# its static functions), which pulls in everything tickle.c itself includes - the tool then
+# flags plenty of correctly-used symbols as "not directly included" since it can't see past
+# that. Both checks stay enabled for the rest of the project via InheritParentConfig.

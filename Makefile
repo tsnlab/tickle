@@ -66,7 +66,14 @@ EXAMPLE_BINS := client:examples/set_bool server:examples/set_bool \
 # `mkdir -p` calls against a per-file rule.
 OBJ_DIRS = $(OBJ)/src $(sort $(addprefix $(OBJ)/,$(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))))))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf lint clean
+# Unit tests: each tests/test_*.c #includes ../src/tickle.c directly (whitebox, to reach its
+# static functions) and provides its own mock HAL (tests/test_mock.h), so it's linked against
+# encoding.c/log.c only - never hal_linux.c or libtickle.a, and never runs real network I/O.
+TEST_DIR = tests
+TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
+TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/$(TEST_DIR)/%,$(TEST_SRCS))
+
+.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean
 
 all:
 	$(MAKE) library
@@ -120,6 +127,18 @@ ALL_OBJS = $(OBJS) $(ALL_EXAMPLE_OBJS)
 # Pull in the auto-generated per-object dependency files (headers each .o actually used),
 # so changing a header rebuilds everything that includes it. Silently ignored on a clean tree.
 -include $(ALL_OBJS:.o=.d)
+
+test: $(TEST_BINS)
+	@for bin in $(TEST_BINS); do \
+	    echo "-- $$bin --"; \
+	    ./$$bin || exit 1; \
+	done
+
+$(OBJ)/$(TEST_DIR)/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/$(TEST_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
+
+$(OBJ)/$(TEST_DIR):
+	mkdir -p $@
 
 lint:
 	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +

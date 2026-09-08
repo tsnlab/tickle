@@ -1,3 +1,7 @@
+# Build output directory (obj/<debug|release>/...), including extension-less binaries in
+# obj/tests/ that the *.o/*.d patterns below don't happen to match
+/obj/
+
 # Prerequisites
 *.d
 
