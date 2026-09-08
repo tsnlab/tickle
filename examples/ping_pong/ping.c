@@ -21,6 +21,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
+#include "../common/cli_opts.h"
 #include "PingPong.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
@@ -118,23 +119,6 @@ static void print_statistics(uint64_t start_time) {
     }
 }
 
-static bool parse_log_level(const char* str, tt_LogLevel* level) {
-    if (strcmp(str, "debug") == 0) {
-        *level = TT_LOG_DEBUG;
-    } else if (strcmp(str, "info") == 0) {
-        *level = TT_LOG_INFO;
-    } else if (strcmp(str, "warning") == 0) {
-        *level = TT_LOG_WARNING;
-    } else if (strcmp(str, "error") == 0) {
-        *level = TT_LOG_ERROR;
-    } else if (strcmp(str, "none") == 0) {
-        *level = TT_LOG_NONE;
-    } else {
-        return false;
-    }
-    return true;
-}
-
 static void print_usage(const char* prog) {
     fprintf(stderr,
             "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-c count] [-i interval_seconds]\n"
@@ -149,57 +133,26 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
 }
 
-struct cli_options {
-    char* broadcast;
-    int port;        // 0 = keep the compiled-in default
-    char* bind_addr; // NULL = keep the compiled-in default
-    double interval_s;
-    char* endpoint_name;
-    tt_LogLevel log_level;
-    bool log_level_set;
-};
-
-// Returns 0 on success, non-zero if argv held an unrecognized/incomplete option.
-static int parse_args(int argc, char** argv, struct cli_options* opts) {
+static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
     opts->interval_s = 1.0;
-    opts->endpoint_name = "ping_pong_server";
+    opts->name = "ping_pong_server";
     opts->log_level = TT_LOG_INFO;
     opts->log_level_set = false;
+    opts->count = 0;
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-b") == 0 && i + 1 < argc) {
-            opts->broadcast = argv[++i];
-        } else if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
-            opts->port = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "-a") == 0 && i + 1 < argc) {
-            opts->bind_addr = argv[++i];
-        } else if (strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
-            target_count = (uint32_t)strtoul(argv[++i], NULL, 10);
-        } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
-            opts->interval_s = strtod(argv[++i], NULL);
-        } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
-            opts->endpoint_name = argv[++i];
-        } else if (strcmp(argv[i], "-l") == 0 && i + 1 < argc) {
-            if (!parse_log_level(argv[++i], &opts->log_level)) {
-                return 1;
-            }
-            opts->log_level_set = true;
-        } else {
-            return 1;
-        }
-    }
-    return 0;
+    return tt_example_parse_args(argc, argv, opts, TT_EXAMPLE_OPT_COUNT | TT_EXAMPLE_OPT_INTERVAL);
 }
 
 int main(int argc, char** argv) {
-    struct cli_options opts;
+    struct tt_example_cli_options opts;
     if (parse_args(argc, argv, &opts) != 0) {
         print_usage(argv[0]);
         return 1;
     }
+    target_count = opts.count;
 
     send_interval_ns = (uint64_t)(opts.interval_s * (double)tt_SECOND);
 
@@ -230,8 +183,7 @@ int main(int argc, char** argv) {
     printf("Node created(#%d)\n", node.id);
 
     struct tt_Client client;
-    ret =
-        tt_Node_create_client(&node, &client, &PingPongService, opts.endpoint_name, (tt_CLIENT_CALLBACK)ping_callback);
+    ret = tt_Node_create_client(&node, &client, &PingPongService, opts.name, (tt_CLIENT_CALLBACK)ping_callback);
     if (ret != 0) {
         printf("Cannot create client: %d\n", ret);
         return ret;

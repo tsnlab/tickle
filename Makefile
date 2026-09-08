@@ -61,12 +61,20 @@ EXAMPLE_BINS := client:examples/set_bool server:examples/set_bool \
                 ping:examples/ping_pong pong:examples/ping_pong \
                 perf_client:examples/perf perf_server:examples/perf
 
+# Every example binary links this too (see examples/common/cli_opts.h) - unlike EXAMPLE_BINS'
+# per-directory _SHARED files below, it lives outside every example's own directory, so it's
+# added to each one's object list explicitly instead of being picked up by that directory's
+# wildcard.
+COMMON_SRCS = examples/common/cli_opts.c
+COMMON_OBJS = $(patsubst %.c,$(OBJ)/%.o,$(COMMON_SRCS))
+
 # Directories the object rule below needs to exist first, derived from EXAMPLE_BINS so a
 # newly-registered example directory doesn't also need a manual entry here. Order-only
 # prerequisites (see `|` below) so make doesn't try to relink everything just because a
 # sibling .o's mkdir touched the directory's mtime, and so -j doesn't race multiple
 # `mkdir -p` calls against a per-file rule.
-OBJ_DIRS = $(OBJ)/src $(sort $(addprefix $(OBJ)/,$(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))))))
+OBJ_DIRS = $(OBJ)/src $(OBJ)/examples/common \
+           $(sort $(addprefix $(OBJ)/,$(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))))))
 
 # Unit tests: each tests/test_*.c #includes ../src/tickle.c directly (whitebox, to reach its
 # static functions) and provides its own mock HAL (tests/test_mock.h), so it's linked against
@@ -116,7 +124,7 @@ ALL_EXAMPLE_OBJS :=
 define EXAMPLE_RULE
 $(1)_MAIN := $(2)/$(1).c
 $(1)_SHARED := $$(filter-out $(EXAMPLE_MAIN_FILES),$$(wildcard $(2)/*.c))
-$(1)_OBJS := $$(patsubst %.c,$(OBJ)/%.o,$$($(1)_MAIN) $$($(1)_SHARED))
+$(1)_OBJS := $$(patsubst %.c,$(OBJ)/%.o,$$($(1)_MAIN) $$($(1)_SHARED)) $(COMMON_OBJS)
 ALL_EXAMPLE_OBJS += $$($(1)_OBJS)
 
 $(1): $$($(1)_OBJS) libtickle.a
