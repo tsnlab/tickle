@@ -1,5 +1,26 @@
 # TickLE: Real-Time ROS2 communication middleware optimized for 10Base-T1S
 
+See [DESIGN.md](DESIGN.md) for the wire protocol, class/sequence diagrams, and the reasoning
+behind TickLE's performance/reliability tradeoffs (fixed-size caches instead of `malloc`/`free`,
+`poll()`-based I/O, single-threaded-per-node concurrency, ...) and its hardware-in-the-loop CI
+architecture. See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test/style expectations before
+opening a PR.
+
+## Platforms
+
+TickLE has a real HAL (`include/tickle/hal_<platform>.h` + `src/hal_<platform>.c`) for two
+platforms:
+
+- **Linux** - the native build below, over real kernel UDP sockets (`src/hal_linux.c`).
+- **FreeRTOS + lwIP**, cross-built for RISC-V and run under QEMU (`platform/freertos/`, own
+  [Makefile](platform/freertos/Makefile)) - over lwIP's socket API against a from-scratch
+  virtio-net driver (`platform/freertos/board/virtio_net.c`). See
+  [platform/freertos/run_pair.sh](platform/freertos/run_pair.sh) for a real two-instance
+  ping/pong round trip under QEMU, or `make test-qemu` below to run it.
+
+There's no fallback HAL for any other platform - `include/tickle/hal.h` fails to compile with a
+clear `#error` naming these two instead of silently offering a HAL that doesn't exist.
+
 ## Security & concurrency model
 
 TickLE has no authentication or encryption: any node on the broadcast domain can send a
@@ -35,13 +56,26 @@ $ make all BUILD_TYPE=release
 ## Tests
 
 ```sh
-$ make test
+$ make test        # Unit tests only (no real sockets, no network namespaces, no QEMU)
+$ make test-netns   # A real round trip over Linux network namespaces (src/hal_linux.c)
+$ make test-qemu    # A real round trip under QEMU (platform/freertos, src/hal_freertos.c)
+$ make test-all     # All three of the above, in order - what CI runs (test-all.yml)
 ```
 
 Each `tests/test_*.c` is a small, framework-free, whitebox unit test: it `#include`s
 `src/tickle.c` directly (to reach its `static` functions) and links against a mock HAL
 (`tests/test_mock.h`) instead of `hal_linux.c`, so it runs with no real sockets/network and no
 timing dependency. `make test` builds and runs every one, stopping at the first failure.
+
+`test-netns` and `test-qemu` instead exercise a real platform HAL end to end - two independent
+`ping`/`pong` processes (or QEMU instances) actually exchanging packets, not a mock - over Linux
+network namespaces and emulated virtio-net respectively (see [netns_run_pair.sh](netns_run_pair.sh)
+/ [platform/freertos/run_pair.sh](platform/freertos/run_pair.sh)). Both need `sudo` (namespaces)
+or the RISC-V toolchain + `qemu-system-riscv32` (see
+[platform/freertos/Makefile](platform/freertos/Makefile)'s `lint` target for the exact packages),
+so they're not part of plain `make test`. The two-Raspberry-Pi hardware-in-the-loop performance
+test below is a separate, fourth tier - it needs real hardware, so there's no local
+`make test-*` equivalent for it.
 
 ## Run examples
 ```sh
