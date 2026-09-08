@@ -18,9 +18,13 @@ CC = $(CROSS)gcc
 OBJCOPY = $(CROSS)objcopy
 
 # ROLE picks which main file (and any role-specific extra sources) gets built:
-#   selftest (default) - main.c, milestones 1-3's single-instance harness
-#   ping / pong         - main_ping.c/main_pong.c, milestone 4's two-instance round trip,
-#                          reusing examples/ping_pong/PingPong.{c,h} (see main_ping.c)
+#   selftest (default)     - main.c, milestones 1-3's single-instance harness
+#   ping / pong             - main_ping.c/main_pong.c, the RPC (call/response) round trip,
+#                             reusing examples/ping_pong/PingPong.{c,h} (see main_ping.c)
+#   publisher / subscriber - main_publisher.c/main_subscriber.c, the pub/sub round trip (covers
+#                             tt_Publisher_publish()'s batched-flush path ping/pong never
+#                             exercises - see main_publisher.c), reusing
+#                             examples/uint64/UInt64.{c,h}
 # NODE_ID sets this instance's static IP (192.168.10.$(NODE_ID)) via -DNET_NODE_ID - see
 # net_init.c. Each (ROLE, NODE_ID) pair gets its own obj dir/ELF name so building more than one
 # doesn't clobber another's cached objects (they're compiled with different -D flags).
@@ -39,8 +43,16 @@ else ifeq ($(ROLE),pong)
 MAIN_SRC = main_pong.c
 ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
 ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
+else ifeq ($(ROLE),publisher)
+MAIN_SRC = main_publisher.c
+ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
+ROLE_INCLUDES = -I$(ROOT)/examples/uint64
+else ifeq ($(ROLE),subscriber)
+MAIN_SRC = main_subscriber.c
+ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
+ROLE_INCLUDES = -I$(ROOT)/examples/uint64
 else
-$(error Unknown ROLE '$(ROLE)': expected 'selftest', 'ping', or 'pong')
+$(error Unknown ROLE '$(ROLE)': expected 'selftest', 'ping', 'pong', 'publisher', or 'subscriber')
 endif
 
 ROOT = ../..
@@ -160,8 +172,9 @@ clean:
 # this directory, alongside hal_linux.*, but need these same cross-compile flags - the top-level
 # Makefile's own `lint` explicitly excludes both this directory and hal_freertos.* for that
 # reason, deferring to this target instead).
-# -I$(ROOT)/examples/ping_pong: main_ping.c/main_pong.c's own #include "PingPong.h" - harmless
-# to pass for files that don't need it.
+# -I$(ROOT)/examples/ping_pong / .../uint64: main_ping.c/main_pong.c's #include "PingPong.h" and
+# main_publisher.c/main_subscriber.c's #include "UInt64.h" - harmless to pass for files that
+# don't need one or the other.
 PICOLIBC_INCLUDE = /usr/lib/picolibc/riscv64-unknown-elf/include
 TIDY_ARGS = --extra-arg=--target=riscv32-unknown-elf --extra-arg=-isystem --extra-arg=$(PICOLIBC_INCLUDE) \
             --extra-arg=-DTT_PLATFORM_FREERTOS \
@@ -169,7 +182,7 @@ TIDY_ARGS = --extra-arg=--target=riscv32-unknown-elf --extra-arg=-isystem --extr
             --extra-arg=-I$(FREERTOS)/include --extra-arg=-I$(RISCV_PORT) \
             --extra-arg=-I$(LWIP)/src/include --extra-arg=-I$(LWIP_FREERTOS_PORT)/include \
             --extra-arg=-I$(ROOT)/include --extra-arg=-I$(ROOT)/src \
-            --extra-arg=-I$(ROOT)/examples/ping_pong
+            --extra-arg=-I$(ROOT)/examples/ping_pong --extra-arg=-I$(ROOT)/examples/uint64
 
 # hal_freertos.c/h live under include/src, outside this directory's own .clang-tidy (which
 # disables misc-include-cleaner/performance-no-int-to-ptr for the same reasons given there) - so

@@ -7,79 +7,101 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-# Milestone 4 (see /home/semih/.claude/plans/lively-sauteeing-rainbow.md): builds a pong (server,
-# node 2) and a ping (client, node 1) image and runs both at once, joined to the same QEMU
-# `-netdev socket,mcast=` group - the same "two independent guests on one broadcast segment"
+# Milestone 4 (see /home/semih/.claude/plans/lively-sauteeing-rainbow.md): builds a receiver
+# (server, node 2) and a sender (client, node 1) image and runs both at once, joined to the same
+# QEMU `-netdev socket,mcast=` group - the same "two independent guests on one broadcast segment"
 # setup the two real Raspberry Pis simulate for the actual HIL performance workflow
 # (.github/workflows/performance.yml), just emulated instead of on real hardware.
+#
+# Runs two such round trips: ping/pong (RPC, call/response) and publisher/subscriber (pub/sub).
+# The latter specifically exercises tt_Publisher_publish()'s batched (not immediately flushed)
+# send path, which ping/pong's always-immediately-flushed tt_Client_call() never reaches at all -
+# see main_publisher.c's file-level comment.
 
 set -u
 cd "$(dirname "$0")"
 
 MCAST_GROUP=230.0.0.1:5000
 DURATION_S=${DURATION_S:-10}
+MIN_COUNT=5
 
-make ROLE=pong NODE_ID=2 all
-make ROLE=ping NODE_ID=1 all
+# Builds and runs one two-instance round trip: $server_role (background, for the whole test) and
+# $client_role (foreground, time-bounded by $DURATION_S) joined to the same QEMU
+# `-netdev socket,mcast=` group - $client_role is what actually drives the test, so once its
+# `timeout` returns, there's nothing further to wait for.
+#
+# Neither QEMU process crashing nor $client_role's own process exiting cleanly actually proves a
+# real round trip happened - $server_role could have silently failed to answer/receive anything
+# and this would still look like a clean run by exit status alone. $client_grep/$server_grep
+# require a real minimum number ($MIN_COUNT) of protocol-level log lines on each side instead of
+# only checking that nothing crashed.
+run_round_trip() {
+    client_role=$1
+    client_node=$2
+    server_role=$3
+    server_node=$4
+    client_grep=$5
+    server_grep=$6
 
-rm -f pong.pcap ping.pcap pong.log ping.log
+    make ROLE=$server_role NODE_ID=$server_node all
+    make ROLE=$client_role NODE_ID=$client_node all
 
-# pong runs in the background for the whole test; ping (foreground, time-bounded) is what
-# actually drives it - once ping's `timeout` returns, there's nothing further to wait for.
-# stdin is explicitly redirected from /dev/null on both: -nographic multiplexes the guest's
-# serial console AND the QEMU monitor over stdin, and a *backgrounded* process left attached to
-# the invoking terminal's stdin can get suspended by the shell's job control (SIGTTIN) the moment
-# it tries to read - at which point it's stopped, not running, and later `kill` (SIGTERM) can't
-# actually terminate a stopped process, so `wait` below would block forever. Redirecting both
-# (not just pong's) keeps the two instances' behavior identical and avoids relying on foreground
-# vs background job-control semantics at all.
-qemu-system-riscv32 -machine virt -nographic -bios none -kernel RTOSDemo-pong-2.elf \
-    -global virtio-mmio.force-legacy=off \
-    -netdev socket,id=net0,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net0 \
-    -object filter-dump,id=dump0,netdev=net0,file=pong.pcap \
-    </dev/null >pong.log 2>&1 &
-pong_pid=$!
+    rm -f "$server_role.pcap" "$client_role.pcap" "$server_role.log" "$client_role.log"
 
-# Give pong a moment to finish booting/negotiating its virtio-net link before ping starts
-# sending - not load-bearing (a request during that window would just time out and retry), but
-# avoids a guaranteed-to-be-wasted first attempt.
-sleep 1
+    # stdin explicitly redirected from /dev/null on both: -nographic multiplexes the guest's
+    # serial console AND the QEMU monitor over stdin, and a *backgrounded* process left attached
+    # to the invoking terminal's stdin can get suspended by the shell's job control (SIGTTIN) the
+    # moment it tries to read - at which point it's stopped, not running, and a later `kill`
+    # (SIGTERM) can't actually terminate a stopped process, so `wait` below would block forever.
+    qemu-system-riscv32 -machine virt -nographic -bios none -kernel "RTOSDemo-$server_role-$server_node.elf" \
+        -global virtio-mmio.force-legacy=off \
+        -netdev socket,id=net0,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net0 \
+        -object filter-dump,id=dump0,netdev=net0,file="$server_role.pcap" \
+        </dev/null >"$server_role.log" 2>&1 &
+    server_pid=$!
 
-timeout "$DURATION_S" qemu-system-riscv32 -machine virt -nographic -bios none -kernel RTOSDemo-ping-1.elf \
-    -global virtio-mmio.force-legacy=off \
-    -netdev socket,id=net1,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net1 \
-    -object filter-dump,id=dump1,netdev=net1,file=ping.pcap \
-    </dev/null >ping.log 2>&1
-ping_status=$?
+    # Give the background instance a moment to finish booting/negotiating its virtio-net link
+    # before the foreground one starts sending - not load-bearing (a request during that window
+    # would just time out and retry), but avoids a guaranteed-to-be-wasted first attempt.
+    sleep 1
 
-kill "$pong_pid" 2>/dev/null
-wait "$pong_pid" 2>/dev/null
+    timeout "$DURATION_S" qemu-system-riscv32 -machine virt -nographic -bios none \
+        -kernel "RTOSDemo-$client_role-$client_node.elf" \
+        -global virtio-mmio.force-legacy=off \
+        -netdev socket,id=net1,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net1 \
+        -object filter-dump,id=dump1,netdev=net1,file="$client_role.pcap" \
+        </dev/null >"$client_role.log" 2>&1
+    client_status=$?
 
-echo "=== pong.log ==="
-cat pong.log
-echo "=== ping.log ==="
-cat ping.log
+    kill "$server_pid" 2>/dev/null
+    wait "$server_pid" 2>/dev/null
 
-# timeout's own exit code for "killed after the time limit" (124) is the expected, successful
-# outcome here - ping has no other way to stop on its own (see main_ping.c: it's just an
-# infinite send/poll loop, like the real ping/pong example's run-until-Ctrl+C default).
-if [ "$ping_status" -ne 124 ] && [ "$ping_status" -ne 0 ]; then
-    echo "run_pair: ping exited unexpectedly (status $ping_status)"
-    exit 1
-fi
+    echo "=== $server_role.log ==="
+    cat "$server_role.log"
+    echo "=== $client_role.log ==="
+    cat "$client_role.log"
 
-# Neither QEMU process crashing nor ping's own process exiting cleanly actually proves a real
-# round trip happened - pong could have silently failed to answer a single request (e.g. the
-# link came up but requests never actually arrived) and this would still look like a clean run
-# by exit status alone. Require a real minimum number of successful replies logged on each side
-# instead of only checking that nothing crashed.
-MIN_REPLIES=5
-replies=$(grep -c 'ping: seq=.*rtt=' ping.log)
-requests=$(grep -c 'pong: request seq=' pong.log)
+    # timeout's own exit code for "killed after the time limit" (124) is the expected, successful
+    # outcome here - $client_role has no other way to stop on its own (see main_ping.c/
+    # main_publisher.c: both are just infinite send/poll loops).
+    if [ "$client_status" -ne 124 ] && [ "$client_status" -ne 0 ]; then
+        echo "run_round_trip($client_role/$server_role): $client_role exited unexpectedly (status $client_status)"
+        return 1
+    fi
 
-echo "run_pair: pong answered $requests request(s), ping received $replies real repl(y/ies)"
+    client_seen=$(grep -c "$client_grep" "$client_role.log")
+    server_seen=$(grep -c "$server_grep" "$server_role.log")
+    echo "run_round_trip($client_role/$server_role): $server_role saw $server_seen, $client_role saw $client_seen"
 
-if [ "$replies" -lt "$MIN_REPLIES" ] || [ "$requests" -lt "$MIN_REPLIES" ]; then
-    echo "run_pair: fewer than $MIN_REPLIES real round trips observed - treating as a failure"
-    exit 1
-fi
+    if [ "$client_seen" -lt "$MIN_COUNT" ] || [ "$server_seen" -lt "$MIN_COUNT" ]; then
+        echo "run_round_trip($client_role/$server_role): fewer than $MIN_COUNT real round trips observed - treating as a failure"
+        return 1
+    fi
+    return 0
+}
+
+status=0
+run_round_trip ping 1 pong 2 'ping: seq=.*rtt=' 'pong: request seq=' || status=1
+run_round_trip publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
+
+exit $status
