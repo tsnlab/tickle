@@ -10,15 +10,18 @@
 
 // ROLE=perf_client: the perf (throughput) round trip's sending side - reuses
 // examples/linux/perf/Bulk.{c,h} verbatim (pure protocol encode/decode code, no POSIX
-// dependency), same reasoning as main_ping.c reusing PingPong.{c,h} over ping.c itself. Unlike
-// examples/linux/perf/perf_client.c (which defaults to filling a whole Ethernet frame - see its
-// own comment - to measure real throughput), this sends a small, fixed-size message at a modest,
-// fixed interval: this exists to prove the round trip works under QEMU/virtio-net, not to
-// measure throughput (that's the two-real-Raspberry-Pi HIL benchmark's job - see
-// .github/workflows/performance.yml). Logs one line per send ("perf_client: sent seq=N") rather
-// than a final summary, since - like main_ping.c/main_client.c - this task runs forever;
-// platform/freertos/test.sh counts these per-send lines the same way it already does for the
-// other pairs.
+// dependency), same reasoning as main_ping.c reusing PingPong.{c,h} over ping.c itself. Same
+// intent as examples/linux/perf/perf_client.c's own defaults too now (see its own comment on why
+// throttling it down doesn't make sense on either platform): fills a full Ethernet frame and
+// republishes itself as soon as tt_Node_poll() next runs it, i.e. as fast as this platform's
+// virtio-net driver and lwIP stack actually allow - real max throughput, not a fixed rate.
+//
+// Reports once a second (interval_sent_msgs/bytes, like perf_client.c's own report()) rather than
+// logging every single publish - unlike a receive callback, this runs inside the same scheduled-
+// task loop as tt_Node_poll() itself, so at max rate that could be many hundreds of printf()s a
+// second onto a byte-at-a-time UART, dominating the loop's own timing instead of just observing
+// it. platform/freertos/test.sh counts these periodic report lines the same way it already counts
+// per-message lines for the other pairs.
 
 #include <FreeRTOS.h>
 #include <stdio.h>
@@ -30,8 +33,6 @@
 #include "board/uart.h"
 #include "net_init.h"
 
-#define PERF_MESSAGE_SIZE 64
-#define PERF_INTERVAL_NS (200LL * tt_MILLISECOND)
 #define PERF_CLIENT_TASK_STACK_WORDS 1024
 
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
@@ -39,19 +40,44 @@ static struct tt_Node node;
 static struct tt_Publisher pub;
 static struct BulkData bulk = {0}; // zero-initialized, reused for every publish
 
+static uint64_t total_sent_msgs = 0;
+static uint64_t total_buffer_full = 0;
+static uint64_t interval_sent_msgs = 0;
+static uint64_t interval_sent_bytes = 0;
+
+static void report(struct tt_Node* node, uint64_t time, void* param) {
+    (void)param;
+
+    printf("perf_client: sent %lu msgs, %lu bytes this interval (%lu total, %lu buffer-full so far)\n",
+           (unsigned long)interval_sent_msgs, (unsigned long)interval_sent_bytes, (unsigned long)total_sent_msgs,
+           (unsigned long)total_buffer_full);
+
+    interval_sent_msgs = 0;
+    interval_sent_bytes = 0;
+
+    tt_Node_schedule(node, time + tt_SECOND, report, NULL);
+}
+
 static void publish_bulk(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
 
-    bulk.size = PERF_MESSAGE_SIZE;
+    bulk.size = BULK_MAX_PAYLOAD_SIZE;
     tt_ret_t ret = tt_Publisher_publish(pub, (struct tt_Data*)&bulk);
     if (ret == tt_RET_OK) {
-        printf("perf_client: sent seq=%lu\n", (unsigned long)bulk.seq);
         bulk.seq++;
-    } else {
-        printf("perf_client: cannot publish: %d\n", ret);
+        total_sent_msgs++;
+        interval_sent_msgs++;
+        interval_sent_bytes += bulk.size;
+    } else if (ret == tt_RET_OUT_OF_BUFFER) {
+        total_buffer_full++;
     }
 
-    tt_Node_schedule(node, time + PERF_INTERVAL_NS, publish_bulk, pub);
+    // Rescheduled for its own already-due time (not time + some interval): the next publish
+    // becomes due again the moment tt_Node_poll() next processes the scheduler, which is exactly
+    // "as fast as poll() allows" - the same target examples/linux/perf/perf_client.c's own -i 0
+    // (its default) describes, just reached via this platform's scheduled-callback loop instead
+    // of perf_client.c's manual next_send_time comparison.
+    tt_Node_schedule(node, time, publish_bulk, pub);
 }
 
 static void perf_client_task(void* param) {
@@ -76,7 +102,9 @@ static void perf_client_task(void* param) {
         }
     }
 
-    tt_Node_schedule(&node, tt_get_ns(), publish_bulk, &pub);
+    uint64_t start_time = tt_get_ns();
+    tt_Node_schedule(&node, start_time, publish_bulk, &pub);
+    tt_Node_schedule(&node, start_time + tt_SECOND, report, NULL);
 
     for (;;) {
         tt_Node_poll(&node, -1);

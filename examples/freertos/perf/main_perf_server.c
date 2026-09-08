@@ -8,8 +8,9 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// ROLE=perf_server: see main_perf_client.c's file-level comment for why this exists and why it
-// reuses examples/linux/perf/Bulk.{c,h} but not perf_server.c itself.
+// ROLE=perf_server: see main_perf_client.c's file-level comment for why this exists, why it
+// reuses examples/linux/perf/Bulk.{c,h} but not perf_server.c itself, and why it reports once a
+// second (mirroring perf_server.c's own report()) instead of logging every receive.
 
 #include <FreeRTOS.h>
 #include <stdio.h>
@@ -27,11 +28,41 @@
 static struct tt_Node node;
 static struct tt_Subscriber sub;
 
+static bool have_first = false;
+static uint32_t expected_seq = 0;
+static uint64_t total_received_msgs = 0;
+static uint64_t total_dropped = 0;
+static uint64_t interval_received_msgs = 0;
+static uint64_t interval_received_bytes = 0;
+
 static void bulk_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no, struct BulkData* data) {
     (void)subscriber;
     (void)time;
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
-    printf("perf_server: recv seq=%lu size=%lu\n", (unsigned long)data->seq, (unsigned long)data->size);
+
+    // Same drop-detection approach as examples/linux/perf/perf_server.c's own bulk_callback().
+    if (have_first && data->seq != expected_seq) {
+        total_dropped += data->seq - expected_seq;
+    }
+    expected_seq = data->seq + 1;
+    have_first = true;
+
+    total_received_msgs++;
+    interval_received_msgs++;
+    interval_received_bytes += data->size;
+}
+
+static void report(struct tt_Node* node, uint64_t time, void* param) {
+    (void)param;
+
+    printf("perf_server: recv %lu msgs, %lu bytes this interval (%lu total, %lu dropped so far)\n",
+           (unsigned long)interval_received_msgs, (unsigned long)interval_received_bytes,
+           (unsigned long)total_received_msgs, (unsigned long)total_dropped);
+
+    interval_received_msgs = 0;
+    interval_received_bytes = 0;
+
+    tt_Node_schedule(node, time + tt_SECOND, report, NULL);
 }
 
 static void perf_server_task(void* param) {
@@ -56,6 +87,8 @@ static void perf_server_task(void* param) {
         }
     }
     printf("perf_server: ready\n");
+
+    tt_Node_schedule(&node, tt_get_ns() + tt_SECOND, report, NULL);
 
     for (;;) {
         tt_Node_poll(&node, -1);

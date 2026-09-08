@@ -124,18 +124,22 @@ check_count ping.log '^seq=' || status=1
 
 # perf_server.c has no per-message log line the way ping.c/subscriber.c do (only periodic
 # aggregated interval reports and the final summary), so its own RESULT: recv=N tally is checked
-# numerically instead of counting individual lines. No -s/-i: unlike the FreeRTOS/QEMU pair (real
-# embedded RAM to worry about, so main_perf_client.c deliberately sends small and slow - see its
-# own comment), a real Linux process over a veth pair has no such constraint, and perf's whole
-# purpose is measuring throughput - so this uses perf_client's own defaults (fills a full
-# Ethernet frame, sends as fast as poll() allows), the same as running it by hand would.
+# numerically instead of counting individual lines. No -s/-i: perf's whole purpose is measuring
+# throughput, so this uses perf_client's own defaults (fills a full Ethernet frame, sends as fast
+# as poll() allows), the same as running it by hand would - the FreeRTOS/QEMU pair does the same
+# now (see main_perf_client.c's own comment).
 #
-# perf_server's own -d is a tight +3s past perf_client's, not the generous +11s margin the other
-# pairs' receivers use (pong/server/subscriber have no periodic output while idle, so a generous
-# margin there is silent) - perf_server's report() task fires every second regardless of whether
-# anything arrived, so a receiver bound as generous as the other pairs' would spend most of it
-# printing pointless "recv 0 msgs ... 0.000 Mbps" lines after perf_client has already finished.
-run_pair perf_client "-d 5" perf_server "-d 8" || status=1
+# A longer window than the other three pairs (PERF_DURATION_S, default 20s vs. their fixed -c 20/
+# ~4s): a short burst is a noisier throughput sample than a longer one, and unlike the other
+# pairs' fixed message count, there's no equivalent "stop after N" for a rate this is meant to
+# maximize. perf_server's own -d is a tight few seconds past perf_client's, not the generous
+# +11s margin the other pairs' receivers use (pong/server/subscriber have no periodic output
+# while idle, so a generous margin there is silent) - perf_server's report() task fires every
+# second regardless of whether anything arrived, so a receiver bound as generous as the other
+# pairs' would spend most of it printing pointless "recv 0 msgs ... 0.000 Mbps" lines after
+# perf_client has already finished.
+PERF_DURATION_S=${PERF_DURATION_S:-20}
+run_pair perf_client "-d $PERF_DURATION_S" perf_server "-d $((PERF_DURATION_S + 3))" || status=1
 recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9]*\).*/\1/p')
 recv=${recv:-0}
 echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"

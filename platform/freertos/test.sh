@@ -22,12 +22,14 @@
 #   - set_bool (client/server): RPC call/response, the same shape as ping/pong but exercising a
 #     different codec/service.
 #   - ping_pong (ping/pong): RPC call/response, latency-flavored.
-#   - perf (perf_client/perf_server): pub/sub, throughput-flavored - unlike
-#     examples/linux/perf/perf_client.c (which defaults to filling a whole Ethernet frame to
-#     measure real throughput), main_perf_client.c sends small fixed-size messages at a modest
-#     fixed rate (see its own comment) - this proves the round trip works under QEMU/virtio-net,
-#     it isn't a throughput measurement.
-# All four purpose-built role mains log one line per message/call on both sides (unlike the real
+#   - perf (perf_client/perf_server): pub/sub, throughput-flavored - fills a full Ethernet frame
+#     and republishes as fast as tt_Node_poll() allows (see main_perf_client.c's own comment),
+#     same as examples/linux/perf/perf_client.c's own defaults now - real max throughput, not a
+#     fixed rate. Given a longer window ($PERF_DURATION_S, default 20s vs the other pairs'
+#     $DURATION_S default 10s) since a short burst is a noisier throughput sample than a longer
+#     one, the same reasoning platform/linux/test.sh's own perf pair follows.
+# All four purpose-built role mains log one line per message/call (or, for perf, one aggregated
+# line per second - see main_perf_client.c's own comment on why) on both sides (unlike the real
 # example binaries platform/linux/test.sh reuses, which only do that on one side per pair - see
 # its own comment), so every pair here uses the same two-sided count check.
 
@@ -36,12 +38,13 @@ cd "$(dirname "$0")"
 
 MCAST_GROUP=230.0.0.1:5000
 DURATION_S=${DURATION_S:-10}
+PERF_DURATION_S=${PERF_DURATION_S:-20}
 MIN_COUNT=5
 
 # Builds and runs one two-instance round trip: $server_role (background, for the whole test) and
-# $client_role (foreground, time-bounded by $DURATION_S) joined to the same QEMU
-# `-netdev socket,mcast=` group - $client_role is what actually drives the test, so once its
-# `timeout` returns, there's nothing further to wait for.
+# $client_role (foreground, time-bounded by $duration, defaulting to $DURATION_S) joined to the
+# same QEMU `-netdev socket,mcast=` group - $client_role is what actually drives the test, so
+# once its `timeout` returns, there's nothing further to wait for.
 #
 # Neither QEMU process crashing nor $client_role's own process exiting cleanly actually proves a
 # real round trip happened - $server_role could have silently failed to answer/receive anything
@@ -55,21 +58,36 @@ run_round_trip() {
     server_node=$4
     client_grep=$5
     server_grep=$6
+    duration=${7:-$DURATION_S}
+    # Off for perf: at real max throughput over $PERF_DURATION_S (20s by default), a full packet
+    # capture runs into the hundreds of MB - useless as a CI artifact (nobody's opening that in
+    # Wireshark) and slow to write inside the emulated machine besides. The other three pairs stay
+    # tiny (a hundred messages or so) regardless, so capturing them costs nothing.
+    capture_pcap=${8:-1}
 
     make ROLE=$server_role NODE_ID=$server_node all
     make ROLE=$client_role NODE_ID=$client_node all
 
     rm -f "$server_role.pcap" "$client_role.pcap" "$server_role.log" "$client_role.log"
 
+    if [ "$capture_pcap" -eq 1 ]; then
+        server_dump="-object filter-dump,id=dump0,netdev=net0,file=$server_role.pcap"
+        client_dump="-object filter-dump,id=dump1,netdev=net1,file=$client_role.pcap"
+    else
+        server_dump=""
+        client_dump=""
+    fi
+
     # stdin explicitly redirected from /dev/null on both: -nographic multiplexes the guest's
     # serial console AND the QEMU monitor over stdin, and a *backgrounded* process left attached
     # to the invoking terminal's stdin can get suspended by the shell's job control (SIGTTIN) the
     # moment it tries to read - at which point it's stopped, not running, and a later `kill`
     # (SIGTERM) can't actually terminate a stopped process, so `wait` below would block forever.
+    # shellcheck disable=SC2086 - server_dump is a deliberately unquoted, possibly-empty option
     qemu-system-riscv32 -machine virt -nographic -bios none -kernel "RTOSDemo-$server_role-$server_node.elf" \
         -global virtio-mmio.force-legacy=off \
         -netdev socket,id=net0,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net0 \
-        -object filter-dump,id=dump0,netdev=net0,file="$server_role.pcap" \
+        $server_dump \
         </dev/null >"$server_role.log" 2>&1 &
     server_pid=$!
 
@@ -78,11 +96,12 @@ run_round_trip() {
     # would just time out and retry), but avoids a guaranteed-to-be-wasted first attempt.
     sleep 1
 
-    timeout "$DURATION_S" qemu-system-riscv32 -machine virt -nographic -bios none \
+    # shellcheck disable=SC2086 - client_dump is a deliberately unquoted, possibly-empty option
+    timeout "$duration" qemu-system-riscv32 -machine virt -nographic -bios none \
         -kernel "RTOSDemo-$client_role-$client_node.elf" \
         -global virtio-mmio.force-legacy=off \
         -netdev socket,id=net1,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net1 \
-        -object filter-dump,id=dump1,netdev=net1,file="$client_role.pcap" \
+        $client_dump \
         </dev/null >"$client_role.log" 2>&1
     client_status=$?
 
@@ -117,6 +136,10 @@ status=0
 run_round_trip publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
 run_round_trip client 1 server 2 'client: call succeeded' 'server: request data=' || status=1
 run_round_trip ping 1 pong 2 'ping: seq=.*rtt=' 'pong: request seq=' || status=1
-run_round_trip perf_client 1 perf_server 2 'perf_client: sent seq=' 'perf_server: recv seq=' || status=1
+# [1-9]: only count intervals with real activity (an aggregated "sent 0 msgs"/"recv 0 msgs" line
+# existing proves nothing - see main_perf_client.c's report()) - unlike the other three pairs'
+# per-event lines, which only ever appear when that event genuinely happened.
+run_round_trip perf_client 1 perf_server 2 'perf_client: sent [1-9]' 'perf_server: recv [1-9]' "$PERF_DURATION_S" 0 ||
+    status=1
 
 exit $status
