@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788852644425,
+  "lastUpdate": 1788853528607,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -219,6 +219,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.215,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.011,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "83e073ee8f91fa856ccd49b30892669800e2e0a4",
+          "message": "Clean up HAL layer for 1.0: consistent contract, drop dead generic platform\n\n- Move tt_get_ns()'s declaration from tickle.h into hal.h, alongside the rest\n  of the per-platform HAL contract (tt_get_node_id/tt_bind/tt_close/tt_send/\n  tt_receive) it belongs with - it was the one HAL function declared outside\n  hal.h for no reason.\n- Standardize zero-arg HAL functions on `(void)` (declarations in hal.h and\n  definitions in hal_linux.c) instead of empty parens, matching what\n  hal_freertos.c and tests/test_mock.h's mock already did.\n- Remove the dead `UNUSED` macro duplicated into both hal_linux.c and\n  hal_freertos.c but never actually used in either.\n- Delete hal_generic.h and the TT_PLATFORM_GENERIC branch: it had no matching\n  src/hal_generic.c, so selecting it never actually built - a known gap now\n  closed by making unsupported platforms fail loudly (a #error naming the two\n  real options) instead of silently offering a HAL that doesn't exist. The\n  top-level Makefile's PLATFORM fallback errors the same way for non-Linux\n  hosts instead of guessing 'generic'.\n- Document why hal_freertos.c's tt_bind() has no SO_SNDBUF/SO_RCVBUF tuning\n  (unlike hal_linux.c): lwIP has no SO_SNDBUF at all, and SO_RCVBUF support\n  is compiled out by default - not an oversight.\n\nVerified: native build + unit tests + top-level lint, FreeRTOS cross-build +\nits own lint, and a full QEMU two-instance round trip (make test-qemu) all\nstill pass.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-08T16:36:30+09:00",
+          "tree_id": "7704fc46cf3c93c1cb8072cdda77fc8edd9f2ba3",
+          "url": "https://github.com/tsnlab/tickle/commit/83e073ee8f91fa856ccd49b30892669800e2e0a4"
+        },
+        "date": 1788853527642,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.214,
             "unit": "ms"
           },
           {
