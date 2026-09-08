@@ -9,7 +9,7 @@
  */
 
 // ROLE=subscriber: see main_publisher.c's file-level comment for why this exists and why it
-// reuses examples/uint64/UInt64.{c,h} but not subscriber.c itself.
+// reuses examples/linux/uint64/UInt64.{c,h} but not subscriber.c itself.
 
 #include <FreeRTOS.h>
 #include <stdio.h>

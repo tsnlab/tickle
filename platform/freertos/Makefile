@@ -20,13 +20,14 @@ OBJCOPY = $(CROSS)objcopy
 # ROLE picks which main file (and any role-specific extra sources) gets built:
 #   selftest (default)     - main.c, milestones 1-3's single-instance harness
 #   ping / pong             - examples/freertos/ping_pong/main_{ping,pong}.c, the RPC
-#                             (call/response) round trip, reusing examples/ping_pong/PingPong.{c,h}
-#                             (see main_ping.c) - examples/linux/ping_pong/{ping,pong}.c are the
-#                             same round trip's Linux drivers, reusing the same codec.
+#                             (call/response) round trip, reusing
+#                             examples/linux/ping_pong/PingPong.{c,h} (see main_ping.c) - the same
+#                             codec examples/linux/ping_pong/{ping,pong}.c (that round trip's Linux
+#                             drivers) already build against, just cross-compiled here too.
 #   publisher / subscriber - examples/freertos/uint64/main_{publisher,subscriber}.c, the pub/sub
 #                             round trip (covers tt_Publisher_publish()'s batched-flush path
 #                             ping/pong never exercises - see main_publisher.c), reusing
-#                             examples/uint64/UInt64.{c,h}
+#                             examples/linux/uint64/UInt64.{c,h}
 # NODE_ID sets this instance's static IP (192.168.10.$(NODE_ID)) via -DNET_NODE_ID - see
 # net_init.c. Each (ROLE, NODE_ID) pair gets its own obj dir/ELF name so building more than one
 # doesn't clobber another's cached objects (they're compiled with different -D flags).
@@ -39,20 +40,20 @@ ROLE_SRCS =
 ROLE_INCLUDES =
 else ifeq ($(ROLE),ping)
 MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_ping.c
-ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
-ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
+ROLE_SRCS = $(ROOT)/examples/linux/ping_pong/PingPong.c
+ROLE_INCLUDES = -I$(ROOT)/examples/linux/ping_pong
 else ifeq ($(ROLE),pong)
 MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_pong.c
-ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
-ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
+ROLE_SRCS = $(ROOT)/examples/linux/ping_pong/PingPong.c
+ROLE_INCLUDES = -I$(ROOT)/examples/linux/ping_pong
 else ifeq ($(ROLE),publisher)
 MAIN_SRC = $(ROOT)/examples/freertos/uint64/main_publisher.c
-ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
-ROLE_INCLUDES = -I$(ROOT)/examples/uint64
+ROLE_SRCS = $(ROOT)/examples/linux/uint64/UInt64.c
+ROLE_INCLUDES = -I$(ROOT)/examples/linux/uint64
 else ifeq ($(ROLE),subscriber)
 MAIN_SRC = $(ROOT)/examples/freertos/uint64/main_subscriber.c
-ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
-ROLE_INCLUDES = -I$(ROOT)/examples/uint64
+ROLE_SRCS = $(ROOT)/examples/linux/uint64/UInt64.c
+ROLE_INCLUDES = -I$(ROOT)/examples/linux/uint64
 else
 $(error Unknown ROLE '$(ROLE)': expected 'selftest', 'ping', 'pong', 'publisher', or 'subscriber')
 endif
@@ -174,9 +175,9 @@ clean:
 # this directory, alongside hal_linux.*, but need these same cross-compile flags - the top-level
 # Makefile's own `lint` explicitly excludes both this directory and hal_freertos.* for that
 # reason, deferring to this target instead).
-# -I$(ROOT)/examples/ping_pong / .../uint64: main_ping.c/main_pong.c's #include "PingPong.h" and
-# main_publisher.c/main_subscriber.c's #include "UInt64.h" - harmless to pass for files that
-# don't need one or the other.
+# -I$(ROOT)/examples/linux/ping_pong / .../uint64: main_ping.c/main_pong.c's
+# #include "PingPong.h" and main_publisher.c/main_subscriber.c's #include "UInt64.h" - harmless to
+# pass for files that don't need one or the other.
 PICOLIBC_INCLUDE = /usr/lib/picolibc/riscv64-unknown-elf/include
 TIDY_ARGS = --extra-arg=--target=riscv32-unknown-elf --extra-arg=-isystem --extra-arg=$(PICOLIBC_INCLUDE) \
             --extra-arg=-DTT_PLATFORM_FREERTOS \
@@ -184,7 +185,7 @@ TIDY_ARGS = --extra-arg=--target=riscv32-unknown-elf --extra-arg=-isystem --extr
             --extra-arg=-I$(FREERTOS)/include --extra-arg=-I$(RISCV_PORT) \
             --extra-arg=-I$(LWIP)/src/include --extra-arg=-I$(LWIP_FREERTOS_PORT)/include \
             --extra-arg=-I$(ROOT)/include --extra-arg=-I$(ROOT)/src \
-            --extra-arg=-I$(ROOT)/examples/ping_pong --extra-arg=-I$(ROOT)/examples/uint64
+            --extra-arg=-I$(ROOT)/examples/linux/ping_pong --extra-arg=-I$(ROOT)/examples/linux/uint64
 
 # Files that need this directory's own cross-compile flags but live elsewhere (so `find .` below
 # never reaches them) also need this directory's .clang-tidy overrides applied explicitly, since

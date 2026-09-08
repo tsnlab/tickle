@@ -21,12 +21,14 @@ platforms:
 There's no fallback HAL for any other platform - `include/tickle/hal.h` fails to compile with a
 clear `#error` naming these two instead of silently offering a HAL that doesn't exist.
 
-Each protocol's example driver is organized the same way: a platform-neutral generated codec
-directly under `examples/<protocol>/` (e.g. `examples/ping_pong/PingPong.{c,h}`), shared verbatim
-by both platforms, plus one driver per platform under `examples/linux/<protocol>/` (argv-parsed
-POSIX binaries, see "Run examples" below) and `examples/freertos/<protocol>/` (FreeRTOS tasks with
-compile-time-fixed config - there's no argv on a flashed embedded target). Not every protocol has
-a FreeRTOS driver yet - only `ping_pong` and `uint64`, the two `test-qemu` exercises.
+`examples/` is organized by platform: `examples/linux/<protocol>/` holds each protocol's generated
+codec (e.g. `PingPong.{c,h}`) together with its argv-parsed POSIX driver (see "Run examples"
+below), and `examples/freertos/<protocol>/` holds just that protocol's FreeRTOS driver (a task with
+compile-time-fixed config - there's no argv on a flashed embedded target), cross-compiling the same
+codec straight out of `examples/linux/<protocol>/` rather than duplicating it. Not every protocol
+has a FreeRTOS driver yet - only `ping_pong` and `uint64`, the two `test-qemu` exercises. The loose
+`.msg`/`.srv` files directly under `examples/` are platform-neutral interface definitions, shared
+by every driver of every protocol.
 
 ## Security & concurrency model
 

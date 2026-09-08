@@ -9,7 +9,7 @@
  */
 
 // ROLE=publisher: the pub/sub counterpart to ROLE=ping/pong's RPC round trip (see main_ping.c's
-// file-level comment) - reuses examples/uint64/UInt64.{c,h} verbatim, same reasoning as main_ping
+// file-level comment) - reuses examples/linux/uint64/UInt64.{c,h} verbatim, same reasoning as main_ping
 // reusing PingPong.{c,h} over ping.c itself.
 //
 // This exists specifically to give the QEMU tier real-HAL coverage of tt_Publisher_publish()'s

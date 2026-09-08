@@ -9,7 +9,7 @@
  */
 
 // ROLE=pong: milestone 4's server side - see main_ping.c's file-level comment for why this
-// reuses examples/ping_pong/PingPong.{c,h} but not pong.c itself.
+// reuses examples/linux/ping_pong/PingPong.{c,h} but not pong.c itself.
 
 #include <FreeRTOS.h>
 #include <stdio.h>
