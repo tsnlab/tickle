@@ -2,6 +2,11 @@
 # obj/tests/ that the *.o/*.d patterns below don't happen to match
 /obj/
 
+# platform/freertos's own cross-build output (RTOSDemo.elf/.map, obj/)
+/platform/freertos/obj/
+/platform/freertos/RTOSDemo.elf
+/platform/freertos/RTOSDemo.map
+
 # Prerequisites
 *.d
 
