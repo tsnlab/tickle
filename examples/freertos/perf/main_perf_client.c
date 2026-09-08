@@ -29,6 +29,7 @@
 
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "Bulk.h"
 #include "board/uart.h"
 #include "net_init.h"
@@ -40,17 +41,24 @@ static struct tt_Node node;
 static struct tt_Publisher pub;
 static struct BulkData bulk = {0}; // zero-initialized, reused for every publish
 
-static uint64_t total_sent_msgs = 0;
 static uint64_t total_buffer_full = 0;
 static uint64_t interval_sent_msgs = 0;
 static uint64_t interval_sent_bytes = 0;
 
+// Field set and wording mirror examples/linux/perf/perf_client.c's own report(): MB/Mbps computed
+// from this interval's bytes, no running sent-total (only perf_server.c's own RESULT line -
+// which can see loss - is authoritative; this side is just visibility into what it attempted).
 static void report(struct tt_Node* node, uint64_t time, void* param) {
     (void)param;
 
-    printf("perf_client: sent %lu msgs, %lu bytes this interval (%lu total, %lu buffer-full so far)\n",
-           (unsigned long)interval_sent_msgs, (unsigned long)interval_sent_bytes, (unsigned long)total_sent_msgs,
-           (unsigned long)total_buffer_full);
+    char sent_buf[TT_GROUPED_BUF_LEN];
+    char buffer_full_buf[TT_GROUPED_BUF_LEN];
+    const double bytes_per_mb = 1e6;
+    double megabytes = (double)interval_sent_bytes / bytes_per_mb;
+    double mbps = ((double)interval_sent_bytes * 8) / bytes_per_mb;
+    printf("perf_client: sent %s msgs, %.3f MB, %.3f Mbps this interval (%s buffer-full so far)\n",
+           tt_format_grouped(interval_sent_msgs, sent_buf), megabytes, mbps,
+           tt_format_grouped(total_buffer_full, buffer_full_buf));
 
     interval_sent_msgs = 0;
     interval_sent_bytes = 0;
@@ -65,7 +73,6 @@ static void publish_bulk(struct tt_Node* node, uint64_t time, void* param) {
     tt_ret_t ret = tt_Publisher_publish(pub, (struct tt_Data*)&bulk);
     if (ret == tt_RET_OK) {
         bulk.seq++;
-        total_sent_msgs++;
         interval_sent_msgs++;
         interval_sent_bytes += bulk.size;
     } else if (ret == tt_RET_OUT_OF_BUFFER) {

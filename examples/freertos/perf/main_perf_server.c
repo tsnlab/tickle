@@ -18,6 +18,7 @@
 
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "Bulk.h"
 #include "board/uart.h"
 #include "net_init.h"
@@ -30,7 +31,6 @@ static struct tt_Subscriber sub;
 
 static bool have_first = false;
 static uint32_t expected_seq = 0;
-static uint64_t total_received_msgs = 0;
 static uint64_t total_dropped = 0;
 static uint64_t interval_received_msgs = 0;
 static uint64_t interval_received_bytes = 0;
@@ -47,17 +47,24 @@ static void bulk_callback(struct tt_Subscriber* subscriber, uint64_t time, uint1
     expected_seq = data->seq + 1;
     have_first = true;
 
-    total_received_msgs++;
     interval_received_msgs++;
     interval_received_bytes += data->size;
 }
 
+// Field set and wording mirror examples/linux/perf/perf_server.c's own report(): MB/Mbps computed
+// from this interval's bytes, only the cumulative drop count carried across intervals - this is
+// the receive side, so (unlike the client) it's the one that can actually see loss.
 static void report(struct tt_Node* node, uint64_t time, void* param) {
     (void)param;
 
-    printf("perf_server: recv %lu msgs, %lu bytes this interval (%lu total, %lu dropped so far)\n",
-           (unsigned long)interval_received_msgs, (unsigned long)interval_received_bytes,
-           (unsigned long)total_received_msgs, (unsigned long)total_dropped);
+    char recv_buf[TT_GROUPED_BUF_LEN];
+    char dropped_buf[TT_GROUPED_BUF_LEN];
+    const double bytes_per_mb = 1e6;
+    double megabytes = (double)interval_received_bytes / bytes_per_mb;
+    double mbps = ((double)interval_received_bytes * 8) / bytes_per_mb;
+    printf("perf_server: recv %s msgs, %.3f MB, %.3f Mbps this interval (%s dropped so far)\n",
+           tt_format_grouped(interval_received_msgs, recv_buf), megabytes, mbps,
+           tt_format_grouped(total_dropped, dropped_buf));
 
     interval_received_msgs = 0;
     interval_received_bytes = 0;
