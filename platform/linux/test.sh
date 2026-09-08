@@ -11,53 +11,48 @@
 # the same "two independent nodes on one broadcast segment" shape as
 # platform/freertos/test.sh's QEMU test, just exercising src/hal_linux.c's real kernel UDP
 # sockets instead of hal_freertos.c's lwIP ones. Reuses the examples/linux/ binaries unmodified
-# (not a purpose-built harness like examples/freertos/'s main_ping.c/main_pong.c) - real
-# user-facing code, exercised the same way `make runping`/`make runpong` would run it by hand.
+# (not a purpose-built harness like examples/freertos/'s main_*.c) - real user-facing code,
+# exercised the same way `make runping`/`make runpong` would run it by hand.
 #
-# Runs two such round trips: ping/pong (RPC, call/response) and publisher/subscriber (pub/sub).
-# The latter specifically exercises tt_Publisher_publish()'s batched (not immediately flushed)
-# send path, which ping/pong's always-immediately-flushed tt_Client_call() never reaches at all -
-# see examples/freertos/uint64/main_publisher.c's file-level comment (same reasoning, different HAL).
+# Every TickLE example doubles as a functional/performance test of the library itself (see
+# README's "Run examples"), so this runs all four pairs, in order:
+#   - uint64 (publisher/subscriber): functional - does pub/sub actually deliver? Also the only
+#     pair that exercises tt_Publisher_publish()'s batched (not immediately flushed) send path -
+#     ping/pong's and set_bool's always-immediately-flushed tt_Client_call() never reaches it.
+#   - set_bool (client/server): functional - does RPC call/response actually work?
+#   - ping_pong (ping/pong): performance - round-trip latency.
+#   - perf (perf_client/perf_server): performance - throughput.
+# Functional pairs report their own PASS/FAIL (see subscriber.c/client.c's print_result()) - this
+# script just checks for that verdict instead of reimplementing one. Performance pairs report
+# numbers, not a verdict (see ping.c/perf_server.c's own comments on why) - this script instead
+# requires real evidence of at least $MIN_COUNT genuine round trips, the same "a clean exit alone
+# doesn't prove anything actually arrived" reasoning platform/freertos/test.sh's check applies.
 #
 # Fully self-contained, like platform/freertos/test.sh: platform/linux/Makefile builds the
-# binaries this test runs right here in platform/linux/, so - unlike before Linux's own Makefile
-# moved to live alongside this script - there's no need to reach up to the repo root for either
-# the build or the built binaries.
+# binaries this test runs right here in platform/linux/.
 
 set -u
 cd "$(dirname "$0")"
 
 MIN_COUNT=5
 
-# Runs one real round trip: $sender (foreground, bounded via $sender_args - typically -c/-i) on
-# ns1, against $receiver (background, bounded via its own -d as a generous cap) on ns2.
-#
-# A clean exit on either side doesn't prove any packet actually arrived - but unlike
-# platform/freertos/test.sh's QEMU pairs (where both purpose-built role mains log per-message on
-# both sides), these are the real, unmodified example binaries, and only one side of each pair
-# actually logs real evidence: ping.c logs every reply it receives, but pong.c never logs
-# per-request; subscriber.c's callback logs every message it decodes, but publisher.c only logs
-# on error. So exactly one of $sender_grep/$receiver_grep is expected to be non-empty per call -
-# whichever side's log this pair's real evidence lives in - and only that one is checked against
-# at least $MIN_COUNT matches. (Passing both, or neither, would also work mechanically, just
-# isn't needed today.)
-run_round_trip() {
+# Launches $receiver (background, bounded via $receiver_args - typically -d 15, a generous cap)
+# then $sender (foreground, bounded via $sender_args), waits for both, and dumps their logs.
+# Doesn't judge pass/fail itself - each call site below does that afterward with check_count/
+# check_pass, however fits that pair. stdin redirected from /dev/null on both: neither binary
+# reads it, but leaving a backgrounded process attached to the invoking terminal's stdin is a
+# latent SIGTTIN/job-control hazard (see platform/freertos/test.sh's own fix for the concrete
+# failure mode this avoids) - cheap to rule out here too.
+run_pair() {
     sender=$1
     sender_args=$2
     receiver=$3
-    sender_grep=$4
-    receiver_grep=$5
+    receiver_args=$4
 
     rm -f "$receiver.log" "$sender.log"
 
-    # $receiver has no fixed end condition of its own (see pong.c/subscriber.c) - -d 15 bounds it
-    # generously past however long $sender's own -c/-i bound their side to, so it always exits on
-    # its own rather than needing a kill/wait dance like platform/freertos/test.sh's backgrounded
-    # QEMU instance does. stdin redirected from /dev/null: neither binary reads it, but leaving a
-    # backgrounded process attached to the invoking terminal's stdin is a latent SIGTTIN/
-    # job-control hazard (see platform/freertos/test.sh's own fix for the concrete failure mode
-    # this avoids) - cheap to rule out.
-    sudo ip netns exec ns2 "./$receiver" -d 15 </dev/null >"$receiver.log" 2>&1 &
+    # shellcheck disable=SC2086 - receiver_args is a deliberately unquoted, space-separated flag list
+    sudo ip netns exec ns2 "./$receiver" $receiver_args </dev/null >"$receiver.log" 2>&1 &
     receiver_pid=$!
 
     sleep 1
@@ -74,26 +69,32 @@ run_round_trip() {
     cat "$sender.log"
 
     if [ "$sender_status" -ne 0 ]; then
-        echo "run_round_trip($sender/$receiver): $sender exited unexpectedly (status $sender_status)"
-        return 1
-    fi
-
-    ok=1
-    if [ -n "$sender_grep" ]; then
-        sender_seen=$(grep -c "$sender_grep" "$sender.log")
-        echo "run_round_trip($sender/$receiver): $sender saw $sender_seen real message(s)"
-        [ "$sender_seen" -ge "$MIN_COUNT" ] || ok=0
-    fi
-    if [ -n "$receiver_grep" ]; then
-        receiver_seen=$(grep -c "$receiver_grep" "$receiver.log")
-        echo "run_round_trip($sender/$receiver): $receiver saw $receiver_seen real message(s)"
-        [ "$receiver_seen" -ge "$MIN_COUNT" ] || ok=0
-    fi
-    if [ "$ok" -ne 1 ]; then
-        echo "run_round_trip($sender/$receiver): fewer than $MIN_COUNT real messages observed - treating as a failure"
+        echo "run_pair($sender/$receiver): $sender exited unexpectedly (status $sender_status)"
         return 1
     fi
     return 0
+}
+
+# Requires at least $MIN_COUNT lines matching $2 in file $1 - performance pairs' evidence of a
+# real round trip (see run_pair's own comment).
+check_count() {
+    file=$1
+    pattern=$2
+    n=$(grep -c "$pattern" "$file")
+    echo "check_count($file): $n matching '$pattern' (need >= $MIN_COUNT)"
+    [ "$n" -ge "$MIN_COUNT" ]
+}
+
+# Requires file $1's own RESULT line to say PASS - functional pairs' evidence (see run_pair's own
+# comment): the example already decided pass/fail for itself, this just reads the verdict.
+check_pass() {
+    file=$1
+    if grep -q '^RESULT: PASS' "$file"; then
+        echo "check_pass($file): PASS"
+        return 0
+    fi
+    echo "check_pass($file): no RESULT: PASS line found"
+    return 1
 }
 
 # Idempotent: clear out any namespaces a previous (e.g. interrupted) run left behind before
@@ -102,18 +103,34 @@ sudo ip netns delete ns1 >/dev/null 2>&1
 sudo ip netns delete ns2 >/dev/null 2>&1
 make createns
 
-make ping_pong
 make uint64
+make set_bool
+make ping_pong
+make perf
 
 status=0
+
+run_pair publisher "-c 20 -i 0.2" subscriber "-d 15" || status=1
+check_pass subscriber.log || status=1
+
+run_pair client "-c 20 -i 0.2" server "-d 15" || status=1
+check_pass client.log || status=1
+
 # pong.c never logs per-request - but a "seq=N time=X ms" line in ping's own log can only appear
 # from a real decoded CallResponse, so that alone (checked against ping.log, the sender) is
 # sufficient evidence of a real round trip.
-run_round_trip ping "-c 20 -i 0.2" pong '^seq=' '' || status=1
-# The mirror image of the ping/pong case: publisher.c only logs on error, never on a successful
-# publish, but subscriber.c's callback logs every message it decodes - checked against
-# subscriber.log, the receiver this time.
-run_round_trip publisher "-c 20 -i 0.2" subscriber '' '  seq_no:' || status=1
+run_pair ping "-c 20 -i 0.2" pong "-d 15" || status=1
+check_count ping.log '^seq=' || status=1
+
+# perf_server.c has no per-message log line the way ping.c/subscriber.c do (only periodic
+# aggregated interval reports and the final summary), so its own RESULT: recv=N tally is checked
+# numerically instead of counting individual lines. -s/-i keep this a light, fast connectivity
+# check, not a real throughput measurement (that's the two-Raspberry-Pi HIL benchmark's job).
+run_pair perf_client "-d 5 -s 64 -i 0.2" perf_server "-d 15" || status=1
+recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9]*\).*/\1/p')
+recv=${recv:-0}
+echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"
+[ "$recv" -ge "$MIN_COUNT" ] || status=1
 
 make deletens
 

@@ -89,20 +89,27 @@ timing dependency. `make test` builds and runs every one, stopping at the first 
 
 `test-linux` and `test-freertos` (named for the platform under test, matching examples/linux and
 examples/freertos - not the mechanism behind each) instead exercise a real platform HAL end to
-end: two independent
-processes (or QEMU instances) actually exchanging packets, not a mock, over Linux network
-namespaces and emulated virtio-net respectively (see
+end: two independent processes (or QEMU instances) actually exchanging packets, not a mock, over
+Linux network namespaces and emulated virtio-net respectively (see
 [platform/linux/test.sh](platform/linux/test.sh) /
-[platform/freertos/test.sh](platform/freertos/test.sh)). Each runs both a `ping`/`pong`
-round trip (RPC - call/response) and a `publisher`/`subscriber` round trip (pub/sub) - the latter
-specifically covers `tt_Publisher_publish()`'s batched-not-immediately-flushed send path, which
-RPC's always-immediately-flushed `tt_Client_call()` never exercises at all (see
-`examples/freertos/uint64/main_publisher.c`'s file-level comment, or DESIGN.md's "RPC flushes
-immediately; Publish batches"). Both tiers need `sudo` (namespaces) or the RISC-V toolchain +
-`qemu-system-riscv32` (see [platform/freertos/Makefile](platform/freertos/Makefile)'s `lint`
-target for the exact packages), so they're not part of plain `make test`. The two-Raspberry-Pi
-hardware-in-the-loop performance test below is a separate, fourth tier - it needs real hardware,
-so there's no local `make test-*` equivalent for it.
+[platform/freertos/test.sh](platform/freertos/test.sh)). Both need `sudo` (namespaces) or the
+RISC-V toolchain + `qemu-system-riscv32` (see
+[platform/freertos/Makefile](platform/freertos/Makefile)'s `lint` target for the exact packages),
+so they're not part of plain `make test`.
+
+Every TickLE example doubles as a functional/performance test of the library itself (see "Run
+examples" below), so each tier runs all four example pairs, in this order: `uint64` (pub/sub),
+`set_bool` (RPC), `ping_pong` (RPC, latency-flavored - also the pair `tt_Publisher_publish()`'s
+batched-not-immediately-flushed send path skips, see DESIGN.md's "RPC flushes immediately;
+Publish batches"), `perf` (pub/sub, throughput-flavored). Each example reports its own result
+when run - see "Command-line options" below - and each tier's script checks exactly that:
+functional pairs (`uint64`, `set_bool`) for a `RESULT: PASS` line, performance pairs (`ping_pong`,
+`perf`) for real evidence of at least a handful of genuine round trips (a clean exit alone doesn't
+prove anything actually arrived).
+
+The two-Raspberry-Pi hardware-in-the-loop performance test below is a separate, fourth tier and
+not part of `test-all` either - it needs real hardware, so there's no local `make test-*`
+equivalent for it (see "Continuous performance testing" below).
 
 ## Run examples
 ```sh
@@ -141,6 +148,21 @@ Receivers (`pong`, `server`, `subscriber`, `perf_server`) additionally take:
 
 `-c`/`-d` exist mainly so a script (e.g. CI) can run a binary without it hanging forever
 waiting on a peer that never shows up.
+
+### Result output
+
+Every example is also a functional or performance test of the library itself (see "Tests"
+above), so the side of each pair that can actually tell whether the round trip worked prints a
+final `RESULT:` line when it stops (`-c`/`-d` elapsing, or Ctrl+C):
+
+- **Functional pairs** (`client` for set_bool, `subscriber` for uint64) print `RESULT: PASS` or
+  `RESULT: FAIL (...)` - did every call get answered / did every published message arrive, in
+  order, with none dropped.
+- **Performance pairs** (`ping` for ping_pong, `perf_server` for perf) print the measurement
+  itself (`RESULT: rtt_avg_ms=... loss_pct=...` / `RESULT: recv=... avg_mbps=...`), not a
+  pass/fail verdict - there's no single right answer to compare against, only numbers to judge by
+  eye or trend over time. The other side of each pair (`server`, `pong`, `publisher`,
+  `perf_client`) has no verdict of its own to report - it just logs a plain completion count.
 
 `perf_client` takes two more flags to control what it sends:
 

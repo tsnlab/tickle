@@ -13,10 +13,23 @@
 # setup the two real Raspberry Pis simulate for the actual HIL performance workflow
 # (.github/workflows/performance.yml), just emulated instead of on real hardware.
 #
-# Runs two such round trips: ping/pong (RPC, call/response) and publisher/subscriber (pub/sub).
-# The latter specifically exercises tt_Publisher_publish()'s batched (not immediately flushed)
-# send path, which ping/pong's always-immediately-flushed tt_Client_call() never reaches at all -
-# see main_publisher.c's file-level comment.
+# Every TickLE example doubles as a functional/performance test of the library itself (see
+# README's "Run examples"), so this runs all four pairs, in order:
+#   - uint64 (publisher/subscriber): pub/sub - also the only pair that exercises
+#     tt_Publisher_publish()'s batched (not immediately flushed) send path, which ping/pong's and
+#     set_bool's always-immediately-flushed tt_Client_call() never reaches at all - see
+#     main_publisher.c's file-level comment.
+#   - set_bool (client/server): RPC call/response, the same shape as ping/pong but exercising a
+#     different codec/service.
+#   - ping_pong (ping/pong): RPC call/response, latency-flavored.
+#   - perf (perf_client/perf_server): pub/sub, throughput-flavored - unlike
+#     examples/linux/perf/perf_client.c (which defaults to filling a whole Ethernet frame to
+#     measure real throughput), main_perf_client.c sends small fixed-size messages at a modest
+#     fixed rate (see its own comment) - this proves the round trip works under QEMU/virtio-net,
+#     it isn't a throughput measurement.
+# All four purpose-built role mains log one line per message/call on both sides (unlike the real
+# example binaries platform/linux/test.sh reuses, which only do that on one side per pair - see
+# its own comment), so every pair here uses the same two-sided count check.
 
 set -u
 cd "$(dirname "$0")"
@@ -101,7 +114,9 @@ run_round_trip() {
 }
 
 status=0
-run_round_trip ping 1 pong 2 'ping: seq=.*rtt=' 'pong: request seq=' || status=1
 run_round_trip publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
+run_round_trip client 1 server 2 'client: call succeeded' 'server: request data=' || status=1
+run_round_trip ping 1 pong 2 'ping: seq=.*rtt=' 'pong: request seq=' || status=1
+run_round_trip perf_client 1 perf_server 2 'perf_client: sent seq=' 'perf_server: recv seq=' || status=1
 
 exit $status
