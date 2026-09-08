@@ -59,35 +59,20 @@ run_round_trip() {
     client_grep=$5
     server_grep=$6
     duration=${7:-$DURATION_S}
-    # Off for perf: at real max throughput over $PERF_DURATION_S (20s by default), a full packet
-    # capture runs into the hundreds of MB - useless as a CI artifact (nobody's opening that in
-    # Wireshark) and slow to write inside the emulated machine besides. The other three pairs stay
-    # tiny (a hundred messages or so) regardless, so capturing them costs nothing.
-    capture_pcap=${8:-1}
 
     make ROLE=$server_role NODE_ID=$server_node all
     make ROLE=$client_role NODE_ID=$client_node all
 
-    rm -f "$server_role.pcap" "$client_role.pcap" "$server_role.log" "$client_role.log"
-
-    if [ "$capture_pcap" -eq 1 ]; then
-        server_dump="-object filter-dump,id=dump0,netdev=net0,file=$server_role.pcap"
-        client_dump="-object filter-dump,id=dump1,netdev=net1,file=$client_role.pcap"
-    else
-        server_dump=""
-        client_dump=""
-    fi
+    rm -f "$server_role.log" "$client_role.log"
 
     # stdin explicitly redirected from /dev/null on both: -nographic multiplexes the guest's
     # serial console AND the QEMU monitor over stdin, and a *backgrounded* process left attached
     # to the invoking terminal's stdin can get suspended by the shell's job control (SIGTTIN) the
     # moment it tries to read - at which point it's stopped, not running, and a later `kill`
     # (SIGTERM) can't actually terminate a stopped process, so `wait` below would block forever.
-    # shellcheck disable=SC2086 - server_dump is a deliberately unquoted, possibly-empty option
     qemu-system-riscv32 -machine virt -nographic -bios none -kernel "RTOSDemo-$server_role-$server_node.elf" \
         -global virtio-mmio.force-legacy=off \
         -netdev socket,id=net0,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net0 \
-        $server_dump \
         </dev/null >"$server_role.log" 2>&1 &
     server_pid=$!
 
@@ -96,12 +81,10 @@ run_round_trip() {
     # would just time out and retry), but avoids a guaranteed-to-be-wasted first attempt.
     sleep 1
 
-    # shellcheck disable=SC2086 - client_dump is a deliberately unquoted, possibly-empty option
     timeout "$duration" qemu-system-riscv32 -machine virt -nographic -bios none \
         -kernel "RTOSDemo-$client_role-$client_node.elf" \
         -global virtio-mmio.force-legacy=off \
         -netdev socket,id=net1,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net1 \
-        $client_dump \
         </dev/null >"$client_role.log" 2>&1
     client_status=$?
 
@@ -139,7 +122,7 @@ run_round_trip ping 1 pong 2 'ping: seq=.*rtt=' 'pong: request seq=' || status=1
 # [1-9]: only count intervals with real activity (an aggregated "sent 0 msgs"/"recv 0 msgs" line
 # existing proves nothing - see main_perf_client.c's report()) - unlike the other three pairs'
 # per-event lines, which only ever appear when that event genuinely happened.
-run_round_trip perf_client 1 perf_server 2 'perf_client: sent [1-9]' 'perf_server: recv [1-9]' "$PERF_DURATION_S" 0 ||
+run_round_trip perf_client 1 perf_server 2 'perf_client: sent [1-9]' 'perf_server: recv [1-9]' "$PERF_DURATION_S" ||
     status=1
 
 exit $status

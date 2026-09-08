@@ -8,12 +8,10 @@
 /platform/linux/obj/
 
 # platform/freertos's own cross-build output: per-(ROLE,NODE_ID) obj dirs and ELF/map files (see
-# its Makefile), the pcaps `make run`/test.sh capture via -object filter-dump, and test.sh's own
-# captured QEMU output logs
+# its Makefile), and test.sh's own captured QEMU output logs
 /platform/freertos/obj-*/
 /platform/freertos/RTOSDemo-*.elf
 /platform/freertos/RTOSDemo-*.map
-/platform/freertos/*.pcap
 /platform/freertos/*.log
 
 # platform/linux/test.sh's own captured ping/pong and publisher/subscriber output logs

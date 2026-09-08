@@ -36,7 +36,7 @@ jobs:
       - name: make test-all
         run: make test-all
 
-      - name: Upload logs and pcaps
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -44,5 +44,4 @@ jobs:
           path: |
             platform/linux/*.log
             platform/freertos/*.log
-            platform/freertos/*.pcap
           if-no-files-found: ignore

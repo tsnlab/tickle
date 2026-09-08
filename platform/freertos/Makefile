@@ -175,9 +175,9 @@ $(ELF): $(OBJS) board/link.ld
 -include $(OBJS:.o=.d)
 
 # -bios none: no OpenSBI/prior firmware - our ELF's entry point runs directly in M-mode.
-# -netdev socket,mcast=: the same UDP-multicast "virtual hub" test.sh's two instances join
-# for milestone 4's real two-node test - joining it solo here (the default ROLE=selftest) still
-# lets -object filter-dump capture what this instance actually transmits.
+# -netdev socket,mcast=: the same UDP-multicast "virtual hub" test.sh's two instances join for
+# milestone 4's real two-node test - joining it solo here (the default ROLE=selftest) still lets
+# it send/receive real broadcast traffic, just with no peer to answer.
 # -global virtio-mmio.force-legacy=off: QEMU's virtio-mmio bus defaults to legacy (v1) transport
 # for backward compatibility with old machine types; this driver only implements modern (v2) -
 # see virtio_net.c's file-level comment for why.
@@ -185,8 +185,7 @@ run: $(ELF)
 	qemu-system-riscv32 -machine virt -nographic -bios none -kernel $(ELF) \
 	    -global virtio-mmio.force-legacy=off \
 	    -netdev socket,id=net0,mcast=230.0.0.1:5000 \
-	    -device virtio-net-device,netdev=net0 \
-	    -object filter-dump,id=dump0,netdev=net0,file=$(ROLE)-$(NODE_ID).pcap
+	    -device virtio-net-device,netdev=net0
 
 clean:
 	rm -rf obj-*/ RTOSDemo-*.elf RTOSDemo-*.map

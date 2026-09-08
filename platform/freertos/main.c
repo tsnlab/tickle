@@ -18,7 +18,7 @@
 // (tt_RET_TIMEOUT) is the *expected* result, not a regression - what this actually checks is
 // that virtio_net_init() succeeds and tt_Node_create()/tt_Node_poll() run to completion without
 // hanging or crashing while real packets are actually going out (see platform/freertos/
-// Makefile's `run` target, which captures those into a pcap file for inspection).
+// Makefile's `run` target).
 
 #include <FreeRTOS.h>
 #include <stdio.h>
