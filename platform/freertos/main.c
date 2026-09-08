@@ -8,17 +8,17 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// Milestone 3 harness: bring up lwIP over the real virtio-net link (net_init.c), then run a
-// real tt_Node_create()/tt_Node_poll() loop - see
-// /home/semih/.claude/plans/lively-sauteeing-rainbow.md. Unlike milestone 2 (a software loopback
-// netif, where node_update()'s own broadcast looped straight back and every poll came back
-// tt_RET_OK), this is a single, unconnected QEMU instance talking to a real NIC with nobody on
-// the other end - every poll legitimately timing out (tt_RET_TIMEOUT) is the *expected* result
-// here, not a regression. What this milestone actually checks is that virtio_net_init()
-// succeeds and tt_Node_create()/tt_Node_poll() run to completion without hanging or crashing
-// while real packets are actually going out - see platform/freertos/Makefile's `run` target,
-// which captures those into net0.pcap for inspection. The real round trip is milestone 4, with
-// two instances of this same image on each end of the link.
+// ROLE=selftest (the Makefile's default): milestone 3's single-instance harness, kept as a
+// standing regression check for milestones 1-3 alongside ROLE=ping/pong (main_ping.c/
+// main_pong.c), milestone 4's actual two-instance round trip - see
+// /home/semih/.claude/plans/lively-sauteeing-rainbow.md.
+//
+// This brings up lwIP over the real virtio-net link (net_init.c), then runs a real
+// tt_Node_create()/tt_Node_poll() loop. Run solo (no peer), every poll legitimately timing out
+// (tt_RET_TIMEOUT) is the *expected* result, not a regression - what this actually checks is
+// that virtio_net_init() succeeds and tt_Node_create()/tt_Node_poll() run to completion without
+// hanging or crashing while real packets are actually going out (see platform/freertos/
+// Makefile's `run` target, which captures those into a pcap file for inspection).
 
 #include <FreeRTOS.h>
 #include <stdio.h>
@@ -71,23 +71,6 @@ int main(void) {
 
     // vTaskStartScheduler() only returns if it couldn't allocate the idle/timer task - fixed
     // configuration here, so this is unreachable in practice.
-    for (;;) {
-    }
-}
-
-void vApplicationMallocFailedHook(void) {
-    printf("tickle/freertos: malloc failed\n");
-    for (;;) {
-    }
-}
-
-// FreeRTOS's own task.h declares this with its Hungarian-notation parameter names
-// (xTask/pcTaskName); this project doesn't use that convention, so it keeps its own descriptive
-// names instead.
-// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
-void vApplicationStackOverflowHook(TaskHandle_t task, char* task_name) {
-    (void)task;
-    printf("tickle/freertos: stack overflow in task '%s'\n", task_name);
     for (;;) {
     }
 }

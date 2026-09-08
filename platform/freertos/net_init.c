@@ -24,11 +24,17 @@
 
 // Matches TickLE's own netns.mk dev/test convention (192.168.10.0/24) rather than the real
 // _tt_NODE_ADDRESS/_tt_NODE_BROADCAST defaults (0.0.0.0/255.255.255.255) - a static address is
-// required since there's no DHCP server (see lwipopts.h).
+// required since there's no DHCP server (see lwipopts.h). The last octet is this specific
+// instance's node ID - the Makefile's NODE_ID variable sets it (-DNET_NODE_ID=$(NODE_ID)) so two
+// separately-built images can each take a different address on the same segment (see
+// run_pair.sh, which builds one of each for milestone 4's two-instance test).
+#ifndef NET_NODE_ID
+#define NET_NODE_ID 1
+#endif
 #define NET_IP_ADDR0 192
 #define NET_IP_ADDR1 168
 #define NET_IP_ADDR2 10
-#define NET_IP_ADDR3 1
+#define NET_IP_ADDR3 NET_NODE_ID
 
 #define NET_NETIF_MTU 1500
 
