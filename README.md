@@ -167,4 +167,6 @@ the workflow fails if latency more than doubles, or throughput drops to less tha
 the last recorded run (`alert-threshold: "200%"` on each `github-action-benchmark` step).
 
 ## License
-GPLv3 or proprietary license on request
+GPLv3 or proprietary license on request. Every source file carries a
+`SPDX-License-Identifier: GPL-3.0-or-later` header; contact TSN Lab, Inc. for a proprietary
+license.
