@@ -37,12 +37,43 @@ static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* p
     g_interrupted = 1;
 }
 
+static bool have_first = false;
+static uint16_t expected_seq = 0;
+static uint32_t received = 0;
+static uint32_t dropped = 0;
+
 static void uint64_data_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no,
                                  struct UInt64Data* data) {
     (void)sub;
     printf("  timestamp: %ld\n", timestamp);
     printf("  seq_no: %d\n", seq_no);
     printf("  data->data: %lx\n", data->data);
+
+    // seq_no is the framework's own per-publish counter (see tt_DataHeader), truncated to 16
+    // bits - same drop-detection approach as examples/linux/perf/perf_server.c's bulk_callback(),
+    // just without a codec-level seq field to fall back on for the un-truncated count (UInt64Data
+    // has none - this topic's whole payload is the uint64_t value itself).
+    if (have_first && seq_no != expected_seq) {
+        dropped += (uint16_t)(seq_no - expected_seq);
+    }
+    expected_seq = (uint16_t)(seq_no + 1);
+    have_first = true;
+    received++;
+}
+
+// The verifying side of the pub/sub round trip: publisher.c only logs on error (see its own
+// comment), so this subscriber's own tally - not publisher.log - is the real evidence a round
+// trip happened at all. PASS requires both "received something" and "received it in order" -
+// zero messages (nothing ever arrived) and a nonzero drop count (something arrived out of
+// sequence, meaning at least one message never did) are both real failures, not just cosmetic.
+static void print_result(void) {
+    printf("\n--- uint64_topic subscribe statistics ---\n");
+    printf("%u messages received, %u dropped\n", received, dropped);
+    if (received > 0 && dropped == 0) {
+        printf("RESULT: PASS (%u received, %u dropped)\n", received, dropped);
+    } else {
+        printf("RESULT: FAIL (%u received, %u dropped)\n", received, dropped);
+    }
 }
 
 static void print_usage(const char* prog) {
@@ -120,6 +151,8 @@ int main(int argc, char** argv) {
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, -1);
     }
+
+    print_result();
 
     tt_Node_destroy(&node);
     printf("Node destroyed(#%d): %d\n", node.id, ret);

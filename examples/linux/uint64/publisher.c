@@ -131,6 +131,10 @@ int main(int argc, char** argv) {
         ret = tt_Node_poll(&node, -1);
     }
 
+    // Informational only - this side has no pass/fail verdict of its own; the subscriber's own
+    // RESULT line (see subscriber.c's print_result()) is what actually verifies the round trip.
+    printf("\nuint64 publisher: sent %u message(s)\n", transmitted);
+
     tt_Node_destroy(&node);
     printf("Node destroyed(#%d): %d\n", node.id, ret);
 

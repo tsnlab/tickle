@@ -37,6 +37,8 @@ static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* p
     g_interrupted = 1;
 }
 
+static uint32_t handled = 0;
+
 static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest* request,
                                 struct SetBoolResponse* response) {
     (void)server;
@@ -50,6 +52,7 @@ static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest*
         response->message = "Failed";
     }
 
+    handled++;
     return 0;
 }
 
@@ -128,6 +131,10 @@ int main(int argc, char** argv) {
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, -1);
     }
+
+    // Informational only - this side has no pass/fail verdict of its own; the client's own
+    // RESULT line (see client.c's print_result()) is what actually verifies the round trip.
+    printf("\nset_bool server: handled %u request(s)\n", handled);
 
     tt_Node_destroy(&node);
     printf("Node destroyed(#%d): %d\n", node.id, ret);

@@ -71,6 +71,10 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
     tt_Node_schedule(node, time + tt_SECOND, report, NULL);
 }
 
+// Throughput is what this pair measures, so - like ping.c's print_statistics() - RESULT reports
+// the numbers themselves rather than a pass/fail verdict; perf_server.c's own RESULT line is the
+// authoritative side (it can see loss, this side can't), this one's just for visibility into
+// what the sender itself achieved.
 static void print_summary(uint64_t start_time) {
     const double bytes_per_mb = 1e6;
     double elapsed_s = (double)(tt_get_ns() - start_time) / (double)tt_SECOND;
@@ -80,6 +84,8 @@ static void print_summary(uint64_t start_time) {
     printf("\n--- bulk_topic send statistics ---\n");
     printf("%llu messages sent, %.3f MB, %.3f sec, avg %.3f Mbps, %llu times tx buffer was full\n",
            (unsigned long long)total_sent_msgs, megabytes, elapsed_s, avg_mbps, (unsigned long long)total_buffer_full);
+    printf("RESULT: sent=%llu avg_mbps=%.3f buffer_full=%llu\n", (unsigned long long)total_sent_msgs, avg_mbps,
+           (unsigned long long)total_buffer_full);
 }
 
 static void print_usage(const char* prog) {

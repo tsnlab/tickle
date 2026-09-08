@@ -37,11 +37,14 @@ static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* p
     g_interrupted = 1;
 }
 
+static uint32_t handled = 0;
+
 static int8_t pong_callback(struct tt_Server* server, struct PingPongRequest* request,
                             struct PingPongResponse* response) {
     (void)server;
     response->seq = request->seq;
     response->timestamp = request->timestamp;
+    handled++;
     return 0;
 }
 
@@ -119,6 +122,10 @@ int main(int argc, char** argv) {
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, -1);
     }
+
+    // Informational only - this side has no pass/fail verdict of its own; ping's own RESULT line
+    // (see ping.c's print_statistics()) is what actually measures the round trip.
+    printf("\nping_pong server: answered %u request(s)\n", handled);
 
     tt_Node_destroy(&node);
     printf("Node destroyed(#%d): %d\n", node.id, ret);

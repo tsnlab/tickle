@@ -80,6 +80,11 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
     tt_Node_schedule(node, time + tt_SECOND, report, NULL);
 }
 
+// The verifying side of the perf round trip: it can see drops (perf_client.c can't - it never
+// hears back), so this is the authoritative measurement, same role ping.c's print_statistics()
+// plays for latency. Still numbers, not a pass/fail verdict - throughput/loss is a spectrum a
+// human or CI log scraper judges against a threshold, not a binary outcome the way "did the
+// response ever arrive at all" is for set_bool/uint64.
 static void print_summary(uint64_t start_time) {
     const double bytes_per_mb = 1e6;
     const double percent_scale = 100.0;
@@ -93,6 +98,8 @@ static void print_summary(uint64_t start_time) {
     printf("%llu messages received, %llu dropped, %.1f%% loss, %.3f MB, %.3f sec, avg %.3f Mbps\n",
            (unsigned long long)total_received_msgs, (unsigned long long)total_dropped, loss_pct, megabytes, elapsed_s,
            avg_mbps);
+    printf("RESULT: recv=%llu dropped=%llu loss_pct=%.1f avg_mbps=%.3f\n", (unsigned long long)total_received_msgs,
+           (unsigned long long)total_dropped, loss_pct, avg_mbps);
 }
 
 static void print_usage(const char* prog) {

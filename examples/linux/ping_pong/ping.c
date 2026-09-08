@@ -102,6 +102,12 @@ static void ping(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
+// The verifying side of the ping/pong round trip: pong.c never logs per-request (see its own
+// comment), so this ping's own tally - not pong.log - is the real evidence a round trip
+// happened. Latency is what this pair measures, so RESULT reports the numbers themselves rather
+// than a pass/fail verdict (see set_bool/uint64's client.c/subscriber.c for the functional-
+// verification counterpart) - a reader (human or CI log scraper) judges "good" or "bad" against
+// the actual rtt/loss values.
 static void print_statistics(uint64_t start_time) {
     uint64_t lost = transmitted - received;
     double loss_pct = transmitted > 0 ? (100.0 * (double)lost / (double)transmitted) : 0.0;
@@ -116,6 +122,11 @@ static void print_statistics(uint64_t start_time) {
         double variance = (rtt_sum_sq_ms / (double)received) - (avg * avg);
         double mdev = variance > 0.0 ? sqrt(variance) : 0.0;
         printf("rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms, mdev);
+        printf("RESULT: sent=%llu recv=%llu loss_pct=%.0f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
+               (unsigned long long)transmitted, (unsigned long long)received, loss_pct, avg, rtt_max_ms);
+    } else {
+        printf("RESULT: sent=%llu recv=%llu loss_pct=%.0f\n", (unsigned long long)transmitted,
+               (unsigned long long)received, loss_pct);
     }
 }
 
