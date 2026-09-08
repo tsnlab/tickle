@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788773382526,
+  "lastUpdate": 1788852641759,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -185,6 +185,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.044,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "a90c53b1e0f3d362bb6b8ca7d63769b77586dff9",
+          "message": "Fix run_pair.sh hanging forever when pong's QEMU gets SIGTTIN-stopped\n\nqemu-system-riscv32 -nographic reads stdin (serial console + monitor\nmultiplexing). pong's instance was backgrounded without redirecting its\nstdin away from the invoking terminal, so if it tried to read stdin while\nbackgrounded, the shell's job control could stop it with SIGTTIN. A stopped\nprocess doesn't respond to the later kill (SIGTERM) - it stays stopped, not\nterminated - so the script's wait on it blocked indefinitely. Redirect both\ninstances' stdin from /dev/null so neither depends on foreground/background\njob-control semantics; applied the same defensive fix to netns_run_pair.sh's\nbackgrounded pong.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-08T16:28:18+09:00",
+          "tree_id": "27f0d331d5de4092325b019b1f7d937881ec69d9",
+          "url": "https://github.com/tsnlab/tickle/commit/a90c53b1e0f3d362bb6b8ca7d63769b77586dff9"
+        },
+        "date": 1788852640759,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.215,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.011,
             "unit": "ms"
           },
           {
