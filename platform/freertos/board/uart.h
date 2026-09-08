@@ -15,6 +15,6 @@
 // terminal, a log file, or - for the two-instance test - a per-instance pty/file).
 
 void uart_init(void);
-void uart_putc(char c);
+void uart_putc(char chr);
 // Returns the next received byte, or -1 if none is available right now (never blocks).
 int uart_getc_nonblock(void);

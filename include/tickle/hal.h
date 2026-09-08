@@ -17,7 +17,11 @@
 #include <string.h>
 
 // Platform detection macros
-#ifdef __linux__
+#ifdef TT_PLATFORM_FREERTOS
+// Set by platform/freertos's own build (-DTT_PLATFORM_FREERTOS) - unlike __linux__ below,
+// FreeRTOS itself defines no standard compiler macro to detect it by.
+#define TT_PLATFORM_NAME "freertos"
+#elif defined(__linux__)
 #define TT_PLATFORM_LINUX
 #define TT_PLATFORM_NAME "linux"
 #else
@@ -61,6 +65,8 @@ struct tt_Header;
 // Platform-specific HAL structure inclusion
 #ifdef TT_PLATFORM_LINUX
 #include <tickle/hal_linux.h> // NOLINT(misc-include-cleaner)
+#elif defined(TT_PLATFORM_FREERTOS)
+#include <tickle/hal_freertos.h> // NOLINT(misc-include-cleaner)
 #elif defined(TT_PLATFORM_GENERIC)
 #include <tickle/hal_generic.h> // NOLINT(misc-include-cleaner)
 #endif

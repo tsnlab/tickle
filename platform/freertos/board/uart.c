@@ -40,10 +40,10 @@ void uart_init(void) {
     UART_FCR = UART_FCR_ENABLE_FIFO_CLEAR;
 }
 
-void uart_putc(char c) {
+void uart_putc(char chr) {
     while ((UART_LSR & UART_LSR_THR_EMPTY) == 0) {
     }
-    UART_THR = (uint8_t)c;
+    UART_THR = (uint8_t)chr;
 }
 
 int uart_getc_nonblock(void) {

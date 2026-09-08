@@ -1,0 +1,14 @@
+InheritParentConfig: true
+# - readability-identifier-naming: FreeRTOSConfig.h/lwipopts.h's macro names
+#   (configUSE_PREEMPTION, LWIP_SOCKET, ...) and FreeRTOS/lwIP callback signatures
+#   (vApplicationStackOverflowHook, sys_arch.c's types, ...) are an external API contract, not
+#   ours to rename to fit the rest of this project's naming convention.
+# - misc-include-cleaner: this directory layers three separately-vendored header trees
+#   (FreeRTOS-Kernel, lwIP, picolibc) that constantly re-export each other's types/macros
+#   (err_t, ip4_addr_t, EAGAIN, pdMS_TO_TICKS, ...) through umbrella headers - "which header
+#   actually defines this" isn't a meaningful question to enforce here the way it is for this
+#   project's own single-layer headers.
+# - performance-no-int-to-ptr: board/*.c's memory-mapped register access (volatile pointer casts
+#   of fixed hardware addresses) is exactly what this check flags, and is the only correct way
+#   to do it - there's no faster alternative to "pessimize" away from.
+Checks: '-readability-identifier-naming,-misc-include-cleaner,-performance-no-int-to-ptr'

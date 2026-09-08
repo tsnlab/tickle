@@ -16,21 +16,24 @@
 
 #include "uart.h"
 
-static int uart_put(char c, FILE* file) {
+static int uart_put(char chr, FILE* file) {
     (void)file;
-    if (c == '\n') {
+    if (chr == '\n') {
         uart_putc('\r');
     }
-    uart_putc(c);
+    uart_putc(chr);
     return 0;
 }
 
 static int uart_get(FILE* file) {
     (void)file;
-    int c = uart_getc_nonblock();
-    return c < 0 ? _FDEV_EOF : c;
+    int chr = uart_getc_nonblock();
+    return chr < 0 ? _FDEV_EOF : chr;
 }
 
+// picolibc's own FDEV_SETUP_STREAM pattern (see its stdio.h) is exactly a static FILE value
+// like this one, addressed through the pointers below - never copied.
+// NOLINTNEXTLINE(misc-non-copyable-objects)
 static FILE uart_stream = FDEV_SETUP_STREAM(uart_put, uart_get, NULL, _FDEV_SETUP_RW);
 
 FILE* const stdin = &uart_stream;

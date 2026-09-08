@@ -16,8 +16,9 @@
 #pragma once
 
 // QEMU's `-machine virt` CLINT-driven timer isn't tied to a real crystal; this only sets the
-// tick/timer-compare math, not real wall-clock behavior. tt_get_ns() (hal_freertos.c) reads the
-// same CLINT mtime counter directly instead of relying on the RTOS tick for its nanosecond clock.
+// tick/timer-compare math, not real wall-clock behavior. tt_get_ns() (src/hal_freertos.c) reads
+// the same CLINT mtime counter directly instead of relying on the RTOS tick for its nanosecond
+// clock - hal_freertos.c's own CLINT_TIMEBASE_HZ must be kept equal to this value.
 #define configCPU_CLOCK_HZ 10000000UL
 #define configTICK_RATE_HZ 1000
 
@@ -34,7 +35,8 @@
 #define configIDLE_SHOULD_YIELD 1
 
 #define configUSE_MUTEXES 1
-#define configUSE_RECURSIVE_MUTEXES 0
+// lwIP's contrib/ports/freertos/sys_arch.c implements sys_mutex_t with recursive semaphores.
+#define configUSE_RECURSIVE_MUTEXES 1
 #define configUSE_COUNTING_SEMAPHORES 1
 #define configUSE_TASK_NOTIFICATIONS 1
 #define configUSE_QUEUE_SETS 0

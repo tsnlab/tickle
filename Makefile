@@ -140,9 +140,19 @@ $(OBJ)/$(TEST_DIR)/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/l
 $(OBJ)/$(TEST_DIR):
 	mkdir -p $@
 
+# Excludes, and why each needs its own lint pass instead (see platform/freertos/Makefile's own
+# `lint` target) rather than just being swept in here with everything else:
+#   - third_party/*: vendored submodules (FreeRTOS-Kernel, lwIP) aren't our code to format/lint.
+#   - platform/*: cross-compiled for RISC-V, needs -DTT_PLATFORM_FREERTOS and lwIP/FreeRTOS
+#     include paths this host build knows nothing about, and FreeRTOSConfig.h's macro names
+#     (configUSE_PREEMPTION, ...) are FreeRTOS's own API contract, not ours to rename to fit our
+#     naming-convention checks.
+#   - hal_freertos.*: same reason as platform/* - it's cross-compiled code that happens to live
+#     in include/src rather than platform/ (mirroring hal_linux.* placement).
+LINT_EXCLUDES = -not -path './third_party/*' -not -path './platform/*' -not -name 'hal_freertos.*'
 lint:
-	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
-	find . -name '*.[ch]' -exec clang-tidy --extra-arg=-I$(INCLUDE) --extra-arg=-I$(SRC) {} +
+	find . $(LINT_EXCLUDES) -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
+	find . $(LINT_EXCLUDES) -name '*.[ch]' -exec clang-tidy --extra-arg=-I$(INCLUDE) --extra-arg=-I$(SRC) {} +
 
 include netns.mk
 
