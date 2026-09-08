@@ -21,6 +21,13 @@ platforms:
 There's no fallback HAL for any other platform - `include/tickle/hal.h` fails to compile with a
 clear `#error` naming these two instead of silently offering a HAL that doesn't exist.
 
+Each protocol's example driver is organized the same way: a platform-neutral generated codec
+directly under `examples/<protocol>/` (e.g. `examples/ping_pong/PingPong.{c,h}`), shared verbatim
+by both platforms, plus one driver per platform under `examples/linux/<protocol>/` (argv-parsed
+POSIX binaries, see "Run examples" below) and `examples/freertos/<protocol>/` (FreeRTOS tasks with
+compile-time-fixed config - there's no argv on a flashed embedded target). Not every protocol has
+a FreeRTOS driver yet - only `ping_pong` and `uint64`, the two `test-qemu` exercises.
+
 ## Security & concurrency model
 
 TickLE has no authentication or encryption: any node on the broadcast domain can send a
@@ -74,7 +81,7 @@ namespaces and emulated virtio-net respectively (see [netns_run_pair.sh](netns_r
 round trip (RPC - call/response) and a `publisher`/`subscriber` round trip (pub/sub) - the latter
 specifically covers `tt_Publisher_publish()`'s batched-not-immediately-flushed send path, which
 RPC's always-immediately-flushed `tt_Client_call()` never exercises at all (see
-`platform/freertos/main_publisher.c`'s file-level comment, or DESIGN.md's "RPC flushes
+`examples/freertos/uint64/main_publisher.c`'s file-level comment, or DESIGN.md's "RPC flushes
 immediately; Publish batches"). Both tiers need `sudo` (namespaces) or the RISC-V toolchain +
 `qemu-system-riscv32` (see [platform/freertos/Makefile](platform/freertos/Makefile)'s `lint`
 target for the exact packages), so they're not part of plain `make test`. The two-Raspberry-Pi

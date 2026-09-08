@@ -11,9 +11,11 @@
 /platform/freertos/*.pcap
 /platform/freertos/*.log
 
-# netns_run_pair.sh's own captured ping/pong output logs (see also *.log below)
+# netns_run_pair.sh's own captured ping/pong and publisher/subscriber output logs
 /ping.log
 /pong.log
+/publisher.log
+/subscriber.log
 
 # Prerequisites
 *.d

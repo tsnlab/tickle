@@ -11,8 +11,8 @@
 // ROLE=ping: milestone 4's client side - the actual two-instance round trip the whole plan
 // (/home/semih/.claude/plans/lively-sauteeing-rainbow.md) has been building up to. This reuses
 // examples/ping_pong/PingPong.{c,h} verbatim (pure protocol encode/decode code, no POSIX
-// dependency) rather than examples/ping_pong/ping.c itself, which is built around argv parsing,
-// SIGINT, and other things that don't exist on this target - the actual tt_Client_call()/
+// dependency) rather than examples/linux/ping_pong/ping.c itself, which is built around argv
+// parsing, SIGINT, and other things that don't exist on this target - the actual tt_Client_call()/
 // callback pattern below is otherwise the same one ping.c uses.
 
 #include <FreeRTOS.h>

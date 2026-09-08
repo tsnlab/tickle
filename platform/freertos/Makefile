@@ -19,11 +19,13 @@ OBJCOPY = $(CROSS)objcopy
 
 # ROLE picks which main file (and any role-specific extra sources) gets built:
 #   selftest (default)     - main.c, milestones 1-3's single-instance harness
-#   ping / pong             - main_ping.c/main_pong.c, the RPC (call/response) round trip,
-#                             reusing examples/ping_pong/PingPong.{c,h} (see main_ping.c)
-#   publisher / subscriber - main_publisher.c/main_subscriber.c, the pub/sub round trip (covers
-#                             tt_Publisher_publish()'s batched-flush path ping/pong never
-#                             exercises - see main_publisher.c), reusing
+#   ping / pong             - examples/freertos/ping_pong/main_{ping,pong}.c, the RPC
+#                             (call/response) round trip, reusing examples/ping_pong/PingPong.{c,h}
+#                             (see main_ping.c) - examples/linux/ping_pong/{ping,pong}.c are the
+#                             same round trip's Linux drivers, reusing the same codec.
+#   publisher / subscriber - examples/freertos/uint64/main_{publisher,subscriber}.c, the pub/sub
+#                             round trip (covers tt_Publisher_publish()'s batched-flush path
+#                             ping/pong never exercises - see main_publisher.c), reusing
 #                             examples/uint64/UInt64.{c,h}
 # NODE_ID sets this instance's static IP (192.168.10.$(NODE_ID)) via -DNET_NODE_ID - see
 # net_init.c. Each (ROLE, NODE_ID) pair gets its own obj dir/ELF name so building more than one
@@ -36,19 +38,19 @@ MAIN_SRC = main.c
 ROLE_SRCS =
 ROLE_INCLUDES =
 else ifeq ($(ROLE),ping)
-MAIN_SRC = main_ping.c
+MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_ping.c
 ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
 ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
 else ifeq ($(ROLE),pong)
-MAIN_SRC = main_pong.c
+MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_pong.c
 ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
 ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
 else ifeq ($(ROLE),publisher)
-MAIN_SRC = main_publisher.c
+MAIN_SRC = $(ROOT)/examples/freertos/uint64/main_publisher.c
 ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
 ROLE_INCLUDES = -I$(ROOT)/examples/uint64
 else ifeq ($(ROLE),subscriber)
-MAIN_SRC = main_subscriber.c
+MAIN_SRC = $(ROOT)/examples/freertos/uint64/main_subscriber.c
 ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
 ROLE_INCLUDES = -I$(ROOT)/examples/uint64
 else
@@ -184,13 +186,21 @@ TIDY_ARGS = --extra-arg=--target=riscv32-unknown-elf --extra-arg=-isystem --extr
             --extra-arg=-I$(ROOT)/include --extra-arg=-I$(ROOT)/src \
             --extra-arg=-I$(ROOT)/examples/ping_pong --extra-arg=-I$(ROOT)/examples/uint64
 
-# hal_freertos.c/h live under include/src, outside this directory's own .clang-tidy (which
-# disables misc-include-cleaner/performance-no-int-to-ptr for the same reasons given there) - so
-# repeat that same override explicitly here via --checks.
-HAL_FREERTOS_TIDY_CHECKS = --checks=-misc-include-cleaner,-performance-no-int-to-ptr
+# Files that need this directory's own cross-compile flags but live elsewhere (so `find .` below
+# never reaches them) also need this directory's .clang-tidy overrides applied explicitly, since
+# clang-tidy's own config auto-discovery walks up from *the file's own location*, not from where
+# it was invoked - a file under examples/freertos/ would otherwise pick up the repo root's
+# .clang-tidy (tuned for this project's own single-layer, Linux-hosted code) instead of this
+# directory's (see platform/freertos/.clang-tidy for what it disables and why):
+#   - hal_freertos.c/h (src/, include/tickle/ - mirrors hal_linux.*'s placement)
+#   - examples/freertos/*/main_*.c (mirrors examples/linux/*'s placement)
+EXTERNAL_TIDY_CHECKS = --checks=-readability-identifier-naming,-misc-include-cleaner,-performance-no-int-to-ptr
+EXTERNAL_TIDY_FILES = $(ROOT)/src/hal_freertos.c $(ROOT)/include/tickle/hal_freertos.h \
+                      $(ROOT)/examples/freertos/ping_pong/main_ping.c $(ROOT)/examples/freertos/ping_pong/main_pong.c \
+                      $(ROOT)/examples/freertos/uint64/main_publisher.c $(ROOT)/examples/freertos/uint64/main_subscriber.c
 
 lint:
 	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
 	find . -name '*.[ch]' -exec clang-tidy $(TIDY_ARGS) {} +
-	clang-format --dry-run --Werror $(ROOT)/src/hal_freertos.c $(ROOT)/include/tickle/hal_freertos.h
-	clang-tidy $(TIDY_ARGS) $(HAL_FREERTOS_TIDY_CHECKS) $(ROOT)/src/hal_freertos.c $(ROOT)/include/tickle/hal_freertos.h
+	clang-format --dry-run --Werror $(EXTERNAL_TIDY_FILES)
+	clang-tidy $(TIDY_ARGS) $(EXTERNAL_TIDY_CHECKS) $(EXTERNAL_TIDY_FILES)

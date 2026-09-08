@@ -10,14 +10,14 @@
 # Automated round-trip test for the Linux HAL, over two real network namespaces (see netns.mk) -
 # the same "two independent nodes on one broadcast segment" shape as
 # platform/freertos/run_pair.sh's QEMU test, just exercising src/hal_linux.c's real kernel UDP
-# sockets instead of hal_freertos.c's lwIP ones. Reuses the example binaries unmodified (not a
-# purpose-built harness like platform/freertos's main_ping.c/main_pong.c) - real user-facing code,
-# exercised the same way `make runping`/`make runpong` would run it by hand.
+# sockets instead of hal_freertos.c's lwIP ones. Reuses the examples/linux/ binaries unmodified
+# (not a purpose-built harness like examples/freertos/'s main_ping.c/main_pong.c) - real
+# user-facing code, exercised the same way `make runping`/`make runpong` would run it by hand.
 #
 # Runs two such round trips: ping/pong (RPC, call/response) and publisher/subscriber (pub/sub).
 # The latter specifically exercises tt_Publisher_publish()'s batched (not immediately flushed)
 # send path, which ping/pong's always-immediately-flushed tt_Client_call() never reaches at all -
-# see platform/freertos/main_publisher.c's file-level comment (same reasoning, different HAL).
+# see examples/freertos/uint64/main_publisher.c's file-level comment (same reasoning, different HAL).
 
 set -u
 cd "$(dirname "$0")"
