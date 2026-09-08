@@ -40,12 +40,12 @@ If your change touches `platform/freertos/` or anything in the HAL contract
 
 ```sh
 $ make -C platform/freertos lint
-$ make test-qemu
+$ make test-freertos
 ```
 
-`make test-netns` needs `sudo` (it creates real network namespaces) and isn't required for every
+`make test-linux` needs `sudo` (it creates real network namespaces) and isn't required for every
 PR, but run it if you touched `src/hal_linux.c` or the core protocol path in `src/tickle.c`.
-`make test-all` runs all three self-contained tiers (unit + netns + QEMU) in one command - see
+`make test-all` runs all three self-contained tiers (unit + linux + freertos) in one command - see
 [README.md](README.md#tests) - and is what CI runs on every push/PR
 ([test-all.yml](.github/workflows/test-all.yml)). The two-Raspberry-Pi hardware-in-the-loop
 performance benchmark ([performance.yml](.github/workflows/performance.yml)) only runs on `main`

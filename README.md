@@ -16,7 +16,7 @@ platforms:
   [Makefile](platform/freertos/Makefile)) - over lwIP's socket API against a from-scratch
   virtio-net driver (`platform/freertos/board/virtio_net.c`). See
   [platform/freertos/run_pair.sh](platform/freertos/run_pair.sh) for a real two-instance
-  ping/pong round trip under QEMU, or `make test-qemu` below to run it.
+  ping/pong round trip under QEMU, or `make test-freertos` below to run it.
 
 There's no fallback HAL for any other platform - `include/tickle/hal.h` fails to compile with a
 clear `#error` naming these two instead of silently offering a HAL that doesn't exist.
@@ -26,7 +26,7 @@ codec (e.g. `PingPong.{c,h}`) together with its argv-parsed POSIX driver (see "R
 below), and `examples/freertos/<protocol>/` holds just that protocol's FreeRTOS driver (a task with
 compile-time-fixed config - there's no argv on a flashed embedded target), cross-compiling the same
 codec straight out of `examples/linux/<protocol>/` rather than duplicating it. Not every protocol
-has a FreeRTOS driver yet - only `ping_pong` and `uint64`, the two `test-qemu` exercises. The loose
+has a FreeRTOS driver yet - only `ping_pong` and `uint64`, the two `test-freertos` exercises. The loose
 `.msg`/`.srv` files directly under `examples/` are platform-neutral interface definitions, shared
 by every driver of every protocol.
 
@@ -65,10 +65,10 @@ $ make all BUILD_TYPE=release
 ## Tests
 
 ```sh
-$ make test        # Unit tests only (no real sockets, no network namespaces, no QEMU)
-$ make test-netns   # Real RPC and pub/sub round trips over Linux network namespaces (src/hal_linux.c)
-$ make test-qemu    # Real RPC and pub/sub round trips under QEMU (platform/freertos, src/hal_freertos.c)
-$ make test-all     # All three of the above, in order - what CI runs (test-all.yml)
+$ make test           # Unit tests only (mock HAL - no real sockets, no network namespaces, no QEMU)
+$ make test-linux     # Real RPC and pub/sub round trips over Linux network namespaces (src/hal_linux.c)
+$ make test-freertos  # Real RPC and pub/sub round trips under QEMU (platform/freertos, src/hal_freertos.c)
+$ make test-all       # All three of the above, in order - what CI runs (test-all.yml)
 ```
 
 Each `tests/test_*.c` is a small, framework-free, whitebox unit test: it `#include`s
@@ -76,7 +76,9 @@ Each `tests/test_*.c` is a small, framework-free, whitebox unit test: it `#inclu
 (`tests/test_mock.h`) instead of `hal_linux.c`, so it runs with no real sockets/network and no
 timing dependency. `make test` builds and runs every one, stopping at the first failure.
 
-`test-netns` and `test-qemu` instead exercise a real platform HAL end to end: two independent
+`test-linux` and `test-freertos` (named for the platform under test, matching examples/linux and
+examples/freertos - not the mechanism behind each) instead exercise a real platform HAL end to
+end: two independent
 processes (or QEMU instances) actually exchanging packets, not a mock, over Linux network
 namespaces and emulated virtio-net respectively (see [netns_run_pair.sh](netns_run_pair.sh) /
 [platform/freertos/run_pair.sh](platform/freertos/run_pair.sh)). Each runs both a `ping`/`pong`

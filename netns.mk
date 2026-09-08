@@ -3,7 +3,7 @@
 # Split out of the main Makefile so build logic and this environment-specific tooling don't
 # get tangled together.
 
-.PHONY: createns deletens runclient runserver runpublisher runsubscriber runping runpong runperf_client runperf_server dump1 dump2 test-netns
+.PHONY: createns deletens runclient runserver runpublisher runsubscriber runping runpong runperf_client runperf_server dump1 dump2 test-linux
 
 createns:
 # Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
@@ -67,6 +67,8 @@ dump2:
 	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
 
 # Automated (createns/run ping+pong/assert/deletens), unlike the manual runX targets above -
-# see netns_run_pair.sh.
-test-netns:
+# see netns_run_pair.sh. Named for the platform under test (matches examples/linux/), not the
+# mechanism - see test-freertos (top-level Makefile) for the same naming choice on the other
+# platform.
+test-linux:
 	./netns_run_pair.sh
