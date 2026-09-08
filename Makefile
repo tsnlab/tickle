@@ -73,7 +73,7 @@ TEST_DIR = tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/$(TEST_DIR)/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-qemu test-all lint clean
 
 all:
 	$(MAKE) library
@@ -133,6 +133,19 @@ test: $(TEST_BINS)
 	    echo "-- $$bin --"; \
 	    ./$$bin || exit 1; \
 	done
+
+# QEMU round trip for the FreeRTOS platform - see platform/freertos/run_pair.sh. Needs the
+# RISC-V toolchain (see platform/freertos/Makefile's own lint target for the exact packages).
+test-qemu:
+	platform/freertos/run_pair.sh
+
+# Every test tier that's fully self-contained (no real hardware needed) in one target: unit
+# tests, a real Linux-HAL round trip over network namespaces (test-netns, from netns.mk), and a
+# real FreeRTOS-HAL round trip over emulated virtio-net (test-qemu). The two Raspberry Pi HIL
+# performance test (.github/workflows/performance.yml) is deliberately not part of this - it
+# needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add
+# here.
+test-all: test test-netns test-qemu
 
 $(OBJ)/$(TEST_DIR)/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/$(TEST_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm

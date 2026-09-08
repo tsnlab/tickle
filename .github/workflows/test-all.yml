@@ -1,9 +1,9 @@
-name: FreeRTOS QEMU
+name: Test all
 
 # Unlike performance.yml (which needs the two real, exclusively-held Raspberry Pis and so only
-# runs post-merge), this needs no real hardware at all - two QEMU processes on a normal
-# GitHub-hosted runner stand in for the two nodes - so it can run on every push and PR like
-# check-all.yml does.
+# runs post-merge), everything this workflow does is fully self-contained (network namespaces
+# and QEMU processes standing in for two real nodes, not real hardware), so - like
+# check-all.yml - it can run on every push and PR.
 on:
   - push
   - pull_request
@@ -17,7 +17,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # third_party/FreeRTOS-Kernel and third_party/lwip are submodules this build needs.
+          # third_party/FreeRTOS-Kernel and third_party/lwip are submodules the QEMU tier needs.
           submodules: true
 
       - name: Install RISC-V toolchain and QEMU
@@ -30,15 +30,19 @@ jobs:
       - name: Lint (platform/freertos)
         run: make -C platform/freertos lint
 
-      - name: Two-instance round trip (ping/pong over virtio-net)
-        run: platform/freertos/run_pair.sh
+      # Every self-contained test tier (unit tests, a real Linux-HAL round trip over network
+      # namespaces, a real FreeRTOS-HAL round trip over emulated virtio-net) behind the one
+      # command `make test-all` also runs locally - see the top-level Makefile.
+      - name: make test-all
+        run: make test-all
 
       - name: Upload logs and pcaps
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: freertos-qemu-logs
+          name: test-all-logs
           path: |
+            *.log
             platform/freertos/*.log
             platform/freertos/*.pcap
           if-no-files-found: ignore
