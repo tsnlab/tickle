@@ -26,11 +26,18 @@ rm -f pong.pcap ping.pcap pong.log ping.log
 
 # pong runs in the background for the whole test; ping (foreground, time-bounded) is what
 # actually drives it - once ping's `timeout` returns, there's nothing further to wait for.
+# stdin is explicitly redirected from /dev/null on both: -nographic multiplexes the guest's
+# serial console AND the QEMU monitor over stdin, and a *backgrounded* process left attached to
+# the invoking terminal's stdin can get suspended by the shell's job control (SIGTTIN) the moment
+# it tries to read - at which point it's stopped, not running, and later `kill` (SIGTERM) can't
+# actually terminate a stopped process, so `wait` below would block forever. Redirecting both
+# (not just pong's) keeps the two instances' behavior identical and avoids relying on foreground
+# vs background job-control semantics at all.
 qemu-system-riscv32 -machine virt -nographic -bios none -kernel RTOSDemo-pong-2.elf \
     -global virtio-mmio.force-legacy=off \
     -netdev socket,id=net0,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net0 \
     -object filter-dump,id=dump0,netdev=net0,file=pong.pcap \
-    >pong.log 2>&1 &
+    </dev/null >pong.log 2>&1 &
 pong_pid=$!
 
 # Give pong a moment to finish booting/negotiating its virtio-net link before ping starts
@@ -42,7 +49,7 @@ timeout "$DURATION_S" qemu-system-riscv32 -machine virt -nographic -bios none -k
     -global virtio-mmio.force-legacy=off \
     -netdev socket,id=net1,mcast=$MCAST_GROUP -device virtio-net-device,netdev=net1 \
     -object filter-dump,id=dump1,netdev=net1,file=ping.pcap \
-    >ping.log 2>&1
+    </dev/null >ping.log 2>&1
 ping_status=$?
 
 kill "$pong_pid" 2>/dev/null
