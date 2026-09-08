@@ -20,6 +20,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "../common/cli_opts.h"
 #include "UInt64.h"
 
@@ -67,12 +68,18 @@ static void uint64_data_callback(struct tt_Subscriber* sub, uint64_t timestamp, 
 // zero messages (nothing ever arrived) and a nonzero drop count (something arrived out of
 // sequence, meaning at least one message never did) are both real failures, not just cosmetic.
 static void print_result(void) {
+    char received_buf[TT_GROUPED_BUF_LEN];
+    char dropped_buf[TT_GROUPED_BUF_LEN];
+
     printf("\n--- uint64_topic subscribe statistics ---\n");
-    printf("%u messages received, %u dropped\n", received, dropped);
+    printf("%s messages received, %s dropped\n", tt_format_grouped(received, received_buf),
+           tt_format_grouped(dropped, dropped_buf));
     if (received > 0 && dropped == 0) {
-        printf("RESULT: PASS (%u received, %u dropped)\n", received, dropped);
+        printf("RESULT: PASS (%s received, %s dropped)\n", tt_format_grouped(received, received_buf),
+               tt_format_grouped(dropped, dropped_buf));
     } else {
-        printf("RESULT: FAIL (%u received, %u dropped)\n", received, dropped);
+        printf("RESULT: FAIL (%s received, %s dropped)\n", tt_format_grouped(received, received_buf),
+               tt_format_grouped(dropped, dropped_buf));
     }
 }
 

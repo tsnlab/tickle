@@ -20,6 +20,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "../common/cli_opts.h"
 #include "SetBool.h"
 
@@ -65,12 +66,18 @@ static void set_bool_callback(struct tt_Client* client, int8_t return_code, stru
 // awaiting a reply when the process is asked to stop counts as neither a pass nor a fail, so
 // it's excluded rather than silently counted as one or the other.
 static void print_result(void) {
+    char transmitted_buf[TT_GROUPED_BUF_LEN];
+    char succeeded_buf[TT_GROUPED_BUF_LEN];
+
     printf("\n--- set_bool call statistics ---\n");
-    printf("%u calls made, %u succeeded\n", transmitted, succeeded);
+    printf("%s calls made, %s succeeded\n", tt_format_grouped(transmitted, transmitted_buf),
+           tt_format_grouped(succeeded, succeeded_buf));
     if (transmitted > 0 && succeeded == transmitted) {
-        printf("RESULT: PASS (%u/%u succeeded)\n", succeeded, transmitted);
+        printf("RESULT: PASS (%s/%s succeeded)\n", tt_format_grouped(succeeded, succeeded_buf),
+               tt_format_grouped(transmitted, transmitted_buf));
     } else {
-        printf("RESULT: FAIL (%u/%u succeeded)\n", succeeded, transmitted);
+        printf("RESULT: FAIL (%s/%s succeeded)\n", tt_format_grouped(succeeded, succeeded_buf),
+               tt_format_grouped(transmitted, transmitted_buf));
     }
 }
 

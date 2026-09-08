@@ -21,6 +21,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "../common/cli_opts.h"
 #include "PingPong.h"
 
@@ -109,24 +110,28 @@ static void ping(struct tt_Node* node, uint64_t time, void* param) {
 // verification counterpart) - a reader (human or CI log scraper) judges "good" or "bad" against
 // the actual rtt/loss values.
 static void print_statistics(uint64_t start_time) {
+    char transmitted_buf[TT_GROUPED_BUF_LEN];
+    char received_buf[TT_GROUPED_BUF_LEN];
     uint64_t lost = transmitted - received;
     double loss_pct = transmitted > 0 ? (100.0 * (double)lost / (double)transmitted) : 0.0;
     double elapsed_ms = (double)(tt_get_ns() - start_time) / (double)tt_MILLISECOND;
 
     printf("\n--- ping statistics ---\n");
-    printf("%llu packets transmitted, %llu received, %.0f%% packet loss, time %.0fms\n",
-           (unsigned long long)transmitted, (unsigned long long)received, loss_pct, elapsed_ms);
+    printf("%s packets transmitted, %s received, %.0f%% packet loss, time %.0fms\n",
+           tt_format_grouped(transmitted, transmitted_buf), tt_format_grouped(received, received_buf), loss_pct,
+           elapsed_ms);
 
     if (received > 0) {
         double avg = rtt_sum_ms / (double)received;
         double variance = (rtt_sum_sq_ms / (double)received) - (avg * avg);
         double mdev = variance > 0.0 ? sqrt(variance) : 0.0;
         printf("rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms, mdev);
-        printf("RESULT: sent=%llu recv=%llu loss_pct=%.0f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
-               (unsigned long long)transmitted, (unsigned long long)received, loss_pct, avg, rtt_max_ms);
+        printf("RESULT: sent=%s recv=%s loss_pct=%.0f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
+               tt_format_grouped(transmitted, transmitted_buf), tt_format_grouped(received, received_buf), loss_pct,
+               avg, rtt_max_ms);
     } else {
-        printf("RESULT: sent=%llu recv=%llu loss_pct=%.0f\n", (unsigned long long)transmitted,
-               (unsigned long long)received, loss_pct);
+        printf("RESULT: sent=%s recv=%s loss_pct=%.0f\n", tt_format_grouped(transmitted, transmitted_buf),
+               tt_format_grouped(received, received_buf), loss_pct);
     }
 }
 

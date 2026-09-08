@@ -20,6 +20,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "../common/cli_opts.h"
 #include "Bulk.h"
 
@@ -68,11 +69,14 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
 static void report(struct tt_Node* node, uint64_t time, void* param) {
     (void)param;
 
+    char recv_buf[TT_GROUPED_BUF_LEN];
+    char dropped_buf[TT_GROUPED_BUF_LEN];
     const double bytes_per_mb = 1e6;
     double megabytes = (double)interval_received_bytes / bytes_per_mb;
     double mbps = ((double)interval_received_bytes * 8) / bytes_per_mb;
-    printf("recv %llu msgs, %.3f MB, %.3f Mbps this interval (%llu dropped so far)\n",
-           (unsigned long long)interval_received_msgs, megabytes, mbps, (unsigned long long)total_dropped);
+    printf("recv %s msgs, %.3f MB, %.3f Mbps this interval (%s dropped so far)\n",
+           tt_format_grouped(interval_received_msgs, recv_buf), megabytes, mbps,
+           tt_format_grouped(total_dropped, dropped_buf));
 
     interval_received_msgs = 0;
     interval_received_bytes = 0;
@@ -86,6 +90,8 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
 // human or CI log scraper judges against a threshold, not a binary outcome the way "did the
 // response ever arrive at all" is for set_bool/uint64.
 static void print_summary(uint64_t start_time) {
+    char recv_buf[TT_GROUPED_BUF_LEN];
+    char dropped_buf[TT_GROUPED_BUF_LEN];
     const double bytes_per_mb = 1e6;
     const double percent_scale = 100.0;
     double elapsed_s = (double)(tt_get_ns() - start_time) / (double)tt_SECOND;
@@ -95,11 +101,11 @@ static void print_summary(uint64_t start_time) {
     double loss_pct = expected_total > 0 ? (percent_scale * (double)total_dropped / (double)expected_total) : 0.0;
 
     printf("\n--- bulk_topic receive statistics ---\n");
-    printf("%llu messages received, %llu dropped, %.1f%% loss, %.3f MB, %.3f sec, avg %.3f Mbps\n",
-           (unsigned long long)total_received_msgs, (unsigned long long)total_dropped, loss_pct, megabytes, elapsed_s,
-           avg_mbps);
-    printf("RESULT: recv=%llu dropped=%llu loss_pct=%.1f avg_mbps=%.3f\n", (unsigned long long)total_received_msgs,
-           (unsigned long long)total_dropped, loss_pct, avg_mbps);
+    printf("%s messages received, %s dropped, %.1f%% loss, %.3f MB, %.3f sec, avg %.3f Mbps\n",
+           tt_format_grouped(total_received_msgs, recv_buf), tt_format_grouped(total_dropped, dropped_buf), loss_pct,
+           megabytes, elapsed_s, avg_mbps);
+    printf("RESULT: recv=%s dropped=%s loss_pct=%.1f avg_mbps=%.3f\n", tt_format_grouped(total_received_msgs, recv_buf),
+           tt_format_grouped(total_dropped, dropped_buf), loss_pct, avg_mbps);
 }
 
 static void print_usage(const char* prog) {

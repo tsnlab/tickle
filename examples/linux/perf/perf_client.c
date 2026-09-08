@@ -20,6 +20,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "../common/cli_opts.h"
 #include "Bulk.h"
 
@@ -59,11 +60,14 @@ static uint64_t interval_sent_bytes = 0;
 static void report(struct tt_Node* node, uint64_t time, void* param) {
     (void)param;
 
+    char sent_buf[TT_GROUPED_BUF_LEN];
+    char buffer_full_buf[TT_GROUPED_BUF_LEN];
     const double bytes_per_mb = 1e6;
     double megabytes = (double)interval_sent_bytes / bytes_per_mb;
     double mbps = ((double)interval_sent_bytes * 8) / bytes_per_mb;
-    printf("sent %llu msgs, %.3f MB, %.3f Mbps this interval (%llu buffer-full so far)\n",
-           (unsigned long long)interval_sent_msgs, megabytes, mbps, (unsigned long long)total_buffer_full);
+    printf("sent %s msgs, %.3f MB, %.3f Mbps this interval (%s buffer-full so far)\n",
+           tt_format_grouped(interval_sent_msgs, sent_buf), megabytes, mbps,
+           tt_format_grouped(total_buffer_full, buffer_full_buf));
 
     interval_sent_msgs = 0;
     interval_sent_bytes = 0;
@@ -76,16 +80,19 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
 // authoritative side (it can see loss, this side can't), this one's just for visibility into
 // what the sender itself achieved.
 static void print_summary(uint64_t start_time) {
+    char sent_buf[TT_GROUPED_BUF_LEN];
+    char buffer_full_buf[TT_GROUPED_BUF_LEN];
     const double bytes_per_mb = 1e6;
     double elapsed_s = (double)(tt_get_ns() - start_time) / (double)tt_SECOND;
     double megabytes = (double)total_sent_bytes / bytes_per_mb;
     double avg_mbps = elapsed_s > 0.0 ? ((double)total_sent_bytes * 8) / bytes_per_mb / elapsed_s : 0.0;
 
     printf("\n--- bulk_topic send statistics ---\n");
-    printf("%llu messages sent, %.3f MB, %.3f sec, avg %.3f Mbps, %llu times tx buffer was full\n",
-           (unsigned long long)total_sent_msgs, megabytes, elapsed_s, avg_mbps, (unsigned long long)total_buffer_full);
-    printf("RESULT: sent=%llu avg_mbps=%.3f buffer_full=%llu\n", (unsigned long long)total_sent_msgs, avg_mbps,
-           (unsigned long long)total_buffer_full);
+    printf("%s messages sent, %.3f MB, %.3f sec, avg %.3f Mbps, %s times tx buffer was full\n",
+           tt_format_grouped(total_sent_msgs, sent_buf), megabytes, elapsed_s, avg_mbps,
+           tt_format_grouped(total_buffer_full, buffer_full_buf));
+    printf("RESULT: sent=%s avg_mbps=%.3f buffer_full=%s\n", tt_format_grouped(total_sent_msgs, sent_buf), avg_mbps,
+           tt_format_grouped(total_buffer_full, buffer_full_buf));
 }
 
 static void print_usage(const char* prog) {

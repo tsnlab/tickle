@@ -20,6 +20,7 @@
 #include <tickle/log.h>
 #include <tickle/tickle.h>
 
+#include "../../format.h"
 #include "../common/cli_opts.h"
 #include "SetBool.h"
 
@@ -134,7 +135,8 @@ int main(int argc, char** argv) {
 
     // Informational only - this side has no pass/fail verdict of its own; the client's own
     // RESULT line (see client.c's print_result()) is what actually verifies the round trip.
-    printf("\nset_bool server: handled %u request(s)\n", handled);
+    char handled_buf[TT_GROUPED_BUF_LEN];
+    printf("\nset_bool server: handled %s request(s)\n", tt_format_grouped(handled, handled_buf));
 
     tt_Node_destroy(&node);
     printf("Node destroyed(#%d): %d\n", node.id, ret);
