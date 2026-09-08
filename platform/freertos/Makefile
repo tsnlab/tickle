@@ -11,7 +11,7 @@
 # linking TickLE's own src/*.c (including src/hal_freertos.c) alongside FreeRTOS and lwIP, instead
 # of building libtickle.a + POSIX example binaries. See milestones in
 # /home/semih/.claude/plans/lively-sauteeing-rainbow.md - this Makefile currently builds through
-# milestone 2 (HAL + lwIP's software loopback netif; the real virtio-net driver is milestone 3).
+# milestone 3 (real virtio-net link, one QEMU instance; the two-instance round trip is milestone 4).
 
 CROSS ?= riscv64-unknown-elf-
 CC = $(CROSS)gcc
@@ -65,7 +65,7 @@ LWIP_SRCS = $(LWIP)/src/core/def.c $(LWIP)/src/core/inet_chksum.c $(LWIP)/src/co
             $(LWIP)/src/api/tcpip.c \
             $(LWIP_FREERTOS_PORT)/sys_arch.c
 
-BOARD_SRCS = board/start.S board/uart.c board/stdio_uart.c board/runtime_stubs.c
+BOARD_SRCS = board/start.S board/uart.c board/stdio_uart.c board/runtime_stubs.c board/virtio_net.c
 
 # TickLE's own protocol/encoding sources plus this platform's HAL - the same src/*.c the
 # top-level Makefile builds into libtickle.a for other platforms, just cross-compiled here
@@ -104,11 +104,20 @@ RTOSDemo.elf: $(OBJS) board/link.ld
 # `make` only checking the .c file's own mtime and reusing a now-stale .o.
 -include $(OBJS:.o=.d)
 
-# -bios none: no OpenSBI/prior firmware - our ELF's entry point runs directly in M-mode. Two
-# instances of this same invocation (each given its own -netdev, once milestone 3+ adds one)
-# are how the two-node broadcast segment is simulated - see the plan.
+# -bios none: no OpenSBI/prior firmware - our ELF's entry point runs directly in M-mode.
+# -netdev socket,mcast=: the same UDP-multicast "virtual hub" two instances of this invocation
+# will join in milestone 4 to simulate the two-node broadcast segment (see the plan) - joining it
+# solo here still lets -object filter-dump capture what this instance actually transmits, for a
+# single-instance smoke test of the driver itself.
+# -global virtio-mmio.force-legacy=off: QEMU's virtio-mmio bus defaults to legacy (v1) transport
+# for backward compatibility with old machine types; this driver only implements modern (v2) -
+# see virtio_net.c's file-level comment for why.
 run: RTOSDemo.elf
-	qemu-system-riscv32 -machine virt -nographic -bios none -kernel RTOSDemo.elf
+	qemu-system-riscv32 -machine virt -nographic -bios none -kernel RTOSDemo.elf \
+	    -global virtio-mmio.force-legacy=off \
+	    -netdev socket,id=net0,mcast=230.0.0.1:5000 \
+	    -device virtio-net-device,netdev=net0 \
+	    -object filter-dump,id=dump0,netdev=net0,file=net0.pcap
 
 clean:
 	rm -rf $(OBJ_DIR) RTOSDemo.elf RTOSDemo.map

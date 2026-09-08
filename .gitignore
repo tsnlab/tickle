@@ -2,10 +2,12 @@
 # obj/tests/ that the *.o/*.d patterns below don't happen to match
 /obj/
 
-# platform/freertos's own cross-build output (RTOSDemo.elf/.map, obj/)
+# platform/freertos's own cross-build output (RTOSDemo.elf/.map, obj/), plus the pcap `make run`
+# captures via -object filter-dump for inspecting what the virtio-net driver actually sends
 /platform/freertos/obj/
 /platform/freertos/RTOSDemo.elf
 /platform/freertos/RTOSDemo.map
+/platform/freertos/net0.pcap
 
 # Prerequisites
 *.d

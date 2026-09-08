@@ -8,12 +8,17 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// Milestone 2 harness: bring up lwIP + hal_freertos.c's loopback netif, then run a real
-// tt_Node_create()/tt_Node_poll() loop and confirm it doesn't crash - see
-// /home/semih/.claude/plans/lively-sauteeing-rainbow.md. node_update()'s very first broadcast
-// (scheduled within ~1ms of tt_Node_create(), see tickle.c) loops straight back to this same
-// node via net_init.c's software loopback, so a poll should come back tt_RET_OK almost
-// immediately - a real round trip through lwIP's UDP/IP stack, not just "didn't crash".
+// Milestone 3 harness: bring up lwIP over the real virtio-net link (net_init.c), then run a
+// real tt_Node_create()/tt_Node_poll() loop - see
+// /home/semih/.claude/plans/lively-sauteeing-rainbow.md. Unlike milestone 2 (a software loopback
+// netif, where node_update()'s own broadcast looped straight back and every poll came back
+// tt_RET_OK), this is a single, unconnected QEMU instance talking to a real NIC with nobody on
+// the other end - every poll legitimately timing out (tt_RET_TIMEOUT) is the *expected* result
+// here, not a regression. What this milestone actually checks is that virtio_net_init()
+// succeeds and tt_Node_create()/tt_Node_poll() run to completion without hanging or crashing
+// while real packets are actually going out - see platform/freertos/Makefile's `run` target,
+// which captures those into net0.pcap for inspection. The real round trip is milestone 4, with
+// two instances of this same image on each end of the link.
 
 #include <FreeRTOS.h>
 #include <stdio.h>
@@ -50,7 +55,7 @@ static void tickle_selftest_task(void* param) {
         printf("tickle/freertos: poll[%d] -> %d\n", i, poll_ret);
     }
 
-    printf("tickle/freertos: milestone 2 self-test done\n");
+    printf("tickle/freertos: milestone 3 self-test done\n");
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
