@@ -33,12 +33,14 @@ override LDLIBS += -ltickle -lm
 # everything that includes it, instead of silently reusing stale .o files.
 DEPFLAGS = -MMD -MP
 
-# Platform detection (still overridable: `make PLATFORM=generic` forces cross-building)
+# Platform detection (still overridable: `make PLATFORM=linux`). There is no native build for any
+# host besides Linux - the only other supported platform (FreeRTOS) is cross-built separately via
+# platform/freertos/Makefile, never through this one.
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     PLATFORM ?= linux
 else
-    PLATFORM ?= generic
+    $(error Unsupported host platform '$(UNAME_S)' - this Makefile only builds natively for Linux; see platform/freertos/Makefile for the FreeRTOS cross-build)
 endif
 
 # HAL source file based on platform

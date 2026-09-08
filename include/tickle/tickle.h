@@ -57,7 +57,7 @@ struct tt_Node {
     int32_t scheduler_tail;
 
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
-    // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_generic.h>).
+    // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_freertos.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
 };
 
@@ -202,7 +202,6 @@ uint32_t tt_hash_id(const char* type, const char* name);
 struct tt_Header;
 bool tt_is_native_endian(struct tt_Header* header);
 bool tt_is_reverse_endian(struct tt_Header* header);
-uint64_t tt_get_ns();
 
 /**
  * @return tt_RET_OK - succeed

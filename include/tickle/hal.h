@@ -16,7 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Platform detection macros
+// Platform detection macros. Only these two platforms have a real HAL (src/hal_freertos.c,
+// src/hal_linux.c) - there is no generic/fallback implementation, so an unsupported host fails
+// here at compile time instead of later at link time with a confusing "undefined reference to
+// tt_bind" (or, worse, silently picking up whatever hal_*.c happens to be on the include path).
 #ifdef TT_PLATFORM_FREERTOS
 // Set by platform/freertos's own build (-DTT_PLATFORM_FREERTOS) - unlike __linux__ below,
 // FreeRTOS itself defines no standard compiler macro to detect it by.
@@ -25,8 +28,8 @@
 #define TT_PLATFORM_LINUX
 #define TT_PLATFORM_NAME "linux"
 #else
-#define TT_PLATFORM_GENERIC
-#define TT_PLATFORM_NAME "generic"
+#error \
+    "No TickLE HAL for this platform - supported: Linux (native build), FreeRTOS (-DTT_PLATFORM_FREERTOS, see platform/freertos)"
 #endif
 
 #define _tt_bswap_16(x) bswap_16((x))
@@ -67,12 +70,12 @@ struct tt_Header;
 #include <tickle/hal_linux.h> // NOLINT(misc-include-cleaner)
 #elif defined(TT_PLATFORM_FREERTOS)
 #include <tickle/hal_freertos.h> // NOLINT(misc-include-cleaner)
-#elif defined(TT_PLATFORM_GENERIC)
-#include <tickle/hal_generic.h> // NOLINT(misc-include-cleaner)
 #endif
 
-// Network functions
-int32_t tt_get_node_id();
+// Network functions - every one of these is implemented per platform (src/hal_linux.c,
+// src/hal_freertos.c, .../tests/test_mock.h's mock) against this same contract.
+uint64_t tt_get_ns(void);
+int32_t tt_get_node_id(void);
 tt_ret_t tt_bind(struct tt_Node* node);
 void tt_close(struct tt_Node* node);
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len);

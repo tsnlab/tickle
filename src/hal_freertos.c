@@ -21,8 +21,6 @@
 
 #include "log.h"
 
-#define UNUSED(x) (void)(x)
-
 struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
     .port = _tt_NODE_PORT,
@@ -82,6 +80,10 @@ tt_ret_t tt_bind(struct tt_Node* node) {
         return tt_RET_IO_ERROR;
     }
 
+    // Unlike hal_linux.c, there's no SO_SNDBUF/SO_RCVBUF tuning here: lwIP's socket layer has no
+    // SO_SNDBUF at all (UDP send never queues), and SO_RCVBUF support is compiled out by default
+    // (LWIP_SO_RCVBUF, off in platform/freertos/lwipopts.h) - its rx buffering is sized instead by
+    // lwipopts.h's own compile-time knobs (e.g. the UDP recvmbox size). Not an oversight.
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;

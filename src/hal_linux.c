@@ -30,15 +30,13 @@
 #define SEC_NS 1000000000LL
 #define MS_NS 1000000LL
 
-#define UNUSED(x) (void)(x)
-
 struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
     .port = _tt_NODE_PORT,
     .broadcast = _tt_NODE_BROADCAST,
 };
 
-uint64_t tt_get_ns() {
+uint64_t tt_get_ns(void) {
     struct timespec ts;
     // CLOCK_REALTIME lives in a glibc-private header; <time.h> (included above) is the correct public header.
     // NOLINTNEXTLINE(misc-include-cleaner)
@@ -47,7 +45,7 @@ uint64_t tt_get_ns() {
     return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
 }
 
-int32_t tt_get_node_id() {
+int32_t tt_get_node_id(void) {
     // Get unique node ID in the network using IP address x.x.x.id
     uint32_t broadcast_ip = inet_addr(_tt_CONFIG.broadcast);
 
@@ -138,7 +136,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
 }
 
 void tt_close(struct tt_Node* node) {
-    if (close(node->hal.sock) == -1) {
+    if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
     }
 }
