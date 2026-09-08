@@ -57,6 +57,22 @@ cat ping.log
 # outcome here - ping has no other way to stop on its own (see main_ping.c: it's just an
 # infinite send/poll loop, like the real ping/pong example's run-until-Ctrl+C default).
 if [ "$ping_status" -ne 124 ] && [ "$ping_status" -ne 0 ]; then
-    echo "ping exited unexpectedly (status $ping_status)"
+    echo "run_pair: ping exited unexpectedly (status $ping_status)"
+    exit 1
+fi
+
+# Neither QEMU process crashing nor ping's own process exiting cleanly actually proves a real
+# round trip happened - pong could have silently failed to answer a single request (e.g. the
+# link came up but requests never actually arrived) and this would still look like a clean run
+# by exit status alone. Require a real minimum number of successful replies logged on each side
+# instead of only checking that nothing crashed.
+MIN_REPLIES=5
+replies=$(grep -c 'ping: seq=.*rtt=' ping.log)
+requests=$(grep -c 'pong: request seq=' pong.log)
+
+echo "run_pair: pong answered $requests request(s), ping received $replies real repl(y/ies)"
+
+if [ "$replies" -lt "$MIN_REPLIES" ] || [ "$requests" -lt "$MIN_REPLIES" ]; then
+    echo "run_pair: fewer than $MIN_REPLIES real round trips observed - treating as a failure"
     exit 1
 fi
