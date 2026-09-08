@@ -144,11 +144,18 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     // scheduled event is due next), and re-arming a socket option that often is pure overhead -
     // poll() just takes the timeout as a plain argument, no socket mutation needed.
     if (timeout >= 0) {
-        int timeout_ms = (int)(timeout / MS_NS);
-        if (timeout > 0 && timeout_ms == 0) {
-            // Sub-millisecond positive timeouts would round down to 0, which poll() treats as
-            // "don't wait at all" - round up so a short-but-nonzero wait still actually waits.
-            timeout_ms = 1;
+        int timeout_ms;
+        if (timeout == 0) {
+            // This function's contract (see hal.h) is "0 for no timeout", i.e. block until data
+            // arrives - not "don't wait at all", which is what poll()'s own timeout=0 means.
+            timeout_ms = -1;
+        } else {
+            timeout_ms = (int)(timeout / MS_NS);
+            if (timeout_ms == 0) {
+                // Sub-millisecond positive timeouts would round down to 0, which poll() treats
+                // as "don't wait at all" - round up so a short-but-nonzero wait still waits.
+                timeout_ms = 1;
+            }
         }
 
         // struct pollfd/POLLIN/poll() live in a glibc-private header; <poll.h> (included above) is

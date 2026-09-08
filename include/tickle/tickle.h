@@ -231,9 +231,6 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
 tt_ret_t tt_Node_destroy(struct tt_Node* node);
 
 #define tt_VERSION 1
-#define tt_PROTOCOL_UPDATE 0
-#define tt_PROTOCOL_DATA 1
-#define tt_PROTOCOL_ACKNACK 2
 
 struct tt_Header {
     union {

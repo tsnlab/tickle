@@ -1,5 +1,17 @@
 # TickLE: Real-Time ROS2 communication middleware optimized for 10Base-T1S
 
+## Security & concurrency model
+
+TickLE has no authentication or encryption: any node on the broadcast domain can send a
+packet claiming any `source` ID, and there's no way to verify a peer's identity. This is an
+intentional tradeoff for its target (10Base-T1S, typically a physically isolated,
+single-purpose automotive/industrial segment) - don't run it on a shared or untrusted network
+without your own isolation (a dedicated VLAN/physical segment).
+
+A `struct tt_Node` and its endpoints are not thread-safe: create, poll, and destroy a given
+node from a single thread. Sharing one node across threads needs external locking of your
+own - none is provided internally.
+
 ## Build
 
 ```sh

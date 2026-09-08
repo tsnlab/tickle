@@ -310,6 +310,18 @@ slot count per server), so going static adds no unbounded-growth risk - just a l
 traded for zero heap churn on the RPC hot path and one less failure mode (no allocation-failure
 branch to handle).
 
+## Concurrency: single-threaded per node, by design (for now)
+
+`struct tt_Node` and its endpoints have no internal locking - `tt_Node_poll()`,
+`tt_Client_call()`, `tt_Publisher_publish()`, etc. all mutate node-owned state
+(`tx_buffer`/`rx_buffer`, the scheduler array, the endpoint table) without synchronization, so
+a given node must be created, polled, and destroyed from a single thread. This isn't an
+oversight: a `tt_lock_t endpoint_lock` was added to `struct tt_Node` at one point (PR #11) and
+then deliberately removed again (PR #13, "revert") rather than left half-integrated. If
+multi-threaded access to one node becomes a real requirement, that's a design decision to
+revisit properly - including which operations actually need mutual exclusion - not something
+to bolt back on piecemeal.
+
 ## Logging conventions
 
 - `TT_LOG_DEBUG`/`INFO`/`WARNING`/`ERROR` check `tt_current_log_level` *before* calling through
