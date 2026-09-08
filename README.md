@@ -57,8 +57,8 @@ $ make all BUILD_TYPE=release
 
 ```sh
 $ make test        # Unit tests only (no real sockets, no network namespaces, no QEMU)
-$ make test-netns   # A real round trip over Linux network namespaces (src/hal_linux.c)
-$ make test-qemu    # A real round trip under QEMU (platform/freertos, src/hal_freertos.c)
+$ make test-netns   # Real RPC and pub/sub round trips over Linux network namespaces (src/hal_linux.c)
+$ make test-qemu    # Real RPC and pub/sub round trips under QEMU (platform/freertos, src/hal_freertos.c)
 $ make test-all     # All three of the above, in order - what CI runs (test-all.yml)
 ```
 
@@ -67,15 +67,19 @@ Each `tests/test_*.c` is a small, framework-free, whitebox unit test: it `#inclu
 (`tests/test_mock.h`) instead of `hal_linux.c`, so it runs with no real sockets/network and no
 timing dependency. `make test` builds and runs every one, stopping at the first failure.
 
-`test-netns` and `test-qemu` instead exercise a real platform HAL end to end - two independent
-`ping`/`pong` processes (or QEMU instances) actually exchanging packets, not a mock - over Linux
-network namespaces and emulated virtio-net respectively (see [netns_run_pair.sh](netns_run_pair.sh)
-/ [platform/freertos/run_pair.sh](platform/freertos/run_pair.sh)). Both need `sudo` (namespaces)
-or the RISC-V toolchain + `qemu-system-riscv32` (see
-[platform/freertos/Makefile](platform/freertos/Makefile)'s `lint` target for the exact packages),
-so they're not part of plain `make test`. The two-Raspberry-Pi hardware-in-the-loop performance
-test below is a separate, fourth tier - it needs real hardware, so there's no local
-`make test-*` equivalent for it.
+`test-netns` and `test-qemu` instead exercise a real platform HAL end to end: two independent
+processes (or QEMU instances) actually exchanging packets, not a mock, over Linux network
+namespaces and emulated virtio-net respectively (see [netns_run_pair.sh](netns_run_pair.sh) /
+[platform/freertos/run_pair.sh](platform/freertos/run_pair.sh)). Each runs both a `ping`/`pong`
+round trip (RPC - call/response) and a `publisher`/`subscriber` round trip (pub/sub) - the latter
+specifically covers `tt_Publisher_publish()`'s batched-not-immediately-flushed send path, which
+RPC's always-immediately-flushed `tt_Client_call()` never exercises at all (see
+`platform/freertos/main_publisher.c`'s file-level comment, or DESIGN.md's "RPC flushes
+immediately; Publish batches"). Both tiers need `sudo` (namespaces) or the RISC-V toolchain +
+`qemu-system-riscv32` (see [platform/freertos/Makefile](platform/freertos/Makefile)'s `lint`
+target for the exact packages), so they're not part of plain `make test`. The two-Raspberry-Pi
+hardware-in-the-loop performance test below is a separate, fourth tier - it needs real hardware,
+so there's no local `make test-*` equivalent for it.
 
 ## Run examples
 ```sh
