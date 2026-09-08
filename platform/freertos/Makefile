@@ -11,7 +11,7 @@
 # linking TickLE's own src/*.c (including src/hal_freertos.c) alongside FreeRTOS and lwIP, instead
 # of building libtickle.a + POSIX example binaries. See milestones in
 # /home/semih/.claude/plans/lively-sauteeing-rainbow.md - this Makefile builds all of them,
-# including milestone 4 (the two-instance round trip - see ROLE below and run_pair.sh).
+# including milestone 4 (the two-instance round trip - see ROLE below and test.sh).
 
 CROSS ?= riscv64-unknown-elf-
 CC = $(CROSS)gcc
@@ -153,7 +153,7 @@ $(ELF): $(OBJS) board/link.ld
 -include $(OBJS:.o=.d)
 
 # -bios none: no OpenSBI/prior firmware - our ELF's entry point runs directly in M-mode.
-# -netdev socket,mcast=: the same UDP-multicast "virtual hub" run_pair.sh's two instances join
+# -netdev socket,mcast=: the same UDP-multicast "virtual hub" test.sh's two instances join
 # for milestone 4's real two-node test - joining it solo here (the default ROLE=selftest) still
 # lets -object filter-dump capture what this instance actually transmits.
 # -global virtio-mmio.force-legacy=off: QEMU's virtio-mmio bus defaults to legacy (v1) transport

@@ -1,7 +1,11 @@
 # Local dev/test helpers: run the example binaries across two Linux network namespaces
 # connected by a veth pair, to exercise UDP broadcast without needing real network hardware.
 # Split out of the main Makefile so build logic and this environment-specific tooling don't
-# get tangled together.
+# get tangled together - included from there (`include platform/linux/netns.mk`) rather than
+# invoked as its own standalone Makefile the way platform/freertos/Makefile is, since (unlike
+# FreeRTOS) there's no separate toolchain/target here that would need its own invocation; the
+# runX/createns/etc. recipes below still run with the repo root as their working directory
+# (wherever `make` itself was invoked from), regardless of which included .mk file defines them.
 
 .PHONY: createns deletens runclient runserver runpublisher runsubscriber runping runpong runperf_client runperf_server dump1 dump2 test-linux
 
@@ -67,8 +71,8 @@ dump2:
 	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
 
 # Automated (createns/run ping+pong/assert/deletens), unlike the manual runX targets above -
-# see netns_run_pair.sh. Named for the platform under test (matches examples/linux/), not the
-# mechanism - see test-freertos (top-level Makefile) for the same naming choice on the other
-# platform.
+# see platform/linux/test.sh. Named for the platform under test (matches examples/linux/), not
+# the mechanism - see test-freertos (top-level Makefile, platform/freertos/test.sh) for the same
+# naming choice on the other platform.
 test-linux:
-	./netns_run_pair.sh
+	platform/linux/test.sh

@@ -42,7 +42,7 @@ jobs:
         with:
           name: test-all-logs
           path: |
-            *.log
+            platform/linux/*.log
             platform/freertos/*.log
             platform/freertos/*.pcap
           if-no-files-found: ignore

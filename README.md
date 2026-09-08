@@ -14,12 +14,18 @@ platforms:
 - **Linux** - the native build below, over real kernel UDP sockets (`src/hal_linux.c`).
 - **FreeRTOS + lwIP**, cross-built for RISC-V and run under QEMU (`platform/freertos/`, own
   [Makefile](platform/freertos/Makefile)) - over lwIP's socket API against a from-scratch
-  virtio-net driver (`platform/freertos/board/virtio_net.c`). See
-  [platform/freertos/run_pair.sh](platform/freertos/run_pair.sh) for a real two-instance
-  ping/pong round trip under QEMU, or `make test-freertos` below to run it.
+  virtio-net driver (`platform/freertos/board/virtio_net.c`).
 
 There's no fallback HAL for any other platform - `include/tickle/hal.h` fails to compile with a
 clear `#error` naming these two instead of silently offering a HAL that doesn't exist.
+
+`platform/<name>/` holds each platform's own bring-up and dev/test tooling - board support,
+network-stack glue, and a linker script for FreeRTOS (it has to do everything the OS would
+normally provide); just [`platform/linux/netns.mk`](platform/linux/netns.mk)'s network-namespace
+helpers for Linux (which gets a real kernel, sockets, and process model for free). Each has a
+`test.sh` with the same job: build and run a real two-instance round trip and assert on the
+result - `platform/linux/test.sh` over network namespaces, `platform/freertos/test.sh` under QEMU
+- which `make test-linux`/`make test-freertos` below run.
 
 `examples/` is organized by platform: `examples/linux/<protocol>/` holds each protocol's generated
 codec (e.g. `PingPong.{c,h}`) together with its argv-parsed POSIX driver (see "Run examples"
@@ -80,8 +86,9 @@ timing dependency. `make test` builds and runs every one, stopping at the first 
 examples/freertos - not the mechanism behind each) instead exercise a real platform HAL end to
 end: two independent
 processes (or QEMU instances) actually exchanging packets, not a mock, over Linux network
-namespaces and emulated virtio-net respectively (see [netns_run_pair.sh](netns_run_pair.sh) /
-[platform/freertos/run_pair.sh](platform/freertos/run_pair.sh)). Each runs both a `ping`/`pong`
+namespaces and emulated virtio-net respectively (see
+[platform/linux/test.sh](platform/linux/test.sh) /
+[platform/freertos/test.sh](platform/freertos/test.sh)). Each runs both a `ping`/`pong`
 round trip (RPC - call/response) and a `publisher`/`subscriber` round trip (pub/sub) - the latter
 specifically covers `tt_Publisher_publish()`'s batched-not-immediately-flushed send path, which
 RPC's always-immediately-flushed `tt_Client_call()` never exercises at all (see

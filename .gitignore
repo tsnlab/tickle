@@ -3,19 +3,16 @@
 /obj/
 
 # platform/freertos's own cross-build output: per-(ROLE,NODE_ID) obj dirs and ELF/map files (see
-# its Makefile), the pcaps `make run`/run_pair.sh capture via -object filter-dump, and
-# run_pair.sh's own captured QEMU output logs
+# its Makefile), the pcaps `make run`/test.sh capture via -object filter-dump, and test.sh's own
+# captured QEMU output logs
 /platform/freertos/obj-*/
 /platform/freertos/RTOSDemo-*.elf
 /platform/freertos/RTOSDemo-*.map
 /platform/freertos/*.pcap
 /platform/freertos/*.log
 
-# netns_run_pair.sh's own captured ping/pong and publisher/subscriber output logs
-/ping.log
-/pong.log
-/publisher.log
-/subscriber.log
+# platform/linux/test.sh's own captured ping/pong and publisher/subscriber output logs
+/platform/linux/*.log
 
 # Prerequisites
 *.d
