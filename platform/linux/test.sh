@@ -124,15 +124,18 @@ check_count ping.log '^seq=' || status=1
 
 # perf_server.c has no per-message log line the way ping.c/subscriber.c do (only periodic
 # aggregated interval reports and the final summary), so its own RESULT: recv=N tally is checked
-# numerically instead of counting individual lines. -s/-i keep this a light, fast connectivity
-# check, not a real throughput measurement (that's the two-Raspberry-Pi HIL benchmark's job).
+# numerically instead of counting individual lines. No -s/-i: unlike the FreeRTOS/QEMU pair (real
+# embedded RAM to worry about, so main_perf_client.c deliberately sends small and slow - see its
+# own comment), a real Linux process over a veth pair has no such constraint, and perf's whole
+# purpose is measuring throughput - so this uses perf_client's own defaults (fills a full
+# Ethernet frame, sends as fast as poll() allows), the same as running it by hand would.
 #
 # perf_server's own -d is a tight +3s past perf_client's, not the generous +11s margin the other
 # pairs' receivers use (pong/server/subscriber have no periodic output while idle, so a generous
 # margin there is silent) - perf_server's report() task fires every second regardless of whether
 # anything arrived, so a receiver bound as generous as the other pairs' would spend most of it
 # printing pointless "recv 0 msgs ... 0.000 Mbps" lines after perf_client has already finished.
-run_pair perf_client "-d 5 -s 64 -i 0.2" perf_server "-d 8" || status=1
+run_pair perf_client "-d 5" perf_server "-d 8" || status=1
 recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9]*\).*/\1/p')
 recv=${recv:-0}
 echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"
