@@ -26,6 +26,7 @@ struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
     .port = _tt_NODE_PORT,
     .broadcast = _tt_NODE_BROADCAST,
+    .node_id = tt_NODE_ID_INVALID, // unused by the mock HAL (test_mock_node_id drives it instead)
 };
 
 // Defaults: a quiet node - no incoming packets, sends "succeed", clock starts at 0.

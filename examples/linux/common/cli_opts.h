@@ -12,7 +12,7 @@
 
 // Shared command-line option parsing for the example binaries (client/server, publisher/
 // subscriber, ping/pong, perf_client/perf_server - see README.md's "Command-line options"). Every
-// example accepts the same -b/-p/-a/-n/-l interface-configuration flags plus some subset of
+// example accepts the same -b/-p/-a/-I/-n/-l interface-configuration flags plus some subset of
 // -c/-i/-d/-s depending on whether it's a sender, a receiver, or perf_client (which is both). Each
 // example still owns its own defaults and print_usage() text (those differ per example); this
 // only shares the parsing loop and log-level lookup that used to be copy-pasted byte-for-byte into
@@ -34,6 +34,7 @@ struct tt_example_cli_options {
     char* broadcast;
     int port;        // 0 = keep the compiled-in default
     char* bind_addr; // NULL = keep the compiled-in default
+    int node_id;     // 0 = keep the default (auto-detect via tt_get_node_id())
     char* name;      // topic/service name to rendezvous on
     tt_LogLevel log_level;
     bool log_level_set;

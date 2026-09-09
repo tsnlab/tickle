@@ -56,12 +56,13 @@ static void publish(struct tt_Node* node, uint64_t time, void* param) {
 
 static void print_usage(const char* prog) {
     fprintf(stderr,
-            "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-c count] [-i interval_seconds]\n"
-            "          [-n topic_name] [-l log_level]\n",
+            "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id] [-c count]\n"
+            "          [-i interval_seconds] [-n topic_name] [-l log_level]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
+    fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -c  stop after publishing this many messages (default 0 = run until Ctrl+C)\n");
     fprintf(stderr, "  -i  seconds between publishes (default 1)\n");
     fprintf(stderr, "  -n  topic name to publish on (default uint64_topic)\n");
@@ -72,6 +73,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
+    opts->node_id = 0;
     opts->interval_s = 1.0;
     opts->name = "uint64_topic";
     opts->log_level = TT_LOG_INFO;
@@ -97,6 +99,9 @@ int main(int argc, char** argv) {
     }
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
+    }
+    if (opts.node_id != 0) {
+        _tt_CONFIG.node_id = opts.node_id;
     }
     if (opts.log_level_set) {
         tt_log_set_level(opts.log_level);

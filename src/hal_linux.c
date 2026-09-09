@@ -34,6 +34,7 @@ struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
     .port = _tt_NODE_PORT,
     .broadcast = _tt_NODE_BROADCAST,
+    .node_id = tt_NODE_ID_INVALID, // auto-detect by default; see its own comment in config.h
 };
 
 uint64_t tt_get_ns(void) {

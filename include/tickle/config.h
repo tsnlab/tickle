@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <stdint.h>
+
 #define tt_SECOND 1000000000ULL
 #define tt_MILLISECOND 1000000ULL
 #define tt_MICROSECOND 1000ULL
@@ -54,6 +56,16 @@ struct _tt_Config {
     char* addr;
     int port;
     char* broadcast;
+    // tt_NODE_ID_INVALID (0, the default) = auto-detect via tt_get_node_id() (the last byte of
+    // the local address matching broadcast's subnet, per the comment above); any other value
+    // overrides it. Auto-detection needs each node to have its own distinct address in that
+    // subnet, which real separate hosts (or namespaces) give for free but a single shared network
+    // namespace can't - two processes on the same host/interface would otherwise both detect the
+    // same id and start silently dropping each other's packets as "self sent" (see
+    // process_packet() in tickle.c). An explicit override sidesteps that: e.g.
+    // platform/linux/test.sh runs both sides of a pair in one namespace over loopback, each
+    // started with a different id, without needing root for network namespaces at all.
+    int32_t node_id;
 };
 
 extern struct _tt_Config _tt_CONFIG;

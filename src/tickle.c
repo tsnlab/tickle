@@ -330,7 +330,8 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
 tt_ret_t tt_Node_create(struct tt_Node* node) {
     reset_node_state(node);
 
-    node->id = tt_get_node_id();
+    // _tt_CONFIG.node_id (see its own comment) skips auto-detection when set explicitly.
+    node->id = (uint8_t)(_tt_CONFIG.node_id != tt_NODE_ID_INVALID ? _tt_CONFIG.node_id : tt_get_node_id());
     if (node->id == tt_NODE_ID_INVALID || node->id == tt_NODE_ID_BROADCAST) {
         TT_LOG_ERROR("Invalid node id: %u", node->id);
         return tt_RET_IILEGAL_NODE_ID;

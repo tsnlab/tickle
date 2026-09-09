@@ -25,6 +25,7 @@ struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
     .port = _tt_NODE_PORT,
     .broadcast = _tt_NODE_BROADCAST,
+    .node_id = tt_NODE_ID_INVALID, // auto-detect by default; see its own comment in config.h
 };
 
 // QEMU's `-machine virt` CLINT counts at a fixed 10MHz (RISCV_ACLINT_DEFAULT_TIMEBASE_FREQ) -

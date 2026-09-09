@@ -21,20 +21,22 @@ clear `#error` naming these two instead of silently offering a HAL that doesn't 
 
 `platform/<name>/` holds each platform's own bring-up and dev/test tooling - board support,
 network-stack glue, and a linker script for FreeRTOS (it has to do everything the OS would
-normally provide); just [`platform/linux/netns.mk`](platform/linux/netns.mk)'s network-namespace
-helpers for Linux (which gets a real kernel, sockets, and process model for free). Each has a
-`test.sh` with the same job: build and run a real two-instance round trip and assert on the
-result - `platform/linux/test.sh` over network namespaces, `platform/freertos/test.sh` under QEMU
-- which `make test-linux`/`make test-freertos` below run.
+normally provide); just [`platform/linux/netns.mk`](platform/linux/netns.mk)'s optional,
+root-requiring network-namespace helpers for Linux (which gets a real kernel, sockets, and process
+model for free) - manual, closer-to-real-network alternatives to `test.sh`'s own root-free
+loopback setup below. Each platform has a `test.sh` with the same job: build and run a real
+two-instance round trip and assert on the result - `platform/linux/test.sh` over a loopback UDP
+broadcast, `platform/freertos/test.sh` under QEMU - which `make test-linux`/`make test-freertos`
+below run.
 
 `examples/` is organized by platform: `examples/linux/<protocol>/` holds each protocol's generated
 codec (e.g. `PingPong.{c,h}`) together with its argv-parsed POSIX driver (see "Run examples"
 below), and `examples/freertos/<protocol>/` holds just that protocol's FreeRTOS driver (a task with
 compile-time-fixed config - there's no argv on a flashed embedded target), cross-compiling the same
-codec straight out of `examples/linux/<protocol>/` rather than duplicating it. Not every protocol
-has a FreeRTOS driver yet - only `ping_pong` and `uint64`, the two `test-freertos` exercises. The loose
-`.msg`/`.srv` files directly under `examples/` are platform-neutral interface definitions, shared
-by every driver of every protocol.
+codec straight out of `examples/linux/<protocol>/` rather than duplicating it. All four protocols
+(`uint64`, `set_bool`, `ping_pong`, `perf`) have a FreeRTOS driver, matching what `test-freertos`
+exercises. The loose `.msg`/`.srv` files directly under `examples/` are platform-neutral interface
+definitions, shared by every driver of every protocol.
 
 ## Security & concurrency model
 
@@ -76,8 +78,8 @@ $ make all BUILD_TYPE=release
 ## Tests
 
 ```sh
-$ make test           # Unit tests only (mock HAL - no real sockets, no network namespaces, no QEMU)
-$ make test-linux     # Real RPC and pub/sub round trips over Linux network namespaces (src/hal_linux.c)
+$ make test           # Unit tests only (mock HAL - no real sockets, no QEMU)
+$ make test-linux     # Real RPC and pub/sub round trips over loopback UDP (src/hal_linux.c), no root needed
 $ make test-freertos  # Real RPC and pub/sub round trips under QEMU (platform/freertos, src/hal_freertos.c)
 $ make test-all       # All three of the above, in order - what CI runs (test-all.yml)
 ```
@@ -90,12 +92,12 @@ timing dependency. `make test` builds and runs every one, stopping at the first 
 `test-linux` and `test-freertos` (named for the platform under test, matching examples/linux and
 examples/freertos - not the mechanism behind each) instead exercise a real platform HAL end to
 end: two independent processes (or QEMU instances) actually exchanging packets, not a mock, over
-Linux network namespaces and emulated virtio-net respectively (see
+a real loopback UDP broadcast and emulated virtio-net respectively (see
 [platform/linux/test.sh](platform/linux/test.sh) /
-[platform/freertos/test.sh](platform/freertos/test.sh)). Both need `sudo` (namespaces) or the
-RISC-V toolchain + `qemu-system-riscv32` (see
-[platform/freertos/Makefile](platform/freertos/Makefile)'s `lint` target for the exact packages),
-so they're not part of plain `make test`.
+[platform/freertos/test.sh](platform/freertos/test.sh)). `test-linux` needs nothing beyond the
+normal build; `test-freertos` needs the RISC-V toolchain + `qemu-system-riscv32` (see
+[platform/freertos/Makefile](platform/freertos/Makefile)'s `lint` target for the exact packages) -
+so neither is part of plain `make test`, but only `test-freertos` needs anything extra installed.
 
 Every TickLE example doubles as a functional/performance test of the library itself (see "Run
 examples" below), so each tier runs all four example pairs, in this order: `uint64` (pub/sub),
@@ -132,6 +134,11 @@ compiled-in defaults `make run*` relies on:
 - `-b` broadcast address (default `192.168.10.255`)
 - `-p` UDP port (default: compiled-in `tt_NODE_PORT`)
 - `-a` bind address (default: compiled-in `tt_NODE_ADDRESS`)
+- `-I` explicit node ID `1`-`254`, overriding auto-detection from `-a`/`-b`'s subnet (see
+  `_tt_CONFIG.node_id`'s own comment in `config.h`). Auto-detection needs each side to have its
+  own distinct address in that subnet - real separate hosts/namespaces give that for free, but
+  two processes sharing one network namespace/interface (e.g. `test-linux`'s root-free loopback
+  round trip above) can't be told apart that way, so `-I` fills in for it there.
 - `-n` topic/service name to rendezvous on (default: each example's own hardcoded name, e.g.
   `bulk_topic`, `set_bool_server`) - pass the same `-n` on both sides if you override it, or
   they won't find each other

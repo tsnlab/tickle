@@ -19,9 +19,10 @@ all library examples set_bool uint64 ping_pong perf test lint clean:
 .DEFAULT:
 	$(MAKE) -C platform/linux $@
 
-# A real round trip over Linux network namespaces - see platform/linux/test.sh. Named for the
-# platform under test, not the mechanism - `test-<platform>` always runs
-# platform/<platform>/test.sh.
+# A real round trip over Linux's own UDP sockets, both sides run as plain processes on loopback -
+# see platform/linux/test.sh (and its own comment on why this needs no root/namespaces, unlike
+# platform/linux/netns.mk's veth-based manual dev targets). Named for the platform under test, not
+# the mechanism - `test-<platform>` always runs platform/<platform>/test.sh.
 test-linux:
 	platform/linux/test.sh
 
@@ -31,7 +32,7 @@ test-freertos:
 	platform/freertos/test.sh
 
 # Every test tier that's fully self-contained (no real hardware needed) in one target: unit
-# tests (mock HAL), a real Linux-HAL round trip over network namespaces (test-linux), and a real
+# tests (mock HAL), a real Linux-HAL round trip over loopback (test-linux), and a real
 # FreeRTOS-HAL round trip over emulated virtio-net (test-freertos). The two Raspberry Pi HIL
 # performance test (.github/workflows/performance.yml) is deliberately not part of this - it
 # needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add

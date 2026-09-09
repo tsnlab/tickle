@@ -96,12 +96,13 @@ static void print_summary(uint64_t start_time) {
 }
 
 static void print_usage(const char* prog) {
-    fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-s message_size_bytes]\n", prog);
-    fprintf(stderr, "                [-i interval_seconds] [-d duration_seconds]\n");
+    fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id]\n", prog);
+    fprintf(stderr, "                [-s message_size_bytes] [-i interval_seconds] [-d duration_seconds]\n");
     fprintf(stderr, "                [-n topic_name] [-l log_level]\n");
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
+    fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -s  payload bytes per message (default/max %d: fills one Ethernet frame)\n",
             DEFAULT_MESSAGE_SIZE);
     fprintf(stderr, "  -i  seconds between sends (default %g = as fast as poll() allows)\n", DEFAULT_INTERVAL_SECONDS);
@@ -114,6 +115,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->broadcast = "192.168.10.255";
     opts->port = 0;
     opts->bind_addr = NULL;
+    opts->node_id = 0;
     opts->message_size = DEFAULT_MESSAGE_SIZE;
     opts->interval_s = DEFAULT_INTERVAL_SECONDS;
     opts->duration_s = 0.0;
@@ -146,6 +148,9 @@ int main(int argc, char** argv) {
     }
     if (opts.bind_addr != NULL) {
         _tt_CONFIG.addr = opts.bind_addr;
+    }
+    if (opts.node_id != 0) {
+        _tt_CONFIG.node_id = opts.node_id;
     }
     if (opts.log_level_set) {
         tt_log_set_level(opts.log_level);

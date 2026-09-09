@@ -7,12 +7,24 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-# Automated round-trip test for the Linux HAL, over two real network namespaces (see netns.mk) -
-# the same "two independent nodes on one broadcast segment" shape as
-# platform/freertos/test.sh's QEMU test, just exercising src/hal_linux.c's real kernel UDP
-# sockets instead of hal_freertos.c's lwIP ones. Reuses the examples/linux/ binaries unmodified
-# (not a purpose-built harness like examples/freertos/'s main_*.c) - real user-facing code,
-# exercised the same way `make runping`/`make runpong` would run it by hand.
+# Automated round-trip test for the Linux HAL - the same "two independent nodes on one broadcast
+# segment" shape as platform/freertos/test.sh's QEMU test, just exercising src/hal_linux.c's real
+# kernel UDP sockets instead of hal_freertos.c's lwIP ones. Reuses the examples/linux/ binaries
+# unmodified (not a purpose-built harness like examples/freertos/'s main_*.c) - real user-facing
+# code, exercised the same way running it by hand would.
+#
+# Runs both sides as plain processes in the current network namespace, broadcasting over loopback
+# (127.255.255.255) rather than the real veth-pair-between-two-namespaces setup platform/linux/
+# netns.mk's createns/runX targets still offer for manual, closer-to-real-network testing. That
+# needs root (creating a namespace/veth is CAP_NET_ADMIN); this doesn't need any privilege at all
+# - broadcasting to a directed local address is a plain, unprivileged SO_BROADCAST send, the same
+# one Linux already accepts on any real interface. The other half of the old setup - each side
+# auto-detecting a distinct node ID from its own namespace's own IP - has no unprivileged
+# replacement, since both sides now share the same loopback interface and would otherwise
+# auto-detect the *same* ID and start silently dropping each other's packets as "self sent" (see
+# process_packet() in tickle.c). -I gives each side an explicit, distinct ID instead (see
+# _tt_CONFIG.node_id's own comment in config.h) - the only thing this setup relies on that a
+# real separate-host/namespace deployment gets automatically from having a real distinct IP.
 #
 # Every TickLE example doubles as a functional/performance test of the library itself (see
 # README's "Run examples"), so this runs all four pairs, in order:
@@ -35,6 +47,7 @@ set -u
 cd "$(dirname "$0")"
 
 MIN_COUNT=5
+BROADCAST=127.255.255.255
 
 # Launches $receiver (background, bounded via $receiver_args - typically -d 15, a generous cap)
 # then $sender (foreground, bounded via $sender_args), waits for both, and dumps their logs.
@@ -42,7 +55,8 @@ MIN_COUNT=5
 # check_pass, however fits that pair. stdin redirected from /dev/null on both: neither binary
 # reads it, but leaving a backgrounded process attached to the invoking terminal's stdin is a
 # latent SIGTTIN/job-control hazard (see platform/freertos/test.sh's own fix for the concrete
-# failure mode this avoids) - cheap to rule out here too.
+# failure mode this avoids) - cheap to rule out here too. $sender is always node id 1, $receiver
+# always node id 2 (see this file's own header comment on why an explicit id is needed here).
 run_pair() {
     sender=$1
     sender_args=$2
@@ -52,13 +66,13 @@ run_pair() {
     rm -f "$receiver.log" "$sender.log"
 
     # shellcheck disable=SC2086 - receiver_args is a deliberately unquoted, space-separated flag list
-    sudo ip netns exec ns2 "./$receiver" $receiver_args </dev/null >"$receiver.log" 2>&1 &
+    "./$receiver" -b "$BROADCAST" -I 2 $receiver_args </dev/null >"$receiver.log" 2>&1 &
     receiver_pid=$!
 
     sleep 1
 
     # shellcheck disable=SC2086 - sender_args is a deliberately unquoted, space-separated flag list
-    sudo ip netns exec ns1 "./$sender" $sender_args </dev/null >"$sender.log" 2>&1
+    "./$sender" -b "$BROADCAST" -I 1 $sender_args </dev/null >"$sender.log" 2>&1
     sender_status=$?
 
     wait "$receiver_pid" 2>/dev/null
@@ -96,12 +110,6 @@ check_pass() {
     echo "check_pass($file): no RESULT: PASS line found"
     return 1
 }
-
-# Idempotent: clear out any namespaces a previous (e.g. interrupted) run left behind before
-# creating fresh ones - createns/deletens themselves aren't safe to call twice in a row.
-sudo ip netns delete ns1 >/dev/null 2>&1
-sudo ip netns delete ns2 >/dev/null 2>&1
-make createns
 
 make uint64
 make set_bool
@@ -144,7 +152,5 @@ recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9,]*\).
 recv=${recv:-0}
 echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"
 [ "$recv" -ge "$MIN_COUNT" ] || status=1
-
-make deletens
 
 exit $status
