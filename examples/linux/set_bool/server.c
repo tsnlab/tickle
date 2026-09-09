@@ -40,10 +40,11 @@ static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* p
 
 static uint32_t handled = 0;
 
+// Silent per-request, like pong.c's own pong_callback() - the client side is the one that prints
+// (and verifies) each call, see set_bool_callback() in client.c.
 static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest* request,
                                 struct SetBoolResponse* response) {
     (void)server;
-    printf("  data: %d\n", request->data);
 
     if (request->data) {
         response->success = true;

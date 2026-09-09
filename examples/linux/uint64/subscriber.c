@@ -43,12 +43,15 @@ static uint16_t expected_seq = 0;
 static uint32_t received = 0;
 static uint32_t dropped = 0;
 
+// One line per message, matching ping.c's ping_callback() (seq=... key=value style) rather than
+// dumping every field on its own line - timestamp itself isn't printed (a raw ns epoch value
+// isn't meaningful to read message-by-message, and ping.c's own line doesn't print one either,
+// just what it derives from it).
 static void uint64_data_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no,
                                  struct UInt64Data* data) {
     (void)sub;
-    printf("  timestamp: %ld\n", timestamp);
-    printf("  seq_no: %d\n", seq_no);
-    printf("  data->data: %lx\n", data->data);
+    (void)timestamp;
+    printf("seq=%u data=%lx\n", seq_no, data->data);
 
     // seq_no is the framework's own per-publish counter (see tt_DataHeader), truncated to 16
     // bits - same drop-detection approach as examples/linux/perf/perf_server.c's bulk_callback(),

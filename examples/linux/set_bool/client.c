@@ -37,6 +37,7 @@ static uint32_t completed = 0; // calls whose outcome (response or error) is kno
 static uint32_t succeeded = 0; // calls that got a real response with return_code == 0
 static uint64_t call_interval_ns = 0;
 static bool next_data = true; // alternates the request payload each call, like the original demo
+static bool call_data = true; // the data value sent with the currently in-flight call
 
 static void note_completed(void) {
     completed++;
@@ -45,15 +46,19 @@ static void note_completed(void) {
     }
 }
 
+// One line per call, printed here (not at send time in call() below) once the outcome is known -
+// same shape as ping.c's ping_callback(): a real response is a compact key=value summary,
+// timeout/error stay short prose (there's no per-call sequence field in the protocol itself to
+// build a "seq=..." line around the way ping_pong's PingPongRequest/Response has one - completed,
+// this call's own 0-based index, fills that role instead).
 static void set_bool_callback(struct tt_Client* client, int8_t return_code, struct SetBoolResponse* response) {
     (void)client;
     if (return_code == 0 && response == NULL) {
-        printf("  Server not found\n");
+        printf("call=%u data=%d Server not found\n", completed, call_data);
     } else if (return_code != 0) {
-        printf("  Error, return_code: %d\n", return_code);
+        printf("call=%u data=%d Error, return_code: %d\n", completed, call_data, return_code);
     } else {
-        printf("  return_code: %d\n", return_code);
-        printf("  response: %d, %s\n", response->success, response->message);
+        printf("call=%u data=%d success=%d message=%s\n", completed, call_data, response->success, response->message);
         succeeded++;
     }
     note_completed();
@@ -84,10 +89,10 @@ static void print_result(void) {
 static void call(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_Client* client = param;
 
-    printf("Call #%u\n", transmitted);
     struct SetBoolRequest request = {.data = next_data};
     tt_ret_t ret = tt_Client_call(client, (struct tt_Request*)&request);
     if (ret == tt_RET_OK) {
+        call_data = next_data;
         transmitted++;
         next_data = !next_data;
     } else if (ret == tt_RET_ILLEGAL_STATUS) {
