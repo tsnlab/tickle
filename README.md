@@ -153,6 +153,23 @@ Receivers (`pong`, `server`, `subscriber`, `perf_server`) additionally take:
 
 - `-d` exit automatically after this many seconds (default `0` = run until Ctrl+C)
 
+`ping` and `perf_server` - the two pairs that report real statistics (latency, throughput; see
+"Result output" below) - additionally take:
+
+- `-w` exclude this many initial samples from the statistics (a ping *count* for `ping`, a number
+  of *seconds* for `perf_server` - each matches its own `-c`/`-d` unit)
+- `-W` on the normal stop trigger (`-c`/`-d` reached, or Ctrl+C), don't exit immediately - keep
+  running this many more (pings, or seconds) first, excluded from the statistics, then actually
+  exit (default `0` = stop immediately, matching every other example)
+
+Startup/shutdown transients (first-packet allocation overhead, ARP/socket warm-up, a run cut off
+mid-burst) skew a latency or throughput number more than they'd ever show up as a functional
+failure, so `-w`/`-W` trim them from the two pairs where that actually matters. `-W` deliberately
+*extends* the run rather than reserving the last few samples out of a known `-c`/`-d` - that's
+what makes it work the same way whether the run was bounded or stopped with Ctrl+C, since neither
+needs to know in advance when the run will end. `make test-linux` passes `-w 2 -W 2` to both (see
+[platform/linux/test.sh](platform/linux/test.sh)).
+
 `-c`/`-d` exist mainly so a script (e.g. CI) can run a binary without it hanging forever
 waiting on a peer that never shows up.
 

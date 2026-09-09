@@ -72,6 +72,10 @@ static enum tt_flag_match parse_conditional_flag(int argc, char** argv, int* i, 
         opts->duration_s = strtod(argv[++*i], NULL);
     } else if ((flags & TT_EXAMPLE_OPT_MESSAGE_SIZE) && strcmp(argv[*i], "-s") == 0 && *i + 1 < argc) {
         opts->message_size = (uint32_t)strtoul(argv[++*i], NULL, 10);
+    } else if ((flags & TT_EXAMPLE_OPT_WARMUP_COOLDOWN) && strcmp(argv[*i], "-w") == 0 && *i + 1 < argc) {
+        opts->warmup = strtod(argv[++*i], NULL);
+    } else if ((flags & TT_EXAMPLE_OPT_WARMUP_COOLDOWN) && strcmp(argv[*i], "-W") == 0 && *i + 1 < argc) {
+        opts->cooldown = strtod(argv[++*i], NULL);
     } else {
         return TT_FLAG_NOT_MATCHED;
     }

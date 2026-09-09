@@ -127,7 +127,12 @@ check_pass client.log || status=1
 # pong.c never logs per-request - but a "seq=N time=X ms" line in ping's own log can only appear
 # from a real decoded CallResponse, so that alone (checked against ping.log, the sender) is
 # sufficient evidence of a real round trip.
-run_pair ping "-c 20 -i 0.2" pong "-d 15" || status=1
+#
+# -w 2 -W 2: excludes the first/last 2 pings from ping's own rtt statistics (see its own comment
+# on why - startup/shutdown transients skew latency more than a fixed count in the middle of the
+# run does). check_count still matches every "(warmup)"/"(cooldown)"-tagged line too, not just the
+# counted ones - it's evidence a round trip happened at all, not evidence about the stats window.
+run_pair ping "-c 20 -i 0.2 -w 2 -W 2" pong "-d 15" || status=1
 check_count ping.log '^seq=' || status=1
 
 # perf_server.c has no per-message log line the way ping.c/subscriber.c do (only periodic
@@ -146,8 +151,12 @@ check_count ping.log '^seq=' || status=1
 # second regardless of whether anything arrived, so a receiver bound as generous as the other
 # pairs' would spend most of it printing pointless "recv 0 msgs ... 0.000 Mbps" lines after
 # perf_client has already finished.
+# perf_server gets -w 2 -W 2 (perf_client doesn't - it's not the authoritative side, see its own
+# comment): warm-up anchors to perf_server's own first *real* received message rather than its
+# process start_time, so the fact that its own -d margin below starts it before perf_client even
+# begins sending doesn't eat into the warm-up budget - see first_recv_time's own comment.
 PERF_DURATION_S=${PERF_DURATION_S:-20}
-run_pair perf_client "-d $PERF_DURATION_S" perf_server "-d $((PERF_DURATION_S + 3))" || status=1
+run_pair perf_client "-d $PERF_DURATION_S" perf_server "-d $((PERF_DURATION_S + 3)) -w 2 -W 2" || status=1
 recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9,]*\).*/\1/p' | tr -d ',')
 recv=${recv:-0}
 echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"

@@ -24,22 +24,61 @@
 #include "../common/cli_opts.h"
 #include "Bulk.h"
 
-static volatile sig_atomic_t g_interrupted = 0;
+static volatile sig_atomic_t g_interrupted = 0; // raw SIGINT flag - see main()'s own comment
+static bool g_exit_now = false;                 // the main loop's actual exit condition
+
+static bool stopping = false;       // a stop trigger has fired; draining cooldown_s more now
+static uint64_t cooldown_start = 0; // ns timestamp once stopping - >= this is cooldown
+
+static double warmup_s = 0.0;   // -w: seconds after the first real message before counting starts
+static double cooldown_s = 0.0; // -W: seconds to keep receiving (uncounted) after the stop
+                                // trigger (-d elapsed, or Ctrl+C) before actually exiting - see
+                                // this file's own comment on why this isn't computed by looking
+                                // backward from a known -d instead.
 
 static void handle_sigint(int sig) {
     (void)sig;
     g_interrupted = 1;
 }
 
-static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+static void finish_cooldown(struct tt_Node* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
-    g_interrupted = 1;
+    g_exit_now = true;
+}
+
+// Called once, the first time a stop condition is detected (-d elapsed, or Ctrl+C) - rather than
+// exiting immediately, keeps receiving for cooldown_s more seconds (uncounted - see
+// bulk_callback()'s own gating) before actually exiting. Works the same way whether the run was
+// bounded (-d) or not (stopped with Ctrl+C), since either way this only ever needs "cooldown_s
+// seconds from now", never advance knowledge of when the run will end. Idempotent - only the
+// first trigger takes effect.
+static void begin_stopping(struct tt_Node* node, uint64_t time) {
+    if (stopping) {
+        return;
+    }
+    stopping = true;
+    cooldown_start = time;
+    if (cooldown_s <= 0.0) {
+        g_exit_now = true;
+        return;
+    }
+    tt_Node_schedule(node, time + (uint64_t)(cooldown_s * (double)tt_SECOND), finish_cooldown, NULL);
+}
+
+static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+    (void)param;
+    begin_stopping(node, time);
 }
 
 static bool have_first = false;
 static uint32_t expected_seq = 0;
+static uint64_t first_recv_time = 0; // ns timestamp of the first real message - anchors warm-up,
+                                     // not this process's own start_time (see this file's own
+                                     // comment: perf_server's -d intentionally runs longer than
+                                     // perf_client's, so "since I started" would count idle time
+                                     // before perf_client even begins sending as warm-up).
 
 static uint64_t total_received_msgs = 0;
 static uint64_t total_received_bytes = 0;
@@ -50,20 +89,28 @@ static uint64_t interval_received_bytes = 0;
 
 static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, struct BulkData* data) {
     (void)sub;
-    (void)time;
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
 
-    if (have_first && data->seq != expected_seq) {
-        // Unsigned wraparound makes this correct even if seq itself has wrapped past UINT32_MAX.
-        total_dropped += data->seq - expected_seq;
+    if (!have_first) {
+        first_recv_time = time;
     }
+
+    bool gap = have_first && data->seq != expected_seq;
+    // Unsigned wraparound makes this correct even if seq itself has wrapped past UINT32_MAX.
+    uint32_t gap_count = gap ? data->seq - expected_seq : 0;
     expected_seq = data->seq + 1;
     have_first = true;
 
-    total_received_msgs++;
-    total_received_bytes += data->size;
     interval_received_msgs++;
     interval_received_bytes += data->size;
+
+    bool in_warmup = (double)(time - first_recv_time) / (double)tt_SECOND < warmup_s;
+    bool in_cooldown = stopping && time >= cooldown_start;
+    if (!in_warmup && !in_cooldown) {
+        total_received_msgs++;
+        total_received_bytes += data->size;
+        total_dropped += gap_count;
+    }
 }
 
 static void report(struct tt_Node* node, uint64_t time, void* param) {
@@ -76,9 +123,19 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
     const double bytes_per_mb = 1e6;
     double megabytes = (double)interval_received_bytes / bytes_per_mb;
     double mbps = ((double)interval_received_bytes * 8) / bytes_per_mb;
-    printf("recv %s msgs, %s MB, %s Mbps this interval (%s dropped so far)\n",
+
+    bool in_warmup = have_first && (double)(time - first_recv_time) / (double)tt_SECOND < warmup_s;
+    bool in_cooldown = stopping && time >= cooldown_start;
+    const char* tag = "";
+    if (in_warmup) {
+        tag = " (warmup)";
+    } else if (in_cooldown) {
+        tag = " (cooldown)";
+    }
+
+    printf("recv %s msgs, %s MB, %s Mbps this interval (%s dropped so far)%s\n",
            tt_format_grouped(interval_received_msgs, recv_buf), tt_format_grouped_f3(megabytes, megabytes_buf),
-           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_dropped, dropped_buf));
+           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_dropped, dropped_buf), tag);
 
     interval_received_msgs = 0;
     interval_received_bytes = 0;
@@ -98,7 +155,16 @@ static void print_summary(uint64_t start_time) {
     char avg_mbps_buf[TT_GROUPED_F3_BUF_LEN];
     const double bytes_per_mb = 1e6;
     const double percent_scale = 100.0;
-    double elapsed_s = (double)(tt_get_ns() - start_time) / (double)tt_SECOND;
+
+    // The counted window excludes warm-up/cool-down, so its duration is measured the same way -
+    // from when warm-up ended (first real message + warmup_s) to when cool-down began (or now, if
+    // this somehow got here without ever stopping - shouldn't normally happen, but a safe
+    // fallback) - not this process's own start_time/-d window, which can run measurably longer
+    // than the real traffic (see first_recv_time's own comment on why).
+    uint64_t window_start = have_first ? first_recv_time + (uint64_t)(warmup_s * (double)tt_SECOND) : start_time;
+    uint64_t window_end = stopping ? cooldown_start : tt_get_ns();
+    double elapsed_s = window_end > window_start ? (double)(window_end - window_start) / (double)tt_SECOND : 0.0;
+
     double megabytes = (double)total_received_bytes / bytes_per_mb;
     double avg_mbps = elapsed_s > 0.0 ? ((double)total_received_bytes * 8) / bytes_per_mb / elapsed_s : 0.0;
     uint64_t expected_total = total_received_msgs + total_dropped;
@@ -115,13 +181,17 @@ static void print_summary(uint64_t start_time) {
 static void print_usage(const char* prog) {
     fprintf(stderr,
             "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id]\n"
-            "          [-d duration_seconds] [-n topic_name] [-l log_level]\n",
+            "          [-d duration_seconds] [-w warmup_seconds] [-W cooldown_seconds]\n"
+            "          [-n topic_name] [-l log_level]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
     fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
     fprintf(stderr, "  -d  exit automatically after this many seconds (default 0 = run until Ctrl+C)\n");
+    fprintf(stderr, "  -w  seconds after the first real message to start counting (default 0)\n");
+    fprintf(stderr, "  -W  seconds to keep receiving (uncounted) after the stop trigger before\n");
+    fprintf(stderr, "      actually exiting (default 0 = stop immediately)\n");
     fprintf(stderr, "  -n  topic name to subscribe to (default bulk_topic)\n");
     fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
 }
@@ -132,11 +202,13 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->bind_addr = NULL;
     opts->node_id = 0;
     opts->duration_s = 0.0;
+    opts->warmup = 0.0;
+    opts->cooldown = 0.0;
     opts->name = "bulk_topic";
     opts->log_level = TT_LOG_INFO;
     opts->log_level_set = false;
 
-    return tt_example_parse_args(argc, argv, opts, TT_EXAMPLE_OPT_DURATION);
+    return tt_example_parse_args(argc, argv, opts, TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_WARMUP_COOLDOWN);
 }
 
 int main(int argc, char** argv) {
@@ -145,6 +217,8 @@ int main(int argc, char** argv) {
         print_usage(argv[0]);
         return 1;
     }
+    warmup_s = opts.warmup;
+    cooldown_s = opts.cooldown;
 
     _tt_CONFIG.broadcast = opts.broadcast;
     if (opts.port != 0) {
@@ -190,8 +264,14 @@ int main(int argc, char** argv) {
     }
 
     ret = tt_RET_OK;
-    while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+    while (!g_exit_now && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, -1);
+        // Checked here (right after poll() returns), not waited on elsewhere: this runs every
+        // iteration regardless of how long until the next scheduled report()/finish_cooldown, so
+        // Ctrl+C is caught right away rather than up to a second late.
+        if (g_interrupted && !stopping) {
+            begin_stopping(&node, tt_get_ns());
+        }
     }
 
     print_summary(start_time);

@@ -13,7 +13,8 @@
 // Shared command-line option parsing for the example binaries (client/server, publisher/
 // subscriber, ping/pong, perf_client/perf_server - see README.md's "Command-line options"). Every
 // example accepts the same -b/-p/-a/-I/-n/-l interface-configuration flags plus some subset of
-// -c/-i/-d/-s depending on whether it's a sender, a receiver, or perf_client (which is both). Each
+// -c/-i/-d/-s/-w/-W depending on whether it's a sender, a receiver, or perf_client (which is
+// both). Each
 // example still owns its own defaults and print_usage() text (those differ per example); this
 // only shares the parsing loop and log-level lookup that used to be copy-pasted byte-for-byte into
 // all eight of them.
@@ -24,10 +25,11 @@
 #include <tickle/log.h>
 
 enum tt_example_opt_flags {
-    TT_EXAMPLE_OPT_COUNT = 1u << 0,        // -c: senders only
-    TT_EXAMPLE_OPT_INTERVAL = 1u << 1,     // -i: senders only (perf_client too)
-    TT_EXAMPLE_OPT_DURATION = 1u << 2,     // -d: receivers only (perf_client too)
-    TT_EXAMPLE_OPT_MESSAGE_SIZE = 1u << 3, // -s: perf_client only
+    TT_EXAMPLE_OPT_COUNT = 1u << 0,           // -c: senders only
+    TT_EXAMPLE_OPT_INTERVAL = 1u << 1,        // -i: senders only (perf_client too)
+    TT_EXAMPLE_OPT_DURATION = 1u << 2,        // -d: receivers only (perf_client too)
+    TT_EXAMPLE_OPT_MESSAGE_SIZE = 1u << 3,    // -s: perf_client only
+    TT_EXAMPLE_OPT_WARMUP_COOLDOWN = 1u << 4, // -w/-W: ping.c, perf_server.c only
 };
 
 struct tt_example_cli_options {
@@ -45,6 +47,13 @@ struct tt_example_cli_options {
     double interval_s;     // -i
     double duration_s;     // -d, 0 = run until Ctrl+C
     uint32_t message_size; // -s
+
+    // -w/-W: excluded from the final statistics, 0 = none. Unit is up to the caller (ping.c reads
+    // these as a ping *count*, matching its own -c; perf_server.c reads them as *seconds*,
+    // matching its own -d) - see each file's own comment for why. Kept as double regardless
+    // (parsed the same way -i/-d already are) so this shared struct doesn't need two variants.
+    double warmup;
+    double cooldown;
 };
 
 bool tt_example_parse_log_level(const char* str, tt_LogLevel* level);
