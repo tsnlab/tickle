@@ -46,12 +46,15 @@ static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest*
                                 struct SetBoolResponse* response) {
     (void)server;
 
+    // message just echoes request->data back as text - "Succeed"/"Failed" read too easily as the
+    // *test's* own pass/fail verdict (which is set_bool_callback() in client.c's RESULT line, not
+    // this), so "true"/"false" says only what it means: the data value this call carried.
     if (request->data) {
         response->success = true;
-        response->message = "Succeed";
+        response->message = "true";
     } else {
         response->success = false;
-        response->message = "Failed";
+        response->message = "false";
     }
 
     handled++;

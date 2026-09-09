@@ -11,10 +11,11 @@
 // ROLE=client: the set_bool RPC round trip's client side - reuses examples/linux/set_bool/
 // SetBool.{c,h} verbatim (pure protocol encode/decode code, no POSIX dependency), same reasoning
 // as main_ping.c reusing PingPong.{c,h} over ping.c itself. Logs one line per call outcome
-// ("client: call N succeeded/failed") rather than a final PASS/FAIL summary the way
-// examples/linux/set_bool/client.c does - this task runs forever (see main_ping.c's own comment
-// on why), so there's no "end of run" to summarize; platform/freertos/test.sh instead counts
-// these per-call lines the same way it already does for ping/publisher.
+// ("client: call=N data=X success=Y message=Z", the same field set/order
+// examples/linux/set_bool/client.c's own set_bool_callback() prints) rather than a final PASS/FAIL
+// summary - this task runs forever (see main_ping.c's own comment on why), so there's no "end of
+// run" to summarize; platform/freertos/test.sh instead counts these per-call lines the same way it
+// already does for ping/publisher.
 
 #include <FreeRTOS.h>
 #include <stdio.h>
@@ -33,15 +34,19 @@
 static struct tt_Node node;
 static struct tt_Client client;
 static bool next_data = true;
+static bool call_data = true;  // the data value sent with the currently in-flight call
+static uint32_t completed = 0; // calls whose outcome (response or error) is known
 
 static void set_bool_callback(struct tt_Client* client, int8_t return_code, struct SetBoolResponse* response) {
     (void)client;
 
     if (return_code == 0 && response != NULL) {
-        printf("client: call succeeded, success=%d\n", response->success);
+        printf("client: call=%u data=%d success=%d message=%s\n", completed, call_data, response->success,
+               response->message);
     } else {
-        printf("client: call failed, return_code=%d\n", return_code);
+        printf("client: call=%u data=%d failed, return_code=%d\n", completed, call_data, return_code);
     }
+    completed++;
 }
 
 static void call(struct tt_Node* node, uint64_t time, void* param) {
@@ -50,6 +55,7 @@ static void call(struct tt_Node* node, uint64_t time, void* param) {
     struct SetBoolRequest request = {.data = next_data};
     tt_ret_t ret = tt_Client_call(client, (struct tt_Request*)&request);
     if (ret == tt_RET_OK) {
+        call_data = next_data;
         next_data = !next_data;
     } else if (ret != tt_RET_ILLEGAL_STATUS) {
         // ILLEGAL_STATUS just means the previous call is still outstanding - expected

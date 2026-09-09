@@ -32,12 +32,15 @@ static int8_t set_bool_callback(struct tt_Server* server_endpoint, struct SetBoo
     (void)server_endpoint;
     printf("server: request data=%d\n", request->data);
 
+    // message just echoes request->data back as text - "Succeed"/"Failed" read too easily as the
+    // *test's* own pass/fail verdict rather than the data value this call carried (see
+    // examples/linux/set_bool/server.c's own comment - kept identical here for the same reason).
     if (request->data) {
         response->success = true;
-        response->message = "Succeed";
+        response->message = "true";
     } else {
         response->success = false;
-        response->message = "Failed";
+        response->message = "false";
     }
 
     return 0;

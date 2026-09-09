@@ -117,8 +117,8 @@ run_round_trip() {
 
 status=0
 run_round_trip publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
-run_round_trip client 1 server 2 'client: call succeeded' 'server: request data=' || status=1
-run_round_trip ping 1 pong 2 'ping: seq=.*rtt=' 'pong: request seq=' || status=1
+run_round_trip client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1
+run_round_trip ping 1 pong 2 'ping: seq=.*time=' 'pong: request seq=' || status=1
 # [1-9]: only count intervals with real activity (an aggregated "sent 0 msgs"/"recv 0 msgs" line
 # existing proves nothing - see main_perf_client.c's report()) - unlike the other three pairs'
 # per-event lines, which only ever appear when that event genuinely happened.

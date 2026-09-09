@@ -45,8 +45,10 @@ static void ping_callback(struct tt_Client* client, int8_t return_code, struct P
         return;
     }
 
-    uint64_t rtt_ns = tt_get_ns() - response->timestamp;
-    printf("ping: seq=%lu rtt=%lu us\n", (unsigned long)response->seq, (unsigned long)(rtt_ns / tt_MICROSECOND));
+    // "time=X.XXX ms" (a double, not an integer us count) matches
+    // examples/linux/ping_pong/ping.c's own ping_callback() exactly.
+    double rtt_ms = (double)(tt_get_ns() - response->timestamp) / (double)tt_MILLISECOND;
+    printf("ping: seq=%lu time=%.3f ms\n", (unsigned long)response->seq, rtt_ms);
 }
 
 static void send_ping(struct tt_Node* node, uint64_t time, void* param) {

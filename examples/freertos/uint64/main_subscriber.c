@@ -31,7 +31,8 @@ static void subscriber_callback(struct tt_Subscriber* subscriber, uint64_t time,
                                 struct UInt64Data* data) {
     (void)subscriber;
     (void)time;
-    printf("subscriber: seq=%u data=%lu\n", seq_no, (unsigned long)data->data);
+    // %lx (hex), not %lu - matches examples/linux/uint64/subscriber.c's own uint64_data_callback().
+    printf("subscriber: seq=%u data=%lx\n", seq_no, (unsigned long)data->data);
 }
 
 static void subscriber_task(void* param) {
