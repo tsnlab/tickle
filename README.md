@@ -146,29 +146,39 @@ compiled-in defaults `make run*` relies on:
 
 Senders (`ping`, `client`, `publisher`, `perf_client`) additionally take:
 
-- `-c` stop after this many sends (default `0` = run until Ctrl+C)
+- `-c` stop after this many sends (default `0` = unlimited - `ping` also accepts `-d` instead/as
+  well, see below)
 - `-i` seconds between sends (default `1`, except `perf_client` - see below)
 
-Receivers (`pong`, `server`, `subscriber`, `perf_server`) additionally take:
+Receivers (`pong`, `server`, `subscriber`, `perf_server`) - and `ping`, which is a sender but (see
+below) can be duration-bound too - additionally take:
 
-- `-d` exit automatically after this many seconds (default `0` = run until Ctrl+C)
+- `-d` exit automatically after this many seconds (default `0` = run until `-c`/Ctrl+C)
 
 `ping` and `perf_server` - the two pairs that report real statistics (latency, throughput; see
 "Result output" below) - additionally take:
 
-- `-w` exclude this many initial samples from the statistics (a ping *count* for `ping`, a number
-  of *seconds* for `perf_server` - each matches its own `-c`/`-d` unit)
+- `-w` exclude this many initial seconds from the statistics (default `0`)
 - `-W` on the normal stop trigger (`-c`/`-d` reached, or Ctrl+C), don't exit immediately - keep
-  running this many more (pings, or seconds) first, excluded from the statistics, then actually
-  exit (default `0` = stop immediately, matching every other example)
+  running this many more seconds first, excluded from the statistics, then actually exit
+  (default `0` = stop immediately, matching every other example)
 
 Startup/shutdown transients (first-packet allocation overhead, ARP/socket warm-up, a run cut off
 mid-burst) skew a latency or throughput number more than they'd ever show up as a functional
 failure, so `-w`/`-W` trim them from the two pairs where that actually matters. `-W` deliberately
-*extends* the run rather than reserving the last few samples out of a known `-c`/`-d` - that's
-what makes it work the same way whether the run was bounded or stopped with Ctrl+C, since neither
-needs to know in advance when the run will end. `make test-linux` passes `-w 2 -W 2` to both (see
-[platform/linux/test.sh](platform/linux/test.sh)).
+*extends* the run rather than reserving the last few seconds out of a known `-c`/`-d` - that's what
+makes it work the same way whether the run was bounded or stopped with Ctrl+C, since neither needs
+to know in advance when the run will end. `-d` itself always means exactly the counted-data span -
+`-d 60 -w 5` measures a real 60 seconds, not `-w` eating into a fixed 60-second window - so `ping`
+(warm-up and the stop trigger both live in the one process that's also doing the sending) just
+keeps pinging through `-w`+`-d`+`-W` = 70 real seconds for `-d 60 -w 5 -W 5`. `perf` splits sender
+and counter across two processes, so `perf_server -d 60 -w 5 -W 5` only ever sees real traffic
+throughout that same 70-second span if `perf_client` is *also* told to send for the full 70
+seconds, not just the 60 that end up counted - `make test-linux` passes `perf_client` `-d 70` and
+`perf_server -d 60 -w 5 -W 5` for exactly this reason (see
+[platform/linux/test.sh](platform/linux/test.sh)'s own comment). `perf_client` itself never takes
+`-w`/`-W` - it isn't the authoritative side (`perf_server` is the one that can see loss), so
+there's nothing on its side to exclude from a statistic it doesn't compute.
 
 `-c`/`-d` exist mainly so a script (e.g. CI) can run a binary without it hanging forever
 waiting on a peer that never shows up.

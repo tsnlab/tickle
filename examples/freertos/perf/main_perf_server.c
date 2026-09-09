@@ -25,30 +25,58 @@
 
 #define PERF_SERVER_TASK_STACK_WORDS 1024
 
+// 5s warm-up + 60s of real measured throughput + 5s cool-down = 70s total, matching
+// examples/linux/perf/perf_server.c's own -w/-W/-d defaults exactly - just as compile-time
+// constants instead of CLI flags, since there's no argv on a flashed target. TOTAL_DURATION_S
+// must match platform/freertos/test.sh's own PERF_DURATION_S for this pair (its QEMU `timeout` is
+// what actually stops this task - it runs forever otherwise, see perf_server_task()'s own poll
+// loop), or the cool-down tag below won't land on the real last 5 seconds.
+#define WARMUP_S 5.0
+#define COOLDOWN_S 5.0
+#define TOTAL_DURATION_S 70.0
+
 // Too large for a task's own stack - static instead, same reasoning as main.c's ROLE=selftest.
 static struct tt_Node node;
 static struct tt_Subscriber sub;
 
 static bool have_first = false;
 static uint32_t expected_seq = 0;
+static uint64_t first_recv_time = 0; // ns timestamp of the first real message - anchors warm-up,
+                                     // not this task's own start_time, the same reasoning
+                                     // examples/linux/perf/perf_server.c's own first_recv_time has
+                                     // (this role's QEMU instance also starts before perf_client's
+                                     // does - see platform/freertos/test.sh's own run_round_trip()).
+static uint64_t g_start_time = 0;    // this task's own start - cool-down still anchors to this, not
+                                     // first_recv_time, since TOTAL_DURATION_S (and so the actual
+                                     // external kill) is timed from process start, not first receive.
 static uint64_t total_dropped = 0;
 static uint64_t interval_received_msgs = 0;
 static uint64_t interval_received_bytes = 0;
 
 static void bulk_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no, struct BulkData* data) {
     (void)subscriber;
-    (void)time;
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
 
-    // Same drop-detection approach as examples/linux/perf/perf_server.c's own bulk_callback().
-    if (have_first && data->seq != expected_seq) {
-        total_dropped += data->seq - expected_seq;
+    if (!have_first) {
+        first_recv_time = time;
     }
+
+    // Same drop-detection approach as examples/linux/perf/perf_server.c's own bulk_callback().
+    bool gap = have_first && data->seq != expected_seq;
+    uint32_t gap_count = gap ? data->seq - expected_seq : 0;
     expected_seq = data->seq + 1;
     have_first = true;
 
     interval_received_msgs++;
     interval_received_bytes += data->size;
+
+    double elapsed_since_first_s = (double)(time - first_recv_time) / (double)tt_SECOND;
+    double elapsed_since_start_s = (double)(time - g_start_time) / (double)tt_SECOND;
+    bool in_warmup = elapsed_since_first_s < WARMUP_S;
+    bool in_cooldown = elapsed_since_start_s >= TOTAL_DURATION_S - COOLDOWN_S;
+    if (!in_warmup && !in_cooldown) {
+        total_dropped += gap_count;
+    }
 }
 
 // Field set and wording mirror examples/linux/perf/perf_server.c's own report(): MB/Mbps computed
@@ -64,9 +92,21 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
     const double bytes_per_mb = 1e6;
     double megabytes = (double)interval_received_bytes / bytes_per_mb;
     double mbps = ((double)interval_received_bytes * 8) / bytes_per_mb;
-    printf("perf_server: recv %s msgs, %s MB, %s Mbps this interval (%s dropped so far)\n",
+
+    double elapsed_since_first_s = have_first ? (double)(time - first_recv_time) / (double)tt_SECOND : 0.0;
+    double elapsed_since_start_s = (double)(time - g_start_time) / (double)tt_SECOND;
+    bool in_warmup = have_first && elapsed_since_first_s < WARMUP_S;
+    bool in_cooldown = elapsed_since_start_s >= TOTAL_DURATION_S - COOLDOWN_S;
+    const char* tag = "";
+    if (in_warmup) {
+        tag = " (warmup)";
+    } else if (in_cooldown) {
+        tag = " (cooldown)";
+    }
+
+    printf("perf_server: recv %s msgs, %s MB, %s Mbps this interval (%s dropped so far)%s\n",
            tt_format_grouped(interval_received_msgs, recv_buf), tt_format_grouped_f3(megabytes, megabytes_buf),
-           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_dropped, dropped_buf));
+           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_dropped, dropped_buf), tag);
 
     interval_received_msgs = 0;
     interval_received_bytes = 0;
@@ -97,7 +137,8 @@ static void perf_server_task(void* param) {
     }
     printf("perf_server: ready\n");
 
-    tt_Node_schedule(&node, tt_get_ns() + tt_SECOND, report, NULL);
+    g_start_time = tt_get_ns();
+    tt_Node_schedule(&node, g_start_time + tt_SECOND, report, NULL);
 
     for (;;) {
         tt_Node_poll(&node, -1);

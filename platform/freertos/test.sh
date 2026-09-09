@@ -21,13 +21,16 @@
 #     main_publisher.c's file-level comment.
 #   - set_bool (client/server): RPC call/response, the same shape as ping/pong but exercising a
 #     different codec/service.
-#   - ping_pong (ping/pong): RPC call/response, latency-flavored.
+#   - ping_pong (ping/pong): RPC call/response, latency-flavored. Given a longer window
+#     ($PING_DURATION_S, default 70s = 5s warm-up + 60s real data + 5s cool-down - see
+#     main_ping.c's own WARMUP_S/COOLDOWN_S/TOTAL_DURATION_S comment) than the other two functional
+#     pairs' $DURATION_S (default 10s), the same split platform/linux/test.sh's own ping pair uses.
 #   - perf (perf_client/perf_server): pub/sub, throughput-flavored - fills a full Ethernet frame
 #     and republishes as fast as tt_Node_poll() allows (see main_perf_client.c's own comment),
 #     same as examples/linux/perf/perf_client.c's own defaults now - real max throughput, not a
-#     fixed rate. Given a longer window ($PERF_DURATION_S, default 20s vs the other pairs'
-#     $DURATION_S default 10s) since a short burst is a noisier throughput sample than a longer
-#     one, the same reasoning platform/linux/test.sh's own perf pair follows.
+#     fixed rate. Same 70s ($PERF_DURATION_S) 5+60+5 split as ping_pong above, for the same reason
+#     (a short burst is a noisier throughput sample than a longer one) platform/linux/test.sh's own
+#     perf pair follows.
 # All four purpose-built role mains log one line per message/call (or, for perf, one aggregated
 # line per second - see main_perf_client.c's own comment on why) on both sides (unlike the real
 # example binaries platform/linux/test.sh reuses, which only do that on one side per pair - see
@@ -38,7 +41,13 @@ cd "$(dirname "$0")"
 
 MCAST_GROUP=230.0.0.1:5000
 DURATION_S=${DURATION_S:-10}
-PERF_DURATION_S=${PERF_DURATION_S:-20}
+# 5s warm-up + 60s of real measured data + 5s cool-down = 70s, matching
+# examples/freertos/ping_pong/main_ping.c's/main_perf_server.c's own WARMUP_S/COOLDOWN_S/
+# TOTAL_DURATION_S constants exactly (see their own comments on why this can't just be a CLI
+# flag here the way platform/linux/test.sh's -w/-W are) - and the same split
+# platform/linux/test.sh's own ping/perf pairs use.
+PING_DURATION_S=${PING_DURATION_S:-70}
+PERF_DURATION_S=${PERF_DURATION_S:-70}
 MIN_COUNT=5
 
 # Builds and runs one two-instance round trip: $server_role (background, for the whole test) and
@@ -118,7 +127,7 @@ run_round_trip() {
 status=0
 run_round_trip publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
 run_round_trip client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1
-run_round_trip ping 1 pong 2 'ping: seq=.*time=' 'pong: request seq=' || status=1
+run_round_trip ping 1 pong 2 'ping: seq=.*time=' 'pong: request seq=' "$PING_DURATION_S" || status=1
 # [1-9]: only count intervals with real activity (an aggregated "sent 0 msgs"/"recv 0 msgs" line
 # existing proves nothing - see main_perf_client.c's report()) - unlike the other three pairs'
 # per-event lines, which only ever appear when that event genuinely happened.

@@ -35,6 +35,9 @@ static double cooldown_s = 0.0; // -W: seconds to keep receiving (uncounted) aft
                                 // trigger (-d elapsed, or Ctrl+C) before actually exiting - see
                                 // this file's own comment on why this isn't computed by looking
                                 // backward from a known -d instead.
+static double duration_s = 0.0; // -d: seconds of real (post-warm-up) data before the stop
+                                // trigger - see bulk_callback()'s own comment on why this is
+                                // scheduled dynamically off the first real message, not up front.
 
 static void handle_sigint(int sig) {
     (void)sig;
@@ -80,6 +83,20 @@ static uint64_t first_recv_time = 0; // ns timestamp of the first real message -
                                      // perf_client's, so "since I started" would count idle time
                                      // before perf_client even begins sending as warm-up).
 
+// A safety-net timeout, scheduled up front (main()) independent of whether any real traffic ever
+// shows up - covers the degenerate "no message ever arrived" case, which bulk_callback()'s own
+// (more precise, warm-up-aware) scheduling of handle_duration_elapsed can never reach on its own,
+// since that one only ever fires off a message that already arrived. Only actually stops if
+// have_first is still false when it fires - otherwise a no-op, since real traffic already
+// scheduled the accurate trigger by then. Deliberately well past duration_s (see main()'s own
+// scheduling of this) so it can never preempt the accurate one once real traffic does show up.
+static void handle_no_traffic_timeout(struct tt_Node* node, uint64_t time, void* param) {
+    (void)param;
+    if (!have_first) {
+        begin_stopping(node, time);
+    }
+}
+
 static uint64_t total_received_msgs = 0;
 static uint64_t total_received_bytes = 0;
 static uint64_t total_dropped = 0;
@@ -88,11 +105,20 @@ static uint64_t interval_received_msgs = 0;
 static uint64_t interval_received_bytes = 0;
 
 static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, struct BulkData* data) {
-    (void)sub;
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
 
     if (!have_first) {
         first_recv_time = time;
+        if (duration_s > 0.0) {
+            // Scheduled here (once, off the first real message), not up front in main(): -d
+            // measures the real data window, not time since this process's own start_time - a
+            // start_time + duration_s trigger would let warmup_s (itself anchored to
+            // first_recv_time, not start_time - see that variable's own comment) eat into it, on
+            // top of the pre-existing "-d intentionally runs longer than perf_client's" gap.
+            // + warmup_s here instead keeps -d's own meaning exactly "seconds of counted data".
+            uint64_t stop_at = first_recv_time + (uint64_t)((warmup_s + duration_s) * (double)tt_SECOND);
+            tt_Node_schedule(sub->node, stop_at, handle_duration_elapsed, NULL);
+        }
     }
 
     bool gap = have_first && data->seq != expected_seq;
@@ -219,6 +245,7 @@ int main(int argc, char** argv) {
     }
     warmup_s = opts.warmup;
     cooldown_s = opts.cooldown;
+    duration_s = opts.duration_s;
 
     _tt_CONFIG.broadcast = opts.broadcast;
     if (opts.port != 0) {
@@ -258,9 +285,14 @@ int main(int argc, char** argv) {
 
     uint64_t start_time = tt_get_ns();
     tt_Node_schedule(&node, start_time + tt_SECOND, report, NULL);
+    // handle_duration_elapsed isn't scheduled here - see bulk_callback()'s own comment on why it
+    // has to wait for the first real message instead. This safety net (see its own comment) is,
+    // so a real -d still eventually bounds a completely dead run - +30s is arbitrary but generous:
+    // real traffic normally arrives within a second or two of this process starting.
     if (opts.duration_s > 0.0) {
-        tt_Node_schedule(&node, start_time + (uint64_t)(opts.duration_s * (double)tt_SECOND), handle_duration_elapsed,
-                         NULL);
+        const double no_traffic_margin_s = 30.0;
+        tt_Node_schedule(&node, start_time + (uint64_t)((opts.duration_s + no_traffic_margin_s) * (double)tt_SECOND),
+                         handle_no_traffic_timeout, NULL);
     }
 
     ret = tt_RET_OK;

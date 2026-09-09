@@ -26,35 +26,63 @@
 #include "PingPong.h"
 
 static volatile sig_atomic_t g_interrupted = 0; // raw SIGINT flag - see main()'s own comment
+static bool g_exit_now = false;                 // the main loop's actual exit condition
+
+static bool stopping = false;       // a stop trigger has fired; draining cooldown_s more now
+static uint64_t cooldown_start = 0; // ns timestamp once stopping - >= this is cooldown
+
+static uint64_t g_start_time = 0; // set once in main() - anchors warm-up (ping sends immediately
+                                  // at startup, unlike perf_server, so there's no "wait for the
+                                  // peer" gap to worry about the way first_recv_time exists for)
+static double warmup_s = 0.0;     // -w: seconds after start before counting starts
+static double cooldown_s = 0.0;   // -W: seconds to keep pinging (uncounted) after the stop
+                                  // trigger (-c/-d reached, or Ctrl+C) before actually exiting -
+                                  // matches perf_server.c's own -w/-W exactly (see its comment).
+static uint32_t target_count = 0; // -c, 0 = unlimited - independent of warm-up/cool-down, an
+                                  // optional extra cap on total pings sent regardless of time
 
 static void handle_sigint(int sig) {
     (void)sig;
     g_interrupted = 1;
 }
 
-static bool g_exit_now = false; // the main loop's actual exit condition - see begin_stopping()
+static void finish_cooldown(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+    g_exit_now = true;
+}
 
-static uint32_t seq = 0;
+// Called once, the first time a stop condition is detected (-c/-d reached, or Ctrl+C) - rather
+// than exiting immediately, keeps pinging for cooldown_s more seconds (uncounted - see ping()'s
+// own gating) before actually exiting. Works the same way whether the run was bounded (-c/-d) or
+// not (stopped with Ctrl+C), since either way this only ever needs "cooldown_s seconds from now",
+// never advance knowledge of when the run will end. Idempotent - only the first trigger takes
+// effect. Exactly mirrors perf_server.c's own begin_stopping().
+static void begin_stopping(struct tt_Node* node, uint64_t time) {
+    if (stopping) {
+        return;
+    }
+    stopping = true;
+    cooldown_start = time;
+    if (cooldown_s <= 0.0) {
+        g_exit_now = true;
+        return;
+    }
+    tt_Node_schedule(node, time + (uint64_t)(cooldown_s * (double)tt_SECOND), finish_cooldown, NULL);
+}
+
+static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+    (void)param;
+    begin_stopping(node, time);
+}
+
+static uint32_t seq = 0; // also this run's total successful-send count (0-based, pre-increment)
 static uint32_t pending_seq = 0;
-static bool pending_counted = true; // was the currently in-flight ping outside warm-up/cool-down?
-static uint32_t completed = 0;      // pings whose outcome (reply or drop) is known
+static bool pending_in_warmup = false; // classified at send time - see ping()'s own comment
+static bool pending_in_cooldown = false;
 static uint64_t send_interval_ns = 0;
 
-static uint32_t target_count = 0;          // live stop-sending threshold (see begin_stopping());
-                                           // starts equal to original_target_count
-static uint32_t original_target_count = 0; // the actual -c value, immutable after parse_args()
-static uint32_t warmup_count = 0;          // -w: initial pings excluded from the statistics
-static uint32_t cooldown_count = 0;        // -W: trailing pings excluded from the statistics -
-                                           // sent/received *after* the normal stop trigger fires
-                                           // (target reached, or Ctrl+C), not reserved out of the
-                                           // original -c count - see this file's own comment on
-                                           // why (also covers an unbounded -c 0 run stopped with
-                                           // Ctrl+C, which reserving from a known count can't).
-static bool stopping = false;              // a stop trigger has fired; draining cooldown_count more
-static uint64_t cooldown_start = 0;        // sent-count boundary once stopping - >= this is cooldown
-
-static uint64_t sent_total = 0;  // every successful send, including warm-up/cool-down ones -
-                                 // drives target_count comparisons (ping()'s/note_completed()'s)
 static uint64_t transmitted = 0; // sends within the counted window - what print_statistics() uses
 static uint64_t received = 0;    // responses within the counted window
 static double rtt_min_ms = -1.0;
@@ -62,51 +90,22 @@ static double rtt_max_ms = 0.0;
 static double rtt_sum_ms = 0.0;
 static double rtt_sum_sq_ms = 0.0;
 
-// Called once, the first time a stop condition is detected (target_count reached, or Ctrl+C) -
-// extends target_count by cooldown_count more pings rather than stopping immediately, so those
-// trailing samples can actually be observed (and excluded) instead of guessed at in advance. That
-// also means this covers an unbounded (-c 0) run stopped with Ctrl+C the same way it covers a
-// fixed -c count - either way, "cooldown_count more from wherever we are now" needs no advance
-// knowledge of when the run will end. cooldown_count == 0 still goes through here rather than
-// exiting directly - target_count just stays where it is, so note_completed() still waits for the
-// already-in-flight ping's own outcome before actually exiting, instead of cutting it off
-// mid-flight the way the old direct-g_interrupted-stops-the-loop code used to. Idempotent - only
-// the first trigger takes effect.
-static void begin_stopping(void) {
-    if (stopping) {
-        return;
-    }
-    stopping = true;
-    cooldown_start = sent_total;
-    target_count = (uint32_t)sent_total + cooldown_count;
-}
-
-// The exit decision belongs here (once every outcome up to target_count is known), not wherever
-// begin_stopping() gets triggered from - see ping()'s own call site for why the *trigger* has to
-// happen at send time, synchronously before that same call decides whether to schedule another.
-static void note_completed(void) {
-    completed++;
-    if (stopping && completed >= target_count) {
-        g_exit_now = true;
-    }
-}
-
 static void ping_callback(struct tt_Client* client, int8_t return_code, struct PingPongResponse* response) {
     (void)client;
 
     const char* tag = "";
-    if (!pending_counted) {
-        tag = sent_total <= warmup_count ? " (warmup)" : " (cooldown)";
+    if (pending_in_warmup) {
+        tag = " (warmup)";
+    } else if (pending_in_cooldown) {
+        tag = " (cooldown)";
     }
 
     if (return_code == 0 && response == NULL) {
         printf("Request timeout for icmp_seq=%u (dropped)%s\n", pending_seq, tag);
-        note_completed();
         return;
     }
     if (return_code != 0) {
         printf("Error, return_code: %d (icmp_seq=%u dropped)%s\n", return_code, pending_seq, tag);
-        note_completed();
         return;
     }
 
@@ -114,7 +113,7 @@ static void ping_callback(struct tt_Client* client, int8_t return_code, struct P
 
     printf("seq=%u time=%.3f ms%s\n", response->seq, rtt_ms, tag);
 
-    if (pending_counted) {
+    if (!pending_in_warmup && !pending_in_cooldown) {
         received++;
         if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
             rtt_min_ms = rtt_ms;
@@ -125,8 +124,6 @@ static void ping_callback(struct tt_Client* client, int8_t return_code, struct P
         rtt_sum_ms += rtt_ms;
         rtt_sum_sq_ms += rtt_ms * rtt_ms;
     }
-
-    note_completed();
 }
 
 static void ping(struct tt_Node* node, uint64_t time, void* param) {
@@ -137,21 +134,20 @@ static void ping(struct tt_Node* node, uint64_t time, void* param) {
     tt_ret_t ret = tt_Client_call(client, (struct tt_Request*)&request);
     if (ret == tt_RET_OK) {
         seq++;
-        bool in_warmup = sent_total < warmup_count;
-        bool in_cooldown = stopping && sent_total >= cooldown_start;
-        pending_counted = !in_warmup && !in_cooldown;
-        if (pending_counted) {
+        double elapsed_s = (double)(time - g_start_time) / (double)tt_SECOND;
+        pending_in_warmup = elapsed_s < warmup_s;
+        pending_in_cooldown = stopping && time >= cooldown_start;
+        if (!pending_in_warmup && !pending_in_cooldown) {
             transmitted++;
         }
-        sent_total++;
         pending_seq = this_seq;
 
-        // Checked here (send time), not in note_completed() (receive time): target_count needs
-        // to already reflect the extension by the time this same call's own "should I send
-        // another" check below runs, or that check would stop scheduling before cooldown_count's
-        // extra pings ever go out - see begin_stopping()'s own comment on the rest of the design.
-        if (!stopping && original_target_count > 0 && sent_total >= original_target_count) {
-            begin_stopping();
+        // Checked here (send time), not from note_completed()-style receive-time bookkeeping:
+        // ping()'s own "should I send another" check just below needs `stopping` to already be
+        // set if this send just crossed target_count, or it would stop scheduling before
+        // cooldown_s's extra pings ever go out.
+        if (!stopping && target_count > 0 && seq >= target_count) {
+            begin_stopping(node, time);
         }
     } else if (ret == tt_RET_ILLEGAL_STATUS) {
         printf("Previous ping still awaiting a reply, skipping this interval\n");
@@ -159,7 +155,10 @@ static void ping(struct tt_Node* node, uint64_t time, void* param) {
         printf("Cannot send ping: %d\n", ret);
     }
 
-    if (target_count == 0 || sent_total < target_count) {
+    // Once stopping, target_count (an original send-count cap, if any) no longer gates further
+    // sends - cooldown_s's own timer (finish_cooldown(), scheduled from begin_stopping()) is what
+    // eventually sets g_exit_now and ends this loop instead.
+    if (!g_exit_now && (stopping || target_count == 0 || seq < target_count)) {
         tt_Node_schedule(node, time + send_interval_ns, ping, client);
     }
 }
@@ -175,7 +174,14 @@ static void print_statistics(uint64_t start_time) {
     char received_buf[TT_GROUPED_BUF_LEN];
     uint64_t lost = transmitted - received;
     double loss_pct = transmitted > 0 ? (100.0 * (double)lost / (double)transmitted) : 0.0;
-    double elapsed_ms = (double)(tt_get_ns() - start_time) / (double)tt_MILLISECOND;
+
+    // The counted window excludes warm-up/cool-down, so its duration is measured the same way -
+    // from when warm-up ended to when cool-down began (or now, if this somehow got here without
+    // ever stopping) - not the raw start_time-to-now process span. Mirrors perf_server.c's own
+    // print_summary() exactly.
+    uint64_t window_start = start_time + (uint64_t)(warmup_s * (double)tt_SECOND);
+    uint64_t window_end = stopping ? cooldown_start : tt_get_ns();
+    double elapsed_ms = window_end > window_start ? (double)(window_end - window_start) / (double)tt_MILLISECOND : 0.0;
 
     printf("\n--- ping statistics ---\n");
     printf("%s packets transmitted, %s received, %.0f%% packet loss, time %.0fms\n",
@@ -199,18 +205,19 @@ static void print_statistics(uint64_t start_time) {
 static void print_usage(const char* prog) {
     fprintf(stderr,
             "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id] [-c count]\n"
-            "          [-i interval_seconds] [-w warmup_count] [-W cooldown_count]\n"
-            "          [-n endpoint_name] [-l log_level]\n",
+            "          [-i interval_seconds] [-d duration_seconds] [-w warmup_seconds]\n"
+            "          [-W cooldown_seconds] [-n endpoint_name] [-l log_level]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
     fprintf(stderr, "  -I  explicit node ID 1-254 (default: auto-detect from -a/-b's subnet)\n");
-    fprintf(stderr, "  -c  stop after this many pings (default 0 = run until Ctrl+C)\n");
+    fprintf(stderr, "  -c  stop after this many pings (default 0 = unlimited - use -d/Ctrl+C)\n");
     fprintf(stderr, "  -i  seconds between pings (default 1)\n");
-    fprintf(stderr, "  -w  exclude this many initial pings from the statistics (default 0)\n");
-    fprintf(stderr, "  -W  keep pinging (uncounted) this many more times after the stop\n");
-    fprintf(stderr, "      trigger (-c reached, or Ctrl+C) before actually exiting (default 0)\n");
+    fprintf(stderr, "  -d  stop after this many seconds (default 0 = run until -c/Ctrl+C)\n");
+    fprintf(stderr, "  -w  exclude this many initial seconds from the statistics (default 0)\n");
+    fprintf(stderr, "  -W  keep pinging (uncounted) this many more seconds after the stop\n");
+    fprintf(stderr, "      trigger (-c/-d reached, or Ctrl+C) before actually exiting (default 0)\n");
     fprintf(stderr, "  -n  service name to rendezvous with pong on (default ping_pong_server)\n");
     fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
 }
@@ -221,6 +228,7 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->bind_addr = NULL;
     opts->node_id = 0;
     opts->interval_s = 1.0;
+    opts->duration_s = 0.0;
     opts->warmup = 0.0;
     opts->cooldown = 0.0;
     opts->name = "ping_pong_server";
@@ -229,7 +237,8 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->count = 0;
 
     return tt_example_parse_args(argc, argv, opts,
-                                 TT_EXAMPLE_OPT_COUNT | TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_WARMUP_COOLDOWN);
+                                 TT_EXAMPLE_OPT_COUNT | TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_DURATION |
+                                     TT_EXAMPLE_OPT_WARMUP_COOLDOWN);
 }
 
 int main(int argc, char** argv) {
@@ -238,10 +247,9 @@ int main(int argc, char** argv) {
         print_usage(argv[0]);
         return 1;
     }
-    original_target_count = opts.count;
     target_count = opts.count;
-    warmup_count = (uint32_t)opts.warmup;
-    cooldown_count = (uint32_t)opts.cooldown;
+    warmup_s = opts.warmup;
+    cooldown_s = opts.cooldown;
 
     send_interval_ns = (uint64_t)(opts.interval_s * (double)tt_SECOND);
 
@@ -282,17 +290,25 @@ int main(int argc, char** argv) {
     }
 
     uint64_t start_time = tt_get_ns();
+    g_start_time = start_time;
     tt_Node_schedule(&node, start_time, ping, &client);
+    if (opts.duration_s > 0.0) {
+        // -d measures the real (post-warm-up) data window, not time since start_time - a plain
+        // start_time + duration_s trigger would let warmup_s eat into it, e.g. -d 60 -w 5 actually
+        // only measuring 55s. + warmup_s here instead keeps -d's own meaning exactly "seconds of
+        // counted data" regardless of what -w is.
+        uint64_t stop_at = start_time + (uint64_t)((warmup_s + opts.duration_s) * (double)tt_SECOND);
+        tt_Node_schedule(&node, stop_at, handle_duration_elapsed, NULL);
+    }
 
     ret = tt_RET_OK;
     while (!g_exit_now && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, -1);
         // Checked here (right after poll() returns), not inside ping()'s own schedule: this runs
         // every iteration regardless of how long until the next scheduled ping, so Ctrl+C is
-        // caught right away - see begin_stopping()'s own comment on why immediacy matters (it
-        // needs sent_total to reflect "now", not whatever it was as of the last scheduled tick).
+        // caught right away instead of up to one send_interval_ns late.
         if (g_interrupted && !stopping) {
-            begin_stopping();
+            begin_stopping(&node, tt_get_ns());
         }
     }
 
