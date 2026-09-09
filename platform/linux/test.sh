@@ -111,6 +111,20 @@ check_pass() {
     return 1
 }
 
+# Appends one line to $SUMMARY: <label> followed by file $2's own RESULT: line, verbatim - reused
+# as-is rather than reformatted, so the final summary can't drift out of sync with what each
+# example itself already decided to report. Printed once at the very end (see this script's own
+# tail) so a run's overall pass/fail and every pair's key numbers are visible without scrolling
+# back through the full logs above.
+SUMMARY=""
+add_summary() {
+    label=$1
+    file=$2
+    result_line=$(grep '^RESULT:' "$file" | tail -1)
+    SUMMARY="$SUMMARY
+$(printf '%-10s %s' "$label" "$result_line")"
+}
+
 make uint64
 make set_bool
 make ping_pong
@@ -120,9 +134,11 @@ status=0
 
 run_pair publisher "-c 20 -i 0.2" subscriber "-d 15" || status=1
 check_pass subscriber.log || status=1
+add_summary uint64 subscriber.log
 
 run_pair client "-c 20 -i 0.2" server "-d 15" || status=1
 check_pass client.log || status=1
+add_summary set_bool client.log
 
 # pong.c never logs per-request - but a "seq=N time=X ms" line in ping's own log can only appear
 # from a real decoded CallResponse, so that alone (checked against ping.log, the sender) is
@@ -136,6 +152,7 @@ check_pass client.log || status=1
 # evidence about the stats window.
 run_pair ping "-d 60 -i 0.2 -w 5 -W 5" pong "-d 80" || status=1
 check_count ping.log '^seq=' || status=1
+add_summary ping_pong ping.log
 
 # perf_server.c has no per-message log line the way ping.c/subscriber.c do (only periodic
 # aggregated interval reports and the final summary), so its own RESULT: recv=N tally is checked
@@ -163,5 +180,15 @@ recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9,]*\).
 recv=${recv:-0}
 echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"
 [ "$recv" -ge "$MIN_COUNT" ] || status=1
+add_summary perf perf_server.log
+
+echo
+echo "=== Summary ==="
+if [ "$status" -eq 0 ]; then
+    echo "Overall: PASS"
+else
+    echo "Overall: FAIL"
+fi
+printf '%s\n' "$SUMMARY"
 
 exit $status

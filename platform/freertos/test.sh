@@ -60,14 +60,21 @@ MIN_COUNT=5
 # and this would still look like a clean run by exit status alone. $client_grep/$server_grep
 # require a real minimum number ($MIN_COUNT) of protocol-level log lines on each side instead of
 # only checking that nothing crashed.
+#
+# Also appends one line to $SUMMARY per call, printed once at the very end (see this script's own
+# tail) - $label (a plain pair name, e.g. "ping_pong") plus PASS/FAIL and the two-sided counts that
+# decided it, so a run's overall pass/fail and every pair's evidence are visible without scrolling
+# back through the full logs above.
+SUMMARY=""
 run_round_trip() {
-    client_role=$1
-    client_node=$2
-    server_role=$3
-    server_node=$4
-    client_grep=$5
-    server_grep=$6
-    duration=${7:-$DURATION_S}
+    label=$1
+    client_role=$2
+    client_node=$3
+    server_role=$4
+    server_node=$5
+    client_grep=$6
+    server_grep=$7
+    duration=${8:-$DURATION_S}
 
     make ROLE=$server_role NODE_ID=$server_node all
     make ROLE=$client_role NODE_ID=$client_node all
@@ -110,6 +117,8 @@ run_round_trip() {
     # main_publisher.c: both are just infinite send/poll loops).
     if [ "$client_status" -ne 124 ] && [ "$client_status" -ne 0 ]; then
         echo "run_round_trip($client_role/$server_role): $client_role exited unexpectedly (status $client_status)"
+        SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (%s exited unexpectedly, status %s)' "$label" "$client_role" "$client_status")"
         return 1
     fi
 
@@ -119,19 +128,32 @@ run_round_trip() {
 
     if [ "$client_seen" -lt "$MIN_COUNT" ] || [ "$server_seen" -lt "$MIN_COUNT" ]; then
         echo "run_round_trip($client_role/$server_role): fewer than $MIN_COUNT real round trips observed - treating as a failure"
+        SUMMARY="$SUMMARY
+$(printf '%-10s FAIL (%s saw %s, %s saw %s)' "$label" "$server_role" "$server_seen" "$client_role" "$client_seen")"
         return 1
     fi
+    SUMMARY="$SUMMARY
+$(printf '%-10s PASS (%s saw %s, %s saw %s)' "$label" "$server_role" "$server_seen" "$client_role" "$client_seen")"
     return 0
 }
 
 status=0
-run_round_trip publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
-run_round_trip client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1
-run_round_trip ping 1 pong 2 'ping: seq=.*time=' 'pong: request seq=' "$PING_DURATION_S" || status=1
+run_round_trip uint64 publisher 1 subscriber 2 'publisher: sent data=' 'subscriber: seq=' || status=1
+run_round_trip set_bool client 1 server 2 'client: call=.*success=' 'server: request data=' || status=1
+run_round_trip ping_pong ping 1 pong 2 'ping: seq=.*time=' 'pong: request seq=' "$PING_DURATION_S" || status=1
 # [1-9]: only count intervals with real activity (an aggregated "sent 0 msgs"/"recv 0 msgs" line
 # existing proves nothing - see main_perf_client.c's report()) - unlike the other three pairs'
 # per-event lines, which only ever appear when that event genuinely happened.
-run_round_trip perf_client 1 perf_server 2 'perf_client: sent [1-9]' 'perf_server: recv [1-9]' "$PERF_DURATION_S" ||
-    status=1
+run_round_trip perf perf_client 1 perf_server 2 'perf_client: sent [1-9]' 'perf_server: recv [1-9]' \
+    "$PERF_DURATION_S" || status=1
+
+echo
+echo "=== Summary ==="
+if [ "$status" -eq 0 ]; then
+    echo "Overall: PASS"
+else
+    echo "Overall: FAIL"
+fi
+printf '%s\n' "$SUMMARY"
 
 exit $status
