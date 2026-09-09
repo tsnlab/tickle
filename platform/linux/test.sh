@@ -140,7 +140,7 @@ check_count ping.log '^seq=' || status=1
 # perf_client has already finished.
 PERF_DURATION_S=${PERF_DURATION_S:-20}
 run_pair perf_client "-d $PERF_DURATION_S" perf_server "-d $((PERF_DURATION_S + 3))" || status=1
-recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9]*\).*/\1/p')
+recv=$(grep '^RESULT:' perf_server.log | tail -1 | sed -n 's/.*recv=\([0-9,]*\).*/\1/p' | tr -d ',')
 recv=${recv:-0}
 echo "perf_server received $recv message(s) (need >= $MIN_COUNT)"
 [ "$recv" -ge "$MIN_COUNT" ] || status=1
