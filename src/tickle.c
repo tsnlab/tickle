@@ -64,7 +64,12 @@ static void rollback(struct tt_Node* node, uint32_t old_tx_tail) {
     node->tx_tail = old_tx_tail;
 }
 
-static bool flush_tx(struct tt_Node* node, uint32_t len) {
+// dest_ip == 0 means "no override, send to the node's usual broadcast address" (0.0.0.0 is
+// never a real unicast peer, so it's a safe sentinel) - the only caller that ever passes a real
+// one is process_callrequest(), unicasting a CallResponse straight back to its own requester
+// instead of broadcasting an answer the rest of the segment never asked for (see its own comment
+// on why that's safe there specifically).
+static bool flush_tx(struct tt_Node* node, uint32_t len, uint32_t dest_ip, uint16_t dest_port) {
     // Check at least 1 submessage is contained
     if (len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
         return true; // Nothing to flush
@@ -81,7 +86,9 @@ static bool flush_tx(struct tt_Node* node, uint32_t len) {
     header->version = tt_VERSION;
     header->source = node->id;
 
-    if (tt_send(node, node->tx_buffer, len) < 0) {
+    int32_t send_ret =
+        dest_ip != 0 ? tt_send_to(node, node->tx_buffer, len, dest_ip, dest_port) : tt_send(node, node->tx_buffer, len);
+    if (send_ret < 0) {
         TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
     }
@@ -92,7 +99,8 @@ static bool flush_tx(struct tt_Node* node, uint32_t len) {
     return true;
 }
 
-static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush) {
+static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
+                       uint32_t dest_ip, uint16_t dest_port) {
     // Set submessage header length
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
     size_t roundup = ROUNDUP(length) - length;
@@ -126,7 +134,7 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     // Case 1: Immediate flush when is_flush is true
     // case 2: Flush when tx_tail exceeds tt_MAX_BUFFER_LENGTH
     if (is_flush) {
-        if (!flush_tx(node, flush_len)) {
+        if (!flush_tx(node, flush_len, dest_ip, dest_port)) {
             return false;
         }
     } else {
@@ -447,8 +455,9 @@ static void resend_call_request(struct tt_Node* node, struct tt_SubmessageHeader
     }
 
     _tt_memcpy(buf, submessage_header, submessage_header->length);
-    // Flush immediately, same reasoning as the initial call in tt_Client_call().
-    if (!end_encode(node, buf, true)) {
+    // Flush immediately, same reasoning as the initial call in tt_Client_call(). Broadcast (0, 0)
+    // - the server that'll answer isn't known yet, that's what this call is discovering.
+    if (!end_encode(node, buf, true, 0, 0)) {
         TT_LOG_WARNING("Cannot flush call request retry, will retry later");
         rollback(node, old_tx_tail);
     }
@@ -546,7 +555,8 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 
     // Flush tx immediately: an RPC caller is synchronously waiting on the reply, so this can't
     // sit batched until node_flush()'s next 1ms tick like a pub/sub publish reasonably can.
-    if (!end_encode(node, submessage_header, true)) {
+    // Broadcast (0, 0) - which server will answer isn't known yet; that's what this call is for.
+    if (!end_encode(node, submessage_header, true, 0, 0)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
@@ -648,7 +658,7 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
-    if (!end_encode(node, submessage_header, false)) {
+    if (!end_encode(node, submessage_header, false, 0, 0)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
@@ -755,7 +765,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     }
     update_header->entity_count = (uint8_t)entity_count;
 
-    if (!end_encode(node, submessage_header, false)) {
+    if (!end_encode(node, submessage_header, false, 0, 0)) {
         rollback(node, old_tx_tail);
         goto done;
     }
@@ -769,8 +779,10 @@ done:
 static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
-    // flush_tx() already logs its own reason on failure, so nothing to add here.
-    flush_tx(node, node->tx_tail);
+    // flush_tx() already logs its own reason on failure, so nothing to add here. Always
+    // broadcast (0, 0) - this periodic tick only ever flushes batched pub/sub data, never a
+    // CallResponse (that always flushes immediately from process_callrequest() itself instead).
+    flush_tx(node, node->tx_tail, 0, 0);
 
     if (!tt_Node_schedule(node, time + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
@@ -1048,7 +1060,7 @@ static struct tt_SubmessageHeader* build_call_response(struct tt_Node* node, str
 }
 
 static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                                uint32_t tail) {
+                                uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_CallRequestHeader* callrequest_header =
         decode(node, buffer, &head, tail, sizeof(struct tt_CallRequestHeader));
     if (callrequest_header == NULL) {
@@ -1079,10 +1091,29 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
         return false;
     }
 
+    // Unicast the response straight back to whoever's request we just decoded, instead of
+    // broadcasting an answer the rest of the segment never asked for - the request already told
+    // us exactly where to send it (sender_ip/sender_port, straight from tt_receive()), so there's
+    // nothing left to discover the way the initial CallRequest still has to (see
+    // tt_Client_call()'s own comment on why *that* stays broadcast). Only when old_tx_tail is
+    // still at the just-reset baseline, i.e. nothing else was already sitting unflushed in
+    // tx_buffer - this node's tx_buffer is shared across every endpoint on it (a publisher and a
+    // server could in principle coexist on one node, even though nothing in this codebase's own
+    // examples does that), so unicasting a flush that happens to also carry something else's
+    // broadcast-destined content would be wrong. Falling back to broadcast in that case costs
+    // nothing here (this server's own response still reaches its caller, everyone else just also
+    // hears it, exactly like before this optimization existed) but keeps that mixed case correct.
+    uint32_t dest_ip = 0;
+    uint16_t dest_port = 0;
+    if (old_tx_tail == sizeof(struct tt_Header)) {
+        dest_ip = sender_ip;
+        dest_port = sender_port;
+    }
+
     // Flush immediately: the client on the other end is synchronously waiting on this response
     // (or already retrying because it hasn't seen one yet), so it can't sit batched until
     // node_flush()'s next 1ms tick like a pub/sub publish reasonably can.
-    if (!end_encode(node, submessage_header, true)) {
+    if (!end_encode(node, submessage_header, true, dest_ip, dest_port)) {
         rollback(node, old_tx_tail);
         return false;
     }
@@ -1148,9 +1179,13 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 }
 
 static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                               uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header) {
+                               uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
+                               uint32_t sender_ip, uint16_t sender_port) {
     // Each process_X() below already logs its own specific reason on failure, so this switch
     // doesn't log again on top of that - only the type dispatch itself gets a message here.
+    // sender_ip/sender_port (this packet's own source, from tt_receive() - see
+    // handle_receive_result()) only ever reaches process_callrequest(), which is the one case
+    // that needs to know it (see its own comment on why).
     switch (submessage_header->type) {
     case tt_SUBMESSAGE_TYPE_UPDATE:
         process_update(node, header, buffer, head, body_tail);
@@ -1162,7 +1197,7 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         TT_LOG_ERROR("Not supported submessage type: %02x", submessage_header->type);
         return false;
     case tt_SUBMESSAGE_TYPE_CALLREQUEST:
-        process_callrequest(node, header, buffer, head, body_tail);
+        process_callrequest(node, header, buffer, head, body_tail, sender_ip, sender_port);
         return true;
     case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
         process_callresponse(node, header, buffer, head, body_tail);
@@ -1194,7 +1229,8 @@ enum submessage_walk_result { SUBMSG_ERROR, SUBMSG_DONE, SUBMSG_CONTINUE };
 
 // Decodes and dispatches one submessage starting at *head, advancing *head past it.
 static enum submessage_walk_result process_one_submessage(struct tt_Node* node, struct tt_Header* header,
-                                                          uint8_t* buffer, uint32_t* head, uint32_t tail) {
+                                                          uint8_t* buffer, uint32_t* head, uint32_t tail,
+                                                          uint32_t sender_ip, uint16_t sender_port) {
     struct tt_SubmessageHeader* submessage_header =
         decode(node, buffer, head, tail, sizeof(struct tt_SubmessageHeader));
     if (submessage_header == NULL) {
@@ -1216,7 +1252,7 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
 
     const uint32_t body_tail = *head + submessage_header->length - sizeof(struct tt_SubmessageHeader);
     if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
-        !process_submessage(node, header, buffer, *head, body_tail, submessage_header)) {
+        !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port)) {
         return SUBMSG_ERROR;
     }
 
@@ -1224,7 +1260,8 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
     return SUBMSG_CONTINUE;
 }
 
-static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail) {
+static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail, uint32_t sender_ip,
+                           uint16_t sender_port) {
     struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
     if (header == NULL) {
         TT_LOG_ERROR("RX buffer underflow");
@@ -1243,7 +1280,8 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     TT_LOG_DEBUG("source: %d", header->source);
 
     while (true) {
-        enum submessage_walk_result result = process_one_submessage(node, header, buffer, &head, tail);
+        enum submessage_walk_result result =
+            process_one_submessage(node, header, buffer, &head, tail, sender_ip, sender_port);
         if (result == SUBMSG_DONE) {
             break;
         }
@@ -1278,7 +1316,7 @@ static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip
     TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                  (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
 
-    if (!process_packet(node, node->rx_buffer, 0, len)) {
+    if (!process_packet(node, node->rx_buffer, 0, len, ip, port)) {
         TT_LOG_ERROR("Cannot process packet");
         *result = tt_RET_PROTOCOL_ERROR;
         return true;

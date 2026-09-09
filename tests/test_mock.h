@@ -37,6 +37,12 @@ int32_t test_mock_receive_return = -1;
 bool test_mock_send_return_override = false;
 int32_t test_mock_send_return = 0;
 int test_mock_send_call_count = 0;
+// tt_send_to() also bumps test_mock_send_call_count above (a test checking "was a response sent"
+// shouldn't need to care which of the two actually carried it) - these track the unicast call
+// specifically, for a test that cares whether the destination was right.
+int test_mock_send_to_call_count = 0;
+uint32_t test_mock_send_to_last_ip = 0;
+uint16_t test_mock_send_to_last_port = 0;
 #else
 extern uint64_t test_mock_now;
 extern int32_t test_mock_node_id;
@@ -45,6 +51,9 @@ extern int32_t test_mock_receive_return;
 extern bool test_mock_send_return_override;
 extern int32_t test_mock_send_return;
 extern int test_mock_send_call_count;
+extern int test_mock_send_to_call_count;
+extern uint32_t test_mock_send_to_last_ip;
+extern uint16_t test_mock_send_to_last_port;
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -56,6 +65,9 @@ static inline void test_mock_reset(void) {
     test_mock_send_return_override = false;
     test_mock_send_return = 0;
     test_mock_send_call_count = 0;
+    test_mock_send_to_call_count = 0;
+    test_mock_send_to_last_ip = 0;
+    test_mock_send_to_last_port = 0;
 }
 
 #ifdef TEST_MOCK_DEFINE_STORAGE
@@ -82,6 +94,22 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
     (void)buf;
 
     test_mock_send_call_count++;
+
+    if (test_mock_send_return_override) {
+        return test_mock_send_return;
+    }
+
+    return (int32_t)len;
+}
+
+int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+    (void)node;
+    (void)buf;
+
+    test_mock_send_call_count++;
+    test_mock_send_to_call_count++;
+    test_mock_send_to_last_ip = ip;
+    test_mock_send_to_last_port = port;
 
     if (test_mock_send_return_override) {
         return test_mock_send_return;

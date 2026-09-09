@@ -79,6 +79,13 @@ int32_t tt_get_node_id(void);
 tt_ret_t tt_bind(struct tt_Node* node);
 void tt_close(struct tt_Node* node);
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len);
+// Sends buf to a specific unicast destination instead of the node's usual broadcast address -
+// used only where the destination is already known precisely (a server's CallResponse, unicast
+// straight back to the CallRequest's own source - see process_callrequest() in tickle.c) rather
+// than needing the broadcast that discovery/pub-sub still relies on. ip/port are host byte order,
+// matching tt_receive()'s own ip/port out-params (the two are meant to be used together: the ip/
+// port a packet arrived with are exactly what a reply back to it should be sent with).
+int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port);
 /**
  * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
  * @return received bytes, -1 for timeout, other negative values for I/O error

@@ -130,7 +130,7 @@ static void test_fresh_request_invokes_callback_and_sends(void) {
 
     uint32_t tail = write_callrequest(&node, 1, 0);
 
-    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail));
+    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(1, (uint32_t)callback_count);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // drained back down by the immediate flush
@@ -156,15 +156,47 @@ static void test_retry_hits_cache_without_recalling_callback(void) {
     header.source = REMOTE_NODE_ID;
 
     uint32_t tail = write_callrequest(&node, 7, 0);
-    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail));
+    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(1, (uint32_t)callback_count);
 
     // Same seq_no again, as a client retrying before seeing the first response would send.
     tail = write_callrequest(&node, 7, 1);
-    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail));
+    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
 
     EXPECT_EQ_U32(1, (uint32_t)callback_count);            // NOT called again - served from cache
     EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count); // but still resent
+}
+
+// A fresh request's response must be unicast straight back to the request's own source, not
+// broadcast to the rest of the segment that never asked - see process_callrequest()'s own
+// comment on why that's safe whenever tx_buffer was empty before this response (init_node_
+// service_server() sets tx_tail to exactly that baseline, same as a real freshly-flushed node).
+static void test_fresh_request_response_is_unicast_to_sender(void) {
+    test_mock_reset();
+    callback_count = 0;
+    stub_return_code = 0;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Server server;
+    init_node_service_server(&node, &service, &server);
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+
+    uint32_t tail = write_callrequest(&node, 1, 0);
+    uint32_t sender_ip = 0xc0a80a02; // 192.168.10.2
+    uint16_t sender_port = 8282;
+
+    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
+    EXPECT_EQ_U32(1, (uint32_t)callback_count);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // unicast, not tt_send()'s broadcast
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);    // and only once, not also broadcast
+    EXPECT_EQ_U32(sender_ip, test_mock_send_to_last_ip);
+    EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)test_mock_send_to_last_port);
 }
 
 // An endpoint_id nobody registered (e.g. meant for a different node sharing the broadcast
@@ -190,7 +222,7 @@ static void test_unknown_endpoint_is_ignored(void) {
     callrequest_header->retry = 0;
     uint32_t tail = sizeof(struct tt_CallRequestHeader);
 
-    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail));
+    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(0, (uint32_t)callback_count);
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count);
 }
@@ -198,6 +230,7 @@ static void test_unknown_endpoint_is_ignored(void) {
 int main(void) {
     test_fresh_request_invokes_callback_and_sends();
     test_retry_hits_cache_without_recalling_callback();
+    test_fresh_request_response_is_unicast_to_sender();
     test_unknown_endpoint_is_ignored();
 
     if (test_result() != 0) {

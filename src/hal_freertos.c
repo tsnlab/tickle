@@ -121,6 +121,17 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
                            sizeof(struct sockaddr_in));
 }
 
+int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(ip);
+    addr.sin_port = htons(port);
+    addr.sin_len = sizeof(addr);
+
+    return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+}
+
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // Same "0 for no timeout" (block until data arrives) contract fix as hal_linux.c's poll()
     // rewrite, using lwIP's select() (LWIP_COMPAT_SOCKETS aliases it the same as the real thing)

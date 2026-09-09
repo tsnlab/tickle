@@ -66,7 +66,7 @@ static void test_rejects_truncated_header(void) {
     uint8_t buf[sizeof(struct tt_Header) - 1];
     memset(buf, 0xff, sizeof(buf));
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf)));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
 }
 
 // Neither the native nor byte-swapped magic value - not this protocol at all (random noise, or
@@ -78,7 +78,7 @@ static void test_rejects_bad_magic(void) {
     uint8_t buf[sizeof(struct tt_Header)];
     write_header(buf, 0xdead, tt_VERSION, REMOTE_NODE_ID);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf)));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
 }
 
 // A peer speaking an older wire version than we understand must be rejected, not misparsed as
@@ -90,7 +90,7 @@ static void test_rejects_old_version(void) {
     uint8_t buf[sizeof(struct tt_Header)];
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION - 1, REMOTE_NODE_ID);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf)));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
 }
 
 // A node hears its own broadcast back (normal on a shared broadcast domain) and must ignore it
@@ -102,7 +102,7 @@ static void test_ignores_self_sent_packet(void) {
     uint8_t buf[sizeof(struct tt_Header)];
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION, LOCAL_NODE_ID);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, sizeof(buf)));
+    EXPECT_TRUE(process_packet(&node, buf, 0, sizeof(buf), 0, 0));
 }
 
 // A submessage claiming a length shorter than its own header can't be real - reject before the
@@ -117,7 +117,7 @@ static void test_rejects_submessage_length_too_small(void) {
     uint32_t tail = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL,
                                              sizeof(struct tt_SubmessageHeader) - 1);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
 }
 
 // A submessage claiming to be far longer than the bytes actually available must be rejected,
@@ -133,7 +133,7 @@ static void test_rejects_submessage_length_exceeds_buffer(void) {
     // but the submessage claims to be 0xffff bytes long.
     uint32_t tail = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, 0xffff);
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
 }
 
 // A type value outside the known set entirely (not even a recognized-but-unimplemented one).
@@ -146,7 +146,7 @@ static void test_rejects_unknown_submessage_type(void) {
     uint32_t offset = sizeof(struct tt_Header);
     uint32_t tail = append_submessage_header(buf, offset, 99, tt_SUBMESSAGE_ID_ALL, sizeof(struct tt_SubmessageHeader));
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
 }
 
 // ACKNACK is a recognized type value with no implementation behind it - process_submessage()
@@ -161,7 +161,7 @@ static void test_rejects_acknack_as_unsupported(void) {
     uint32_t tail = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_ACKNACK, tt_SUBMESSAGE_ID_ALL,
                                              sizeof(struct tt_SubmessageHeader));
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail));
+    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
 }
 
 // Sanity check in the other direction: two well-formed DATA submessages back to back in one
@@ -185,7 +185,7 @@ static void test_accepts_two_valid_data_submessages(void) {
     offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, submessage_length);
     offset = append_data_header(buf, offset, 0x2222, 2);
 
-    EXPECT_TRUE(process_packet(&node, buf, 0, offset));
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
 }
 
 int main(void) {
