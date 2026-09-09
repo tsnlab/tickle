@@ -53,12 +53,14 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
 
     char sent_buf[TT_GROUPED_BUF_LEN];
     char buffer_full_buf[TT_GROUPED_BUF_LEN];
+    char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
+    char mbps_buf[TT_GROUPED_F3_BUF_LEN];
     const double bytes_per_mb = 1e6;
     double megabytes = (double)interval_sent_bytes / bytes_per_mb;
     double mbps = ((double)interval_sent_bytes * 8) / bytes_per_mb;
-    printf("perf_client: sent %s msgs, %.3f MB, %.3f Mbps this interval (%s buffer-full so far)\n",
-           tt_format_grouped(interval_sent_msgs, sent_buf), megabytes, mbps,
-           tt_format_grouped(total_buffer_full, buffer_full_buf));
+    printf("perf_client: sent %s msgs, %s MB, %s Mbps this interval (%s buffer-full so far)\n",
+           tt_format_grouped(interval_sent_msgs, sent_buf), tt_format_grouped_f3(megabytes, megabytes_buf),
+           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
 
     interval_sent_msgs = 0;
     interval_sent_bytes = 0;

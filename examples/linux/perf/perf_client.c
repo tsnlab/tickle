@@ -62,12 +62,14 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
 
     char sent_buf[TT_GROUPED_BUF_LEN];
     char buffer_full_buf[TT_GROUPED_BUF_LEN];
+    char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
+    char mbps_buf[TT_GROUPED_F3_BUF_LEN];
     const double bytes_per_mb = 1e6;
     double megabytes = (double)interval_sent_bytes / bytes_per_mb;
     double mbps = ((double)interval_sent_bytes * 8) / bytes_per_mb;
-    printf("sent %s msgs, %.3f MB, %.3f Mbps this interval (%s buffer-full so far)\n",
-           tt_format_grouped(interval_sent_msgs, sent_buf), megabytes, mbps,
-           tt_format_grouped(total_buffer_full, buffer_full_buf));
+    printf("sent %s msgs, %s MB, %s Mbps this interval (%s buffer-full so far)\n",
+           tt_format_grouped(interval_sent_msgs, sent_buf), tt_format_grouped_f3(megabytes, megabytes_buf),
+           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
 
     interval_sent_msgs = 0;
     interval_sent_bytes = 0;
@@ -82,17 +84,19 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
 static void print_summary(uint64_t start_time) {
     char sent_buf[TT_GROUPED_BUF_LEN];
     char buffer_full_buf[TT_GROUPED_BUF_LEN];
+    char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
+    char avg_mbps_buf[TT_GROUPED_F3_BUF_LEN];
     const double bytes_per_mb = 1e6;
     double elapsed_s = (double)(tt_get_ns() - start_time) / (double)tt_SECOND;
     double megabytes = (double)total_sent_bytes / bytes_per_mb;
     double avg_mbps = elapsed_s > 0.0 ? ((double)total_sent_bytes * 8) / bytes_per_mb / elapsed_s : 0.0;
 
     printf("\n--- bulk_topic send statistics ---\n");
-    printf("%s messages sent, %.3f MB, %.3f sec, avg %.3f Mbps, %s times tx buffer was full\n",
-           tt_format_grouped(total_sent_msgs, sent_buf), megabytes, elapsed_s, avg_mbps,
-           tt_format_grouped(total_buffer_full, buffer_full_buf));
-    printf("RESULT: sent=%s avg_mbps=%.3f buffer_full=%s\n", tt_format_grouped(total_sent_msgs, sent_buf), avg_mbps,
-           tt_format_grouped(total_buffer_full, buffer_full_buf));
+    printf("%s messages sent, %s MB, %.3f sec, avg %s Mbps, %s times tx buffer was full\n",
+           tt_format_grouped(total_sent_msgs, sent_buf), tt_format_grouped_f3(megabytes, megabytes_buf), elapsed_s,
+           tt_format_grouped_f3(avg_mbps, avg_mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
+    printf("RESULT: sent=%s avg_mbps=%s buffer_full=%s\n", tt_format_grouped(total_sent_msgs, sent_buf),
+           tt_format_grouped_f3(avg_mbps, avg_mbps_buf), tt_format_grouped(total_buffer_full, buffer_full_buf));
 }
 
 static void print_usage(const char* prog) {

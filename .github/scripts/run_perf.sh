@@ -117,8 +117,11 @@ write_benchmark_json() {
     rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
     rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
     loss_pct=$(grep -oP '\d+(?=% packet loss)' "$LOG_DIR/latency_client.log")
-    send_mbps=$(grep -oP 'avg \K[\d.]+(?= Mbps)' "$LOG_DIR/throughput_client.log")
-    recv_mbps=$(grep -oP 'avg \K[\d.]+(?= Mbps)' "$LOG_DIR/throughput_server.log")
+    # perf_client.c/perf_server.c's "avg X Mbps" is comma-grouped past 999 (e.g. "avg 2,037.577
+    # Mbps") - [\d,.]+ captures that, and tr strips the commas back out since a bare comma inside a
+    # JSON number below would make it invalid JSON, not just a formatting choice.
+    send_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_client.log" | tr -d ',')
+    recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_server.log" | tr -d ',')
 
     cat > latency-benchmark.json <<EOF
 [

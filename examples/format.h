@@ -50,3 +50,43 @@ static inline char* tt_format_grouped(uint64_t num, char buf[TT_GROUPED_BUF_LEN]
 
     return buf;
 }
+
+// '.' plus 3 fractional digits on top of tt_format_grouped()'s own bound.
+#define TT_GROUPED_F3_BUF_LEN (TT_GROUPED_BUF_LEN + 4)
+
+// Like tt_format_grouped(), but for a non-negative value formatted to exactly 3 decimal digits
+// (e.g. 1234567.891 -> "1,234,567.891") - the MB/Mbps figures in the perf examples, which can run
+// well past 999 at full throughput. Splits into integer and fractional parts and formats each
+// manually rather than deferring to printf's own grouping flag, for the same portability reason
+// tt_format_grouped() itself exists (see this file's own top comment) - and because "%'f" isn't a
+// thing even where glibc's "%'d" is. value must be non-negative (every call site here is a
+// count/rate); buf must be at least TT_GROUPED_F3_BUF_LEN bytes.
+static inline char* tt_format_grouped_f3(double value, char buf[TT_GROUPED_F3_BUF_LEN]) {
+    char int_buf[TT_GROUPED_BUF_LEN];
+
+    // Round to the nearest thousandth up front (not truncate-then-round-fraction separately) so
+    // the integer and fractional parts printed always agree with each other, e.g. 0.9999 becomes
+    // "1.000" rather than the integer part truncating to "0" while the fraction rounds to "1000".
+    const double thousandths_per_unit = 1000.0;
+    const double round_half_up = 0.5;
+    uint64_t total_thousandths = (uint64_t)((value * thousandths_per_unit) + round_half_up);
+    uint64_t integer_part = total_thousandths / (uint64_t)thousandths_per_unit;
+    uint64_t frac_part = total_thousandths % (uint64_t)thousandths_per_unit;
+
+    tt_format_grouped(integer_part, int_buf);
+
+    int pos = 0;
+    for (; int_buf[pos] != '\0'; pos++) {
+        buf[pos] = int_buf[pos];
+    }
+
+    const uint64_t hundreds_place = 100;
+    const uint64_t tens_place = 10;
+    buf[pos++] = '.';
+    buf[pos++] = (char)('0' + (frac_part / hundreds_place));
+    buf[pos++] = (char)('0' + ((frac_part / tens_place) % tens_place));
+    buf[pos++] = (char)('0' + (frac_part % tens_place));
+    buf[pos] = '\0';
+
+    return buf;
+}

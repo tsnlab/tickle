@@ -59,12 +59,14 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
 
     char recv_buf[TT_GROUPED_BUF_LEN];
     char dropped_buf[TT_GROUPED_BUF_LEN];
+    char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
+    char mbps_buf[TT_GROUPED_F3_BUF_LEN];
     const double bytes_per_mb = 1e6;
     double megabytes = (double)interval_received_bytes / bytes_per_mb;
     double mbps = ((double)interval_received_bytes * 8) / bytes_per_mb;
-    printf("perf_server: recv %s msgs, %.3f MB, %.3f Mbps this interval (%s dropped so far)\n",
-           tt_format_grouped(interval_received_msgs, recv_buf), megabytes, mbps,
-           tt_format_grouped(total_dropped, dropped_buf));
+    printf("perf_server: recv %s msgs, %s MB, %s Mbps this interval (%s dropped so far)\n",
+           tt_format_grouped(interval_received_msgs, recv_buf), tt_format_grouped_f3(megabytes, megabytes_buf),
+           tt_format_grouped_f3(mbps, mbps_buf), tt_format_grouped(total_dropped, dropped_buf));
 
     interval_received_msgs = 0;
     interval_received_bytes = 0;
