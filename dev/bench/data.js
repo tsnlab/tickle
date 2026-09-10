@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789031869209,
+  "lastUpdate": 1789034809082,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -686,6 +686,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.014,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "9f300060a1fd96f0086f0d8895d7771f575511c3",
+          "message": "Fix FreeRTOS RX-drain hang: gate tt_try_receive() on a zero-timeout select()\n\nopt1 (21a640a) added drain_rx(), which calls tt_try_receive() repeatedly\nuntil it reports nothing left. On Linux that's a recvfrom(MSG_DONTWAIT)\nper call and works. On lwIP, MSG_DONTWAIT is not honored per-call without\nO_NONBLOCK on the socket, so the recvfrom() after the last datagram blocks\nforever - tt_Node_poll() never returns and the scheduler stops running.\nStandalone repro: the FreeRTOS publisher sent \"data=0\" once and went\nsilent instead of every 500ms.\n\nMirror tt_receive()'s existing lwIP pattern in this file (select() as the\nreadiness primitive, since lwIP has no poll()) but with a {0,0} timeout:\nonly recvfrom() when the socket is readable, otherwise return -1\nimmediately. make test-freertos now passes all four scenarios.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T19:05:39+09:00",
+          "tree_id": "8bb3e59937a6e05e57b4db6ed1876a4a584f10bd",
+          "url": "https://github.com/tsnlab/tickle/commit/9f300060a1fd96f0086f0d8895d7771f575511c3"
+        },
+        "date": 1789034808113,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
             "unit": "ms"
           },
           {
