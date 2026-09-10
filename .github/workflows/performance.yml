@@ -51,3 +51,40 @@ jobs:
           summary-always: true
           fail-on-alert: true
           alert-threshold: "200%"
+
+      # run_perf.sh writes perf-frag.json (Raspberry Pi build/test outcome + the measured
+      # numbers) even when it aborts early; hand it to the publish job below.
+      - name: Upload dashboard fragment
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-frag
+          path: perf-frag.json
+          if-no-files-found: warn
+
+  # Folding the perf numbers into the shared status table is done on a hosted runner (python3 +
+  # a clean git checkout, no dependence on whatever the self-hosted box has), not on tickle-hil.
+  publish:
+    needs: test
+    # Runs whether `test` passed or failed (so a broken HIL run still lands as a red row), but
+    # not when the whole run was cancelled - e.g. superseded by a newer push (concurrency above).
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download dashboard fragment
+        uses: actions/download-artifact@v4
+        with:
+          name: perf-frag
+
+      - name: Publish dashboard (perf section)
+        # A flaky gh-pages push shouldn't turn "Performance Test" red - the `test` job is the signal.
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: .github/scripts/publish_dashboard.sh perf perf-frag.json

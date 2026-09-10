@@ -25,6 +25,50 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
 
+# Fragment the "Performance Test" workflow hands to .github/scripts/publish_dashboard.sh for the
+# Raspberry Pi row of https://tsnlab.github.io/tickle/dev/bench/. Seed it as a failure now and
+# rewrite it once results exist, so an early abort (build failure, SSH timeout) still leaves the
+# dashboard an honest red.
+FRAG="${DASHBOARD_FRAGMENT:-perf-frag.json}"
+printf '{"build":"fail","integration":"fail"}\n' > "$FRAG"
+
+write_dashboard_fragment() {
+    local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps integ smsg_rate smsg_recv smsg_dur
+
+    rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
+    rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
+    loss_pct=$(grep -oP '\d+(?=% packet loss)' "$LOG_DIR/latency_client.log" || true)
+    send_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_client.log" | tr -d ',' || true)
+    recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_server.log" | tr -d ',' || true)
+    smsg_recv=$(grep -oP 'recv=\K[\d,]+' "$LOG_DIR/smallmsg_server.log" | tail -1 | tr -d ',' || true)
+    smsg_dur=$(grep -oP '[\d.]+(?= sec, avg)' "$LOG_DIR/smallmsg_server.log" | tail -1 || true)
+
+    # A round trip happened at all (ping got replies, throughput parsed) => integration pass.
+    integ=fail
+    if [ -n "${loss_pct:-}" ] && [ "${loss_pct}" -lt 100 ] && [ -n "${send_mbps:-}" ]; then
+        integ=pass
+    fi
+    smsg_rate=null
+    if [ -n "${smsg_recv:-}" ] && [ -n "${smsg_dur:-}" ]; then
+        smsg_rate=$(awk "BEGIN{printf \"%.0f\", $smsg_recv/$smsg_dur}")
+    fi
+
+    cat > "$FRAG" <<EOF
+{
+  "build": "pass",
+  "integration": "$integ",
+  "commit_short": "$(git rev-parse --short HEAD)",
+  "run_url": "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-tsnlab/tickle}/actions/runs/${GITHUB_RUN_ID:-0}",
+  "throughput_send_mbps": ${send_mbps:-null},
+  "throughput_recv_mbps": ${recv_mbps:-null},
+  "rtt_avg_ms": ${rtt_avg:-null},
+  "rtt_mdev_ms": ${rtt_mdev:-null},
+  "loss_pct": ${loss_pct:-null},
+  "smallmsg_rate_msgs_s": ${smsg_rate}
+}
+EOF
+}
+
 SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
 
 ssh_run() {
@@ -180,3 +224,4 @@ run_paired_test "smallmsg" "perf_server" "perf_client" "-s $SMALL_MSG_SIZE -d $P
 
 summarize
 write_benchmark_json
+write_dashboard_fragment

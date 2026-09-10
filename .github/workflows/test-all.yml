@@ -11,7 +11,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20 # explicit per-tier build+test steps + dashboard publish
+    permissions:
+      contents: write # the "Publish dashboard" step below pushes to gh-pages (main only)
 
     steps:
       - name: Checkout
@@ -27,14 +29,38 @@ jobs:
             gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf \
             qemu-system-misc
 
-      - name: Lint (platform/freertos)
+      # Each platform's compile + test tiers run as their own step so the dashboard can show
+      # exactly which one broke. continue-on-error keeps every tier attempted (and recorded)
+      # even after an earlier one fails; the "Gate" step at the end still fails the job.
+      - name: Build - Linux x86-64
+        id: build_linux
+        continue-on-error: true
+        run: make all
+
+      - name: Build - FreeRTOS RISC-V
+        id: build_freertos
+        continue-on-error: true
+        run: make -C platform/freertos all
+
+      - name: Lint - FreeRTOS
+        id: lint_freertos
+        continue-on-error: true
         run: make -C platform/freertos lint
 
-      # Every self-contained test tier (unit tests, a real Linux-HAL round trip over network
-      # namespaces, a real FreeRTOS-HAL round trip over emulated virtio-net) behind the one
-      # command `make test-all` also runs locally - see the top-level Makefile.
-      - name: make test-all
-        run: make test-all
+      - name: Unit tests (mock HAL)
+        id: unit
+        continue-on-error: true
+        run: make test
+
+      - name: Integration - Linux HAL over netns
+        id: itest_linux
+        continue-on-error: true
+        run: make test-linux
+
+      - name: Integration - FreeRTOS HAL over QEMU virtio-net
+        id: itest_freertos
+        continue-on-error: true
+        run: make test-freertos
 
       - name: Upload logs
         if: always()
@@ -45,3 +71,51 @@ jobs:
             platform/linux/*.log
             platform/freertos/*.log
           if-no-files-found: ignore
+
+      - name: Publish dashboard (build/test section)
+        # Only a push to main updates the shared status page; PRs still run every tier above.
+        # continue-on-error: a flaky gh-pages push must not turn the test signal red - "Gate" does that.
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          map() { case "$1" in success) echo pass;; failure) echo fail;; *) echo skipped;; esac; }
+          cat > buildtest-frag.json <<EOF
+          {
+            "commit": "${GITHUB_SHA}",
+            "commit_short": "${GITHUB_SHA:0:7}",
+            "branch": "${GITHUB_REF_NAME}",
+            "run_url": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+            "rows": {
+              "linux": {
+                "build": "$(map '${{ steps.build_linux.outcome }}')",
+                "unit": "$(map '${{ steps.unit.outcome }}')",
+                "integration": "$(map '${{ steps.itest_linux.outcome }}')"
+              },
+              "freertos": {
+                "build": "$(map '${{ steps.build_freertos.outcome }}')",
+                "unit": "n/a",
+                "integration": "$(map '${{ steps.itest_freertos.outcome }}')"
+              }
+            }
+          }
+          EOF
+          .github/scripts/publish_dashboard.sh buildtest buildtest-frag.json
+
+      - name: Gate - fail the job if any tier failed
+        if: always()
+        run: |
+          fail=0
+          for s in \
+            'Build Linux=${{ steps.build_linux.outcome }}' \
+            'Build FreeRTOS=${{ steps.build_freertos.outcome }}' \
+            'Lint FreeRTOS=${{ steps.lint_freertos.outcome }}' \
+            'Unit tests=${{ steps.unit.outcome }}' \
+            'Integration Linux=${{ steps.itest_linux.outcome }}' \
+            'Integration FreeRTOS=${{ steps.itest_freertos.outcome }}'; do
+            name="${s%%=*}"; outcome="${s#*=}"
+            printf '%-22s %s\n' "$name" "$outcome"
+            if [ "$outcome" = failure ]; then fail=1; fi
+          done
+          exit $fail

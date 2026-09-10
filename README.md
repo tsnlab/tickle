@@ -267,6 +267,22 @@ paced accurately since it's comfortably larger than that ceiling.
 
 ## Continuous performance testing
 
+**<https://tsnlab.github.io/tickle/dev/bench/>** carries a single per-platform status table -
+did it compile, did each test tier pass, and (for the hardware-in-the-loop row) the latest
+measured throughput / latency / small-message rate - refreshed on every push to `main`:
+
+| Platform | Build | Unit tests | Integration test | Throughput | Latency RTT | Small-msg rate |
+|---|---|---|---|---|---|---|
+| Linux x86-64 | ✅ | ✅ | ✅ (HAL over network namespaces) | – | – | – |
+| FreeRTOS RISC-V (QEMU) | ✅ | – | ✅ (HAL over emulated virtio-net) | – | – | – |
+| Raspberry Pi (HIL, arm64) | ✅ | – | ✅ (ping/pong over real Ethernet) | measured | measured | measured |
+
+The Linux / FreeRTOS rows come from [`test-all.yml`](.github/workflows/test-all.yml) (each tier
+is its own step now, so the table can pinpoint which broke); the Raspberry Pi row and all the
+numbers come from [`performance.yml`](.github/workflows/performance.yml). Both feed
+[`.github/scripts/publish_dashboard.sh`](.github/scripts/publish_dashboard.sh), which folds its
+section into `dev/bench/status.json` and re-renders the table above the benchmark charts.
+
 Every push to `main` runs a hardware-in-the-loop latency and throughput test on two real
 Raspberry Pi boards connected by an Ethernet link (`rpi#1` as client/sender, `rpi#2` as
 server/receiver), via a self-hosted GitHub Actions runner:
@@ -279,7 +295,7 @@ server/receiver), via a self-hosted GitHub Actions runner:
   `perf_client`/`perf_server` for throughput (using the `-c`/`-d` flags above so a run can never
   hang waiting on a peer), and writes the results to the job summary
 
-Results are tracked over time and charted at **<https://tsnlab.github.io/tickle/dev/bench/>**;
+Results are tracked over time and charted at the same page (below the status table);
 the workflow fails if latency more than doubles, or throughput drops to less than half, versus
 the last recorded run (`alert-threshold: "200%"` on each `github-action-benchmark` step).
 
