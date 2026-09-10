@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789023486474,
+  "lastUpdate": 1789023489645,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -834,6 +834,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 896.672,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "committer": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "id": "1329b73d353f3ebf1543a4ade4a0a58db468f91e",
+          "message": "Merge branch 'main' into perf-experiments",
+          "timestamp": "2026-09-10T06:56:13Z",
+          "url": "https://github.com/tsnlab/tickle/commit/1329b73d353f3ebf1543a4ade4a0a58db468f91e"
+        },
+        "date": 1789023488617,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 936.314,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 887.887,
             "unit": "Mbps"
           }
         ]
