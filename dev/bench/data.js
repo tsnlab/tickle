@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789015134636,
+  "lastUpdate": 1789015642945,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -344,6 +344,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "dd0e9e9051e86cc69d544b45e6392a7b92e91b9c",
+          "message": "Don't let perf_client's -i 0 loop block in poll() between sends\n\nperf_client's \"as fast as poll() allows\" loop was publish() then\ntt_Node_poll(&node, -1), which resolves to a 100us tt_RECEIVE_TIMEOUT\nreceive wait. That wait is invisible while broadcasting - the node loops\nits own packets back, so poll() returns immediately - but once the\nPublisher unicasts to its lone discovered Subscriber it gets nothing back,\nturning the 100us into a hard per-iteration floor: ~40x slower on the HIL\nPis (883 -> 21 Mbps), lossless either way, purely a send-rate effect.\n\nIn the -i 0 path it now asks for a minimal non-blocking poll (1ns, since\ntt_Node_poll treats 0 as \"do nothing\"): run due scheduler work plus one\nreceive drain, then straight back to publishing. Rate-limited runs\n(-i > 0) keep -1 - they're idle between sends anyway.\n\nDESIGN.md's discovery/unicast section gets the matching note: a high-rate\nPublisher must not block in poll() between sends, and Publisher-side\nunicast is for cutting broadcast traffic on low-subscriber topics, not a\nthroughput optimization.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T13:46:46+09:00",
+          "tree_id": "beb4f7f40cefbfd447a3baeae7da59f6ad7087e8",
+          "url": "https://github.com/tsnlab/tickle/commit/dd0e9e9051e86cc69d544b45e6392a7b92e91b9c"
+        },
+        "date": 1789015641842,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
             "unit": "%"
           }
         ]
