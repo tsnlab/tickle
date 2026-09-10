@@ -91,3 +91,9 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
  * @return received bytes, -1 for timeout, other negative values for I/O error
  */
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout);
+
+// Non-blocking single receive: pulls one datagram if one is already waiting, without any poll()
+// wait. tt_Node_poll() uses this to drain whatever else the kernel has buffered after tt_receive()
+// hands it the first packet, so a saturated receiver pays one poll() per drain rather than one
+// per packet. Returns received bytes, -1 if nothing is waiting, other negatives for I/O error.
+int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port);
