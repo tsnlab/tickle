@@ -16,9 +16,18 @@
 #define tt_MILLISECOND 1000000ULL
 #define tt_MICROSECOND 1000ULL
 
-#define tt_NODE_CYCLE tt_MILLISECOND                   // nanosecond
-#define tt_NODE_UPDATE_INTERVAL (10 * tt_SECOND)       // nanosecond  TODO: Temporary value for debugging
-#define tt_NODE_TX_INTERVAL tt_MILLISECOND             // nanosecond
+#define tt_NODE_CYCLE tt_MILLISECOND // nanosecond
+// How often a node re-broadcasts its endpoint list (discovery announce). The first announce goes
+// out ~tt_NODE_CYCLE after tt_Node_create(), and a node that hears a peer's announce for the
+// first time replies with its own straight away (see reply_with_own_announce() in tickle.c), so
+// mutual discovery is effectively immediate on a healthy link - this interval is the recovery
+// cadence for an announce lost to packet loss, or for a node that was already up when this one
+// started. 1s keeps that recovery quick while costing one small packet per node per second.
+#define tt_NODE_UPDATE_INTERVAL (1 * tt_SECOND) // nanosecond
+#define tt_NODE_TX_INTERVAL tt_MILLISECOND      // nanosecond
+// Reserved for a future reliable-QoS (ACKNACK) release - not read anywhere in this one; a
+// Topic's history_depth/deadline_duration/lifespan_duration (tickle.h) are reserved for the
+// same reason. Best-effort delivery is all this release does.
 #define tt_RELIABLE_DEADLINE 0                         // nanosecond, 0 is auto
 #define tt_RELIABLE_RETRY 3                            // count
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value

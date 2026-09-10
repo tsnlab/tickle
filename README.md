@@ -75,6 +75,25 @@ so switching between them doesn't need a `make clean` in between:
 $ make all BUILD_TYPE=release
 ```
 
+### Integrating the library
+
+`make library` produces `platform/linux/libtickle.a`; link that and add `include/` to your
+include path. There is no `make install` yet - vendor the tree, or copy `libtickle.a` +
+`include/tickle/` into your project.
+
+- **The public headers need C11** (`-std=c11` or newer - they use an anonymous union in
+  `tt_Header`). They are otherwise `-pedantic`-clean.
+- **The library never allocates or copies on your behalf.** Every struct you hand a
+  `tt_Node_create*` call (the node, the client/server/publisher/subscriber, its service/topic)
+  and every string (`endpoint_name`, `service->name`, `topic->name`) must outlive the endpoint -
+  string literals are fine, a freed buffer is not.
+- **One `tt_Node` is single-threaded**: drive all of its calls from one thread (see
+  [DESIGN.md](DESIGN.md), "Concurrency").
+- Delivery is **best-effort** in this release. `tt_Topic`'s `history_depth` /
+  `deadline_duration` / `lifespan_duration` and the `tt_RELIABLE_*` knobs in
+  [`config.h`](include/tickle/config.h) are reserved for a later reliable-QoS release and are
+  ignored for now.
+
 ## Tests
 
 ```sh
