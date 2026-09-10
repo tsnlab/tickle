@@ -351,6 +351,22 @@ destination `ip`/`port` a send was made with (`test_process_callrequest.c`,
 cases) are what actually cover correctness here; a real second host or `platform/linux/netns.mk`'s
 veth-pair setup (real distinct IPs, needs root) would be the way to check it end-to-end.
 
+The real-hardware (two Raspberry Pis) run then surfaced a third thing, this one about send-loop
+shape rather than correctness: a Publisher that publishes in a tight `publish(); tt_Node_poll();`
+loop with no rate limit (`perf_client.c`'s `-i 0` default, and the natural idiom generally) was
+implicitly getting its speed from *self-receive*. Broadcasting, the node loops its own packets
+straight back, so the `poll()` between sends returns immediately every time; unicasting to a lone
+discovered Subscriber, nothing comes back, so that `poll()` sits on its full
+`tt_RECEIVE_TIMEOUT` (100us) default wait and the send rate drops ~40x (measured: 883 -> 21 Mbps
+on the Pis; delivery stayed lossless either way - purely a send-rate effect). This isn't a
+library bug and RPC/`tt_Client_call()` isn't affected (its latency actually improved slightly on
+the same run), but it means **a high-rate Publisher must not block in `poll()` between sends** -
+`perf_client.c` now asks for a minimal non-blocking poll (`tt_Node_poll(&node, 1)`) in its `-i 0`
+path, and a real high-throughput publisher should do the same rather than relying on the default
+wait. The Publisher-side unicast decision is worth keeping for what it's for (cutting broadcast
+traffic when a topic has one or two subscribers) but is not a throughput optimization, and for a
+saturating stream broadcast is still the faster choice.
+
 ## Fixed-size caches, not `malloc`/`free`
 
 Both `tt_Client.cache` (the one outstanding call) and `tt_Server.cache[]` (up to
