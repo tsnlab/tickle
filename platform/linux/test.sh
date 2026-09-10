@@ -13,18 +13,22 @@
 # unmodified (not a purpose-built harness like examples/freertos/'s main_*.c) - real user-facing
 # code, exercised the same way running it by hand would.
 #
-# Runs both sides as plain processes in the current network namespace, broadcasting over loopback
-# (127.255.255.255) rather than the real veth-pair-between-two-namespaces setup platform/linux/
-# netns.mk's createns/runX targets still offer for manual, closer-to-real-network testing. That
-# needs root (creating a namespace/veth is CAP_NET_ADMIN); this doesn't need any privilege at all
-# - broadcasting to a directed local address is a plain, unprivileged SO_BROADCAST send, the same
-# one Linux already accepts on any real interface. The other half of the old setup - each side
-# auto-detecting a distinct node ID from its own namespace's own IP - has no unprivileged
-# replacement, since both sides now share the same loopback interface and would otherwise
-# auto-detect the *same* ID and start silently dropping each other's packets as "self sent" (see
-# process_packet() in tickle.c). -I gives each side an explicit, distinct ID instead (see
-# _tt_CONFIG.node_id's own comment in config.h) - the only thing this setup relies on that a
-# real separate-host/namespace deployment gets automatically from having a real distinct IP.
+# Runs the two sides in two real network namespaces joined by a veth pair, each with its own
+# distinct address (ns1 = 192.168.10.1, ns2 = 192.168.10.2). This needs root (creating a
+# namespace/veth is CAP_NET_ADMIN, and entering one via `ip netns exec` needs it too) - the quick
+# inner loop that doesn't is `make test` (unit tests, mock HAL). An earlier version of this script
+# put both sides in one shared network namespace over loopback to avoid that, distinguished only
+# by an -I node-id override - but a kernel delivers a *unicast* packet aimed at one wildcard-bound
+# socket to whichever such socket bound last, not by any real address distinction, so that setup
+# silently could not validate any of the unicast paths (a server's CallResponse, a Publisher/
+# Client that has discovered a peer - see tt_UNICAST_PEER_THRESHOLD, the reactive discovery reply
+# in process_update()). Two genuinely distinct addresses have no such ambiguity, and node IDs come
+# from tt_get_node_id()'s normal auto-detection (last octet of the address on the broadcast
+# subnet) rather than an override, so that path gets exercised for real too.
+#
+# platform/linux/netns.mk still has manual createns/deletens/runX targets for poking at a single
+# process inside a namespace interactively; this script manages its own namespaces (torn down on
+# exit, set up fresh each run) and doesn't depend on those.
 #
 # Every TickLE example doubles as a functional/performance test of the library itself (see
 # README's "Run examples"), so this runs all four pairs, in order:
@@ -47,16 +51,67 @@ set -u
 cd "$(dirname "$0")"
 
 MIN_COUNT=5
-BROADCAST=127.255.255.255
+BROADCAST=192.168.10.255
+NS1=tickle-ns1
+NS2=tickle-ns2
+VETH1=tickle-veth1
+VETH2=tickle-veth2
+NS1_ADDR=192.168.10.1
+NS2_ADDR=192.168.10.2
+PREFIX=24
 
-# Launches $receiver (background, bounded via $receiver_args - typically -d 15, a generous cap)
-# then $sender (foreground, bounded via $sender_args), waits for both, and dumps their logs.
-# Doesn't judge pass/fail itself - each call site below does that afterward with check_count/
-# check_pass, however fits that pair. stdin redirected from /dev/null on both: neither binary
-# reads it, but leaving a backgrounded process attached to the invoking terminal's stdin is a
-# latent SIGTTIN/job-control hazard (see platform/freertos/test.sh's own fix for the concrete
-# failure mode this avoids) - cheap to rule out here too. $sender is always node id 1, $receiver
-# always node id 2 (see this file's own header comment on why an explicit id is needed here).
+# Probe the exact privilege this needs (sudo + ip), not a blanket `sudo -n true` - a scoped
+# `NOPASSWD: /usr/sbin/ip` sudoers rule (which is all this wants) passes the former and not the
+# latter.
+if ! sudo -n ip netns list >/dev/null 2>&1; then
+    if [ -t 0 ]; then
+        echo "test-linux runs its two nodes in network namespaces and needs sudo - it will prompt."
+    else
+        echo "ERROR: test-linux needs passwordless sudo for 'ip' (it sets up network namespaces)." >&2
+        echo "       e.g.  echo '$(id -un) ALL=(ALL) NOPASSWD: /usr/sbin/ip' | sudo tee /etc/sudoers.d/tickle-test" >&2
+        echo "       The unit tests (make test) need no privilege." >&2
+        exit 1
+    fi
+fi
+
+teardown_ns() {
+    sudo ip netns del "$NS1" 2>/dev/null || true
+    sudo ip netns del "$NS2" 2>/dev/null || true
+    # If a previous run died between creating the veth and moving it into a namespace, both ends
+    # are still in the root namespace - deleting either end removes the pair.
+    sudo ip link del "$VETH1" 2>/dev/null || true
+}
+
+setup_ns() {
+    teardown_ns # idempotent: start from a clean slate even if a previous run left something behind
+
+    sudo ip netns add "$NS1"
+    sudo ip netns add "$NS2"
+    sudo ip link add "$VETH1" type veth peer name "$VETH2"
+    sudo ip link set "$VETH1" netns "$NS1"
+    sudo ip link set "$VETH2" netns "$NS2"
+    sudo ip -n "$NS1" addr add "$NS1_ADDR/$PREFIX" dev "$VETH1"
+    sudo ip -n "$NS2" addr add "$NS2_ADDR/$PREFIX" dev "$VETH2"
+    sudo ip -n "$NS1" link set "$VETH1" up
+    sudo ip -n "$NS2" link set "$VETH2" up
+
+    if ! sudo ip netns exec "$NS1" ping -c 1 -W 1 "$NS2_ADDR" >/dev/null 2>&1; then
+        echo "ERROR: namespace setup failed - $NS1 ($NS1_ADDR) cannot reach $NS2 ($NS2_ADDR)" >&2
+        exit 1
+    fi
+}
+
+trap teardown_ns EXIT
+setup_ns
+
+# Launches $receiver in ns2 (background, bounded via $receiver_args - typically -d 15, a generous
+# cap) then $sender in ns1 (foreground, bounded via $sender_args), waits for both, dumps their
+# logs. Doesn't judge pass/fail itself - each call site below does that afterward with
+# check_count/check_pass, however fits that pair. stdin redirected from /dev/null on both: neither
+# binary reads it, but leaving a backgrounded process attached to the invoking terminal's stdin is
+# a latent SIGTTIN/job-control hazard (see platform/freertos/test.sh's own fix for the concrete
+# failure mode this avoids). No -I: each namespace's own distinct address auto-detects a distinct
+# node ID the normal way (see this file's header comment).
 run_pair() {
     sender=$1
     sender_args=$2
@@ -66,13 +121,13 @@ run_pair() {
     rm -f "$receiver.log" "$sender.log"
 
     # shellcheck disable=SC2086 - receiver_args is a deliberately unquoted, space-separated flag list
-    "./$receiver" -b "$BROADCAST" -I 2 $receiver_args </dev/null >"$receiver.log" 2>&1 &
+    sudo ip netns exec "$NS2" "./$receiver" -b "$BROADCAST" $receiver_args </dev/null >"$receiver.log" 2>&1 &
     receiver_pid=$!
 
     sleep 1
 
     # shellcheck disable=SC2086 - sender_args is a deliberately unquoted, space-separated flag list
-    "./$sender" -b "$BROADCAST" -I 1 $sender_args </dev/null >"$sender.log" 2>&1
+    sudo ip netns exec "$NS1" "./$sender" -b "$BROADCAST" $sender_args </dev/null >"$sender.log" 2>&1
     sender_status=$?
 
     wait "$receiver_pid" 2>/dev/null
@@ -142,7 +197,11 @@ add_summary set_bool client.log
 
 # pong.c never logs per-request - but a "seq=N time=X ms" line in ping's own log can only appear
 # from a real decoded CallResponse, so that alone (checked against ping.log, the sender) is
-# sufficient evidence of a real round trip.
+# sufficient evidence of a real round trip. Because the two sides now have genuinely distinct
+# addresses, this also actually exercises unicast delivery: once ping's Client has discovered
+# pong's Server (via the periodic UPDATE announce / the reactive first-contact reply), its
+# CallRequests go out unicast, and pong's CallResponses always do - a shared-loopback setup could
+# not have told a working unicast path from a broken one here.
 #
 # -d 60 -w 5 -W 5: 5s warm-up, 60s of real measured pinging, 5s cool-down (see ping.c's own
 # comment on why -W extends past the stop trigger rather than reserving from a known -d). pong's
@@ -150,22 +209,6 @@ add_summary set_bool client.log
 # perf_server's own -d already uses below. check_count still matches every "(warmup)"/"(cooldown)"-
 # tagged line too, not just the counted ones - it's evidence a round trip happened at all, not
 # evidence about the stats window.
-#
-# NOTE on loss once a Client/Publisher has discovered a peer (tt_UNICAST_PEER_THRESHOLD): both
-# sides here bind the *same* wildcard address (0.0.0.0:$PORT, SO_REUSEADDR) on one shared loopback
-# namespace, distinguished only by -I's node id, not a real distinct IP (see the file comment up
-# top). Confirmed via a minimal two-socket repro: a kernel with multiple wildcard-bound UDP
-# sockets on one address delivers a *unicast* packet to whichever socket bound last - never by
-# any real address distinction - while broadcast still correctly fans out to all of them. run_pair
-# starts the receiver first, so the *sender*'s own socket wins every unicast delivery here,
-# regardless of who a packet was actually addressed to. That makes ping_pong/perf's own loss/RTT
-# numbers unreliable as a verdict on unicast correctness specifically (not a real regression - on
-# any real deployment, distinct per-node IPs make delivery unambiguous, confirmed by the same
-# repro against two non-wildcard addresses) - trust the whitebox tests (test_process_callrequest.c,
-# test_peer_discovery.c, test_client_call.c, test_publish_subscribe.c's test_node_flush_* cases),
-# which assert the exact destination ip/port a send was made with, for that. A real second host or
-# platform/linux/netns.mk's veth-pair setup (real distinct IPs, needs root) would be the way to
-# verify this end-to-end if that's ever needed.
 run_pair ping "-d 60 -i 0.2 -w 5 -W 5" pong "-d 80" || status=1
 check_count ping.log '^seq=' || status=1
 add_summary ping_pong ping.log

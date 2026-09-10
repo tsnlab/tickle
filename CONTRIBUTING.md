@@ -43,8 +43,9 @@ $ make -C platform/freertos lint
 $ make test-freertos
 ```
 
-`make test-linux` needs nothing beyond the normal build (no root - see `platform/linux/test.sh`'s
-own comment) and isn't required for every PR, but run it if you touched `src/hal_linux.c` or the
+`make test-linux` puts its two nodes in a veth-joined pair of network namespaces, so it needs
+passwordless sudo for `ip` (see `platform/linux/test.sh`'s own comment; `make test` alone needs no
+privilege). It isn't required for every PR, but run it if you touched `src/hal_linux.c` or the
 core protocol path in `src/tickle.c`.
 `make test-all` runs all three self-contained tiers (unit + linux + freertos) in one command - see
 [README.md](README.md#tests) - and is what CI runs on every push/PR

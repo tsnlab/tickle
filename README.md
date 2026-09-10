@@ -21,13 +21,13 @@ clear `#error` naming these two instead of silently offering a HAL that doesn't 
 
 `platform/<name>/` holds each platform's own bring-up and dev/test tooling - board support,
 network-stack glue, and a linker script for FreeRTOS (it has to do everything the OS would
-normally provide); just [`platform/linux/netns.mk`](platform/linux/netns.mk)'s optional,
-root-requiring network-namespace helpers for Linux (which gets a real kernel, sockets, and process
-model for free) - manual, closer-to-real-network alternatives to `test.sh`'s own root-free
-loopback setup below. Each platform has a `test.sh` with the same job: build and run a real
-two-instance round trip and assert on the result - `platform/linux/test.sh` over a loopback UDP
-broadcast, `platform/freertos/test.sh` under QEMU - which `make test-linux`/`make test-freertos`
-below run.
+normally provide); just [`platform/linux/netns.mk`](platform/linux/netns.mk)'s optional manual
+helpers for running a single example process inside a network namespace for Linux (which gets a
+real kernel, sockets, and process model for free). Each platform has a `test.sh` with the same
+job: build and run a real two-instance round trip and assert on the result - `platform/linux/
+test.sh` across a veth-joined pair of network namespaces (real distinct addresses, needs sudo for
+`ip`), `platform/freertos/test.sh` under QEMU - which `make test-linux`/`make test-freertos` below
+run.
 
 `examples/` is organized by platform: `examples/linux/<protocol>/` holds each protocol's generated
 codec (e.g. `PingPong.{c,h}`) together with its argv-parsed POSIX driver (see "Run examples"
@@ -78,8 +78,8 @@ $ make all BUILD_TYPE=release
 ## Tests
 
 ```sh
-$ make test           # Unit tests only (mock HAL - no real sockets, no QEMU)
-$ make test-linux     # Real RPC and pub/sub round trips over loopback UDP (src/hal_linux.c), no root needed
+$ make test           # Unit tests only (mock HAL - no real sockets, no QEMU) - no privilege needed
+$ make test-linux     # Real RPC and pub/sub round trips across a veth namespace pair (src/hal_linux.c) - sudo for `ip`
 $ make test-freertos  # Real RPC and pub/sub round trips under QEMU (platform/freertos, src/hal_freertos.c)
 $ make test-all       # All three of the above, in order - what CI runs (test-all.yml)
 ```
@@ -92,12 +92,12 @@ timing dependency. `make test` builds and runs every one, stopping at the first 
 `test-linux` and `test-freertos` (named for the platform under test, matching examples/linux and
 examples/freertos - not the mechanism behind each) instead exercise a real platform HAL end to
 end: two independent processes (or QEMU instances) actually exchanging packets, not a mock, over
-a real loopback UDP broadcast and emulated virtio-net respectively (see
+a real UDP broadcast between two network namespaces and emulated virtio-net respectively (see
 [platform/linux/test.sh](platform/linux/test.sh) /
-[platform/freertos/test.sh](platform/freertos/test.sh)). `test-linux` needs nothing beyond the
-normal build; `test-freertos` needs the RISC-V toolchain + `qemu-system-riscv32` (see
-[platform/freertos/Makefile](platform/freertos/Makefile)'s `lint` target for the exact packages) -
-so neither is part of plain `make test`, but only `test-freertos` needs anything extra installed.
+[platform/freertos/test.sh](platform/freertos/test.sh)). `test-linux` needs passwordless sudo for
+`ip` (it creates the namespace pair); `test-freertos` needs the RISC-V toolchain +
+`qemu-system-riscv32` (see [platform/freertos/Makefile](platform/freertos/Makefile)'s `lint`
+target for the exact packages) - so neither is part of plain `make test`.
 
 Every TickLE example doubles as a functional/performance test of the library itself (see "Run
 examples" below), so each tier runs all four example pairs, in this order: `uint64` (pub/sub),
@@ -136,9 +136,9 @@ compiled-in defaults `make run*` relies on:
 - `-a` bind address (default: compiled-in `tt_NODE_ADDRESS`)
 - `-I` explicit node ID `1`-`254`, overriding auto-detection from `-a`/`-b`'s subnet (see
   `_tt_CONFIG.node_id`'s own comment in `config.h`). Auto-detection needs each side to have its
-  own distinct address in that subnet - real separate hosts/namespaces give that for free, but
-  two processes sharing one network namespace/interface (e.g. `test-linux`'s root-free loopback
-  round trip above) can't be told apart that way, so `-I` fills in for it there.
+  own distinct address in that subnet - real separate hosts/namespaces give that for free (which
+  is why `test-linux`'s veth namespace pair doesn't need `-I`), but two processes sharing one
+  network namespace/interface can't be told apart that way, so `-I` fills in for it there.
 - `-n` topic/service name to rendezvous on (default: each example's own hardcoded name, e.g.
   `bulk_topic`, `set_bool_server`) - pass the same `-n` on both sides if you override it, or
   they won't find each other

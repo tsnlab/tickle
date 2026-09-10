@@ -336,36 +336,35 @@ publish()` batches (see below) while `tt_Client_call()` doesn't:
   `node_flush()` only ever unicasts when the node has *exactly one* `TOPIC_PUBLISHER` endpoint, so
   a mixed-Publisher node can't have one's batched data misdirected at the other's peers.
 
-Verifying this end-to-end hit a second, more subtle issue worth recording: `platform/linux/
-test.sh` runs both sides of every pair in one shared network namespace, bound to the *same*
-wildcard address (`0.0.0.0:8282`, `SO_REUSEADDR`) and distinguished only by an explicit `-I` node
-id (see that file's own comment) - never a real distinct IP. A minimal two-socket repro confirmed
-that with multiple wildcard-bound UDP sockets sharing one address, the kernel delivers a *unicast*
-packet only to whichever one bound last, regardless of any addressing intent, while broadcast
-still correctly reaches all of them - and with two genuinely distinct addresses instead, unicast
-delivery is exactly correct. So this harness cannot validate unicast delivery specifically (it
-happened to make the already-existing `CallResponse` unicast look reliable only by the coincidence
-of which side `run_pair()` happens to start last) - the whitebox tests that assert the exact
-destination `ip`/`port` a send was made with (`test_process_callrequest.c`,
+Verifying this end-to-end forced a test-harness change worth recording: `platform/linux/test.sh`
+used to run both sides in one shared network namespace, bound to the *same* wildcard address
+(`0.0.0.0:8282`, `SO_REUSEADDR`) and distinguished only by an explicit `-I` node id. A minimal
+two-socket repro confirmed that with multiple wildcard-bound UDP sockets sharing one address, the
+kernel delivers a *unicast* packet only to whichever one bound last, regardless of any addressing
+intent, while broadcast still correctly reaches all of them - and with two genuinely distinct
+addresses instead, unicast delivery is exactly correct. That setup therefore could not tell a
+working unicast path from a broken one (it had made the earlier `CallResponse` unicast *look*
+reliable only by the coincidence of which side `run_pair()` starts last), so `test.sh` now puts
+its two nodes in a veth-joined pair of network namespaces with real distinct addresses - `make
+test-linux` needs sudo for that, but `make test` still needs no privilege. The whitebox tests that
+assert the exact destination `ip`/`port` a send was made with (`test_process_callrequest.c`,
 `test_peer_discovery.c`, `test_client_call.c`, `test_publish_subscribe.c`'s `test_node_flush_*`
-cases) are what actually cover correctness here; a real second host or `platform/linux/netns.mk`'s
-veth-pair setup (real distinct IPs, needs root) would be the way to check it end-to-end.
+cases) still cover the decision logic directly.
 
 The real-hardware (two Raspberry Pis) run then surfaced a third thing, this one about send-loop
 shape rather than correctness: a Publisher that publishes in a tight `publish(); tt_Node_poll();`
 loop with no rate limit (`perf_client.c`'s `-i 0` default, and the natural idiom generally) was
 implicitly getting its speed from *self-receive*. Broadcasting, the node loops its own packets
 straight back, so the `poll()` between sends returns immediately every time; unicasting to a lone
-discovered Subscriber, nothing comes back, so that `poll()` sits on its full
-`tt_RECEIVE_TIMEOUT` (100us) default wait and the send rate drops ~40x (measured: 883 -> 21 Mbps
-on the Pis; delivery stayed lossless either way - purely a send-rate effect). This isn't a
-library bug and RPC/`tt_Client_call()` isn't affected (its latency actually improved slightly on
-the same run), but it means **a high-rate Publisher must not block in `poll()` between sends** -
-`perf_client.c` now asks for a minimal non-blocking poll (`tt_Node_poll(&node, 1)`) in its `-i 0`
-path, and a real high-throughput publisher should do the same rather than relying on the default
-wait. The Publisher-side unicast decision is worth keeping for what it's for (cutting broadcast
-traffic when a topic has one or two subscribers) but is not a throughput optimization, and for a
-saturating stream broadcast is still the faster choice.
+discovered Subscriber, nothing comes back, so that `poll()` sits on its wait and the send rate
+collapses (measured on the Pis: ~1,800 msg/s for 100-byte messages vs ~460,000 after the fix;
+full-MTU delivery stayed lossless either way - purely a send-rate effect). This isn't a library
+bug and RPC/`tt_Client_call()` isn't affected, but it means **a high-rate Publisher must not block
+in `poll()` between sends** - `tt_Node_poll(node, 0)` is now a genuine non-blocking pass (run due
+scheduler work, drain whatever RX is already waiting, return) rather than a no-op, and
+`perf_client.c`'s `-i 0` path passes `0`. The Publisher-side unicast decision is worth keeping for
+what it's for (cutting broadcast traffic when a topic has one or two subscribers) but is not a
+full-MTU throughput optimization - at line rate broadcast is still the faster choice.
 
 ## Fixed-size caches, not `malloc`/`free`
 

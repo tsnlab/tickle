@@ -1,17 +1,18 @@
-# Local dev/test helpers: run the example binaries across two Linux network namespaces
-# connected by a veth pair, to exercise UDP broadcast without needing real network hardware - a
-# manual, closer-to-real-network (each side gets its own real interface/address, auto-detecting
-# its node ID the normal way) alternative to platform/linux/test.sh's own root-free loopback setup
-# (see that file's own comment). Needs root (creating a namespace/veth needs CAP_NET_ADMIN);
-# test-linux itself does not, so it doesn't use these targets.
+# Manual dev helpers for poking at a *single* example process inside a network namespace
+# interactively (attach a debugger, run tcpdump alongside it - see dump1/dump2) - e.g.
+# `sudo make -C platform/linux createns && sudo make -C platform/linux runping`. All need root
+# (namespace/veth is CAP_NET_ADMIN).
+#
+# The automated round-trip test (platform/linux/test.sh, via `make test-linux` at the repo root)
+# also runs in a namespace pair now, but manages its own (torn down on exit, distinct names:
+# tickle-ns1/tickle-ns2) and does not use or depend on these targets - so a `createns` here and a
+# `test-linux` run can coexist.
+#
 # Split out of platform/linux/Makefile so build logic and this environment-specific tooling don't
 # get tangled together - included from there (`include netns.mk`, same directory) rather than
 # invoked as its own standalone Makefile, since there's no separate toolchain/target here that
 # would need its own invocation. The runX targets' `./client` etc. resolve correctly because the
 # binaries they depend on (client, ...) are built right here in platform/linux/ too now.
-#
-# test-linux itself (running platform/linux/test.sh) is defined at the repo root, not here - see
-# that Makefile's own comment.
 
 .PHONY: createns deletens runclient runserver runpublisher runsubscriber runping runpong runperf_client runperf_server dump1 dump2
 
