@@ -178,15 +178,42 @@ static bool decode_string(struct tt_Node* node, uint8_t* buffer, uint32_t* head,
     return true;
 }
 
-static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id) {
+static void rebuild_endpoint_index(struct tt_Node* node) {
+    for (uint32_t i = 0; i < tt_ENDPOINT_INDEX_SIZE; i++) {
+        node->endpoint_index[i] = NULL;
+    }
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL) {
             continue;
         }
-        if ((endpoint->kind == kind) && (endpoint->id == endpoint_id)) {
+        uint32_t slot = endpoint->id & (tt_ENDPOINT_INDEX_SIZE - 1);
+        while (node->endpoint_index[slot] != NULL) {
+            slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+        }
+        node->endpoint_index[slot] = endpoint;
+    }
+    node->endpoint_index_valid = true;
+}
+
+static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id) {
+    if (!node->endpoint_index_valid) {
+        rebuild_endpoint_index(node);
+    }
+
+    // Linear probe from the id's home slot; a NULL slot means "not present" (load is kept <= 0.5,
+    // so the probe is short). Distinct endpoints sharing an id (different kind) just land in
+    // adjacent slots and the kind check below picks the right one.
+    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
+    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        if (endpoint == NULL) {
+            return NULL;
+        }
+        if (endpoint->kind == kind && endpoint->id == endpoint_id) {
             return endpoint;
         }
+        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
     }
 
     return NULL;
@@ -244,6 +271,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
     }
 
     node->endpoints[node->endpoint_count++] = endpoint;
+    node->endpoint_index_valid = false;
 
     return tt_RET_OK;
 }
@@ -257,6 +285,7 @@ static bool remove_endpoint_from_node(struct tt_Node* node, struct tt_Endpoint* 
                             sizeof(struct tt_Endpoint*) * (node->endpoint_count - i));
             }
             node->endpoints[node->endpoint_count] = NULL;
+            node->endpoint_index_valid = false;
             return true;
         }
     }
@@ -382,6 +411,7 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot);
 static void reset_node_state(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
     node->endpoint_count = 0;
+    node->endpoint_index_valid = false;
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         node->endpoints[i] = NULL;
