@@ -14,15 +14,44 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+        with:
+          # third_party/FreeRTOS-Kernel and third_party/lwip hold the headers the synthesised
+          # src/hal_freertos.c compile-DB entry below points clang-tidy at.
+          submodules: true
 
       - name: Install build packages
         run: |
           sudo apt update
-          sudo apt install bear
+          sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf
 
       - name: Generate compile_commands.json
         run: |
           bear -- make all
+          # `make all` builds only the Linux platform, so src/hal_freertos.c would reach
+          # clang-tidy with no lwIP/picolibc include context and fail to even parse. It has no
+          # entry to inherit flags from either, so synthesise one - the same cross-compile flags
+          # platform/freertos/Makefile's own `lint` target uses (--target instead of gcc's
+          # --specs=picolibc.specs, which clang ignores; -nostdinc + explicit -isystem so the
+          # host headers don't leak in and clash with picolibc's).
+          picolibc_inc="$(dpkg -L picolibc-riscv64-unknown-elf | grep -E '/include$' | head -1)"
+          gcc_inc="$(riscv64-unknown-elf-gcc -print-file-name=include)"
+          fr=platform/freertos
+          jq --arg root "$PWD" --arg pico "$picolibc_inc" --arg gi "$gcc_inc" --arg fr "$fr" \
+            '. + [{
+              directory: ($root + "/" + $fr),
+              file: ($root + "/src/hal_freertos.c"),
+              arguments: ["clang", "--target=riscv32-unknown-elf", "-nostdinc",
+                "-ffreestanding", "-DTT_PLATFORM_FREERTOS",
+                "-isystem", $pico, "-isystem", $gi,
+                "-I.", "-Iboard", "-Ilwip_arch",
+                "-I../../third_party/FreeRTOS-Kernel/include",
+                "-I../../third_party/FreeRTOS-Kernel/portable/GCC/RISC-V",
+                "-I../../third_party/lwip/src/include",
+                "-I../../third_party/lwip/contrib/ports/freertos/include",
+                "-I../../include", "-I../../src",
+                "-c", ($root + "/src/hal_freertos.c")]
+            }]' compile_commands.json > compile_commands.tmp
+          mv compile_commands.tmp compile_commands.json
 
       - name: Check all
         uses: tsnlab/check@main

@@ -8,6 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
+// NOLINTNEXTLINE(misc-include-cleaner) -- picolibc routes EINTR/EAGAIN/EWOULDBLOCK through <sys/errno.h>
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -134,8 +135,12 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
 
 int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
+    // iovec.iov_base is non-const by POSIX, but sendmsg() only reads it - casting away const here
+    // is the standard idiom, not a real int-to-pointer round trip.
     struct iovec iov[2] = {
+        // NOLINTNEXTLINE(performance-no-int-to-ptr)
         {.iov_base = (void*)(uintptr_t)hdr, .iov_len = hdr_len},
+        // NOLINTNEXTLINE(performance-no-int-to-ptr)
         {.iov_base = (void*)(uintptr_t)body, .iov_len = body_len},
     };
 
@@ -184,6 +189,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
             return -1; // Timeout
         }
         if (select_ret < 0) {
+            // NOLINTNEXTLINE(misc-include-cleaner)
             if (errno == EINTR) {
                 return -1; // Treat an interrupted wait like a timeout; the caller just polls again
             }
@@ -199,6 +205,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     *port = ntohs(addr.sin_port);
 
     if (ret < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner)
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return -1; // Timeout
         }

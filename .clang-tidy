@@ -46,5 +46,10 @@ CheckOptions:
     value: '1;2;3;4;5;8;10;16;24;32;255'
   - key: misc-include-header.MissingIncludes
     value: false
+  # lwIP's public API is a small set of umbrella headers (lwip/sockets.h, lwip/netif.h, ...) that
+  # deliberately re-export names from private sub-headers; misc-include-cleaner's "include the
+  # exact provider" rule fights that design in hal_freertos.c. Suppress it for lwip/ only.
+  - key: misc-include-cleaner.IgnoreHeaders
+    value: 'lwip/.*'
   - key: readability-function-cognitive-complexity.IgnoreMacros
     value: true
