@@ -58,3 +58,6 @@ jobs:
         with:
           python_version: '3.12'
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # submodules: true (above) puts third_party/lwip's own shell scripts on disk; they
+          # aren't ours to lint. cpp-linter already auto-skips submodules; shellcheck needs telling.
+          shellcheck_ignore_paths: third_party
