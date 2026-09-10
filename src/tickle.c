@@ -279,27 +279,59 @@ static const char* endpoint_type_name(struct tt_Endpoint* endpoint) {
     }
 }
 
+// scheduler[] is a binary min-heap keyed on TCB.time (heap[0] = earliest), sized by
+// scheduler_tail. schedule/pop/unschedule are all O(log N) sift operations with no array
+// memmove. Equal-time entries no longer keep strict FIFO order (heaps don't) - nothing in this
+// codebase's scheduling depends on that.
+static void sched_sift_up(struct tt_Node* node, int32_t index) {
+    struct tt_TCB moving = node->scheduler[index];
+    while (index > 0) {
+        int32_t parent = (index - 1) / 2;
+        if (node->scheduler[parent].time <= moving.time) {
+            break;
+        }
+        node->scheduler[index] = node->scheduler[parent];
+        index = parent;
+    }
+    node->scheduler[index] = moving;
+}
+
+static void sched_sift_down(struct tt_Node* node, int32_t index) {
+    struct tt_TCB moving = node->scheduler[index];
+    int32_t count = node->scheduler_tail;
+    while (true) {
+        int32_t left = (2 * index) + 1;
+        int32_t right = left + 1;
+        int32_t smallest = index;
+        uint64_t best = moving.time;
+        if (left < count && node->scheduler[left].time < best) {
+            smallest = left;
+            best = node->scheduler[left].time;
+        }
+        if (right < count && node->scheduler[right].time < best) {
+            smallest = right;
+        }
+        if (smallest == index) {
+            break;
+        }
+        node->scheduler[index] = node->scheduler[smallest];
+        index = smallest;
+    }
+    node->scheduler[index] = moving;
+}
+
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
     if (node->scheduler_tail + 1 >= tt_MAX_SCHEDULER_LENGTH) {
         return false;
     }
 
-    struct tt_TCB* tcb = &node->scheduler[node->scheduler_tail];
-    for (int32_t i = 0; i < node->scheduler_tail; i++) {
-        if (node->scheduler[i].time > time) {
-            _tt_memmove(&node->scheduler[i + 1], &node->scheduler[i],
-                        sizeof(struct tt_TCB) * (node->scheduler_tail - i));
-            tcb = &node->scheduler[i];
-            break;
-        }
-    }
-
-    tcb->time = time;
-    tcb->function = function;
-    tcb->param = param;
-
+    int32_t index = node->scheduler_tail;
+    node->scheduler[index].time = time;
+    node->scheduler[index].function = function;
+    node->scheduler[index].param = param;
     node->scheduler_tail++;
+    sched_sift_up(node, index);
 
     return true;
 }
@@ -312,11 +344,14 @@ bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* n
         if (node->scheduler[i].function == function && node->scheduler[i].param == param) {
             node->scheduler_tail--;
             if (i < node->scheduler_tail) {
-                _tt_memmove(&node->scheduler[i], &node->scheduler[i + 1],
-                            sizeof(struct tt_TCB) * (node->scheduler_tail - i));
+                node->scheduler[i] = node->scheduler[node->scheduler_tail];
+                // The moved-in entry can be out of order in either direction; one of these is a
+                // no-op. Re-check this same index next iteration - it holds a different TCB now.
+                sched_sift_up(node, i);
+                sched_sift_down(node, i);
             }
             removed = true;
-            i--; // Re-check this index: the next entry was just shifted into it.
+            i--;
         }
     }
 
@@ -332,8 +367,11 @@ static struct tt_TCB* peek_scheduler(struct tt_Node* node) {
 }
 
 static void pop_scheduler(struct tt_Node* node) {
-    _tt_memmove(&node->scheduler[0], &node->scheduler[1], sizeof(struct tt_TCB) * (node->scheduler_tail - 1));
     node->scheduler_tail--;
+    if (node->scheduler_tail > 0) {
+        node->scheduler[0] = node->scheduler[node->scheduler_tail];
+        sched_sift_down(node, 0);
+    }
 }
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
