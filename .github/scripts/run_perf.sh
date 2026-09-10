@@ -30,7 +30,8 @@ trap 'rm -rf "$LOG_DIR"' EXIT
 # rewrite it once results exist, so an early abort (build failure, SSH timeout) still leaves the
 # dashboard an honest red.
 FRAG="${DASHBOARD_FRAGMENT:-perf-frag.json}"
-printf '{"build":"fail","integration":"fail"}\n' > "$FRAG"
+printf '{"build":"fail","integration":"fail","commit":"%s","commit_short":"%s","date":"%s"}\n' \
+    "$(git rev-parse HEAD)" "$(git rev-parse --short HEAD)" "$(date -u +%Y-%m-%dT%H:%MZ)" > "$FRAG"
 
 write_dashboard_fragment() {
     local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps integ smsg_rate smsg_recv smsg_dur
@@ -57,7 +58,9 @@ write_dashboard_fragment() {
 {
   "build": "pass",
   "integration": "$integ",
+  "commit": "$(git rev-parse HEAD)",
   "commit_short": "$(git rev-parse --short HEAD)",
+  "date": "$(date -u +%Y-%m-%dT%H:%MZ)",
   "run_url": "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-tsnlab/tickle}/actions/runs/${GITHUB_RUN_ID:-0}",
   "throughput_send_mbps": ${send_mbps:-null},
   "throughput_recv_mbps": ${recv_mbps:-null},

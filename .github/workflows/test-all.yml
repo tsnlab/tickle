@@ -85,6 +85,7 @@ jobs:
           {
             "commit": "${GITHUB_SHA}",
             "commit_short": "${GITHUB_SHA:0:7}",
+            "date": "$(date -u +%Y-%m-%dT%H:%MZ)",
             "branch": "${GITHUB_REF_NAME}",
             "run_url": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
             "rows": {
