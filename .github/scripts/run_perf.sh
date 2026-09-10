@@ -11,7 +11,7 @@
 #   - Both Pis already have ~/tickle cloned (this script only fetches/checks out).
 set -euo pipefail
 
-RPI_CLIENT_HOST="${RPI_CLIENT_HOST:-10.1.1.207}" # rpi#1
+RPI_CLIENT_HOST="${RPI_CLIENT_HOST:-10.1.1.214}" # rpi#1 (was .207 until 2026-09; DHCP reassigned)
 RPI_SERVER_HOST="${RPI_SERVER_HOST:-10.1.1.213}" # rpi#2
 SSH_USER="ci"
 SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
