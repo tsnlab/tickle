@@ -199,17 +199,13 @@ int main(int argc, char** argv) {
                          NULL);
     }
 
-    // In "as fast as poll() allows" mode (-i 0), don't let poll() sit on its default
-    // tt_RECEIVE_TIMEOUT (100us) receive wait between sends. That wait is invisible when the
-    // socket is broadcasting - the node loops its own packets straight back, so poll() returns
-    // immediately every time - but a Publisher unicasting to its lone discovered Subscriber (see
-    // tt_UNICAST_PEER_THRESHOLD in config.h) gets nothing back, turning that 100us into a hard
-    // per-iteration floor and cutting send rate ~40x. Ask for the minimum instead (1ns, not 0 -
-    // tt_Node_poll treats 0 as "return without doing anything"): run whatever scheduler work is
-    // due (node_flush's own flush) plus one non-blocking receive drain, then back to publishing.
-    // A rate-limited run (-i > 0) keeps -1: it's idle between sends anyway, and the wait lets it
-    // service inbound traffic without spinning.
-    const int64_t poll_timeout = send_interval_ns == 0 ? 1 : -1;
+    // In "as fast as poll() allows" mode (-i 0), pass 0 for a non-blocking poll pass between
+    // sends (run due scheduler work + drain RX, no wait). Anything else - even a nominal 1ns -
+    // rounds up to a full 1ms poll() wait, which throttled send rate ~40x once the Publisher
+    // started unicasting to its lone discovered Subscriber and stopped seeing its own broadcast
+    // loop back to keep that wait short. A rate-limited run (-i > 0) keeps -1: it's genuinely
+    // idle between sends, so the wait lets it service inbound traffic without spinning a core.
+    const int64_t poll_timeout = send_interval_ns == 0 ? 0 : -1;
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
