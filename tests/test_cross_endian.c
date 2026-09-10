@@ -232,6 +232,10 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
     EXPECT_EQ_U32(sender_ip, pub.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)pub.peers[0].port);
+
+    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        _tt_free(node.updates[i]); // process_update() malloc'd a copy; node is never destroyed here
+    }
 }
 
 // --- CALLREQUEST from a reverse-endian client: server answers with the right seq_no ---

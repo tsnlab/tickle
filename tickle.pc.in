@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: TickLE
+Description: Real-time pub/sub + RPC middleware for 10Base-T1S
+URL: https://github.com/tsnlab/tickle
+Version: 1.0.0
+Libs: -L${libdir} -ltickle
+Libs.private: -lm
+Cflags: -I${includedir}

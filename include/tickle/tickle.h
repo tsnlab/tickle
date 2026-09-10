@@ -16,6 +16,20 @@
 #include <tickle/config.h>
 #include <tickle/hal.h>
 
+// Library version (semantic). tt_VERSION further down is the on-the-wire *protocol* version and
+// moves independently. TICKLE_VERSION packs major/minor/patch for a single #if comparison, e.g.
+//   #if TICKLE_VERSION >= TICKLE_VERSION_MAKE(1, 2, 0)
+#define TICKLE_VERSION_MAJOR 1
+#define TICKLE_VERSION_MINOR 0
+#define TICKLE_VERSION_PATCH 0
+#define TICKLE_VERSION_STRING "1.0.0"
+#define TICKLE_VERSION_MAKE(major, minor, patch) (((major) << 16) | ((minor) << 8) | (patch))
+#define TICKLE_VERSION TICKLE_VERSION_MAKE(TICKLE_VERSION_MAJOR, TICKLE_VERSION_MINOR, TICKLE_VERSION_PATCH)
+
+// Same string as TICKLE_VERSION_STRING, but from the compiled library - lets a caller check what
+// a prebuilt libtickle.a actually is, not just what its headers say.
+const char* tt_version(void);
+
 #define tt_KIND_NONE 0x00
 #define tt_KIND_TOPIC 0x01
 #define tt_KIND_SERVICE 0x02

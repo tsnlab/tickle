@@ -52,6 +52,16 @@ jobs:
         continue-on-error: true
         run: make test
 
+      - name: Unit tests under ASan + UBSan
+        id: sanitize
+        continue-on-error: true
+        run: make sanitize
+
+      - name: Fuzz smoke (packet parser)
+        id: fuzz
+        continue-on-error: true
+        run: make fuzz FUZZ_ARGS='-max_total_time=45 -error_exitcode=1'
+
       - name: Integration - Linux HAL over netns
         id: itest_linux
         continue-on-error: true
@@ -113,6 +123,8 @@ jobs:
             'Build FreeRTOS=${{ steps.build_freertos.outcome }}' \
             'Lint FreeRTOS=${{ steps.lint_freertos.outcome }}' \
             'Unit tests=${{ steps.unit.outcome }}' \
+            'Sanitizers=${{ steps.sanitize.outcome }}' \
+            'Fuzz smoke=${{ steps.fuzz.outcome }}' \
             'Integration Linux=${{ steps.itest_linux.outcome }}' \
             'Integration FreeRTOS=${{ steps.itest_freertos.outcome }}'; do
             name="${s%%=*}"; outcome="${s#*=}"

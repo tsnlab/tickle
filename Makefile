@@ -9,10 +9,29 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean test-linux test-freertos test-all
+.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean test-linux test-freertos test-all \
+        install uninstall fuzz sanitize
 
-all library examples set_bool uint64 ping_pong perf test lint clean:
+all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize:
 	$(MAKE) -C platform/linux $@
+
+# Static lib + headers + a pkg-config file. Override PREFIX (default /usr/local) and/or DESTDIR
+# (staging root, for packaging) as usual: `make install PREFIX=/opt/tickle DESTDIR=/tmp/stage`.
+# There is no shared library - TickLE is meant to be linked statically (or vendored).
+PREFIX ?= /usr/local
+LIBDIR ?= $(PREFIX)/lib
+INCLUDEDIR ?= $(PREFIX)/include
+
+install: library
+	install -d '$(DESTDIR)$(LIBDIR)' '$(DESTDIR)$(INCLUDEDIR)/tickle' '$(DESTDIR)$(LIBDIR)/pkgconfig'
+	install -m 644 platform/linux/libtickle.a '$(DESTDIR)$(LIBDIR)/'
+	install -m 644 include/tickle/*.h '$(DESTDIR)$(INCLUDEDIR)/tickle/'
+	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@LIBDIR@|$(LIBDIR)|g' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|g' \
+	    tickle.pc.in > '$(DESTDIR)$(LIBDIR)/pkgconfig/tickle.pc'
+
+uninstall:
+	rm -f '$(DESTDIR)$(LIBDIR)/libtickle.a' '$(DESTDIR)$(LIBDIR)/pkgconfig/tickle.pc'
+	rm -rf '$(DESTDIR)$(INCLUDEDIR)/tickle'
 
 # Anything not listed above (createns, deletens, runclient, runping, dump1, ... - see
 # platform/linux/netns.mk) also forwards, without needing to be individually kept in sync here.

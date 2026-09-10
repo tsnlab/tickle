@@ -113,7 +113,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean
+.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize
 
 all:
 	$(MAKE) library
@@ -179,6 +179,26 @@ $(OBJ)/tests/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c |
 
 $(OBJ)/tests:
 	mkdir -p $@
+
+# Coverage-guided fuzzing of the packet parser - the untrusted-input boundary. Needs clang.
+# `make fuzz` builds and runs it; pass FUZZ_ARGS (e.g. '-max_total_time=60', or a corpus dir).
+FUZZ_CC ?= clang
+fuzz: $(OBJ)/fuzz/fuzz_process_packet
+	./$< $(FUZZ_ARGS)
+
+$(OBJ)/fuzz/fuzz_process_packet: $(TEST_DIR)/fuzz_process_packet.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c \
+                                 | $(OBJ)/fuzz
+	$(FUZZ_CC) $(CPPFLAGS) -g -O1 -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer \
+	    -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
+
+$(OBJ)/fuzz:
+	mkdir -p $@
+
+# Re-run the unit tests under AddressSanitizer + UndefinedBehaviorSanitizer. Catches
+# use-after-free / out-of-bounds / UB the plain run misses (e.g. process_update()'s malloc path).
+sanitize:
+	$(MAKE) clean
+	$(MAKE) test CFLAGS='-O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer'
 
 # Excludes, and why each needs its own lint pass instead (see platform/freertos/Makefile's own
 # `lint` target) rather than just being swept in here with everything else:

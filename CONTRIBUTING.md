@@ -85,10 +85,22 @@ after merge - you can't trigger it from a PR, and don't need to.
   for it in the same PR rather than leaving it to a follow-up - see DESIGN.md for the protocol
   shape if you're not sure what "a test for it" looks like at the wire level.
 
+## API stability
+
+From `v1.0.0` on, TickLE follows [SemVer](https://semver.org/) for its **public surface**: the
+`tt_`-prefixed types, functions and macros declared in `include/tickle/*.h`. A breaking change
+to any of those needs a major-version bump and a `CHANGELOG.md` entry.
+
+Not covered, and free to change in any release: anything prefixed `_tt_` / `_TT_`, everything
+under `src/`, the `tt_Node` / `tt_Client` / … struct *layouts* (treat them as opaque - allocate
+them, don't inspect or copy their fields), and the on-the-wire protocol details (`tt_VERSION`
+gates those separately). Bump `TICKLE_VERSION_*` in the same PR as the change.
+
 ## Submitting a change
 
 - Open a PR against `main` at <https://github.com/tsnlab/tickle>. `check-all.yml` and
   `test-all.yml` both run automatically; make sure they're green before requesting review.
+- Record anything user-visible in `CHANGELOG.md` under `## [Unreleased]`.
 - Commit messages: a short, imperative-mood subject line (`Fix indefinite recv hang on a short
   scheduler-driven timeout`, not `Fixed a bug` or `Updates`) - see `git log` for the existing
   convention. Explain *why* in the body when the subject alone doesn't make it obvious.

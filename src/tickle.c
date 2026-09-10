@@ -1949,3 +1949,7 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
 
     return tt_RET_OK;
 }
+
+const char* tt_version(void) {
+    return TICKLE_VERSION_STRING;
+}
