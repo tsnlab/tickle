@@ -211,3 +211,24 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 
     return ret;
 }
+
+int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(struct sockaddr_in);
+    // MSG_DONTWAIT makes just this call non-blocking regardless of the socket's own mode - no
+    // poll() first, no socket-option re-arm.
+    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+
+    *ip = ntohl(addr.sin_addr.s_addr);
+    *port = ntohs(addr.sin_port);
+
+    if (ret < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -1; // Nothing waiting
+        }
+        return -2; // I/O error
+    }
+
+    return ret;
+}

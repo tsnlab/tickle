@@ -1470,6 +1470,47 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
 // Handles one tt_receive() outcome: on timeout/error/success that should end the poll, fills in
 // *result and returns true; on a timeout that was just a short wait for a due scheduler entry
 // (not the caller's real timeout), returns false so the caller keeps polling.
+// Decodes and dispatches one just-received datagram of `len` bytes now sitting in node->rx_buffer.
+static tt_ret_t process_datagram(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port) {
+    node->rx_tail = (uint32_t)len;
+
+    TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
+                 (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
+
+    if (!process_packet(node, node->rx_buffer, 0, len, ip, port)) {
+        TT_LOG_ERROR("Cannot process packet");
+        return tt_RET_PROTOCOL_ERROR;
+    }
+
+    return tt_RET_OK;
+}
+
+// After tt_receive() hands tt_Node_poll() the first datagram, pull whatever else the kernel
+// already has buffered without another poll() per packet - a saturated receiver otherwise pays
+// poll()+recvfrom() per packet instead of one poll() per drain. Best-effort: stops on the first
+// "nothing waiting", a protocol error, or an I/O error (the outer poll picks that back up).
+static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
+    if (first_result != tt_RET_OK) {
+        return first_result;
+    }
+
+    while (true) {
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+        if (len < 0) {
+            break; // -1 nothing waiting, -2 I/O error - either way, done draining
+        }
+
+        tt_ret_t result = process_datagram(node, len, ip, port);
+        if (result != tt_RET_OK) {
+            return result;
+        }
+    }
+
+    return tt_RET_OK;
+}
+
 static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port,
                                   bool woke_for_scheduler, tt_ret_t* result) {
     if (len == -1) { // Timeout
@@ -1485,18 +1526,7 @@ static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip
         return true;
     }
 
-    node->rx_tail = (uint32_t)len;
-
-    TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-                 (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
-
-    if (!process_packet(node, node->rx_buffer, 0, len, ip, port)) {
-        TT_LOG_ERROR("Cannot process packet");
-        *result = tt_RET_PROTOCOL_ERROR;
-        return true;
-    }
-
-    *result = tt_RET_OK;
+    *result = process_datagram(node, len, ip, port);
     return true;
 }
 
@@ -1529,7 +1559,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
 
             tt_ret_t result;
             if (handle_receive_result(node, len, ip, port, woke_for_scheduler, &result)) {
-                return result;
+                return drain_rx(node, result);
             }
         }
 

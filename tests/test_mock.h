@@ -129,4 +129,18 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 
     return test_mock_receive_return;
 }
+
+int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    (void)node;
+    (void)buf;
+    (void)len;
+
+    *ip = 0;
+    *port = 0;
+
+    // The mock feeds at most the one datagram test_mock_receive_return describes, via tt_receive()
+    // above - tt_Node_poll()'s drain loop then immediately sees "nothing more waiting" here and
+    // stops, so no whitebox test needs to model a multi-packet kernel backlog.
+    return -1;
+}
 #endif
