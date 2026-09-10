@@ -207,12 +207,21 @@ typedef int32_t (*tt_DATA_DECODE)(struct tt_Data* data, const uint8_t* payload, 
                                   bool is_native_endian);
 typedef void (*tt_DATA_FREE)(struct tt_Data* data);
 
+// Optional zero-copy decode: instead of unpacking the wire payload into a caller-owned tt_Data
+// (a full copy), return a tt_Data* that aliases `payload` directly - valid only for the duration
+// of the subscriber callback, and never passed to data_free. Return NULL to fall back to
+// data_decode's copy path (e.g. when the wire is byte-swapped, or the layout needs fixups a
+// bare cast can't do). process_data() prefers this when it's set. Only worth defining for a
+// topic whose wire layout already matches its in-memory struct in native byte order.
+typedef struct tt_Data* (*tt_DATA_DECODE_INPLACE)(const uint8_t* payload, uint32_t len, bool is_native_endian);
+
 struct tt_Topic {
     const char* name;
     uint32_t data_size;
     tt_DATA_ENCODE_SIZE data_encode_size;
     tt_DATA_ENCODE data_encode;
     tt_DATA_DECODE data_decode;
+    tt_DATA_DECODE_INPLACE data_decode_inplace; // optional, see typedef
     tt_DATA_FREE data_free;
 
     // QoS

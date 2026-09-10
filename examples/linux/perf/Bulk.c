@@ -24,6 +24,7 @@ struct tt_Topic BulkTopic = {
     .data_encode_size = (tt_DATA_ENCODE_SIZE)BulkData_encode_size,
     .data_encode = (tt_DATA_ENCODE)BulkData_encode,
     .data_decode = (tt_DATA_DECODE)BulkData_decode,
+    .data_decode_inplace = (tt_DATA_DECODE_INPLACE)BulkData_decode_inplace,
     .data_free = (tt_DATA_FREE)BulkData_free,
 };
 
@@ -105,6 +106,23 @@ int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, uint32_t 
     payload += size;
 
     return decoded;
+}
+
+struct BulkData* BulkData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian) {
+    // BulkData is { u32 seq; u32 size; u8 bytes[]; } with no padding, so a native-endian wire
+    // payload [seq][size][bytes] already *is* a BulkData - just bounds-check and alias it. The
+    // payload sits 24 bytes into rx_buffer (past tt_Header + SubmessageHeader + DataHeader),
+    // which keeps the u32s 4-byte aligned. Byte-swapped wire can't be aliased -> NULL (copy path).
+    if (!is_native_endian || len < 2 * sizeof(uint32_t)) {
+        return NULL;
+    }
+
+    uint32_t size = ((const uint32_t*)payload)[1];
+    if (size > BULK_MAX_PAYLOAD_SIZE || 2 * sizeof(uint32_t) + size > len) {
+        return NULL;
+    }
+
+    return (struct BulkData*)(uintptr_t)payload;
 }
 
 void BulkData_free(struct BulkData* data) {

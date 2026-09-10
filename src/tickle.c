@@ -1055,10 +1055,21 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
 
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
     struct tt_Topic* topic = sub->topic;
+    bool is_native = tt_is_native_endian(header);
+
+    // Zero-copy path: hand the callback a tt_Data* aliasing rx_buffer directly, skipping the
+    // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
+    // the topic doesn't offer it or it declines (e.g. byte-swapped wire).
+    if (topic->data_decode_inplace != NULL) {
+        struct tt_Data* inplace = topic->data_decode_inplace(buffer + head, tail - head, is_native);
+        if (inplace != NULL) {
+            sub->callback(sub, data_header->timestamp, data_header->seq_no, inplace);
+            return true;
+        }
+    }
 
     uint8_t data[topic->data_size];
-    int32_t decoded =
-        topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, tt_is_native_endian(header));
+    int32_t decoded = topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, is_native);
 
     if (decoded < 0) {
         TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %d", data_header->endpoint_id,
