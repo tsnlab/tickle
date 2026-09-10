@@ -86,6 +86,15 @@ int32_t tt_send(struct tt_Node* node, const void* buf, size_t len);
 // matching tt_receive()'s own ip/port out-params (the two are meant to be used together: the ip/
 // port a packet arrived with are exactly what a reply back to it should be sent with).
 int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port);
+
+// Scatter-gather send: one datagram made of `hdr` (framing this node built) followed by `body`
+// (payload the publisher handed over, still in its own memory) - no staging copy into one
+// contiguous buffer first. ip == 0 means the usual broadcast address, otherwise that unicast
+// destination (same convention as flush_tx()'s peer list). Returns total bytes sent, negative on
+// error. Used by tt_Publisher_publish()'s standalone-packet path when the topic offers
+// data_encode_inplace.
+int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+                    uint32_t ip, uint16_t port);
 /**
  * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
  * @return received bytes, -1 for timeout, other negative values for I/O error

@@ -130,6 +130,25 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     return test_mock_receive_return;
 }
 
+int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+                    uint32_t ip, uint16_t port) {
+    (void)node;
+    (void)hdr;
+    (void)body;
+
+    test_mock_send_call_count++;
+    if (ip != 0) {
+        test_mock_send_to_call_count++;
+        test_mock_send_to_last_ip = ip;
+        test_mock_send_to_last_port = port;
+    }
+
+    if (test_mock_send_return_override) {
+        return test_mock_send_return;
+    }
+    return (int32_t)(hdr_len + body_len);
+}
+
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     (void)node;
     (void)buf;

@@ -694,10 +694,63 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     return tt_RET_OK;
 }
 
+// Zero-copy standalone-packet publish: framing (Header + SubmessageHeader + DataHeader) built in
+// a stack buffer, the CDR sent straight from the publisher's own memory via one sendmsg() - no
+// staging copy into tx_buffer. Only reachable when tx_buffer is empty (nothing to coalesce with),
+// so it makes the same broadcast-vs-unicast destination choice node_flush() would for a batched
+// flush. body_len must be 4-aligned (the caller checks) so the single submessage needs no pad.
+static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, uint32_t body_len) {
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
+    struct tt_Node* node = pub->node;
+
+    uint8_t framing[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
+    struct tt_Header* header = (struct tt_Header*)framing;
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = node->id;
+
+    struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)(framing + sizeof(struct tt_Header));
+    submessage_header->type = tt_SUBMESSAGE_TYPE_DATA;
+    submessage_header->receiver = tt_SUBMESSAGE_ID_ALL;
+    submessage_header->length =
+        (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + body_len);
+
+    struct tt_DataHeader* data_header =
+        (struct tt_DataHeader*)(framing + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    data_header->endpoint_id = endpoint->id;
+    data_header->seq_no = pub->seq_no + 1;
+    data_header->timestamp = tt_get_ns();
+
+    uint8_t peer_count = count_peers(pub->peers);
+    if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
+        for (uint8_t i = 0; i < peer_count; i++) {
+            if (tt_send_iov(node, framing, sizeof(framing), body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
+                return tt_RET_IO_ERROR;
+            }
+        }
+    } else if (tt_send_iov(node, framing, sizeof(framing), body, body_len, 0, 0) < 0) {
+        return tt_RET_IO_ERROR;
+    }
+
+    pub->seq_no++;
+    return tt_RET_OK;
+}
+
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Node* node = pub->node;
     uint32_t old_tx_tail = node->tx_tail;
+
+    // Zero-copy path when the topic offers it and tx_buffer is empty (this publish() is its own
+    // packet, nothing batched to coalesce with - the common case for a full-MTU stream).
+    if (pub->topic->data_encode_inplace != NULL && old_tx_tail == sizeof(struct tt_Header)) {
+        const uint8_t* body = NULL;
+        int32_t body_len = pub->topic->data_encode_inplace(data, &body);
+        if (body_len >= 0 && (body_len % 4) == 0) {
+            return publish_zerocopy(pub, body, (uint32_t)body_len);
+        }
+        // declined (or unaligned) - fall through to the staging copy path
+    }
 
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL);
