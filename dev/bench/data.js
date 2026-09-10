@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789036152291,
+  "lastUpdate": 1789036155433,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1416,6 +1416,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.358,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "70fd890609acc2a965398492496bdb07a0beb6d4",
+          "message": "CI: exclude third_party from check-all.yml's shellcheck\n\nsubmodules: true (added in b37baa8 for hal_freertos.c's lint context)\nalso drops third_party/lwip's own shell scripts on disk, which shellcheck\nthen flagged (SC2148/SC2045/...). cpp-linter auto-skips submodules;\nshellcheck needs shellcheck_ignore_paths.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T19:28:26+09:00",
+          "tree_id": "c0943223a7b83f79c777f79a78f382d598730118",
+          "url": "https://github.com/tsnlab/tickle/commit/70fd890609acc2a965398492496bdb07a0beb6d4"
+        },
+        "date": 1789036154483,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 936.308,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 900.005,
             "unit": "Mbps"
           }
         ]
