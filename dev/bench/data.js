@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789022203583,
+  "lastUpdate": 1789023411310,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -415,6 +415,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.048,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "2c0f03a89a8fa3720cb44dbb36c448222fc2c729",
+          "message": "run_perf.sh: add a 100-byte small-message perf run\n\nFull-MTU throughput is already at GbE line rate on the HIL Pis, so it can't\nshow whether internal changes cut per-message CPU cost. Small messages\n(batched several per packet) are per-message-CPU-bound instead - message\nrate there is the signal.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T15:56:06+09:00",
+          "tree_id": "caf74c75bea97950bb6c0313865706ce908b4a70",
+          "url": "https://github.com/tsnlab/tickle/commit/2c0f03a89a8fa3720cb44dbb36c448222fc2c729"
+        },
+        "date": 1789023410296,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           },
           {
