@@ -100,15 +100,6 @@ static void init_header(struct tt_Header* header, uint8_t source) {
     header->source = source;
 }
 
-// Whitebox tests here build a tt_Node on the stack and never tt_Node_destroy() it, so free the
-// per-source UpdateHeader copies process_update() malloc'd (checked by `make sanitize`).
-static void drop_updates(struct tt_Node* node) {
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        _tt_free(node->updates[i]);
-        node->updates[i] = NULL;
-    }
-}
-
 // An UpdateHeader that announces no endpoints at all - what tt_Node_destroy() broadcasts on the
 // way out.
 static uint32_t write_update_no_entities(uint8_t* buf, uint64_t last_modified) {
@@ -140,7 +131,6 @@ static void test_publisher_learns_subscriber_peer_from_update(void) {
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
     EXPECT_EQ_U32(sender_ip, pub.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)pub.peers[0].port);
-    drop_updates(&node);
 }
 
 // Same as above, mirrored for the Client/Server direction: a remote SERVICE_SERVER announcing a
@@ -165,7 +155,6 @@ static void test_client_learns_server_peer_from_update(void) {
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)client.peers[0].node_id);
     EXPECT_EQ_U32(sender_ip, client.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)client.peers[0].port);
-    drop_updates(&node);
 }
 
 // A remote entity of a kind that doesn't complement anything we track peers for (e.g. another
@@ -185,7 +174,6 @@ static void test_unrelated_entity_kind_is_not_tracked_as_peer(void) {
 
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a04, 8282));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
-    drop_updates(&node);
 }
 
 // Two announces from the same source node, with a changed last_modified (so the dedup check
@@ -212,7 +200,6 @@ static void test_repeated_announce_from_same_node_refreshes_peer_not_duplicates(
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers)); // refreshed, not duplicated
     EXPECT_EQ_U32(new_ip, pub.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)new_port, (uint32_t)pub.peers[0].port);
-    drop_updates(&node);
 }
 
 // A repeated announce with the SAME last_modified hits process_update()'s existing dedup
@@ -238,7 +225,6 @@ static void test_update_skipped_when_last_modified_unchanged_does_not_rerun_matc
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     EXPECT_EQ_U32(first_ip, pub.peers[0].ip); // unchanged - the second call's address was ignored
-    drop_updates(&node);
 }
 
 // Once peers[] is full, a newly seen peer is silently dropped without disturbing the existing
@@ -269,7 +255,6 @@ static void test_peer_table_full_drops_new_peer_silently(void) {
 
     EXPECT_EQ_U32(tt_MAX_PEER_COUNT, (uint32_t)count_peers(pub.peers)); // unchanged, not grown
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);      // first entry untouched
-    drop_updates(&node);
 }
 
 // Hearing from a node for the very first time must trigger an immediate unicast reply with our
@@ -298,7 +283,6 @@ static void test_first_contact_triggers_unicast_reply_with_own_announce(void) {
     EXPECT_EQ_U32(sender_ip, test_mock_send_to_last_ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)test_mock_send_to_last_port);
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // flushed immediately, drained back down
-    drop_updates(&node);
 }
 
 // A second announce from a node we already know (even one that legitimately changed - different
@@ -323,7 +307,6 @@ static void test_repeat_contact_does_not_trigger_reply(void) {
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // still just the one reply
-    drop_updates(&node);
 }
 
 // If tx_buffer already has something else pending, replying would risk redirecting that
@@ -345,7 +328,6 @@ static void test_reply_skipped_when_tx_buffer_has_pending_content(void) {
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
-    drop_updates(&node);
 }
 
 // A later announce from the same source that no longer lists the endpoint (it dropped that
@@ -372,7 +354,6 @@ static void test_source_dropping_endpoint_forgets_its_peer(void) {
     tail = write_update_no_entities(node.rx_buffer, 200);
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
-    drop_updates(&node);
 }
 
 // A farewell from one source must not disturb a peer entry another source established.
@@ -408,7 +389,6 @@ static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
         EXPECT_TRUE(pub.peers[i].node_id != 2); // source 2 fully gone
     }
     EXPECT_TRUE(found_node3);
-    drop_updates(&node);
 }
 
 int main(void) {

@@ -93,10 +93,5 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     memcpy(node.rx_buffer, data, size);
     process_packet(&node, node.rx_buffer, 0, (uint32_t)size, 0x0a000002, 8282);
 
-    // process_update() is the one path that allocates; free anything it recorded so a long fuzz
-    // run doesn't just leak-report on the first UPDATE.
-    for (uint32_t i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        _tt_free(node.updates[i]);
-    }
     return 0;
 }

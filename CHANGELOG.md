@@ -23,6 +23,7 @@ Targeting the first tagged release, `v1.0.0`.
   endianness-independent (byte-at-a-time FNV-1a).
 - `tests/test_cross_endian.c`; `tests/fuzz_process_packet.c` + `make fuzz`; `make sanitize`
   (ASan + UBSan unit-test run).
+- `tt_hash_id()` collision test and reverse-endian string-decode test.
 
 ### Changed
 
@@ -48,6 +49,8 @@ Targeting the first tagged release, `v1.0.0`.
   datagram - forward-compatible with newer protocol revisions.
 - `tt_hash_id()` no longer does unaligned `uint32_t` reads of the name strings (a fault on
   strict-alignment targets).
+- The library no longer allocates: `process_update()`'s per-source `malloc()` is replaced by
+  two fixed arrays on `tt_Node`. Nothing in `src/` calls `malloc`/`free` now.
 
 ### Known limitations
 

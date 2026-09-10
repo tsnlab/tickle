@@ -60,6 +60,18 @@ static void test_hash_id_is_byte_oriented_and_stable(void) {
 
     // The separator makes the split between type and name significant.
     EXPECT_TRUE(tt_hash_id("ab", "c") != tt_hash_id("a", "bc"));
+
+    // Distinct nearby inputs land on distinct ids (the old additive hash collided readily here).
+    EXPECT_TRUE(tt_hash_id("t", "a") != tt_hash_id("t", "b"));
+    EXPECT_TRUE(tt_hash_id("t", "ab") != tt_hash_id("t", "ba"));
+    EXPECT_TRUE(tt_hash_id("t", "aaaa") != tt_hash_id("t", "aaab"));
+
+    // An over-long name is clamped to tt_MAX_NAME_LENGTH, not read past / crashed on.
+    char longname[tt_MAX_NAME_LENGTH + 64];
+    memset(longname, 'x', sizeof(longname));
+    longname[sizeof(longname) - 1] = '\0';
+    EXPECT_TRUE(tt_hash_id("t", longname) != 0);
+
     byte_swapped_string_hash_ref = h;
 }
 
@@ -232,10 +244,6 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
     EXPECT_EQ_U32(sender_ip, pub.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)sender_port, (uint32_t)pub.peers[0].port);
-
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        _tt_free(node.updates[i]); // process_update() malloc'd a copy; node is never destroyed here
-    }
 }
 
 // --- CALLREQUEST from a reverse-endian client: server answers with the right seq_no ---

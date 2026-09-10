@@ -461,7 +461,8 @@ static void reset_node_state(struct tt_Node* node) {
     node->last_modified = 0;
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        node->updates[i] = NULL;
+        node->update_last_modified[i] = 0;
+        node->update_seen[i] = false;
     }
 
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
@@ -1208,10 +1209,10 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
 // Unicasts our own current UPDATE announce straight back to a peer we've just heard from for the
 // first time - see process_update()'s own comment on why. Terminates rather than looping forever
 // because it only ever fires on that first contact: by the time this reply reaches the peer and
-// it processes it, node->updates[our own source] on ITS side is no longer NULL - either it's
+// it processes it, node->update_seen[our own source] on ITS side is already true - either from
 // whatever announce got us onto its radar in the first place, or, in the simultaneous-startup
-// case, this very reply is what does - so replying to a reply never meets this same trigger
-// condition again on either side. Skipped (not a correctness issue, just a missed optimization
+// case, from this very reply - so replying to a reply never meets this same trigger condition
+// again on either side. Skipped (not a correctness issue, just a missed optimization
 // this one time - the periodic broadcast still reaches them eventually) whenever tx_buffer
 // already has something else pending: redirecting that to a single peer here could be wrong for
 // whatever else it's for (same shared-tx_buffer reasoning as process_callrequest()'s own unicast).
@@ -1227,53 +1228,43 @@ static void reply_with_own_announce(struct tt_Node* node, uint8_t sender_node_id
 
 static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                            uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
-    uint32_t length = tail - head;
-
     struct tt_UpdateHeader* update_header = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateHeader));
     if (update_header == NULL) {
         TT_LOG_ERROR("Illegal UpdateHeader");
         return false;
     }
 
+    uint8_t source = header->source;
+    uint64_t last_modified = rd64(header, update_header->last_modified);
+
     TT_LOG_DEBUG("Update");
-    TT_LOG_DEBUG("  last_modified: %lu", update_header->last_modified);
+    TT_LOG_DEBUG("  last_modified: %lu", last_modified);
     TT_LOG_DEBUG("  entity_count: %u", update_header->entity_count);
 
-    if ((node->updates[header->source] != NULL) &&
-        (node->updates[header->source]->last_modified == update_header->last_modified)) {
-        return true;
+    if (node->update_seen[source] && node->update_last_modified[source] == last_modified) {
+        return true; // nothing changed since the announce we last acted on
     }
 
-    // The very first time we've heard from this node (as opposed to it having changed its
-    // endpoints since we last heard from it) - captured before node->updates[header->source] is
-    // overwritten below, since that's exactly the state reply_with_own_announce() needs to not
-    // reply forever (see its own comment).
-    bool is_first_contact_from_sender = node->updates[header->source] == NULL;
-
-    struct tt_UpdateHeader* new_update = _tt_malloc(length);
-    if (new_update == NULL) {
-        TT_LOG_ERROR("Out of memory");
-        return false;
-    }
-
-    _tt_memcpy(new_update, update_header, length);
+    // First time we've ever heard from this node, as opposed to it changing its endpoints since -
+    // captured before update_seen[] is set below, because that's the state
+    // reply_with_own_announce() needs to not reply forever (see its own comment).
+    bool is_first_contact_from_sender = !node->update_seen[source];
 
     // This announce supersedes anything we knew about what this source hosts (it may have dropped
     // an endpoint, or left entirely - see tt_Node_destroy()'s farewell UPDATE). Forget its old
     // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
-    forget_peers_from_source(node, header->source);
+    forget_peers_from_source(node, source);
 
     if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip,
                                 sender_port)) {
-        _tt_free(new_update);
         return false;
     }
 
-    _tt_free(node->updates[header->source]);
-    node->updates[header->source] = new_update;
+    node->update_last_modified[source] = last_modified;
+    node->update_seen[source] = true;
 
     if (is_first_contact_from_sender) {
-        reply_with_own_announce(node, header->source, sender_ip, sender_port);
+        reply_with_own_announce(node, source, sender_ip, sender_port);
     }
 
     return true;
@@ -1933,11 +1924,6 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     node_update(node, time, NULL);
     if (!flush_tx(node, node->tx_tail, NULL, 0)) {
         TT_LOG_WARNING("Could not send farewell announce on node destroy");
-    }
-
-    for (uint32_t i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        _tt_free(node->updates[i]);
-        node->updates[i] = NULL;
     }
 
     // The node is fully torn down at this point; drop every pending scheduler entry

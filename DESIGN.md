@@ -366,16 +366,24 @@ scheduler work, drain whatever RX is already waiting, return) rather than a no-o
 what it's for (cutting broadcast traffic when a topic has one or two subscribers) but is not a
 full-MTU throughput optimization - at line rate broadcast is still the faster choice.
 
-## Fixed-size caches, not `malloc`/`free`
+## No dynamic allocation after `tt_Node_create()`
 
-Both `tt_Client.cache` (the one outstanding call) and `tt_Server.cache[]` (up to
-`tt_MAX_SERVER_CACHE_COUNT` cached responses, for retry-dedup) are backed by fixed buffers
-embedded in the struct (`cache_buf`/`cache_buf[][]`) instead of `malloc()`ing one per
-call/response. Both are naturally bounded already (one outstanding call per client; a fixed
-slot count per server), so going static adds no unbounded-growth risk - just a larger
-`sizeof(struct tt_Server)` (~188KB, dominated by `cache_buf[64][tt_MAX_BUFFER_LENGTH * 2]`),
-traded for zero heap churn on the RPC hot path and one less failure mode (no allocation-failure
-branch to handle).
+The library never calls `malloc()`/`free()` on any path. Everything that could have been a
+heap object is a fixed buffer embedded in a struct:
+
+- `tt_Client.cache` (the one outstanding call) and `tt_Server.cache[]` (up to
+  `tt_MAX_SERVER_CACHE_COUNT` cached responses, for retry-dedup) live in `cache_buf` /
+  `cache_buf[][]`. Both are naturally bounded (one outstanding call per client; a fixed slot
+  count per server), so going static adds no unbounded-growth risk - just a larger
+  `sizeof(struct tt_Server)` (~188KB, dominated by `cache_buf[64][tt_MAX_BUFFER_LENGTH * 2]`).
+- Discovery state per remote node is two plain arrays on `tt_Node` -
+  `update_last_modified[tt_MAX_ENDPOINT_COUNT]` and `update_seen[...]`. `process_update()` used
+  to `malloc()` a copy of each incoming announce, but only its `last_modified` and
+  seen/not-seen were ever read back, so a `uint64_t` + a `bool` per source is all it keeps.
+
+The payoff: no allocation-failure branch to reason about, no heap fragmentation on a
+long-running embedded target, and `make sanitize` (ASan/UBSan) has nothing to leak-check in the
+library itself.
 
 ## Byte order: every node sends native, every receiver swaps
 

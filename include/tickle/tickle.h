@@ -63,7 +63,12 @@ struct tt_Node {
     bool endpoint_index_valid;
     uint64_t last_modified; // Last modified timestamp in ns to announce other nodes e.g. server, publisher
 
-    struct tt_UpdateHeader* updates[tt_MAX_ENDPOINT_COUNT];
+    // Per remote node (indexed by its node id), the last UPDATE announce we've acted on: its
+    // last_modified, and whether we've seen it at all. Only these two facts are ever read back
+    // (dedup + first-contact detection - see process_update()), so there's no need to keep a
+    // malloc'd copy of the whole variable-length announce the way earlier versions did.
+    uint64_t update_last_modified[tt_MAX_ENDPOINT_COUNT];
+    bool update_seen[tt_MAX_ENDPOINT_COUNT];
 
     uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t tx_tail;
