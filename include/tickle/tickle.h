@@ -48,6 +48,11 @@ struct tt_Node {
     uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t tx_tail;
     uint32_t tx_size;
+    // Set whenever node_update()'s always-broadcast UPDATE announce is sitting batched,
+    // unflushed, in tx_buffer (cleared once a flush actually sends it) - node_flush() must not
+    // unicast while this is true, since tx_buffer is one shared buffer flushed as a unit and an
+    // UPDATE has to reach the whole segment, not just a couple of known peers. See node_flush().
+    bool tx_has_pending_update;
 
     uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
@@ -65,6 +70,16 @@ struct tt_Endpoint {
     uint8_t kind;
     uint32_t id; // hash(topic/service name + endpoint name)
     const char* name;
+};
+
+// A destination this node has learned it can reach directly (see decode_update_entities()'s
+// peer-matching, upsert_peer() in tickle.c). node_id doubles as the "slot occupied" flag -
+// tt_NODE_ID_INVALID (0) means empty, the same sentinel struct tt_Node's own id already uses
+// (valid node ids are 1..254).
+struct tt_Peer {
+    uint8_t node_id;
+    uint32_t ip;   // host byte order, matching tt_receive()'s own sender_ip out-param
+    uint16_t port; // host byte order, matching tt_receive()'s own sender_port out-param
 };
 
 struct tt_Service;
@@ -89,6 +104,10 @@ struct tt_Client { // extends endpoint
     struct tt_SubmessageHeader* cache; // NULL when idle, else points into cache_buf
     uint64_t cache_time;               // Cache time
     uint32_t latency;                  // Call latency
+
+    // Known Servers matching this Client's service, learned via UPDATE announces - see
+    // tt_UNICAST_PEER_THRESHOLD.
+    struct tt_Peer peers[tt_MAX_PEER_COUNT];
 };
 
 struct tt_Server;
@@ -162,6 +181,10 @@ struct tt_Publisher { // extends endpoint
 
     // transcation
     uint16_t seq_no;
+
+    // Known Subscribers matching this Publisher's topic, learned via UPDATE announces - see
+    // tt_UNICAST_PEER_THRESHOLD.
+    struct tt_Peer peers[tt_MAX_PEER_COUNT];
 };
 
 struct tt_Subscriber;

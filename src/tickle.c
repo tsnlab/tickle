@@ -64,12 +64,14 @@ static void rollback(struct tt_Node* node, uint32_t old_tx_tail) {
     node->tx_tail = old_tx_tail;
 }
 
-// dest_ip == 0 means "no override, send to the node's usual broadcast address" (0.0.0.0 is
-// never a real unicast peer, so it's a safe sentinel) - the only caller that ever passes a real
-// one is process_callrequest(), unicasting a CallResponse straight back to its own requester
-// instead of broadcasting an answer the rest of the segment never asked for (see its own comment
-// on why that's safe there specifically).
-static bool flush_tx(struct tt_Node* node, uint32_t len, uint32_t dest_ip, uint16_t dest_port) {
+// peer_count == 0 (peers may be NULL) means "no override, send to the node's usual broadcast
+// address" - the direct successor to the old dest_ip == 0 sentinel. peer_count >= 1 sends the
+// same already-encoded buffer to each peer in turn via tt_send_to() instead - used by
+// process_callrequest() (a peer list of length 1: the CallResponse straight back to its own
+// requester, see its own comment on why that's safe there specifically) and by
+// tt_Publisher_publish()/tt_Client_call()/resend_call_request() (a short list of known peers, see
+// tt_UNICAST_PEER_THRESHOLD) once discovery has learned a handful of them.
+static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
     // Check at least 1 submessage is contained
     if (len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
         return true; // Nothing to flush
@@ -86,12 +88,27 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, uint32_t dest_ip, uint1
     header->version = tt_VERSION;
     header->source = node->id;
 
-    int32_t send_ret =
-        dest_ip != 0 ? tt_send_to(node, node->tx_buffer, len, dest_ip, dest_port) : tt_send(node, node->tx_buffer, len);
-    if (send_ret < 0) {
+    bool sent_ok = true;
+    if (peer_count == 0) {
+        sent_ok = tt_send(node, node->tx_buffer, len) >= 0;
+    } else {
+        for (uint8_t i = 0; i < peer_count; i++) {
+            if (tt_send_to(node, node->tx_buffer, len, peers[i].ip, peers[i].port) < 0) {
+                sent_ok = false;
+                break;
+            }
+        }
+    }
+    if (!sent_ok) {
         TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
     }
+
+    // Whatever was pending (including any batched UPDATE - see node_update()/node_flush()) just
+    // went out in `len` bytes above, unconditionally: a deferred-flush's `base` always covers
+    // everything appended before the submessage that triggered it, which includes an earlier
+    // UPDATE if one was still batched.
+    node->tx_has_pending_update = false;
 
     _tt_memmove(node->tx_buffer + sizeof(struct tt_Header), node->tx_buffer + len, node->tx_tail - len);
     node->tx_tail = sizeof(struct tt_Header) + (node->tx_tail - len);
@@ -100,7 +117,7 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, uint32_t dest_ip, uint1
 }
 
 static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
-                       uint32_t dest_ip, uint16_t dest_port) {
+                       const struct tt_Peer* peers, uint8_t peer_count) {
     // Set submessage header length
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
     size_t roundup = ROUNDUP(length) - length;
@@ -134,7 +151,7 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     // Case 1: Immediate flush when is_flush is true
     // case 2: Flush when tx_tail exceeds tt_MAX_BUFFER_LENGTH
     if (is_flush) {
-        if (!flush_tx(node, flush_len, dest_ip, dest_port)) {
+        if (!flush_tx(node, flush_len, peers, peer_count)) {
             return false;
         }
     } else {
@@ -173,6 +190,42 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     }
 
     return NULL;
+}
+
+// Refreshes node_id's existing slot in peers[] (its address may have changed), or claims the
+// first empty one. Fixed-capacity, no malloc - see tt_MAX_PEER_COUNT. Silently drops the peer if
+// the table is already full: a full table already means more peers than tt_UNICAST_PEER_THRESHOLD
+// exist, i.e. the sender is already broadcasting instead of unicasting, so the dropped peer is
+// still reached that way.
+static void upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uint16_t port) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (peers[i].node_id == node_id) {
+            peers[i].ip = ip;
+            peers[i].port = port;
+            return;
+        }
+    }
+
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (peers[i].node_id == tt_NODE_ID_INVALID) {
+            peers[i].node_id = node_id;
+            peers[i].ip = ip;
+            peers[i].port = port;
+            return;
+        }
+    }
+
+    TT_LOG_WARNING("Peer table full (%d), dropping newly seen peer node %u", tt_MAX_PEER_COUNT, node_id);
+}
+
+static uint8_t count_peers(const struct tt_Peer* peers) {
+    uint8_t count = 0;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (peers[i].node_id != tt_NODE_ID_INVALID) {
+            count++;
+        }
+    }
+    return count;
 }
 
 static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
@@ -305,6 +358,7 @@ static void reset_node_state(struct tt_Node* node) {
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
+    node->tx_has_pending_update = false;
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
@@ -368,6 +422,9 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
     client->cache = NULL;
     client->cache_time = 0;
     client->latency = 0;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        client->peers[i].node_id = tt_NODE_ID_INVALID;
+    }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_RET_OK) {
@@ -413,6 +470,9 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        pub->peers[i].node_id = tt_NODE_ID_INVALID;
+    }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_RET_OK) {
@@ -446,7 +506,8 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
 
 // Re-sends the still-outstanding call request verbatim. Failing to encode/flush isn't fatal here
 // - the retry timer armed by the caller will just try again.
-static void resend_call_request(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header) {
+static void resend_call_request(struct tt_Node* node, struct tt_Client* client,
+                                struct tt_SubmessageHeader* submessage_header) {
     uint32_t old_tx_tail = node->tx_tail;
     void* buf = encode(node, submessage_header->length);
     if (buf == NULL) {
@@ -455,9 +516,14 @@ static void resend_call_request(struct tt_Node* node, struct tt_SubmessageHeader
     }
 
     _tt_memcpy(buf, submessage_header, submessage_header->length);
-    // Flush immediately, same reasoning as the initial call in tt_Client_call(). Broadcast (0, 0)
-    // - the server that'll answer isn't known yet, that's what this call is discovering.
-    if (!end_encode(node, buf, true, 0, 0)) {
+    // Flush immediately, same reasoning as the initial call in tt_Client_call(). Same peer
+    // decision too, recomputed here in case discovery has learned more (or fewer) Servers since
+    // the initial call went out - see tt_Client_call()'s own comment on the threshold and the
+    // shared-tx_buffer guard (old_tx_tail == sizeof(tt_Header)).
+    uint8_t peer_count = count_peers(client->peers);
+    bool unicast =
+        peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header);
+    if (!end_encode(node, buf, true, unicast ? client->peers : NULL, unicast ? peer_count : 0)) {
         TT_LOG_WARNING("Cannot flush call request retry, will retry later");
         rollback(node, old_tx_tail);
     }
@@ -493,7 +559,7 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
         return;
     }
 
-    resend_call_request(node, submessage_header);
+    resend_call_request(node, client, submessage_header);
 
     if (!tt_Node_schedule(node, tt_get_ns() + compute_retry_interval(client), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
@@ -555,8 +621,15 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 
     // Flush tx immediately: an RPC caller is synchronously waiting on the reply, so this can't
     // sit batched until node_flush()'s next 1ms tick like a pub/sub publish reasonably can.
-    // Broadcast (0, 0) - which server will answer isn't known yet; that's what this call is for.
-    if (!end_encode(node, submessage_header, true, 0, 0)) {
+    // Unicast to each known Server when there are few enough of them (tt_UNICAST_PEER_THRESHOLD)
+    // and nothing else was already sitting unflushed in tx_buffer ahead of this CallRequest (same
+    // shared-tx_buffer guard as tt_Publisher_publish()/process_callrequest()); otherwise - 0
+    // known Servers (discovery hasn't matched one yet) or more than the threshold - broadcast, as
+    // this always has until now.
+    uint8_t peer_count = count_peers(client->peers);
+    bool unicast =
+        peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header);
+    if (!end_encode(node, submessage_header, true, unicast ? client->peers : NULL, unicast ? peer_count : 0)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
@@ -658,7 +731,12 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
-    if (!end_encode(node, submessage_header, false, 0, 0)) {
+    // Always batches (is_flush=false) - node_flush()'s own 1ms tick decides broadcast vs. unicast
+    // to pub->peers for the whole accumulated buffer at once (see its own comment on why that
+    // decision has to live there and not here: unicasting a single publish() immediately, tried
+    // and measured, collapsed a bulk/high-rate stream's real throughput by forgoing this
+    // batching entirely - node_flush() gets the traffic-reduction benefit without that cost).
+    if (!end_encode(node, submessage_header, false, NULL, 0)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
@@ -729,9 +807,13 @@ static int encode_update_entities(struct tt_Node* node, struct tt_Endpoint* cons
     return entity_count;
 }
 
-static void node_update(struct tt_Node* node, uint64_t time, void* param) {
-    UNUSED(param);
-
+// Builds this node's current UPDATE announce (its own endpoint list) and sends it either way
+// node_update()/process_update() need it sent: peer_count == 0 broadcasts it, batched
+// (is_flush=false - the periodic case, no synchronous waiter, node_flush()'s own tick is fine);
+// peer_count >= 1 unicasts it to that one peer, flushed immediately (the reactive first-contact
+// reply case in process_update() - the whole point is the other side learning us as fast as
+// possible, not waiting for the next tick or our own next periodic broadcast).
+static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
     uint32_t old_tx_tail = node->tx_tail;
 
     // start_encode()/encode() below already log their own reason when they fail (e.g. "Lack of
@@ -740,13 +822,13 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     // Header and SubmessageHeader
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
-        goto done;
+        return false;
     }
 
     struct tt_UpdateHeader* update_header = encode(node, sizeof(struct tt_UpdateHeader));
     if (update_header == NULL) {
         rollback(node, old_tx_tail);
-        goto done;
+        return false;
     }
 
     update_header->last_modified = node->last_modified;
@@ -761,45 +843,108 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     int entity_count = encode_update_entities(node, endpoints, endpoint_count);
     if (entity_count < 0) {
         rollback(node, old_tx_tail);
-        goto done;
+        return false;
     }
     update_header->entity_count = (uint8_t)entity_count;
 
-    if (!end_encode(node, submessage_header, false, 0, 0)) {
+    bool is_flush = peer_count > 0;
+    if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
         rollback(node, old_tx_tail);
-        goto done;
+        return false;
     }
 
-done:
+    if (!is_flush) {
+        // This UPDATE is now sitting batched in tx_buffer (or, rarely, was already flushed on
+        // its own by end_encode()'s own overflow handling above) - either way it's
+        // broadcast-only content that must not get swept into a unicast flush; node_flush()
+        // clears this once it's actually sent, see flush_tx().
+        node->tx_has_pending_update = true;
+    }
+
+    return true;
+}
+
+static void node_update(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(param);
+
+    build_and_send_update(node, NULL, 0);
+
     if (!tt_Node_schedule(node, time + tt_NODE_UPDATE_INTERVAL, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
     }
 }
 
+// This periodic tick only ever flushes batched pub/sub content - a DATA submessage from
+// tt_Publisher_publish() and/or an UPDATE from node_update() - never a CallResponse (that always
+// flushes immediately from process_callrequest() itself instead). Broadcast is always correct
+// for that content; unicasting it to a short list of known peers is only correct when (a) no
+// UPDATE is currently batched in there (it must reach the whole segment, not just a couple of
+// peers - see tx_has_pending_update) and (b) there's exactly one Publisher on this node to
+// attribute the batched DATA to (tx_buffer is shared across every endpoint on a node - mixing
+// two Publishers' data in one unicast flush could send one's data to the other's peers). Both
+// conditions hold for every one of this codebase's own examples (one Publisher per node); a node
+// with 0 or 2+ Publishers, or one with an UPDATE still pending, simply keeps broadcasting exactly
+// as before this feature existed.
 static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
-    // flush_tx() already logs its own reason on failure, so nothing to add here. Always
-    // broadcast (0, 0) - this periodic tick only ever flushes batched pub/sub data, never a
-    // CallResponse (that always flushes immediately from process_callrequest() itself instead).
-    flush_tx(node, node->tx_tail, 0, 0);
+    const struct tt_Peer* peers = NULL;
+    uint8_t peer_count = 0;
+
+    if (!node->tx_has_pending_update) {
+        struct tt_Publisher* sole_publisher = NULL;
+        uint32_t publisher_count = 0;
+        for (uint32_t i = 0; i < node->endpoint_count; i++) {
+            struct tt_Endpoint* endpoint = node->endpoints[i];
+            if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+                sole_publisher = (struct tt_Publisher*)endpoint;
+                publisher_count++;
+            }
+        }
+
+        if (publisher_count == 1) {
+            uint8_t count = count_peers(sole_publisher->peers);
+            if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD) {
+                peers = sole_publisher->peers;
+                peer_count = count;
+            }
+        }
+    }
+
+    // flush_tx() already logs its own reason on failure, so nothing to add here.
+    flush_tx(node, node->tx_tail, peers, peer_count);
 
     if (!tt_Node_schedule(node, time + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
     }
 }
 
-// Walks the entity_count UpdateEntity records following an UpdateHeader, just enough to
-// advance *head past them (their contents themselves are discarded - only used for logging).
-// Returns false if a type/name string fails to decode.
-static bool decode_update_entities(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail,
-                                   int entity_count) {
+// Walks the entity_count UpdateEntity records following an UpdateHeader, advancing *head past
+// them. Along the way, matches each announced entity against this node's own endpoints: a
+// remote TOPIC_SUBSCRIBER (resp. SERVICE_SERVER) whose endpoint_id matches one of our own
+// Publishers (resp. Clients) means that Publisher/Client just learned a new (or refreshed) peer
+// it can unicast to - see upsert_peer(), tt_UNICAST_PEER_THRESHOLD. Returns false if a
+// type/name string fails to decode.
+static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
+                                   uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port) {
     for (int i = 0; i < entity_count && *head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, head, tail, sizeof(struct tt_UpdateEntity));
 
         TT_LOG_DEBUG("UpdateEntity");
         TT_LOG_DEBUG("  endpoint_id: %08x", update_entity->endpoint_id);
         TT_LOG_DEBUG("  kind: %d", update_entity->kind);
+
+        if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, update_entity->endpoint_id);
+            if (local != NULL) {
+                upsert_peer(((struct tt_Publisher*)local)->peers, header->source, sender_ip, sender_port);
+            }
+        } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
+            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_SERVICE_CLIENT, update_entity->endpoint_id);
+            if (local != NULL) {
+                upsert_peer(((struct tt_Client*)local)->peers, header->source, sender_ip, sender_port);
+            }
+        }
 
         uint16_t type_len = 0;
         char* type = NULL;
@@ -821,8 +966,28 @@ static bool decode_update_entities(struct tt_Node* node, uint8_t* buffer, uint32
     return true;
 }
 
+// Unicasts our own current UPDATE announce straight back to a peer we've just heard from for the
+// first time - see process_update()'s own comment on why. Terminates rather than looping forever
+// because it only ever fires on that first contact: by the time this reply reaches the peer and
+// it processes it, node->updates[our own source] on ITS side is no longer NULL - either it's
+// whatever announce got us onto its radar in the first place, or, in the simultaneous-startup
+// case, this very reply is what does - so replying to a reply never meets this same trigger
+// condition again on either side. Skipped (not a correctness issue, just a missed optimization
+// this one time - the periodic broadcast still reaches them eventually) whenever tx_buffer
+// already has something else pending: redirecting that to a single peer here could be wrong for
+// whatever else it's for (same shared-tx_buffer reasoning as process_callrequest()'s own unicast).
+static void reply_with_own_announce(struct tt_Node* node, uint8_t sender_node_id, uint32_t sender_ip,
+                                    uint16_t sender_port) {
+    if (node->tx_tail != sizeof(struct tt_Header)) {
+        return;
+    }
+
+    struct tt_Peer reply_to = {sender_node_id, sender_ip, sender_port};
+    build_and_send_update(node, &reply_to, 1);
+}
+
 static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                           uint32_t tail) {
+                           uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     uint32_t length = tail - head;
 
     struct tt_UpdateHeader* update_header = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateHeader));
@@ -840,6 +1005,12 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
         return true;
     }
 
+    // The very first time we've heard from this node (as opposed to it having changed its
+    // endpoints since we last heard from it) - captured before node->updates[header->source] is
+    // overwritten below, since that's exactly the state reply_with_own_announce() needs to not
+    // reply forever (see its own comment).
+    bool is_first_contact_from_sender = node->updates[header->source] == NULL;
+
     struct tt_UpdateHeader* new_update = _tt_malloc(length);
     if (new_update == NULL) {
         TT_LOG_ERROR("Out of memory");
@@ -848,13 +1019,18 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 
     _tt_memcpy(new_update, update_header, length);
 
-    if (!decode_update_entities(node, buffer, &head, tail, update_header->entity_count)) {
+    if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip,
+                                sender_port)) {
         _tt_free(new_update);
         return false;
     }
 
     _tt_free(node->updates[header->source]);
     node->updates[header->source] = new_update;
+
+    if (is_first_contact_from_sender) {
+        reply_with_own_announce(node, header->source, sender_ip, sender_port);
+    }
 
     return true;
 }
@@ -1103,17 +1279,14 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     // broadcast-destined content would be wrong. Falling back to broadcast in that case costs
     // nothing here (this server's own response still reaches its caller, everyone else just also
     // hears it, exactly like before this optimization existed) but keeps that mixed case correct.
-    uint32_t dest_ip = 0;
-    uint16_t dest_port = 0;
-    if (old_tx_tail == sizeof(struct tt_Header)) {
-        dest_ip = sender_ip;
-        dest_port = sender_port;
-    }
+    struct tt_Peer sender_peer = {header->source, sender_ip, sender_port};
+    bool unicast_to_sender = old_tx_tail == sizeof(struct tt_Header);
 
     // Flush immediately: the client on the other end is synchronously waiting on this response
     // (or already retrying because it hasn't seen one yet), so it can't sit batched until
     // node_flush()'s next 1ms tick like a pub/sub publish reasonably can.
-    if (!end_encode(node, submessage_header, true, dest_ip, dest_port)) {
+    if (!end_encode(node, submessage_header, true, unicast_to_sender ? &sender_peer : NULL,
+                    unicast_to_sender ? 1 : 0)) {
         rollback(node, old_tx_tail);
         return false;
     }
@@ -1184,11 +1357,12 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     // Each process_X() below already logs its own specific reason on failure, so this switch
     // doesn't log again on top of that - only the type dispatch itself gets a message here.
     // sender_ip/sender_port (this packet's own source, from tt_receive() - see
-    // handle_receive_result()) only ever reaches process_callrequest(), which is the one case
-    // that needs to know it (see its own comment on why).
+    // handle_receive_result()) reach process_callrequest() (to unicast the CallResponse straight
+    // back) and process_update() (to learn/refresh a peer table entry - see decode_update_
+    // entities()'s own comment); the other cases don't need them.
     switch (submessage_header->type) {
     case tt_SUBMESSAGE_TYPE_UPDATE:
-        process_update(node, header, buffer, head, body_tail);
+        process_update(node, header, buffer, head, body_tail, sender_ip, sender_port);
         return true;
     case tt_SUBMESSAGE_TYPE_DATA:
         process_data(node, header, buffer, head, body_tail);

@@ -95,6 +95,7 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node, struc
     memset(pub, 0, sizeof(*pub));
     pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
     pub->endpoint.id = ENDPOINT_ID;
+    pub->endpoint.name = "test_publisher"; // node_update()'s encode_update_entities() needs a name
     pub->node = node;
     pub->topic = topic;
 }
@@ -114,7 +115,9 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
 
 // Unlike tt_Client_call() (which flushes immediately - see test_client_call.c), publish batches:
 // it must only append to node->tx_buffer and bump pub->seq_no, never call tt_send() itself (see
-// DESIGN.md's "RPC flushes immediately; Publish batches").
+// DESIGN.md's "RPC flushes immediately; Publish batches"). This holds regardless of pub->peers -
+// the broadcast-vs-unicast decision for the batched content lives entirely in node_flush() (see
+// the test_node_flush_* cases below), not here.
 static void test_publish_buffers_without_flushing(void) {
     test_mock_reset();
 
@@ -154,6 +157,160 @@ static void test_publish_rolls_back_on_out_of_buffer(void) {
     EXPECT_EQ_INT(tt_RET_OUT_OF_BUFFER, ret);
     EXPECT_EQ_U32(old_tx_tail, node.tx_tail);
     EXPECT_EQ_U32(0, (uint32_t)pub.seq_no);
+}
+
+// node_flush() must broadcast (not unicast) when the Publisher has no known peers yet - the
+// pre-existing, unchanged default behavior discovery falls back to before it's learned anyone.
+static void test_node_flush_broadcasts_with_no_known_peers(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+}
+
+// At or under tt_UNICAST_PEER_THRESHOLD known peers on the node's one Publisher, node_flush()
+// must unicast the whole batched buffer to each of them instead of broadcasting - batching (the
+// publish() call itself never flushes, see test_publish_buffers_without_flushing) is preserved;
+// only the destination changes at flush time.
+static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub.peers[1] = (struct tt_Peer) {.node_id = 3, .ip = 0xc0a80a03, .port = 8283};
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // one unicast per known peer
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);    // and no broadcast on top
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+}
+
+// More known peers than tt_UNICAST_PEER_THRESHOLD must fall back to broadcast instead of
+// unicasting to all of them.
+static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    for (int i = 0; i < tt_UNICAST_PEER_THRESHOLD + 1; i++) {
+        pub.peers[i] =
+            (struct tt_Peer) {.node_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
+    }
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// A still-batched UPDATE announce (tx_has_pending_update) must force node_flush() to broadcast,
+// even with an otherwise-eligible peer count - it's the regression test for the real bug this
+// design was built to avoid: an UPDATE has to reach the whole segment, not just the peers a
+// Publisher happens to already know, and tx_buffer is one shared buffer flushed as a unit.
+static void test_node_flush_broadcasts_when_update_is_pending(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    node.tx_has_pending_update = true; // simulates node_update() having just batched an UPDATE
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_TRUE(!node.tx_has_pending_update); // cleared - it just went out in that broadcast
+}
+
+// A node with more than one Publisher must keep broadcasting even if one of them has an
+// eligible peer count - tx_buffer could hold batched DATA from either Publisher, and unicasting
+// to just one's peers would misdirect (or simply drop, for the other Subscribers) the other's.
+static void test_node_flush_broadcasts_when_multiple_publishers_on_node(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub1;
+    struct tt_Publisher pub2;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub1, &node, &topic);
+    init_publisher(&pub2, &node, &topic);
+    node.endpoint_count = 2;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub1;
+    node.endpoints[1] = (struct tt_Endpoint*)&pub2;
+
+    pub1.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub1, (struct tt_Data*)&value));
+
+    node_flush(&node, 0, NULL);
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// node_update() must mark tx_has_pending_update so node_flush() knows to keep broadcasting while
+// this announce is still sitting batched, unflushed, in tx_buffer.
+static void test_node_update_sets_pending_update_flag(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    EXPECT_TRUE(!node.tx_has_pending_update);
+
+    node_update(&node, 0, NULL);
+
+    EXPECT_TRUE(node.tx_has_pending_update);
 }
 
 // Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail
@@ -261,6 +418,12 @@ static void test_process_data_decode_failure_is_reported(void) {
 int main(void) {
     test_publish_buffers_without_flushing();
     test_publish_rolls_back_on_out_of_buffer();
+    test_node_flush_broadcasts_with_no_known_peers();
+    test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold();
+    test_node_flush_broadcasts_when_peer_count_exceeds_threshold();
+    test_node_flush_broadcasts_when_update_is_pending();
+    test_node_flush_broadcasts_when_multiple_publishers_on_node();
+    test_node_update_sets_pending_update_flag();
     test_process_data_dispatches_to_subscriber();
     test_process_data_unknown_endpoint_is_ignored();
     test_process_data_decode_failure_is_reported();

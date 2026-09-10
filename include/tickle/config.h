@@ -48,6 +48,21 @@
 #define tt_MAX_SCHEDULER_LENGTH 128  // Scheduling queue
 #define tt_MAX_SERVER_CACHE_COUNT 64 // >= # of client
 
+// Threshold for how many known recipient nodes a Publisher/Client sends to individually before
+// switching to one broadcast instead. <= this many known peers -> unicast (tt_send_to() once per
+// peer); more than this many -> broadcast (tt_send() once). Zero known peers (nobody has
+// announced a matching endpoint yet) always broadcasts too, regardless of this threshold -
+// there's nothing to unicast to yet, so it falls back to today's discovery-by-broadcast behavior.
+#define tt_UNICAST_PEER_THRESHOLD 2
+
+// Fixed capacity of each Publisher's/Client's peers[] table (struct tt_Peer, tickle.h) - the
+// known set of remote nodes (IP:port) hosting a matching Subscriber/Server, learned from their
+// periodic UPDATE announces. Must stay > tt_UNICAST_PEER_THRESHOLD: once full, a never-seen
+// peer is silently dropped rather than tracked (see upsert_peer() in tickle.c) - safe only
+// because a full table already implies "more than the threshold", i.e. already broadcasting,
+// which still reaches that dropped peer too.
+#define tt_MAX_PEER_COUNT 8
+
 #define _tt_NODE_ADDRESS "0.0.0.0"
 #define _tt_NODE_PORT 8282
 #define _tt_NODE_BROADCAST "255.255.255.255"

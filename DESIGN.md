@@ -299,6 +299,58 @@ batching (flush only once the buffer would otherwise overflow) is free efficienc
 latency cost to anyone. This one change dropped measured RPC round-trip latency by ~6.7x (rtt
 avg 1.451ms → 0.217ms on the `ping`/`pong` example).
 
+## Discovery-learned peers: unicast to a few, broadcast to the rest
+
+A server's `CallResponse` was the first thing taught to unicast straight back to its request's own
+source (`sender_ip`/`sender_port`, from the packet that just arrived) instead of broadcasting an
+answer the rest of the segment never asked for. `tt_UNICAST_PEER_THRESHOLD` and `tt_MAX_PEER_COUNT`
+(`config.h`) generalize the same idea to the two cases where a node doesn't already know a single
+answer address off the just-received packet: `tt_Publisher_publish()`'s Subscribers and
+`tt_Client_call()`'s Servers. Each `tt_Publisher`/`tt_Client` gets a small fixed-size `peers[]`
+table (`struct tt_Peer`, no `malloc` - same convention as `tt_Server.cache[]` above), populated by
+matching the periodic UPDATE announce's entities (`decode_update_entities()`) against this node's
+own endpoints by `endpoint_id`: a remote `TOPIC_SUBSCRIBER` matching one of ours is a Publisher's
+new peer; a remote `SERVICE_SERVER` match is a Client's. Peers are never expired (the protocol has
+no "leave" message to key that off, matching `node->updates[]`'s own no-expiry dedup cache) - a
+peer that's genuinely gone just goes back to behaving like an unanswered broadcast always has.
+
+At send time: 0 known peers (discovery hasn't matched yet) or more than the threshold both mean
+broadcast, exactly as before this feature existed. 1..`tt_UNICAST_PEER_THRESHOLD` known peers
+means unicast - but *where* that decision gets made differs by sender, because `tt_Publisher_
+publish()` batches (see below) while `tt_Client_call()` doesn't:
+
+- **Client**: decided right in `tt_Client_call()`/`resend_call_request()`, since RPC already
+  always flushes immediately regardless of destination - no batching to preserve or lose either
+  way.
+- **Publisher**: deciding this inside `tt_Publisher_publish()` itself was tried first and measured
+  against the `perf` example - forcing an immediate flush per `publish()` call to unicast, instead
+  of letting `node_flush()`'s normal batching apply, collapsed real receive throughput by ~95% once
+  discovery completed (many more, much smaller packets than the receive loop could keep up with) -
+  sending got *faster* (no self-receive tax - see the section below), but almost nothing arrived.
+  The decision was moved into `node_flush()`'s own 1ms tick instead: batching stays exactly as it
+  is today, and only the eventual flush's destination changes. Two guards keep that safe, since
+  `tx_buffer` is shared across every endpoint on a node and a flush always sends it as one unit:
+  `node->tx_has_pending_update` (set when `node_update()` batches its always-broadcast UPDATE
+  announce, cleared once a flush actually sends it) forces broadcast while an UPDATE is still
+  sitting in there - it has to reach the whole segment, not just a Publisher's known peers - and
+  `node_flush()` only ever unicasts when the node has *exactly one* `TOPIC_PUBLISHER` endpoint, so
+  a mixed-Publisher node can't have one's batched data misdirected at the other's peers.
+
+Verifying this end-to-end hit a second, more subtle issue worth recording: `platform/linux/
+test.sh` runs both sides of every pair in one shared network namespace, bound to the *same*
+wildcard address (`0.0.0.0:8282`, `SO_REUSEADDR`) and distinguished only by an explicit `-I` node
+id (see that file's own comment) - never a real distinct IP. A minimal two-socket repro confirmed
+that with multiple wildcard-bound UDP sockets sharing one address, the kernel delivers a *unicast*
+packet only to whichever one bound last, regardless of any addressing intent, while broadcast
+still correctly reaches all of them - and with two genuinely distinct addresses instead, unicast
+delivery is exactly correct. So this harness cannot validate unicast delivery specifically (it
+happened to make the already-existing `CallResponse` unicast look reliable only by the coincidence
+of which side `run_pair()` happens to start last) - the whitebox tests that assert the exact
+destination `ip`/`port` a send was made with (`test_process_callrequest.c`,
+`test_peer_discovery.c`, `test_client_call.c`, `test_publish_subscribe.c`'s `test_node_flush_*`
+cases) are what actually cover correctness here; a real second host or `platform/linux/netns.mk`'s
+veth-pair setup (real distinct IPs, needs root) would be the way to check it end-to-end.
+
 ## Fixed-size caches, not `malloc`/`free`
 
 Both `tt_Client.cache` (the one outstanding call) and `tt_Server.cache[]` (up to

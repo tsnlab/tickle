@@ -83,6 +83,9 @@ static void test_call_rejected_while_one_outstanding(void) {
 // A fresh call must encode into the client's own cache_buf (not a new allocation), and - since
 // call requests always flush immediately (see end_encode(is_flush=true) in tt_Client_call) -
 // must have already gone out over tt_send() by the time tt_Client_call() returns.
+// init_node_and_client() leaves client.peers[] zeroed (no known Servers yet), which is also the
+// "0 known peers" case: discovery hasn't matched anyone yet, so this always broadcasts
+// regardless of tt_UNICAST_PEER_THRESHOLD.
 static void test_call_flushes_immediately_and_fills_cache(void) {
     test_mock_reset();
     test_mock_now = 500;
@@ -102,9 +105,86 @@ static void test_call_flushes_immediately_and_fills_cache(void) {
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // drained back down by the flush
 }
 
+// At or under tt_UNICAST_PEER_THRESHOLD known Servers, the initial call must unicast to each of
+// them instead of broadcasting - no batching concern here (RPC always flushes immediately
+// regardless of destination, unlike Publisher - see tt_Client_call()'s own comment).
+static void test_call_unicasts_to_known_servers_at_or_under_threshold(void) {
+    test_mock_reset();
+    test_mock_now = 500;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+
+    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    struct tt_Request request;
+    tt_ret_t ret = tt_Client_call(&client, &request);
+
+    EXPECT_EQ_INT(tt_RET_OK, ret);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(client.peers[0].ip, test_mock_send_to_last_ip);
+    EXPECT_EQ_U32((uint32_t)client.peers[0].port, (uint32_t)test_mock_send_to_last_port);
+}
+
+// More known Servers than tt_UNICAST_PEER_THRESHOLD must fall back to broadcast, same as today.
+static void test_call_broadcasts_when_server_count_exceeds_threshold(void) {
+    test_mock_reset();
+    test_mock_now = 500;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+
+    for (int i = 0; i < tt_UNICAST_PEER_THRESHOLD + 1; i++) {
+        client.peers[i] =
+            (struct tt_Peer) {.node_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
+    }
+
+    struct tt_Request request;
+    tt_ret_t ret = tt_Client_call(&client, &request);
+
+    EXPECT_EQ_INT(tt_RET_OK, ret);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+}
+
+// A retry (call_retry() -> resend_call_request()) must apply the same peer decision as the
+// initial call, recomputed from the client's current peer table.
+static void test_call_retry_uses_same_peer_decision_as_initial_call(void) {
+    test_mock_reset();
+    test_mock_now = 500;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+    service.call_retry_count = 3;
+
+    struct tt_Request request;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, &request));
+
+    // Discovery learns a Server only after the initial (broadcast) call already went out.
+    client.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    test_mock_send_call_count = 0;
+    test_mock_send_to_call_count = 0;
+    call_retry(&node, tt_get_ns(), &client);
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // the retry goes out unicast
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(client.peers[0].ip, test_mock_send_to_last_ip);
+}
+
 int main(void) {
     test_call_rejected_while_one_outstanding();
     test_call_flushes_immediately_and_fills_cache();
+    test_call_unicasts_to_known_servers_at_or_under_threshold();
+    test_call_broadcasts_when_server_count_exceeds_threshold();
+    test_call_retry_uses_same_peer_decision_as_initial_call();
 
     if (test_result() != 0) {
         return 1;

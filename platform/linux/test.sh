@@ -150,6 +150,22 @@ add_summary set_bool client.log
 # perf_server's own -d already uses below. check_count still matches every "(warmup)"/"(cooldown)"-
 # tagged line too, not just the counted ones - it's evidence a round trip happened at all, not
 # evidence about the stats window.
+#
+# NOTE on loss once a Client/Publisher has discovered a peer (tt_UNICAST_PEER_THRESHOLD): both
+# sides here bind the *same* wildcard address (0.0.0.0:$PORT, SO_REUSEADDR) on one shared loopback
+# namespace, distinguished only by -I's node id, not a real distinct IP (see the file comment up
+# top). Confirmed via a minimal two-socket repro: a kernel with multiple wildcard-bound UDP
+# sockets on one address delivers a *unicast* packet to whichever socket bound last - never by
+# any real address distinction - while broadcast still correctly fans out to all of them. run_pair
+# starts the receiver first, so the *sender*'s own socket wins every unicast delivery here,
+# regardless of who a packet was actually addressed to. That makes ping_pong/perf's own loss/RTT
+# numbers unreliable as a verdict on unicast correctness specifically (not a real regression - on
+# any real deployment, distinct per-node IPs make delivery unambiguous, confirmed by the same
+# repro against two non-wildcard addresses) - trust the whitebox tests (test_process_callrequest.c,
+# test_peer_discovery.c, test_client_call.c, test_publish_subscribe.c's test_node_flush_* cases),
+# which assert the exact destination ip/port a send was made with, for that. A real second host or
+# platform/linux/netns.mk's veth-pair setup (real distinct IPs, needs root) would be the way to
+# verify this end-to-end if that's ever needed.
 run_pair ping "-d 60 -i 0.2 -w 5 -W 5" pong "-d 80" || status=1
 check_count ping.log '^seq=' || status=1
 add_summary ping_pong ping.log
