@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789023414051,
+  "lastUpdate": 1789023486474,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -454,6 +454,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.009,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "committer": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "id": "1329b73d353f3ebf1543a4ade4a0a58db468f91e",
+          "message": "Merge branch 'main' into perf-experiments",
+          "timestamp": "2026-09-10T06:56:13Z",
+          "url": "https://github.com/tsnlab/tickle/commit/1329b73d353f3ebf1543a4ade4a0a58db468f91e"
+        },
+        "date": 1789023485428,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
             "unit": "ms"
           },
           {
