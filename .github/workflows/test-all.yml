@@ -25,7 +25,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf picolibc-riscv64-unknown-elf \
-            qemu-system-riscv
+            qemu-system-misc
 
       - name: Lint (platform/freertos)
         run: make -C platform/freertos lint
