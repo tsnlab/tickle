@@ -1601,6 +1601,29 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     }
 
     uint64_t time = tt_get_ns();
+
+    // timeout == 0: one non-blocking pass - run everything due now, drain whatever RX is already
+    // waiting, return. No poll()/select() wait at all. For a caller that just wants to make
+    // progress and get straight back to its own work (a tight publish loop with -i 0), where a
+    // sub-millisecond "wait" would otherwise round up to a full 1ms poll() and throttle it -
+    // and where relying on broadcast self-receive to keep that poll() returning early breaks the
+    // moment the publisher switches to unicast.
+    if (timeout == 0) {
+        struct tt_TCB* tcb;
+        while ((tcb = peek_scheduler(node)) != NULL && tcb->time <= time) {
+            tcb->function(node, time, tcb->param);
+            pop_scheduler(node);
+        }
+
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+        if (len < 0) {
+            return tt_RET_TIMEOUT;
+        }
+        return drain_rx(node, process_datagram(node, len, ip, port));
+    }
+
     while (timeout > 0) {
         struct tt_TCB* tcb = peek_scheduler(node);
 
