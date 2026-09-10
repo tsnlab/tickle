@@ -37,7 +37,7 @@
 # its own comment), so every pair here uses the same two-sided count check.
 
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 MCAST_GROUP=230.0.0.1:5000
 DURATION_S=${DURATION_S:-10}
@@ -76,8 +76,8 @@ run_round_trip() {
     server_grep=$7
     duration=${8:-$DURATION_S}
 
-    make ROLE=$server_role NODE_ID=$server_node all
-    make ROLE=$client_role NODE_ID=$client_node all
+    make ROLE="$server_role" NODE_ID="$server_node" all
+    make ROLE="$client_role" NODE_ID="$client_node" all
 
     rm -f "$server_role.log" "$client_role.log"
 

@@ -30,6 +30,8 @@ SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChe
 ssh_run() {
     local host="$1"
     shift
+    # "$@" is a command line meant to run on $host - it is supposed to expand remotely.
+    # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" "$@"
 }
 
