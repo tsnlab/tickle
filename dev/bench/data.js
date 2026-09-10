@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789014967511,
+  "lastUpdate": 1789015134636,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -307,6 +307,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "committer": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "id": "46e9f52a8e8b3821ac147893bd5e72ad5f0f262a",
+          "message": "Fix run_perf.sh's binary paths after the platform/linux/ move\n\nThe example binaries build under platform/linux/ now, not the repo root -\nrun_paired_test()'s `cd ~/tickle && ./ping` has been failing with \"No such\nfile or directory\" since that reorganization landed. update_and_build()'s\n`make all` is fine as-is (the root Makefile forwards to platform/linux/).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T04:35:28Z",
+          "url": "https://github.com/tsnlab/tickle/commit/46e9f52a8e8b3821ac147893bd5e72ad5f0f262a"
+        },
+        "date": 1789015133647,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.213,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
             "unit": "%"
           }
         ]
