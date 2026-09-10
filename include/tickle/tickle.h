@@ -41,6 +41,12 @@ struct tt_Node {
     uint8_t id;
     uint32_t endpoint_count;
     struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
+    // Open-addressed index into endpoints[] keyed by endpoint id, for O(1) find_endpoint()
+    // instead of an O(endpoint_count) scan. Rebuilt lazily from endpoints[] on the next lookup
+    // after any add/remove (endpoint_index_valid = false marks it stale) - endpoints change
+    // rarely, lookups happen per received packet.
+    struct tt_Endpoint* endpoint_index[tt_ENDPOINT_INDEX_SIZE];
+    bool endpoint_index_valid;
     uint64_t last_modified; // Last modified timestamp in ns to announce other nodes e.g. server, publisher
 
     struct tt_UpdateHeader* updates[tt_MAX_ENDPOINT_COUNT];

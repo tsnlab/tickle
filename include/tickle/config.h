@@ -32,6 +32,9 @@
 #define tt_SOCKET_BUFFER_SIZE (1024 * 1024)
 
 #define tt_MAX_ENDPOINT_COUNT 256  // Maximum number of endpoints (data or services)
+// Size of tt_Node.endpoint_index (power of two, >= 2 * tt_MAX_ENDPOINT_COUNT so load stays
+// <= 0.5 for linear-probe lookups).
+#define tt_ENDPOINT_INDEX_SIZE 512
 #define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name
 #define tt_MAX_STRING_LENGTH 65535 // Maximum length of string
 // RX/TX buffering size to flush: the largest UDP payload a standard 1500-byte Ethernet MTU
