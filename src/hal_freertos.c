@@ -132,6 +132,34 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
 }
 
+int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+                    uint32_t ip, uint16_t port) {
+    struct iovec iov[2] = {
+        {.iov_base = (void*)(uintptr_t)hdr, .iov_len = hdr_len},
+        {.iov_base = (void*)(uintptr_t)body, .iov_len = body_len},
+    };
+
+    struct sockaddr_in unicast_addr;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 2;
+    if (ip != 0) {
+        memset(&unicast_addr, 0, sizeof(unicast_addr));
+        unicast_addr.sin_family = AF_INET;
+        unicast_addr.sin_addr.s_addr = htonl(ip);
+        unicast_addr.sin_port = htons(port);
+        unicast_addr.sin_len = sizeof(unicast_addr);
+        msg.msg_name = &unicast_addr;
+        msg.msg_namelen = sizeof(unicast_addr);
+    } else {
+        msg.msg_name = &node->hal.broadcast_addr;
+        msg.msg_namelen = sizeof(node->hal.broadcast_addr);
+    }
+
+    return (int32_t)sendmsg(node->hal.sock, &msg, 0);
+}
+
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
     // Same "0 for no timeout" (block until data arrives) contract fix as hal_linux.c's poll()
     // rewrite, using lwIP's select() (LWIP_COMPAT_SOCKETS aliases it the same as the real thing)

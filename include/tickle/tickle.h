@@ -203,6 +203,12 @@ struct tt_Subscriber { // extends endpoint
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
 typedef int32_t (*tt_DATA_ENCODE)(struct tt_Data* data, uint8_t* payload, const uint32_t len);
+// Optional zero-copy encode: instead of writing the CDR into a caller buffer, set *payload_out
+// to a pointer to the already-serialized CDR bytes (native byte order) living in the caller's
+// own tt_Data, and return their length. tt_Publisher_publish() then sends framing + that memory
+// via one sendmsg() with no staging copy. Return -1 to decline (fall back to data_encode). Only
+// definable for a topic whose in-memory layout already is its own native-endian wire form.
+typedef int32_t (*tt_DATA_ENCODE_INPLACE)(struct tt_Data* data, const uint8_t** payload_out);
 typedef int32_t (*tt_DATA_DECODE)(struct tt_Data* data, const uint8_t* payload, const uint32_t len,
                                   bool is_native_endian);
 typedef void (*tt_DATA_FREE)(struct tt_Data* data);
@@ -220,6 +226,7 @@ struct tt_Topic {
     uint32_t data_size;
     tt_DATA_ENCODE_SIZE data_encode_size;
     tt_DATA_ENCODE data_encode;
+    tt_DATA_ENCODE_INPLACE data_encode_inplace; // optional, see typedef
     tt_DATA_DECODE data_decode;
     tt_DATA_DECODE_INPLACE data_decode_inplace; // optional, see typedef
     tt_DATA_FREE data_free;

@@ -23,6 +23,7 @@ struct tt_Topic BulkTopic = {
     .data_size = sizeof(struct BulkData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)BulkData_encode_size,
     .data_encode = (tt_DATA_ENCODE)BulkData_encode,
+    .data_encode_inplace = (tt_DATA_ENCODE_INPLACE)BulkData_encode_inplace,
     .data_decode = (tt_DATA_DECODE)BulkData_decode,
     .data_decode_inplace = (tt_DATA_DECODE_INPLACE)BulkData_decode_inplace,
     .data_free = (tt_DATA_FREE)BulkData_free,
@@ -30,6 +31,14 @@ struct tt_Topic BulkTopic = {
 
 int32_t BulkData_encode_size(struct BulkData* data) {
     return (int32_t)(sizeof(uint32_t) + sizeof(uint32_t) + data->size); // seq + size + bytes
+}
+
+int32_t BulkData_encode_inplace(struct BulkData* data, const uint8_t** payload_out) {
+    // BulkData is { u32 seq; u32 size; u8 bytes[]; } with no padding, so on a native-endian host
+    // the struct's first 8 + size bytes already *are* the wire CDR [seq][size][bytes] - hand that
+    // pointer over instead of re-serializing it.
+    *payload_out = (const uint8_t*)data;
+    return (int32_t)(sizeof(uint32_t) + sizeof(uint32_t) + data->size);
 }
 
 int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, uint32_t len) {
