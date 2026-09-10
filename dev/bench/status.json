@@ -1,0 +1,15 @@
+{
+  "perf": {
+    "build": "pass",
+    "commit_short": "d55a094",
+    "integration": "pass",
+    "loss_pct": 0,
+    "rtt_avg_ms": 0.202,
+    "rtt_mdev_ms": 0.012,
+    "run_url": "https://github.com/tsnlab/tickle/actions/runs/34487758781",
+    "smallmsg_rate_msgs_s": 499168,
+    "throughput_recv_mbps": 895.752,
+    "throughput_send_mbps": 936.412,
+    "updated": "2026-09-10 14:15 UTC"
+  }
+}
