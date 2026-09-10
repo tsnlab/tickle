@@ -209,11 +209,30 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 }
 
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    // lwIP does NOT honor MSG_DONTWAIT per recvfrom() call the way Linux does - without O_NONBLOCK
+    // on the socket it can still block on an empty socket, which hangs drain_rx()'s "keep calling
+    // until nothing's left" loop forever. So gate the read on a zero-timeout select() (the same
+    // lwIP primitive tt_receive() uses, just non-blocking): only recvfrom() when it reports the
+    // socket readable, otherwise report "nothing waiting" immediately.
+    struct timeval no_wait = {0, 0};
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(node->hal.sock, &readfds);
+
+    int select_ret = select(node->hal.sock + 1, &readfds, NULL, NULL, &no_wait);
+    if (select_ret == 0) {
+        return -1; // Nothing waiting
+    }
+    if (select_ret < 0) {
+        if (errno == EINTR) {
+            return -1;
+        }
+        return -2; // I/O error
+    }
+
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
-    // lwIP honors MSG_DONTWAIT on recvfrom() (LWIP_SOCKET flag support), so no select() first and
-    // no socket-mode change - the same non-blocking single-shot receive hal_linux.c does.
-    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
