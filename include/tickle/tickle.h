@@ -93,6 +93,11 @@ struct tt_Client;
 struct tt_Response;
 struct tt_SubmessageHeader;
 
+// Passed as `return_code` to a client callback when the RPC got no answer at all - every retry
+// went unanswered (tt_CALL_RETRY_COUNT) - as opposed to the server replying with its own code.
+// `response` is NULL in that case. A tt_SERVER_CALLBACK must not return this value itself.
+#define tt_CALL_TIMEOUT ((int8_t)-128)
+
 typedef void (*tt_CLIENT_CALLBACK)(struct tt_Client* client, int8_t return_code, struct tt_Response* response);
 
 struct tt_Client { // extends endpoint

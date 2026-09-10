@@ -485,6 +485,9 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
 }
 
 tt_ret_t tt_Node_create(struct tt_Node* node) {
+    if (node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
     reset_node_state(node);
 
     // _tt_CONFIG.node_id (see its own comment) skips auto-detection when set explicitly.
@@ -504,8 +507,24 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
     return schedule_periodic_tasks(node);
 }
 
+// A message struct sized 0 or larger than one datagram is a misconfiguration: on the receive
+// path the request/response/data is decoded into a stack buffer of exactly that size (see
+// process_data(), build_call_response(), process_callresponse()), and nothing on the wire can
+// exceed tt_MAX_BUFFER_LENGTH anyway - the protocol doesn't fragment. Catch it here, at init,
+// instead of overflowing a task stack on the first message received.
+static bool valid_msg_size(uint32_t size) {
+    return size > 0 && size <= tt_MAX_BUFFER_LENGTH;
+}
+
 tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
                                const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+    if (node == NULL || client == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
+        service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
+        service->request_encode_size == NULL || service->request_encode == NULL || service->response_decode == NULL ||
+        service->response_free == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
     endpoint->kind = tt_KIND_SERVICE_CLIENT;
     endpoint->id = tt_hash_id(service->name, endpoint_name);
@@ -533,6 +552,13 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
 
 tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
                                const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+    if (node == NULL || server == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
+        service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
+        service->request_decode == NULL || service->request_free == NULL || service->response_encode_size == NULL ||
+        service->response_encode == NULL || service->response_free == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
     endpoint->kind = tt_KIND_SERVICE_SERVER;
     endpoint->id = tt_hash_id(service->name, endpoint_name);
@@ -558,6 +584,11 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
 
 tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
                                   const char* endpoint_name) {
+    if (node == NULL || pub == NULL || topic == NULL || endpoint_name == NULL || topic->name == NULL ||
+        !valid_msg_size(topic->data_size) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     endpoint->kind = tt_KIND_TOPIC_PUBLISHER;
     endpoint->id = tt_hash_id(topic->name, endpoint_name);
@@ -581,6 +612,12 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
 
 tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                    const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+    if (node == NULL || sub == NULL || topic == NULL || endpoint_name == NULL || callback == NULL ||
+        topic->name == NULL || !valid_msg_size(topic->data_size) || topic->data_decode == NULL ||
+        topic->data_free == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     endpoint->kind = tt_KIND_TOPIC_SUBSCRIBER;
     endpoint->id = tt_hash_id(topic->name, endpoint_name);
@@ -648,7 +685,7 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
         (struct tt_CallRequestHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
     if (++callrequest_header->retry > client->service->call_retry_count) {
-        client->callback(client, 0, NULL); // No response from server
+        client->callback(client, tt_CALL_TIMEOUT, NULL); // every retry went unanswered
 
         client->cache = NULL;
         return;
@@ -658,13 +695,18 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
 
     if (!tt_Node_schedule(node, tt_get_ns() + compute_retry_interval(client), call_retry, client)) {
         TT_LOG_ERROR("Cannot schedule call_retry");
-        client->callback(client, 0, NULL); // Cannot guarantee further retry
+        client->callback(client, tt_CALL_TIMEOUT, NULL); // can't arm another retry - treat as no answer
 
         client->cache = NULL;
     }
 }
 
 tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
+    if (client == NULL || request == NULL || client->node == NULL || client->service == NULL ||
+        client->service->request_encode_size == NULL || client->service->request_encode == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+
     if (client->cache != NULL) {
         return tt_RET_ILLEGAL_STATUS; // waiting response
     }
@@ -694,13 +736,18 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 
     // CallRequestBody
     int32_t cdr_len = client->service->request_encode_size(request);
-    void* cdr = encode(node, cdr_len);
+    if (cdr_len < 0 || cdr_len > tt_MAX_BUFFER_LENGTH) {
+        TT_LOG_ERROR("request_encode_size returned %d (out of range)", cdr_len);
+        rollback(node, old_tx_tail);
+        return tt_RET_PROTOCOL_ERROR;
+    }
+    void* cdr = encode(node, (uint32_t)cdr_len);
     if (cdr == NULL) {
         rollback(node, old_tx_tail);
         return tt_RET_OUT_OF_BUFFER;
     }
 
-    int32_t encoded_len = client->service->request_encode(request, cdr, cdr_len);
+    int32_t encoded_len = client->service->request_encode(request, cdr, (uint32_t)cdr_len);
     if (encoded_len < 0) {
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
@@ -751,6 +798,9 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
 }
 
 tt_ret_t tt_Client_destroy(struct tt_Client* client) {
+    if (client == NULL || client->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)client;
 
     if (!remove_endpoint_from_node(client->node, endpoint)) {
@@ -770,6 +820,9 @@ tt_ret_t tt_Client_destroy(struct tt_Client* client) {
 }
 
 tt_ret_t tt_Server_destroy(struct tt_Server* server) {
+    if (server == NULL || server->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)server;
 
     if (!remove_endpoint_from_node(server->node, endpoint)) {
@@ -832,6 +885,11 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 }
 
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
+    if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
+        pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Node* node = pub->node;
     uint32_t old_tx_tail = node->tx_tail;
@@ -873,7 +931,12 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 
     // DataBody
     int32_t cdr_len = pub->topic->data_encode_size(data);
-    void* cdr = encode(node, cdr_len);
+    if (cdr_len < 0 || cdr_len > tt_MAX_BUFFER_LENGTH) {
+        TT_LOG_ERROR("data_encode_size returned %d (out of range)", cdr_len);
+        rollback(node, old_tx_tail);
+        return tt_RET_PROTOCOL_ERROR;
+    }
+    void* cdr = encode(node, (uint32_t)cdr_len);
     if (cdr == NULL) {
         rollback(node, old_tx_tail);
         return tt_RET_OUT_OF_BUFFER;
@@ -901,6 +964,9 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 }
 
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
+    if (pub == NULL || pub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
 
     if (remove_endpoint_from_node(pub->node, endpoint)) {
@@ -912,6 +978,9 @@ tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
 }
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
+    if (sub == NULL || sub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
 
     if (remove_endpoint_from_node(sub->node, endpoint)) {
@@ -1793,6 +1862,9 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
 }
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {
+    if (node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
     uint64_t time = tt_get_ns();
 
     for (uint32_t i = 0; i < node->endpoint_count; i++) {

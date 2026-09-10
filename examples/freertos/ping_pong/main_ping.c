@@ -56,7 +56,7 @@ static void ping_callback(struct tt_Client* client, int8_t return_code, struct P
         tag = " (cooldown)";
     }
 
-    if (return_code == 0 && response == NULL) {
+    if (return_code == tt_CALL_TIMEOUT) {
         printf("ping: timeout (dropped)%s\n", tag);
         return;
     }

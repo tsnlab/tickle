@@ -60,6 +60,7 @@ typedef enum tt_ret_t {
     tt_RET_IILEGAL_NODE_ID = -7,
     tt_RET_IILEGAL_ENDPOINT_ID = -8,
     tt_RET_ILLEGAL_STATUS = -9,
+    tt_RET_INVALID_ARGUMENT = -10, // NULL pointer, or an out-of-range size in a tt_Service/tt_Topic
 } tt_ret_t;
 
 struct tt_Node;

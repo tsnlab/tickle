@@ -53,8 +53,8 @@ static void note_completed(void) {
 // this call's own 0-based index, fills that role instead).
 static void set_bool_callback(struct tt_Client* client, int8_t return_code, struct SetBoolResponse* response) {
     (void)client;
-    if (return_code == 0 && response == NULL) {
-        printf("call=%u data=%d Server not found\n", completed, call_data);
+    if (return_code == tt_CALL_TIMEOUT) {
+        printf("call=%u data=%d no response (timed out)\n", completed, call_data);
     } else if (return_code != 0) {
         printf("call=%u data=%d Error, return_code: %d\n", completed, call_data, return_code);
     } else {

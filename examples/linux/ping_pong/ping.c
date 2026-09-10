@@ -100,7 +100,7 @@ static void ping_callback(struct tt_Client* client, int8_t return_code, struct P
         tag = " (cooldown)";
     }
 
-    if (return_code == 0 && response == NULL) {
+    if (return_code == tt_CALL_TIMEOUT) {
         printf("Request timeout for icmp_seq=%u (dropped)%s\n", pending_seq, tag);
         return;
     }

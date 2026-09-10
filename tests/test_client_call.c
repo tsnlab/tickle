@@ -36,10 +36,13 @@ static int32_t stub_request_encode(struct tt_Request* request, uint8_t* payload,
     return 4;
 }
 
+static int last_return_code = 0;
+static int callback_calls = 0;
 static void test_callback(struct tt_Client* client, int8_t return_code, struct tt_Response* response) {
     (void)client;
-    (void)return_code;
     (void)response;
+    last_return_code = (int)return_code;
+    callback_calls++;
 }
 
 static void init_node_and_client(struct tt_Node* node, struct tt_Service* service, struct tt_Client* client) {
@@ -179,12 +182,82 @@ static void test_call_retry_uses_same_peer_decision_as_initial_call(void) {
     EXPECT_EQ_U32(client.peers[0].ip, test_mock_send_to_last_ip);
 }
 
+// NULL / missing-callback arguments must be rejected with tt_RET_INVALID_ARGUMENT, not
+// dereferenced.
+static void test_call_rejects_invalid_arguments(void) {
+    test_mock_reset();
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+    struct tt_Request request;
+
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Client_call(NULL, &request));
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Client_call(&client, NULL));
+
+    struct tt_Client no_node = client;
+    no_node.node = NULL;
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Client_call(&no_node, &request));
+
+    struct tt_Service no_enc = service;
+    no_enc.request_encode = NULL;
+    struct tt_Client bad_svc = client;
+    bad_svc.service = &no_enc;
+    EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Client_call(&bad_svc, &request));
+}
+
+// request_encode_size() returning a nonsense value (negative, or bigger than a datagram) must be
+// caught as a protocol error, not fed to encode() where it would wrap the unsigned length check.
+static int32_t stub_request_encode_size_negative(struct tt_Request* request) {
+    (void)request;
+    return -1;
+}
+static void test_call_rejects_bad_encode_size(void) {
+    test_mock_reset();
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+    service.request_encode_size = stub_request_encode_size_negative;
+
+    struct tt_Request request;
+    EXPECT_EQ_INT(tt_RET_PROTOCOL_ERROR, tt_Client_call(&client, &request));
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // rolled back
+}
+
+// When every retry goes unanswered, call_retry() must report tt_CALL_TIMEOUT (not 0, which a
+// server can legitimately return) with a NULL response, exactly once.
+static void test_call_retry_exhausted_reports_timeout(void) {
+    test_mock_reset();
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+    service.call_retry_count = 2;
+
+    struct tt_Request request;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, &request));
+
+    callback_calls = 0;
+    last_return_code = 12345;
+    for (int i = 0; i < 5; i++) {
+        call_retry(&node, tt_get_ns(), &client); // retry 1, retry 2, then give up; then no-ops
+    }
+
+    EXPECT_EQ_INT((int)tt_CALL_TIMEOUT, last_return_code);
+    EXPECT_EQ_U32(1, (uint32_t)callback_calls); // fired once, not on every subsequent no-op
+    EXPECT_TRUE(client.cache == NULL);
+}
+
 int main(void) {
     test_call_rejected_while_one_outstanding();
     test_call_flushes_immediately_and_fills_cache();
     test_call_unicasts_to_known_servers_at_or_under_threshold();
     test_call_broadcasts_when_server_count_exceeds_threshold();
     test_call_retry_uses_same_peer_decision_as_initial_call();
+    test_call_rejects_invalid_arguments();
+    test_call_rejects_bad_encode_size();
+    test_call_retry_exhausted_reports_timeout();
 
     if (test_result() != 0) {
         return 1;
