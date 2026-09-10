@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789015645552,
+  "lastUpdate": 1789022203583,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -378,6 +378,43 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.012,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "committer": {
+            "name": "Semih Kim",
+            "username": "semihlab",
+            "email": "semih.kim@gmail.com"
+          },
+          "id": "43efa03b099bcfac106052c28691669f5d42df7c",
+          "message": "opt6: find_endpoint() via lazy-rebuilt open-addressed hash index\n\nO(1) lookup keyed by endpoint id instead of an O(endpoint_count) scan.\nendpoint_index[] is rebuilt from endpoints[] on the next lookup after any\nadd/remove. No effect on a few-endpoint node; a scaling change.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T06:34:10Z",
+          "url": "https://github.com/tsnlab/tickle/commit/43efa03b099bcfac106052c28691669f5d42df7c"
+        },
+        "date": 1789022202594,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.209,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.048,
             "unit": "ms"
           },
           {
