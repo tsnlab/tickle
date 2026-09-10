@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789029982937,
+  "lastUpdate": 1789029985688,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1051,6 +1051,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 899.409,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "b8f8c7618dfe4e8c8a5b219e2d7aca899ae70322",
+          "message": "test.sh: shellcheck-clean (SC1072/1073, SC2164, SC2024)\n\nThe `# shellcheck disable=SCxxx - freeform text` style is a parse error in\ncurrent shellcheck (SC1072/1073) - split the rationale onto its own comment\nline. Also `cd || exit 1` (SC2164), and suppress SC2024 (the log redirects\nare the non-root caller's shell's, on purpose). No behavior change.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T17:45:37+09:00",
+          "tree_id": "13b21fd44632af04ac1478945487877a1c8eab88",
+          "url": "https://github.com/tsnlab/tickle/commit/b8f8c7618dfe4e8c8a5b219e2d7aca899ae70322"
+        },
+        "date": 1789029984648,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 936.321,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 899.72,
             "unit": "Mbps"
           }
         ]
