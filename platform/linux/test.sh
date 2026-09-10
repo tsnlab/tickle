@@ -13,8 +13,8 @@
 # unmodified (not a purpose-built harness like examples/freertos/'s main_*.c) - real user-facing
 # code, exercised the same way running it by hand would.
 #
-# Runs the two sides in two real network namespaces joined by a veth pair, each with its own
-# distinct address (ns1 = 192.168.10.1, ns2 = 192.168.10.2). This needs root (creating a
+# Runs the two sides in two network namespaces joined by a veth pair, each with its own distinct
+# address (tickle-ns1 = 192.168.10.1, tickle-ns2 = 192.168.10.2). This needs root (creating a
 # namespace/veth is CAP_NET_ADMIN, and entering one via `ip netns exec` needs it too) - the quick
 # inner loop that doesn't is `make test` (unit tests, mock HAL). An earlier version of this script
 # put both sides in one shared network namespace over loopback to avoid that, distinguished only
@@ -48,7 +48,7 @@
 # binaries this test runs right here in platform/linux/.
 
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")" || exit 1
 
 MIN_COUNT=5
 BROADCAST=192.168.10.255
@@ -120,13 +120,17 @@ run_pair() {
 
     rm -f "$receiver.log" "$sender.log"
 
-    # shellcheck disable=SC2086 - receiver_args is a deliberately unquoted, space-separated flag list
+    # receiver_args: deliberately unquoted, space-separated flag list. SC2024: the log redirect is the
+    # calling (non-root) shell's, on purpose - keeps $receiver.log/$sender.log user-owned.
+    # shellcheck disable=SC2086,SC2024
     sudo ip netns exec "$NS2" "./$receiver" -b "$BROADCAST" $receiver_args </dev/null >"$receiver.log" 2>&1 &
     receiver_pid=$!
 
     sleep 1
 
-    # shellcheck disable=SC2086 - sender_args is a deliberately unquoted, space-separated flag list
+    # sender_args: deliberately unquoted, space-separated flag list. SC2024: the log redirect is the
+    # calling (non-root) shell's, on purpose - keeps $receiver.log/$sender.log user-owned.
+    # shellcheck disable=SC2086,SC2024
     sudo ip netns exec "$NS1" "./$sender" -b "$BROADCAST" $sender_args </dev/null >"$sender.log" 2>&1
     sender_status=$?
 
