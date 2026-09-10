@@ -100,6 +100,15 @@ static void init_header(struct tt_Header* header, uint8_t source) {
     header->source = source;
 }
 
+// An UpdateHeader that announces no endpoints at all - what tt_Node_destroy() broadcasts on the
+// way out.
+static uint32_t write_update_no_entities(uint8_t* buf, uint64_t last_modified) {
+    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)buf;
+    update_header->last_modified = last_modified;
+    update_header->entity_count = 0;
+    return sizeof(struct tt_UpdateHeader);
+}
+
 // A remote TOPIC_SUBSCRIBER announcing the same endpoint_id as our local Publisher must be
 // learned as that Publisher's peer, with the address the packet actually arrived from.
 static void test_publisher_learns_subscriber_peer_from_update(void) {
@@ -321,6 +330,67 @@ static void test_reply_skipped_when_tx_buffer_has_pending_content(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
+// A later announce from the same source that no longer lists the endpoint (it dropped that
+// Subscriber, or - entity_count 0 - it's a tt_Node_destroy() farewell) must drop the peer entry
+// its earlier announce created. Without this, a peer that leaves lingers forever (there's no
+// other expiry).
+static void test_source_dropping_endpoint_forgets_its_peer(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+
+    struct tt_Header header;
+    init_header(&header, REMOTE_NODE_ID);
+
+    uint32_t tail =
+        write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+
+    // Farewell: same source, newer last_modified, no entities.
+    tail = write_update_no_entities(node.rx_buffer, 200);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+}
+
+// A farewell from one source must not disturb a peer entry another source established.
+static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+
+    struct tt_Header from2;
+    init_header(&from2, 2);
+    struct tt_Header from3;
+    init_header(&from3, 3);
+
+    uint32_t tail =
+        write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    EXPECT_TRUE(process_update(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    tail = write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    EXPECT_TRUE(process_update(&node, &from3, node.rx_buffer, 0, tail, 0xc0a80a03, 8282));
+    EXPECT_EQ_U32(2, (uint32_t)count_peers(pub.peers));
+
+    tail = write_update_no_entities(node.rx_buffer, 200);
+    EXPECT_TRUE(process_update(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    bool found_node3 = false;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub.peers[i].node_id == 3) {
+            found_node3 = true;
+        }
+        EXPECT_TRUE(pub.peers[i].node_id != 2); // source 2 fully gone
+    }
+    EXPECT_TRUE(found_node3);
+}
+
 int main(void) {
     test_publisher_learns_subscriber_peer_from_update();
     test_client_learns_server_peer_from_update();
@@ -331,6 +401,8 @@ int main(void) {
     test_first_contact_triggers_unicast_reply_with_own_announce();
     test_repeat_contact_does_not_trigger_reply();
     test_reply_skipped_when_tx_buffer_has_pending_content();
+    test_source_dropping_endpoint_forgets_its_peer();
+    test_farewell_from_one_source_leaves_other_peers_intact();
 
     if (test_result() != 0) {
         return 1;

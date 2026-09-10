@@ -136,32 +136,42 @@ static void test_rejects_submessage_length_exceeds_buffer(void) {
     EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
 }
 
-// A type value outside the known set entirely (not even a recognized-but-unimplemented one).
-static void test_rejects_unknown_submessage_type(void) {
+// An unknown type (likely a newer protocol revision's submessage - validate_packet_header()
+// deliberately accepts higher versions) must be skipped by its validated length, not treated as
+// fatal: a valid DATA submessage right after it in the same datagram still has to parse.
+static void test_skips_unknown_submessage_type_and_continues(void) {
     struct tt_Node node;
     init_node(&node);
 
-    uint8_t buf[64];
+    uint8_t buf[128];
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION, REMOTE_NODE_ID);
     uint32_t offset = sizeof(struct tt_Header);
-    uint32_t tail = append_submessage_header(buf, offset, 99, tt_SUBMESSAGE_ID_ALL, sizeof(struct tt_SubmessageHeader));
+    offset = append_submessage_header(buf, offset, 99, tt_SUBMESSAGE_ID_ALL, sizeof(struct tt_SubmessageHeader));
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
+    uint16_t data_len = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader);
+    offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, data_len);
+    offset =
+        append_data_header(buf, offset, 0x1234, 1); // no subscriber -> process_data() returns "not mine", not error
+
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
 }
 
-// ACKNACK is a recognized type value with no implementation behind it - process_submessage()
-// must say so and fail, not silently ignore it or fall through to some other handler.
-static void test_rejects_acknack_as_unsupported(void) {
+// ACKNACK is a known-but-unimplemented type in this release. Same contract: skip it, keep going.
+static void test_skips_acknack_and_continues(void) {
     struct tt_Node node;
     init_node(&node);
 
-    uint8_t buf[64];
+    uint8_t buf[128];
     write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION, REMOTE_NODE_ID);
     uint32_t offset = sizeof(struct tt_Header);
-    uint32_t tail = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_ACKNACK, tt_SUBMESSAGE_ID_ALL,
-                                             sizeof(struct tt_SubmessageHeader));
+    offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_ACKNACK, tt_SUBMESSAGE_ID_ALL,
+                                      sizeof(struct tt_SubmessageHeader));
 
-    EXPECT_TRUE(!process_packet(&node, buf, 0, tail, 0, 0));
+    uint16_t data_len = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader);
+    offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, data_len);
+    offset = append_data_header(buf, offset, 0x1234, 1);
+
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
 }
 
 // Sanity check in the other direction: two well-formed DATA submessages back to back in one
@@ -195,8 +205,8 @@ int main(void) {
     test_ignores_self_sent_packet();
     test_rejects_submessage_length_too_small();
     test_rejects_submessage_length_exceeds_buffer();
-    test_rejects_unknown_submessage_type();
-    test_rejects_acknack_as_unsupported();
+    test_skips_unknown_submessage_type_and_continues();
+    test_skips_acknack_and_continues();
     test_accepts_two_valid_data_submessages();
 
     if (test_result() != 0) {

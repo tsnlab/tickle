@@ -255,6 +255,33 @@ static uint8_t count_peers(const struct tt_Peer* peers) {
     return count;
 }
 
+static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (peers[i].node_id == node_id) {
+            peers[i].node_id = tt_NODE_ID_INVALID;
+        }
+    }
+}
+
+// Drops every peer-table entry pointing at `node_id`, across every Publisher and Client on this
+// node. Called when a fresh UPDATE from that source arrives (process_update): its new announce is
+// authoritative for what it still hosts, and decode_update_entities() re-adds whatever's still
+// listed. Also does the right thing for a node that has left - tt_Node_destroy() broadcasts a
+// final entity-less UPDATE, so this forgets it and nothing gets re-added.
+static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL) {
+            continue;
+        }
+        if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
+            forget_peer(((struct tt_Publisher*)endpoint)->peers, node_id);
+        } else if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
+            forget_peer(((struct tt_Client*)endpoint)->peers, node_id);
+        }
+    }
+}
+
 static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
@@ -1146,6 +1173,11 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
 
     _tt_memcpy(new_update, update_header, length);
 
+    // This announce supersedes anything we knew about what this source hosts (it may have dropped
+    // an endpoint, or left entirely - see tt_Node_destroy()'s farewell UPDATE). Forget its old
+    // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
+    forget_peers_from_source(node, header->source);
+
     if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip,
                                 sender_port)) {
         _tt_free(new_update);
@@ -1452,6 +1484,25 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     }
 
     struct tt_Client* client = (struct tt_Client*)endpoint;
+
+    // Only the response to the call that's still outstanding counts. A duplicate (the server
+    // answered both the original request and a retry that crossed it on the wire) or a late one
+    // (arriving after call_retry() already gave up, see its own client->callback(0, NULL)) would
+    // otherwise invoke client->callback a second time and pollute the latency EMA with a stale
+    // cache_time. client->cache == NULL means nothing is outstanding; a seq_no mismatch means
+    // this is an answer to some earlier call.
+    if (client->cache == NULL) {
+        TT_LOG_DEBUG("CallResponse with no outstanding call, ignoring");
+        return true;
+    }
+    const struct tt_CallRequestHeader* cached_request =
+        (const struct tt_CallRequestHeader*)((const uint8_t*)client->cache + sizeof(struct tt_SubmessageHeader));
+    if (cached_request->seq_no != callresponse_header->seq_no) {
+        TT_LOG_DEBUG("CallResponse seq_no %u != outstanding %u, ignoring", callresponse_header->seq_no,
+                     cached_request->seq_no);
+        return true;
+    }
+
     struct tt_Service* service = client->service;
     uint32_t latency = calculate_latency(client->cache_time, tt_get_ns());
 
@@ -1471,6 +1522,9 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     }
 
     client->cache = NULL;
+    // The call is done; drop its still-pending retry timer so it doesn't occupy a scheduler slot
+    // until it fires and no-ops (call_retry() already guards on cache == NULL).
+    tt_Node_unschedule(node, call_retry, client);
 
     if (client->latency == 0) {
         client->latency = latency;
@@ -1506,8 +1560,11 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         process_data(node, header, buffer, head, body_tail);
         return true;
     case tt_SUBMESSAGE_TYPE_ACKNACK:
-        TT_LOG_ERROR("Not supported submessage type: %02x", submessage_header->type);
-        return false;
+        // Reliable pub/sub isn't implemented in this release. Skip this one submessage and keep
+        // parsing the rest of the datagram rather than dropping the whole packet - a peer that
+        // does send ACKNACK will usually batch it alongside DATA/UPDATE we do understand.
+        TT_LOG_WARNING("ACKNACK submessage not supported in this release, skipping");
+        return true;
     case tt_SUBMESSAGE_TYPE_CALLREQUEST:
         process_callrequest(node, header, buffer, head, body_tail, sender_ip, sender_port);
         return true;
@@ -1515,8 +1572,11 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         process_callresponse(node, header, buffer, head, body_tail);
         return true;
     default:
-        TT_LOG_ERROR("Illegal submessage type: %d, len: %02x", submessage_header->type, body_tail - head);
-        return false;
+        // An unknown type is most likely a submessage from a newer protocol revision (see
+        // validate_packet_header()'s "accept higher version"). Its length was already validated
+        // by the caller, so skip exactly that far and carry on instead of discarding the packet.
+        TT_LOG_WARNING("Unknown submessage type %d, skipping (len %u)", submessage_header->type, body_tail - head);
+        return true;
     }
 }
 
@@ -1764,7 +1824,14 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     }
     node->endpoint_count = 0;
 
+    // Broadcast a final, entity-less UPDATE so peers can drop this node right away
+    // (forget_peers_from_source() on their side) instead of carrying it until - nothing, there's
+    // no other expiry. node_update() only batches it into tx_buffer; flush it out here, before
+    // the socket closes below, since node_flush()'s tick is about to be cancelled too.
     node_update(node, time, NULL);
+    if (!flush_tx(node, node->tx_tail, NULL, 0)) {
+        TT_LOG_WARNING("Could not send farewell announce on node destroy");
+    }
 
     for (uint32_t i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         _tt_free(node->updates[i]);

@@ -313,6 +313,27 @@ static void test_node_update_sets_pending_update_flag(void) {
     EXPECT_TRUE(node.tx_has_pending_update);
 }
 
+// tt_Node_destroy() must actually put its final entity-less UPDATE on the wire (broadcast), not
+// just batch it into tx_buffer and then close the socket - otherwise peers never learn the node
+// left. Regression test for that: the farewell has to be a real tt_send(), before tt_close().
+static void test_node_destroy_broadcasts_farewell(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    EXPECT_EQ_INT(tt_RET_OK, (int)tt_Node_destroy(&node));
+
+    EXPECT_TRUE(test_mock_send_call_count >= 1);              // farewell went out
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // as a broadcast, not a unicast
+    EXPECT_TRUE(!node.tx_has_pending_update);                 // flush cleared it
+}
+
 // Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail
 // offset (matching what process_packet() would have handed process_data()).
 static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
@@ -424,6 +445,7 @@ int main(void) {
     test_node_flush_broadcasts_when_update_is_pending();
     test_node_flush_broadcasts_when_multiple_publishers_on_node();
     test_node_update_sets_pending_update_flag();
+    test_node_destroy_broadcasts_farewell();
     test_process_data_dispatches_to_subscriber();
     test_process_data_unknown_endpoint_is_ignored();
     test_process_data_decode_failure_is_reported();
