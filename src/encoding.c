@@ -13,12 +13,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include <sys/types.h>
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
 #include "log.h"
+
+// FNV-1a 32-bit constants (see tt_hash_id).
+#define FNV1A_OFFSET_BASIS 2166136261U
+#define FNV1A_PRIME 16777619U
 
 // Endian checking functions
 bool tt_is_native_endian(struct tt_Header* header) {
@@ -47,13 +50,13 @@ uint32_t tt_hash_id(const char* type, const char* name) {
         name_len = tt_MAX_NAME_LENGTH;
     }
 
-    uint32_t hash = 2166136261u; // FNV-1a 32-bit offset basis
+    uint32_t hash = FNV1A_OFFSET_BASIS;
     for (size_t i = 0; i < type_len; i++) {
-        hash = (hash ^ (uint8_t)type[i]) * 16777619u;
+        hash = (hash ^ (uint8_t)type[i]) * FNV1A_PRIME;
     }
-    hash = (hash ^ (uint8_t)'/') * 16777619u;
+    hash = (hash ^ (uint8_t)'/') * FNV1A_PRIME;
     for (size_t i = 0; i < name_len; i++) {
-        hash = (hash ^ (uint8_t)name[i]) * 16777619u;
+        hash = (hash ^ (uint8_t)name[i]) * FNV1A_PRIME;
     }
     return hash;
 }
