@@ -377,6 +377,28 @@ slot count per server), so going static adds no unbounded-growth risk - just a l
 traded for zero heap churn on the RPC hot path and one less failure mode (no allocation-failure
 branch to handle).
 
+## Byte order: every node sends native, every receiver swaps
+
+A packet's `tt_Header` starts with a two-byte magic - `"TK"` when a big-endian host serialized
+it, `"KT"` when a little-endian one did (`tt_is_native_endian()` / `tt_is_reverse_endian()`
+compare it against this host's `NATIVE_MAGIC_VALUE`). The **send** side is trivial: a node always
+writes every framing field and the magic in its own native order and never converts anything.
+All the work is on the **receive** side - when the magic says the sender was the opposite
+endianness, `process_*()` byte-swaps every field the library itself interprets on the way in:
+`tt_SubmessageHeader.length`, the `endpoint_id` / `seq_no` / `timestamp` in `tt_DataHeader` /
+`tt_CallRequestHeader` / `tt_CallResponseHeader` / `tt_UpdateEntity`, and the 2-byte length
+prefix on each announced type/name string (`rd16()`/`rd32()`/`rd64()` and `tt_decode_string()`'s
+`reverse` flag). A server building a response copies the request's *already-swapped* (native)
+`seq_no`, then re-encodes it in its own order - so the round trip is symmetric.
+
+The application's own CDR payload is not the library's to swap: `data_decode` / `request_decode`
+/ `response_decode` receive an `is_native_endian` flag and are responsible for their own bytes.
+
+`tt_hash_id()` (which turns a topic/service + endpoint name into the `endpoint_id` both sides
+match on) is computed **locally** on each node, so it must land on the same 32-bit value
+regardless of host endianness: it's a byte-at-a-time FNV-1a, not the previous word-at-a-time
+sum, which also removes an unaligned-read hazard on stricter targets.
+
 ## Concurrency: single-threaded per node, by design (for now)
 
 `struct tt_Node` and its endpoints have no internal locking - `tt_Node_poll()`,

@@ -167,15 +167,29 @@ static void* decode(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint3
 }
 
 static bool decode_string(struct tt_Node* node, uint8_t* buffer, uint32_t* head, uint32_t tail, uint16_t* str_len,
-                          char** str) {
+                          char** str, bool reverse) {
     UNUSED(node);
 
-    if (!tt_decode_string(buffer, head, tail, str_len, str)) {
+    if (!tt_decode_string(buffer, head, tail, str_len, str, reverse)) {
         TT_LOG_ERROR("Too big string length: %d + %d > %d", *head, *str_len, tail);
         return false;
     }
 
     return true;
+}
+
+// Framing-field reads for a packet whose tt_Header says the sender used the opposite byte order.
+// Every field the library itself interprets (submessage length, endpoint ids, seq/ack numbers,
+// timestamps) is stored in the sender's native order; the app's own CDR codecs get is_native_
+// endian and handle their payload themselves.
+static uint16_t rd16(struct tt_Header* header, uint16_t value) {
+    return tt_is_reverse_endian(header) ? _tt_bswap_16(value) : value;
+}
+static uint32_t rd32(struct tt_Header* header, uint32_t value) {
+    return tt_is_reverse_endian(header) ? _tt_bswap_32(value) : value;
+}
+static uint64_t rd64(struct tt_Header* header, uint64_t value) {
+    return tt_is_reverse_endian(header) ? _tt_bswap_64(value) : value;
 }
 
 static void rebuild_endpoint_index(struct tt_Node* node) {
@@ -1150,20 +1164,22 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
 // type/name string fails to decode.
 static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
                                    uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port) {
+    bool reverse = tt_is_reverse_endian(header);
     for (int i = 0; i < entity_count && *head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, head, tail, sizeof(struct tt_UpdateEntity));
+        uint32_t entity_id = rd32(header, update_entity->endpoint_id);
 
         TT_LOG_DEBUG("UpdateEntity");
-        TT_LOG_DEBUG("  endpoint_id: %08x", update_entity->endpoint_id);
+        TT_LOG_DEBUG("  endpoint_id: %08x", entity_id);
         TT_LOG_DEBUG("  kind: %d", update_entity->kind);
 
         if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, update_entity->endpoint_id);
+            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id);
             if (local != NULL) {
                 upsert_peer(((struct tt_Publisher*)local)->peers, header->source, sender_ip, sender_port);
             }
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
-            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_SERVICE_CLIENT, update_entity->endpoint_id);
+            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_SERVICE_CLIENT, entity_id);
             if (local != NULL) {
                 upsert_peer(((struct tt_Client*)local)->peers, header->source, sender_ip, sender_port);
             }
@@ -1171,7 +1187,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
 
         uint16_t type_len = 0;
         char* type = NULL;
-        if (!decode_string(node, buffer, head, tail, &type_len, &type)) {
+        if (!decode_string(node, buffer, head, tail, &type_len, &type, reverse)) {
             TT_LOG_ERROR("Cannot decode type");
             return false;
         }
@@ -1179,7 +1195,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
 
         uint16_t name_len = 0;
         char* name = NULL;
-        if (!decode_string(node, buffer, head, tail, &name_len, &name)) {
+        if (!decode_string(node, buffer, head, tail, &name_len, &name, reverse)) {
             TT_LOG_ERROR("Cannot decode name");
             return false;
         }
@@ -1271,12 +1287,16 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
         return false;
     }
 
-    TT_LOG_DEBUG("Data");
-    TT_LOG_DEBUG("  endpoint_id: %08x", data_header->endpoint_id);
-    TT_LOG_DEBUG("  timestamp: %ld", data_header->timestamp);
-    TT_LOG_DEBUG("  seq_no: %d", data_header->seq_no);
+    uint32_t endpoint_id = rd32(header, data_header->endpoint_id);
+    uint32_t seq_no = rd32(header, data_header->seq_no);
+    uint64_t timestamp = rd64(header, data_header->timestamp);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, data_header->endpoint_id);
+    TT_LOG_DEBUG("Data");
+    TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
+    TT_LOG_DEBUG("  timestamp: %ld", timestamp);
+    TT_LOG_DEBUG("  seq_no: %d", seq_no);
+
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id);
     if (endpoint == NULL) {
         return true;
     }
@@ -1291,7 +1311,7 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     if (topic->data_decode_inplace != NULL) {
         struct tt_Data* inplace = topic->data_decode_inplace(buffer + head, tail - head, is_native);
         if (inplace != NULL) {
-            sub->callback(sub, data_header->timestamp, data_header->seq_no, inplace);
+            sub->callback(sub, timestamp, (uint16_t)seq_no, inplace);
             return true;
         }
     }
@@ -1300,12 +1320,11 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     int32_t decoded = topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, is_native);
 
     if (decoded < 0) {
-        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %d", data_header->endpoint_id,
-                     data_header->seq_no);
+        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %d", endpoint_id, seq_no);
         return false;
     }
 
-    sub->callback(sub, data_header->timestamp, data_header->seq_no, (struct tt_Data*)data);
+    sub->callback(sub, timestamp, (uint16_t)seq_no, (struct tt_Data*)data);
     topic->data_free((struct tt_Data*)data);
     return true;
 }
@@ -1409,9 +1428,9 @@ static struct tt_SubmessageHeader* resend_cached_response(struct tt_Node* node,
 // No cached response yet: run the service callback fresh, then encode and cache a new
 // CallResponse. `old_tx_tail` is this submessage's start, for rolling back on a failure here.
 static struct tt_SubmessageHeader* build_call_response(struct tt_Node* node, struct tt_Header* header,
-                                                       struct tt_Server* server,
-                                                       struct tt_CallRequestHeader* callrequest_header, uint8_t* buffer,
-                                                       uint32_t head, uint32_t tail, uint32_t old_tx_tail) {
+                                                       struct tt_Server* server, uint16_t request_seq_no,
+                                                       uint8_t* buffer, uint32_t head, uint32_t tail,
+                                                       uint32_t old_tx_tail) {
     struct tt_Service* service = server->service;
 
     uint8_t request[service->request_size];
@@ -1442,20 +1461,25 @@ static struct tt_SubmessageHeader* build_call_response(struct tt_Node* node, str
     }
 
     call_response_header->endpoint_id = server->endpoint.id;
-    call_response_header->seq_no = callrequest_header->seq_no;
+    call_response_header->seq_no = request_seq_no; // native - encoded below in this node's own order
     call_response_header->retry = 0;
     call_response_header->return_code = return_code;
 
     // CallRequestBody
     if (return_code == 0) {
         int32_t cdr_len = service->response_encode_size((struct tt_Response*)response);
-        void* cdr = encode(node, cdr_len);
+        if (cdr_len < 0 || cdr_len > tt_MAX_BUFFER_LENGTH) {
+            TT_LOG_ERROR("response_encode_size returned %d (out of range)", cdr_len);
+            rollback(node, old_tx_tail);
+            return NULL;
+        }
+        void* cdr = encode(node, (uint32_t)cdr_len);
         if (cdr == NULL) {
             rollback(node, old_tx_tail);
             return NULL;
         }
 
-        int32_t encoded_len = service->response_encode((struct tt_Response*)response, cdr, cdr_len);
+        int32_t encoded_len = service->response_encode((struct tt_Response*)response, cdr, (uint32_t)cdr_len);
         service->response_free((struct tt_Response*)response);
 
         if (encoded_len < 0) {
@@ -1483,12 +1507,15 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
         return false;
     }
 
+    uint32_t endpoint_id = rd32(header, callrequest_header->endpoint_id);
+    uint16_t seq_no = rd16(header, callrequest_header->seq_no);
+
     TT_LOG_DEBUG("CallRequest");
-    TT_LOG_DEBUG("  endpoint_id: %08x", callrequest_header->endpoint_id);
-    TT_LOG_DEBUG("  seq_no: %d", callrequest_header->seq_no);
+    TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
+    TT_LOG_DEBUG("  seq_no: %d", seq_no);
     TT_LOG_DEBUG("  retry: %d", callrequest_header->retry);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_SERVER, callrequest_header->endpoint_id);
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_SERVER, endpoint_id);
     if (endpoint == NULL) {
         return true;
     }
@@ -1496,12 +1523,12 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     struct tt_Server* server = (struct tt_Server*)endpoint;
 
     // Check cache
-    struct tt_SubmessageHeader* cached = get_server_cache(server, header->source, callrequest_header->seq_no);
+    struct tt_SubmessageHeader* cached = get_server_cache(server, header->source, seq_no);
     uint32_t old_tx_tail = node->tx_tail;
 
     struct tt_SubmessageHeader* submessage_header =
         cached != NULL ? resend_cached_response(node, cached)
-                       : build_call_response(node, header, server, callrequest_header, buffer, head, tail, old_tx_tail);
+                       : build_call_response(node, header, server, seq_no, buffer, head, tail, old_tx_tail);
     if (submessage_header == NULL) {
         return false;
     }
@@ -1541,13 +1568,16 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
         return false;
     }
 
+    uint32_t endpoint_id = rd32(header, callresponse_header->endpoint_id);
+    uint16_t seq_no = rd16(header, callresponse_header->seq_no);
+
     TT_LOG_DEBUG("CallResponse");
-    TT_LOG_DEBUG("  endpoint_id: %08x", callresponse_header->endpoint_id);
-    TT_LOG_DEBUG("  seq_no: %d", callresponse_header->seq_no);
+    TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
+    TT_LOG_DEBUG("  seq_no: %d", seq_no);
     TT_LOG_DEBUG("  retry: %d", callresponse_header->retry);
     TT_LOG_DEBUG("  return_code: %d", callresponse_header->return_code);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_CLIENT, callresponse_header->endpoint_id);
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_SERVICE_CLIENT, endpoint_id);
     if (endpoint == NULL) {
         return true;
     }
@@ -1566,9 +1596,8 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     }
     const struct tt_CallRequestHeader* cached_request =
         (const struct tt_CallRequestHeader*)((const uint8_t*)client->cache + sizeof(struct tt_SubmessageHeader));
-    if (cached_request->seq_no != callresponse_header->seq_no) {
-        TT_LOG_DEBUG("CallResponse seq_no %u != outstanding %u, ignoring", callresponse_header->seq_no,
-                     cached_request->seq_no);
+    if (cached_request->seq_no != seq_no) {
+        TT_LOG_DEBUG("CallResponse seq_no %u != outstanding %u, ignoring", seq_no, cached_request->seq_no);
         return true;
     }
 
@@ -1679,25 +1708,26 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
         return SUBMSG_DONE;
     }
 
+    uint16_t sub_length = rd16(header, submessage_header->length);
+
     TT_LOG_DEBUG("type: %d", submessage_header->type);
     TT_LOG_DEBUG("receiver: %d", submessage_header->receiver);
-    TT_LOG_DEBUG("length: %d / %ld", submessage_header->length, tail - *head + sizeof(struct tt_SubmessageHeader));
+    TT_LOG_DEBUG("length: %d / %ld", sub_length, tail - *head + sizeof(struct tt_SubmessageHeader));
 
-    if (submessage_header->length < sizeof(struct tt_SubmessageHeader) ||
-        submessage_header->length > tail - *head + sizeof(struct tt_SubmessageHeader)) {
-        TT_LOG_ERROR("Illegal submessage length: %d < %ld || %d > %ld", submessage_header->length,
-                     sizeof(struct tt_SubmessageHeader), submessage_header->length,
-                     tail - *head + sizeof(struct tt_SubmessageHeader));
+    if (sub_length < sizeof(struct tt_SubmessageHeader) ||
+        sub_length > tail - *head + sizeof(struct tt_SubmessageHeader)) {
+        TT_LOG_ERROR("Illegal submessage length: %d < %ld || %d > %ld", sub_length, sizeof(struct tt_SubmessageHeader),
+                     sub_length, tail - *head + sizeof(struct tt_SubmessageHeader));
         return SUBMSG_ERROR;
     }
 
-    const uint32_t body_tail = *head + submessage_header->length - sizeof(struct tt_SubmessageHeader);
+    const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
     if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
         !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port)) {
         return SUBMSG_ERROR;
     }
 
-    *head += submessage_header->length - sizeof(struct tt_SubmessageHeader);
+    *head += sub_length - sizeof(struct tt_SubmessageHeader);
     return SUBMSG_CONTINUE;
 }
 
