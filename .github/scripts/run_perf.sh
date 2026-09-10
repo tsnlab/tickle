@@ -20,6 +20,7 @@ REMOTE_DIR="tickle"
 PING_COUNT="${PING_COUNT:-50}"
 PING_INTERVAL="${PING_INTERVAL:-0.1}"
 PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
+SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
@@ -109,6 +110,23 @@ summarize() {
         echo '```'
         cat "$LOG_DIR/throughput_server.log"
         echo '```'
+        echo
+        echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
+        echo "### Sender (rpi#1)"
+        echo '```'
+        cat "$LOG_DIR/smallmsg_client.log"
+        echo '```'
+        echo "### Receiver (rpi#2)"
+        echo '```'
+        cat "$LOG_DIR/smallmsg_server.log"
+        echo '```'
+        local smsg_recv smsg_dur
+        smsg_recv=$(grep -oP 'recv=\K[\d,]+' "$LOG_DIR/smallmsg_server.log" | tail -1 | tr -d ',')
+        smsg_dur=$(grep -oP '[\d.]+(?= sec, avg)' "$LOG_DIR/smallmsg_server.log" | tail -1)
+        if [ -n "${smsg_recv:-}" ] && [ -n "${smsg_dur:-}" ]; then
+            echo
+            echo "small-message rate: $(awk "BEGIN{printf \"%.0f\", $smsg_recv/$smsg_dur}") msg/sec"
+        fi
     } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 }
 
@@ -149,6 +167,13 @@ run_paired_test "latency" "pong" "ping" "-c $PING_COUNT -i $PING_INTERVAL" \
     "$(awk "BEGIN { printf \"%d\", ($PING_COUNT * $PING_INTERVAL) + 30 }")"
 
 run_paired_test "throughput" "perf_server" "perf_client" "-d $PERF_DURATION_SEC" \
+    "$((PERF_DURATION_SEC + 30))"
+
+# Small-message run: 100-byte payloads that node_flush() batches several per packet, so this is
+# limited by per-message CPU work (encode/decode/lookup/callback) rather than link bandwidth -
+# the regime where internal optimizations show up as message rate even when a full-MTU run is
+# already at line rate. Reported as messages/sec (its Mbps is mostly framing overhead).
+run_paired_test "smallmsg" "perf_server" "perf_client" "-s $SMALL_MSG_SIZE -d $PERF_DURATION_SEC" \
     "$((PERF_DURATION_SEC + 30))"
 
 summarize
