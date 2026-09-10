@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789036155433,
+  "lastUpdate": 1789049719548,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -803,6 +803,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.013,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d55a094648e28aeebd2dbf4255b756f20d91e443",
+          "message": "CI: publish a per-platform status table on the benchmark page\n\ngithub.io only had the perf history charts. Add a single table above them\n(https://tsnlab.github.io/tickle/dev/bench/) showing, per platform, whether\nit compiled, whether each test tier passed, and - for the HIL row - the\nlatest throughput / latency / small-message rate. Refreshed on every push\nto main.\n\n- .github/scripts/dashboard.py: merges a producer's section into\n  dev/bench/status.json and (re-)injects the rendered table into\n  dev/bench/index.html between HTML markers. github-action-benchmark\n  regenerates that file every perf run, so the markers are re-inserted\n  (after </header>) whenever they've gone.\n- .github/scripts/publish_dashboard.sh: shared entry point - clones\n  gh-pages, folds in one section, pushes with a fetch+reapply retry loop\n  (test-all.yml, performance.yml and github-action-benchmark can all push\n  there at once on a main push). Also drops a root index.html redirect so\n  the site root stops 404ing. Runs on ubuntu-latest (python3 + git, no jq).\n- test-all.yml: each compile + test tier is now its own step (so the table\n  can pinpoint which broke); a Gate step still fails the job on any tier\n  failure; on a push to main a Publish step writes the \"buildtest\" section\n  (Linux x86-64 + FreeRTOS/QEMU rows).\n- performance.yml / run_perf.sh: run_perf.sh writes perf-frag.json (RPi\n  build/test outcome + numbers, seeded red so an early abort still shows);\n  a new publish job on ubuntu-latest folds it in as the \"perf\" section.\n\nPRs still run every tier (Gate enforces green) but don't touch the page.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T23:14:29+09:00",
+          "tree_id": "96724d27c41532234bec4f8fee9a24dc4e4f5c1b",
+          "url": "https://github.com/tsnlab/tickle/commit/d55a094648e28aeebd2dbf4255b756f20d91e443"
+        },
+        "date": 1789049718512,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
             "unit": "ms"
           },
           {
