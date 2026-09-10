@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789050215330,
+  "lastUpdate": 1789050218394,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1562,6 +1562,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 895.752,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "77635b8cbd9565ce31fb32cc856fe1ec862aec6a",
+          "message": "dashboard: per-commit history grid instead of a single snapshot\n\nRows are now commits on main (newest first, last 30); columns are each\nplatform's tiers - Linux (build / unit / integration), FreeRTOS\n(build / integration), Raspberry Pi HIL (build / integration / throughput\n/ RTT / small-msg rate).\n\nstatus.json holds a \"history\" array; dashboard.py merge upserts a row by\ncommit SHA and fills only its own section, so test-all.yml and\nperformance.yml (separate jobs, finishing out of order) each contribute\ntheir columns to the same row. Rows sort by date desc; a commit whose\nother section hasn't landed yet shows \"·\" for those cells.\n\nrun_perf.sh / test-all.yml now stamp each fragment with commit + date.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T23:22:47+09:00",
+          "tree_id": "21163381175d9da94077047ad263ae453f10962d",
+          "url": "https://github.com/tsnlab/tickle/commit/77635b8cbd9565ce31fb32cc856fe1ec862aec6a"
+        },
+        "date": 1789050217237,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 936.416,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.023,
             "unit": "Mbps"
           }
         ]
