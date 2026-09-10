@@ -100,30 +100,37 @@
 <!-- TICKLE-STATUS:BEGIN -->
 <style>
   #tickle-status { margin: 8px 0 16px; overflow-x: auto; }
-  #tickle-status table { border-collapse: collapse; font-size: 0.95em; }
-  #tickle-status th, #tickle-status td { border: 1px solid #dbdbdb; padding: 4px 10px; text-align: center; }
+  #tickle-status table { border-collapse: collapse; font-size: 0.9em; white-space: nowrap; }
+  #tickle-status th, #tickle-status td { border: 1px solid #dbdbdb; padding: 3px 8px; text-align: center; }
   #tickle-status thead th { background: #f5f5f5; }
-  #tickle-status tbody th { text-align: left; background: #fafafa; white-space: nowrap; }
+  #tickle-status tbody th { background: #fafafa; font-weight: normal; }
   #tickle-status td.s-fail { background: #fff0f0; }
-  #tickle-status td.s-pass { background: #f2fbf2; }
-  #tickle-status .status-caption { font-size: 0.85em; color: #7a7a7a; margin-top: 4px; }
+  #tickle-status td.s-pass { background: #f3fbf3; }
+  #tickle-status td.s-pending { color: #bbb; }
+  #tickle-status .status-caption { font-size: 0.82em; color: #7a7a7a; margin-top: 4px; }
 </style>
 <section id="tickle-status">
-  <h2>Platform status</h2>
+  <h2>Platform status &mdash; last 30 commits on <code>main</code></h2>
   <table>
     <thead>
       <tr>
-        <th>Platform</th><th>Build</th><th>Unit tests</th><th>Integration test</th>
-        <th>Throughput (Mbps)</th><th>Latency RTT (ms)</th><th>Small-msg rate</th>
+        <th rowspan="2">Commit</th><th rowspan="2">Date (UTC)</th>
+        <th colspan="3">Linux x86-64</th>
+        <th colspan="2">FreeRTOS RISC-V (QEMU)</th>
+        <th colspan="5">Raspberry Pi (HIL, arm64)</th>
+      </tr>
+      <tr>
+        <th>Build</th><th>Unit</th><th>Integ.</th>
+        <th>Build</th><th>Integ.</th>
+        <th>Build</th><th>Integ.</th><th>Tput ↑/↓<br>Mbps</th><th>RTT<br>ms</th><th>Small-msg<br>msg/s</th>
       </tr>
     </thead>
     <tbody>
-<tr><th>Linux x86-64</th><td class="s-pass" title="pass">✅</td><td class="s-pass" title="pass">✅</td><td class="s-pass" title="pass">✅</td><td>–</td><td>–</td><td>–</td></tr>
-<tr><th>FreeRTOS RISC-V (QEMU)</th><td class="s-pass" title="pass">✅</td><td class="s-na" title="na">–</td><td class="s-pass" title="pass">✅</td><td>–</td><td>–</td><td>–</td></tr>
-<tr><th>Raspberry Pi (HIL, arm64)</th><td class="s-pass" title="pass">✅</td><td class="s-na" title="na">–</td><td class="s-pass" title="pass">✅</td><td>936 ↑ / 896 ↓</td><td>0.20 ± 0.01</td><td>499,168/s</td></tr>
+<tr><th><a href="https://github.com/tsnlab/tickle/commit/77635b8cbd9565ce31fb32cc856fe1ec862aec6a"><code>77635b8</code></a></th><td>2026-09-10 14:23</td><td class="s-pending" title="pending">·</td><td class="s-pending" title="pending">·</td><td class="s-pending" title="pending">·</td><td class="s-pending" title="pending">·</td><td class="s-pending" title="pending">·</td><td class="s-pass" title="pass">✅</td><td class="s-pass" title="pass">✅</td><td>936/901</td><td>0.20</td><td>497,917</td></tr>
     </tbody>
   </table>
-  <div class="status-caption">build/test @ <a href="https://github.com/tsnlab/tickle/actions/runs/34487758996">d55a094</a> (2026-09-10 14:22 UTC) &nbsp;·&nbsp; perf @ <a href="https://github.com/tsnlab/tickle/actions/runs/34487758781">d55a094</a> (2026-09-10 14:15 UTC)</div>
+  <div class="status-caption">✅ pass &nbsp; ❌ fail &nbsp; ⚠️ skipped &nbsp; – n/a &nbsp; · not run yet
+  &nbsp;·&nbsp; updated 2026-09-10 14:23 UTC</div>
 </section>
 <!-- TICKLE-STATUS:END -->
 
