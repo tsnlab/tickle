@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789028261158,
+  "lastUpdate": 1789029397342,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -525,6 +525,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.013,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "74f70176a06a8442eb6819d958a1421da725eb0b",
+          "message": "test-linux: run in a veth namespace pair, not shared loopback\n\ntest.sh put both nodes in one network namespace on loopback, bound to the\nsame wildcard address and told apart only by -I. A kernel delivers a\nunicast packet aimed at one such socket to whichever bound last, so that\nsetup could not validate any unicast path - a server's CallResponse, a\nPublisher/Client that discovered a peer, the reactive discovery reply -\nand produced misleading ping_pong/perf loss once those landed.\n\nIt now sets up its own veth-joined pair (tickle-ns1/tickle-ns2, real\ndistinct 192.168.10.1/.2), torn down on exit, and drops -I so node IDs\ncome from tt_get_node_id() auto-detection for real. Needs passwordless\nsudo for `ip`; `make test` stays privilege-free. netns.mk's manual runX\ntargets are unchanged and independent (distinct names, no dependency).\n\nFolds in the throwaway test-netns.sh. Docs (README, CONTRIBUTING, Makefile,\nDESIGN, netns.mk) updated to match.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T17:35:51+09:00",
+          "tree_id": "b00bfca9b46c7d696307bed9ccb5768be8abf239",
+          "url": "https://github.com/tsnlab/tickle/commit/74f70176a06a8442eb6819d958a1421da725eb0b"
+        },
+        "date": 1789029396370,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
             "unit": "ms"
           },
           {
