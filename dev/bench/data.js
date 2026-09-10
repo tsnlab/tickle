@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789030097404,
+  "lastUpdate": 1789030100253,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1124,6 +1124,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 899.72,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "19423dfe85ac9e7b70211cbdaef27e2ce107713b",
+          "message": "Make the remaining shell scripts shellcheck-clean too\n\nplatform/freertos/test.sh: `cd || exit 1` (SC2164), quote $server_role /\n$client_node in the make lines (SC2086). run_perf.sh: disable SC2029 on\nthe ssh_run helper (the argument is meant to expand on the remote host).\nNo behavior change - lets `Check all` (ludeeus/action-shellcheck) pass.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T17:47:32+09:00",
+          "tree_id": "e2e16ff7c027c0e95215c47b29712ebc6aac5a8a",
+          "url": "https://github.com/tsnlab/tickle/commit/19423dfe85ac9e7b70211cbdaef27e2ce107713b"
+        },
+        "date": 1789030099270,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 936.386,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 899.806,
             "unit": "Mbps"
           }
         ]
