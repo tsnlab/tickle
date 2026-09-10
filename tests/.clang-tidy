@@ -1,8 +1,21 @@
+# Test scaffolding, not shipped code - keep every real correctness/portability check from the
+# repo-root .clang-tidy (InheritParentConfig), drop only the style nits that don't apply here:
+#
+# - readability-magic-numbers: test fixture values (sentinel IDs, arbitrary timestamps) don't
+#   benefit from being named constants - the point is that their exact value doesn't matter.
+# - misc-include-cleaner: every test .c #includes ../src/tickle.c directly (whitebox, to reach
+#   its static functions), which pulls in everything tickle.c itself includes - the tool then
+#   flags plenty of correctly-used symbols as "not directly included" since it can't see past
+#   that.
+# - readability-identifier-length / -naming / -non-const-parameter: table-driven tests use
+#   short-lived locals (buf, off, len16, ...), and a fuzz harness has to define
+#   LLVMFuzzerTestOneInput / LLVMFuzzerInitialize verbatim (libFuzzer's API contract).
+#
+# All of these stay enabled for the rest of the project via InheritParentConfig.
 InheritParentConfig: true
-Checks: '-readability-magic-numbers,-misc-include-cleaner'
-# readability-magic-numbers: test fixture values (sentinel IDs, arbitrary timestamps) don't
-# benefit from being named constants - the point is that their exact value doesn't matter.
-# misc-include-cleaner: every test .c #includes ../src/tickle.c directly (whitebox, to reach
-# its static functions), which pulls in everything tickle.c itself includes - the tool then
-# flags plenty of correctly-used symbols as "not directly included" since it can't see past
-# that. Both checks stay enabled for the rest of the project via InheritParentConfig.
+Checks: >
+  -readability-magic-numbers,
+  -misc-include-cleaner,
+  -readability-identifier-length,
+  -readability-identifier-naming,
+  -readability-non-const-parameter

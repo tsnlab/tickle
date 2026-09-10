@@ -85,6 +85,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     memset(&sub, 0, sizeof(sub));
     sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
     sub.endpoint.id = 0x11223344;
+    sub.endpoint.name = "fuzz_sub"; // reply_with_own_announce() re-encodes our endpoints' names
     sub.topic = &topic;
     sub.callback = sub_cb;
     node.endpoint_count = 1;

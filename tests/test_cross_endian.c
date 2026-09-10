@@ -30,21 +30,21 @@
 
 // The host running this test is (almost certainly) little-endian, so "the other endianness" is
 // big-endian: write each field byte-swapped and stamp the header REVERSE.
-static uint16_t sw16(uint16_t v) {
-    return _tt_bswap_16(v);
+static uint16_t swap16(uint16_t val) {
+    return _tt_bswap_16(val);
 }
-static uint32_t sw32(uint32_t v) {
-    return _tt_bswap_32(v);
+static uint32_t swap32(uint32_t val) {
+    return _tt_bswap_32(val);
 }
-static uint64_t sw64(uint64_t v) {
-    return _tt_bswap_64(v);
+static uint64_t swap64(uint64_t val) {
+    return _tt_bswap_64(val);
 }
 
 static void write_reverse_header(uint8_t* buf, uint8_t source) {
-    struct tt_Header* h = (struct tt_Header*)buf;
-    h->magic_value = REVERSE_MAGIC_VALUE;
-    h->version = tt_VERSION;
-    h->source = source;
+    struct tt_Header* header = (struct tt_Header*)buf;
+    header->magic_value = REVERSE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = source;
 }
 
 // --- tt_hash_id is endian-independent ---------------------------------------
@@ -54,9 +54,9 @@ static uint32_t byte_swapped_string_hash_ref;
 static void test_hash_id_is_byte_oriented_and_stable(void) {
     // Same names must hash the same regardless of host endianness; this pins the value so a
     // regression on either side (or a switch back to word-at-a-time reads) is caught.
-    uint32_t h = tt_hash_id("std_msgs/String", "chatter");
-    EXPECT_TRUE(h != 0);
-    EXPECT_EQ_U32(h, tt_hash_id("std_msgs/String", "chatter")); // deterministic
+    uint32_t hash = tt_hash_id("std_msgs/String", "chatter");
+    EXPECT_TRUE(hash != 0);
+    EXPECT_EQ_U32(hash, tt_hash_id("std_msgs/String", "chatter")); // deterministic
 
     // The separator makes the split between type and name significant.
     EXPECT_TRUE(tt_hash_id("ab", "c") != tt_hash_id("a", "bc"));
@@ -72,7 +72,7 @@ static void test_hash_id_is_byte_oriented_and_stable(void) {
     longname[sizeof(longname) - 1] = '\0';
     EXPECT_TRUE(tt_hash_id("t", longname) != 0);
 
-    byte_swapped_string_hash_ref = h;
+    byte_swapped_string_hash_ref = hash;
 }
 
 // --- tt_decode_string with a byte-swapped length prefix --------------------
@@ -81,19 +81,28 @@ static void test_decode_string_swaps_length_prefix(void) {
     uint8_t buf[64];
     memset(buf, 0, sizeof(buf));
 
-    const char* s = "hello"; // encoded length is 6 (includes the NUL)
-    uint16_t len_be = sw16(6);
+    const char* str = "hello"; // encoded length is 6 (includes the NUL)
+    uint16_t len_be = swap16(6);
     memcpy(buf, &len_be, sizeof(len_be));
-    memcpy(buf + sizeof(len_be), s, 6);
+    memcpy(buf + sizeof(len_be), str, 6);
     uint32_t tail = sizeof(len_be) + 6;
 
     uint32_t head = 0;
     uint16_t out_len = 0;
-    char* out = NULL;
-    EXPECT_TRUE(tt_decode_string(buf, &head, tail, &out_len, &out, true));
+    char* out_str = NULL;
+    EXPECT_TRUE(tt_decode_string(buf, &head, tail, &out_len, &out_str, true));
     EXPECT_EQ_U32(6, (uint32_t)out_len);
-    EXPECT_TRUE(strcmp(out, "hello") == 0);
+    EXPECT_TRUE(strcmp(out_str, "hello") == 0);
     EXPECT_EQ_U32(tail, head); // advanced past the whole field
+}
+
+// tt_encode_string(NULL) must fail cleanly, not strnlen(NULL) -> SEGV. Regression for a crash
+// the fuzzer found via reply_with_own_announce() re-encoding a local endpoint with no name set.
+static void test_encode_string_rejects_null(void) {
+    uint8_t buf[16];
+    uint32_t tail = 0;
+    EXPECT_TRUE(!tt_encode_string(buf, &tail, sizeof(buf), NULL));
+    EXPECT_EQ_U32(0, tail);
 }
 
 // --- DATA submessage from a reverse-endian publisher ----------------------
@@ -115,8 +124,8 @@ static int32_t data_decode_le(struct tt_Data* data, const uint8_t* payload, uint
 static void data_free_noop(struct tt_Data* data) {
     (void)data;
 }
-static void sub_cb(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
-    (void)s;
+static void sub_cb(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)subscriber;
     sub_calls++;
     sub_time = time;
     sub_seq = seq_no;
@@ -153,19 +162,19 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
     uint32_t off = sizeof(struct tt_Header);
 
     uint16_t sub_len = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + sizeof(uint32_t);
-    struct tt_SubmessageHeader* sh = (struct tt_SubmessageHeader*)(buf + off);
-    sh->type = tt_SUBMESSAGE_TYPE_DATA;
-    sh->receiver = tt_SUBMESSAGE_ID_ALL;
-    sh->length = sw16(sub_len);
+    struct tt_SubmessageHeader* submsg = (struct tt_SubmessageHeader*)(buf + off);
+    submsg->type = tt_SUBMESSAGE_TYPE_DATA;
+    submsg->receiver = tt_SUBMESSAGE_ID_ALL;
+    submsg->length = swap16(sub_len);
     off += sizeof(struct tt_SubmessageHeader);
 
-    struct tt_DataHeader* dh = (struct tt_DataHeader*)(buf + off);
-    dh->endpoint_id = sw32(0xdeadbeef);
-    dh->seq_no = sw32(42);
-    dh->timestamp = sw64(0x1122334455667788ULL);
+    struct tt_DataHeader* data_hdr = (struct tt_DataHeader*)(buf + off);
+    data_hdr->endpoint_id = swap32(0xdeadbeef);
+    data_hdr->seq_no = swap32(42);
+    data_hdr->timestamp = swap64(0x1122334455667788ULL);
     off += sizeof(struct tt_DataHeader);
 
-    uint32_t payload_be = sw32(0xCAFEF00D);
+    uint32_t payload_be = swap32(0xCAFEF00D);
     memcpy(buf + off, &payload_be, sizeof(payload_be));
     off += sizeof(payload_be);
 
@@ -208,33 +217,33 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
     write_reverse_header(buf, REMOTE_NODE_ID);
     uint32_t off = sizeof(struct tt_Header);
 
-    struct tt_SubmessageHeader* sh = (struct tt_SubmessageHeader*)(buf + off);
-    sh->type = tt_SUBMESSAGE_TYPE_UPDATE;
-    sh->receiver = tt_SUBMESSAGE_ID_ALL;
+    struct tt_SubmessageHeader* submsg = (struct tt_SubmessageHeader*)(buf + off);
+    submsg->type = tt_SUBMESSAGE_TYPE_UPDATE;
+    submsg->receiver = tt_SUBMESSAGE_ID_ALL;
     uint32_t sub_start = off;
     off += sizeof(struct tt_SubmessageHeader);
 
-    struct tt_UpdateHeader* uh = (struct tt_UpdateHeader*)(buf + off);
-    uh->last_modified = sw64(1000);
-    uh->entity_count = 1;
+    struct tt_UpdateHeader* update_hdr = (struct tt_UpdateHeader*)(buf + off);
+    update_hdr->last_modified = swap64(1000);
+    update_hdr->entity_count = 1;
     off += sizeof(struct tt_UpdateHeader);
 
-    struct tt_UpdateEntity* ue = (struct tt_UpdateEntity*)(buf + off);
-    ue->endpoint_id = sw32(0x01020304); // same id our Publisher has
-    ue->kind = tt_KIND_TOPIC_SUBSCRIBER;
+    struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + off);
+    entity->endpoint_id = swap32(0x01020304); // same id our Publisher has
+    entity->kind = tt_KIND_TOPIC_SUBSCRIBER;
     off += sizeof(struct tt_UpdateEntity);
 
     // two length-prefixed strings ("type", "name"), each length byte-swapped
     for (int k = 0; k < 2; k++) {
         const char* str = k == 0 ? "T" : "N";
-        uint16_t l = sw16(2);
-        memcpy(buf + off, &l, sizeof(l));
-        off += sizeof(l);
+        uint16_t len16 = swap16(2);
+        memcpy(buf + off, &len16, sizeof(len16));
+        off += sizeof(len16);
         memcpy(buf + off, str, 2);
         off += 2;
     }
 
-    sh->length = sw16((uint16_t)(off - sub_start));
+    submsg->length = swap16((uint16_t)(off - sub_start));
 
     uint32_t sender_ip = 0x0a000005;
     uint16_t sender_port = 9999;
@@ -248,34 +257,34 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
 
 // --- CALLREQUEST from a reverse-endian client: server answers with the right seq_no ---
 
-static int8_t srv_cb(struct tt_Server* s, struct tt_Request* req, struct tt_Response* resp) {
-    (void)s;
-    (void)req;
-    (void)resp;
+static int8_t srv_cb(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response) {
+    (void)server;
+    (void)request;
+    (void)response;
     return 0;
 }
-static int32_t req_decode(struct tt_Request* r, const uint8_t* p, uint32_t len, bool native) {
-    (void)r;
-    (void)p;
+static int32_t req_decode(struct tt_Request* request, const uint8_t* payload, uint32_t len, bool native) {
+    (void)request;
+    (void)payload;
     (void)len;
     (void)native;
     return 0;
 }
-static void req_free(struct tt_Request* r) {
-    (void)r;
+static void req_free(struct tt_Request* request) {
+    (void)request;
 }
-static int32_t resp_encode_size(struct tt_Response* r) {
-    (void)r;
+static int32_t resp_encode_size(struct tt_Response* response) {
+    (void)response;
     return 0;
 }
-static int32_t resp_encode(struct tt_Response* r, uint8_t* p, uint32_t len) {
-    (void)r;
-    (void)p;
+static int32_t resp_encode(struct tt_Response* response, uint8_t* payload, uint32_t len) {
+    (void)response;
+    (void)payload;
     (void)len;
     return 0;
 }
-static void resp_free(struct tt_Response* r) {
-    (void)r;
+static void resp_free(struct tt_Response* response) {
+    (void)response;
 }
 
 static void test_reverse_endian_callrequest_reaches_server(void) {
@@ -314,16 +323,16 @@ static void test_reverse_endian_callrequest_reaches_server(void) {
     uint32_t off = sizeof(struct tt_Header);
 
     uint16_t sub_len = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallRequestHeader);
-    struct tt_SubmessageHeader* sh = (struct tt_SubmessageHeader*)(buf + off);
-    sh->type = tt_SUBMESSAGE_TYPE_CALLREQUEST;
-    sh->receiver = tt_SUBMESSAGE_ID_ALL;
-    sh->length = sw16(sub_len);
+    struct tt_SubmessageHeader* submsg = (struct tt_SubmessageHeader*)(buf + off);
+    submsg->type = tt_SUBMESSAGE_TYPE_CALLREQUEST;
+    submsg->receiver = tt_SUBMESSAGE_ID_ALL;
+    submsg->length = swap16(sub_len);
     off += sizeof(struct tt_SubmessageHeader);
 
-    struct tt_CallRequestHeader* crh = (struct tt_CallRequestHeader*)(buf + off);
-    crh->endpoint_id = sw32(0x55667788);
-    crh->seq_no = sw16(9);
-    crh->retry = 0;
+    struct tt_CallRequestHeader* call_req = (struct tt_CallRequestHeader*)(buf + off);
+    call_req->endpoint_id = swap32(0x55667788);
+    call_req->seq_no = swap16(9);
+    call_req->retry = 0;
     off += sizeof(struct tt_CallRequestHeader);
 
     EXPECT_TRUE(process_packet(&node, buf, 0, off, 0x0a000009, 8282));
@@ -332,17 +341,16 @@ static void test_reverse_endian_callrequest_reaches_server(void) {
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
 
     // ...and its seq_no is 9 in this node's own (native) byte order.
-    struct tt_Header* out_h = (struct tt_Header*)node.tx_buffer;
-    (void)out_h;
-    struct tt_SubmessageHeader* out_sh = (struct tt_SubmessageHeader*)(node.tx_buffer + sizeof(struct tt_Header));
-    struct tt_CallResponseHeader* out_crh =
-        (struct tt_CallResponseHeader*)((uint8_t*)out_sh + sizeof(struct tt_SubmessageHeader));
-    EXPECT_EQ_U32(9, (uint32_t)out_crh->seq_no);
-    EXPECT_EQ_U32(server.endpoint.id, out_crh->endpoint_id);
+    struct tt_SubmessageHeader* out_submsg = (struct tt_SubmessageHeader*)(node.tx_buffer + sizeof(struct tt_Header));
+    struct tt_CallResponseHeader* out_call_resp =
+        (struct tt_CallResponseHeader*)((uint8_t*)out_submsg + sizeof(struct tt_SubmessageHeader));
+    EXPECT_EQ_U32(9, (uint32_t)out_call_resp->seq_no);
+    EXPECT_EQ_U32(server.endpoint.id, out_call_resp->endpoint_id);
 }
 
 int main(void) {
     test_hash_id_is_byte_oriented_and_stable();
+    test_encode_string_rejects_null();
     test_decode_string_swaps_length_prefix();
     test_reverse_endian_data_routes_and_unswaps();
     test_reverse_endian_update_matches_and_learns_peer();

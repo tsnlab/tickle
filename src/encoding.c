@@ -77,6 +77,9 @@ void* tt_decode_buffer(void* buffer, uint32_t* head, uint32_t tail, uint32_t len
 
 // String encoding/decoding functions
 bool tt_encode_string(void* buffer, uint32_t* tail, uint32_t buffer_size, const char* str) {
+    if (str == NULL) {
+        return false; // a caller-supplied name/type string should never be NULL; fail, don't deref
+    }
     size_t str_len = _tt_strnlen(str, tt_MAX_STRING_LENGTH) + 1; // including '\0'
 
     // str_len always >= 0

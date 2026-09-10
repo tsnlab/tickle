@@ -173,11 +173,11 @@ struct tt_Server { // extends endpoint
 // are valid ISO C (an empty struct is a GNU extension - a consumer building the public headers
 // with -std=c99 -pedantic-errors would otherwise fail to compile them).
 struct tt_Request {
-    char _reserved;
+    char reserved;
 };
 
 struct tt_Response {
-    char _reserved;
+    char reserved;
 };
 
 typedef int32_t (*tt_REQUEST_ENCODE_SIZE)(struct tt_Request* request);
@@ -212,7 +212,7 @@ struct tt_Service {
 struct tt_Topic;
 
 struct tt_Data {
-    char _reserved; // see tt_Request's own note - opaque base, one byte only to stay valid ISO C
+    char reserved; // see tt_Request's own note - opaque base, one byte only to stay valid ISO C
 };
 
 struct tt_Publisher { // extends endpoint
