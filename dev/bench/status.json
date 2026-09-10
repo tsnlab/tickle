@@ -1,6 +1,18 @@
 {
   "history": [
     {
+      "commit": "ec463ddca768be3cf83cf225f92ec5b5a912407e",
+      "commit_short": "ec463dd",
+      "date": "2026-09-10T15:19Z",
+      "perf": {
+        "build": "fail",
+        "commit": "ec463ddca768be3cf83cf225f92ec5b5a912407e",
+        "commit_short": "ec463dd",
+        "date": "2026-09-10T15:19Z",
+        "integration": "fail"
+      }
+    },
+    {
       "buildtest": {
         "branch": "main",
         "commit": "77635b8cbd9565ce31fb32cc856fe1ec862aec6a",
@@ -39,5 +51,5 @@
       }
     }
   ],
-  "updated": "2026-09-10 14:30 UTC"
+  "updated": "2026-09-10 15:19 UTC"
 }
