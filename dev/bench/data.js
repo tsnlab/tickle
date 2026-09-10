@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789050218394,
+  "lastUpdate": 1789082879891,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -881,6 +881,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.014,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3d6a3b67656a7a9f0eb5ba4c0873b7e317004660",
+          "message": "HIL: rpi#1 moved from 10.1.1.207 to 10.1.1.214\n\nDHCP reassigned the client Pi. Overridable via RPI_CLIENT_HOST as before.\n(The stale .207 host key was also dropped from the runner's known_hosts;\nStrictHostKeyChecking=accept-new re-learns .214 / .213 on first connect.)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T08:26:55+09:00",
+          "tree_id": "60347e59892e78095865aa3aacdee8aff3cd3e5c",
+          "url": "https://github.com/tsnlab/tickle/commit/3d6a3b67656a7a9f0eb5ba4c0873b7e317004660"
+        },
+        "date": 1789082878453,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           },
           {
