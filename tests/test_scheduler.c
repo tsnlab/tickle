@@ -74,7 +74,7 @@ static void test_unschedule_middle_keeps_order(void) {
     tt_Node_schedule(&node, 30, noop_a, NULL);
     tt_Node_schedule(&node, 40, noop_b, &marker); // target
     tt_Node_schedule(&node, 50, noop_a, NULL);
-    tt_Node_schedule(&node, 5, noop_b, &marker);  // target
+    tt_Node_schedule(&node, 5, noop_b, &marker); // target
     tt_Node_schedule(&node, 60, noop_a, NULL);
 
     EXPECT_TRUE(tt_Node_unschedule(&node, noop_b, &marker));

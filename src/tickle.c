@@ -779,15 +779,21 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_Node* node = pub->node;
     uint32_t old_tx_tail = node->tx_tail;
 
-    // Zero-copy path when the topic offers it and tx_buffer is empty (this publish() is its own
-    // packet, nothing batched to coalesce with - the common case for a full-MTU stream).
+    // Zero-copy path when the topic offers it, tx_buffer is empty (nothing batched to coalesce
+    // with), and the message is big enough that a second one wouldn't fit in the same packet
+    // anyway - i.e. batching has nothing to gain here. Small messages fall through to the staging
+    // path so node_flush() can still pack several per packet.
     if (pub->topic->data_encode_inplace != NULL && old_tx_tail == sizeof(struct tt_Header)) {
         const uint8_t* body = NULL;
         int32_t body_len = pub->topic->data_encode_inplace(data, &body);
-        if (body_len >= 0 && (body_len % 4) == 0) {
+        uint32_t standalone_len = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) +
+                                  sizeof(struct tt_DataHeader) + (body_len >= 0 ? (uint32_t)body_len : 0);
+        bool fills_packet =
+            standalone_len + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) > tt_MAX_BUFFER_LENGTH;
+        if (body_len >= 0 && (body_len % 4) == 0 && fills_packet) {
             return publish_zerocopy(pub, body, (uint32_t)body_len);
         }
-        // declined (or unaligned) - fall through to the staging copy path
+        // declined, unaligned, or small enough to want batching - use the staging copy path
     }
 
     // Header and SubmessageHeader
