@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789030100253,
+  "lastUpdate": 1789031866427,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -647,6 +647,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.012,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "eccaaa69a2dcfeccd1531009a2050a356c47626b",
+          "message": "CI: qemu-system-riscv -> qemu-system-misc on ubuntu-latest\n\nGitHub's ubuntu-latest is Ubuntu 24.04 (noble) now, where the RISC-V\nsystem emulators moved from the qemu-system-riscv package into\nqemu-system-misc. Test all has been failing at the toolchain-install step\nfor this since the runner image bumped; nothing downstream (make test-all,\nthe FreeRTOS QEMU round trip) had run.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T18:17:01+09:00",
+          "tree_id": "1ee2d0100196c4721430e1e57e4bbe71aeb59c23",
+          "url": "https://github.com/tsnlab/tickle/commit/eccaaa69a2dcfeccd1531009a2050a356c47626b"
+        },
+        "date": 1789031865428,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.014,
             "unit": "ms"
           },
           {
