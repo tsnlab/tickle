@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789034811776,
+  "lastUpdate": 1789036044892,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -725,6 +725,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.012,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih.kim@gmail.com",
+            "name": "Semih Kim",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "b37baa8bcaeeb0056d9b551cb9b8dec11c2f17d2",
+          "message": "CI: give check-all.yml a lint context for src/hal_freertos.c\n\ncheck-all.yml's cpp-linter runs clang-tidy on every changed .c file, but\n`bear -- make all` only builds the Linux platform - so src/hal_freertos.c\nhad no compile-DB entry and clang-tidy parsed it with no lwIP/picolibc\nincludes, failing with `'lwip/netif.h' file not found` plus a cascade of\n\"no header providing X\" warnings. This stayed hidden until now only\nbecause no green-CI commit had touched that file since check-all.yml was\nrepaired; the QEMU fix is the first, so it tripped it.\n\n- check-all.yml: synthesise a compile-DB entry for hal_freertos.c with\n  the same cross-compile flags platform/freertos/Makefile's own `lint`\n  target uses (--target, -nostdinc, explicit picolibc/gcc -isystem, the\n  FreeRTOS + lwIP submodule include paths). No FreeRTOS build - clang-tidy\n  only needs the flags and headers.\n- .clang-tidy: ignore lwip/* for misc-include-cleaner. lwIP's public API\n  is a handful of umbrella headers that deliberately re-export from\n  private sub-headers; \"include the exact provider\" doesn't apply.\n- hal_freertos.c: NOLINT the errno-macro uses (picolibc routes them via\n  <sys/errno.h>) and the tt_send_iov iovec const-cast, matching the\n  inline-NOLINT style hal_linux.c already uses for the same patterns.\n\nplatform/freertos/Makefile's lint still covers this file too (it disables\nthese checks wholesale for the cross-compiled HAL); check-all.yml now\njust stops choking on it.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-10T19:26:36+09:00",
+          "tree_id": "02464e5dca99c4dcf3653d1d5c2cfdfe9dcc134c",
+          "url": "https://github.com/tsnlab/tickle/commit/b37baa8bcaeeb0056d9b551cb9b8dec11c2f17d2"
+        },
+        "date": 1789036043917,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.014,
             "unit": "ms"
           },
           {
