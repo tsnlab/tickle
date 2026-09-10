@@ -70,17 +70,21 @@ update_and_build() {
 # Starts the server binary in the background (with a generous -d safety cap in case the
 # client hangs), runs the client in the foreground, then proactively stops the server
 # instead of waiting out the safety cap.
+#
+# The example binaries build under platform/linux/ now (the native Linux build moved there when
+# the repo split into platform/linux/ + platform/freertos/), not the repo root - update_and_build
+# still runs `make all` from the root, which forwards there.
 run_paired_test() {
     local label="$1" server_bin="$2" client_bin="$3" client_args="$4" server_safety_sec="$5"
 
     echo "== $label =="
-    ssh_run "$RPI_SERVER_HOST" "cd ~/$REMOTE_DIR && ./$server_bin -d $server_safety_sec" \
+    ssh_run "$RPI_SERVER_HOST" "cd ~/$REMOTE_DIR/platform/linux && ./$server_bin -d $server_safety_sec" \
         > "$LOG_DIR/${label}_server.log" 2>&1 &
     local server_pid=$!
 
     sleep 1 # let the server bind before the client starts sending
 
-    ssh_run "$RPI_CLIENT_HOST" "cd ~/$REMOTE_DIR && ./$client_bin $client_args" \
+    ssh_run "$RPI_CLIENT_HOST" "cd ~/$REMOTE_DIR/platform/linux && ./$client_bin $client_args" \
         > "$LOG_DIR/${label}_client.log" 2>&1 || true
 
     # -x matches the exact process name, so this can't accidentally match its own
