@@ -119,6 +119,28 @@ class TwistData(ctypes.Structure):
     _fields_ = [("linear", GeometryMsgsVector3), ("angular", GeometryMsgsVector3)]
 
 
+class ArrayDefaultsData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("fixed_with_default", ctypes.c_uint8 * 4),
+        ("bounded_with_default_count", ctypes.c_uint16),
+        ("bounded_with_default", ctypes.c_uint16 * 4),
+    ]
+
+
+class PingPongRequest(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("seq", ctypes.c_uint32), ("timestamp", ctypes.c_uint64)]
+
+
+class PingPongResponse(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("seq", ctypes.c_uint32), ("timestamp", ctypes.c_uint64)]
+
+
 IMAGE_DATA_CAPACITY = 1400  # tests/fixtures_own/Image.msg's `# @capacity 1400` annotation
 
 
@@ -482,6 +504,32 @@ def test_bulk_decode_inplace_rejects_reverse_endian(generated_lib):
     wire = bytes(4) + b"\x00\x00"
     result = decode_inplace(wire, len(wire), False)
     assert not result  # NULL
+
+
+def test_array_defaults_init_sets_fixed_and_variable_array_defaults(generated_lib):
+    # M6: a fixed array's default fills every declared element (no count of its own to set); a
+    # variable array's default also sets its own _count - fewer elements than its capacity here,
+    # proving _init() doesn't also touch the untouched tail (already handled by its own
+    # memset(0), never overwritten with something like a repeated last value).
+    init_fn = generated_lib.ArrayDefaultsData_init
+    init_fn.argtypes = [ctypes.POINTER(ArrayDefaultsData)]
+    init_fn.restype = None
+
+    data = ArrayDefaultsData(fixed_with_default=(9, 9, 9, 9), bounded_with_default_count=99)
+    init_fn(ctypes.byref(data))
+
+    assert list(data.fixed_with_default) == [1, 2, 3, 4]
+    assert data.bounded_with_default_count == 2
+    assert list(data.bounded_with_default[:2]) == [10, 20]
+    assert list(data.bounded_with_default[2:]) == [0, 0]
+
+
+def test_pingpong_roundtrip(generated_lib):
+    result, _buf = _roundtrip(
+        generated_lib, "PingPongRequest", PingPongRequest, lambda d: (setattr(d, "seq", 7), setattr(d, "timestamp", 123456789))
+    )
+    assert result.seq == 7
+    assert result.timestamp == 123456789
 
 
 def test_setbool_response_layout_has_one_byte_gap(generated_lib):

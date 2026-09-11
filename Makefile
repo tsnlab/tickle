@@ -10,7 +10,7 @@
 .DEFAULT_GOAL := all
 
 .PHONY: all library examples set_bool uint64 ping_pong perf test lint clean test-linux test-freertos test-all \
-        install uninstall fuzz sanitize
+        install uninstall fuzz sanitize regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize:
 	$(MAKE) -C platform/linux $@
@@ -59,3 +59,19 @@ test-freertos:
 # needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add
 # here.
 test-all: test test-linux test-freertos
+
+# Re-runs tools/typesupport over every real (non-test) interface, in place - each one flattened
+# into examples/<proto>/ alongside the .msg/.srv it's generated from (see tools/typesupport/
+# PLAN.md's M5 milestone: this is the only remaining reason to have Python/empy installed at
+# all - generated output is committed, so a plain `make`/`make test-all` never needs this
+# target or tools/typesupport's own venv). Needs `pip install -e tools/typesupport` (or
+# equivalent - see tools/typesupport/README.md) first; not part of any `all`/`test*` target so a
+# checkout with no Python still builds and tests everything from the committed output alone.
+# check-all.yml runs this in CI and fails the build on any diff, so a hand-edit of a generated
+# file (or a .msg/.srv edited without re-running this) doesn't silently drift.
+TICKLE_TYPESUPPORT ?= tickle-typesupport
+regen:
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/uint64 examples/uint64/UInt64.msg
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/set_bool examples/set_bool/SetBool.srv
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/ping_pong examples/ping_pong/PingPong.srv
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/perf examples/perf/Bulk.msg

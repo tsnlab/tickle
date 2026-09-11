@@ -20,20 +20,23 @@ OBJCOPY = $(CROSS)objcopy
 # ROLE picks which main file (and any role-specific extra sources) gets built:
 #   selftest (default)     - main.c, milestones 1-3's single-instance harness
 #   ping / pong             - examples/freertos/ping_pong/main_{ping,pong}.c, the RPC
-#                             (call/response) round trip, reusing
-#                             examples/linux/ping_pong/PingPong.{c,h} (see main_ping.c) - the same
-#                             codec examples/linux/ping_pong/{ping,pong}.c (that round trip's Linux
+#                             (call/response) round trip, reusing examples/ping_pong/
+#                             PingPong.{c,h} (see main_ping.c) - the same generated codec
+#                             examples/linux/ping_pong/{ping,pong}.c (that round trip's Linux
 #                             drivers) already build against, just cross-compiled here too.
 #   publisher / subscriber - examples/freertos/uint64/main_{publisher,subscriber}.c, the pub/sub
 #                             round trip (covers tt_Publisher_publish()'s batched-flush path
 #                             ping/pong never exercises - see main_publisher.c), reusing
-#                             examples/linux/uint64/UInt64.{c,h}
+#                             examples/uint64/UInt64.{c,h}
 #   client / server         - examples/freertos/set_bool/main_{client,server}.c, the set_bool RPC
-#                             round trip, reusing examples/linux/set_bool/SetBool.{c,h}
+#                             round trip, reusing examples/set_bool/SetBool.{c,h}
 #   perf_client / perf_server - examples/freertos/perf/main_perf_{client,server}.c, a (small,
 #                             fixed-rate - see main_perf_client.c) round trip over the same
 #                             protocol examples/linux/perf/ uses for real throughput
-#                             measurement, reusing examples/linux/perf/Bulk.{c,h}
+#                             measurement, reusing examples/perf/Bulk.{c,h}
+# Every codec above is generated (tools/typesupport, from the .msg/.srv living alongside it in
+# that same examples/<proto>/ directory) - see tools/typesupport/PLAN.md's M5 milestone and
+# `make regen` at the repo root.
 # NODE_ID sets this instance's static IP (192.168.10.$(NODE_ID)) via -DNET_NODE_ID - see
 # net_init.c. Each (ROLE, NODE_ID) pair gets its own obj dir/ELF name so building more than one
 # doesn't clobber another's cached objects (they're compiled with different -D flags).
@@ -46,36 +49,36 @@ ROLE_SRCS =
 ROLE_INCLUDES =
 else ifeq ($(ROLE),ping)
 MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_ping.c
-ROLE_SRCS = $(ROOT)/examples/linux/ping_pong/PingPong.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/ping_pong
+ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
+ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
 else ifeq ($(ROLE),pong)
 MAIN_SRC = $(ROOT)/examples/freertos/ping_pong/main_pong.c
-ROLE_SRCS = $(ROOT)/examples/linux/ping_pong/PingPong.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/ping_pong
+ROLE_SRCS = $(ROOT)/examples/ping_pong/PingPong.c
+ROLE_INCLUDES = -I$(ROOT)/examples/ping_pong
 else ifeq ($(ROLE),publisher)
 MAIN_SRC = $(ROOT)/examples/freertos/uint64/main_publisher.c
-ROLE_SRCS = $(ROOT)/examples/linux/uint64/UInt64.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/uint64
+ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
+ROLE_INCLUDES = -I$(ROOT)/examples/uint64
 else ifeq ($(ROLE),subscriber)
 MAIN_SRC = $(ROOT)/examples/freertos/uint64/main_subscriber.c
-ROLE_SRCS = $(ROOT)/examples/linux/uint64/UInt64.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/uint64
+ROLE_SRCS = $(ROOT)/examples/uint64/UInt64.c
+ROLE_INCLUDES = -I$(ROOT)/examples/uint64
 else ifeq ($(ROLE),client)
 MAIN_SRC = $(ROOT)/examples/freertos/set_bool/main_client.c
-ROLE_SRCS = $(ROOT)/examples/linux/set_bool/SetBool.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/set_bool
+ROLE_SRCS = $(ROOT)/examples/set_bool/SetBool.c
+ROLE_INCLUDES = -I$(ROOT)/examples/set_bool
 else ifeq ($(ROLE),server)
 MAIN_SRC = $(ROOT)/examples/freertos/set_bool/main_server.c
-ROLE_SRCS = $(ROOT)/examples/linux/set_bool/SetBool.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/set_bool
+ROLE_SRCS = $(ROOT)/examples/set_bool/SetBool.c
+ROLE_INCLUDES = -I$(ROOT)/examples/set_bool
 else ifeq ($(ROLE),perf_client)
 MAIN_SRC = $(ROOT)/examples/freertos/perf/main_perf_client.c
-ROLE_SRCS = $(ROOT)/examples/linux/perf/Bulk.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/perf
+ROLE_SRCS = $(ROOT)/examples/perf/Bulk.c
+ROLE_INCLUDES = -I$(ROOT)/examples/perf
 else ifeq ($(ROLE),perf_server)
 MAIN_SRC = $(ROOT)/examples/freertos/perf/main_perf_server.c
-ROLE_SRCS = $(ROOT)/examples/linux/perf/Bulk.c
-ROLE_INCLUDES = -I$(ROOT)/examples/linux/perf
+ROLE_SRCS = $(ROOT)/examples/perf/Bulk.c
+ROLE_INCLUDES = -I$(ROOT)/examples/perf
 else
 $(error Unknown ROLE '$(ROLE)': expected 'selftest', 'ping', 'pong', 'publisher', 'subscriber', 'client', 'server', 'perf_client', or 'perf_server')
 endif
@@ -196,9 +199,10 @@ clean:
 # this directory, alongside hal_linux.*, but need these same cross-compile flags - the top-level
 # Makefile's own `lint` explicitly excludes both this directory and hal_freertos.* for that
 # reason, deferring to this target instead).
-# -I$(ROOT)/examples/linux/{ping_pong,uint64,set_bool,perf}: each ROLE's main_*.c #include"s its
-# protocol's codec header ("PingPong.h", "UInt64.h", "SetBool.h", "Bulk.h") - harmless to pass all
-# four for files that only need one of them.
+# -I$(ROOT)/examples/{ping_pong,uint64,set_bool,perf}: each ROLE's main_*.c #include"s its
+# protocol's generated codec header ("PingPong.h", "UInt64.h", "SetBool.h", "Bulk.h"), flattened
+# into examples/<proto>/ alongside the .msg/.srv it's generated from (tools/typesupport/PLAN.md's
+# M5 milestone) - harmless to pass all four for files that only need one of them.
 PICOLIBC_INCLUDE = /usr/lib/picolibc/riscv64-unknown-elf/include
 TIDY_ARGS = --extra-arg=--target=riscv32-unknown-elf --extra-arg=-isystem --extra-arg=$(PICOLIBC_INCLUDE) \
             --extra-arg=-DTT_PLATFORM_FREERTOS \
@@ -206,8 +210,8 @@ TIDY_ARGS = --extra-arg=--target=riscv32-unknown-elf --extra-arg=-isystem --extr
             --extra-arg=-I$(FREERTOS)/include --extra-arg=-I$(RISCV_PORT) \
             --extra-arg=-I$(LWIP)/src/include --extra-arg=-I$(LWIP_FREERTOS_PORT)/include \
             --extra-arg=-I$(ROOT)/include --extra-arg=-I$(ROOT)/src \
-            --extra-arg=-I$(ROOT)/examples/linux/ping_pong --extra-arg=-I$(ROOT)/examples/linux/uint64 \
-            --extra-arg=-I$(ROOT)/examples/linux/set_bool --extra-arg=-I$(ROOT)/examples/linux/perf
+            --extra-arg=-I$(ROOT)/examples/ping_pong --extra-arg=-I$(ROOT)/examples/uint64 \
+            --extra-arg=-I$(ROOT)/examples/set_bool --extra-arg=-I$(ROOT)/examples/perf
 
 # Files that need this directory's own cross-compile flags but live elsewhere (so `find .` below
 # never reaches them) also need this directory's .clang-tidy overrides applied explicitly, since

@@ -4,13 +4,16 @@ A Python tool that generates TickLE codecs (`<Name>.c` / `<Name>.h`) from ROS 2 
 interface files. Structurally inspired by `rosidl_typesupport_fastrtps` / `rosidl_generator_c`,
 but the serialization is TickLE's own ("CDR-4"), not OMG CDR — TickLE is not DDS-wire-compatible.
 
+**Status**: M0–M6 complete (see the milestone table below) — every real TickLE interface is
+generated, not hand-written; see [`README.md`](README.md) for usage.
+
 ## Locked decisions
 
 | Area | Decision |
 |---|---|
 | Parser | Vendor one file: `rosidl_adapter/parser.py` → `tickle_typesupport/_rosidl_parser.py` (Apache-2.0, note origin commit, do not edit) |
 | Templating | `empy == 3.3.4` (pinned), then `clang-format -i` post-pass (formatting is never the template's job) |
-| Lint | `examples/.clang-tidy` (InheritParentConfig; disable only `readability-identifier-naming` + `readability-magic-numbers`). Delete the `SetBool\|UInt64\|Ping\|Bulk` whitelist from the root `.clang-tidy` |
+| Lint | A `.clang-tidy` in each `examples/<proto>/` directory (InheritParentConfig; disable `readability-identifier-naming` + `readability-magic-numbers` + `readability-non-const-parameter` - one per generated-codec directory rather than a single `examples/.clang-tidy`, since that would also reach the hand-written drivers under `examples/{linux,freertos}/<proto>/`, which keep every check). Deleted the `SetBool\|UInt64\|Ping\|Bulk` whitelist from the root `.clang-tidy` |
 | Alignment | CDR-4: every primitive at an offset that is a multiple of `min(sizeof, 4)`, zero-padded. 64-bit types are 4-aligned, not 8 |
 | Length prefixes | Every string and array length is `uint16` (a single-datagram payload is always < 2^16) |
 | Generated structs | `#pragma pack(push, 4)` + `_Static_assert(sizeof / offsetof …)` |
@@ -100,15 +103,15 @@ Pipeline: `parse (_rosidl_parser) → resolve nesteds → adapt → IR → layou
 
 ## Milestones
 
-| | Deliverable | Done when |
-|---|---|---|
-| **M0** | DESIGN.md CDR-4 section; `tt_CallRequestHeader` 7→8; tx/rx buffers `_Alignas(4)` + static_asserts; `tools/typesupport/` scaffold (pinned empy, vendored parser, IR-dump stub CLI) | `make test-all` still PASS (framing regression); HIL PASS |
-| **M1** | scalars + string + `.srv` + constants + scalar/string defaults + `examples/.clang-tidy`; regenerate `UInt64` and `SetBool` | golden == regenerated (byte-equal post clang-format); roundtrip + cross-endian green; `make test` + `make sanitize` PASS |
-| **M2** | fixed + variable arrays (capacity rules) + `#pragma pack(4)` + static_asserts; new `Bulk.msg`; regenerate `Bulk` (non-inplace) | `test_capacity`; perf examples PASS; HIL throughput no regression |
-| **M3** | nested messages + `-I` include path + `std_msgs/Header` builtin + parser smoke corpus | `Image.msg` generates + compiles (Linux + FreeRTOS) + round-trips |
-| **M4** | auto `encode_inplace` / `decode_inplace` for all-fixed-size; fully regenerate `Bulk` | `Bulk` golden == the hand-written version; HIL throughput holds |
-| **M5** | delete the 4 hand-written codecs; flatten to `examples/<proto>/`; Makefile codegen rules; delete root `.clang-tidy` whitelist; `make regen`; `check-all.yml` regen+lint+diff; new `PingPong.srv` | `test-all` + `check-all` + `test-freertos` green; zero hand codecs in the repo; HIL PASS |
-| **M6** | array default values; README / CONTRIBUTING updates; `.action` / multi-dim arrays documented as out of scope | `make test-all` + HIL latency/throughput baseline recorded |
+| | Deliverable | Done when | |
+|---|---|---|---|
+| **M0** | DESIGN.md CDR-4 section; `tt_CallRequestHeader` 7→8; tx/rx buffers `_Alignas(4)` + static_asserts; `tools/typesupport/` scaffold (pinned empy, vendored parser, IR-dump stub CLI) | `make test-all` still PASS (framing regression); HIL PASS | ✅ |
+| **M1** | scalars + string + `.srv` + constants + scalar/string defaults + `examples/.clang-tidy`; regenerate `UInt64` and `SetBool` | golden == regenerated (byte-equal post clang-format); roundtrip + cross-endian green; `make test` + `make sanitize` PASS | ✅ |
+| **M2** | fixed + variable arrays (capacity rules) + `#pragma pack(4)` + static_asserts; new `Bulk.msg`; regenerate `Bulk` (non-inplace) | `test_capacity`; perf examples PASS; HIL throughput no regression | ✅ |
+| **M3** | nested messages + `-I` include path + `std_msgs/Header` builtin + parser smoke corpus | `Image.msg` generates + compiles (Linux + FreeRTOS) + round-trips | ✅ |
+| **M4** | auto `encode_inplace` / `decode_inplace` for all-fixed-size; fully regenerate `Bulk` | `Bulk` golden == the hand-written version; HIL throughput holds | ✅ (`Bulk` didn't fit "all-fixed-size" - it's prefix-aliasable instead, a new eligibility rule this milestone added; hand-written version deleted, not matched byte-for-byte) |
+| **M5** | delete the 4 hand-written codecs; flatten to `examples/<proto>/`; Makefile codegen rules; delete root `.clang-tidy` whitelist; `make regen`; `check-all.yml` regen+lint+diff; new `PingPong.srv` | `test-all` + `check-all` + `test-freertos` green; zero hand codecs in the repo; HIL PASS | ✅ |
+| **M6** | array default values; README / CONTRIBUTING updates; `.action` / multi-dim arrays documented as out of scope | `make test-all` + HIL latency/throughput baseline recorded | ✅ |
 
 Out of scope: `.action`, multi-dimensional arrays, `wstring`, 128-bit, DDS/CDR wire
 compatibility, XCDR2, type hashes, introspection typesupport.

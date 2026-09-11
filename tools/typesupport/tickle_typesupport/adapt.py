@@ -62,13 +62,12 @@ def adapt_field(rosidl_field, resolver=None):
             raise UnsupportedFieldError(
                 f"field '{rosidl_field.name}': unknown array element type '{field_type.type}'"
             )
-        if rosidl_field.default_value is not None:
-            # ROS 2 lets a .msg give an array field its own default (e.g. `uint8[4] x [1,2,3,4]`)
-            # - out of scope until M6 (PLAN.md) rather than silently dropped, which would hide a
-            # real default the .msg author actually asked for.
-            raise UnsupportedFieldError(
-                f"field '{rosidl_field.name}': array default values aren't supported yet (M6)"
-            )
+        # ROS 2 lets a .msg give an array field its own default (e.g. `uint8[4] x [1,2,3,4]`) -
+        # a plain Python list, already scalar-typed, straight from rosidl. Bounds-checked against
+        # array_size/capacity once every field's own capacity is fully known
+        # (_validate_array_defaults, below) - an unbounded field's capacity may still be pending
+        # auto-derivation at this point.
+        default = rosidl_field.default_value
         if field_type.array_size is not None and not field_type.is_upper_bound:
             # Fixed: T[N] - no length prefix, N is part of the wire format itself.
             return model.WireField(
@@ -77,6 +76,7 @@ def adapt_field(rosidl_field, resolver=None):
                 scalar_type=field_type.type,
                 array_mode="fixed",
                 array_size=field_type.array_size,
+                default=default,
             )
         if field_type.array_size is not None and field_type.is_upper_bound:
             # Bounded: T[<=N] - variable, ROS 2's own upper bound becomes the wire capacity.
@@ -87,6 +87,7 @@ def adapt_field(rosidl_field, resolver=None):
                 array_mode="variable",
                 capacity=field_type.array_size,
                 capacity_source="bounded",
+                default=default,
             )
         # Unbounded: T[] - variable, capacity comes from an explicit @capacity annotation if
         # present, else gets auto-derived once every field's own size is known (_resolve_
@@ -99,6 +100,7 @@ def adapt_field(rosidl_field, resolver=None):
             array_mode="variable",
             capacity=capacity,
             capacity_source="annotation" if capacity is not None else None,
+            default=default,
         )
     if field_type.type in STRING_TYPES:
         if field_type.type == "wstring":
@@ -172,6 +174,26 @@ def _resolve_auto_capacities(fields):
     target.capacity_source = "auto"
 
 
+def _validate_array_defaults(fields):
+    """A fixed array's default must supply exactly array_size elements (there's no length
+    prefix on the wire to fall back to - every element needs a real initial value); a variable
+    array's default must fit within its (by now fully resolved, including auto-derived)
+    capacity. Called after _resolve_auto_capacities so every field's capacity is final."""
+    for f in fields:
+        if f.kind != "array" or f.default is None:
+            continue
+        if f.array_mode == "fixed" and len(f.default) != f.array_size:
+            raise UnsupportedFieldError(
+                f"field '{f.name}': default has {len(f.default)} elements, but the array is "
+                f"fixed-size {f.array_size} - a fixed array's default must supply exactly that many"
+            )
+        if f.array_mode == "variable" and len(f.default) > f.capacity:
+            raise UnsupportedFieldError(
+                f"field '{f.name}': default has {len(f.default)} elements, exceeding its "
+                f"capacity {f.capacity}"
+            )
+
+
 def adapt_constant(rosidl_constant):
     return model.Constant(
         name=rosidl_constant.name,
@@ -183,6 +205,7 @@ def adapt_constant(rosidl_constant):
 def adapt_struct(c_name, rosidl_spec, resolver=None):
     fields = [adapt_field(f, resolver) for f in rosidl_spec.fields]
     _resolve_auto_capacities(fields)
+    _validate_array_defaults(fields)
     struct = model.WireStruct(
         c_name=c_name,
         fields=fields,

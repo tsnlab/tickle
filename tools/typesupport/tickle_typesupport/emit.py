@@ -572,6 +572,12 @@ def emit_init(struct):
             continue
         if f.kind == "string":
             lines.append(f'data->{f.name} = "{f.default}";')
+        elif f.kind == "array":
+            for i, element in enumerate(f.default):
+                value = ("true" if element else "false") if f.scalar_type == "bool" else repr(element)
+                lines.append(f"data->{f.name}[{i}] = {value};")
+            if f.array_mode == "variable":
+                lines.append(f"data->{f.name}_count = {len(f.default)};")
         elif f.scalar_type == "bool":
             lines.append(f"data->{f.name} = {'true' if f.default else 'false'};")
         else:

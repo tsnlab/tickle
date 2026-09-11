@@ -55,11 +55,18 @@ def test_nested_same_package_type_is_resolved():
 
 
 def test_own_examples_still_parse():
-    # TickLE's own hand-written interface sources (the ones the hand-written codecs were derived
-    # from) must parse too - these are the first ones M1 regenerates.
+    # TickLE's own real interface sources - each flattened into examples/<proto>/ alongside its
+    # generated .c/.h (M5, tools/typesupport/PLAN.md) - must parse too. Trigger.srv (tests/
+    # fixtures_own/'s own empty-message edge case, never a real TickLE interface) is covered
+    # separately by test_roundtrip.py.
     examples = pathlib.Path(__file__).parent.parent.parent.parent / "examples"
-    for name in ("UInt64.msg", "SetBool.srv", "Trigger.srv", "Image.msg"):
-        path = examples / name
+    for proto, name in (
+        ("uint64", "UInt64.msg"),
+        ("set_bool", "SetBool.srv"),
+        ("ping_pong", "PingPong.srv"),
+        ("perf", "Bulk.msg"),
+    ):
+        path = examples / proto / name
         package, ifname = _guess_package_and_name(str(path))
         text = path.read_text(encoding="utf-8")
         if path.suffix == ".msg":

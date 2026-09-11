@@ -80,16 +80,21 @@ dir_for = $(patsubst $(REPO_ROOT)/%,$(OBJ)/%,$(abspath $(1)))
 
 OBJS = $(call obj_for,$(SRC_FILES))
 
-# Register each example binary as "<binary-name>:<its directory>". Every other .c file in that
-# same directory (its protocol's generated codec, e.g. SetBool.c/UInt64.c - shared verbatim by
-# examples/freertos/'s drivers for the same protocol too, via their own ROLE_INCLUDES/ROLE_SRCS in
-# platform/freertos/Makefile) is treated as a shared source compiled into that binary too. Adding
-# a new example binary is then a one-line addition here instead of a hand-written target + object
-# list.
-EXAMPLE_BINS := client:$(ROOT)/examples/linux/set_bool server:$(ROOT)/examples/linux/set_bool \
-                publisher:$(ROOT)/examples/linux/uint64 subscriber:$(ROOT)/examples/linux/uint64 \
-                ping:$(ROOT)/examples/linux/ping_pong pong:$(ROOT)/examples/linux/ping_pong \
-                perf_client:$(ROOT)/examples/linux/perf perf_server:$(ROOT)/examples/linux/perf
+# Register each example binary as "<binary-name>:<its driver directory>:<its generated-codec
+# directory>". Every .c file in EITHER directory (the driver's own, and its protocol's generated
+# codec - e.g. examples/set_bool/SetBool.c, flattened out of the driver's own directory per
+# tools/typesupport/PLAN.md's M5 milestone, and shared verbatim by examples/freertos/'s drivers
+# for the same protocol too, via their own ROLE_INCLUDES/ROLE_SRCS in platform/freertos/Makefile)
+# is treated as a shared source compiled into that binary too. Adding a new example binary is
+# then a one-line addition here instead of a hand-written target + object list.
+EXAMPLE_BINS := client:$(ROOT)/examples/linux/set_bool:$(ROOT)/examples/set_bool \
+                server:$(ROOT)/examples/linux/set_bool:$(ROOT)/examples/set_bool \
+                publisher:$(ROOT)/examples/linux/uint64:$(ROOT)/examples/uint64 \
+                subscriber:$(ROOT)/examples/linux/uint64:$(ROOT)/examples/uint64 \
+                ping:$(ROOT)/examples/linux/ping_pong:$(ROOT)/examples/ping_pong \
+                pong:$(ROOT)/examples/linux/ping_pong:$(ROOT)/examples/ping_pong \
+                perf_client:$(ROOT)/examples/linux/perf:$(ROOT)/examples/perf \
+                perf_server:$(ROOT)/examples/linux/perf:$(ROOT)/examples/perf
 
 # Every example binary links this too (see examples/linux/common/cli_opts.h) - unlike EXAMPLE_BINS'
 # per-directory _SHARED files below, it lives outside every example's own directory, so it's
@@ -98,13 +103,20 @@ EXAMPLE_BINS := client:$(ROOT)/examples/linux/set_bool server:$(ROOT)/examples/l
 COMMON_SRCS = $(ROOT)/examples/linux/common/cli_opts.c
 COMMON_OBJS = $(call obj_for,$(COMMON_SRCS))
 
+# A driver #includes its protocol's generated header by bare name (e.g. "SetBool.h") without
+# its own -I - historically because that header sat right alongside it, and unchanged now that
+# flattening (above) moved it out: every driver's own directory search still finds nothing there
+# now, so the compiler falls through to CPPFLAGS' own -I list, which needs each codec directory
+# added once here (harmless as an unused -I for any driver that doesn't need a given one).
+override CPPFLAGS += $(patsubst %,-I%,$(sort $(foreach bin,$(EXAMPLE_BINS),$(word 3,$(subst :, ,$(bin))))))
+
 # Directories the object rule below needs to exist first, derived from EXAMPLE_BINS so a
 # newly-registered example directory doesn't also need a manual entry here. Order-only
 # prerequisites (see `|` below) so make doesn't try to relink everything just because a
 # sibling .o's mkdir touched the directory's mtime, and so -j doesn't race multiple
 # `mkdir -p` calls against a per-file rule.
 OBJ_DIRS = $(call dir_for,$(SRC)) $(call dir_for,$(ROOT)/examples/linux/common) \
-           $(sort $(call dir_for,$(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))))))
+           $(sort $(call dir_for,$(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))) $(word 3,$(subst :, ,$(bin))))))
 
 # Unit tests: each tests/test_*.c #includes ../src/tickle.c directly (whitebox, to reach its
 # static functions) and provides its own mock HAL (tests/test_mock.h), so it's linked against
@@ -133,7 +145,7 @@ perf: perf_client perf_server
 
 # Generic rule: mirrors every source file's REPO_ROOT-relative path under $(OBJ)/, so
 # ../../src/tickle.c becomes obj/<type>/src/tickle.o and
-# ../../examples/linux/set_bool/SetBool.c becomes obj/<type>/examples/linux/set_bool/SetBool.o.
+# ../../examples/set_bool/SetBool.c becomes obj/<type>/examples/set_bool/SetBool.o.
 $(OBJ)/%.o: $(REPO_ROOT)/%.c | $(OBJ_DIRS)
 	$(CC) $(CPPFLAGS) $(DEPFLAGS) $(CFLAGS) -c -o $@ $<
 
@@ -153,14 +165,14 @@ EXAMPLE_MAIN_FILES := $(foreach bin,$(EXAMPLE_BINS),$(word 2,$(subst :, ,$(bin))
 ALL_EXAMPLE_OBJS :=
 define EXAMPLE_RULE
 $(1)_MAIN := $(2)/$(1).c
-$(1)_SHARED := $$(filter-out $(EXAMPLE_MAIN_FILES),$$(wildcard $(2)/*.c))
+$(1)_SHARED := $$(filter-out $(EXAMPLE_MAIN_FILES),$$(wildcard $(2)/*.c) $$(wildcard $(3)/*.c))
 $(1)_OBJS := $$(call obj_for,$$($(1)_MAIN) $$($(1)_SHARED)) $(COMMON_OBJS)
 ALL_EXAMPLE_OBJS += $$($(1)_OBJS)
 
 $(1): $$($(1)_OBJS) libtickle.a
 	$$(CC) $$(CFLAGS) $$(LDFLAGS) -o $$@ $$($(1)_OBJS) $$(LDLIBS)
 endef
-$(foreach bin,$(EXAMPLE_BINS),$(eval $(call EXAMPLE_RULE,$(word 1,$(subst :, ,$(bin))),$(word 2,$(subst :, ,$(bin))))))
+$(foreach bin,$(EXAMPLE_BINS),$(eval $(call EXAMPLE_RULE,$(word 1,$(subst :, ,$(bin))),$(word 2,$(subst :, ,$(bin))),$(word 3,$(subst :, ,$(bin))))))
 
 ALL_OBJS = $(OBJS) $(ALL_EXAMPLE_OBJS)
 
@@ -215,9 +227,12 @@ sanitize:
 #     rather than platform/ (mirroring hal_linux.* placement).
 LINT_EXCLUDES = -not -path '$(REPO_ROOT)/third_party/*' -not -path '$(REPO_ROOT)/platform/*' \
                 -not -path '$(REPO_ROOT)/examples/freertos/*' -not -name 'hal_freertos.*'
+# --extra-arg=-Ixxx per CPPFLAGS entry (not just -I$(INCLUDE)/-I$(SRC) - a driver #include"s its
+# protocol's generated codec header by bare name, resolved via CPPFLAGS' own -I list for each
+# examples/<proto>/ directory, same as the real compile rule above).
 lint:
 	find $(REPO_ROOT) $(LINT_EXCLUDES) -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
-	find $(REPO_ROOT) $(LINT_EXCLUDES) -name '*.[ch]' -exec clang-tidy --extra-arg=-I$(INCLUDE) --extra-arg=-I$(SRC) {} +
+	find $(REPO_ROOT) $(LINT_EXCLUDES) -name '*.[ch]' -exec clang-tidy $(patsubst -I%,--extra-arg=-I%,$(CPPFLAGS)) {} +
 
 include netns.mk
 

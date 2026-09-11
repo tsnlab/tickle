@@ -29,14 +29,18 @@ CC = "cc"
 CFLAGS = ["-Wall", "-Wextra", "-fPIC", f"-I{REPO_ROOT / 'include'}", f"-I{REPO_ROOT / 'src'}"]
 
 # The interfaces every codegen test exercises, and where each one's .msg/.srv source lives:
-#   - UInt64/SetBool/Trigger: TickLE's own real example interfaces (examples/) - an all-scalar
-#     fixed message, a request/response pair with a string + a scalar-then-string default
-#     padding gap, and an empty request.
-#   - Bulk: also a real example interface (examples/), added for M2 - a single unbounded array
-#     with an auto-derived capacity (see examples/Bulk.msg's own comment on why it isn't yet
-#     wire-compatible with examples/linux/perf/Bulk.c's hand-written version).
-#   - Arrays: tests/fixtures_own/ - not a real TickLE interface, exists purely to exercise every
-#     other array shape (fixed, bounded, annotated-capacity, float element) in one place.
+#   - UInt64/SetBool/PingPong/Bulk: TickLE's own real example interfaces - flattened into
+#     examples/<proto>/ alongside their generated .c/.h (M5 - see tools/typesupport/PLAN.md and
+#     examples/linux/{uint64,set_bool,ping_pong,perf}/'s own drivers, which build against the
+#     copies actually committed there, not these regenerated-into-a-tmp-dir ones). Between them:
+#     an all-scalar fixed message, a request/response pair with a string + a scalar-then-string
+#     default padding gap, an all-scalar fixed request/response pair, and (Bulk, M2) a single
+#     unbounded array with an auto-derived capacity (see examples/perf/Bulk.msg's own comment on
+#     why it isn't wire-compatible with the hand-written codec it replaced).
+#   - Trigger: tests/fixtures_own/ - not a real TickLE interface (nothing builds against it),
+#     exists purely for the empty-message edge case (Trigger.srv's request has zero fields).
+#   - Arrays/ArrayDefaults: tests/fixtures_own/ - every other array shape (fixed, bounded,
+#     annotated-capacity, float element) and, separately, M6's array default values.
 #   - Stamped/Image (fixtures_own/, M3): nested messages - Stamped nests std_msgs/Header (itself
 #     nesting builtin_interfaces/Time) purely via tickle_typesupport.builtins, two levels deep,
 #     with no -I needed at all; Image is the same std_msgs/Header nest plus a real ROS 2 shape
@@ -49,11 +53,13 @@ CFLAGS = ["-Wall", "-Wextra", "-fPIC", f"-I{REPO_ROOT / 'include'}", f"-I{REPO_R
 #     resolver caches rather than re-adapting (and re-emitting) it twice.
 FIXTURES_ROS2 = pathlib.Path(__file__).parent / "fixtures_ros2"
 GENERATED_INTERFACES = {
-    "UInt64.msg": EXAMPLES,
-    "SetBool.srv": EXAMPLES,
+    "UInt64.msg": EXAMPLES / "uint64",
+    "SetBool.srv": EXAMPLES / "set_bool",
+    "PingPong.srv": EXAMPLES / "ping_pong",
+    "Bulk.msg": EXAMPLES / "perf",
     "Trigger.srv": EXAMPLES,
-    "Bulk.msg": EXAMPLES,
     "Arrays.msg": FIXTURES_OWN,
+    "ArrayDefaults.msg": FIXTURES_OWN,
     "Stamped.msg": FIXTURES_OWN,
     "Image.msg": FIXTURES_OWN,
     "Twist.msg": FIXTURES_ROS2 / "geometry_msgs" / "msg",

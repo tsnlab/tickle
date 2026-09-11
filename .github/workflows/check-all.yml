@@ -24,6 +24,20 @@ jobs:
           sudo apt update
           sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Regenerate typesupport codecs and check for drift
+        run: |
+          pip install ./tools/typesupport
+          make regen
+          # A .msg/.srv edited without re-running `make regen`, or a generated .c/.h hand-edited
+          # directly (tools/typesupport/PLAN.md: "do not edit generated codecs") both show up
+          # here as an unexpected diff - fail the build rather than silently drifting.
+          git diff --exit-code -- examples/uint64 examples/set_bool examples/ping_pong examples/perf
+
       - name: Generate compile_commands.json
         run: |
           bear -- make all
@@ -41,17 +55,19 @@ jobs:
           fr=platform/freertos
 
           # file (relative to repo root) : role-specific extra -I (relative to $fr, matching
-          # platform/freertos/Makefile's ROLE_INCLUDES for that same file's MAIN_SRC/ROLE_SRCS).
+          # platform/freertos/Makefile's ROLE_INCLUDES for that same file's MAIN_SRC/ROLE_SRCS) -
+          # each one is a generated-codec directory (examples/<proto>/, tools/typesupport/
+          # PLAN.md's M5 milestone), not the driver's own.
           entries=(
             "src/hal_freertos.c:"
-            "examples/freertos/ping_pong/main_ping.c:../../examples/linux/ping_pong"
-            "examples/freertos/ping_pong/main_pong.c:../../examples/linux/ping_pong"
-            "examples/freertos/uint64/main_publisher.c:../../examples/linux/uint64"
-            "examples/freertos/uint64/main_subscriber.c:../../examples/linux/uint64"
-            "examples/freertos/set_bool/main_client.c:../../examples/linux/set_bool"
-            "examples/freertos/set_bool/main_server.c:../../examples/linux/set_bool"
-            "examples/freertos/perf/main_perf_client.c:../../examples/linux/perf"
-            "examples/freertos/perf/main_perf_server.c:../../examples/linux/perf"
+            "examples/freertos/ping_pong/main_ping.c:../../examples/ping_pong"
+            "examples/freertos/ping_pong/main_pong.c:../../examples/ping_pong"
+            "examples/freertos/uint64/main_publisher.c:../../examples/uint64"
+            "examples/freertos/uint64/main_subscriber.c:../../examples/uint64"
+            "examples/freertos/set_bool/main_client.c:../../examples/set_bool"
+            "examples/freertos/set_bool/main_server.c:../../examples/set_bool"
+            "examples/freertos/perf/main_perf_client.c:../../examples/perf"
+            "examples/freertos/perf/main_perf_server.c:../../examples/perf"
           )
 
           for entry in "${entries[@]}"; do

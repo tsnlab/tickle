@@ -17,3 +17,11 @@ tickle-typesupport = "tickle_typesupport.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["tickle_typesupport*"]
+
+# render.py reads these at runtime (pathlib.Path(__file__).parent / "templates") - without this,
+# setuptools' default file discovery only picks up .py files, so a real (non-editable) `pip
+# install` - exactly what check-all.yml's `make regen` step and any real consumer does, unlike
+# this repo's own `pip install -e .` dev setup, which just points at the source tree directly -
+# would silently ship a package with no templates/ at all.
+[tool.setuptools.package-data]
+tickle_typesupport = ["templates/*.em"]
