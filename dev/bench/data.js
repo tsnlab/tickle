@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789104580270,
+  "lastUpdate": 1789104582958,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2336,6 +2336,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 895.162,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ffe33c41084d8631907e5ad12caaeb8f1a595577",
+          "message": "CHANGELOG: record the CallRequestHeader wire change and tools/typesupport\n\nBoth landed as part of the typesupport milestone work (M0-M6) but were never recorded here -\nCONTRIBUTING.md asks for anything user-visible to go under ## [Unreleased].\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T14:28:53+09:00",
+          "tree_id": "4d85de1aaf1449c2961f68dc210e6eca3bda3d2d",
+          "url": "https://github.com/tsnlab/tickle/commit/ffe33c41084d8631907e5ad12caaeb8f1a595577"
+        },
+        "date": 1789104581942,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.606,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.389,
             "unit": "Mbps"
           }
         ]
