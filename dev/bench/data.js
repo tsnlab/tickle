@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789097408597,
+  "lastUpdate": 1789097909333,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1232,6 +1232,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.013,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "de16f28a15b597acdd04653fa72ccc4afbdf30b0",
+          "message": "Fix check-all.yml: synthesize compile-DB entries for every FreeRTOS role driver\n\nThe Bulk cutover commit's Check all failed on files it never should have needed to touch:\nexamples/freertos/perf/main_perf_client.c/main_perf_server.c, which happened to be the first\nexamples/freertos/**/*.c files ever part of a commit's diff since check-all.yml's compile_commands.json\nsynthesis was written. That synthesis only ever covered src/hal_freertos.c - every other\nFreeRTOS-only source (every examples/freertos/**/main_*.c role driver) has no compile-database\nentry and no cross-compile context, so clang-tidy can't even parse it ('FreeRTOS.h' file not\nfound) - a latent gap, not something this cutover caused, just the first commit to trip over it.\n\nGeneralized the synthesis into a small table (file -> its role-specific -I, matching platform/\nfreertos/Makefile's own ROLE_INCLUDES) so it covers hal_freertos.c and all eight role-driver\nmains uniformly, with the same cross-compile flags platform/freertos/Makefile's own `lint` target\nalready uses.\n\nThat still isn't enough on its own: platform/freertos/Makefile's `lint` target additionally\npasses an explicit --checks override on the command line (disabling readability-identifier-\nnaming/misc-include-cleaner/performance-no-int-to-ptr for the same \"layers three separately-\nvendored header trees\" reason platform/freertos/.clang-tidy documents) - a command-line flag,\nnot something a compile-database entry can carry, and not something check-all.yml's cpp-linter-\naction step (tidy-checks: '', i.e. \"just use .clang-tidy files\") ever applied. New examples/\nfreertos/.clang-tidy makes that same exemption available through file-based config inheritance\ntoo, mirroring platform/freertos/.clang-tidy's own reasoning verbatim for the same underlying\ncause.\n\nVerified locally: synthesizing the same compile_commands.json entries this workflow now would\nand running clang-tidy directly against both previously-failing files now reports zero findings\n(confirmed no findings via `--quiet` output containing no \"warning:\"/\"error:\" lines); `make lint`\n/ `make -C platform/freertos lint` both still pass unaffected (this only changes CI's own\nsynthesis and adds a new, correctly-scoped .clang-tidy - platform/freertos/Makefile's own lint\ntarget already works exactly as it did before).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T12:37:42+09:00",
+          "tree_id": "c10b9680a1a33537695aefeb24dc60a3fa459b81",
+          "url": "https://github.com/tsnlab/tickle/commit/de16f28a15b597acdd04653fa72ccc4afbdf30b0"
+        },
+        "date": 1789097907816,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.207,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.043,
             "unit": "ms"
           },
           {
