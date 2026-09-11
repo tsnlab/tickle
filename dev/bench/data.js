@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789095105629,
+  "lastUpdate": 1789095108379,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1932,6 +1932,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 900.352,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3a78ffeb6e3ea9d25b7772341108e2dff6a63766",
+          "message": "typesupport M4 (part 1): auto encode_inplace/decode_inplace for all-fixed-size structs\n\nAny struct where is_fixed_size holds (UInt64Data, SetBoolRequest, geometry_msgs__Vector3,\nTwistData - the last composed entirely of nested fields, nothing scalar of its own, showing the\noptimization needs no per-field analysis at all) now also gets:\n\n  int32_t <Name>_encode_inplace(struct <Name>* data, const uint8_t** payload_out);\n  struct <Name>* <Name>_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);\n\nper DESIGN.md's \"Struct layout\" note: #pragma pack(4) already makes the struct's own memory\nbyte-identical to its CDR-4 wire form on every supported ABI, so there's nothing to serialize -\nencode_inplace just hands back the struct's own address, decode_inplace just casts the payload\npointer (after checking is_native_endian and length), matching examples/linux/perf/Bulk.c's own\nhand-written pattern for the same idea (Bulk itself doesn't qualify here - see below).\n\nWired into struct.h.em/struct.c.em (guarded by the same is_fixed_size flag the sizeof/wire_size\n_Static_assert already uses) and, only for a Topic whose data is fixed-size, into the generated\ntt_Topic initializer's .data_encode_inplace/.data_decode_inplace (tt_Service has no such fields\nat all - RPC always copies; only Publish/Subscribe's zero-copy path this mirrors, per opt2/opt3\nearlier this session, is affected).\n\nThis is the unambiguous half of M4's own table entry. The other half - \"fully regenerate Bulk\"\nwith the done-criterion \"Bulk golden == the hand-written version\" - needs a design decision this\ncommit doesn't make: examples/Bulk.msg's generated form (M2, a real uint16 length-prefixed\nvariable array) and examples/linux/perf/Bulk.c's hand-written one (which reuses its own `size`\nfield as the array's length instead of a separate wire count, precisely to make the *whole*\nmessage - not just a fixed prefix of it - inplace-aliasable) are two different wire formats by\ndesign, and reconciling them means either teaching CDR-4 a new \"alias an array's length to\nanother field\" convention, or replacing the hand-tuned zero-copy Bulk with the slower generated\none - the latter risks regressing the exact HIL throughput benchmark this session's own opt2/opt3\nwork improved. Flagging for a decision rather than guessing.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T11:50:50+09:00",
+          "tree_id": "15679e4753c49f7d3488942a851fa7f4a7d313dc",
+          "url": "https://github.com/tsnlab/tickle/commit/3a78ffeb6e3ea9d25b7772341108e2dff6a63766"
+        },
+        "date": 1789095107362,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 936.401,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 900.577,
             "unit": "Mbps"
           }
         ]
