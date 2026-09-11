@@ -8,8 +8,13 @@
 @[if needs_config_h]@
 #include <tickle/config.h> // tt_MAX_STRING_LENGTH
 @[end if]@
+@[if needs_hal_h]@
 #include <tickle/hal.h>
+@[end if]@
 #include <tickle/tickle.h>
+@[for nested_name in nested_includes]@
+#include "@(nested_name).h"
+@[end for]@
 
 struct tt_Topic @(name)Topic = {
     .name = "@(name)Topic",

@@ -37,12 +37,32 @@ CFLAGS = ["-Wall", "-Wextra", "-fPIC", f"-I{REPO_ROOT / 'include'}", f"-I{REPO_R
 #     wire-compatible with examples/linux/perf/Bulk.c's hand-written version).
 #   - Arrays: tests/fixtures_own/ - not a real TickLE interface, exists purely to exercise every
 #     other array shape (fixed, bounded, annotated-capacity, float element) in one place.
+#   - Stamped/Image (fixtures_own/, M3): nested messages - Stamped nests std_msgs/Header (itself
+#     nesting builtin_interfaces/Time) purely via tickle_typesupport.builtins, two levels deep,
+#     with no -I needed at all; Image is the same std_msgs/Header nest plus a real ROS 2 shape
+#     (sensor_msgs/Image, with an explicit @capacity added to its own unbounded uint8[] - see its
+#     own file for why that's a fixtures_own/ copy rather than tests/fixtures_ros2/'s unmodified
+#     one).
+#   - Twist (fixtures_ros2/geometry_msgs/, M3): a real ROS 2 message exercising the *other* nested
+#     resolution path - an explicit `-I` search path (INCLUDE_DIRS, below) rather than a builtin -
+#     and the same nested type referenced twice (linear/angular, both Vector3), proving the
+#     resolver caches rather than re-adapting (and re-emitting) it twice.
+FIXTURES_ROS2 = pathlib.Path(__file__).parent / "fixtures_ros2"
 GENERATED_INTERFACES = {
     "UInt64.msg": EXAMPLES,
     "SetBool.srv": EXAMPLES,
     "Trigger.srv": EXAMPLES,
     "Bulk.msg": EXAMPLES,
     "Arrays.msg": FIXTURES_OWN,
+    "Stamped.msg": FIXTURES_OWN,
+    "Image.msg": FIXTURES_OWN,
+    "Twist.msg": FIXTURES_ROS2 / "geometry_msgs" / "msg",
+}
+# -I search paths generate_interface() needs for the interfaces above that nest a nonstandard
+# type not covered by tickle_typesupport.builtins - keyed the same way as GENERATED_INTERFACES.
+# Stamped.msg/Image.msg both only nest std_msgs/Header (a builtin), so neither needs one.
+INCLUDE_DIRS = {
+    "Twist.msg": [FIXTURES_ROS2],  # nests geometry_msgs/Vector3, found under fixtures_ros2/
 }
 
 
@@ -55,10 +75,17 @@ def _compile_to_object(path, outdir):
 @pytest.fixture(scope="session")
 def generated_dir(tmp_path_factory):
     """Generates every interface in GENERATED_INTERFACES into one temp directory and returns it -
-    used both to compile (this file) and to diff against tests/golden/ (test_golden.py)."""
+    used both to compile (this file) and to diff against tests/golden/ (test_golden.py). A nested
+    dependency (std_msgs__Header.c, say) that more than one interface here needs is regenerated
+    once per interface that references it, into this same shared directory - harmless, since
+    generate_interface() is deterministic per (pkg, name): the file just gets overwritten with
+    identical bytes, so only one copy of it actually exists (and gets compiled) by the time every
+    interface above has been generated."""
     outdir = tmp_path_factory.mktemp("generated")
     for name, source_dir in GENERATED_INTERFACES.items():
-        cli.generate_interface(str(source_dir / name), str(outdir), style_dir=str(REPO_ROOT))
+        cli.generate_interface(
+            str(source_dir / name), str(outdir), style_dir=str(REPO_ROOT), include_dirs=INCLUDE_DIRS.get(name, [])
+        )
     return outdir
 
 

@@ -16,7 +16,7 @@ import os
 import sys
 
 from . import _rosidl_parser as rosidl
-from . import adapt, postprocess, render
+from . import adapt, postprocess, render, resolve
 
 
 def _type_str(field_type):
@@ -73,30 +73,10 @@ def dump_interface(path):
         raise SystemExit(f"{path}: expected a .msg or .srv file")
 
 
-def generate_interface(path, outdir, *, name_override=None, style_dir=None):
-    """Parses one .msg/.srv, generates its <Name>.h/.c, clang-formats them, and writes them into
-    outdir. Returns the two file paths written."""
-    package, guessed_name = _guess_package_and_name(path)
-    name = name_override or guessed_name
-    text = open(path, encoding="utf-8").read()
-    source_label = os.path.basename(path)
-
-    if path.endswith(".msg"):
-        spec = rosidl.parse_message_string(package, guessed_name, text)
-        ir = adapt.adapt_message(name, spec)
-        header, source = render.render_topic(ir)
-    elif path.endswith(".srv"):
-        spec = rosidl.parse_service_string(package, guessed_name, text)
-        ir = adapt.adapt_service(name, spec)
-        header, source = render.render_service(ir)
-    else:
-        raise SystemExit(f"{path}: expected a .msg or .srv file")
-
+def _write_generated(name, header, source, source_label, outdir, fmt_dir):
     os.makedirs(outdir, exist_ok=True)
     header_path = os.path.join(outdir, f"{name}.h")
     source_path = os.path.join(outdir, f"{name}.c")
-    fmt_dir = style_dir or outdir
-
     header_text = postprocess.clang_format(
         postprocess.add_banner(header, source_label), style_dir=fmt_dir, filename=f"{name}.h"
     )
@@ -108,6 +88,38 @@ def generate_interface(path, outdir, *, name_override=None, style_dir=None):
     with open(source_path, "w", encoding="utf-8") as f:
         f.write(source_text)
     return header_path, source_path
+
+
+def generate_interface(path, outdir, *, name_override=None, style_dir=None, include_dirs=()):
+    """Parses one .msg/.srv, generates its <Name>.h/.c, clang-formats them, and writes them into
+    outdir - along with a <pkg>__<Name>.h/.c pair for every distinct nested message type it (or
+    one of its own nested types, recursively) references, resolved from `include_dirs` (ROS 2's
+    own `pkg/msg/Name.msg` layout) or tickle_typesupport.builtins (see resolve.py). Returns every
+    file path written, top-level interface first."""
+    package, guessed_name = _guess_package_and_name(path)
+    name = name_override or guessed_name
+    text = open(path, encoding="utf-8").read()
+    source_label = os.path.basename(path)
+    resolver = resolve.Resolver(include_dirs)
+
+    if path.endswith(".msg"):
+        spec = rosidl.parse_message_string(package, guessed_name, text)
+        ir = adapt.adapt_message(name, spec, resolver)
+        header, source = render.render_topic(ir)
+    elif path.endswith(".srv"):
+        spec = rosidl.parse_service_string(package, guessed_name, text)
+        ir = adapt.adapt_service(name, spec, resolver)
+        header, source = render.render_service(ir)
+    else:
+        raise SystemExit(f"{path}: expected a .msg or .srv file")
+
+    fmt_dir = style_dir or outdir
+    written = list(_write_generated(name, header, source, source_label, outdir, fmt_dir))
+    for nested_pkg, nested_name, nested_struct in resolver.in_discovery_order():
+        nested_header, nested_source = render.render_nested(nested_struct)
+        nested_label = f"{nested_pkg}/{nested_name}.msg"
+        written += _write_generated(nested_struct.c_name, nested_header, nested_source, nested_label, outdir, fmt_dir)
+    return written
 
 
 def main(argv=None):
@@ -127,6 +139,16 @@ def main(argv=None):
         action="store_true",
         help="parse and print the interface's fields/constants instead of generating code",
     )
+    parser.add_argument(
+        "-I",
+        "--include-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="search DIR/<pkg>/msg/<Name>.msg to resolve a nested message field's type "
+        "(repeatable; builtin_interfaces/Time and std_msgs/Header are always available even "
+        "without one - see tickle_typesupport.builtins)",
+    )
     args = parser.parse_args(argv)
 
     if args.name and len(args.inputs) != 1:
@@ -137,8 +159,10 @@ def main(argv=None):
             dump_interface(path)
             continue
         outdir = args.outdir or os.path.dirname(os.path.abspath(path))
-        header_path, source_path = generate_interface(path, outdir, name_override=args.name, style_dir=args.style_dir)
-        print(f"{path} -> {header_path}, {source_path}")
+        written = generate_interface(
+            path, outdir, name_override=args.name, style_dir=args.style_dir, include_dirs=args.include_dir
+        )
+        print(f"{path} -> {', '.join(written)}")
     return 0
 
 

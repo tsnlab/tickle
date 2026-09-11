@@ -361,6 +361,32 @@ def _emit_variable_array_decode(field):
     return lines
 
 
+def _emit_nested_encode(field):
+    # A nested type's own *_encode already writes starting at its own payload pointer's offset
+    # 0 with no header of its own (DESIGN.md's "no header, no extra alignment beyond what the
+    # first nested field needs") - calling it with `payload + encoded` is exactly "inlining its
+    # fields at the current offset", just delegated instead of pasted in field-by-field. Its
+    # error codes (-1/-2/-3) already mean the same thing here, so they propagate unchanged.
+    return [
+        "{",
+        f"    int32_t nested_size = {field.nested.c_name}_encode(&data->{field.name}, payload + encoded, len - (uint32_t)encoded);",
+        "    if (nested_size < 0) { return nested_size; }",
+        "    encoded += nested_size;",
+        "}",
+    ]
+
+
+def _emit_nested_decode(field):
+    return [
+        "{",
+        f"    int32_t nested_size = {field.nested.c_name}_decode(&data->{field.name}, payload + decoded, "
+        "len - (uint32_t)decoded, is_native_endian);",
+        "    if (nested_size < 0) { return nested_size; }",
+        "    decoded += nested_size;",
+        "}",
+    ]
+
+
 def emit_encode(struct):
     # Defensive (void) casts, not conditional on whether each parameter ends up used below: a
     # message with zero fields (e.g. Trigger.srv's request) never touches data/payload/len at
@@ -376,6 +402,8 @@ def emit_encode(struct):
             lines += _emit_fixed_array_encode(plan.field)
         elif plan.field.kind == "array":
             lines += _emit_variable_array_encode(plan.field)
+        elif plan.field.kind == "nested":
+            lines += _emit_nested_encode(plan.field)
         else:
             raise NotImplementedError(plan.field.kind)
     lines.append("return encoded;")
@@ -400,6 +428,8 @@ def emit_decode(struct):
             lines += _emit_fixed_array_decode(plan.field)
         elif plan.field.kind == "array":
             lines += _emit_variable_array_decode(plan.field)
+        elif plan.field.kind == "nested":
+            lines += _emit_nested_decode(plan.field)
         else:
             raise NotImplementedError(plan.field.kind)
     lines.append("return decoded;")
@@ -438,6 +468,14 @@ def emit_encode_size(struct):
             if plan.field.element_align > 1:
                 lines.append(f"size += (int32_t){_runtime_align_expr('size', plan.field.element_align)};")
             lines.append(f"size += (int32_t)((uint32_t){count_var} * {plan.field.element_size});")
+        elif plan.field.kind == "nested":
+            lines += [
+                "{",
+                f"    int32_t nested_size = {plan.field.nested.c_name}_encode_size(&data->{plan.field.name});",
+                "    if (nested_size < 0) { return nested_size; }",
+                "    size += nested_size;",
+                "}",
+            ]
         else:
             raise NotImplementedError(plan.field.kind)
     lines.append("return size;")
@@ -492,6 +530,25 @@ def needs_string_h(struct):
                 return True
     for plan in layout.plan_fields(struct.fields):
         if plan.field.wire_align > 1 and (plan.static_padding is None or plan.static_padding):
+            return True
+    return False
+
+
+def needs_hal_h(struct):
+    """True if the generated .c calls something from <tickle/hal.h> directly - the only two
+    things it ever uses are _tt_bswap_16/32/64 (any multi-byte scalar, any string or variable
+    array's own uint16 length/count prefix, or a multi-byte array element) and _tt_strnlen (any
+    string field). A struct built entirely out of 1-byte scalars, fixed arrays of 1-byte
+    elements, and/or nested fields (which delegate - see emit_nested_encode/decode - rather than
+    calling _tt_bswap_* themselves) doesn't need it at all: geometry_msgs__Vector3 (three
+    float64s) does, but examples/... Twist (two Vector3 *fields*, nothing scalar of its own)
+    does not."""
+    for f in struct.fields:
+        if f.kind == "string":
+            return True
+        if f.kind == "scalar" and model.SCALAR_SIZE[f.scalar_type] > 1:
+            return True
+        if f.kind == "array" and (f.array_mode == "variable" or f.element_size > 1):
             return True
     return False
 

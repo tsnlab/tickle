@@ -11,9 +11,12 @@ sizing, and emit.py/the templates render into C. Kept separate from the vendored
 (model.WireField etc., not rosidl_parser.Field/Type) so a future parser swap only touches
 adapt.py.
 
-M2 scope adds fixed (`T[N]`) and variable (`T[]` / `T[<=N]`) arrays of scalar element types;
-nested messages are still M3 - WireField already carries what that will need (a "nested" kind)
-so layout.py/emit.py don't have to be revisited structurally again, just extended.
+M3 scope adds nested messages (kind == "nested"): a field whose type is itself a WireStruct,
+resolved (resolve.py) from a `-I` search path or builtins.py. DESIGN.md's "nested message" rule
+- "the nested type's fields are inlined recursively at the current offset, no header, no extra
+alignment beyond what the first nested field needs" - is exactly why wire_align/wire_size below
+can just delegate to the nested WireStruct's own first field / overall size: nothing about a
+nested field's position in its parent needs new alignment or padding rules of its own.
 """
 
 from dataclasses import dataclass, field
@@ -74,7 +77,7 @@ FRAMING_OVERHEAD = 24
 @dataclass
 class WireField:
     name: str
-    kind: str  # "scalar" | "string" | "array"  ("nested" lands in M3)
+    kind: str  # "scalar" | "string" | "array" | "nested"
     scalar_type: str | None = None  # e.g. "uint32" - element type for "scalar" and "array" kinds
     default: object | None = None  # python-side default value, or None
     comment: str = ""  # the field's own trailing comment, for @capacity and readability
@@ -83,6 +86,8 @@ class WireField:
     array_size: int | None = None  # element count, when array_mode == "fixed"
     capacity: int | None = None  # max element count, when array_mode == "variable"
     capacity_source: str | None = None  # "annotation" | "bounded" | "auto" - docs/errors only
+    # Only set when kind == "nested":
+    nested: "WireStruct | None" = None  # the resolved nested type's own struct (resolve.py)
 
     @property
     def element_ctype(self):
@@ -108,6 +113,8 @@ class WireField:
             # "uint16_t name_count;" member) - not expressible as one type string, so
             # emit.emit_struct_fields() special-cases kind == "array" rather than using this.
             return self.element_ctype
+        if self.kind == "nested":
+            return f"struct {self.nested.c_name}"
         raise NotImplementedError(self.kind)
 
     @property
@@ -120,16 +127,22 @@ class WireField:
             # A fixed array has no length prefix - its own start aligns to its element type,
             # same as a bare scalar would. A variable array's uint16 count prefix aligns to 2.
             return self.element_align if self.array_mode == "fixed" else ARRAY_COUNT_ALIGN
+        if self.kind == "nested":
+            # "No extra alignment beyond what the first nested field needs" (DESIGN.md) - an
+            # empty nested struct (no TickLE interface actually has one) needs none of its own.
+            return self.nested.fields[0].wire_align if self.nested.fields else 1
         raise NotImplementedError(self.kind)
 
     @property
     def wire_size(self):
         """Exact wire size in bytes, or None if it depends on runtime data (strings, variable
-        arrays)."""
+        arrays, or a nested message that itself contains either)."""
         if self.kind == "scalar":
             return SCALAR_SIZE[self.scalar_type]
         if self.kind == "array" and self.array_mode == "fixed":
             return self.array_size * self.element_size
+        if self.kind == "nested":
+            return self.nested.wire_size if self.nested.is_fixed_size else None
         return None
 
 

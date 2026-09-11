@@ -17,7 +17,7 @@ import ctypes
 import struct
 import sys
 
-from test_roundtrip import TT_MAX_BUFFER_LENGTH, ArraysData, SetBoolResponse, UInt64Data, _bind
+from test_roundtrip import TT_MAX_BUFFER_LENGTH, ArraysData, SetBoolResponse, StampedData, UInt64Data, _bind
 
 _OPPOSITE = ">" if sys.byteorder == "little" else "<"  # struct format prefix for "not host order"
 
@@ -93,3 +93,27 @@ def test_arrays_decode_swaps_fixed_and_variable_array_fields(generated_lib):
     assert list(out.bounded_values[: len(bounded_values)]) == bounded_values
     assert out.samples_count == len(samples)
     assert list(out.samples[: len(samples)]) == samples
+
+
+def test_stamped_decode_swaps_through_nested_delegation(generated_lib):
+    # StampedData_decode() doesn't byte-swap header's fields itself - it delegates to
+    # std_msgs__Header_decode() (see emit._emit_nested_decode). This proves is_native_endian
+    # actually reaches that delegated call, and that the parent's own field (value) right after
+    # the nested one is unaffected by whatever the nested call did internally.
+    sec, nanosec, frame_id, value = -5, 123456789, b"map", 0xDEADBEEF
+
+    wire = struct.pack(_OPPOSITE + "i", sec) + struct.pack(_OPPOSITE + "I", nanosec)
+    wire += struct.pack(_OPPOSITE + "H", len(frame_id) + 1) + frame_id + b"\x00"
+    wire += b"\x00" * ((-len(wire)) % 4)
+    wire += struct.pack(_OPPOSITE + "I", value)
+
+    _encode_size, _encode, decode, _free = _bind(generated_lib, "StampedData", StampedData)
+    out = StampedData()
+    buf = ctypes.create_string_buffer(wire, TT_MAX_BUFFER_LENGTH)
+    decoded = decode(ctypes.byref(out), buf, len(wire), False)
+
+    assert decoded == len(wire)
+    assert out.header.stamp.sec == sec
+    assert out.header.stamp.nanosec == nanosec
+    assert out.header.frame_id == frame_id
+    assert out.value == value

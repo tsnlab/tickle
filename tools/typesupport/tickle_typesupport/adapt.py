@@ -34,14 +34,25 @@ def _annotation_capacity(rosidl_field):
     return None
 
 
-def adapt_field(rosidl_field):
+def adapt_field(rosidl_field, resolver=None):
     field_type = rosidl_field.type
 
     if field_type.pkg_name is not None:
-        raise UnsupportedFieldError(
-            f"field '{rosidl_field.name}': nested message types aren't supported yet (M3) - "
-            f"{field_type.pkg_name}/{field_type.type}"
-        )
+        if field_type.is_array:
+            raise UnsupportedFieldError(
+                f"field '{rosidl_field.name}': arrays of nested message types aren't supported"
+            )
+        if resolver is None:
+            raise UnsupportedFieldError(
+                f"field '{rosidl_field.name}': nested type '{field_type.pkg_name}/{field_type.type}'"
+                " needs a resolver (pass -I search paths) - none was given"
+            )
+        if rosidl_field.default_value is not None:
+            raise UnsupportedFieldError(
+                f"field '{rosidl_field.name}': defaults on a nested message field aren't supported"
+            )
+        nested = resolver.resolve_struct(field_type.pkg_name, field_type.type, adapt_struct)
+        return model.WireField(name=rosidl_field.name, kind="nested", nested=nested)
     if field_type.is_array:
         if field_type.type in STRING_TYPES:
             raise UnsupportedFieldError(
@@ -110,11 +121,20 @@ def adapt_field(rosidl_field):
 def _resolve_auto_capacities(fields):
     """Fills in .capacity for any variable array left without one (no ROS 2 upper bound, no
     @capacity annotation) - priority (3), "auto", from PLAN.md's capacity rule. Restricted to at
-    most one such field, and it must be the struct's last field: with more than one, "the
-    remaining budget" isn't well-defined (which one gets it?), and a non-trailing auto field
-    would need to know its own worst-case size to plan every later field's offset - solvable, but
-    not needed by anything TickLE ships today (an unbounded bulk-payload array is always last, as
-    examples/perf/Bulk's own hand-written struct already is). Both cases raise, asking for an
+    most one such field, it must be the struct's last field, and every field before it must be
+    fully fixed-size (scalars, fixed arrays, or an all-fixed-size nested struct):
+      - with more than one auto field, "the remaining budget" isn't well-defined (which one gets
+        it?);
+      - a non-trailing auto field would need to know its own worst-case size to plan every later
+        field's offset;
+      - a preceding string (or a nested struct that itself isn't fixed-size, e.g. one containing
+        a string) has no useful worst-case bound to budget against: `tt_MAX_STRING_LENGTH`
+        (65535) alone already exceeds `tt_MAX_BUFFER_LENGTH`, so treating it as the worst case
+        would make auto-derivation fail even for a message whose strings are, in practice, only
+        ever a few bytes long.
+    None of these are needed by anything TickLE ships today (an unbounded bulk-payload array is
+    always both last and preceded only by fixed-size fields, as examples/Bulk.msg and
+    examples/perf/Bulk.c's own hand-written struct both are) - all three raise, asking for an
     explicit @capacity instead of guessing.
     """
     needs_auto = [
@@ -132,12 +152,13 @@ def _resolve_auto_capacities(fields):
     target = fields[-1]
     offset = 0
     for f in fields[:-1]:
-        offset = layout.align_up(offset, f.wire_align)
-        if f.kind == "string":
-            offset += model.STRING_LEN_SIZE + model.TT_MAX_STRING_LENGTH
-            offset = layout.align_up(offset, 4)
-        else:  # scalar, or a fixed array - always a known size
-            offset += f.wire_size
+        if f.wire_size is None:
+            raise UnsupportedFieldError(
+                f"field '{target.name}': its capacity can't be auto-derived because a preceding "
+                f"field ('{f.name}') isn't fixed-size (a string, or a nested type containing "
+                "one) - add an explicit '# @capacity <N>' annotation instead"
+            )
+        offset = layout.align_up(offset, f.wire_align) + f.wire_size
     offset = layout.align_up(offset, model.ARRAY_COUNT_ALIGN) + model.ARRAY_COUNT_SIZE
     offset = layout.align_up(offset, target.element_align)
     remaining = (model.TT_MAX_BUFFER_LENGTH - model.FRAMING_OVERHEAD) - offset
@@ -159,26 +180,33 @@ def adapt_constant(rosidl_constant):
     )
 
 
-def adapt_struct(c_name, rosidl_spec):
-    fields = [adapt_field(f) for f in rosidl_spec.fields]
+def adapt_struct(c_name, rosidl_spec, resolver=None):
+    fields = [adapt_field(f, resolver) for f in rosidl_spec.fields]
     _resolve_auto_capacities(fields)
-    return model.WireStruct(
+    struct = model.WireStruct(
         c_name=c_name,
         fields=fields,
         constants=[adapt_constant(c) for c in rosidl_spec.constants],
     )
+    # A nested field (adapt_field, above) reads .wire_size/.is_fixed_size off the nested
+    # WireStruct it was resolved to - both need layout.compute() to have already run on it. Doing
+    # that here (rather than leaving it to render.py, which also calls it - harmless, just
+    # redundant - once this struct itself gets rendered) means it's already done by the time
+    # resolve.Resolver caches this struct and any *other* field elsewhere nests the same type.
+    layout.compute(struct)
+    return struct
 
 
-def adapt_message(name, rosidl_message_spec):
+def adapt_message(name, rosidl_message_spec, resolver=None):
     """.msg -> TopicIR. `name` is the interface name (e.g. "UInt64"), independent of whatever
     package/message name rosidl needed to satisfy its own validation."""
-    return model.TopicIR(name=name, data=adapt_struct(f"{name}Data", rosidl_message_spec))
+    return model.TopicIR(name=name, data=adapt_struct(f"{name}Data", rosidl_message_spec, resolver))
 
 
-def adapt_service(name, rosidl_service_spec):
+def adapt_service(name, rosidl_service_spec, resolver=None):
     """.srv -> ServiceIR."""
     return model.ServiceIR(
         name=name,
-        request=adapt_struct(f"{name}Request", rosidl_service_spec.request),
-        response=adapt_struct(f"{name}Response", rosidl_service_spec.response),
+        request=adapt_struct(f"{name}Request", rosidl_service_spec.request, resolver),
+        response=adapt_struct(f"{name}Response", rosidl_service_spec.response, resolver),
     )

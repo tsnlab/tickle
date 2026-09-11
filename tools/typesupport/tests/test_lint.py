@@ -52,15 +52,21 @@ def generated_dir_in_repo(generated_dir, tmp_path):
 
 @pytest.mark.skipif(shutil.which("clang-tidy") is None, reason="clang-tidy not installed")
 def test_generated_c_files_pass_clang_tidy(generated_dir_in_repo):
+    # .h files need clang-tidy's own C-vs-C++ language-mode guess overridden (`-xc`) - a bare
+    # header has no extension-based hint of its own the way a .c file does, and clang-tidy
+    # otherwise treats it as C++ (rejecting e.g. `struct Foo x;`'s C-style elaborated-type use
+    # without `struct`, and other things this generator's own output relies on being valid C).
     failures = {}
-    for c_file in sorted(generated_dir_in_repo.glob("*.c")):
+    for src_file in sorted(generated_dir_in_repo.glob("*.[ch]")):
+        extra_args = [f"--extra-arg=-I{REPO_ROOT / 'include'}", f"--extra-arg=-I{REPO_ROOT / 'src'}"]
+        if src_file.suffix == ".h":
+            extra_args.append("--extra-arg=-xc")
         result = subprocess.run(
             [
                 "clang-tidy",
-                f"--extra-arg=-I{REPO_ROOT / 'include'}",
-                f"--extra-arg=-I{REPO_ROOT / 'src'}",
+                *extra_args,
                 "--quiet",
-                str(c_file),
+                str(src_file),
             ],
             capture_output=True,
             text=True,
@@ -73,5 +79,5 @@ def test_generated_c_files_pass_clang_tidy(generated_dir_in_repo):
             if " warning: " in line or " error: " in line
         ]
         if findings:
-            failures[c_file.name] = findings
+            failures[src_file.name] = findings
     assert not failures, "\n".join(f"{name}:\n  " + "\n  ".join(lines) for name, lines in failures.items())

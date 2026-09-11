@@ -80,6 +80,58 @@ class ArraysData(ctypes.Structure):
     ]
 
 
+# M3: nested messages. Mirrors builtin_interfaces__Time / std_msgs__Header / geometry_msgs__
+# Vector3's own generated structs (tests/fixtures_own/{Stamped,Image}.msg, tests/fixtures_ros2/
+# geometry_msgs/msg/Twist.msg) - a nested field embeds the nested type's ctypes.Structure *by
+# value*, same as the generated C struct does (see DESIGN.md: nesting inlines, it doesn't point).
+class BuiltinInterfacesTime(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("sec", ctypes.c_int32), ("nanosec", ctypes.c_uint32)]
+
+
+class StdMsgsHeader(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("stamp", BuiltinInterfacesTime), ("frame_id", ctypes.c_char_p)]
+
+
+class StampedData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("header", StdMsgsHeader), ("value", ctypes.c_uint32)]
+
+
+class GeometryMsgsVector3(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double), ("z", ctypes.c_double)]
+
+
+class TwistData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("linear", GeometryMsgsVector3), ("angular", GeometryMsgsVector3)]
+
+
+IMAGE_DATA_CAPACITY = 1400  # tests/fixtures_own/Image.msg's `# @capacity 1400` annotation
+
+
+class ImageData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("header", StdMsgsHeader),
+        ("height", ctypes.c_uint32),
+        ("width", ctypes.c_uint32),
+        ("encoding", ctypes.c_char_p),
+        ("is_bigendian", ctypes.c_uint8),
+        ("step", ctypes.c_uint32),
+        ("data", ctypes.c_uint8 * IMAGE_DATA_CAPACITY),
+        ("data_count", ctypes.c_uint16),
+    ]
+
+
 def _bind(lib, prefix, struct_type):
     """Sets up ctypes argtypes/restype for one message's four codec functions - ctypes assumes
     every C function returns `int` and takes no particular argument types unless told otherwise,
@@ -240,6 +292,56 @@ def test_arrays_roundtrip(generated_lib):
     assert list(result.bounded_values[:3]) == [10, 20, 30]
     assert result.samples_count == 2
     assert list(result.samples[:2]) == [1.5, -2.25]
+
+
+def test_stamped_roundtrip(generated_lib):
+    def populate(d):
+        d.header.stamp.sec = -5
+        d.header.stamp.nanosec = 123456789
+        d.header.frame_id = b"map"
+        d.value = 0xDEADBEEF
+
+    result, _buf = _roundtrip(generated_lib, "StampedData", StampedData, populate)
+    assert result.header.stamp.sec == -5
+    assert result.header.stamp.nanosec == 123456789
+    assert result.header.frame_id == b"map"
+    assert result.value == 0xDEADBEEF
+
+
+def test_twist_roundtrip(generated_lib):
+    # Both fields (linear, angular) nest the *same* type (geometry_msgs/Vector3) - proves the
+    # resolver's single shared struct/codec is usable independently for each field, not just
+    # generated once and only ever exercised through one of them.
+    def populate(d):
+        d.linear.x, d.linear.y, d.linear.z = 1.0, 2.0, 3.0
+        d.angular.x, d.angular.y, d.angular.z = -1.5, 0.0, 4.25
+
+    result, _buf = _roundtrip(generated_lib, "TwistData", TwistData, populate)
+    assert (result.linear.x, result.linear.y, result.linear.z) == (1.0, 2.0, 3.0)
+    assert (result.angular.x, result.angular.y, result.angular.z) == (-1.5, 0.0, 4.25)
+
+
+def test_image_roundtrip(generated_lib):
+    def populate(d):
+        d.header.stamp.sec = 1
+        d.header.stamp.nanosec = 2
+        d.header.frame_id = b"camera"
+        d.height = 480
+        d.width = 640
+        d.encoding = b"rgb8"
+        d.is_bigendian = 0
+        d.step = 640 * 3
+        pixels = bytes(range(256)) * 4  # 1024 bytes, under the 1400 capacity
+        d.data_count = len(pixels)
+        ctypes.memmove(d.data, pixels, len(pixels))
+
+    result, _buf = _roundtrip(generated_lib, "ImageData", ImageData, populate)
+    assert result.header.frame_id == b"camera"
+    assert (result.height, result.width) == (480, 640)
+    assert result.encoding == b"rgb8"
+    assert result.step == 1920
+    assert result.data_count == 1024
+    assert bytes(result.data[:1024]) == bytes(range(256)) * 4
 
 
 def test_setbool_response_layout_has_one_byte_gap(generated_lib):

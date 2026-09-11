@@ -100,6 +100,12 @@ def max_wire_size(struct):
             offset += model.ARRAY_COUNT_SIZE
             offset = align_up(offset, wire_field.element_align)
             offset += wire_field.capacity * wire_field.element_size
+        elif wire_field.kind == "nested":
+            # Recurse: a nested struct's own worst case follows exactly the same rules (a string
+            # inside it contributes only its prefix, an array inside it its resolved capacity,
+            # and so on down through however many levels are nested) - see this function's own
+            # docstring on why a string never contributes its full tt_MAX_STRING_LENGTH here.
+            offset += max_wire_size(wire_field.nested)
         else:
             raise NotImplementedError(wire_field.kind)
     return offset
