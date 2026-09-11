@@ -12,6 +12,7 @@
 
 #include "UInt64.h"
 
+#include <stddef.h> // NULL, in *_decode_inplace
 #include <stdint.h>
 
 #include <tickle/hal.h>

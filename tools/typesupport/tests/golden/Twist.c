@@ -12,6 +12,7 @@
 
 #include "Twist.h"
 
+#include <stddef.h> // NULL, in *_decode_inplace
 #include <stdint.h>
 
 #include <tickle/tickle.h>

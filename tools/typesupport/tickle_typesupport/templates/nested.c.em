@@ -4,6 +4,9 @@
 @[if needs_string_h]@
 #include <string.h>
 @[end if]@
+@[if is_fixed_size]@
+#include <stddef.h> // NULL, in *_decode_inplace
+@[end if]@
 
 @[if needs_config_h]@
 #include <tickle/config.h> // tt_MAX_STRING_LENGTH

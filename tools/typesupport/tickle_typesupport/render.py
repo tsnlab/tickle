@@ -108,6 +108,7 @@ def render_service(service_ir):
         needs_string_h=request_ctx["needs_string_h"] or response_ctx["needs_string_h"],
         needs_config_h=request_ctx["needs_config_h"] or response_ctx["needs_config_h"],
         needs_hal_h=request_ctx["needs_hal_h"] or response_ctx["needs_hal_h"],
+        needs_stddef_h=request_ctx["is_fixed_size"] or response_ctx["is_fixed_size"],
         nested_includes=nested_includes,
     )
     return header, source
@@ -127,6 +128,7 @@ def render_nested(struct):
         needs_string_h=ctx["needs_string_h"],
         needs_config_h=ctx["needs_config_h"],
         needs_hal_h=ctx["needs_hal_h"],
+        is_fixed_size=ctx["is_fixed_size"],
         nested_includes=ctx["nested_includes"],
     )
     return header, source
