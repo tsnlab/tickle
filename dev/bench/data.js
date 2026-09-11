@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789089629881,
+  "lastUpdate": 1789092172788,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -959,6 +959,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.019,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1e6c68b4b3a37cb65be5cb74035e713ce8e68305",
+          "message": "typesupport M1: scalars, strings, .srv, constants, defaults - full codec generator\n\nImplements the actual empy templates + IR pipeline PLAN.md's M1 calls for, on top of M0's\nvendored parser and CDR-4 spec:\n\n- model.py: WireField/Constant/WireStruct/TopicIR/ServiceIR IR dataclasses, with the CDR-4\n  size/alignment tables for every scalar type.\n- adapt.py: turns a parsed MessageSpecification/ServiceSpecification into that IR (scalars +\n  string/wstring only for now - arrays and nested messages raise UnsupportedFieldError, deferred\n  to M2/M3 per the milestone table).\n- layout.py: walks a struct's fields once, working out per-field static byte offsets/padding\n  until the first variable-size (string) field, after which padding has to be computed at\n  runtime - this is what lets emit.py tell a compile-time-constant pad from a memset one.\n- emit.py: renders each field's actual encode/decode/encode_size C, matching DESIGN.md's new\n  \"Interface serialization (TickLE CDR-4)\" section - direct pointer casts for naturally-aligned\n  scalars (no memcpy, per CDR-4's whole point), byte-swap-in-a-union for cross-endian floats,\n  uint16-length-prefixed strings aliasing the input buffer on decode (never copied), capacity/\n  buffer-bounds checks throughout. Also generates rosidl_generator_c-style constants (enum for\n  integers, static const for float/string) and an optional *_init() when a message has defaults.\n- render.py / templates/*.em: turns the IR into (header, source) text via empy 3.3.4, expanding\n  struct.h.em/struct.c.em once per WireStruct in Python and splicing the result into the outer\n  topic/service template rather than nesting interpreters.\n- postprocess.py: prepends the license/provenance banner, then always runs the real clang-format\n  over the result (-assume-filename=<Name>.c/.h, not a placeholder - needed so clang-format's\n  main-header-first IncludeCategories rule actually fires) so generated code is never shipped\n  unformatted.\n- cli.py: generate_interface() ties it together; `-O/--outdir`, `--name`, `--style-dir` added\n  alongside M0's --dump-ir.\n\nVerified against UInt64.msg, SetBool.srv and Trigger.srv (a zero-field request, an empty-string\nedge case, and every scalar width):\n- tests/test_roundtrip.py (10 cases, via ctypes against a real compiled .so): basic roundtrip,\n  zero value, empty string, NULL/short-buffer rejection, zero-field message, and an explicit\n  byte-layout check for the padding gap CDR-4 predicts between `bool` and the following string.\n- tests/test_crossendian.py (3 cases): decode() actually byte-swaps when told the input isn't\n  native-endian, built by hand with struct.pack rather than through our own encode().\n- tests/test_lint.py: the project's real clang-tidy, inherited from the repo-root .clang-tidy via\n  a local override copied into a real tools/typesupport/.pytest_lint_tmp/ subtree (clang-tidy's\n  own config search walks up from the analyzed file's path, not cwd, so files outside the repo\n  tree can't inherit it and silently get clang-tidy's unrelated defaults instead). Chasing this\n  down to green surfaced and fixed several real generator bugs: a missing <tickle/config.h> for\n  tt_MAX_STRING_LENGTH, redundant (int32_t) casts and lowercase `u` suffixes on the runtime\n  alignment expression (now shared via _runtime_align_expr()), operator-precedence parens missing\n  around that same expression (silently narrowing an unsigned `&` result before the mask instead\n  of after), a redundant same-type cast on uint64 decode, and <string.h>/<tickle/config.h> being\n  included even when a struct never uses memcpy/memset/tt_MAX_STRING_LENGTH.\n- tests/test_golden.py: pins the exact post-clang-format output so future emit.py/template\n  changes show up as a diff here, not just a passing-by-accident behavioral test.\n\ntests/golden/ also carries its own .clang-tidy (inherits root, disables the same three checks\nM5's examples/.clang-tidy will make permanent) so these checked-in ROS 2-named snapshots don't\nfail the repo-wide `make lint` the way M0's bare files would have; test_golden.py excludes it\nfrom the generated-vs-golden file-set comparison.\n\nDeviation from PLAN.md's M1 line item: examples/.clang-tidy itself is NOT created yet - creating\nit now would prematurely relax lint checking on every existing hand-written example driver, since\nnothing under examples/ is generated until M5's actual cutover. tests/golden/.clang-tidy plus\ntest_lint.py's own ad-hoc override cover M1's own needs in the meantime.\n\nmake test / make sanitize / make lint all still pass unchanged (M1 touches nothing outside\ntools/typesupport/).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T11:01:09+09:00",
+          "tree_id": "2d5be8ec4886fd69c86a0d3330fdc09df2a24f0b",
+          "url": "https://github.com/tsnlab/tickle/commit/1e6c68b4b3a37cb65be5cb74035e713ce8e68305"
+        },
+        "date": 1789092171290,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
             "unit": "ms"
           },
           {
