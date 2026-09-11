@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789104467429,
+  "lastUpdate": 1789104580270,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1310,6 +1310,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.036,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ffe33c41084d8631907e5ad12caaeb8f1a595577",
+          "message": "CHANGELOG: record the CallRequestHeader wire change and tools/typesupport\n\nBoth landed as part of the typesupport milestone work (M0-M6) but were never recorded here -\nCONTRIBUTING.md asks for anything user-visible to go under ## [Unreleased].\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T14:28:53+09:00",
+          "tree_id": "4d85de1aaf1449c2961f68dc210e6eca3bda3d2d",
+          "url": "https://github.com/tsnlab/tickle/commit/ffe33c41084d8631907e5ad12caaeb8f1a595577"
+        },
+        "date": 1789104578670,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.201,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.008,
             "unit": "ms"
           },
           {
