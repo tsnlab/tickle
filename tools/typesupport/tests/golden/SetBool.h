@@ -27,6 +27,8 @@ struct SetBoolRequest {
 int32_t SetBoolRequest_encode_size(struct SetBoolRequest* data);
 int32_t SetBoolRequest_encode(struct SetBoolRequest* data, uint8_t* payload, uint32_t len);
 int32_t SetBoolRequest_decode(struct SetBoolRequest* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
+int32_t SetBoolRequest_encode_inplace(struct SetBoolRequest* data, const uint8_t** payload_out);
+struct SetBoolRequest* SetBoolRequest_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);
 void SetBoolRequest_free(struct SetBoolRequest* data);
 
 _Static_assert(sizeof(struct SetBoolRequest) == 1, "SetBoolRequest must match its CDR-4 wire size - ABI mismatch");

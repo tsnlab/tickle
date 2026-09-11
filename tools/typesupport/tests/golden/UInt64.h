@@ -27,6 +27,8 @@ struct UInt64Data {
 int32_t UInt64Data_encode_size(struct UInt64Data* data);
 int32_t UInt64Data_encode(struct UInt64Data* data, uint8_t* payload, uint32_t len);
 int32_t UInt64Data_decode(struct UInt64Data* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
+int32_t UInt64Data_encode_inplace(struct UInt64Data* data, const uint8_t** payload_out);
+struct UInt64Data* UInt64Data_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);
 void UInt64Data_free(struct UInt64Data* data);
 
 _Static_assert(sizeof(struct UInt64Data) == 8, "UInt64Data must match its CDR-4 wire size - ABI mismatch");

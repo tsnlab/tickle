@@ -22,7 +22,9 @@ struct tt_Topic UInt64Topic = {
     .data_size = sizeof(struct UInt64Data),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)UInt64Data_encode_size,
     .data_encode = (tt_DATA_ENCODE)UInt64Data_encode,
+    .data_encode_inplace = (tt_DATA_ENCODE_INPLACE)UInt64Data_encode_inplace,
     .data_decode = (tt_DATA_DECODE)UInt64Data_decode,
+    .data_decode_inplace = (tt_DATA_DECODE_INPLACE)UInt64Data_decode_inplace,
     .data_free = (tt_DATA_FREE)UInt64Data_free,
 };
 
@@ -64,6 +66,18 @@ int32_t UInt64Data_decode(struct UInt64Data* data, const uint8_t* payload, uint3
         decoded += 8;
     }
     return decoded;
+}
+
+int32_t UInt64Data_encode_inplace(struct UInt64Data* data, const uint8_t** payload_out) {
+    *payload_out = (const uint8_t*)data;
+    return 8;
+}
+
+struct UInt64Data* UInt64Data_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian) {
+    if (!is_native_endian || len < 8) {
+        return NULL;
+    }
+    return (struct UInt64Data*)payload;
 }
 
 void UInt64Data_free(struct UInt64Data* data) {

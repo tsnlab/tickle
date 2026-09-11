@@ -30,6 +30,8 @@ struct TwistData {
 int32_t TwistData_encode_size(struct TwistData* data);
 int32_t TwistData_encode(struct TwistData* data, uint8_t* payload, uint32_t len);
 int32_t TwistData_decode(struct TwistData* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
+int32_t TwistData_encode_inplace(struct TwistData* data, const uint8_t** payload_out);
+struct TwistData* TwistData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);
 void TwistData_free(struct TwistData* data);
 
 _Static_assert(sizeof(struct TwistData) == 48, "TwistData must match its CDR-4 wire size - ABI mismatch");

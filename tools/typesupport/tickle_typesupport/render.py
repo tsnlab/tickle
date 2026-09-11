@@ -34,6 +34,12 @@ def _nested_includes(struct):
 
 def _struct_context(struct):
     layout.compute(struct)
+    # An empty message (e.g. Trigger.srv's request) is fixed-size (wire_size 0) but still needs a
+    # one-byte filler field to stay valid ISO C (see emit_struct_fields) - sizeof() is then 1, not
+    # 0, so the sizeof/wire_size static_assert (and the *_encode_inplace/_decode_inplace this same
+    # flag now also gates - DESIGN.md's "Struct layout" note) would be asserting something that
+    # isn't actually a wire-layout invariant. Skip both rather than do that.
+    is_fixed_size = struct.is_fixed_size and bool(struct.fields)
     return {
         "name": struct.c_name,
         "constant_lines": emit.emit_constants(struct),
@@ -43,16 +49,14 @@ def _struct_context(struct):
         "encode_size_lines": emit.emit_encode_size(struct),
         "encode_lines": emit.emit_encode(struct),
         "decode_lines": emit.emit_decode(struct),
+        "encode_inplace_lines": emit.emit_encode_inplace(struct) if is_fixed_size else [],
+        "decode_inplace_lines": emit.emit_decode_inplace(struct) if is_fixed_size else [],
         "free_lines": emit.emit_free(struct),
         "needs_string_h": emit.needs_string_h(struct),
         "needs_config_h": emit.needs_config_h(struct),
         "needs_hal_h": emit.needs_hal_h(struct),
         "nested_includes": _nested_includes(struct),
-        # An empty message (e.g. Trigger.srv's request) is fixed-size (wire_size 0) but still
-        # needs a one-byte filler field to stay valid ISO C (see emit_struct_fields) - sizeof()
-        # is then 1, not 0, so the sizeof/wire_size static_assert would be false. Skip it rather
-        # than assert something that isn't actually a wire-layout invariant.
-        "is_fixed_size": struct.is_fixed_size and bool(struct.fields),
+        "is_fixed_size": is_fixed_size,
         "wire_size": struct.wire_size,
         "max_wire_size": layout.max_wire_size(struct),
     }
@@ -76,6 +80,7 @@ def render_topic(topic_ir):
         needs_config_h=ctx["needs_config_h"],
         needs_hal_h=ctx["needs_hal_h"],
         nested_includes=ctx["nested_includes"],
+        data_is_fixed_size=ctx["is_fixed_size"],
     )
     return header, source
 

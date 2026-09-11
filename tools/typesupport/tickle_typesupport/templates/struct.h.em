@@ -20,6 +20,10 @@ void @(name)_init(struct @(name)* data);
 int32_t @(name)_encode_size(struct @(name)* data);
 int32_t @(name)_encode(struct @(name)* data, uint8_t* payload, uint32_t len);
 int32_t @(name)_decode(struct @(name)* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
+@[if is_fixed_size]@
+int32_t @(name)_encode_inplace(struct @(name)* data, const uint8_t** payload_out);
+struct @(name)* @(name)_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);
+@[end if]@
 void @(name)_free(struct @(name)* data);
 
 @[if is_fixed_size]@

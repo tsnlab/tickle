@@ -75,6 +75,19 @@ int32_t builtin_interfaces__Time_decode(struct builtin_interfaces__Time* data, c
     return decoded;
 }
 
+int32_t builtin_interfaces__Time_encode_inplace(struct builtin_interfaces__Time* data, const uint8_t** payload_out) {
+    *payload_out = (const uint8_t*)data;
+    return 8;
+}
+
+struct builtin_interfaces__Time* builtin_interfaces__Time_decode_inplace(const uint8_t* payload, uint32_t len,
+                                                                         bool is_native_endian) {
+    if (!is_native_endian || len < 8) {
+        return NULL;
+    }
+    return (struct builtin_interfaces__Time*)payload;
+}
+
 void builtin_interfaces__Time_free(struct builtin_interfaces__Time* data) {
     (void)data;
 }

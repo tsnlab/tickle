@@ -72,6 +72,18 @@ int32_t SetBoolRequest_decode(struct SetBoolRequest* data, const uint8_t* payloa
     return decoded;
 }
 
+int32_t SetBoolRequest_encode_inplace(struct SetBoolRequest* data, const uint8_t** payload_out) {
+    *payload_out = (const uint8_t*)data;
+    return 1;
+}
+
+struct SetBoolRequest* SetBoolRequest_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian) {
+    if (!is_native_endian || len < 1) {
+        return NULL;
+    }
+    return (struct SetBoolRequest*)payload;
+}
+
 void SetBoolRequest_free(struct SetBoolRequest* data) {
     (void)data;
 }

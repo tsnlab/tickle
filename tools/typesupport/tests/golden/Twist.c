@@ -23,7 +23,9 @@ struct tt_Topic TwistTopic = {
     .data_size = sizeof(struct TwistData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)TwistData_encode_size,
     .data_encode = (tt_DATA_ENCODE)TwistData_encode,
+    .data_encode_inplace = (tt_DATA_ENCODE_INPLACE)TwistData_encode_inplace,
     .data_decode = (tt_DATA_DECODE)TwistData_decode,
+    .data_decode_inplace = (tt_DATA_DECODE_INPLACE)TwistData_decode_inplace,
     .data_free = (tt_DATA_FREE)TwistData_free,
 };
 
@@ -77,6 +79,18 @@ int32_t TwistData_decode(struct TwistData* data, const uint8_t* payload, uint32_
         decoded += nested_size;
     }
     return decoded;
+}
+
+int32_t TwistData_encode_inplace(struct TwistData* data, const uint8_t** payload_out) {
+    *payload_out = (const uint8_t*)data;
+    return 48;
+}
+
+struct TwistData* TwistData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian) {
+    if (!is_native_endian || len < 48) {
+        return NULL;
+    }
+    return (struct TwistData*)payload;
 }
 
 void TwistData_free(struct TwistData* data) {

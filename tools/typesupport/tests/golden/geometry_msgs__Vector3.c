@@ -123,6 +123,19 @@ int32_t geometry_msgs__Vector3_decode(struct geometry_msgs__Vector3* data, const
     return decoded;
 }
 
+int32_t geometry_msgs__Vector3_encode_inplace(struct geometry_msgs__Vector3* data, const uint8_t** payload_out) {
+    *payload_out = (const uint8_t*)data;
+    return 24;
+}
+
+struct geometry_msgs__Vector3* geometry_msgs__Vector3_decode_inplace(const uint8_t* payload, uint32_t len,
+                                                                     bool is_native_endian) {
+    if (!is_native_endian || len < 24) {
+        return NULL;
+    }
+    return (struct geometry_msgs__Vector3*)payload;
+}
+
 void geometry_msgs__Vector3_free(struct geometry_msgs__Vector3* data) {
     (void)data;
 }

@@ -29,6 +29,9 @@ int32_t geometry_msgs__Vector3_encode_size(struct geometry_msgs__Vector3* data);
 int32_t geometry_msgs__Vector3_encode(struct geometry_msgs__Vector3* data, uint8_t* payload, uint32_t len);
 int32_t geometry_msgs__Vector3_decode(struct geometry_msgs__Vector3* data, const uint8_t* payload, uint32_t len,
                                       bool is_native_endian);
+int32_t geometry_msgs__Vector3_encode_inplace(struct geometry_msgs__Vector3* data, const uint8_t** payload_out);
+struct geometry_msgs__Vector3* geometry_msgs__Vector3_decode_inplace(const uint8_t* payload, uint32_t len,
+                                                                     bool is_native_endian);
 void geometry_msgs__Vector3_free(struct geometry_msgs__Vector3* data);
 
 _Static_assert(sizeof(struct geometry_msgs__Vector3) == 24,

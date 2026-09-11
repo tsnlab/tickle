@@ -21,7 +21,13 @@ struct tt_Topic @(name)Topic = {
     .data_size = sizeof(struct @(data_name)),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)@(data_name)_encode_size,
     .data_encode = (tt_DATA_ENCODE)@(data_name)_encode,
+@[if data_is_fixed_size]@
+    .data_encode_inplace = (tt_DATA_ENCODE_INPLACE)@(data_name)_encode_inplace,
+@[end if]@
     .data_decode = (tt_DATA_DECODE)@(data_name)_decode,
+@[if data_is_fixed_size]@
+    .data_decode_inplace = (tt_DATA_DECODE_INPLACE)@(data_name)_decode_inplace,
+@[end if]@
     .data_free = (tt_DATA_FREE)@(data_name)_free,
 };
 

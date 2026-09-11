@@ -132,6 +132,21 @@ class ImageData(ctypes.Structure):
     ]
 
 
+def _bind_inplace(lib, prefix, struct_type):
+    """*_encode_inplace/*_decode_inplace (only generated for an all-fixed-size struct - M4, see
+    emit.emit_encode_inplace's own docstring) have a different shape than the four ctypes.
+    _bind() below covers: encode_inplace hands back a pointer *through* an out-param instead of
+    writing into a caller-supplied buffer, and decode_inplace returns a struct pointer directly
+    instead of a byte count."""
+    encode_inplace = getattr(lib, f"{prefix}_encode_inplace")
+    decode_inplace = getattr(lib, f"{prefix}_decode_inplace")
+    encode_inplace.argtypes = [ctypes.POINTER(struct_type), ctypes.POINTER(ctypes.c_void_p)]
+    encode_inplace.restype = ctypes.c_int32
+    decode_inplace.argtypes = [ctypes.c_char_p, ctypes.c_uint32, ctypes.c_bool]
+    decode_inplace.restype = ctypes.POINTER(struct_type)
+    return encode_inplace, decode_inplace
+
+
 def _bind(lib, prefix, struct_type):
     """Sets up ctypes argtypes/restype for one message's four codec functions - ctypes assumes
     every C function returns `int` and takes no particular argument types unless told otherwise,
@@ -342,6 +357,58 @@ def test_image_roundtrip(generated_lib):
     assert result.step == 1920
     assert result.data_count == 1024
     assert bytes(result.data[:1024]) == bytes(range(256)) * 4
+
+
+def test_uint64_encode_inplace_aliases_struct_memory(generated_lib):
+    # No serialization happens at all - the payload pointer handed back must be the struct's own
+    # address (see emit.emit_encode_inplace: "just hand the struct's own address over").
+    encode_inplace, _decode_inplace = _bind_inplace(generated_lib, "UInt64Data", UInt64Data)
+    data = UInt64Data(data=0xFEEDFACECAFEBEEF)
+    payload_out = ctypes.c_void_p()
+    size = encode_inplace(ctypes.byref(data), ctypes.byref(payload_out))
+    assert size == 8
+    assert payload_out.value == ctypes.addressof(data)
+
+
+def test_uint64_decode_inplace_native_aliases_payload_buffer(generated_lib):
+    encode_size, encode, _decode, _free = _bind(generated_lib, "UInt64Data", UInt64Data)
+    _encode_inplace, decode_inplace = _bind_inplace(generated_lib, "UInt64Data", UInt64Data)
+    original = UInt64Data(data=0x0102030405060708)
+    buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
+    size = encode(ctypes.byref(original), buf, TT_MAX_BUFFER_LENGTH)
+    assert size == encode_size(ctypes.byref(original))
+
+    result = decode_inplace(buf.raw[:size], size, True)
+    assert bool(result)  # non-NULL
+    assert result.contents.data == 0x0102030405060708
+
+
+def test_uint64_decode_inplace_rejects_reverse_endian(generated_lib):
+    # A foreign-endian payload's raw bytes are NOT what UInt64Data's own memory would contain -
+    # must fall back to NULL (the caller then uses the regular, copying *_decode() instead).
+    _encode_inplace, decode_inplace = _bind_inplace(generated_lib, "UInt64Data", UInt64Data)
+    wire = (0).to_bytes(8, "big" if sys.byteorder == "little" else "little")
+    result = decode_inplace(wire, len(wire), False)
+    assert not result  # NULL
+
+
+def test_uint64_decode_inplace_rejects_short_buffer(generated_lib):
+    _encode_inplace, decode_inplace = _bind_inplace(generated_lib, "UInt64Data", UInt64Data)
+    result = decode_inplace(b"\x00" * 4, 4, True)
+    assert not result  # NULL
+
+
+def test_twist_encode_inplace_aliases_struct_memory(generated_lib):
+    # A fixed-size struct composed *entirely* of nested fields (TwistData: two Vector3s, nothing
+    # scalar of its own) is eligible too - the same whole-struct-is-the-payload trick applies
+    # regardless of what's inside it, exactly because it needs "no per-field analysis" (DESIGN.md).
+    encode_inplace, _decode_inplace = _bind_inplace(generated_lib, "TwistData", TwistData)
+    data = TwistData()
+    data.linear.x, data.linear.y, data.linear.z = 1.0, 2.0, 3.0
+    payload_out = ctypes.c_void_p()
+    size = encode_inplace(ctypes.byref(data), ctypes.byref(payload_out))
+    assert size == 48
+    assert payload_out.value == ctypes.addressof(data)
 
 
 def test_setbool_response_layout_has_one_byte_gap(generated_lib):

@@ -482,6 +482,29 @@ def emit_encode_size(struct):
     return lines
 
 
+def emit_encode_inplace(struct):
+    """Only emitted for an all-fixed-size struct (see render._struct_context's "is_fixed_size",
+    the same gate the sizeof/wire_size _Static_assert uses) - #pragma pack(4) already makes the
+    struct's own memory byte-identical to its CDR-4 wire form on every supported ABI (DESIGN.md's
+    "Struct layout" note), so there's nothing to serialize: just hand the struct's own address
+    over as the payload pointer. Always safe regardless of the local host's endianness - the
+    struct is however this same process's encode()/scalar writes would have produced it, i.e.
+    already native, exactly what encode_inplace is contractually allowed to hand back."""
+    return ["*payload_out = (const uint8_t*)data;", f"return {struct.wire_size};"]
+
+
+def emit_decode_inplace(struct):
+    """The decode-side mirror of emit_encode_inplace - only safe when the wire bytes are already
+    native-endian (a foreign-endian payload's bytes are NOT what the struct's own memory would
+    contain, so this must fall back to NULL - the caller then uses the regular copying *_decode()
+    instead, per tt_DATA_DECODE_INPLACE's own contract in tickle.h) and long enough to hold the
+    whole fixed-size struct."""
+    return [
+        f"if (!is_native_endian || len < {struct.wire_size}) {{ return NULL; }}",
+        f"return (struct {struct.c_name}*)payload;",
+    ]
+
+
 def emit_free(struct):
     # Nothing is ever malloc'd: strings alias the rx buffer they were decoded from (see
     # _emit_string_decode), and there are no other owned resources - see DESIGN.md's "No

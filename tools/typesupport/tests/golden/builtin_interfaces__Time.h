@@ -28,6 +28,9 @@ int32_t builtin_interfaces__Time_encode_size(struct builtin_interfaces__Time* da
 int32_t builtin_interfaces__Time_encode(struct builtin_interfaces__Time* data, uint8_t* payload, uint32_t len);
 int32_t builtin_interfaces__Time_decode(struct builtin_interfaces__Time* data, const uint8_t* payload, uint32_t len,
                                         bool is_native_endian);
+int32_t builtin_interfaces__Time_encode_inplace(struct builtin_interfaces__Time* data, const uint8_t** payload_out);
+struct builtin_interfaces__Time* builtin_interfaces__Time_decode_inplace(const uint8_t* payload, uint32_t len,
+                                                                         bool is_native_endian);
 void builtin_interfaces__Time_free(struct builtin_interfaces__Time* data);
 
 _Static_assert(sizeof(struct builtin_interfaces__Time) == 8,
