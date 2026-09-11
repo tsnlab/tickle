@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789095108379,
+  "lastUpdate": 1789096070139,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1115,6 +1115,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.009,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "15da35360862c9aa84ead93de780ed9be31fbf8c",
+          "message": "typesupport: fix CI clang-tidy failure - <stddef.h> for NULL in *_decode_inplace\n\nThe M4 commit's decode_inplace bodies return NULL on rejection, but nothing included the header\nthat actually declares it. My own local clang-tidy (21.1.8) didn't flag this, but CI's\ncpp-linter pins clang-tidy 19.1.1, which does (\"no header providing NULL is directly included\")\n- caught by Check all on push, not caught locally. Fixed properly rather than just for the one\nCI version: <stddef.h> is NULL's real, portable home, included in topic.c.em/service.c.em/\nnested.c.em exactly when a decode_inplace exists to use it (the same is_fixed_size flag already\ngating everything else about this feature).\n\ntests/golden/ updated (every file that gained *_decode_inplace in the previous commit gains the\ninclude here too). make test / make lint pass; test_lint.py already covered this locally under\nits own clang-tidy version - the gap was purely the version-to-version NULL-attribution\ndifference, not a hole in what gets checked.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T12:07:03+09:00",
+          "tree_id": "cd3654fefba46f0e6dbded460f68d3c509c2f519",
+          "url": "https://github.com/tsnlab/tickle/commit/15da35360862c9aa84ead93de780ed9be31fbf8c"
+        },
+        "date": 1789096068573,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
             "unit": "ms"
           },
           {
