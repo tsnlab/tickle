@@ -18,17 +18,21 @@
 #include <tickle/config.h> // tt_MAX_BUFFER_LENGTH
 #include <tickle/tickle.h>
 
+#define BULKDATA__PAYLOAD_CAPACITY 1442
+
 #pragma pack(push, 4)
 struct BulkData {
     uint32_t seq;
-    uint8_t payload[1442];
     uint16_t payload_count; // <= 1442
+    uint8_t payload[1442];
 };
 #pragma pack(pop)
 
 int32_t BulkData_encode_size(struct BulkData* data);
 int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, uint32_t len);
 int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
+int32_t BulkData_encode_inplace(struct BulkData* data, const uint8_t** payload_out);
+struct BulkData* BulkData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);
 void BulkData_free(struct BulkData* data);
 
 _Static_assert(1448 <= tt_MAX_BUFFER_LENGTH, "BulkData's worst-case wire size exceeds a single datagram");

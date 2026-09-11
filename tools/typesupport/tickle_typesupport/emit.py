@@ -37,8 +37,11 @@ def emit_struct_fields(struct):
     the CDR-4 rule - no manually inserted padding fields needed (verified against both gcc/
     x86-64 and the riscv64-unknown-elf cross compiler; see PLAN.md). An array needs more than
     one type-string can express (a fixed array is just `elem name[N];`, but a variable array
-    also needs its own count member alongside the fixed-capacity buffer), so it's special-cased
-    here rather than going through field.ctype like every other kind does."""
+    also needs its own count member alongside the fixed-capacity buffer - declared *before* the
+    buffer, matching the count-then-elements wire order, so a struct that's otherwise fixed-size
+    up to a single trailing byte array can alias its own memory as the wire payload the same way
+    a fully fixed-size one does - see layout.prefix_array_field), so it's special-cased here
+    rather than going through field.ctype like every other kind does."""
     if not struct.fields:
         # An empty struct is a GNU extension (see tt_Request's own note in tickle.h) - a message
         # with no fields (e.g. Trigger.srv's request) still needs one byte to stay valid ISO C.
@@ -50,8 +53,8 @@ def emit_struct_fields(struct):
             if wire_field.array_mode == "fixed":
                 lines.append(f"{wire_field.element_ctype} {wire_field.name}[{wire_field.array_size}];")
             else:
-                lines.append(f"{wire_field.element_ctype} {wire_field.name}[{wire_field.capacity}];")
                 lines.append(f"uint16_t {wire_field.name}_count; // <= {wire_field.capacity}")
+                lines.append(f"{wire_field.element_ctype} {wire_field.name}[{wire_field.capacity}];")
         else:
             lines.append(f"{wire_field.ctype} {wire_field.name};")
     return lines
@@ -69,6 +72,20 @@ def emit_constants(struct):
         else:
             lines.append(f"enum {{ {macro_name} = {constant.value} }};")
     return lines
+
+
+def emit_array_capacity_constants(struct):
+    """A #define for each variable array field's resolved capacity (a fixed array doesn't need
+    one - its N is already spelled out in the field declaration itself, `elem name[N];`). Lets
+    application code bounds-check against - or size something relative to - the number the
+    generator picked without hardcoding it, particularly for the "auto" capacity-resolution case
+    where nothing else in the .msg says what it is (examples/Bulk.msg's own `payload`, whose
+    hand-written predecessor exposed exactly this as its own `BULK_MAX_PAYLOAD_SIZE` macro)."""
+    return [
+        f"#define {struct.c_name.upper()}__{f.name.upper()}_CAPACITY {f.capacity}"
+        for f in struct.fields
+        if f.kind == "array" and f.array_mode == "variable"
+    ]
 
 
 def _emit_pad(cursor, count_expr, *, runtime):
@@ -501,6 +518,41 @@ def emit_decode_inplace(struct):
     whole fixed-size struct."""
     return [
         f"if (!is_native_endian || len < {struct.wire_size}) {{ return NULL; }}",
+        f"return (struct {struct.c_name}*)payload;",
+    ]
+
+
+def emit_prefix_encode_inplace(struct, array_field):
+    """*_encode_inplace for a struct that isn't fully fixed-size but does end in exactly one
+    prefix-aliasable trailing byte array (layout.prefix_array_field) - the fixed header plus
+    however many of the array's elements are actually in use (data->*_count, not its full
+    capacity) is still one contiguous span of the struct's own memory, count member declared
+    right before the buffer (emit_struct_fields) to match the wire's own count-then-elements
+    order. Same capacity check *_encode/_encode_size already do, for the same reason: a
+    data->*_count an application set larger than the array's own declared capacity would read
+    out of bounds below, not just write a wrong wire length."""
+    prefix_offset = layout.plan_fields(struct.fields)[-1].static_offset
+    count_var = f"data->{array_field.name}_count"
+    return [
+        f"if ({count_var} > {array_field.capacity}) {{ return -2; }}",
+        "*payload_out = (const uint8_t*)data;",
+        f"return {prefix_offset} + 2 + (int32_t){count_var};",
+    ]
+
+
+def emit_prefix_decode_inplace(struct, array_field):
+    """The decode-side mirror of emit_prefix_encode_inplace. Reads the count directly out of the
+    (already known native-endian) payload rather than through a decoded struct - there isn't one
+    yet, the whole point is handing back a pointer into `payload` itself - then bounds-checks it
+    exactly like the copying *_decode() does (count <= capacity, and the elements it claims
+    actually fit in `len`) before aliasing."""
+    prefix_offset = layout.plan_fields(struct.fields)[-1].static_offset
+    return [
+        f"if (!is_native_endian || len < (uint32_t){prefix_offset} + 2) {{ return NULL; }}",
+        "{",
+        f"    uint16_t count = *(const uint16_t*)(payload + {prefix_offset});",
+        f"    if (count > {array_field.capacity} || (uint32_t){prefix_offset} + 2 + count > len) {{ return NULL; }}",
+        "}",
         f"return (struct {struct.c_name}*)payload;",
     ]
 

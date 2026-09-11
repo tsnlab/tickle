@@ -12,6 +12,7 @@
 
 #include "Bulk.h"
 
+#include <stddef.h> // NULL, in *_decode_inplace
 #include <stdint.h>
 #include <string.h>
 
@@ -23,7 +24,9 @@ struct tt_Topic BulkTopic = {
     .data_size = sizeof(struct BulkData),
     .data_encode_size = (tt_DATA_ENCODE_SIZE)BulkData_encode_size,
     .data_encode = (tt_DATA_ENCODE)BulkData_encode,
+    .data_encode_inplace = (tt_DATA_ENCODE_INPLACE)BulkData_encode_inplace,
     .data_decode = (tt_DATA_DECODE)BulkData_decode,
+    .data_decode_inplace = (tt_DATA_DECODE_INPLACE)BulkData_decode_inplace,
     .data_free = (tt_DATA_FREE)BulkData_free,
 };
 
@@ -105,6 +108,27 @@ int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, uint32_t 
         data->payload_count = count;
     }
     return decoded;
+}
+
+int32_t BulkData_encode_inplace(struct BulkData* data, const uint8_t** payload_out) {
+    if (data->payload_count > 1442) {
+        return -2;
+    }
+    *payload_out = (const uint8_t*)data;
+    return 4 + 2 + (int32_t)data->payload_count;
+}
+
+struct BulkData* BulkData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian) {
+    if (!is_native_endian || len < (uint32_t)4 + 2) {
+        return NULL;
+    }
+    {
+        uint16_t count = *(const uint16_t*)(payload + 4);
+        if (count > 1442 || (uint32_t)4 + 2 + count > len) {
+            return NULL;
+        }
+    }
+    return (struct BulkData*)payload;
 }
 
 void BulkData_free(struct BulkData* data) {

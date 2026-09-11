@@ -25,7 +25,7 @@ int32_t @(name)_decode(struct @(name)* data, const uint8_t* payload, uint32_t le
 @[end for]@
 }
 
-@[if is_fixed_size]@
+@[if has_inplace]@
 int32_t @(name)_encode_inplace(struct @(name)* data, const uint8_t** payload_out) {
 @[for line in encode_inplace_lines]@
     @(line)

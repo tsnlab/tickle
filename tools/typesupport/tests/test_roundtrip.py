@@ -62,8 +62,13 @@ class BulkData(ctypes.Structure):
     _layout_ = "ms"
     _fields_ = [
         ("seq", ctypes.c_uint32),
-        ("payload", ctypes.c_uint8 * BULK_PAYLOAD_CAPACITY),
+        # A variable array's count member is declared *before* its buffer (matching wire order -
+        # see emit.emit_struct_fields) so a struct like this one, otherwise fixed-size up to a
+        # single trailing byte array, can alias its own memory as the wire payload - the same
+        # reason examples/Bulk.msg now gets *_encode_inplace/*_decode_inplace (M4's
+        # layout.prefix_array_field).
         ("payload_count", ctypes.c_uint16),
+        ("payload", ctypes.c_uint8 * BULK_PAYLOAD_CAPACITY),
     ]
 
 
@@ -73,10 +78,10 @@ class ArraysData(ctypes.Structure):
     _fields_ = [
         ("fixed_bytes", ctypes.c_uint8 * 4),
         ("fixed_ints", ctypes.c_int32 * 3),
-        ("bounded_values", ctypes.c_uint16 * 8),
         ("bounded_values_count", ctypes.c_uint16),
-        ("samples", ctypes.c_float * 16),
+        ("bounded_values", ctypes.c_uint16 * 8),
         ("samples_count", ctypes.c_uint16),
+        ("samples", ctypes.c_float * 16),
     ]
 
 
@@ -127,8 +132,8 @@ class ImageData(ctypes.Structure):
         ("encoding", ctypes.c_char_p),
         ("is_bigendian", ctypes.c_uint8),
         ("step", ctypes.c_uint32),
-        ("data", ctypes.c_uint8 * IMAGE_DATA_CAPACITY),
         ("data_count", ctypes.c_uint16),
+        ("data", ctypes.c_uint8 * IMAGE_DATA_CAPACITY),
     ]
 
 
@@ -378,7 +383,11 @@ def test_uint64_decode_inplace_native_aliases_payload_buffer(generated_lib):
     size = encode(ctypes.byref(original), buf, TT_MAX_BUFFER_LENGTH)
     assert size == encode_size(ctypes.byref(original))
 
-    result = decode_inplace(buf.raw[:size], size, True)
+    # Pass `buf` itself, not buf.raw[:size]: a fresh bytes object would have no reference kept
+    # beyond this call, and decode_inplace's whole point is returning a pointer *into* whatever
+    # buffer it was given - same dangling-pointer gotcha _roundtrip() already documents for a
+    # decoded string.
+    result = decode_inplace(buf, size, True)
     assert bool(result)  # non-NULL
     assert result.contents.data == 0x0102030405060708
 
@@ -409,6 +418,70 @@ def test_twist_encode_inplace_aliases_struct_memory(generated_lib):
     size = encode_inplace(ctypes.byref(data), ctypes.byref(payload_out))
     assert size == 48
     assert payload_out.value == ctypes.addressof(data)
+
+
+def test_bulk_encode_inplace_aliases_struct_memory(generated_lib):
+    # examples/Bulk.msg isn't fully fixed-size (payload is a variable array) but its own trailing
+    # byte array still makes it prefix-aliasable (layout.prefix_array_field) - the returned size
+    # covers only seq + the count prefix + the *active* payload_count bytes, not the array's full
+    # declared capacity.
+    encode_inplace, _decode_inplace = _bind_inplace(generated_lib, "BulkData", BulkData)
+    data = BulkData()
+    data.seq = 7
+    data.payload_count = 100
+    ctypes.memmove(data.payload, bytes(range(100)), 100)
+    payload_out = ctypes.c_void_p()
+    size = encode_inplace(ctypes.byref(data), ctypes.byref(payload_out))
+    assert size == 4 + 2 + 100
+    assert payload_out.value == ctypes.addressof(data)
+
+
+def test_bulk_encode_inplace_rejects_over_capacity(generated_lib):
+    encode_inplace, _decode_inplace = _bind_inplace(generated_lib, "BulkData", BulkData)
+    data = BulkData()
+    data.payload_count = BULK_PAYLOAD_CAPACITY + 1  # ctypes lets us set this even past the
+    # array's own physical size - see test_capacity.py's identical note on the non-inplace path.
+    payload_out = ctypes.c_void_p()
+    assert encode_inplace(ctypes.byref(data), ctypes.byref(payload_out)) == -2
+
+
+def test_bulk_decode_inplace_native_aliases_payload_buffer(generated_lib):
+    # Round-trips through the real *_encode() (not encode_inplace - proves decode_inplace reads
+    # back exactly what a normal sender would have put on the wire, not just its own encoder's
+    # output) then decode_inplace()s the result and checks it aliases the payload buffer itself.
+    _encode_size, encode, _decode, _free = _bind(generated_lib, "BulkData", BulkData)
+    _encode_inplace, decode_inplace = _bind_inplace(generated_lib, "BulkData", BulkData)
+    original = BulkData()
+    original.seq = 0xAABBCCDD
+    original.payload_count = 5
+    ctypes.memmove(original.payload, b"\x01\x02\x03\x04\x05", 5)
+
+    buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
+    size = encode(ctypes.byref(original), buf, TT_MAX_BUFFER_LENGTH)
+
+    # Pass `buf` itself, not buf.raw[:size]: a fresh bytes object has no reference kept beyond
+    # this call, and decode_inplace's whole point is returning a pointer *into* whatever buffer
+    # it was given - the same dangling-pointer gotcha _roundtrip() already documents for a
+    # decoded string, just one call earlier in the chain here.
+    result = decode_inplace(buf, size, True)
+    assert bool(result)
+    assert result.contents.seq == 0xAABBCCDD
+    assert result.contents.payload_count == 5
+    assert bytes(result.contents.payload[:5]) == b"\x01\x02\x03\x04\x05"
+
+
+def test_bulk_decode_inplace_rejects_over_capacity_count_on_wire(generated_lib):
+    wire = (0).to_bytes(4, sys.byteorder) + (BULK_PAYLOAD_CAPACITY + 1).to_bytes(2, sys.byteorder)
+    _encode_inplace, decode_inplace = _bind_inplace(generated_lib, "BulkData", BulkData)
+    result = decode_inplace(wire, len(wire), True)
+    assert not result  # NULL - a count this large can't fit the declared capacity either way
+
+
+def test_bulk_decode_inplace_rejects_reverse_endian(generated_lib):
+    _encode_inplace, decode_inplace = _bind_inplace(generated_lib, "BulkData", BulkData)
+    wire = bytes(4) + b"\x00\x00"
+    result = decode_inplace(wire, len(wire), False)
+    assert not result  # NULL
 
 
 def test_setbool_response_layout_has_one_byte_gap(generated_lib):

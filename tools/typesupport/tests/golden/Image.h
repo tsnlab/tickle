@@ -20,6 +20,8 @@
 
 #include "std_msgs__Header.h"
 
+#define IMAGEDATA__DATA_CAPACITY 1400
+
 #pragma pack(push, 4)
 struct ImageData {
     struct std_msgs__Header header;
@@ -28,8 +30,8 @@ struct ImageData {
     char* encoding;
     uint8_t is_bigendian;
     uint32_t step;
-    uint8_t data[1400];
     uint16_t data_count; // <= 1400
+    uint8_t data[1400];
 };
 #pragma pack(pop)
 

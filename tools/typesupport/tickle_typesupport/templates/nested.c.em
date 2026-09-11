@@ -4,7 +4,7 @@
 @[if needs_string_h]@
 #include <string.h>
 @[end if]@
-@[if is_fixed_size]@
+@[if has_inplace]@
 #include <stddef.h> // NULL, in *_decode_inplace
 @[end if]@
 

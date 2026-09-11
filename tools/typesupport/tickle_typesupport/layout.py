@@ -109,3 +109,29 @@ def max_wire_size(struct):
         else:
             raise NotImplementedError(wire_field.kind)
     return offset
+
+
+def prefix_array_field(struct):
+    """The struct's own trailing field, IF it's a variable byte array (1-byte elements) that
+    every other field precedes with a fixed size - the one common "fixed header + one trailing
+    bulk-payload array" shape (examples/Bulk.msg's own `seq` + `payload`) where, once
+    emit.emit_struct_fields() declares the array's uint16 count member *before* its data buffer
+    (matching wire order), #pragma pack(4) makes the struct's own memory byte-identical to the
+    wire bytes up through however many of the array's elements are actually in use - even though
+    the struct as a whole isn't fixed-size (compute()'s is_fixed_size), so it doesn't qualify for
+    the simpler whole-struct emit_encode_inplace/emit_decode_inplace. Backs emit.
+    emit_prefix_encode_inplace/emit_prefix_decode_inplace. None if no field qualifies.
+
+    Restricted to exactly this shape (byte elements, last field, everything before it fixed) the
+    same way adapt._resolve_auto_capacities is: a 1-byte element means no padding can ever fall
+    between the count and the data, and being last means nothing needs to follow it - both are
+    what let *_encode_inplace hand back a single contiguous span with a length that isn't known
+    until encode_size time, without also having to re-derive per-field alignment at runtime."""
+    if not struct.fields:
+        return None
+    last = struct.fields[-1]
+    if not (last.kind == "array" and last.array_mode == "variable" and last.element_size == 1):
+        return None
+    if plan_fields(struct.fields)[-1].static_offset is None:
+        return None
+    return last

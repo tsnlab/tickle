@@ -18,14 +18,17 @@
 #include <tickle/config.h> // tt_MAX_BUFFER_LENGTH
 #include <tickle/tickle.h>
 
+#define ARRAYSDATA__BOUNDED_VALUES_CAPACITY 8
+#define ARRAYSDATA__SAMPLES_CAPACITY 16
+
 #pragma pack(push, 4)
 struct ArraysData {
     uint8_t fixed_bytes[4];
     int32_t fixed_ints[3];
-    uint16_t bounded_values[8];
     uint16_t bounded_values_count; // <= 8
-    float samples[16];
+    uint16_t bounded_values[8];
     uint16_t samples_count; // <= 16
+    float samples[16];
 };
 #pragma pack(pop)
 
