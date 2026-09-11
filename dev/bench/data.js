@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789093407582,
+  "lastUpdate": 1789094642149,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1037,6 +1037,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.046,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "631dc2417b1826676685ff76e16bbe1a65d104c6",
+          "message": "typesupport M3: nested messages, -I include path, std_msgs/Header builtin\n\nAdds nested-message support, per PLAN.md/DESIGN.md's \"Nested messages\" rule (\"the nested type's\nfields are inlined recursively at the current offset - no header, no extra alignment beyond what\nthe first nested field needs\"):\n\n- resolve.py (new): finds and parses a nested field's own `.msg` - from a caller-supplied `-I`\n  search path (ROS 2's `pkg/msg/Name.msg` layout) first, falling back to builtins.py. A\n  Resolver caches by (pkg_name, msg_name) so a type nested from more than one field - std_msgs/\n  Header from many messages, or even two fields of the same message (geometry_msgs/Twist's own\n  linear/angular, both Vector3) - is parsed/adapted exactly once and shares one WireStruct, which\n  is what makes \"one generated file per nested dependency, no duplicate symbols\" possible.\n- builtins.py (new): built-in `.msg` text for builtin_interfaces/Time and std_msgs/Header, so\n  referencing either \"just works\" without vendoring those two upstream packages behind a caller's\n  own -I path - which still takes priority if given (see resolve.py's own docstring).\n- model.py: WireField gains kind \"nested\" (a resolved WireStruct). wire_align/wire_size delegate\n  entirely to the nested struct's own first field / overall size, needing no new layout rules of\n  their own - the same reason layout.py's plan_fields()/compute() needed zero changes for this\n  milestone.\n- adapt.py: adapt_field/adapt_struct/adapt_message/adapt_service all thread an optional Resolver\n  through; a nested field calls resolver.resolve_struct(pkg, name, adapt_struct) and gets back a\n  \"struct pkg__Name\" field (arrays of nested types and defaults on a nested field are out of\n  scope, same as arrays of strings already were). _resolve_auto_capacities is tightened: instead\n  of treating a preceding string as tt_MAX_STRING_LENGTH-worst-case, it now refuses auto-\n  derivation outright whenever any preceding field (string, or a nested struct that itself isn't\n  fixed-size) isn't fixed-size at all - tt_MAX_STRING_LENGTH (65535) alone already exceeds\n  tt_MAX_BUFFER_LENGTH, so treating it as a real budget would make auto-derivation fail even for\n  messages whose strings are, in practice, only ever a few bytes - this is why\n  tests/fixtures_own/Image.msg needs its own explicit `@capacity` annotation rather than the\n  upstream file's bare unbounded array (see that file's own comment).\n- emit.py: a nested field's encode/decode/encode_size just delegate to the nested type's own\n  generated functions (`<Nested>_encode(&data->field, payload + encoded, len - encoded)` etc.) -\n  its own error codes propagate unchanged, and it needs no header/alignment of its own beyond\n  what the generic per-field alignment logic (already handling strings/arrays identically)\n  already does before dispatching to it.\n- render.py / cli.py: a nested dependency gets its own `<pkg>__<Name>.h/.c` pair (via new\n  templates/nested.{h,c}.em - same struct.h.em/struct.c.em content as any interface's own data\n  struct, minus the tt_Topic/tt_Service wrapper a nested type has no wire existence to warrant),\n  written into the same `-O` output directory as the interface that needed it (deduplicated\n  automatically: multiple interfaces sharing one dependency each just overwrite it with identical\n  bytes). cli.py gains a repeatable `-I/--include-dir` flag.\n\nChasing the newly-added nested test fixtures through test_lint.py (now covering *.h too, not just\n*.c - a gap this surfaced) found two more conditionally-unnecessary includes, following the same\npattern as M1/M2's needs_string_h/needs_config_h: `<tickle/tickle.h>` is only ever needed by a\n*_Topic/_Service wrapper (never by a bare nested struct's own file), and `<tickle/hal.h>` is only\nneeded when a struct's own fields (not a nested field, which delegates rather than calling\n_tt_bswap_* itself) actually call something from it - true of every existing example, but not of\ne.g. Twist (composed entirely of two nested Vector3 fields, nothing scalar/string/array of its\nown). Both are now conditional (needs_hal_h, new) the same way the other two already were.\n\nNew interfaces: tests/fixtures_own/Stamped.msg (std_msgs/Header, resolved purely via builtins.py\n- no -I needed) and .../Image.msg (a real sensor_msgs/Image shape - nested Header + M2's array\nsupport together - see its own comment on why this is a fixtures_own/ copy, not tests/\nfixtures_ros2/Image.msg's unmodified one), plus tests/fixtures_ros2/geometry_msgs/Twist.msg\n(already present for parser-fidelity testing) now also exercised through actual code generation\nvia an explicit -I path, covering the \"same nested type from two fields\" caching case tests/\nfixtures_own's own two builtin-only fixtures don't. Roundtrip / cross-endian coverage added for\nall three (test_roundtrip.py, test_crossendian.py - the latter specifically proving is_native_\nendian reaches a nested field's own decode through the delegation).\n\ntests/golden/ updated (unaffected: UInt64/SetBool/Trigger/Bulk/Arrays - byte-identical; new:\nStamped/Image/Twist plus their three shared nested dependencies). make test / make sanitize /\nmake lint / FreeRTOS lint all still pass unchanged.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T11:43:08+09:00",
+          "tree_id": "672614ace3f45244970163a280173550c115d067",
+          "url": "https://github.com/tsnlab/tickle/commit/631dc2417b1826676685ff76e16bbe1a65d104c6"
+        },
+        "date": 1789094640669,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
             "unit": "ms"
           },
           {
