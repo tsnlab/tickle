@@ -20,7 +20,11 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/uio.h>
+// struct iovec (tt_send_iov, below) - clang-tidy's IWYU mapping doesn't know this glibc symbol's
+// real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
+// if neither provided/needed the other; this is the correct, portable header regardless (see
+// readv(2)/writev(2)/sendmsg(2)).
+#include <sys/uio.h> // NOLINT(misc-include-cleaner)
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
@@ -159,9 +163,10 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
 
 int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
     struct iovec iov[2] = {
-        {.iov_base = (void*)(uintptr_t)hdr, .iov_len = hdr_len},
-        {.iov_base = (void*)(uintptr_t)body, .iov_len = body_len},
+        {.iov_base = (void*)hdr, .iov_len = hdr_len},
+        {.iov_base = (void*)body, .iov_len = body_len},
     };
 
     struct sockaddr_in unicast_addr;

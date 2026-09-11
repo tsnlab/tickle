@@ -12,8 +12,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>

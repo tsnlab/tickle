@@ -39,6 +39,22 @@ jobs:
           fail-on-alert: true
           alert-threshold: "200%"
 
+      # rtt mdev (jitter) lives in its own group, not latency-benchmark.json above: it's noisy
+      # enough on real hardware to trip a 200% alert on commits that couldn't have affected it
+      # (three separate false alarms in one session - see run_perf.sh's own comment on why it's
+      # split out). Still tracked/graphed (summary-always, auto-push), just never fails the build.
+      - name: Track latency jitter history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Latency jitter (ping/pong rtt mdev)
+          tool: customSmallerIsBetter
+          output-file-path: latency-jitter-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+
       - name: Track throughput history
         uses: benchmark-action/github-action-benchmark@v1
         with:

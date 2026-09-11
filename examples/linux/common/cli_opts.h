@@ -25,11 +25,11 @@
 #include <tickle/log.h>
 
 enum tt_example_opt_flags {
-    TT_EXAMPLE_OPT_COUNT = 1u << 0,           // -c: senders only
-    TT_EXAMPLE_OPT_INTERVAL = 1u << 1,        // -i: senders only (perf_client too)
-    TT_EXAMPLE_OPT_DURATION = 1u << 2,        // -d: receivers only (perf_client too)
-    TT_EXAMPLE_OPT_MESSAGE_SIZE = 1u << 3,    // -s: perf_client only
-    TT_EXAMPLE_OPT_WARMUP_COOLDOWN = 1u << 4, // -w/-W: ping.c, perf_server.c only
+    TT_EXAMPLE_OPT_COUNT = 1U << 0,           // -c: senders only
+    TT_EXAMPLE_OPT_INTERVAL = 1U << 1,        // -i: senders only (perf_client too)
+    TT_EXAMPLE_OPT_DURATION = 1U << 2,        // -d: receivers only (perf_client too)
+    TT_EXAMPLE_OPT_MESSAGE_SIZE = 1U << 3,    // -s: perf_client only
+    TT_EXAMPLE_OPT_WARMUP_COOLDOWN = 1U << 4, // -w/-W: ping.c, perf_server.c only
 };
 
 struct tt_example_cli_options {
