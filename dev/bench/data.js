@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789082882863,
+  "lastUpdate": 1789089629881,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -920,6 +920,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.009,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "59972304b7f1c7d246f16df5faf65b5a72cb5bb6",
+          "message": "typesupport M0: CDR-4 spec, CallRequestHeader padding, tool scaffold\n\nFoundations for tools/typesupport/ (generates TickLE codecs from ROS 2\n.msg/.srv - see tools/typesupport/PLAN.md for the full design):\n\n- DESIGN.md: new \"Interface serialization (TickLE CDR-4)\" section -\n  4-byte alignment (not 8: keeps batched DATA payloads aligned without\n  padding tt_SubmessageHeader), uint16 string/array length prefixes (a\n  single-datagram payload is always < 2^16), capacity resolution for\n  variable arrays, #pragma pack(4) generated structs.\n\n- Wire change (pre-1.0, approved): tt_CallRequestHeader grows 7 -> 8\n  bytes (added `reserved`) so its CDR payload lands 4-aligned like\n  DATA/CALLRESPONSE already do. tt_Node's tx_buffer/rx_buffer are\n  _Alignas(4); _Static_assert guards in tickle.c pin all of this down as\n  a compile-time invariant rather than a comment. make test-all (both\n  platforms) and HIL still pass.\n\n- tools/typesupport/ scaffold: pyproject.toml pinning empy==3.3.4 (to be\n  used from M1 on); tickle_typesupport/_rosidl_parser.py, a verbatim vendor\n  of rosidl_adapter/parser.py (Apache-2.0, ros2/rosidl@jazzy) - the\n  canonical ROS 2 .msg/.srv grammar, stdlib-only, chosen over a pip\n  dependency to avoid version skew and guarantee compatibility\n  structurally; a `--dump-ir` CLI stub; a parse-smoke test suite against\n  seven real ROS 2 interface files (fetched into tests/fixtures_ros2/)\n  covering nested types, fixed/bounded/unbounded arrays, constants and\n  defaults, plus TickLE's own four example interfaces. Verified with a\n  clean `pip install -e .` in a fresh venv.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T10:19:32+09:00",
+          "tree_id": "cb7a137296c0ea270bd4589a44301572295cc9c2",
+          "url": "https://github.com/tsnlab/tickle/commit/59972304b7f1c7d246f16df5faf65b5a72cb5bb6"
+        },
+        "date": 1789089628392,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.228,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.019,
             "unit": "ms"
           },
           {
