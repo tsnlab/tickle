@@ -24,10 +24,19 @@ Targeting the first tagged release, `v1.0.0`.
 - `tests/test_cross_endian.c`; `tests/fuzz_process_packet.c` + `make fuzz`; `make sanitize`
   (ASan + UBSan unit-test run).
 - `tt_hash_id()` collision test and reverse-endian string-decode test.
+- `tools/typesupport`: generates a message/service's `<Name>.c`/`<Name>.h` codec directly from
+  its `.msg`/`.srv` (ROS 2's own interface grammar) instead of hand-writing it - see
+  `tools/typesupport/README.md` and DESIGN.md's "Interface serialization (TickLE CDR-4)" for the
+  wire format it implements. Every one of TickLE's own example interfaces
+  (`examples/{uint64,set_bool,ping_pong,perf}/*.msg`/`*.srv`) is generated this way now; `make
+  regen` re-runs it in place (see CONTRIBUTING.md's "Generated codecs").
 
 ### Changed
 
 - `tt_NODE_UPDATE_INTERVAL` is 1s (was a 10s "temporary, for debugging" value).
+- `tt_CallRequestHeader` is 8 bytes, not 7 (a `reserved` pad byte) - keeps a CALLREQUEST's CDR
+  payload 4-byte aligned, matching CALLRESPONSE/DATA. Wire-incompatible with pre-1.0 builds; not
+  a concern before the first tagged release.
 - A fully unanswered RPC reports `return_code == tt_CALL_TIMEOUT` to the client callback instead
   of `0` (which a server can legitimately return). A `tt_SERVER_CALLBACK` must not return that
   value.
