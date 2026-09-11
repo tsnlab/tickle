@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789097405645,
+  "lastUpdate": 1789097408597,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2151,6 +2151,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 900.445,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ec1bd41761823d5dc3d7d196b6176e2243fd510e",
+          "message": "Cut examples/linux/perf/Bulk.c/h over to the generated version\n\nPer the user's decision on M4's open question (replace the hand-written zero-copy Bulk with the\ngenerated one, while keeping the zero-copy property - see the two \"typesupport M4\" commits just\nbefore this one for how the generator itself was extended to make that possible): examples/\nlinux/perf/Bulk.{c,h} are no longer hand-written - `tickle-typesupport examples/Bulk.msg` output,\ncommitted as-is (M5 will wire this into a `make regen` Makefile rule; for now it's generated once\nand checked in like every other codec).\n\nWire-visible difference from the old hand-written version: `payload` now carries its own real\nuint16 length prefix (2 bytes/message) instead of reusing `seq`'s sibling `size` field as the\narray's length - the deliberate generality M2 already committed CDR-4 to. Everything else -\nincluding the zero-copy *_encode_inplace/*_decode_inplace path opt2/opt3 built this benchmark\naround - is preserved: layout.prefix_array_field (previous commit) makes the generated BulkData\njust as inplace-aliasable as the hand-written one was, given the array's own uint16 count member\nis now declared before its buffer (matching wire order) rather than after.\n\nField renames follow from the .msg's own field names (`size` -> `payload_count`, `bytes` ->\n`payload`) - updated in both platforms' drivers:\n  - examples/linux/perf/perf_client.c / perf_server.c\n  - examples/freertos/perf/main_perf_client.c / main_perf_server.c (reuses the same Bulk.{c,h} -\n    see platform/freertos/Makefile's ROLE_SRCS for perf_client/perf_server)\nBULK_MAX_PAYLOAD_SIZE is now BULKDATA__PAYLOAD_CAPACITY, generated for every variable array field\nby struct.h.em - not perf-specific, and available (spelled after the struct/field name) for any\nfuture generated message with one.\n\nAlso (both driver .c files, discovered by clang-tidy while checking this commit's own diff -\npre-existing, unrelated to the cutover itself): removed <stdlib.h>/<string.h>, neither used\ndirectly by perf_client.c/perf_server.c despite being included.\n\nNew examples/linux/perf/.clang-tidy, scoped to this one directory: Bulk.c/h's own generated\nnumeric literals (offsets/sizes/capacities) would otherwise trip the repo-wide readability-\nmagic-numbers check that hand-written code should keep - a placeholder for what PLAN.md's M5\nmilestone makes permanent (examples/.clang-tidy, once code generation's output is flattened into\nits own examples/<proto>/ directories, separate from hand-written drivers like perf_client.c/\nperf_server.c, which keep the real check here in the meantime unaffected. Bulk's own naming\nalready satisfies the repo-root .clang-tidy's existing `(SetBool|UInt64|Ping|Bulk).*` whitelist.\n\nVerified: `make test` / `make sanitize` / `make lint` / FreeRTOS build (both perf_client and\nperf_server ROLEs) + lint all pass; `make test-freertos` (full QEMU round-trip, all four role\npairs) PASS, perf pair sustaining ~136 Mbps - no observable throughput regression from the extra\n2-byte wire overhead. HIL throughput will be confirmed by Performance Test on push.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T12:28:58+09:00",
+          "tree_id": "a1b9bad4fa07031bef379bed76e104458f03676b",
+          "url": "https://github.com/tsnlab/tickle/commit/ec1bd41761823d5dc3d7d196b6176e2243fd510e"
+        },
+        "date": 1789097407525,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.615,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 892.703,
             "unit": "Mbps"
           }
         ]
