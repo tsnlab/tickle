@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789096750958,
+  "lastUpdate": 1789096753699,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2078,6 +2078,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 895.636,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "502a865c09cfd90c7c6620a4492b561536eeca7b",
+          "message": "typesupport M4 (part 2): prefix-aliasable inplace for a trailing byte array\n\nAnswers M4's open question from the previous commit: examples/Bulk.msg (a fixed `seq` header\nplus one trailing unbounded `payload` array) now gets real *_encode_inplace/*_decode_inplace too,\nwithout inventing a new CDR-4 wire convention or giving up the extra wire-format generality M2\nalready committed to (a real uint16 length prefix, not reusing an unrelated field as the length).\n\nThe trick: emit_struct_fields now declares a variable array's uint16 count member *before* its\ndata buffer (matching wire order, not source order) - for a struct that isn't fully fixed-size\nbut does end in exactly one such array with 1-byte elements, preceded only by fixed-size fields\n(layout.prefix_array_field, new), #pragma pack(4) then makes the struct's own memory byte-\nidentical to the wire bytes up through however many elements are actually in use, even though the\nstruct as a whole has a much larger declared capacity. *_encode_inplace hands back the struct's\nown address with a data-dependent size (fixed prefix + 2 + data->*_count, not sizeof); *_decode_\ninplace reads the count straight out of the payload before aliasing it, bounds-checking exactly\nlike the copying *_decode() does. Same idea as examples/linux/perf/Bulk.c's own hand-written\nversion, generalized to work for any message with this one common shape, and to interoperate with\na real self-describing wire length instead of reusing a same-named struct field as one.\n\nAlso adds a `#define <STRUCT>__<FIELD>_CAPACITY <N>` for every variable array field (struct.h.em)\n- lets application code reference the generator's resolved capacity symbolically instead of\nhardcoding it, matching what the hand-written Bulk.h already exposed as its own\nBULK_MAX_PAYLOAD_SIZE for exactly this reason.\n\nField reordering changes memory layout for every existing variable-array struct (Bulk, Arrays,\nImage) without changing wire behavior at all - encode/decode already address fields by name, not\nstruct position. tests/golden/ updated; test_roundtrip.py's ctypes mirrors reordered to match,\nplus new tests actually driving Bulk's new inplace pair through ctypes (encode_inplace aliases\nstruct memory with a count-dependent size; decode_inplace round-trips through a real *_encode()\ncall and rejects over-capacity/reverse-endian input) - which also caught two dangling-pointer bugs\nin the *_decode_inplace tests added in the previous commit (passing buf.raw[:size], a fresh bytes\nobject with nothing keeping it alive, into a function whose entire contract is aliasing whatever\nbuffer it's given - same class of bug _roundtrip()'s own docstring already warns about for a\ndecoded string).\n\nSets up examples/linux/perf/Bulk.c/h's own cutover to the generated version as a separate, next\ncommit - this one only changes what the generator is capable of.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T12:18:17+09:00",
+          "tree_id": "ed3785f87e1285ea1d63891ab2bb08a376bb6ffa",
+          "url": "https://github.com/tsnlab/tickle/commit/502a865c09cfd90c7c6620a4492b561536eeca7b"
+        },
+        "date": 1789096752636,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 936.393,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 900.445,
             "unit": "Mbps"
           }
         ]
