@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789097909333,
+  "lastUpdate": 1789104464633,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1271,6 +1271,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.043,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ae994a5151044415a05f46f5b7a3accd27dc1ccc",
+          "message": "typesupport M5+M6: flatten remaining codecs, delete hand-written ones, array defaults, docs\n\nM5 - the last three hand-written codecs are gone; every real TickLE interface is now generated:\n\n- examples/{uint64,set_bool,ping_pong,perf}/ (new): each holds its own .msg/.srv source plus the\n  generated .c/.h next to it (tools/typesupport/PLAN.md's \"flatten\" layout - Bulk was already\n  here from the earlier cutover commit; UInt64/SetBool/PingPong join it now). Hand-written\n  examples/linux/{uint64,set_bool,ping_pong}/{UInt64,SetBool,PingPong}.{c,h} are deleted -\n  examples/ping_pong/PingPong.srv is new (the other three already had .msg/.srv sources; ping/\n  pong's request/response pair never did, since it predates this tool).\n- Drivers (examples/linux/*/, examples/freertos/*/main_*.c) are otherwise untouched: they\n  #include their protocol's header by bare name same as always, resolved now via a `-I` onto the\n  new directory instead of the file just sitting next to them - platform/linux/Makefile's\n  EXAMPLE_BINS gained a third (codec directory) field per binary and adds all four to CPPFLAGS;\n  platform/freertos/Makefile's ROLE_INCLUDES/ROLE_SRCS point at the new locations.\n- Each examples/<proto>/ gets its own .clang-tidy (disabling readability-identifier-naming/\n  magic-numbers/non-const-parameter - generated code, ROS 2's own naming, a fixed codec-ABI\n  signature) - not a single top-level examples/.clang-tidy as PLAN.md originally said, since\n  that would also reach the hand-written drivers under examples/{linux,freertos}/<proto>/ one\n  level up, which keep every check. The root .clang-tidy's now-unneeded `(SetBool|UInt64|Ping|\n  Bulk).*` naming whitelist is deleted.\n- New `make regen` (repo root Makefile): re-runs tickle-typesupport over all four interfaces in\n  place. check-all.yml now installs the package and runs it, failing the build on any diff (a\n  hand-edited generated file, or a .msg/.srv edited without regenerating, both get caught this\n  way rather than silently drifting).\n- Fixed a real packaging bug this surfaced: pyproject.toml had no package-data entry for\n  templates/*.em, so a normal `pip install` (unlike this repo's own dev-setup `pip install -e .`,\n  which just points at the source tree) would silently ship a package with no templates at all -\n  caught by testing check-all.yml's new step against a real, non-editable install in a fresh\n  venv before pushing, not just the editable one every other test here has used all along.\n\nM6 - array default values, the last generator feature PLAN.md called for:\n\n- adapt.py accepts a `.msg`'s array default (`uint8[4] x [1,2,3,4]`) instead of rejecting it -\n  validated once every field's capacity is fully resolved (a fixed array's default must supply\n  exactly its declared length; a variable array's must fit its capacity, auto-derived or not).\n- emit.py's *_init() sets each default element (and, for a variable array, its own _count) -\n  tests/fixtures_own/ArrayDefaults.msg (new, test-only) exercises both shapes, with a roundtrip\n  test proving a variable array's untouched tail stays at _init()'s own memset(0) rather than\n  something like the last default value leaking into it.\n- README.md (status, usage) and CONTRIBUTING.md (new \"Generated codecs\" section: edit the\n  .msg/.srv, `make regen`, never hand-edit generated output - and the naming-exemption line\n  fixed since the old SetBool/UInt64/Ping/Bulk whitelist it referenced is gone) updated.\n  PLAN.md's milestone table marked done. `.action`/multi-dimensional arrays were already\n  documented as out of scope (PLAN.md's own \"Out of scope\" line, unchanged).\n\nAlso: test_own_examples_still_parse (M0) referenced a stray top-level examples/Image.msg -\nidentical content to (and apparently an unintentional duplicate of) tests/fixtures_ros2/\nsensor_msgs/msg/Image.msg, not a real TickLE interface, added at some earlier point this\nsession before tests/fixtures_ros2/ existed. Deleted; the test now checks the four real\nflattened interfaces at their new locations instead.\n\nVerified: full typesupport pytest suite (50 tests: roundtrip/cross-endian/capacity/lint/golden,\ncovering every existing interface at its new location plus PingPong and ArrayDefaults);\n`make regen` reproduces byte-identical output from a completely fresh, real (non-editable) `pip\ninstall` in an empty venv - not just the dev `-e` one; `make test` / `make sanitize` / `make\nlint` on the main repo; full FreeRTOS build (all 8 roles) + lint; `make test-freertos` (real QEMU\nround trip, all four protocol pairs) PASS.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T14:26:48+09:00",
+          "tree_id": "b64307a2c06fbf7418cde43ab4f7dd99bf547ef8",
+          "url": "https://github.com/tsnlab/tickle/commit/ae994a5151044415a05f46f5b7a3accd27dc1ccc"
+        },
+        "date": 1789104463027,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.209,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.036,
             "unit": "ms"
           },
           {
