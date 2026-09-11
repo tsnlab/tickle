@@ -68,7 +68,7 @@ static void bulk_callback(struct tt_Subscriber* subscriber, uint64_t time, uint1
     have_first = true;
 
     interval_received_msgs++;
-    interval_received_bytes += data->size;
+    interval_received_bytes += data->payload_count;
 
     double elapsed_since_first_s = (double)(time - first_recv_time) / (double)tt_SECOND;
     double elapsed_since_start_s = (double)(time - g_start_time) / (double)tt_SECOND;

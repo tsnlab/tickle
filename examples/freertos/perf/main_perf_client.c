@@ -71,12 +71,12 @@ static void report(struct tt_Node* node, uint64_t time, void* param) {
 static void publish_bulk(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
 
-    bulk.size = BULK_MAX_PAYLOAD_SIZE;
+    bulk.payload_count = BULKDATA__PAYLOAD_CAPACITY;
     tt_ret_t ret = tt_Publisher_publish(pub, (struct tt_Data*)&bulk);
     if (ret == tt_RET_OK) {
         bulk.seq++;
         interval_sent_msgs++;
-        interval_sent_bytes += bulk.size;
+        interval_sent_bytes += bulk.payload_count;
     } else if (ret == tt_RET_OUT_OF_BUFFER) {
         total_buffer_full++;
     }

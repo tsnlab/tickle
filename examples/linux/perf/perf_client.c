@@ -12,8 +12,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -27,7 +25,7 @@
 // DEFAULT_MESSAGE_SIZE fills one standard (1500-byte MTU) Ethernet frame as full as this
 // protocol allows, so every packet carries the most payload it can without IP fragmentation.
 // See "Message size: filling an Ethernet frame" in README.md for the derivation.
-#define DEFAULT_MESSAGE_SIZE BULK_MAX_PAYLOAD_SIZE
+#define DEFAULT_MESSAGE_SIZE BULKDATA__PAYLOAD_CAPACITY
 
 // DEFAULT_INTERVAL_SECONDS of 0 means no send interval at all: publish as fast as poll()
 // allows, which is what a throughput benchmark should default to. Pass -i to rate-limit to a
@@ -138,11 +136,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (opts.message_size > BULK_MAX_PAYLOAD_SIZE) {
-        printf("Requested message size %u exceeds the max %d; clamping.\n", opts.message_size, BULK_MAX_PAYLOAD_SIZE);
-        opts.message_size = BULK_MAX_PAYLOAD_SIZE;
+    if (opts.message_size > BULKDATA__PAYLOAD_CAPACITY) {
+        printf("Requested message size %u exceeds the max %d; clamping.\n", opts.message_size,
+               BULKDATA__PAYLOAD_CAPACITY);
+        opts.message_size = BULKDATA__PAYLOAD_CAPACITY;
     }
-    bulk.size = opts.message_size;
+    bulk.payload_count = opts.message_size;
 
     uint64_t send_interval_ns = opts.interval_s > 0.0 ? (uint64_t)(opts.interval_s * (double)tt_SECOND) : 0;
 
@@ -218,9 +217,9 @@ int main(int argc, char** argv) {
             if (pub_ret == tt_RET_OK) {
                 bulk.seq++;
                 total_sent_msgs++;
-                total_sent_bytes += bulk.size;
+                total_sent_bytes += bulk.payload_count;
                 interval_sent_msgs++;
-                interval_sent_bytes += bulk.size;
+                interval_sent_bytes += bulk.payload_count;
             } else if (pub_ret == tt_RET_OUT_OF_BUFFER) {
                 total_buffer_full++;
             }

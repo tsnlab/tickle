@@ -12,8 +12,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -128,13 +126,13 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
     have_first = true;
 
     interval_received_msgs++;
-    interval_received_bytes += data->size;
+    interval_received_bytes += data->payload_count;
 
     bool in_warmup = (double)(time - first_recv_time) / (double)tt_SECOND < warmup_s;
     bool in_cooldown = stopping && time >= cooldown_start;
     if (!in_warmup && !in_cooldown) {
         total_received_msgs++;
-        total_received_bytes += data->size;
+        total_received_bytes += data->payload_count;
         total_dropped += gap_count;
     }
 }
