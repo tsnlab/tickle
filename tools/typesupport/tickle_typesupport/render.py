@@ -1,0 +1,91 @@
+# Copyright (c) 2025-2026 TSN Lab, Inc.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License, version 3, as published by the Free
+# Software Foundation. A proprietary license is also available on request - see README.md.
+
+"""Turns a TopicIR / ServiceIR into (header_text, source_text). The per-struct pieces (struct.h.em
+/ struct.c.em) are expanded once per WireStruct in plain Python and spliced into the outer
+topic/service template as a text block, rather than nesting empy interpreters - simpler, and
+keeps each struct's own render context (field names etc.) from leaking into its sibling's."""
+
+import pathlib
+
+import em
+
+from . import emit, layout
+
+_TEMPLATES = pathlib.Path(__file__).parent / "templates"
+
+
+def _expand(template_name, **context):
+    text = (_TEMPLATES / template_name).read_text(encoding="utf-8")
+    return em.expand(text, **context)
+
+
+def _struct_context(struct):
+    layout.compute(struct)
+    return {
+        "name": struct.c_name,
+        "constant_lines": emit.emit_constants(struct),
+        "field_lines": emit.emit_struct_fields(struct),
+        "has_init": emit.has_defaults(struct),
+        "init_lines": emit.emit_init(struct) if emit.has_defaults(struct) else [],
+        "encode_size_lines": emit.emit_encode_size(struct),
+        "encode_lines": emit.emit_encode(struct),
+        "decode_lines": emit.emit_decode(struct),
+        "free_lines": emit.emit_free(struct),
+        "needs_string_h": emit.needs_string_h(struct),
+        "needs_config_h": emit.needs_config_h(struct),
+        # An empty message (e.g. Trigger.srv's request) is fixed-size (wire_size 0) but still
+        # needs a one-byte filler field to stay valid ISO C (see emit_struct_fields) - sizeof()
+        # is then 1, not 0, so the sizeof/wire_size static_assert would be false. Skip it rather
+        # than assert something that isn't actually a wire-layout invariant.
+        "is_fixed_size": struct.is_fixed_size and bool(struct.fields),
+        "wire_size": struct.wire_size,
+    }
+
+
+def render_topic(topic_ir):
+    ctx = _struct_context(topic_ir.data)
+    header = _expand(
+        "topic.h.em",
+        name=topic_ir.name,
+        data_name=topic_ir.data.c_name,
+        data_struct_h=_expand("struct.h.em", **ctx),
+    )
+    source = _expand(
+        "topic.c.em",
+        name=topic_ir.name,
+        data_name=topic_ir.data.c_name,
+        data_struct_c=_expand("struct.c.em", **ctx),
+        needs_string_h=ctx["needs_string_h"],
+        needs_config_h=ctx["needs_config_h"],
+    )
+    return header, source
+
+
+def render_service(service_ir):
+    request_ctx = _struct_context(service_ir.request)
+    response_ctx = _struct_context(service_ir.response)
+    header = _expand(
+        "service.h.em",
+        name=service_ir.name,
+        request_name=service_ir.request.c_name,
+        response_name=service_ir.response.c_name,
+        request_struct_h=_expand("struct.h.em", **request_ctx),
+        response_struct_h=_expand("struct.h.em", **response_ctx),
+    )
+    source = _expand(
+        "service.c.em",
+        name=service_ir.name,
+        request_name=service_ir.request.c_name,
+        response_name=service_ir.response.c_name,
+        request_struct_c=_expand("struct.c.em", **request_ctx),
+        response_struct_c=_expand("struct.c.em", **response_ctx),
+        needs_string_h=request_ctx["needs_string_h"] or response_ctx["needs_string_h"],
+        needs_config_h=request_ctx["needs_config_h"] or response_ctx["needs_config_h"],
+    )
+    return header, source

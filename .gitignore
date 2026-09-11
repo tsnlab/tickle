@@ -17,12 +17,13 @@
 # platform/linux/test.sh's own captured ping/pong and publisher/subscriber output logs
 /platform/linux/*.log
 
-# tools/typesupport (Python) build/test artifacts
+# tools/typesupport (Python) build/test/dev-environment artifacts
 /tools/typesupport/**/__pycache__/
 /tools/typesupport/.pytest_cache/
 /tools/typesupport/*.egg-info/
 /tools/typesupport/build/
 /tools/typesupport/dist/
+/tools/typesupport/.venv/
 
 # Prerequisites
 *.d
@@ -87,3 +88,4 @@ compile_commands.json
 # github-action-benchmark within the same job run)
 /latency-benchmark.json
 /throughput-benchmark.json
+/tools/typesupport/.pytest_lint_tmp/
