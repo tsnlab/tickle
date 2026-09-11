@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789092175541,
+  "lastUpdate": 1789093407582,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -998,6 +998,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.01,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "83495ae164ef9144d5975a0ecf412afe770c2ad7",
+          "message": "typesupport M2: fixed + variable arrays, capacity resolution, datagram-size assert\n\nAdds array field support to the generator, per PLAN.md/DESIGN.md's \"Fixed arrays\" / \"Variable\narrays\" / \"Capacity\" rules:\n\n- model.py: WireField grows array_mode (\"fixed\" | \"variable\"), array_size, capacity and\n  capacity_source, plus element_ctype/element_size/element_align helpers. wire_align/wire_size\n  extend naturally - a fixed array behaves like a single wider field (known size/align, so\n  layout.py's existing static-vs-runtime-padding logic needs no changes at all), a variable array\n  behaves like a string (wire_size None, wire_align 2 for its uint16 count prefix).\n- adapt.py: rejects arrays of strings and nested-typed arrays (still out of scope / M3) and array\n  default values (M6); resolves a variable array's capacity via PLAN.md's priority order - a\n  trailing `# @capacity <N>` comment annotation, then a ROS 2 upper bound `T[<=N]`, then\n  auto-derived from what's left of a single datagram once every other field's own worst-case size\n  is accounted for (restricted to a single trailing unbounded array, so \"what's left\" is\n  well-defined - anything else asks for an explicit annotation instead of guessing).\n- emit.py: fixed arrays get a plain memcpy (1-byte elements) or a per-element byte-swap loop\n  (wider ones, unioned for floats) in both encode and decode; variable arrays get the same plus\n  their own uint16 count prefix and a capacity check (`count > capacity` -> -2) on both the way\n  out (an over-large data->*_count) and the way in (an over-large count read off a malformed or\n  hostile peer's wire) - never trusting either to write past the fixed-capacity C array\n  underneath.\n- layout.py: new max_wire_size() - the struct's worst-case wire size from what's actually fixed\n  at generate time (a resolved array capacity counts; a plain M1 string does not, since unlike an\n  array it has no fixed C buffer at all - see the function's own docstring on why DESIGN.md's\n  \"Capacity\" wording, \"a variable array's *or bounded string's* C buffer\", doesn't yet apply to\n  the char*-aliasing strings M1 shipped). Backs a new `_Static_assert(<max size> <=\n  tt_MAX_BUFFER_LENGTH)` struct.h.em now emits for every message, matching PLAN.md's \"always\n  assert the message fits in one datagram\" rule (previously only the sizeof/wire_size assert\n  existed, and only for fully fixed-size messages).\n- examples/Bulk.msg (new): a large variable-length payload, exercising the auto-derived-capacity\n  path end to end - not yet wire-compatible with examples/linux/perf/Bulk.c's hand-written\n  version (which reuses its own `size` field as the array's length instead of a separate wire\n  count, to avoid storing the length twice); reconciling the two is M4/M5's job, per the\n  milestone table, and the hand-written perf driver is untouched here.\n- tests/fixtures_own/Arrays.msg (new, test-only): exercises every other array shape in one\n  message - a fixed byte array, a fixed int32 array, a ROS 2 upper-bounded variable array, and an\n  annotated-capacity variable array of floats.\n- tests/test_capacity.py (new): the capacity/rejection behavior above, for both the bounded and\n  auto-derived cases, both directions (struct-side and wire-side).\n- tests/test_roundtrip.py / test_crossendian.py: roundtrip coverage for Bulk/Arrays, plus a\n  hand-built-wire cross-endian case proving a fixed array's per-element swap and a variable\n  array's count-prefix-and-element swap both work (not just scalars/strings, already covered).\n\nChasing test_lint.py to green after generating Arrays/Bulk surfaced two more real generator bugs\n(neither array-specific in cause): a pointer-offset multiplication done in uint32_t and then\nimplicitly widened to size_t (bugprone-implicit-widening-of-multiplication-result - fixed by\nwidening one operand explicitly before the multiply), and the new datagram-size assert failing\noutright on every string-bearing message before the max_wire_size scoping fix above (a plain\nstring's \"worst case\" naively taken as tt_MAX_STRING_LENGTH is 65535, dwarfing\ntt_MAX_BUFFER_LENGTH on its own regardless of anything else in the message).\n\ntests/golden/ updated (SetBool.h / Trigger.h / UInt64.h gain the new config.h include + assert\nline; Arrays.h/.c and Bulk.h/.c added). make test / make sanitize / make lint / FreeRTOS lint all\nstill pass unchanged (M2 touches nothing outside tools/typesupport/ and the new examples/Bulk.msg\nsource file, which nothing yet builds from).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T11:22:35+09:00",
+          "tree_id": "bc8159f8019a79b58a4159e1291667fb8a2e5553",
+          "url": "https://github.com/tsnlab/tickle/commit/83495ae164ef9144d5975a0ecf412afe770c2ad7"
+        },
+        "date": 1789093406098,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.208,
+            "unit": "ms"
+          },
+          {
+            "name": "rtt mdev",
+            "value": 0.046,
             "unit": "ms"
           },
           {
