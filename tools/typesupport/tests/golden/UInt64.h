@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <tickle/config.h> // tt_MAX_BUFFER_LENGTH
 #include <tickle/tickle.h>
 
 #pragma pack(push, 4)
@@ -29,5 +30,6 @@ int32_t UInt64Data_decode(struct UInt64Data* data, const uint8_t* payload, uint3
 void UInt64Data_free(struct UInt64Data* data);
 
 _Static_assert(sizeof(struct UInt64Data) == 8, "UInt64Data must match its CDR-4 wire size - ABI mismatch");
+_Static_assert(8 <= tt_MAX_BUFFER_LENGTH, "UInt64Data's worst-case wire size exceeds a single datagram");
 
 extern struct tt_Topic UInt64Topic;

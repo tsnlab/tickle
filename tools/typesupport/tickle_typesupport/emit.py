@@ -35,13 +35,26 @@ def emit_struct_fields(struct):
     `struct NAME { ... };` / `#pragma pack(pop)`. Plain field-ordered declarations are enough:
     pack(4) caps the compiler's own alignment at min(natural, 4) per member, which is exactly
     the CDR-4 rule - no manually inserted padding fields needed (verified against both gcc/
-    x86-64 and the riscv64-unknown-elf cross compiler; see PLAN.md)."""
+    x86-64 and the riscv64-unknown-elf cross compiler; see PLAN.md). An array needs more than
+    one type-string can express (a fixed array is just `elem name[N];`, but a variable array
+    also needs its own count member alongside the fixed-capacity buffer), so it's special-cased
+    here rather than going through field.ctype like every other kind does."""
     if not struct.fields:
         # An empty struct is a GNU extension (see tt_Request's own note in tickle.h) - a message
         # with no fields (e.g. Trigger.srv's request) still needs one byte to stay valid ISO C.
         # It is not a wire field: nothing ever reads or writes it.
         return ["uint8_t reserved; // empty message - not serialized, just fills the struct"]
-    return [f"{field.ctype} {field.name};" for field in struct.fields]
+    lines = []
+    for wire_field in struct.fields:
+        if wire_field.kind == "array":
+            if wire_field.array_mode == "fixed":
+                lines.append(f"{wire_field.element_ctype} {wire_field.name}[{wire_field.array_size}];")
+            else:
+                lines.append(f"{wire_field.element_ctype} {wire_field.name}[{wire_field.capacity}];")
+                lines.append(f"uint16_t {wire_field.name}_count; // <= {wire_field.capacity}")
+        else:
+            lines.append(f"{wire_field.ctype} {wire_field.name};")
+    return lines
 
 
 def emit_constants(struct):
@@ -201,6 +214,153 @@ def _emit_string_decode(field):
     ]
 
 
+def _emit_fixed_array_encode(field):
+    n, size = field.array_size, field.element_size
+    total = n * size
+    check = [f"if ((uint32_t)encoded + {total} > len) {{ return -1; }}"]
+    if size == 1:
+        # 1-byte elements (uint8/int8/byte/char/bool) never need a byte-swap - a plain memcpy
+        # is both simpler and faster than a per-element loop.
+        return _braced(check + [f"memcpy(payload + encoded, data->{field.name}, {total});", f"encoded += {total};"])
+    wire = _WIRE_UINT[size]
+    if field.scalar_type in _FLOAT_TYPES:
+        loop = [
+            f"union {{ {field.element_ctype} value; {wire} bits; }} convert;",
+            f"convert.value = data->{field.name}[i];",
+            f"*({wire}*)(payload + encoded + ((size_t)i * {size})) = convert.bits;",
+        ]
+    else:
+        loop = [f"*({field.element_ctype}*)(payload + encoded + ((size_t)i * {size})) = data->{field.name}[i];"]
+    body = check + [f"for (uint32_t i = 0; i < {n}; i++) {{"] + [f"    {ln}" for ln in loop] + ["}", f"encoded += {total};"]
+    return _braced(body)
+
+
+def _emit_fixed_array_decode(field):
+    n, size = field.array_size, field.element_size
+    total = n * size
+    check = [f"if ((uint32_t)decoded + {total} > len) {{ return -1; }}"]
+    if size == 1:
+        return _braced(check + [f"memcpy(data->{field.name}, payload + decoded, {total});", f"decoded += {total};"])
+    wire, bswap = _WIRE_UINT[size], _BSWAP[size]
+    loop = [
+        f"{wire} raw = *(const {wire}*)(payload + decoded + ((size_t)i * {size}));",
+        f"if (!is_native_endian) {{ raw = {bswap}(raw); }}",
+    ]
+    if field.scalar_type in _FLOAT_TYPES:
+        loop += [
+            f"union {{ {wire} bits; {field.element_ctype} value; }} convert;",
+            "convert.bits = raw;",
+            f"data->{field.name}[i] = convert.value;",
+        ]
+    elif field.element_ctype != wire:
+        loop.append(f"data->{field.name}[i] = ({field.element_ctype})raw;")
+    else:
+        loop.append(f"data->{field.name}[i] = raw;")
+    body = check + [f"for (uint32_t i = 0; i < {n}; i++) {{"] + [f"    {ln}" for ln in loop] + ["}", f"decoded += {total};"]
+    return _braced(body)
+
+
+def _emit_variable_array_encode(field):
+    count_var = f"data->{field.name}_count"
+    size = field.element_size
+    lines = [
+        f"if ({count_var} > {field.capacity}) {{ return -2; }}",
+        "{",
+        "    if ((uint32_t)encoded + 2 > len) { return -1; }",
+        f"    *(uint16_t*)(payload + encoded) = {count_var};",
+        "    encoded += 2;",
+    ]
+    if field.element_align > 1:
+        lines += [
+            "    {",
+            f"        uint32_t pad = {_runtime_align_expr('encoded', field.element_align)};",
+            "        if ((uint32_t)encoded + pad > len) { return -1; }",
+            "        memset(payload + encoded, 0, pad);",
+            "        encoded += (int32_t)pad;",
+            "    }",
+        ]
+    total_expr = f"((uint32_t){count_var} * {size})"
+    if size == 1:
+        lines += [
+            f"    if ((uint32_t)encoded + {count_var} > len) {{ return -1; }}",
+            f"    memcpy(payload + encoded, data->{field.name}, {count_var});",
+            f"    encoded += (int32_t){count_var};",
+        ]
+    else:
+        wire = _WIRE_UINT[size]
+        if field.scalar_type in _FLOAT_TYPES:
+            loop = [
+                f"union {{ {field.element_ctype} value; {wire} bits; }} convert;",
+                f"convert.value = data->{field.name}[i];",
+                f"*({wire}*)(payload + encoded + ((size_t)i * {size})) = convert.bits;",
+            ]
+        else:
+            loop = [f"*({field.element_ctype}*)(payload + encoded + ((size_t)i * {size})) = data->{field.name}[i];"]
+        lines += (
+            [
+                f"    if ((uint32_t)encoded + {total_expr} > len) {{ return -1; }}",
+                f"    for (uint32_t i = 0; i < {count_var}; i++) {{",
+            ]
+            + [f"        {ln}" for ln in loop]
+            + ["    }", f"    encoded += (int32_t){total_expr};"]
+        )
+    lines.append("}")
+    return lines
+
+
+def _emit_variable_array_decode(field):
+    size = field.element_size
+    lines = [
+        "{",
+        "    if ((uint32_t)decoded + 2 > len) { return -1; }",
+        "    uint16_t count = *(const uint16_t*)(payload + decoded);",
+        "    if (!is_native_endian) { count = _tt_bswap_16(count); }",
+        f"    if (count > {field.capacity}) {{ return -2; }}",
+        "    decoded += 2;",
+    ]
+    if field.element_align > 1:
+        lines += [
+            "    {",
+            f"        uint32_t pad = {_runtime_align_expr('decoded', field.element_align)};",
+            "        if ((uint32_t)decoded + pad > len) { return -1; }",
+            "        decoded += (int32_t)pad;",
+            "    }",
+        ]
+    total_expr = f"((uint32_t)count * {size})"
+    if size == 1:
+        lines += [
+            "    if ((uint32_t)decoded + count > len) { return -1; }",
+            f"    memcpy(data->{field.name}, payload + decoded, count);",
+            "    decoded += (int32_t)count;",
+        ]
+    else:
+        wire, bswap = _WIRE_UINT[size], _BSWAP[size]
+        loop = [
+            f"{wire} raw = *(const {wire}*)(payload + decoded + ((size_t)i * {size}));",
+            f"if (!is_native_endian) {{ raw = {bswap}(raw); }}",
+        ]
+        if field.scalar_type in _FLOAT_TYPES:
+            loop += [
+                f"union {{ {wire} bits; {field.element_ctype} value; }} convert;",
+                "convert.bits = raw;",
+                f"data->{field.name}[i] = convert.value;",
+            ]
+        elif field.element_ctype != wire:
+            loop.append(f"data->{field.name}[i] = ({field.element_ctype})raw;")
+        else:
+            loop.append(f"data->{field.name}[i] = raw;")
+        lines += (
+            [
+                f"    if ((uint32_t)decoded + {total_expr} > len) {{ return -1; }}",
+                "    for (uint32_t i = 0; i < count; i++) {",
+            ]
+            + [f"        {ln}" for ln in loop]
+            + ["    }", f"    decoded += (int32_t){total_expr};"]
+        )
+    lines += [f"    data->{field.name}_count = count;", "}"]
+    return lines
+
+
 def emit_encode(struct):
     # Defensive (void) casts, not conditional on whether each parameter ends up used below: a
     # message with zero fields (e.g. Trigger.srv's request) never touches data/payload/len at
@@ -212,6 +372,10 @@ def emit_encode(struct):
             lines += _emit_scalar_encode(plan.field)
         elif plan.field.kind == "string":
             lines += _emit_string_encode(plan.field)
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
+            lines += _emit_fixed_array_encode(plan.field)
+        elif plan.field.kind == "array":
+            lines += _emit_variable_array_encode(plan.field)
         else:
             raise NotImplementedError(plan.field.kind)
     lines.append("return encoded;")
@@ -232,6 +396,10 @@ def emit_decode(struct):
             lines += _emit_scalar_decode(plan.field)
         elif plan.field.kind == "string":
             lines += _emit_string_decode(plan.field)
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
+            lines += _emit_fixed_array_decode(plan.field)
+        elif plan.field.kind == "array":
+            lines += _emit_variable_array_decode(plan.field)
         else:
             raise NotImplementedError(plan.field.kind)
     lines.append("return decoded;")
@@ -261,6 +429,15 @@ def emit_encode_size(struct):
                 f"    size += (int32_t){_runtime_align_expr('size', 4)};",
                 "}",
             ]
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
+            lines.append(f"size += {plan.field.wire_size};")
+        elif plan.field.kind == "array":
+            count_var = f"data->{plan.field.name}_count"
+            lines.append(f"if ({count_var} > {plan.field.capacity}) {{ return -2; }}")
+            lines.append("size += 2;")
+            if plan.field.element_align > 1:
+                lines.append(f"size += (int32_t){_runtime_align_expr('size', plan.field.element_align)};")
+            lines.append(f"size += (int32_t)((uint32_t){count_var} * {plan.field.element_size});")
         else:
             raise NotImplementedError(plan.field.kind)
     lines.append("return size;")
@@ -305,6 +482,14 @@ def needs_string_h(struct):
     for f in struct.fields:
         if f.kind == "string":
             return True
+        if f.kind == "array":
+            # A fixed array of 1-byte elements always memcpy()s (see _emit_fixed_array_encode/
+            # decode); a variable array always does too (element_size == 1) or memset()s its
+            # count-to-element-align pad (element_align > 1) - one of those two is always true.
+            if f.array_mode == "fixed" and f.element_size == 1:
+                return True
+            if f.array_mode == "variable":
+                return True
     for plan in layout.plan_fields(struct.fields):
         if plan.field.wire_align > 1 and (plan.static_padding is None or plan.static_padding):
             return True

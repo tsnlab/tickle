@@ -11,9 +11,9 @@ sizing, and emit.py/the templates render into C. Kept separate from the vendored
 (model.WireField etc., not rosidl_parser.Field/Type) so a future parser swap only touches
 adapt.py.
 
-M1 scope: scalar and string fields only. Arrays and nested messages are added in M2/M3 -
-WireField already carries the fields they'll need (array_size, is_upper_bound, nested) so
-layout.py/emit.py don't have to be revisited structurally, just extended.
+M2 scope adds fixed (`T[N]`) and variable (`T[]` / `T[<=N]`) arrays of scalar element types;
+nested messages are still M3 - WireField already carries what that will need (a "nested" kind)
+so layout.py/emit.py don't have to be revisited structurally again, just extended.
 """
 
 from dataclasses import dataclass, field
@@ -54,15 +54,48 @@ SCALAR_CTYPE = {
 }
 STRING_LEN_SIZE = 2  # uint16 length prefix (see CDR-4 spec: never needs to be wider)
 STRING_LEN_ALIGN = 2
+ARRAY_COUNT_SIZE = 2  # uint16 element count prefix for a variable array - same reasoning
+ARRAY_COUNT_ALIGN = 2
+
+# Mirrors include/tickle/config.h - not read from the header (same reasoning as SCALAR_SIZE etc.
+# above: this is a hand-kept mirror of the wire spec, not a build-time dependency on the C
+# headers). Used only for the "message fits in one datagram" _Static_assert every generated
+# struct gets, and to auto-derive a variable array's capacity when nothing else specifies one.
+TT_MAX_STRING_LENGTH = 65535
+TT_MAX_BUFFER_LENGTH = 1472
+# Smallest framing overhead any submessage carrying a payload has (a CALLREQUEST/CALLRESPONSE
+# payload starts at offset 16, DATA's at 24 - see DESIGN.md's "Interface serialization") - used
+# only as auto-capacity's safety margin, so an auto-derived array still leaves room for framing
+# in the tightest (DATA) case. The _Static_assert itself checks the message alone against
+# TT_MAX_BUFFER_LENGTH, per PLAN.md - this margin is not part of that check.
+FRAMING_OVERHEAD = 24
 
 
 @dataclass
 class WireField:
     name: str
-    kind: str  # "scalar" | "string"  (M1; "array" | "nested" land in M2/M3)
-    scalar_type: str | None = None  # e.g. "uint32" - set when kind == "scalar"
+    kind: str  # "scalar" | "string" | "array"  ("nested" lands in M3)
+    scalar_type: str | None = None  # e.g. "uint32" - element type for "scalar" and "array" kinds
     default: object | None = None  # python-side default value, or None
-    comment: str = ""  # the field's own trailing comment, for @capacity (M2) and readability
+    comment: str = ""  # the field's own trailing comment, for @capacity and readability
+    # Only set when kind == "array":
+    array_mode: str | None = None  # "fixed" (T[N]) | "variable" (T[] / T[<=N])
+    array_size: int | None = None  # element count, when array_mode == "fixed"
+    capacity: int | None = None  # max element count, when array_mode == "variable"
+    capacity_source: str | None = None  # "annotation" | "bounded" | "auto" - docs/errors only
+
+    @property
+    def element_ctype(self):
+        """Only meaningful for kind == "array" - the C type of one element."""
+        return SCALAR_CTYPE[self.scalar_type]
+
+    @property
+    def element_size(self):
+        return SCALAR_SIZE[self.scalar_type]
+
+    @property
+    def element_align(self):
+        return SCALAR_ALIGN[self.scalar_type]
 
     @property
     def ctype(self):
@@ -70,6 +103,11 @@ class WireField:
             return SCALAR_CTYPE[self.scalar_type]
         if self.kind == "string":
             return "char*"
+        if self.kind == "array":
+            # The declaration needs "elem name[N];" (and, for a variable array, a second
+            # "uint16_t name_count;" member) - not expressible as one type string, so
+            # emit.emit_struct_fields() special-cases kind == "array" rather than using this.
+            return self.element_ctype
         raise NotImplementedError(self.kind)
 
     @property
@@ -78,13 +116,20 @@ class WireField:
             return SCALAR_ALIGN[self.scalar_type]
         if self.kind == "string":
             return STRING_LEN_ALIGN
+        if self.kind == "array":
+            # A fixed array has no length prefix - its own start aligns to its element type,
+            # same as a bare scalar would. A variable array's uint16 count prefix aligns to 2.
+            return self.element_align if self.array_mode == "fixed" else ARRAY_COUNT_ALIGN
         raise NotImplementedError(self.kind)
 
     @property
     def wire_size(self):
-        """Exact wire size in bytes, or None if it depends on runtime data (strings)."""
+        """Exact wire size in bytes, or None if it depends on runtime data (strings, variable
+        arrays)."""
         if self.kind == "scalar":
             return SCALAR_SIZE[self.scalar_type]
+        if self.kind == "array" and self.array_mode == "fixed":
+            return self.array_size * self.element_size
         return None
 
 

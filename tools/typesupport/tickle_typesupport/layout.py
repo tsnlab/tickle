@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from . import model
 
 
-def _align_up(offset, alignment):
+def align_up(offset, alignment):
     return (offset + alignment - 1) & ~(alignment - 1)
 
 
@@ -46,7 +46,7 @@ def plan_fields(fields):
         if offset is None:
             plans.append(FieldPlan(field=wire_field, static_offset=None, static_padding=None))
         else:
-            aligned = _align_up(offset, wire_field.wire_align)
+            aligned = align_up(offset, wire_field.wire_align)
             plans.append(
                 FieldPlan(field=wire_field, static_offset=aligned, static_padding=aligned - offset)
             )
@@ -74,3 +74,32 @@ def compute(struct):
             return
     struct.is_fixed_size = True
     struct.wire_size = offset if plans else 0
+
+
+def max_wire_size(struct):
+    """Worst-case wire size in bytes, from what's actually knowable at generate time - backs the
+    "message fits in one datagram" _Static_assert every generated struct.h.em carries (PLAN.md /
+    DESIGN.md's "Capacity" rule), not just variable-size structs. A variable array contributes
+    its resolved capacity, because that capacity becomes a real fixed-size C buffer inside the
+    struct (see emit.emit_struct_fields) - an oversized one is a genuine compile-time-detectable
+    mistake. A plain (M1) string contributes only its own 2-byte length prefix: unlike an array,
+    it has no fixed C buffer at all (it's a `char*` aliasing external memory - DESIGN.md's
+    "Strings" rule), so its true bound is the `len` its caller passes to *_encode/_decode at
+    runtime, not something a compile-time assert here could meaningfully check. (DESIGN.md's own
+    "Capacity" rule is scoped the same way - "a variable array's *or bounded string's* C buffer" -
+    a bounded `string<=N` would get the array-like treatment too, but TickLE has no generated
+    bounded-string field yet to exercise that against.)"""
+    offset = 0
+    for wire_field in struct.fields:
+        offset = align_up(offset, wire_field.wire_align)
+        if wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
+            offset += wire_field.wire_size
+        elif wire_field.kind == "string":
+            offset += model.STRING_LEN_SIZE
+        elif wire_field.kind == "array":  # variable
+            offset += model.ARRAY_COUNT_SIZE
+            offset = align_up(offset, wire_field.element_align)
+            offset += wire_field.capacity * wire_field.element_size
+        else:
+            raise NotImplementedError(wire_field.kind)
+    return offset

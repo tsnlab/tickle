@@ -15,6 +15,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <tickle/config.h> // tt_MAX_BUFFER_LENGTH
 #include <tickle/tickle.h>
 
 #pragma pack(push, 4)
@@ -28,6 +29,8 @@ int32_t TriggerRequest_encode(struct TriggerRequest* data, uint8_t* payload, uin
 int32_t TriggerRequest_decode(struct TriggerRequest* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
 void TriggerRequest_free(struct TriggerRequest* data);
 
+_Static_assert(0 <= tt_MAX_BUFFER_LENGTH, "TriggerRequest's worst-case wire size exceeds a single datagram");
+
 #pragma pack(push, 4)
 struct TriggerResponse {
     bool success;
@@ -40,5 +43,7 @@ int32_t TriggerResponse_encode(struct TriggerResponse* data, uint8_t* payload, u
 int32_t TriggerResponse_decode(struct TriggerResponse* data, const uint8_t* payload, uint32_t len,
                                bool is_native_endian);
 void TriggerResponse_free(struct TriggerResponse* data);
+
+_Static_assert(4 <= tt_MAX_BUFFER_LENGTH, "TriggerResponse's worst-case wire size exceeds a single datagram");
 
 extern struct tt_Service TriggerService;

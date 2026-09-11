@@ -48,6 +48,38 @@ class TriggerResponse(ctypes.Structure):
     _fields_ = [("success", ctypes.c_bool), ("message", ctypes.c_char_p)]
 
 
+# examples/Bulk.msg's `payload` has no ROS 2 upper bound or @capacity annotation, so its capacity
+# is auto-derived (PLAN.md's lowest-priority rule) from TT_MAX_BUFFER_LENGTH (1472) minus
+# FRAMING_OVERHEAD (24) minus `seq` (4 bytes) minus the array's own uint16 count prefix (2 bytes,
+# already 1-aligned so no further padding) = 1442 - see model.py / adapt._resolve_auto_capacities.
+# A ctypes mirror has to hardcode this the same way a hand-written struct.h consumer would: it's
+# baked into the generated struct's own layout, not discoverable at the ABI level.
+BULK_PAYLOAD_CAPACITY = 1442
+
+
+class BulkData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("seq", ctypes.c_uint32),
+        ("payload", ctypes.c_uint8 * BULK_PAYLOAD_CAPACITY),
+        ("payload_count", ctypes.c_uint16),
+    ]
+
+
+class ArraysData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("fixed_bytes", ctypes.c_uint8 * 4),
+        ("fixed_ints", ctypes.c_int32 * 3),
+        ("bounded_values", ctypes.c_uint16 * 8),
+        ("bounded_values_count", ctypes.c_uint16),
+        ("samples", ctypes.c_float * 16),
+        ("samples_count", ctypes.c_uint16),
+    ]
+
+
 def _bind(lib, prefix, struct_type):
     """Sets up ctypes argtypes/restype for one message's four codec functions - ctypes assumes
     every C function returns `int` and takes no particular argument types unless told otherwise,
@@ -171,6 +203,43 @@ def test_trigger_response_roundtrip(generated_lib):
     )
     assert result.success is True
     assert result.message == b"triggered"
+
+
+def test_bulk_roundtrip(generated_lib):
+    def populate(d):
+        d.seq = 42
+        payload = bytes(range(256)) * 4  # 1024 bytes, well under the 1442 capacity
+        d.payload_count = len(payload)
+        ctypes.memmove(d.payload, payload, len(payload))
+
+    result, _buf = _roundtrip(generated_lib, "BulkData", BulkData, populate)
+    assert result.seq == 42
+    assert result.payload_count == 1024
+    assert bytes(result.payload[:1024]) == bytes(range(256)) * 4
+
+
+def test_bulk_roundtrip_empty_payload(generated_lib):
+    result, _buf = _roundtrip(generated_lib, "BulkData", BulkData, lambda d: setattr(d, "seq", 7))
+    assert result.seq == 7
+    assert result.payload_count == 0
+
+
+def test_arrays_roundtrip(generated_lib):
+    def populate(d):
+        d.fixed_bytes[:] = [1, 2, 3, 4]
+        d.fixed_ints[:] = [-1, 0, 2_000_000_000]
+        d.bounded_values_count = 3
+        d.bounded_values[:3] = [10, 20, 30]
+        d.samples_count = 2
+        d.samples[:2] = [1.5, -2.25]
+
+    result, _buf = _roundtrip(generated_lib, "ArraysData", ArraysData, populate)
+    assert list(result.fixed_bytes) == [1, 2, 3, 4]
+    assert list(result.fixed_ints) == [-1, 0, 2_000_000_000]
+    assert result.bounded_values_count == 3
+    assert list(result.bounded_values[:3]) == [10, 20, 30]
+    assert result.samples_count == 2
+    assert list(result.samples[:2]) == [1.5, -2.25]
 
 
 def test_setbool_response_layout_has_one_byte_gap(generated_lib):

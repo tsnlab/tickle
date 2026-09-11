@@ -45,6 +45,7 @@ def _struct_context(struct):
         # than assert something that isn't actually a wire-layout invariant.
         "is_fixed_size": struct.is_fixed_size and bool(struct.fields),
         "wire_size": struct.wire_size,
+        "max_wire_size": layout.max_wire_size(struct),
     }
 
 

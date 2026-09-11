@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <tickle/config.h> // tt_MAX_BUFFER_LENGTH
 #include <tickle/tickle.h>
 
 @(request_struct_h)
