@@ -407,6 +407,81 @@ match on) is computed **locally** on each node, so it must land on the same 32-b
 regardless of host endianness: it's a byte-at-a-time FNV-1a, not the previous word-at-a-time
 sum, which also removes an unaligned-read hazard on stricter targets.
 
+## Interface serialization (TickLE CDR-4)
+
+How a topic's `tt_Data` (or a service's `tt_Request` / `tt_Response`) turns into the payload
+bytes that follow the framing headers inside a DATA / CALLREQUEST / CALLRESPONSE submessage. The
+per-type `*_encode` / `*_decode` functions - hand-written today, generated from `.msg` / `.srv`
+by `tools/typesupport/` going forward - implement exactly this. It is deliberately **not** OMG
+CDR: TickLE is not DDS-wire-compatible, and it trades CDR's 8-byte alignment and 4-byte length
+prefixes for a form that stays cheap on a 10Base-T1S segment.
+
+All offsets and alignment below are **relative to the first byte of the message payload** - the
+position where `*_encode` starts writing. The framing headers have their own fixed layout and
+are not part of this.
+
+**Byte order.** The encoder always writes host-native (same rule as the framing fields above).
+The decoder byte-swaps each multi-byte scalar iff `is_native_endian` is false. Padding bytes are
+written as zero and skipped on read - never inspected.
+
+**Alignment.** Each primitive is placed at an offset that is a multiple of `min(sizeof, 4)`; the
+encoder inserts zero padding to reach it.
+
+| type | size | offset must be |
+|---|---|---|
+| `bool`, `int8`, `uint8` | 1 | any |
+| `int16`, `uint16` | 2 | a multiple of 2 |
+| `int32`, `uint32`, `float32` | 4 | a multiple of 4 |
+| `int64`, `uint64`, `float64` | 8 | a multiple of **4** |
+
+The payload itself begins at a 4-aligned offset in `tx_buffer` / `rx_buffer`: the framing that
+precedes it is 4 + 4 + 16 = 24 bytes for DATA, 4 + 4 + 8 = 16 for CALLREQUEST (`tt_CallRequestHeader`
+carries a `reserved` pad byte precisely so this is 8, not 7) and 4 + 4 + 8 = 16 for CALLRESPONSE.
+The buffers are `_Alignas(4)` and `src/tickle.c` has `_Static_assert`s covering all of this.
+
+Why 4-byte, not 8-byte, alignment: batched DATA submessages are padded to 4 bytes, so an 8-byte
+rule would put the 2nd+ payload in a packet at a 4-off offset unless `tt_SubmessageHeader` were
+also padded to 8 - a per-submessage cost that hurts exactly the small-message batching TickLE
+optimizes for. A 4-aligned 64-bit access is correct and fast on every target anyway (RISC-V
+rv32: a 64-bit value is two 32-bit ops regardless; ARM64: permits it; x86-64: doesn't care).
+
+**Strings.** `align 2` → `uint16 length` (the number of bytes that follow, *including* the
+trailing `\0`, so the empty string is length 1) → `length` bytes (data + `\0`) → pad to 4. An
+encoder rejects `length > tt_MAX_STRING_LENGTH` (`-2`). A decoder aliases the string in place
+(`field = (const char*)(payload + offset)`), checks the trailing `\0` is really there (`-2`
+otherwise), and never copies or frees it - so a decoded message is only valid for the duration
+of the subscriber / server callback. `uint16` is enough because nothing that fits in one
+datagram can be longer than `tt_MAX_BUFFER_LENGTH` (< 2^16).
+
+**Fixed arrays** `T[N]`: exactly N elements of T, each aligned per T. No length prefix.
+
+**Variable arrays** `T[]` / `T[<=N]`: `align 2` → `uint16 count` → pad to T's alignment →
+`count` elements. On decode, `count` must be `<= capacity` (the fixed size of the C buffer,
+below) and the elements must fit the remaining `len`, else `-1`.
+
+**Nested messages**: the nested type's fields are inlined recursively at the current offset -
+no header, no extra alignment beyond what the first nested field needs.
+
+**Capacity** of a variable array's (or bounded string's) C buffer, in priority order:
+
+1. a trailing `# … @capacity <N>` annotation on the field line (a plain ROS 2 comment) → `<N>`;
+2. a ROS 2 upper bound `T[<=N]` / `string<=N` → `N`;
+3. otherwise auto-derived: `floor((tt_MAX_BUFFER_LENGTH − framing − max size of the other
+   fields) / sizeof-on-wire(T))`.
+
+Either way the generator emits `_Static_assert(<message's max serialized size> <=
+tt_MAX_BUFFER_LENGTH)`; an explicit `N` that breaks it is a generate-time error. **A whole
+message always serializes within one datagram - there is no fragmentation.**
+
+**Struct layout.** Generated message structs are `#pragma pack(push, 4)`, which makes the
+in-memory C layout byte-identical to the wire layout on every supported ABI. Two consequences:
+any all-fixed-size message can offer `*_encode_inplace` / `*_decode_inplace` (true zero-copy -
+the struct pointer *is* the payload pointer) with no per-field analysis, and a
+`_Static_assert(sizeof / offsetof …)` per struct turns an unexpected ABI into a compile error
+rather than a silent wire mismatch. The only caveat is `-Waddress-of-packed-member`: don't take
+the address of a packed 8-byte field for an alignment-sensitive consumer. Reading a message by
+value is unaffected.
+
 ## Concurrency: single-threaded per node, by design (for now)
 
 `struct tt_Node` and its endpoints have no internal locking - `tt_Node_poll()`,

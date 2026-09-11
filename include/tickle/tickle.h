@@ -70,7 +70,11 @@ struct tt_Node {
     uint64_t update_last_modified[tt_MAX_ENDPOINT_COUNT];
     bool update_seen[tt_MAX_ENDPOINT_COUNT];
 
-    uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
+    // 4-byte aligned so a decoded/encoded message payload (which sits at a fixed 4-multiple
+    // offset past the framing headers) is itself 4-aligned - see "Interface serialization
+    // (TickLE CDR-4)" in DESIGN.md. tt_Node already has >= 8-byte alignment (it holds uint64_t
+    // members); _Alignas keeps that true for these buffers regardless of member reordering.
+    _Alignas(4) uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t tx_tail;
     uint32_t tx_size;
     // Set whenever node_update()'s always-broadcast UPDATE announce is sitting batched,
@@ -79,7 +83,7 @@ struct tt_Node {
     // UPDATE has to reach the whole segment, not just a couple of known peers. See node_flush().
     bool tx_has_pending_update;
 
-    uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
+    _Alignas(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
     uint32_t rx_size;
 
@@ -392,6 +396,7 @@ struct tt_CallRequestHeader {
     uint32_t endpoint_id; // endpoint id for service server lookup
     uint16_t seq_no;      // sequence number
     uint8_t retry;        // retry count from client side
+    uint8_t reserved;     // pad 7 -> 8 so the CDR payload that follows starts 4-byte aligned
     // CDR
 } __attribute__((packed));
 

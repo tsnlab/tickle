@@ -17,6 +17,13 @@
 # platform/linux/test.sh's own captured ping/pong and publisher/subscriber output logs
 /platform/linux/*.log
 
+# tools/typesupport (Python) build/test artifacts
+/tools/typesupport/**/__pycache__/
+/tools/typesupport/.pytest_cache/
+/tools/typesupport/*.egg-info/
+/tools/typesupport/build/
+/tools/typesupport/dist/
+
 # Prerequisites
 *.d
 

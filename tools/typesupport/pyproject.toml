@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tickle-typesupport"
+version = "0.1.0"
+description = "Generates TickLE codecs (.c/.h) from ROS 2 .msg/.srv interface files"
+requires-python = ">=3.10"
+# Pinned to match ROS 2's own dependency (e.g. Humble/Jazzy ship python3-empy 3.3.4) - empy's
+# 4.x is an incompatible rewrite. The .msg/.srv parser itself is vendored (see
+# tickle_typesupport/_rosidl_parser.py), not a dependency.
+dependencies = ["empy==3.3.4"]
+
+[project.scripts]
+tickle-typesupport = "tickle_typesupport.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tickle_typesupport*"]

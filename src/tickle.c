@@ -9,6 +9,7 @@
  */
 
 #include <errno.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +23,19 @@
 #include "log.h"
 
 #define UNUSED(x) (void)(x)
+
+// A message's CDR payload (see "Interface serialization (TickLE CDR-4)" in DESIGN.md) is written
+// straight after the framing headers and must land at a 4-byte-aligned offset in tx_buffer /
+// rx_buffer so a generated codec can read/write aligned scalars without memcpy. Guard the two
+// things that make that true: the header sizes, and the buffers' own alignment.
+#define TT_FRAMING_HDR (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader))
+_Static_assert(sizeof(struct tt_CallRequestHeader) == 8, "tt_CallRequestHeader must be 8 bytes");
+_Static_assert((TT_FRAMING_HDR + sizeof(struct tt_DataHeader)) % 4 == 0, "DATA payload not 4-aligned");
+_Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallRequestHeader)) % 4 == 0, "CALLREQUEST payload not 4-aligned");
+_Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallResponseHeader)) % 4 == 0, "CALLRESPONSE payload not 4-aligned");
+_Static_assert(offsetof(struct tt_Node, tx_buffer) % 4 == 0, "tx_buffer not 4-aligned in tt_Node");
+_Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Node");
+#undef TT_FRAMING_HDR
 
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
@@ -748,6 +762,7 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     callrequest_header->endpoint_id = endpoint->id;
     callrequest_header->seq_no = client->seq_no;
     callrequest_header->retry = 0;
+    callrequest_header->reserved = 0;
 
     // CallRequestBody
     int32_t cdr_len = client->service->request_encode_size(request);
