@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789116812367,
+  "lastUpdate": 1789116815295,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2404,6 +2404,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.389,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2277851ba8ba7171b51c777e480af6327a6ee075",
+          "message": "Lint cleanup (repo-wide, `make lint` now zero warnings) + HIL jitter alert split out\n\n1. Pre-existing lint findings, none of them caused by the typesupport work, just never cleaned\n   up:\n   - examples/linux/{uint64/{publisher,subscriber},set_bool/{client,server},ping_pong/{ping,pong}}.c:\n     removed unused <stdlib.h>/<string.h> (neither ever called anything from either - same\n     \"misc-include-cleaner\" finding perf_client.c/perf_server.c already had fixed for the same\n     reason during the Bulk cutover).\n   - examples/linux/common/cli_opts.h: `1u` -> `1U` (readability-uppercase-literal-suffix, 5\n     spots). cli_opts.c: added a direct <stdint.h> for uint32_t (previously only reached\n     transitively through cli_opts.h).\n   - src/hal_linux.c: tt_send_iov()'s `(void*)(uintptr_t)hdr`/`body` casts were a redundant\n     integer round-trip just to discard `const` on an already-a-pointer value (performance-no-\n     int-to-ptr) - a straight `(void*)hdr` does the same thing without it, same fix already\n     applied to the generated Bulk.c during the earlier cutover. Also added NOLINT(misc-include-\n     cleaner) on <sys/uio.h> and its own `struct iovec` use - clang-tidy's IWYU mapping doesn't\n     know this glibc symbol's real (portable, POSIX-specified) home and flags both sides of a\n     correct, portable include; same class of false positive this file already suppresses for\n     CLOCK_REALTIME/SOL_SOCKET a few lines up.\n\n2. performance.yml: rtt mdev (ping's own mean-deviation/jitter stat) is inherently noisy on real\n   hardware - it alone tripped the Performance Test's 200% alert-threshold three separate times\n   in one session, each time on a commit nowhere near the ping/pong latency path (a check-all.yml\n   fix, a doc-only CHANGELOG commit, ...). Split into its own benchmark group (run_perf.sh now\n   writes a separate latency-jitter-benchmark.json) with fail-on-alert: false - still tracked and\n   graphed (summary-always, auto-push, same as every other group), just never fails the build on\n   its own. rtt avg and packet loss - the two latency-benchmark.json still carries - stay at\n   200%/fail-on-alert: true, since neither showed this flakiness and both do reflect a real\n   regression when they move.\n\nVerified: `make lint` / `make -C platform/freertos lint` both zero warnings (previously ~16\npre-existing findings across 9 files); `make test` / `make sanitize` still pass; run_perf.sh's\nnew JSON-writing logic checked directly (valid JSON, correct split) since HIL itself isn't\nreachable from here to run the real script end to end.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-11T17:52:38+09:00",
+          "tree_id": "76846519aefc3f0c44d64f359e346119e925a5ff",
+          "url": "https://github.com/tsnlab/tickle/commit/2277851ba8ba7171b51c777e480af6327a6ee075"
+        },
+        "date": 1789116814219,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.636,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 897.198,
             "unit": "Mbps"
           }
         ]
