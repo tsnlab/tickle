@@ -27,31 +27,51 @@ jobs:
       - name: Generate compile_commands.json
         run: |
           bear -- make all
-          # `make all` builds only the Linux platform, so src/hal_freertos.c would reach
-          # clang-tidy with no lwIP/picolibc include context and fail to even parse. It has no
-          # entry to inherit flags from either, so synthesise one - the same cross-compile flags
-          # platform/freertos/Makefile's own `lint` target uses (--target instead of gcc's
-          # --specs=picolibc.specs, which clang ignores; -nostdinc + explicit -isystem so the
-          # host headers don't leak in and clash with picolibc's).
+          # `make all` builds only the Linux platform, so any FreeRTOS-only source - src/
+          # hal_freertos.c, and every examples/freertos/**/main_*.c role driver, each with its
+          # own role-specific -I (platform/freertos/Makefile's own ROLE_INCLUDES table) - would
+          # reach clang-tidy with no lwIP/picolibc/cross-target context and fail to even parse
+          # ('FreeRTOS.h' file not found). None has an entry to inherit flags from, so synthesise
+          # one each: the same cross-compile flags platform/freertos/Makefile's own `lint` target
+          # uses (--target instead of gcc's --specs=picolibc.specs, which clang ignores;
+          # -nostdinc + explicit -isystem so the host headers don't leak in and clash with
+          # picolibc's).
           picolibc_inc="$(dpkg -L picolibc-riscv64-unknown-elf | grep -E '/include$' | head -1)"
           gcc_inc="$(riscv64-unknown-elf-gcc -print-file-name=include)"
           fr=platform/freertos
-          jq --arg root "$PWD" --arg pico "$picolibc_inc" --arg gi "$gcc_inc" --arg fr "$fr" \
-            '. + [{
-              directory: ($root + "/" + $fr),
-              file: ($root + "/src/hal_freertos.c"),
-              arguments: ["clang", "--target=riscv32-unknown-elf", "-nostdinc",
-                "-ffreestanding", "-DTT_PLATFORM_FREERTOS",
-                "-isystem", $pico, "-isystem", $gi,
-                "-I.", "-Iboard", "-Ilwip_arch",
-                "-I../../third_party/FreeRTOS-Kernel/include",
-                "-I../../third_party/FreeRTOS-Kernel/portable/GCC/RISC-V",
-                "-I../../third_party/lwip/src/include",
-                "-I../../third_party/lwip/contrib/ports/freertos/include",
-                "-I../../include", "-I../../src",
-                "-c", ($root + "/src/hal_freertos.c")]
-            }]' compile_commands.json > compile_commands.tmp
-          mv compile_commands.tmp compile_commands.json
+
+          # file (relative to repo root) : role-specific extra -I (relative to $fr, matching
+          # platform/freertos/Makefile's ROLE_INCLUDES for that same file's MAIN_SRC/ROLE_SRCS).
+          entries=(
+            "src/hal_freertos.c:"
+            "examples/freertos/ping_pong/main_ping.c:../../examples/linux/ping_pong"
+            "examples/freertos/ping_pong/main_pong.c:../../examples/linux/ping_pong"
+            "examples/freertos/uint64/main_publisher.c:../../examples/linux/uint64"
+            "examples/freertos/uint64/main_subscriber.c:../../examples/linux/uint64"
+            "examples/freertos/set_bool/main_client.c:../../examples/linux/set_bool"
+            "examples/freertos/set_bool/main_server.c:../../examples/linux/set_bool"
+            "examples/freertos/perf/main_perf_client.c:../../examples/linux/perf"
+            "examples/freertos/perf/main_perf_server.c:../../examples/linux/perf"
+          )
+
+          for entry in "${entries[@]}"; do
+            file="${entry%%:*}"
+            role_include="${entry#*:}"
+            args=(clang --target=riscv32-unknown-elf -nostdinc -ffreestanding -DTT_PLATFORM_FREERTOS \
+              -isystem "$picolibc_inc" -isystem "$gcc_inc" \
+              -I. -Iboard -Ilwip_arch)
+            [ -n "$role_include" ] && args+=("-I$role_include")
+            args+=(-I../../third_party/FreeRTOS-Kernel/include \
+              -I../../third_party/FreeRTOS-Kernel/portable/GCC/RISC-V \
+              -I../../third_party/lwip/src/include \
+              -I../../third_party/lwip/contrib/ports/freertos/include \
+              -I../../include -I../../src \
+              -c "$PWD/$file")
+            jq --arg root "$PWD" --arg fr "$fr" --arg file "$PWD/$file" --argjson args "$(printf '%s\n' "${args[@]}" | jq -R . | jq -s .)" \
+              '. + [{directory: ($root + "/" + $fr), file: $file, arguments: $args}]' \
+              compile_commands.json > compile_commands.tmp
+            mv compile_commands.tmp compile_commands.json
+          done
 
       - name: Check all
         uses: tsnlab/check@main

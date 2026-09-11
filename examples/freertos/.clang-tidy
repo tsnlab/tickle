@@ -1,0 +1,7 @@
+InheritParentConfig: true
+# Same reasoning as platform/freertos/.clang-tidy (these role drivers are cross-compiled for the
+# same target, against the same three vendored header trees) - see that file's own comment.
+# readability-identifier-naming and performance-no-int-to-ptr aren't actually exercised by this
+# directory's own files today, but are disabled for consistency with platform/freertos/'s
+# treatment of the same target/headers, in case a future role driver needs either.
+Checks: '-readability-identifier-naming,-misc-include-cleaner,-performance-no-int-to-ptr'
