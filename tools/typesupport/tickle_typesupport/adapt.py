@@ -105,9 +105,24 @@ def adapt_field(rosidl_field, resolver=None):
     if field_type.type in STRING_TYPES:
         if field_type.type == "wstring":
             raise UnsupportedFieldError(f"field '{rosidl_field.name}': wstring is out of scope")
+        # A bounded string (`string<=N`, or a plain `string` with an explicit @capacity
+        # annotation - same priority order as a variable array's capacity, minus auto-derive:
+        # PLAN.md's "Capacity" rule deliberately doesn't extend auto-derivation to plain strings,
+        # see adapt.py's module docstring / PLAN.md for why) gets a fixed char[N+1] buffer
+        # instead of the usual alias-into-the-rx-buffer char*.
+        capacity = _annotation_capacity(rosidl_field)
+        if capacity is None and field_type.string_upper_bound is not None:
+            capacity = field_type.string_upper_bound
+            capacity_source = "bounded"
+        elif capacity is not None:
+            capacity_source = "annotation"
+        else:
+            capacity_source = None
         return model.WireField(
             name=rosidl_field.name,
             kind="string",
+            capacity=capacity,
+            capacity_source=capacity_source,
             default=rosidl_field.default_value,
         )
     if field_type.type not in model.SCALAR_SIZE:
@@ -178,8 +193,16 @@ def _validate_array_defaults(fields):
     """A fixed array's default must supply exactly array_size elements (there's no length
     prefix on the wire to fall back to - every element needs a real initial value); a variable
     array's default must fit within its (by now fully resolved, including auto-derived)
-    capacity. Called after _resolve_auto_capacities so every field's capacity is final."""
+    capacity. A bounded string's default must fit its own char[N+1] buffer the same way. Called
+    after _resolve_auto_capacities so every field's capacity is final."""
     for f in fields:
+        if f.kind == "string" and f.default is not None and f.capacity is not None:
+            if len(f.default) > f.capacity:
+                raise UnsupportedFieldError(
+                    f"field '{f.name}': default is {len(f.default)} chars, exceeding its "
+                    f"capacity {f.capacity}"
+                )
+            continue
         if f.kind != "array" or f.default is None:
             continue
         if f.array_mode == "fixed" and len(f.default) != f.array_size:

@@ -40,8 +40,12 @@ def emit_struct_fields(struct):
     also needs its own count member alongside the fixed-capacity buffer - declared *before* the
     buffer, matching the count-then-elements wire order, so a struct that's otherwise fixed-size
     up to a single trailing byte array can alias its own memory as the wire payload the same way
-    a fully fixed-size one does - see layout.prefix_array_field), so it's special-cased here
-    rather than going through field.ctype like every other kind does."""
+    a fully fixed-size one does - see layout.prefix_array_field); a bounded string (`string<=N`,
+    or a plain `string` with an explicit `@capacity` annotation) is a fixed `char[N+1]` buffer
+    instead of the `char*` a plain, uncapacitied string gets (DESIGN.md's "Capacity" rule groups
+    the two together for exactly this reason - both need a real C buffer, not just a pointer).
+    Both are special-cased here rather than going through field.ctype like every other kind
+    does."""
     if not struct.fields:
         # An empty struct is a GNU extension (see tt_Request's own note in tickle.h) - a message
         # with no fields (e.g. Trigger.srv's request) still needs one byte to stay valid ISO C.
@@ -55,6 +59,8 @@ def emit_struct_fields(struct):
             else:
                 lines.append(f"uint16_t {wire_field.name}_count; // <= {wire_field.capacity}")
                 lines.append(f"{wire_field.element_ctype} {wire_field.name}[{wire_field.capacity}];")
+        elif wire_field.kind == "string" and wire_field.capacity is not None:
+            lines.append(f"char {wire_field.name}[{wire_field.capacity + 1}]; // <= {wire_field.capacity} chars + NUL")
         else:
             lines.append(f"{wire_field.ctype} {wire_field.name};")
     return lines
@@ -76,15 +82,18 @@ def emit_constants(struct):
 
 def emit_array_capacity_constants(struct):
     """A #define for each variable array field's resolved capacity (a fixed array doesn't need
-    one - its N is already spelled out in the field declaration itself, `elem name[N];`). Lets
-    application code bounds-check against - or size something relative to - the number the
-    generator picked without hardcoding it, particularly for the "auto" capacity-resolution case
-    where nothing else in the .msg says what it is (examples/Bulk.msg's own `payload`, whose
-    hand-written predecessor exposed exactly this as its own `BULK_MAX_PAYLOAD_SIZE` macro)."""
+    one - its N is already spelled out in the field declaration itself, `elem name[N];`) and for
+    each bounded string's (its own capacity isn't spelled out anywhere else - emit_struct_fields
+    declares it as `char name[N+1]`, capacity+1 for the NUL, so this macro is the one place N
+    itself is visible). Lets application code bounds-check against - or size something relative
+    to - the number the generator picked without hardcoding it, particularly for the "auto"
+    capacity-resolution case where nothing else in the .msg says what it is (examples/Bulk.msg's
+    own `payload`, whose hand-written predecessor exposed exactly this as its own
+    `BULK_MAX_PAYLOAD_SIZE` macro)."""
     return [
         f"#define {struct.c_name.upper()}__{f.name.upper()}_CAPACITY {f.capacity}"
         for f in struct.fields
-        if f.kind == "array" and f.array_mode == "variable"
+        if (f.kind == "array" and f.array_mode == "variable") or (f.kind == "string" and f.capacity is not None)
     ]
 
 
@@ -192,11 +201,19 @@ def _emit_scalar_decode(field):
 
 
 def _emit_string_encode(field):
-    return [
-        f"if (data->{field.name} == NULL) {{ return -3; }}",
+    # A bounded string (field.capacity is not None - `string<=N`, or a plain `string` with an
+    # explicit @capacity annotation) is a real `char[N+1]` array (emit_struct_fields), which can
+    # never be NULL the way a plain string's `char*` can - so no NULL check - and is bounded by
+    # its own buffer size (capacity + 1, for the NUL - matching tt_MAX_STRING_LENGTH's own meaning
+    # as a max str_len-including-NUL, not a max content length) rather than the global
+    # tt_MAX_STRING_LENGTH ceiling. Everything else (the length-prefix-then-bytes-then-pad-to-4
+    # wire shape) is identical either way.
+    max_len = field.capacity + 1 if field.capacity is not None else "tt_MAX_STRING_LENGTH"
+    lines = [] if field.capacity is not None else [f"if (data->{field.name} == NULL) {{ return -3; }}"]
+    lines += [
         "{",
-        f"    size_t str_len = _tt_strnlen(data->{field.name}, tt_MAX_STRING_LENGTH) + 1;",
-        "    if (str_len > tt_MAX_STRING_LENGTH) { return -2; }",
+        f"    size_t str_len = _tt_strnlen(data->{field.name}, {max_len}) + 1;",
+        f"    if (str_len > {max_len}) {{ return -2; }}",
         "    if ((uint32_t)encoded + 2 > len) { return -1; }",
         "    *(uint16_t*)(payload + encoded) = (uint16_t)str_len;",
         "    encoded += 2;",
@@ -211,24 +228,42 @@ def _emit_string_encode(field):
         "    }",
         "}",
     ]
+    return lines
 
 
 def _emit_string_decode(field):
-    return [
-        "{",
-        "    if ((uint32_t)decoded + 2 > len) { return -1; }",
-        "    uint16_t str_len = *(const uint16_t*)(payload + decoded);",
-        "    if (!is_native_endian) { str_len = _tt_bswap_16(str_len); }",
-        "    if (str_len == 0) { return -2; }",
-        "    decoded += 2;",
-        "    if ((uint32_t)decoded + str_len > len) { return -1; }",
-        "    if (payload[decoded + str_len - 1] != '\\0') { return -2; }",
-        f"    data->{field.name} = (char*)(payload + decoded); // aliases the input buffer - see *_free()",
-        "    decoded += str_len;",
-        f"    decoded += (int32_t){_runtime_align_expr('decoded', 4)};",
-        "    if ((uint32_t)decoded > len) { return -1; }",
-        "}",
-    ]
+    # Bounded (field.capacity is not None): the destination is a real `char[N+1]` array, not a
+    # pointer to alias the input buffer with - copy into it instead, and bounds-check the wire
+    # count against the field's own capacity (+1 for the NUL the wire length already counts)
+    # rather than trusting whatever the sender claims to have sent.
+    bound_check = (
+        [f"    if (str_len > {field.capacity + 1}) {{ return -2; }}"] if field.capacity is not None else []
+    )
+    dest = (
+        f"    memcpy(data->{field.name}, payload + decoded, str_len);"
+        if field.capacity is not None
+        else f"    data->{field.name} = (char*)(payload + decoded); // aliases the input buffer - see *_free()"
+    )
+    return (
+        [
+            "{",
+            "    if ((uint32_t)decoded + 2 > len) { return -1; }",
+            "    uint16_t str_len = *(const uint16_t*)(payload + decoded);",
+            "    if (!is_native_endian) { str_len = _tt_bswap_16(str_len); }",
+            "    if (str_len == 0) { return -2; }",
+        ]
+        + bound_check
+        + [
+            "    decoded += 2;",
+            "    if ((uint32_t)decoded + str_len > len) { return -1; }",
+            "    if (payload[decoded + str_len - 1] != '\\0') { return -2; }",
+            dest,
+            "    decoded += str_len;",
+            f"    decoded += (int32_t){_runtime_align_expr('decoded', 4)};",
+            "    if ((uint32_t)decoded > len) { return -1; }",
+            "}",
+        ]
+    )
 
 
 def _emit_fixed_array_encode(field):
@@ -467,11 +502,12 @@ def emit_encode_size(struct):
         if plan.field.kind == "scalar":
             lines.append(f"size += {model.SCALAR_SIZE[plan.field.scalar_type]};")
         elif plan.field.kind == "string":
-            lines += [
-                f"if (data->{plan.field.name} == NULL) {{ return -3; }}",
+            max_len = plan.field.capacity + 1 if plan.field.capacity is not None else "tt_MAX_STRING_LENGTH"
+            null_check = [] if plan.field.capacity is not None else [f"if (data->{plan.field.name} == NULL) {{ return -3; }}"]
+            lines += null_check + [
                 "{",
-                f"    size_t str_len = _tt_strnlen(data->{plan.field.name}, tt_MAX_STRING_LENGTH) + 1;",
-                "    if (str_len > tt_MAX_STRING_LENGTH) { return -2; }",
+                f"    size_t str_len = _tt_strnlen(data->{plan.field.name}, {max_len}) + 1;",
+                f"    if (str_len > {max_len}) {{ return -2; }}",
                 "    size += (int32_t)(2 + str_len);",
                 f"    size += (int32_t){_runtime_align_expr('size', 4)};",
                 "}",
@@ -571,7 +607,12 @@ def emit_init(struct):
         if f.default is None:
             continue
         if f.kind == "string":
-            lines.append(f'data->{f.name} = "{f.default}";')
+            if f.capacity is not None:
+                # A bounded string's field is a real char[N+1] array (emit_struct_fields), not a
+                # pointer - can't assign a string literal to it, memcpy the default bytes in.
+                lines.append(f'memcpy(data->{f.name}, "{f.default}", {len(f.default) + 1});')
+            else:
+                lines.append(f'data->{f.name} = "{f.default}";')
         elif f.kind == "array":
             for i, element in enumerate(f.default):
                 value = ("true" if element else "false") if f.scalar_type == "bool" else repr(element)
@@ -636,6 +677,8 @@ def needs_hal_h(struct):
 
 def needs_config_h(struct):
     """True if the generated .c references tt_MAX_STRING_LENGTH (from <tickle/config.h>) - only
-    a string field's *_encode/_encode_size/_decode do (see _emit_string_encode et al.). A struct
-    with no string fields (e.g. UInt64Data) doesn't need the include."""
-    return any(f.kind == "string" for f in struct.fields)
+    an *unbounded* string field's *_encode/_encode_size/_decode do (see _emit_string_encode et
+    al.); a bounded one (field.capacity is not None) checks against its own resolved capacity
+    instead and never mentions tt_MAX_STRING_LENGTH. A struct with no unbounded string fields
+    (e.g. UInt64Data, or one with only bounded strings) doesn't need the include."""
+    return any(f.kind == "string" and f.capacity is None for f in struct.fields)

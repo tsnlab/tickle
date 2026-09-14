@@ -467,7 +467,9 @@ no header, no extra alignment beyond what the first nested field needs.
 1. a trailing `# … @capacity <N>` annotation on the field line (a plain ROS 2 comment) → `<N>`;
 2. a ROS 2 upper bound `T[<=N]` / `string<=N` → `N`;
 3. otherwise auto-derived: `floor((tt_MAX_BUFFER_LENGTH − framing − max size of the other
-   fields) / sizeof-on-wire(T))`.
+   fields) / sizeof-on-wire(T))` - variable arrays only; a plain `string` with neither an
+   annotation nor a ROS 2 bound stays the existing alias-only `char*` (unbounded, no fixed C
+   buffer) rather than being auto-bounded.
 
 Either way the generator emits `_Static_assert(<message's max serialized size> <=
 tt_MAX_BUFFER_LENGTH)`; an explicit `N` that breaks it is a generate-time error. **A whole

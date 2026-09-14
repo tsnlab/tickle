@@ -85,15 +85,19 @@ def max_wire_size(struct):
     mistake. A plain (M1) string contributes only its own 2-byte length prefix: unlike an array,
     it has no fixed C buffer at all (it's a `char*` aliasing external memory - DESIGN.md's
     "Strings" rule), so its true bound is the `len` its caller passes to *_encode/_decode at
-    runtime, not something a compile-time assert here could meaningfully check. (DESIGN.md's own
-    "Capacity" rule is scoped the same way - "a variable array's *or bounded string's* C buffer" -
-    a bounded `string<=N` would get the array-like treatment too, but TickLE has no generated
-    bounded-string field yet to exercise that against.)"""
+    runtime, not something a compile-time assert here could meaningfully check. A *bounded*
+    string (`string<=N`, or a plain string with an explicit @capacity annotation) DOES get the
+    array-like treatment - DESIGN.md's "Capacity" rule is scoped as "a variable array's *or
+    bounded string's* C buffer" - because it has a real fixed char[N+1] buffer (emit.
+    emit_struct_fields), same reasoning as a variable array above."""
     offset = 0
     for wire_field in struct.fields:
         offset = align_up(offset, wire_field.wire_align)
         if wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
             offset += wire_field.wire_size
+        elif wire_field.kind == "string" and wire_field.capacity is not None:
+            offset += model.STRING_LEN_SIZE + wire_field.capacity + 1
+            offset = align_up(offset, 4)
         elif wire_field.kind == "string":
             offset += model.STRING_LEN_SIZE
         elif wire_field.kind == "array":  # variable

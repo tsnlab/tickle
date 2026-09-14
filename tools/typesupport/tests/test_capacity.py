@@ -22,6 +22,7 @@ from test_roundtrip import (
     BULK_PAYLOAD_CAPACITY,
     TT_MAX_BUFFER_LENGTH,
     ArraysData,
+    BoundedStringData,
     BulkData,
     _bind,
 )
@@ -74,6 +75,33 @@ def test_bounded_array_decode_rejects_over_capacity_count_on_wire(generated_lib)
     wire = bytes(4 + 12) + (9).to_bytes(2, sys.byteorder) + bytes(9 * 2)  # fixed_bytes+fixed_ints, then count=9
     buf = ctypes.create_string_buffer(wire, TT_MAX_BUFFER_LENGTH)
     out = ArraysData()
+    assert decode(ctypes.byref(out), buf, len(wire), True) == -2
+
+
+def test_bounded_string_encode_rejects_over_capacity(generated_lib):
+    # Fill `bounded_name` (`string<=8`, capacity 8) with 9 non-NUL bytes so _tt_strnlen can't find
+    # a terminator within the field's own capacity - the fixed-buffer analog of
+    # test_bounded_array_encode_rejects_over_capacity above. Writes straight into the struct's
+    # memory (bypassing ctypes' own c_char-array get/set copying) so the buffer genuinely holds no
+    # NUL, the same way a caller who forgot to terminate their string would leave it.
+    encode_size, encode, _decode, _free = _bind(generated_lib, "BoundedStringData", BoundedStringData)
+    data = BoundedStringData()
+    offset = BoundedStringData.bounded_name.offset
+    ctypes.memmove(ctypes.byref(data, offset), b"123456789", 9)
+    assert encode_size(ctypes.byref(data)) == -2
+    buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
+    assert encode(ctypes.byref(data), buf, TT_MAX_BUFFER_LENGTH) == -2
+
+
+def test_bounded_string_decode_rejects_over_capacity_length_on_wire(generated_lib):
+    # A malformed (or hostile) peer's wire length prefix must be rejected before ever memcpy()ing
+    # it into the fixed char[9] buffer underneath - not just an over-long struct field on the way
+    # out. `bounded_name` is the struct's first field (offset 0), so its wire length prefix is the
+    # first two bytes.
+    _encode_size, _encode, decode, _free = _bind(generated_lib, "BoundedStringData", BoundedStringData)
+    wire = (10).to_bytes(2, sys.byteorder)  # str_len = 10, over bounded_name's capacity+1 (9)
+    buf = ctypes.create_string_buffer(wire, TT_MAX_BUFFER_LENGTH)
+    out = BoundedStringData()
     assert decode(ctypes.byref(out), buf, len(wire), True) == -2
 
 

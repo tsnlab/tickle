@@ -129,6 +129,16 @@ class ArrayDefaultsData(ctypes.Structure):
     ]
 
 
+class BoundedStringData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("bounded_name", ctypes.c_char * 9),  # `string<=8` -> capacity 8 + NUL, default "hi"
+        ("annotated_name", ctypes.c_char * 5),  # plain `string` + `# @capacity 4`
+        ("plain_name", ctypes.c_char_p),  # plain, unbounded `string` - unchanged alias-only path
+    ]
+
+
 class PingPongRequest(ctypes.Structure):
     _pack_ = 4
     _layout_ = "ms"
@@ -334,6 +344,28 @@ def test_arrays_roundtrip(generated_lib):
     assert list(result.bounded_values[:3]) == [10, 20, 30]
     assert result.samples_count == 2
     assert list(result.samples[:2]) == [1.5, -2.25]
+
+
+def test_bounded_string_roundtrip(generated_lib):
+    def populate(d):
+        d.bounded_name = b"eight888"  # exactly capacity (8) - boundary value
+        d.annotated_name = b"abcd"  # exactly capacity (4)
+        d.plain_name = b"unbounded and free"
+
+    result, _buf = _roundtrip(generated_lib, "BoundedStringData", BoundedStringData, populate)
+    assert result.bounded_name == b"eight888"
+    assert result.annotated_name == b"abcd"
+    assert result.plain_name == b"unbounded and free"
+
+
+def test_bounded_string_init_sets_default(generated_lib):
+    init_fn = generated_lib.BoundedStringData_init
+    init_fn.argtypes = [ctypes.POINTER(BoundedStringData)]
+    init_fn.restype = None
+
+    data = BoundedStringData(bounded_name=b"stale")
+    init_fn(ctypes.byref(data))
+    assert data.bounded_name == b"hi"
 
 
 def test_stamped_roundtrip(generated_lib):

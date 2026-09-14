@@ -115,8 +115,12 @@ Pipeline: `parse (_rosidl_parser) → resolve nesteds → adapt → IR → layou
 
 Out of scope: `.action`, multi-dimensional arrays, `wstring`, 128-bit, DDS/CDR wire
 compatibility, XCDR2, type hashes, introspection typesupport, arrays of strings, arrays of
-nested message types, defaults on a nested message field, and a bounded string's own capacity
-(`string<=N` is accepted but currently generates the exact same alias-only `char*` a plain
-`string` does - no fixed C buffer, no capacity check; see DESIGN.md's "Capacity" rule, which
-already notes this gap - nothing in TickLE's own four interfaces needs it yet). `adapt.py`
-raises a clear error for each of the first four rather than silently generating something wrong.
+nested message types, and defaults on a nested message field. `adapt.py` raises a clear error
+for each rather than silently generating something wrong.
+
+A bounded string (`string<=N`, or a plain `string` with an explicit `# @capacity <N>`
+annotation) gets a fixed `char[N+1]` C buffer and a real capacity check, same as a variable
+array - see DESIGN.md's "Capacity" rule. Deliberately *not* extended to auto-derivation
+(priority (3) of that rule): only an explicit ROS 2 bound or annotation makes a string bounded,
+so a plain `string` field keeps its existing alias-only `char*` behavior unconditionally - no
+existing generated interface changes shape from this.

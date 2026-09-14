@@ -41,6 +41,9 @@ CFLAGS = ["-Wall", "-Wextra", "-fPIC", f"-I{REPO_ROOT / 'include'}", f"-I{REPO_R
 #     exists purely for the empty-message edge case (Trigger.srv's request has zero fields).
 #   - Arrays/ArrayDefaults: tests/fixtures_own/ - every other array shape (fixed, bounded,
 #     annotated-capacity, float element) and, separately, M6's array default values.
+#   - BoundedString: tests/fixtures_own/ - a bounded string's own capacity (ROS 2 upper bound,
+#     @capacity annotation, and a default value on one), plus a plain unbounded string alongside
+#     them to prove that path is untouched (DESIGN.md's "Capacity" rule).
 #   - Stamped/Image (fixtures_own/, M3): nested messages - Stamped nests std_msgs/Header (itself
 #     nesting builtin_interfaces/Time) purely via tickle_typesupport.builtins, two levels deep,
 #     with no -I needed at all; Image is the same std_msgs/Header nest plus a real ROS 2 shape
@@ -60,6 +63,7 @@ GENERATED_INTERFACES = {
     "Trigger.srv": EXAMPLES,
     "Arrays.msg": FIXTURES_OWN,
     "ArrayDefaults.msg": FIXTURES_OWN,
+    "BoundedString.msg": FIXTURES_OWN,
     "Stamped.msg": FIXTURES_OWN,
     "Image.msg": FIXTURES_OWN,
     "Twist.msg": FIXTURES_ROS2 / "geometry_msgs" / "msg",
