@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789377941329,
+  "lastUpdate": 1789378472134,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2165,6 +2165,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.205,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "606898eae9477ed91dcc36ea890787a27a18ad41",
+          "message": "rmw_tickle Milestone 2: mark done, verified green in real CI\n\nCHANGELOG.md: record rmw_create_node()/rmw_destroy_node()/rmw_node_get_\ngraph_guard_condition() as real, working entry points now that check-all.yml\nhas proven them green.\n\nPLAN.md: Milestone 2 marked done, noting the one CI-only issue found beyond\nlocal review (mixing CMake's plain and keyword target_link_libraries()\nsignatures on the same target, from ament_target_dependencies() and a\ndirect Threads::Threads link both touching rmw_tickle).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T18:33:45+09:00",
+          "tree_id": "de5fdf7bc044791ac16c35e4070319f6c5e39573",
+          "url": "https://github.com/tsnlab/tickle/commit/606898eae9477ed91dcc36ea890787a27a18ad41"
+        },
+        "date": 1789378470245,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
             "unit": "ms"
           },
           {
