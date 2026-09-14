@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789348055746,
+  "lastUpdate": 1789348058479,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2540,6 +2540,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 892.191,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a6e5a8c0f33fa0ddac227e02da529e324c0524a4",
+          "message": "typesupport: implement bounded string (string<=N / @capacity) capacity\n\nDESIGN.md's \"Capacity\" rule already documented this (\"a variable\narray's *or bounded string's* C buffer\"), but adapt.py silently\ngenerated the exact same alias-only char* for a bounded string as for\na plain one - no fixed buffer, no capacity check. Give a bounded\nstring (a ROS 2 upper bound `string<=N`, or a plain `string` with an\nexplicit `# @capacity <N>` annotation) a real char[N+1] buffer and a\ncapacity check on both encode and decode, mirroring how a variable\narray's capacity already works. A plain, unbounded string is\nunaffected - auto-derivation (the rule's priority-3 case) is\ndeliberately not extended to strings, so no existing generated\ninterface changes shape.\n\nNew tests/fixtures_own/BoundedString.msg (+ golden output) covers both\ncapacity sources plus a default value; test_capacity.py adds the\nover-capacity encode/decode rejection cases.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T10:05:25+09:00",
+          "tree_id": "c2775288d7991f98e7e643523b35a29cd56f7af1",
+          "url": "https://github.com/tsnlab/tickle/commit/a6e5a8c0f33fa0ddac227e02da529e324c0524a4"
+        },
+        "date": 1789348057445,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.591,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.095,
             "unit": "Mbps"
           }
         ]
