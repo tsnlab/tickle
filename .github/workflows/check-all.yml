@@ -198,6 +198,53 @@ jobs:
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_srv
 
+      - name: Verify RMW_IMPLEMENTATION=rmw_tickle selection works
+        run: |
+          # rmw_tickle/PLAN.md's Milestone 8 - register_rmw_implementation() (rmw_tickle/
+          # CMakeLists.txt) registers the ament_index resources rmw_implementation's own
+          # get_available_rmw_implementations()/get_default_rmw_implementation() read, but that
+          # alone only proves the *marker* exists, not that the standard RMW_IMPLEMENTATION=
+          # rmw_tickle *selection* mechanism can actually find and load this rmw. rmw_
+          # implementation's own functions.cpp does that by dlopen()ing "librmw_tickle.so" (the
+          # library name it derives from the RMW_IMPLEMENTATION value) and dlsym()ing the well-
+          # known rmw_* symbols it needs - reproducing exactly that here (not a full rclcpp/rcl
+          # round trip - no live two-process test infra exists yet for rmw_tickle, matching every
+          # other milestone's own "compile+link, not live network" verification depth) is a much
+          # stronger check than only confirming the ament_index resource marker's own text content.
+          source install/setup.bash
+          # A heredoc's own closing delimiter can't carry this step's indentation (bash requires
+          # it unindented, but this YAML block scalar requires every line indented at least as
+          # much as its first) - write the source with python3 instead, sidestepping the clash.
+          python3 -c '
+          import pathlib
+          pathlib.Path("/tmp/verify_rmw_load.c").write_text(r"""
+          #include <dlfcn.h>
+          #include <stdio.h>
+          #include <string.h>
+          int main(void) {
+              void* handle = dlopen("librmw_tickle.so", RTLD_NOW);
+              if (!handle) {
+                  fprintf(stderr, "dlopen(\"librmw_tickle.so\") failed: %s\n", dlerror());
+                  return 1;
+              }
+              const char* (*get_id)(void) = (const char* (*)(void))dlsym(handle, "rmw_get_implementation_identifier");
+              if (!get_id) {
+                  fprintf(stderr, "dlsym(\"rmw_get_implementation_identifier\") failed: %s\n", dlerror());
+                  return 1;
+              }
+              const char* id = get_id();
+              printf("rmw_get_implementation_identifier() -> %s\n", id);
+              if (strcmp(id, "rmw_tickle") != 0) {
+                  fprintf(stderr, "unexpected implementation identifier: %s\n", id);
+                  return 1;
+              }
+              return 0;
+          }
+          """)
+          '
+          gcc -o /tmp/verify_rmw_load /tmp/verify_rmw_load.c -ldl
+          /tmp/verify_rmw_load
+
       - name: Check all
         uses: tsnlab/check@main
         with:

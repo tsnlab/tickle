@@ -135,6 +135,13 @@ number, `tt_VERSION`, which moves independently.
   (`RMW_RET_UNSUPPORTED`) instead of silently ignored. `qos_profile->depth` now really sizes a
   subscription's queue (allocated at `rmw_create_subscription()` time) instead of a fixed
   placeholder capacity.
+- Packaging (`rmw_tickle/PLAN.md`'s Milestone 8): `package.xml` gained `<member_of_group>
+  rmw_implementation_packages</member_of_group>`, and `CMakeLists.txt` now calls
+  `register_rmw_implementation("c:rosidl_typesupport_tickle_c")` - the real mechanism (not just
+  documentation) behind `RMW_IMPLEMENTATION=rmw_tickle` selection. New `check-all.yml` step
+  reproduces `rmw_implementation`'s own runtime loading (`dlopen("librmw_tickle.so")` +
+  `dlsym("rmw_get_implementation_identifier")`) to prove selection actually works, not just that
+  the ament_index marker's text looks right.
 
 ## [1.0.0] - 2026-09-14
 

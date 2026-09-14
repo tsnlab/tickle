@@ -8,6 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rmw REQUIRED)
+find_package(rmw_implementation_cmake REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_tickle_c REQUIRED)
 find_package(Threads REQUIRED)
@@ -66,6 +67,14 @@ target_link_libraries(rmw_tickle Threads::Threads)
 
 ament_export_targets(export_rmw_tickle HAS_LIBRARY_TARGET)
 ament_export_dependencies(rcutils rmw rosidl_runtime_c rosidl_typesupport_tickle_c)
+
+# rmw_tickle/PLAN.md's Milestone 8: registers the "rmw_typesupport"/"rmw_typesupport_c" ament_index
+# resources (share/ament_index/resource_index/rmw_typesupport/rmw_tickle, content "rosidl_
+# typesupport_tickle_c") that rmw_implementation_cmake's own get_available_rmw_implementations()/
+# get_default_rmw_implementation() read - the actual mechanism behind `RMW_IMPLEMENTATION=rmw_
+# tickle` selection, not just documentation. One language ("c"), one typesupport - matches this
+# package's own "Supported subset" (PLAN.md): no C++ typesupport, no introspection typesupport.
+register_rmw_implementation("c:rosidl_typesupport_tickle_c")
 
 install(
   DIRECTORY include/

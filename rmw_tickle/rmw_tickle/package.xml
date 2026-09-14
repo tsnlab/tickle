@@ -16,6 +16,15 @@
        rmw_typesupport.c resolve a real ROS 2 rosidl_message_type_support_t* down to this
        package's own callback struct (rosidl_typesupport_tickle_c/message_type_support.h). -->
   <depend>rosidl_typesupport_tickle_c</depend>
+  <!-- rmw_tickle/PLAN.md's Milestone 8: CMakeLists.txt's register_rmw_implementation() call, which
+       registers the "rmw_typesupport"/"rmw_typesupport_c" ament_index resources rmw_implementation
+       CMake's own get_available_rmw_implementations()/get_default_rmw_implementation() read. -->
+  <depend>rmw_implementation_cmake</depend>
+
+  <!-- rmw_tickle/PLAN.md's Milestone 8: the same package.xml convention every other real rmw
+       implementation (rmw_fastrtps_cpp, rmw_cyclonedds_cpp, ...) uses to mark itself as one -
+       REP 149 metadata, not itself part of the CMake-time discovery mechanism above. -->
+  <member_of_group>rmw_implementation_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>
