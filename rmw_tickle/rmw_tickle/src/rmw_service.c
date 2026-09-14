@@ -32,7 +32,8 @@
 #include <string.h>
 #include <time.h>
 
-#include <tickle/hal.h> // tt_ret_t/tt_RET_OK
+#include <tickle/config.h> // tt_SECOND
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
