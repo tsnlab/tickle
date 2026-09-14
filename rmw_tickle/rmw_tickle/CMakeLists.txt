@@ -46,7 +46,11 @@ ament_target_dependencies(rmw_tickle
   rosidl_runtime_c
 )
 
-target_link_libraries(rmw_tickle PUBLIC Threads::Threads)
+# Plain (non-keyword) signature, matching ament_target_dependencies() above's own internal
+# target_link_libraries() calls for this same target - CMake refuses to mix the plain and
+# keyword (PUBLIC/PRIVATE/INTERFACE) signatures for one target across separate calls
+# ("All uses of target_link_libraries with a target must be either all-keyword or all-plain").
+target_link_libraries(rmw_tickle Threads::Threads)
 
 ament_export_targets(export_rmw_tickle HAS_LIBRARY_TARGET)
 ament_export_dependencies(rcutils rmw rosidl_runtime_c)
