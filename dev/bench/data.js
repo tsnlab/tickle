@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789390675113,
+  "lastUpdate": 1789392076304,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2534,6 +2534,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ae703758e41cd18a43207a25f459faf93623b79b"
         },
         "date": 1789390667429,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "03d7d722db56eeca7e578a5a7967d2320869ce0e",
+          "message": "rmw_tickle Milestone 5: rmw_create_wait_set/rmw_wait/guard conditions\n\nOne condition variable per context (rmw_tickle_context_impl_t.wait_cond),\nshared by every waitable entity - subscriber queues, client responses,\nservice requests, and guard conditions - since this rmw supports only one\nnode per process anyway. rmw_wait() holds wait_mutex continuously across\nits own check-every-entity pass and into the actual wait call; every\nproducer takes wait_mutex only after releasing its own entity-local lock\njust to broadcast, which closes the classic lost-wakeup race between the\ntwo without needing every producer and waiter to share one single lock.\n\nserver_callback() (rmw_service.c) had to be restructured to release\nrequest_mutex before taking wait_mutex to broadcast, then re-acquire it -\nbroadcasting while still holding request_mutex would have inverted rmw_\nwait()'s own wait_mutex-then-request_mutex nesting order, risking an\nAB-BA deadlock against a concurrently running rmw_wait().\n\nrmw_node_get_graph_guard_condition() previously returned a guard\ncondition with .data == NULL, which would have crashed the moment any\nwait set checked it (every default rclcpp executor's wait set includes\nit) - it's now a real, safely-waitable rmw_tickle_guard_condition_t.\nActually triggering it on a graph change is still Milestone 6.\n\nReal struct shapes (rmw_subscriptions_t et al., each holding void**\nentries that are each entity's own ->data) confirmed against real\nros2/rmw and ros2/rcl source (jazzy) before implementing, rather than\nguessed and fixed via CI round trips.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T22:20:29+09:00",
+          "tree_id": "f789308ad66276b167cc40129aa8275e15a69965",
+          "url": "https://github.com/tsnlab/tickle/commit/03d7d722db56eeca7e578a5a7967d2320869ce0e"
+        },
+        "date": 1789392074377,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
