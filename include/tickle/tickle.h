@@ -43,6 +43,7 @@ const char* tt_version(void);
 struct tt_Endpoint;
 struct tt_UpdateHeader;
 struct tt_Node;
+struct tt_Discovery;
 
 // Task Control Block
 struct tt_TCB {
@@ -50,6 +51,16 @@ struct tt_TCB {
     void (*function)(struct tt_Node* node, uint64_t time, void* param);
     void* param;
 };
+
+// Fired by a registered struct tt_Discovery (tt_Node_set_discovery()) whenever a remote entity
+// appears, is refreshed (a repeat announce - harmless to ignore if a caller only cares about
+// appear/depart), or departs (`departed` true - either an explicit farewell UPDATE or
+// check_liveliness()'s own timeout). Deliberately minimal (DESIGN.md's "Concurrency" neighbor,
+// rmw_tickle/PLAN.md's Milestone 0(c)): `type`/`name` aren't passed here at all - look them up
+// via tt_Discovery_find(discovery, node_id, endpoint_id) if/when actually needed, rather than
+// paying to decode/copy them for every caller whether they want them or not.
+typedef void (*tt_DISCOVERY_CALLBACK)(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+                                      bool departed, void* param);
 
 struct tt_Node {
     uint8_t id;
@@ -100,6 +111,18 @@ struct tt_Node {
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_freertos.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
+
+    // Opt-in graph introspection (tt_Node_set_discovery(), rmw_tickle/PLAN.md's Milestone 0(c)) -
+    // NULL (the default - see reset_node_state()) unless a caller attaches its own, externally-
+    // owned struct tt_Discovery. Deliberately *not* an embedded struct tt_Discovery the way
+    // update_seen[]/peers[] etc. are: that table can hold real name/type strings for
+    // tt_MAX_DISCOVERED_ENTITIES entities, easily several KB, and every tt_Node pays for its own
+    // fields whether or not anything ever uses them - a FreeRTOS target with no rmw layer (today,
+    // or a future micro-ROS-style thin client whose *agent* - not the constrained device itself -
+    // would be the one wanting this) shouldn't carry that weight. Unset, this costs 3 pointers.
+    struct tt_Discovery* discovery;
+    tt_DISCOVERY_CALLBACK discovery_callback;
+    void* discovery_callback_param;
 };
 
 struct tt_Endpoint {
@@ -116,6 +139,26 @@ struct tt_Peer {
     uint8_t node_id;
     uint32_t ip;   // host byte order, matching tt_receive()'s own sender_ip out-param
     uint16_t port; // host byte order, matching tt_receive()'s own sender_port out-param
+};
+
+// One remote entity (a Publisher/Subscriber/Client/Server hosted by some *other* node) this
+// node's discovery has recorded - see struct tt_Discovery. node_id doubles as the "slot
+// occupied" flag, the same convention struct tt_Peer above uses.
+struct tt_DiscoveredEntity {
+    uint8_t node_id;
+    uint32_t endpoint_id;
+    uint8_t kind; // tt_KIND_TOPIC_PUBLISHER / _SUBSCRIBER / SERVICE_CLIENT / _SERVER
+    char type[tt_MAX_NAME_LENGTH + 1];
+    char name[tt_MAX_NAME_LENGTH + 1];
+};
+
+// Fixed-capacity graph cache a caller opts a struct tt_Node into via tt_Node_set_discovery() -
+// every remote entity any attached node has announced (not just ones matching a local endpoint
+// the way struct tt_Peer's unicast-address tracking is scoped to), for `ros2 topic list`-style
+// introspection. Owned by the caller (e.g. embedded in an rmw wrapper's own node struct), not by
+// TickLE - see struct tt_Node's own "discovery" field comment on why.
+struct tt_Discovery {
+    struct tt_DiscoveredEntity entities[tt_MAX_DISCOVERED_ENTITIES];
 };
 
 struct tt_Service;
@@ -354,6 +397,26 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
 // sees no difference either way; one that calls tt_Node_poll() only occasionally should account
 // for an earlier tt_Node_interrupt() still being able to cut its next, unrelated wait short.
 tt_ret_t tt_Node_interrupt(struct tt_Node* node);
+
+// Opts `node` into graph introspection: every UPDATE it processes from here on also records the
+// announcing entity into `*discovery` (an otherwise-inert struct the caller owns - see its own
+// comment) and fires `callback` for an appearance, refresh, or (check_liveliness()/an explicit
+// farewell UPDATE) departure. `discovery` must outlive `node`, and must already be zeroed
+// (`memset` or `= {0}`) - this does not initialize its contents itself, only points `node` at it.
+// `callback`/`param` may be NULL to record without being notified (poll tt_Discovery_find()
+// yourself instead). Pass `discovery == NULL` to detach again.
+tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discovery, tt_DISCOVERY_CALLBACK callback,
+                               void* param);
+
+// Number of occupied slots in `discovery` - for iterating/sizing a snapshot without walking the
+// full tt_MAX_DISCOVERED_ENTITIES capacity by hand.
+uint32_t tt_Discovery_count(const struct tt_Discovery* discovery);
+
+// Looks up one specific remote entity by (node_id, endpoint_id), or NULL if it's not currently
+// known (never announced, or already departed). The returned pointer is only valid until the
+// next UPDATE this node processes - copy out anything needed past that point.
+const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t node_id,
+                                                    uint32_t endpoint_id);
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node);
 

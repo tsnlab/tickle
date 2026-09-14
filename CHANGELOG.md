@@ -25,6 +25,18 @@ number, `tt_VERSION`, which moves independently.
   first-contact handling re-armed for a later announce from the same node id). `rmw_tickle/PLAN.md`'s
   Milestone 0(b) - previously a node that crashed or was network-partitioned without sending
   `tt_Node_destroy()`'s own farewell UPDATE lingered in every peer table forever.
+- Opt-in discovery API for graph introspection (`rmw_tickle/PLAN.md`'s Milestone 0(c)):
+  `tt_Node_set_discovery()` attaches a caller-owned `struct tt_Discovery` (capacity
+  `tt_MAX_DISCOVERED_ENTITIES`, config.h, default 16) that records every remote Publisher/
+  Subscriber/Client/Server any attached node hears announced - not just ones matching a local
+  endpoint the way `struct tt_Peer`'s unicast-address tracking already is - queryable via
+  `tt_Discovery_count()`/`tt_Discovery_find()`, with a `tt_DISCOVERY_CALLBACK` fired on
+  appearance, refresh, or departure (an explicit farewell UPDATE, or Milestone 0(b)'s liveliness
+  timeout). Deliberately not part of `struct tt_Node` itself (adds only 3 pointers there,
+  ~24 bytes) - the actual entity table, easily several KB with real name/type strings, is owned
+  by whoever opts in, so a `tt_Node` with nothing attached (including a possible future
+  micro-ROS-style thin FreeRTOS client, whose *agent* rather than the constrained device itself
+  would want this) doesn't pay for it.
 
 ## [1.0.0] - 2026-09-14
 

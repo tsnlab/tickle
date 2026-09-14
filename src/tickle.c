@@ -310,6 +310,79 @@ static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id) {
     }
 }
 
+// Records one remote entity into node->discovery (tt_Node_set_discovery(), rmw_tickle/PLAN.md's
+// Milestone 0(c)), refreshing its existing slot or claiming the first empty one, then fires the
+// appear/refresh callback. No-op (not even the callback) if no discovery cache is attached -
+// every caller below calls this unconditionally rather than checking node->discovery first, the
+// same way logging macros check their own level instead of every call site checking it.
+static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+                                     const char* type, const char* name) {
+    if (node->discovery == NULL) {
+        return;
+    }
+
+    struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    struct tt_DiscoveredEntity* slot = NULL;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        if (entities[i].node_id == node_id && entities[i].endpoint_id == endpoint_id) {
+            slot = &entities[i];
+            break;
+        }
+    }
+    if (slot == NULL) {
+        for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+            if (entities[i].node_id == tt_NODE_ID_INVALID) {
+                slot = &entities[i];
+                break;
+            }
+        }
+    }
+    if (slot == NULL) {
+        TT_LOG_WARNING("Discovery table full (%d), dropping newly seen entity node %u endpoint %08x",
+                       tt_MAX_DISCOVERED_ENTITIES, node_id, endpoint_id);
+        return;
+    }
+
+    slot->node_id = node_id;
+    slot->endpoint_id = endpoint_id;
+    slot->kind = kind;
+    size_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH);
+    _tt_memcpy(slot->type, type, type_len);
+    slot->type[type_len] = '\0';
+    size_t name_len = _tt_strnlen(name, tt_MAX_NAME_LENGTH);
+    _tt_memcpy(slot->name, name, name_len);
+    slot->name[name_len] = '\0';
+
+    if (node->discovery_callback != NULL) {
+        node->discovery_callback(node, node_id, endpoint_id, kind, /*departed=*/false, node->discovery_callback_param);
+    }
+}
+
+// The discovery-cache counterpart to forget_peers_from_source() - same "authoritative announce
+// supersedes old state" reasoning (a fresh UPDATE means decode_update_entities() is about to
+// re-add whatever `node_id` still actually hosts, so anything not re-added here first must have
+// been dropped), plus check_liveliness()'s own timeout case, where nothing gets re-added at all.
+// No-op if no discovery cache is attached.
+static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t node_id) {
+    if (node->discovery == NULL) {
+        return;
+    }
+
+    struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        if (entities[i].node_id != node_id) {
+            continue;
+        }
+        uint32_t endpoint_id = entities[i].endpoint_id;
+        uint8_t kind = entities[i].kind;
+        entities[i].node_id = tt_NODE_ID_INVALID;
+        if (node->discovery_callback != NULL) {
+            node->discovery_callback(node, node_id, endpoint_id, kind, /*departed=*/true,
+                                     node->discovery_callback_param);
+        }
+    }
+}
+
 static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
@@ -480,6 +553,10 @@ static void reset_node_state(struct tt_Node* node) {
         node->update_seen[i] = false;
         node->update_last_seen[i] = 0;
     }
+
+    node->discovery = NULL;
+    node->discovery_callback = NULL;
+    node->discovery_callback_param = NULL;
 
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->tx_tail = sizeof(struct tt_Header);
@@ -1155,6 +1232,7 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
             TT_LOG_WARNING("Node %d presumed dead (no UPDATE for %d consecutive intervals)", i,
                            tt_LIVELINESS_MISS_THRESHOLD);
             forget_peers_from_source(node, (uint8_t)i);
+            forget_discovered_entities_from_source(node, (uint8_t)i);
             node->update_seen[i] = false;
             node->update_last_modified[i] = 0;
             node->update_last_seen[i] = 0;
@@ -1255,6 +1333,11 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
             return false;
         }
         TT_LOG_DEBUG("  name: (%d)\"%s\"", name_len, name);
+
+        // Recorded regardless of kind or whether a local endpoint matched above - discovery
+        // (tt_Node_set_discovery()) lists every remote entity a node has heard of, not just ones
+        // this node itself can talk to.
+        upsert_discovered_entity(node, header->source, entity_id, update_entity->kind, type, name);
     }
 
     return true;
@@ -1313,6 +1396,7 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     // an endpoint, or left entirely - see tt_Node_destroy()'s farewell UPDATE). Forget its old
     // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
     forget_peers_from_source(node, source);
+    forget_discovered_entities_from_source(node, source);
 
     if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip,
                                 sender_port)) {
@@ -1955,6 +2039,43 @@ tt_ret_t tt_Node_interrupt(struct tt_Node* node) {
         return tt_RET_INVALID_ARGUMENT;
     }
     return tt_wake_signal(node);
+}
+
+tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discovery, tt_DISCOVERY_CALLBACK callback,
+                               void* param) {
+    if (node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    node->discovery = discovery;
+    node->discovery_callback = discovery != NULL ? callback : NULL;
+    node->discovery_callback_param = discovery != NULL ? param : NULL;
+    return tt_RET_OK;
+}
+
+uint32_t tt_Discovery_count(const struct tt_Discovery* discovery) {
+    if (discovery == NULL) {
+        return 0;
+    }
+    uint32_t count = 0;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        if (discovery->entities[i].node_id != tt_NODE_ID_INVALID) {
+            count++;
+        }
+    }
+    return count;
+}
+
+const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t node_id,
+                                                    uint32_t endpoint_id) {
+    if (discovery == NULL) {
+        return NULL;
+    }
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        if (discovery->entities[i].node_id == node_id && discovery->entities[i].endpoint_id == endpoint_id) {
+            return &discovery->entities[i];
+        }
+    }
+    return NULL;
 }
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {

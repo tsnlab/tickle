@@ -85,6 +85,17 @@
 // default other discovery protocols use for the same reason.
 #define tt_LIVELINESS_MISS_THRESHOLD 3
 
+// Fixed capacity of an opt-in struct tt_Discovery (tickle.h, tt_Node_set_discovery()) - the
+// number of distinct remote entities (across every node it's ever heard an UPDATE from) it can
+// track at once for graph introspection. Unrelated to tt_MAX_PEER_COUNT (that's a *local*
+// endpoint's own known-unicast-destinations table; this is one shared cache of *every* remote
+// entity a node has opted into recording, regardless of whether it matches anything local).
+// Silently drops a new entity past this limit (see upsert_discovered_entity() in tickle.c) -
+// introspection is a best-effort aid, not something correctness depends on. Each entry costs
+// roughly 2 * (tt_MAX_NAME_LENGTH + 1) bytes for its type/name strings alone, so this is
+// deliberately much smaller than tt_MAX_ENDPOINT_COUNT.
+#define tt_MAX_DISCOVERED_ENTITIES 16
+
 #define _tt_NODE_ADDRESS "0.0.0.0"
 #define _tt_NODE_PORT 8282
 #define _tt_NODE_BROADCAST "255.255.255.255"
