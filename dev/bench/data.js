@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789358157390,
+  "lastUpdate": 1789360278272,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1514,6 +1514,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/f1b5b77d9f0dc36818a051e2d1c3fc558ba722b8"
         },
         "date": 1789358150247,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "65214ca07bf8a6583a91c74d9a9ad9a25658de02",
+          "message": "rmw_tickle: write the implementation plan (PLAN.md)\n\nCaptures the design philosophy (TickLE stays single-threaded and\nmalloc-free; rmw_tickle owns locking and allocation; the one core\nextension is a narrow blocking-poll wake primitive, not a workaround),\nthe supported subset (tools/typesupport's own out-of-scope list plus\nTickLE's single-datagram size ceiling), the QoS roadmap (local/rmw-only\nwork first, wire-protocol work last), and an 11-milestone build order\nfrom TickLE core extensions through packaging and a scoped test suite.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T13:30:31+09:00",
+          "tree_id": "f700c58e456ac729694986c6ba3f166cf9e766de",
+          "url": "https://github.com/tsnlab/tickle/commit/65214ca07bf8a6583a91c74d9a9ad9a25658de02"
+        },
+        "date": 1789360276659,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
