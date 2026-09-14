@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789372146588,
+  "lastUpdate": 1789372512650,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1825,6 +1825,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "812128ddc1a383868f57384ed4a192efa955f9db",
+          "message": "Fix check-all: rosidl_typesupport_tickle_c_tests needs CXX too, not just C\n\nThe remaining \"CMake Error: Cannot determine link language\" failures (for\nrosidl_typesupport_c, rosidl_typesupport_fastrtps_c/_cpp, rosidl_typesupport_\nintrospection_cpp - none of them ours) persisted even after removing the\nscope-unwinding return() in our own extension. Root cause this time:\nproject(rosidl_typesupport_tickle_c_tests C) only enabled the C compiler/\nlinker, copying rmw_tickle/rmw_tickle/CMakeLists.txt's own C-only\nproject() - but that package never calls rosidl_generate_interfaces() at\nall, so it never needed CXX. Several of the *other* typesupport generators\nrosidl_generate_interfaces() invokes for our msg/Simple.msg generate .cpp\nsources (rosidl_typesupport_c's own dispatch file is .cpp despite its \"C\"\nname, and fastrtps_cpp/introspection_cpp are C++-only outright) - without\nCXX enabled, CMake can't determine a link language for any of their\ngenerated library targets, unrelated to our own rosidl_typesupport_tickle_c\nextension (C-only, and confirmed NOT in the failing-target list either\ntime). project(... C CXX) fixes it.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T16:54:26+09:00",
+          "tree_id": "ab8bd4ba201934430613136b63881050fa8b89ba",
+          "url": "https://github.com/tsnlab/tickle/commit/812128ddc1a383868f57384ed4a192efa955f9db"
+        },
+        "date": 1789372511045,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.204,
             "unit": "ms"
           },
           {
