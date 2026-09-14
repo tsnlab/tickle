@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789358154578,
+  "lastUpdate": 1789358157390,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2676,6 +2676,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.319,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "halim9512@gmail.com",
+            "name": "hseong",
+            "username": "harimseong"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f1b5b77d9f0dc36818a051e2d1c3fc558ba722b8",
+          "message": "Integrate rmw_tickle initialization part (#20)\n\n* Integrate RMW partially with TickLE\n\n* global header\n* RMW initialization source\n\n* WIP: fix lint error\n\n* WIP: resolve ROS 2 dependency and generate compile_commands.json for github actions\n\n* rmw_tickle: fix build/config gaps found in review\n\nRebased onto main via the merge commit above; on top of that, fix\nwhat a review of this PR turned up:\n\n- Add package.xml/CMakeLists.txt: colcon had nothing to build -\n  check-all.yml's new \"Generate compile_commands.json for rmw_tickle\"\n  step ran `colcon build --packages-select rmw_tickle` against a\n  directory with no build manifest at all.\n- rmw_init() hardcoded `_tt_CONFIG.broadcast` to a specific /24. Read\n  it from TICKLE_BROADCAST_ADDR instead, defaulting to the HAL's own\n  compiled-in address when unset, so this doesn't silently break every\n  network that isn't 192.168.10.0/24.\n- Add the missing definitions for rmw_get_implementation_identifier(),\n  rmw_get_zero_initialized_init_options(), and the two identifier\n  externs the header declares but rmw_init.c never defined.\n- Add the standard TickLE license header to both new files\n  (CONTRIBUTING.md: every .c/.h needs one) and #include <stdbool.h>\n  explicitly for the bool field rmw_tickle.h uses instead of relying\n  on a transitive include.\n\ncheck-all.yml's own colcon step also moved from wrapping the whole\njob in a ROS Docker image (broke the existing `sudo apt install bear`\nstep with an unanswerable interactive prompt) to a single `docker run`\nscoped to just that step, merging its compile_commands.json into the\nexisting one instead of overwriting it.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* check-all.yml: use a ROS 2-preinstalled image tag for rmw_tickle\n\nCI's first real run (after the merge/fix commits) showed\n`/opt/ros/*/setup.bash: No such file or directory` -\nrostooling/setup-ros-docker:ubuntu-noble-latest turns out to be that\nproject's bare OS-base tag (APT repos configured, no actual ROS\npackages - see its own README), not a ROS-preinstalled one. Switch to\n...-ros-jazzy-ros-base-latest (ROS 2 Jazzy, the distro that targets\nUbuntu Noble) and install python3-colcon-common-extensions, which\nros-base doesn't pull in on its own.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* check-all.yml: exclude colcon's build/ output from shellcheck\n\nThe rmw_tickle compile-db step's colcon build leaves ament-generated\nboilerplate under build/ (local_setup.{bash,sh,zsh},\ncolcon_command_prefix_build.sh, ...) - not ours to fix, and already\ngitignored. Extend shellcheck_ignore_paths the same way third_party\nalready is.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* check-all.yml: also exclude colcon's install/ from shellcheck\n\nSame class of issue as the previous build/ fix, just under colcon's\nother generated-output directory (setup.{bash,sh,zsh},\nlocal_setup.{bash,sh,zsh}, package.{bash,sh}, ...).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* check-all.yml: mount the rmw_tickle build container at $PWD, not /ws\n\nThe compile database that clang-tidy actually needed (rcutils/\nallocator.h et al. not found for rmw_init.c, reproducible on every\npull_request-triggered run) turned out to be a path mismatch: CMake\nbakes the build directory's absolute path into compile_commands.json,\nand colcon built at /ws inside the container while clang-tidy reads\nthe merged database back out on the *host*, where the runner's own\ncheckout lives at a completely different absolute path. Mounting the\ncontainer at the same absolute path the runner uses ($PWD) makes the\nrecorded paths resolve on both sides.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* check-all.yml: install ROS 2 on the runner instead of via Docker\n\nThe path-mount fix wasn't enough - clang-tidy (run on the *host* by\ncpp-linter-action, after the rmw_tickle build step finishes) could\nresolve our own headers fine, but never rcutils/rmw/rosidl_runtime_c's:\nthose only ever existed inside the throwaway `--rm` container's\n/opt/ros, which is gone by the time linting happens on the bare\nrunner. Use ros-tooling/setup-ros@v0.7 (required-ros-distributions:\njazzy) instead - it installs ROS 2 straight onto the runner via apt,\nso colcon and clang-tidy see the exact same filesystem throughout, no\ncontainer/host split at all. It also brings colcon with it, so the\nmanual apt-get install step goes away too.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* check-all.yml: source setup.bash before the rmw_tickle colcon build\n\nros-tooling/setup-ros@v0.7 installs ROS 2 onto the runner but doesn't\nput ament_cmake et al. on CMAKE_PREFIX_PATH for every subsequent step\nby itself - colcon build failed with \"Could not find a package\nconfiguration file provided by ament_cmake\". Source setup.bash first,\nsame as any fresh ROS 2 terminal would.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* check-all.yml: pip install catkin_pkg for the rmw_tickle colcon build\n\nCMake's ament_package_xml.cmake shells out to `python3` for\ncatkin_pkg's package.xml parser - but actions/setup-python (run\nearlier, for the typesupport regen step) already put its own Python\n3.12 first on PATH, so that's the python3 CMake invokes, and it has\nno catkin_pkg (that's only installed for the system python3 that\nros-tooling/setup-ros's apt packages target). pip install it into\nwhichever python3 is currently active instead of reordering steps.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* rmw_tickle: fix include-cleaner and redundant-declaration findings\n\nNow that the compile database actually resolves (previous 4 commits),\nclang-tidy could finally see real findings instead of just failing to\nparse the file at all:\n\n- rmw_tickle.h re-declared rmw_get_implementation_identifier() and\n  rmw_get_zero_initialized_init_options() - both already declared in\n  rmw/rmw.h, which every .c file needing them already includes\n  directly (rmw_init.c does). Drop the redundant copies rather than\n  keep two declarations of the same function in sync by hand.\n- misc-include-cleaner: both files relied on rmw/rmw.h's own\n  transitive includes for rmw_node_t/rmw_publisher_t/rmw_context_t/\n  rmw_ret_t/rmw_init_options_t/rmw_security_options_t/etc. instead of\n  including each type's own defining header (rmw/types.h, rmw/init.h,\n  rmw/ret_types.h, rmw/init_options.h, rmw/security_options.h,\n  rcutils/allocator.h). rmw_tickle.h no longer needs rmw/rmw.h itself\n  at all once its own declarations are gone - it only ever used types,\n  never called an rmw_* function.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T12:55:05+09:00",
+          "tree_id": "b548eb0b8aad52fdcf3a44bab8b4b87979d7fb3b",
+          "url": "https://github.com/tsnlab/tickle/commit/f1b5b77d9f0dc36818a051e2d1c3fc558ba722b8"
+        },
+        "date": 1789358156274,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.706,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 898.088,
             "unit": "Mbps"
           }
         ]
