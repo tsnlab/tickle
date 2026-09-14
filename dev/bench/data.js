@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789344407559,
+  "lastUpdate": 1789344410231,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2472,6 +2472,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 897.198,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a517f871fcb345ec464ecabb62c465ebd33ebc0b",
+          "message": "README.md: fix docs left stale by the typesupport flatten (M5), plus a \"no make install\" claim\n\n- examples/ layout paragraph: still described the pre-M5 shape (codec + driver together under\n  examples/linux/<protocol>/, examples/freertos/ cross-compiling straight out of that same\n  directory). Rewritten for the actual current layout: examples/<protocol>/ holds the .msg/.srv\n  + its generated codec; examples/linux/<protocol>/ and examples/freertos/<protocol>/ hold only\n  their own driver, both building against the same examples/<protocol>/ codec.\n- \"Integrating the library\": said \"There is no make install yet\" - it's existed since the 1.0\n  readiness pass (see CHANGELOG.md's own Added entry), this just never got mentioned here.\n- \"Message size: filling an Ethernet frame\": the numbers were for the hand-written Bulk (seq +\n  size, 8 bytes of its own header, BULK_MAX_PAYLOAD_SIZE = 1440) - stale since the cutover to the\n  generated codec, whose payload array carries a real uint16 wire length prefix instead (seq + a\n  2-byte count = 6 bytes of its own header, BULKDATA__PAYLOAD_CAPACITY = 1442, auto-derived by\n  tools/typesupport rather than hand-calculated). Recomputed and cross-checked against\n  perf_client's own -h output (`-s  payload bytes per message (default/max 1442: ...)`) and\n  BULKDATA__PAYLOAD_CAPACITY's real value before writing either down.\n\ntools/typesupport/PLAN.md: added the four adapt.py rejects that were never listed in \"Out of\nscope\" (arrays of strings, arrays of nested message types, defaults on a nested message field,\nand a bounded string's own capacity) - all four already raise a clear UnsupportedFieldError\nrather than generating something wrong, just weren't written down as deliberately out of scope\nversus simply forgotten.\n\nNo code changes; `make test` / `make lint` still pass (unaffected either way).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T09:05:47+09:00",
+          "tree_id": "08db25c002b2b59d9722c1a39c038bac4cf21c25",
+          "url": "https://github.com/tsnlab/tickle/commit/a517f871fcb345ec464ecabb62c465ebd33ebc0b"
+        },
+        "date": 1789344409188,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.643,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 892.191,
             "unit": "Mbps"
           }
         ]
