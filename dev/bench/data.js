@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789390672034,
+  "lastUpdate": 1789390675113,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4716,6 +4716,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.905,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ae703758e41cd18a43207a25f459faf93623b79b",
+          "message": "rmw_tickle Milestone 4: mark done, verified green in real CI\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T21:57:01+09:00",
+          "tree_id": "81755d294bd82d484a7694e3e58d857253cb4360",
+          "url": "https://github.com/tsnlab/tickle/commit/ae703758e41cd18a43207a25f459faf93623b79b"
+        },
+        "date": 1789390674057,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.676,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 900.562,
             "unit": "Mbps"
           }
         ]
