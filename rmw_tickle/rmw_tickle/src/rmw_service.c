@@ -73,7 +73,22 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
     svc->current_sequence_id = ++svc->next_sequence_id;
     svc->request_available = true;
     svc->response_ready = false;
+    pthread_mutex_unlock(&svc->request_mutex);
 
+    // Wake anyone blocked in rmw_wait() on this service's request - deliberately *not* held while
+    // still holding request_mutex above: rmw_wait()'s own check_services() locks context_impl-
+    // >wait_mutex first and svc->request_mutex second (see rmw_tickle_context_impl_t's own doc
+    // comment), so taking them in the opposite order here would risk an AB-BA deadlock against a
+    // concurrently running rmw_wait(). request_mutex is re-locked immediately below, before the
+    // response-wait loop starts; response_ready is re-checked fresh once re-locked, so a response
+    // that raced in during this brief gap (extremely unlikely, but not otherwise ruled out) is
+    // still observed correctly rather than waited on unnecessarily.
+    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)svc->node->context->impl;
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+
+    pthread_mutex_lock(&svc->request_mutex);
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own comment
     deadline.tv_nsec += RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS;

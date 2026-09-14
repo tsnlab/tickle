@@ -83,8 +83,8 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
     }
 
     rcutils_allocator_t* allocator = &context->options.allocator;
-    rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)allocator->zero_allocate(
-        1, sizeof(rmw_tickle_node_t), allocator->state);
+    rmw_tickle_node_t* node_impl =
+        (rmw_tickle_node_t*)allocator->zero_allocate(1, sizeof(rmw_tickle_node_t), allocator->state);
     if (NULL == node_impl) {
         RMW_SET_ERROR_MSG("failed to allocate rmw_tickle_node_t");
         atomic_store(&g_tickle_node_created, false);
@@ -182,5 +182,5 @@ const rmw_guard_condition_t* rmw_node_get_graph_guard_condition(const rmw_node_t
         return NULL;
     }
     rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)node->context->impl;
-    return &context_impl->graph_guard_condition;
+    return &context_impl->graph_guard_condition.rmw_guard_condition;
 }

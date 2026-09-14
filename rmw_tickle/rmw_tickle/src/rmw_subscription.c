@@ -73,6 +73,14 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     sub_impl->queue[tail_index].reception_sequence_number = sub_impl->reception_sequence_number++;
     sub_impl->queue_count++;
     pthread_mutex_unlock(&sub_impl->queue_mutex);
+
+    // Wake anyone blocked in rmw_wait() on this queue becoming non-empty - see rmw_tickle_
+    // context_impl_t's own doc comment (rmw_tickle.h) for why the broadcast must happen under
+    // wait_mutex even though queue_count itself is guarded by the separate queue_mutex above.
+    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)sub_impl->node->context->impl;
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
 }
 
 rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,

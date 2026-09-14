@@ -14,6 +14,7 @@
 // reached transitively via this one (misc-include-cleaner attributes them there instead of to
 // pthread.h itself) - same class of system-header quirk as hal_linux.c's own EINTR/POLLIN NOLINTs.
 #include <pthread.h> // NOLINT(misc-include-cleaner)
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -70,14 +71,46 @@ typedef struct rmw_tickle_service_typesupport_t {
 bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support,
                                       rmw_tickle_service_typesupport_t* out);
 
+// Forward reference only (pointer field below) - rmw_tickle_context_impl_t's own full definition
+// needs rmw_tickle_guard_condition_t to already be complete (it embeds one), so the two are
+// declared in this order rather than the other way around.
+typedef struct rmw_tickle_context_impl_t rmw_tickle_context_impl_t;
+
+// TickLE specific guard condition data. Shared by rmw_guard_condition.c's own rmw_create_guard_
+// condition() (heap-allocated, one per rmw_create_guard_condition() call) and rmw_init()'s
+// context_impl.graph_guard_condition (embedded, one per context) - rmw_wait_set.c's rmw_wait()
+// treats both identically since they're the same struct shape either way.
+typedef struct rmw_tickle_guard_condition_t {
+    rmw_guard_condition_t rmw_guard_condition; // RMW guard condition structure (must be first)
+    rmw_tickle_context_impl_t* context_impl;   // to reach wait_mutex/wait_cond below on trigger
+    // atomic rather than mutex-guarded: rmw_trigger_guard_condition() only ever needs to set it,
+    // and rmw_wait()'s own check-then-clear (a guard condition is edge-triggered - observing it
+    // ready in one rmw_wait() call consumes it, so the next one blocks again until retriggered) is
+    // a single atomic_exchange(), needing no separate lock of its own.
+    atomic_bool has_triggered;
+    rcutils_allocator_t allocator;
+} rmw_tickle_guard_condition_t;
+
 // TickLE context implementation
-typedef struct rmw_tickle_context_impl_t {
-    // Graph guard condition for node discovery
-    rmw_guard_condition_t graph_guard_condition;
-    // Placeholder for TickLE context data
-    // This can be extended with TickLE-specific context information
-    int dummy; // Temporary field to avoid empty struct
-} rmw_tickle_context_impl_t;
+struct rmw_tickle_context_impl_t {
+    // Wired up so a wait set can safely include it without crashing (Milestone 5) - actually
+    // *triggered* on a real graph change only from Milestone 6 onward (0(c)'s discovery callback);
+    // until then it simply never fires on its own, same as a graph that never changes would look.
+    rmw_tickle_guard_condition_t graph_guard_condition;
+
+    // Milestone 5's own single condition variable, shared by every waitable entity belonging to
+    // this context (subscriber queues, client responses, service requests, guard conditions) -
+    // see rmw_wait_set.c's own module doc comment for the multi-lock design this enables: a
+    // producer (subscriber_callback() et al.) updates its own entity-local state under its own
+    // fine-grained lock, *then* briefly takes wait_mutex just to broadcast wait_cond: since rmw_
+    // wait() holds wait_mutex continuously across its own check-every-entity pass and into
+    // pthread_cond_timedwait() itself, a producer's broadcast can never land in the gap between
+    // the waiter's last check and it actually starting to wait (the classic lost-wakeup race) -
+    // the producer's attempt to lock wait_mutex simply blocks until the waiter reaches the wait
+    // call, at which point the broadcast is guaranteed to be observed.
+    pthread_mutex_t wait_mutex;
+    pthread_cond_t wait_cond;
+};
 
 // TickLE specific node data
 typedef struct rmw_tickle_node_t {
@@ -231,18 +264,15 @@ typedef struct rmw_tickle_service_t {
     int64_t next_sequence_id;
 } rmw_tickle_service_t;
 
-// TickLE specific guard condition data
-typedef struct rmw_tickle_guard_condition_t {
-    rmw_guard_condition_t rmw_guard_condition; // RMW guard condition structure (must be first)
-    bool has_triggered;
-    rcutils_allocator_t allocator;
-} rmw_tickle_guard_condition_t;
-
-// TickLE specific wait set data
+// TickLE specific wait set data. Unlike a typical DDS-backed rmw, this doesn't need its own
+// condition variable or any pre-sized entity storage - rmw_wait() (rmw_wait_set.c) waits directly
+// on context_impl->wait_cond (shared by the one node/context this rmw currently supports - see
+// PLAN.md's "Deferred: multiple ROS 2 nodes per process"), and the entity arrays it scans each
+// call are owned and sized by rcl itself, not by this wait set. `max_conditions` (rmw_create_wait_
+// set()'s own parameter) has nothing to size here for the same reason and is simply ignored.
 typedef struct rmw_tickle_wait_set_t {
     rmw_wait_set_t rmw_wait_set; // RMW wait set structure (must be first)
-    rmw_tickle_guard_condition_t** guard_conditions;
-    size_t guard_condition_count;
+    rmw_tickle_context_impl_t* context_impl;
     rcutils_allocator_t allocator;
 } rmw_tickle_wait_set_t;
 

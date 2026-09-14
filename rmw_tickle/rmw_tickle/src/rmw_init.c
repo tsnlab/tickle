@@ -8,6 +8,8 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
+#include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,9 +128,27 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // Initialize the context implementation
     memset(impl, 0, sizeof(rmw_tickle_context_impl_t));
 
-    // Initialize graph guard condition
-    impl->graph_guard_condition.implementation_identifier = RMW_TICKLE_IDENTIFIER;
-    impl->graph_guard_condition.data = NULL;
+    if (pthread_mutex_init(&impl->wait_mutex, NULL) != 0) {
+        RMW_SET_ERROR_MSG("failed to initialize context wait_mutex");
+        options->allocator.deallocate(impl, options->allocator.state);
+        return RMW_RET_ERROR;
+    }
+    if (pthread_cond_init(&impl->wait_cond, NULL) != 0) {
+        RMW_SET_ERROR_MSG("failed to initialize context wait_cond");
+        pthread_mutex_destroy(&impl->wait_mutex);
+        options->allocator.deallocate(impl, options->allocator.state);
+        return RMW_RET_ERROR;
+    }
+
+    // rmw_tickle/PLAN.md's Milestone 5: safely waitable from the start (rmw_wait() never crashes
+    // seeing it in a wait set); actually triggered on a real graph change is Milestone 6, not yet
+    // wired up - see rmw_tickle_context_impl_t's own doc comment.
+    impl->graph_guard_condition.rmw_guard_condition.implementation_identifier = RMW_TICKLE_IDENTIFIER;
+    impl->graph_guard_condition.rmw_guard_condition.data = &impl->graph_guard_condition;
+    impl->graph_guard_condition.rmw_guard_condition.context = context;
+    impl->graph_guard_condition.context_impl = impl;
+    atomic_init(&impl->graph_guard_condition.has_triggered, false);
+    impl->graph_guard_condition.allocator = options->allocator;
 
     context->impl = (rmw_context_impl_t*)impl;
 
@@ -167,6 +187,9 @@ rmw_ret_t rmw_context_fini(rmw_context_t* const context) {
 
     // Free the context implementation
     if (context->impl != NULL) {
+        rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)context->impl;
+        pthread_cond_destroy(&impl->wait_cond);
+        pthread_mutex_destroy(&impl->wait_mutex);
         context->options.allocator.deallocate(context->impl, context->options.allocator.state);
         context->impl = NULL;
     }

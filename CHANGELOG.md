@@ -106,6 +106,17 @@ number, `tt_VERSION`, which moves independently.
   synchronous single-threaded-executor pattern this targets first; documented, not solved, for a
   slow/deferred handler). Both sides mirror TickLE's own one-outstanding-call-at-a-time limit
   directly rather than queueing several in-flight requests per client.
+- `rmw_create_wait_set()`/`rmw_destroy_wait_set()`/`rmw_wait()` (`rmw_tickle/src/rmw_wait_set.c`,
+  new) and `rmw_create_guard_condition()`/`rmw_destroy_guard_condition()`/
+  `rmw_trigger_guard_condition()` (`rmw_tickle/src/rmw_guard_condition.c`, new)
+  (`rmw_tickle/PLAN.md`'s Milestone 5): one condition variable per context, shared by every
+  waitable entity (subscriber queues, client responses, service requests, guard conditions) -
+  `rmw_wait()` holds it continuously across its own check-every-entity pass and into the actual
+  wait call, while every producer takes it only after releasing its own entity-local lock just to
+  broadcast, closing the classic lost-wakeup race between the two. `rmw_node_get_graph_guard_
+  condition()`'s own guard condition is now a real, safely-waitable one (previously `.data ==
+  NULL`, which would have crashed the moment any wait set checked it) - actually triggering it on
+  a graph change is still Milestone 6.
 
 ## [1.0.0] - 2026-09-14
 

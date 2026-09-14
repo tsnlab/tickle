@@ -61,6 +61,14 @@ static void client_callback(struct tt_Client* tt_client, int8_t return_code, str
     }
     client_impl->response_ready = true;
     pthread_mutex_unlock(&client_impl->response_mutex);
+
+    // Wake anyone blocked in rmw_wait() on this client's response - see rmw_tickle_context_impl_t's
+    // own doc comment (rmw_tickle.h) for why the broadcast must happen under wait_mutex even though
+    // response_ready itself is guarded by the separate response_mutex above.
+    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)client_impl->node->context->impl;
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
 }
 
 rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_type_support_t* type_support,
