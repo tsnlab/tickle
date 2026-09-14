@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789381314839,
+  "lastUpdate": 1789381317885,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5122,6 +5122,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.046,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3f9ad25a1c37dc9b2f25be2e53f37be246f6a373",
+          "message": "rmw_tickle Milestone 3: mark done, verified green in real CI\n\nCHANGELOG.md: record rmw_create_publisher()/rmw_publish(), rmw_create_\nsubscription()/rmw_take(_with_info)(), rmw_serialize()/rmw_deserialize() as\nreal, working entry points now that check-all.yml's real ROS 2 CI has\nproven them.\n\nPLAN.md: Milestone 3 marked done, noting the lint-only CI round trips\n(misc-include-cleaner wanting direct includes even where a transitively-\nincluded umbrella header already provides the symbol, one particularly\nnon-obvious case being rmw_time_point_value_t living in rmw/time.h rather\nthan rmw/types.h) and the one known, explicitly-deferred correctness gap\n(rmw_take_with_info()/rmw_deserialize() assume a fresh ros_message buffer,\nsince properly handling a reused one needs a per-message __fini() function\npointer rosidl_typesupport_tickle_c doesn't generate yet).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T19:21:07+09:00",
+          "tree_id": "5f71787a0047e5ebe3285b63af62b87ffdfab691",
+          "url": "https://github.com/tsnlab/tickle/commit/3f9ad25a1c37dc9b2f25be2e53f37be246f6a373"
+        },
+        "date": 1789381316851,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.011,
             "unit": "ms"
           }
         ]
