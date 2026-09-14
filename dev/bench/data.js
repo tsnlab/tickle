@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789387073588,
+  "lastUpdate": 1789387077160,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4444,6 +4444,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 903.283,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "801452d775393f6366f7545bb05a5a6e40544000",
+          "message": "Fix check-all: clang-format test_dispatch_srv.c\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T20:57:03+09:00",
+          "tree_id": "611ab32e87bc1a578f46abff4f60ba2bc2b0c9f8",
+          "url": "https://github.com/tsnlab/tickle/commit/801452d775393f6366f7545bb05a5a6e40544000"
+        },
+        "date": 1789387075955,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.68,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 893.417,
             "unit": "Mbps"
           }
         ]
