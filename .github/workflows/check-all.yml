@@ -157,6 +157,11 @@ jobs:
             --packages-select rmw_tickle rosidl_typesupport_tickle_c \
             --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           source install/setup.bash
+          # TODO: temporary diagnostics for the ament-index registration gap (rmw_tickle/PLAN.md's
+          # Milestone 1(c)) - remove once the actual cause is confirmed and fixed.
+          echo "AMENT_PREFIX_PATH=$AMENT_PREFIX_PATH"
+          find install -path '*resource_index/rosidl_typesupport_c*'
+          find install/rosidl_typesupport_tickle_c -type f
           colcon build \
             --packages-select rosidl_typesupport_tickle_c_tests \
             --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
