@@ -144,27 +144,32 @@ jobs:
           pip install numpy lark catkin_pkg
           # Two colcon build calls, not one covering all three packages: rosidl_typesupport_tickle_c_
           # tests' own rosidl_generate_interfaces() call needs rosidl_typesupport_tickle_c to already
-          # be *discoverable via the ament index*, not just find_package()-able. Those are two
-          # different things - colcon extends CMAKE_PREFIX_PATH across packages within a single
-          # build run (why find_package(rosidl_typesupport_tickle_c) itself would still succeed even
-          # in one combined call), but ament_index_get_resources() (what get_used_typesupports(),
-          # and so rmw_tickle/PLAN.md's Milestone 1(c) registration, actually queries) reads the
-          # AMENT_PREFIX_PATH *environment variable* instead, which colcon does not extend mid-build -
-          # only sourcing install/setup.bash after a build finishes does that, the same way a fresh
-          # terminal on a real ROS 2 install would need to. rmw_tickle needs neither rosidl_
-          # typesupport_tickle_c nor _tests, so it stays in the first call for less redundant work.
+          # be *discoverable via the ament index*, not just find_package()-able. A one-off diagnostic
+          # run (echoing AMENT_PREFIX_PATH and `find`ing the installed marker file right after
+          # sourcing install/setup.bash below) confirmed colcon's own per-package environment
+          # extension already gets this right even within one combined colcon build call - so this
+          # split turned out not to be the fix for the failure that followed (BUILD_SHARED_LIBS
+          # below was) - kept anyway since it's the more explicit, easier-to-reason-about ordering,
+          # and rmw_tickle needs neither rosidl_typesupport_tickle_c nor _tests so splitting costs
+          # nothing extra.
+          # -DBUILD_SHARED_LIBS=ON on both calls: confirmed via that same one-off diagnostic run that the
+          # AMENT_PREFIX_PATH/ament-index registration itself was already correct (the marker file
+          # existed, and was on AMENT_PREFIX_PATH) - the actual reason get_message_typesupport_
+          # handle() still couldn't reach rosidl_typesupport_tickle_c was that rosidl_typesupport_c's
+          # own runtime dispatch (rosidl_typesupport_c__get_message_typesupport_handle_function,
+          # rosidl_typesupport_c/src/message_type_support_dispatch.cpp) loads a message's specific
+          # typesupport implementation via dlopen() by convention name at *runtime* - impossible for
+          # a plain .a static archive (CMake's own default absent BUILD_SHARED_LIBS), confirmed by
+          # that same diagnostic run showing librosidl_typesupport_tickle_c.a getting built. /opt/
+          # ros/jazzy's own apt-built packages are already shared (that's how apt-packaged ROS 2 is
+          # always built) - only our own two packages, built fresh here, needed telling explicitly.
           colcon build \
             --packages-select rmw_tickle rosidl_typesupport_tickle_c \
-            --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=ON
           source install/setup.bash
-          # TODO: temporary diagnostics for the ament-index registration gap (rmw_tickle/PLAN.md's
-          # Milestone 1(c)) - remove once the actual cause is confirmed and fixed.
-          echo "AMENT_PREFIX_PATH=$AMENT_PREFIX_PATH"
-          find install -path '*resource_index/rosidl_typesupport_c*'
-          find install/rosidl_typesupport_tickle_c -type f
           colcon build \
             --packages-select rosidl_typesupport_tickle_c_tests \
-            --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=ON
           # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
           # need to stay put for clang-tidy to lint everything else. rosidl_typesupport_tickle_c_
           # tests' own compile_commands.json is the one that actually has entries for the files
