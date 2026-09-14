@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789348058479,
+  "lastUpdate": 1789349398123,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1446,6 +1446,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/a6e5a8c0f33fa0ddac227e02da529e324c0524a4"
         },
         "date": 1789348051422,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d3b430e59c70aa5ad168578097f66d9495afbdc2",
+          "message": "CHANGELOG: record discovery-unicast + bounded strings, cut v1.0.0\n\nBoth features were already merged (peer-discovery unicast: 1dcb059,\n0fded4b; bounded string capacity: this session) but never made it\ninto the changelog - CONTRIBUTING.md's own rule is to record anything\nuser-visible there. Fold them into the Added section, then promote\nUnreleased to the first tagged release.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T10:29:06+09:00",
+          "tree_id": "c2a6e840c30eb779541de75023d8e345ff4821a9",
+          "url": "https://github.com/tsnlab/tickle/commit/d3b430e59c70aa5ad168578097f66d9495afbdc2"
+        },
+        "date": 1789349396635,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
