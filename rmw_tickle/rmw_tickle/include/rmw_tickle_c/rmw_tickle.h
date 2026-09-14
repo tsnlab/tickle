@@ -10,11 +10,15 @@
 
 #pragma once
 
-#include <pthread.h>
+// pthread_t/pthread_mutex_t/pthread_cond_t below are declared through a private glibc header
+// reached transitively via this one (misc-include-cleaner attributes them there instead of to
+// pthread.h itself) - same class of system-header quirk as hal_linux.c's own EINTR/POLLIN NOLINTs.
+#include <pthread.h> // NOLINT(misc-include-cleaner)
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
+#include <tickle/config.h> // tt_SECOND
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -93,8 +97,8 @@ typedef struct rmw_tickle_node_t {
     // pattern rmw_destroy_node() itself uses to stop poll_thread. tt_Node_interrupt() is the one
     // tt_Node_* call explicitly safe to make without holding `mutex` first (see tickle.h's own
     // doc comment on it).
-    pthread_t poll_thread;
-    pthread_mutex_t mutex;
+    pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
+    pthread_mutex_t mutex; // NOLINT(misc-include-cleaner)
     volatile bool poll_thread_running;
 } rmw_tickle_node_t;
 
@@ -174,12 +178,12 @@ typedef struct rmw_tickle_client_t {
     // holding node->mutex; rmw_take_response() - whichever thread the application calls it from -
     // has no reason to wait on that just to poll this one response slot).
     pthread_mutex_t response_mutex;
-    bool response_ready;       // client_callback() has filled response_storage (or gave up)
-    bool response_success;     // false if the call timed out (tt_CALL_TIMEOUT) - response_storage
-                                // wasn't touched in that case
+    bool response_ready;   // client_callback() has filled response_storage (or gave up)
+    bool response_success; // false if the call timed out (tt_CALL_TIMEOUT) - response_storage
+                           // wasn't touched in that case
     int64_t response_sequence_id;
-    void* response_storage;    // response_callbacks->ros_struct_size bytes, reused across calls
-                                // (only one outstanding at a time - see above)
+    void* response_storage; // response_callbacks->ros_struct_size bytes, reused across calls
+                            // (only one outstanding at a time - see above)
     int64_t next_sequence_id;
 } rmw_tickle_client_t;
 
@@ -211,9 +215,9 @@ typedef struct rmw_tickle_service_t {
     // limit as rmw_tickle_client_t's own (mirroring TickLE's tt_Server, which likewise only ever
     // has one request in flight through a given server_callback() invocation at a time).
     pthread_mutex_t request_mutex;
-    pthread_cond_t request_cond;
-    bool request_available; // server_callback() has a request waiting for rmw_take_request()
-    bool response_ready;    // rmw_send_response() has filled response_storage for it
+    pthread_cond_t request_cond; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
+    bool request_available;      // server_callback() has a request waiting for rmw_take_request()
+    bool response_ready;         // rmw_send_response() has filled response_storage for it
     int64_t current_sequence_id;
     // ROS-shaped (request_callbacks->ros_struct_size bytes) - server_callback() converts TickLE's
     // own request (aliasing node->rx_buffer, same DESIGN.md "Strings" concern as rmw_subscription.

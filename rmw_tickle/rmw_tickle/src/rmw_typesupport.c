@@ -61,11 +61,13 @@ bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_
         return false;
     }
 
-    const rosidl_typesupport_tickle_c_message_callbacks_t* request = rmw_tickle_get_message_callbacks(ours->request_typesupport);
+    const rosidl_typesupport_tickle_c_message_callbacks_t* request =
+        rmw_tickle_get_message_callbacks(ours->request_typesupport);
     if (NULL == request) {
         return false; // error message already set
     }
-    const rosidl_typesupport_tickle_c_message_callbacks_t* response = rmw_tickle_get_message_callbacks(ours->response_typesupport);
+    const rosidl_typesupport_tickle_c_message_callbacks_t* response =
+        rmw_tickle_get_message_callbacks(ours->response_typesupport);
     if (NULL == response) {
         return false; // error message already set
     }

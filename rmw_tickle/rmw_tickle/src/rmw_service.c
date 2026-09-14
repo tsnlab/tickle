@@ -41,7 +41,6 @@
 #include "rmw/error_handling.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
-#include "rmw/time.h" // rmw_time_point_value_t
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
@@ -57,7 +56,8 @@
 // Runs on the node's poll thread, node->mutex already held (rmw_tickle.h's own threading model).
 // See this file's own module doc comment for the full bridge rationale.
 static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* request, struct tt_Response* response) {
-    rmw_tickle_service_t* svc = (rmw_tickle_service_t*)((char*)tt_server - offsetof(rmw_tickle_service_t, tickle_server));
+    rmw_tickle_service_t* svc =
+        (rmw_tickle_service_t*)((char*)tt_server - offsetof(rmw_tickle_service_t, tickle_server));
 
     pthread_mutex_lock(&svc->request_mutex);
 
@@ -74,10 +74,13 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
     svc->response_ready = false;
 
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
+    clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own comment
     deadline.tv_nsec += RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS;
-    deadline.tv_sec += deadline.tv_nsec / 1000000000L;
-    deadline.tv_nsec %= 1000000000L;
+    // tt_SECOND (nanoseconds per second) instead of a raw 1000000000 literal - already the
+    // project's own name for this exact quantity (config.h), and RMW_TICKLE_SERVICE_RESPONSE_
+    // TIMEOUT_NS above is itself defined as a multiple of it.
+    deadline.tv_sec += (time_t)(deadline.tv_nsec / (long)tt_SECOND);
+    deadline.tv_nsec %= (long)tt_SECOND;
 
     int wait_ret = 0;
     while (!svc->response_ready && wait_ret == 0) {
@@ -191,7 +194,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_mutex_lock(&node_impl->mutex);
     tt_ret_t ret = tt_Node_create_server(&node_impl->tickle_node, &svc->tickle_server, &svc->service,
-                                        svc->rmw_service.service_name, server_callback);
+                                         svc->rmw_service.service_name, server_callback);
     pthread_mutex_unlock(&node_impl->mutex);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create_server() failed");
@@ -234,7 +237,8 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
     return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* request_header, void* ros_request, bool* taken) {
+rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* request_header, void* ros_request,
+                           bool* taken) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(service, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(request_header, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_request, RMW_RET_INVALID_ARGUMENT);

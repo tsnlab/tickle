@@ -36,7 +36,6 @@
 #include "rmw/error_handling.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
-#include "rmw/time.h" // rmw_time_point_value_t
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
@@ -50,13 +49,15 @@
 // only ever *reads* the result later via rmw_take_response(), it never has to send anything back
 // through this same callback.
 static void client_callback(struct tt_Client* tt_client, int8_t return_code, struct tt_Response* response) {
-    rmw_tickle_client_t* client_impl = (rmw_tickle_client_t*)((char*)tt_client - offsetof(rmw_tickle_client_t, tickle_client));
+    rmw_tickle_client_t* client_impl =
+        (rmw_tickle_client_t*)((char*)tt_client - offsetof(rmw_tickle_client_t, tickle_client));
 
     pthread_mutex_lock(&client_impl->response_mutex);
     if (return_code == tt_CALL_TIMEOUT || NULL == response) {
         client_impl->response_success = false;
     } else {
-        client_impl->response_success = client_impl->response_callbacks->from_tickle(response, client_impl->response_storage);
+        client_impl->response_success =
+            client_impl->response_callbacks->from_tickle(response, client_impl->response_storage);
     }
     client_impl->response_ready = true;
     pthread_mutex_unlock(&client_impl->response_mutex);
@@ -115,8 +116,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     // call_retry_interval/call_retry_count left 0 (zero_allocate) - "0 means auto"/"0 means
     // tt_CALL_RETRY_COUNT" (tickle.h's own struct tt_Service doc comment), i.e. TickLE's defaults.
 
-    client_impl->response_storage =
-        allocator->zero_allocate(1, callbacks.response->ros_struct_size, allocator->state);
+    client_impl->response_storage = allocator->zero_allocate(1, callbacks.response->ros_struct_size, allocator->state);
     if (NULL == client_impl->response_storage) {
         RMW_SET_ERROR_MSG("failed to allocate response storage");
         allocator->deallocate(client_impl, allocator->state);
@@ -146,7 +146,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_mutex_lock(&node_impl->mutex);
     tt_ret_t ret = tt_Node_create_client(&node_impl->tickle_node, &client_impl->tickle_client, &client_impl->service,
-                                        client_impl->rmw_client.service_name, client_callback);
+                                         client_impl->rmw_client.service_name, client_callback);
     pthread_mutex_unlock(&node_impl->mutex);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create_client() failed");
@@ -197,7 +197,8 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request, 
     rmw_tickle_client_t* client_impl = (rmw_tickle_client_t*)client->data;
     const rosidl_typesupport_tickle_c_message_callbacks_t* request_callbacks = client_impl->request_callbacks;
 
-    void* tickle_buf = client_impl->allocator.allocate(request_callbacks->tickle_struct_size, client_impl->allocator.state);
+    void* tickle_buf =
+        client_impl->allocator.allocate(request_callbacks->tickle_struct_size, client_impl->allocator.state);
     if (NULL == tickle_buf) {
         RMW_SET_ERROR_MSG("failed to allocate scratch TickLE request struct");
         return RMW_RET_BAD_ALLOC;
@@ -230,7 +231,8 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request, 
     return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* request_header, void* ros_response, bool* taken) {
+rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* request_header, void* ros_response,
+                            bool* taken) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(request_header, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_response, RMW_RET_INVALID_ARGUMENT);
