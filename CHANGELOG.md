@@ -37,6 +37,20 @@ number, `tt_VERSION`, which moves independently.
   by whoever opts in, so a `tt_Node` with nothing attached (including a possible future
   micro-ROS-style thin FreeRTOS client, whose *agent* rather than the constrained device itself
   would want this) doesn't pay for it.
+- `tools/typesupport/tickle_typesupport/ros2_adapter.py` (`rmw_tickle/PLAN.md`'s Milestone 1(a)):
+  generates a converter (`<ros_name>__to_tickle`/`__from_tickle`) between a real ROS 2 interface
+  package's own `rosidl_generator_c` struct and this tool's own, already-generated, already-tested
+  struct/codec for that same message - field-by-field copy plus bounds checks, reusing the existing
+  `<Msg>_encode`/`_decode`/`_encode_size`/`_free` codec completely unchanged rather than
+  regenerating CDR-4 logic a second time against ROS 2's struct shape. Verified fully offline (no
+  ROS 2 install exists in this tool's own dev/test environment): `tests/fixtures_ros2_adapter/`'s
+  hand-written stand-ins for `rosidl_generator_c`/`rosidl_runtime_c` let `tests/test_ros2_adapter.py`
+  compile and round-trip the generated converter against the real TickLE codec, covering scalars,
+  fixed arrays, bounded/unbounded variable arrays (including over-capacity rejection), and
+  bounded/unbounded strings (including over-capacity rejection) - clang-tidy-clean and
+  warning-free under the project's own `.clang-tidy`/`-Wall -Wextra`. Not yet checked against a
+  real ROS 2 install's actual header shapes, and not yet wired into an actual CMake build
+  (`rmw_tickle/PLAN.md`'s Milestone 1(b), still pending).
 
 ## [1.0.0] - 2026-09-14
 
