@@ -142,8 +142,23 @@ jobs:
           # first on PATH, so that's the python3 CMake's find_package(Python3) resolves to, not
           # the system one apt's packages would land in.
           pip install numpy lark catkin_pkg
+          # Two colcon build calls, not one covering all three packages: rosidl_typesupport_tickle_c_
+          # tests' own rosidl_generate_interfaces() call needs rosidl_typesupport_tickle_c to already
+          # be *discoverable via the ament index*, not just find_package()-able. Those are two
+          # different things - colcon extends CMAKE_PREFIX_PATH across packages within a single
+          # build run (why find_package(rosidl_typesupport_tickle_c) itself would still succeed even
+          # in one combined call), but ament_index_get_resources() (what get_used_typesupports(),
+          # and so rmw_tickle/PLAN.md's Milestone 1(c) registration, actually queries) reads the
+          # AMENT_PREFIX_PATH *environment variable* instead, which colcon does not extend mid-build -
+          # only sourcing install/setup.bash after a build finishes does that, the same way a fresh
+          # terminal on a real ROS 2 install would need to. rmw_tickle needs neither rosidl_
+          # typesupport_tickle_c nor _tests, so it stays in the first call for less redundant work.
           colcon build \
-            --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_c_tests \
+            --packages-select rmw_tickle rosidl_typesupport_tickle_c \
+            --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          source install/setup.bash
+          colcon build \
+            --packages-select rosidl_typesupport_tickle_c_tests \
             --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
           # need to stay put for clang-tidy to lint everything else. rosidl_typesupport_tickle_c_
