@@ -103,8 +103,14 @@ jobs:
           # to install ROS... but no actual ROS packages installed yet" (its own README) - hence
           # no /opt/ros/*/setup.bash; ...-ros-jazzy-ros-base-latest is the tag that actually has
           # ROS 2 Jazzy (the Noble-targeted distro) preinstalled. ros-base doesn't include colcon
-          # itself, so install that too.
-          docker run --rm -v "$PWD:/ws" -w /ws rostooling/setup-ros-docker:ubuntu-noble-ros-jazzy-ros-base-latest \
+          # itself, so install that too. Mount at the *same* absolute path the runner itself sees
+          # ($PWD, not some /ws convenience alias) - CMake bakes the build directory's absolute
+          # path into compile_commands.json (colcon/CMAKE_EXPORT_COMPILE_COMMANDS doesn't record
+          # relative paths), and clang-tidy (run on the *host* below, outside this container, by
+          # cpp-linter-action) looks up each file by that same absolute path - a mismatched mount
+          # point would leave every entry unmatched, silently falling back to no include flags at
+          # all rather than erroring.
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" rostooling/setup-ros-docker:ubuntu-noble-ros-jazzy-ros-base-latest \
             bash -c 'source /opt/ros/*/setup.bash && \
               apt-get update && apt-get install -y python3-colcon-common-extensions && \
               colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
