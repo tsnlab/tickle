@@ -24,6 +24,11 @@ jobs:
           sudo apt update
           sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf
 
+      - name: Set up ROS 2 (for rmw_tickle)
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -92,28 +97,20 @@ jobs:
       - name: Generate compile_commands.json for rmw_tickle
         run: |
           # rmw_tickle needs a real ROS 2 environment (ament_cmake, rcutils, rmw, rosidl_runtime_c)
-          # colcon can find via `find_package` - rather than run the *whole* job inside a ROS
-          # Docker image (tried first; broke the plain `sudo apt install bear` step above with an
-          # unanswerable interactive prompt, since that image's apt isn't configured
-          # non-interactive by default, and would have put every other step's toolchain
-          # expectations - riscv64 cross-compiler, clang-tidy via cpp-linter-action - at risk of
-          # the same kind of surprise) run just this one build inside a throwaway container on the
-          # runner's own Docker daemon, exactly like a local dev machine without ROS installed
-          # would. `ubuntu-noble-latest` (tried first) is that project's bare OS-base tag - "ready
-          # to install ROS... but no actual ROS packages installed yet" (its own README) - hence
-          # no /opt/ros/*/setup.bash; ...-ros-jazzy-ros-base-latest is the tag that actually has
-          # ROS 2 Jazzy (the Noble-targeted distro) preinstalled. ros-base doesn't include colcon
-          # itself, so install that too. Mount at the *same* absolute path the runner itself sees
-          # ($PWD, not some /ws convenience alias) - CMake bakes the build directory's absolute
-          # path into compile_commands.json (colcon/CMAKE_EXPORT_COMPILE_COMMANDS doesn't record
-          # relative paths), and clang-tidy (run on the *host* below, outside this container, by
-          # cpp-linter-action) looks up each file by that same absolute path - a mismatched mount
-          # point would leave every entry unmatched, silently falling back to no include flags at
-          # all rather than erroring.
-          docker run --rm -v "$PWD:$PWD" -w "$PWD" rostooling/setup-ros-docker:ubuntu-noble-ros-jazzy-ros-base-latest \
-            bash -c 'source /opt/ros/*/setup.bash && \
-              apt-get update && apt-get install -y python3-colcon-common-extensions && \
-              colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
+          # colcon can find via `find_package`. Tried running colcon inside a throwaway ROS Docker
+          # container instead of installing ROS onto the runner directly - twice: first the whole
+          # job in a container (broke the plain `sudo apt install bear` step above with an
+          # unanswerable interactive prompt); then just this one step in its own `docker run`
+          # (colcon succeeded, but clang-tidy - run on the *host*, by cpp-linter-action, below -
+          # could resolve our own headers fine once the container was mounted at the runner's own
+          # $PWD, but could never resolve rcutils/rmw/rosidl_runtime_c's own headers, because those
+          # only exist inside the `--rm`-and-gone container's /opt/ros, never on the host at all).
+          # `ros-tooling/setup-ros@v0.7` (above) sidesteps the whole class of problem: it installs
+          # ROS 2 straight onto the runner's own filesystem via apt, so every header colcon's build
+          # sees is a header clang-tidy can see afterward too - same convention every other
+          # ros-tooling-based ROS 2 CI uses, and it brought colcon with it (part of the ROS 2 dev
+          # tools it installs), so nothing else to add here.
+          colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
           # need to stay put for clang-tidy to lint everything else.
           jq -s 'add' compile_commands.json build/rmw_tickle/compile_commands.json > compile_commands.tmp
