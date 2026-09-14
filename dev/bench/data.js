@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789373328885,
+  "lastUpdate": 1789373331799,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3492,6 +3492,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 900.327,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7219c6d455ad7a31bde10170e81b8abf1f2c17c4",
+          "message": "Fix check-all: rosidl_generate_interfaces() needs rosidl_cmake found too\n\nd70b26c dropped rosidl_default_generators in favor of a minimal dependency\nset (rosidl_generator_c + rosidl_typesupport_c), but rosidl_\ngenerate_interfaces() itself is provided by rosidl_cmake, which\nrosidl_default_generators had only been pulling in transitively - without\nit: \"Unknown CMake command rosidl_generate_interfaces\". find_package(\nrosidl_cmake REQUIRED) explicitly instead, and declare it as a\nbuildtool_depend in package.xml.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T17:07:59+09:00",
+          "tree_id": "81a6a0e2411a9a6b24d93c1dc20a03bbc0e7a65b",
+          "url": "https://github.com/tsnlab/tickle/commit/7219c6d455ad7a31bde10170e81b8abf1f2c17c4"
+        },
+        "date": 1789373330666,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.652,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 889.355,
             "unit": "Mbps"
           }
         ]
