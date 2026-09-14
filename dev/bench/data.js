@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789377670675,
+  "lastUpdate": 1789377673612,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4540,6 +4540,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.014,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c7a90b59eadb735e462aef67032b257d669329a9",
+          "message": "rmw_tickle Milestone 2: rmw_create_node()/rmw_destroy_node()\n\nNew src/rmw_node.c: rmw_create_node()/rmw_destroy_node()/rmw_node_get_\ngraph_guard_condition(), implementing rmw_tickle/PLAN.md's threading model\n(TickLE row: \"single-threaded per tt_Node\"; rmw_tickle row: \"owns all lock/\nthread management - a background thread per node drives tt_Node_poll(); a\nper-node mutex serializes every other entry point against it\").\n\nrmw_tickle_node_t (rmw_tickle.h) gains poll_thread/mutex/poll_thread_\nrunning. poll_thread loops tt_Node_poll(&tickle_node, tt_RECEIVE_TIMEOUT),\nholding `mutex` only around each individual call - not across iterations,\nand not while blocked in the syscall underneath a single call for longer\nthan that short (100us, config.h) default timeout. Every other entry point\nthat will touch tickle_node (rmw_publish() et al., Milestone 3+) is meant to\ntt_Node_interrupt(&tickle_node) *then* lock `mutex` before doing so -\ntt_Node_interrupt() is the one tt_Node_* call Milestone 0(a) built\nspecifically to be safe from a different thread than whichever one is\nblocked in tt_Node_poll(). rmw_destroy_node() uses that exact pattern to\nstop poll_thread before tt_Node_destroy(): clear poll_thread_running,\ninterrupt, join, destroy.\n\n_tt_CONFIG (config.h) is a process-wide global, not per-node, so only one\ntt_Node can exist per process for now - a process-wide atomic flag rejects\na second rmw_create_node() call outright (RMW_RET-equivalent NULL + error\nmessage) rather than silently colliding with the first. \"Multiple ROS 2\nnodes per process\" stays the explicitly deferred PLAN.md item it already\nwas; this just makes the current limit fail loudly instead of silently.\n\nrmw_tickle/rmw_tickle/CMakeLists.txt: compiles TickLE's own src/tickle.c/\nencoding.c/log.c/hal_linux.c straight into librmw_tickle and links\nThreads::Threads - the first milestone that actually calls into TickLE's\nreal node lifecycle (tt_Node_create/_poll/_interrupt/_destroy); rmw_init.c\nonly ever touched the _tt_CONFIG global struct before this, needing none of\nTickLE's compiled code. No installed ament/colcon TickLE package exists to\nlink against instead - same reasoning already established for rosidl_\ntypesupport_tickle_c's own CMakeLists.txt.\n\nAlso filled in rmw_get_serialization_format() (rmw_init.c) - missing from\nthe #20-era scaffold despite RMW_TICKLE_SERIALIZATION_FORMAT/rmw_tickle_\nserialization_format already existing right next to it.\n\nNot yet verified against a real ROS 2 build - no local ROS 2 install to\ncheck rmw/rcutils header usage against directly, unlike Milestone 1's\nCMake-internals research (this one's API surface is small and copies\nrmw_init.c's own already-CI-verified macro/field usage directly, but the\nactual compile is still pending the next CI run).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T18:20:22+09:00",
+          "tree_id": "ece24e51f6bc0a3f5c646ccafa3adc3e056b8115",
+          "url": "https://github.com/tsnlab/tickle/commit/c7a90b59eadb735e462aef67032b257d669329a9"
+        },
+        "date": 1789377672502,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.013,
             "unit": "ms"
           }
         ]
