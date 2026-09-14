@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789371812620,
+  "lastUpdate": 1789371815498,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3220,6 +3220,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.623,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "100ba2323e1bb15efcd5b7d5d4d7144885b05f24",
+          "message": "Fix check-all: rosidl_generator_py needs NumPy, not something we use\n\nrosidl_typesupport_tickle_c_tests declares <depend>rosidl_default_generators</depend>\n(matching how any real ROS 2 interface package declares its own generator\ndependency) - that transitively pulls in rosidl_generator_py too, unrelated\nto rosidl_typesupport_tickle_c itself, whose own CMake configure step\n(rosidl_generator_py_generate_interfaces.cmake) needs Python3's NumPy\nheaders and failed outright since this CI environment never installed it:\n\n  CMake Error ... Could NOT find Python3 (missing: Python3_NumPy_INCLUDE_DIRS NumPy)\n\npip install rather than `apt install python3-numpy`: actions/setup-python's\nown Python 3.12 is first on PATH (same reason catkin_pkg right below it is\npip-installed instead of apt-installed), so that's the python3 CMake's\nfind_package(Python3) resolves to - not the system one apt's package would\nland in.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T16:42:43+09:00",
+          "tree_id": "55189154d1dfb2b6bbab7a57190861c20e33d36a",
+          "url": "https://github.com/tsnlab/tickle/commit/100ba2323e1bb15efcd5b7d5d4d7144885b05f24"
+        },
+        "date": 1789371814439,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.608,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 895.522,
             "unit": "Mbps"
           }
         ]
