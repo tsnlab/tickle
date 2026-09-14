@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789362563192,
+  "lastUpdate": 1789362566229,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3085,6 +3085,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.01,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1e76fb2ec4fc0ae40bc76cc13e966ed8b895caa9",
+          "message": "Liveliness timeout: presume a silent peer gone after N missed UPDATEs\n\nrmw_tickle/PLAN.md's Milestone 0(b). Discovery previously only forgot\na remote node's peer-table entries when a *fresh* UPDATE said it no\nlonger hosts them, or when it sent tt_Node_destroy()'s own explicit\nfarewell UPDATE - a node that just stopped announcing at all (crash,\nnetwork partition, anything that skips the farewell) lingered in\nevery peer table forever, since process_update()'s own dedup early\nreturn (unchanged content) never touched any per-source timestamp.\n\nAdd tt_Node.update_last_seen[] (wall-clock time of the most recent\nannounce from that source, moved on *every* valid announce including\nthe dedup case - unlike update_last_modified[], which only moves on\nreal content change) and a new scheduled check_liveliness(), run every\ntt_NODE_UPDATE_INTERVAL alongside node_update()/node_flush(): a known\nnode with no announce heard for tt_LIVELINESS_MISS_THRESHOLD (config.h,\ndefault 3 - separate knob from the interval itself) consecutive\nintervals gets the same forget_peers_from_source() cleanup and update_\nseen[]/update_last_modified[] reset a farewell UPDATE would have\ntriggered, so a later announce from the same node id is treated as\nfirst contact again.\n\ntests/test_liveliness.c covers expiry past the threshold, no false\nexpiry before it, and the critical regression case: a repeated\n*unchanged* announce must still push update_last_seen[] forward, or a\nperfectly healthy node with static endpoints would eventually get\nfalsely expired despite never missing an announce.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T14:08:36+09:00",
+          "tree_id": "3e2610cc027958f20924adaf299bd79a863a9d68",
+          "url": "https://github.com/tsnlab/tickle/commit/1e76fb2ec4fc0ae40bc76cc13e966ed8b895caa9"
+        },
+        "date": 1789362565223,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.013,
             "unit": "ms"
           }
         ]
