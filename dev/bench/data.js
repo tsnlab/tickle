@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789368422484,
+  "lastUpdate": 1789368425264,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3274,6 +3274,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/240fc4067b47adb7c2b0542cb61672aa451faa2f"
         },
         "date": 1789363758242,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f0b39624ec2a103716929bf47aad0d538a9b2287",
+          "message": "rmw_tickle Milestone 1(a): ros2_adapter.py converter generator\n\nAdds tickle_typesupport.ros2_adapter, generating a thin converter between a\nreal ROS 2 interface package's own rosidl_generator_c struct and TickLE's\nown, already-generated, already-tested struct/codec for that same message -\nfield-by-field copy plus bounds checks, calling the existing\n<Msg>_encode/_decode/_encode_size/_free codec completely unchanged rather\nthan regenerating CDR-4 logic a second time against ROS 2's struct shape.\nChosen specifically to minimize risk: this tool's own dev/test environment\nhas no ROS 2 install at all (no /opt/ros, rosidl_adapter not importable),\nso reusing TickLE's existing, CI-verified codec means only the converter\nitself - a much smaller surface - needs new verification.\n\nVerified fully offline via tests/fixtures_ros2_adapter/ (hand-written\nstand-ins for rosidl_generator_c/rosidl_runtime_c's public API shape) and\ntests/test_ros2_adapter.py, which compiles and round-trips the generated\nconverter against the real TickLE codec: scalars, fixed arrays,\nbounded/unbounded variable arrays (including over-capacity rejection), and\nbounded/unbounded strings (including over-capacity rejection). Zero\ncompiler warnings under -Wall -Wextra and zero clang-tidy findings under\nthe project's own .clang-tidy.\n\nBugs found and fixed during development:\n- TickLE header include was derived from the WireStruct's own c_name\n  (e.g. \"ArraysData.h\") instead of the interface-level generated filename\n  (e.g. \"Arrays.h\") that cli.generate_interface() actually produces.\n- ROS 2 header paths need snake_case filenames even though the struct name\n  keeps PascalCase (UInt64 -> u_int64.h) - added _camel_to_snake().\n- A struct with multiple variable-array element types emitted a duplicate\n  #include for primitives_sequence_functions.h, one per element type.\n- test_ros2_adapter.py's own independent render.render_topic() call hit\n  empy's global Interpreter._wasProxyInstalled state conflicting with\n  pytest's stdout capture across test modules (\"interpreter stdout proxy\n  lost\") when run as part of the full suite; fixed by reusing conftest.py's\n  shared, session-scoped generated_dir fixture instead of generating the\n  TickLE codec a second time.\n- clang-tidy (run with the project's real .clang-tidy config, not defaults)\n  flagged missing direct includes for bool/true/false, uint16_t, and both\n  paired struct headers, previously pulled in only transitively.\n\nrmw_tickle/PLAN.md's Milestone 1(b) (the CMake package + macro invoking\nthis generator as part of a real ROS 2 build) and 1(c) (automatic\nextension-point registration, stretch goal) remain pending - both need a\nreal ROS 2 CI environment to iterate against.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T15:46:08+09:00",
+          "tree_id": "5d21c108a1c0e4f4230c6afc991487cb216ff242",
+          "url": "https://github.com/tsnlab/tickle/commit/f0b39624ec2a103716929bf47aad0d538a9b2287"
+        },
+        "date": 1789368424196,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
