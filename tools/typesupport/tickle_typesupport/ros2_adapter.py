@@ -37,6 +37,19 @@ ament_cmake *build-system* internals, which this module has nothing to do with):
     long-documented rosidl_runtime_c convention.
   - nested message: recurses into that nested type's own <Ros2Name>__to_tickle/__from_tickle,
     named the same way (see ros2_nested_struct_name()).
+
+render_adapter() above produces the converter alone - fully offline-verifiable (tests/test_ros2_
+adapter.py), but on its own unreachable from a real `rmw_create_publisher()` call: the `rosidl_
+message_type_support_t*` handle rcl hands an rmw implementation is always the one `rosidl_
+typesupport_c` builds for that specific message, listing only whichever typesupport identifiers
+were registered (via `ament_index_register_resource("rosidl_typesupport_c")`, discovered through
+`get_used_typesupports()`) at the *interface package's own* `rosidl_generate_interfaces()` time -
+a converter this module generates but that PLAN.md's Milestone 1(c) registration never rode into
+that table on is dead code from rmw_tickle's point of view, correct or not. render_type_support()
+below is the piece that actually rides along: wraps this same struct's converter plus TickLE's own
+codec into a `rosidl_message_type_support_t` reachable through that exact standard dispatch chain
+(see its own docstring) - see rmw_tickle/rosidl_typesupport_tickle_c/ for the CMake-side extension-
+point registration this depends on.
 """
 
 import re
@@ -240,3 +253,86 @@ def render_adapter(struct, ros_name, tickle_header):
     header = "\n".join(header_lines) + "\n"
     source = "\n".join(source_lines) + "\n"
     return header, source
+
+
+def render_type_support(struct, ros_name, tickle_header, adapter_header):
+    """Returns the .c source for <ros_name>__type_support.c - rmw_tickle/PLAN.md's Milestone
+    1(b)/(c), the final wrapping step render_adapter() alone doesn't do: a `rosidl_message_type_
+    support_t` whose `.data` is this package's own private `rosidl_typesupport_tickle_c_message_
+    callbacks_t` (rosidl_typesupport_tickle_c/message_type_support.h - rosidl's typesupport
+    contract never inspects `.data`'s shape, so only rmw_tickle itself and this file need to agree
+    on it), pointing straight at TickLE's own already-generated codec function pointers - cast to
+    the generic tt_DATA_ENCODE/tt_DATA_DECODE/tt_DATA_ENCODE_SIZE/tt_DATA_FREE typedefs the exact
+    same way every examples/*/*.c's own <Name>Topic definition already casts its per-type codec
+    functions - plus this same struct's own __to_tickle/__from_tickle converter from render_
+    adapter() above. The accessor function follows rosidl_typesupport_interface/macros.h's
+    ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME naming exactly, and `.func`/`.typesupport_
+    identifier` follow rosidl_runtime_c's own get_message_typesupport_handle_function() convention
+    (same one every real typesupport - introspection, fastrtps, ... - uses) - together, this is
+    what makes rmw_tickle/PLAN.md's Milestone 1(c) registration (this package's own CMakeLists.txt:
+    ament_index_register_resource("rosidl_typesupport_c") + ament_register_extension(...)) actually
+    reachable from a real rmw_create_publisher() call's type_support handle, not just a self-
+    contained offline test the way render_adapter() alone only ever was.
+
+    Message-only for now (rmw_tickle/PLAN.md's Milestone 1(b)/(c) first cut) - `struct.c_name`
+    is assumed to have its own top-level <c_name>_encode/_decode/_encode_size/_free codec
+    (cli.generate_interface()'s normal output), not a .srv request/response struct sharing one
+    file; .srv support follows once the message path is proven in a real ROS 2 CI build.
+
+    get_type_hash_func/get_type_description_func/get_type_description_sources_func (jazzy's type
+    description feature - rosidl_runtime_c/type_hash.h et al.) are left NULL: nothing in rmw_
+    tickle's own "Supported subset" (rmw_tickle/PLAN.md) needs runtime type introspection/hashing,
+    and rosidl's own dispatch code only calls these through a *different* typesupport's handle
+    (e.g. rosidl_typesupport_introspection_c's), never through ours - see this module's own
+    docstring for why a leaf typesupport's `.data` shape is otherwise free to be anything."""
+    pkg, subfolder, type_name = ros_name.split("__")
+    callbacks_var = f"_{pkg}__{subfolder}__{type_name}__callbacks"
+    handle_var = f"_{pkg}__{subfolder}__{type_name}__handle"
+    return "\n".join(
+        [
+            "#include <stddef.h>",
+            "",
+            # tt_DATA_ENCODE_SIZE/tt_DATA_ENCODE/tt_DATA_DECODE/tt_DATA_FREE
+            "#include <tickle/tickle.h>",
+            "",
+            '#include "rosidl_runtime_c/message_type_support_struct.h"',
+            '#include "rosidl_typesupport_interface/macros.h"',
+            '#include "rosidl_typesupport_tickle_c/identifier.h"',
+            '#include "rosidl_typesupport_tickle_c/message_type_support.h"',
+            "",
+            f'#include "{ros2_header_path(ros_name)}"',
+            f'#include "{tickle_header}"',
+            f'#include "{adapter_header}"',
+            "",
+            f"static rosidl_typesupport_tickle_c_message_callbacks_t {callbacks_var} = {{",
+            f"    .tickle_struct_size = sizeof(struct {struct.c_name}),",
+            f"    .to_tickle = (rosidl_typesupport_tickle_c_to_tickle_function)&{ros_name}__to_tickle,",
+            f"    .from_tickle = (rosidl_typesupport_tickle_c_from_tickle_function)&{ros_name}__from_tickle,",
+            f"    .tickle_encode_size = (tt_DATA_ENCODE_SIZE)&{struct.c_name}_encode_size,",
+            f"    .tickle_encode = (tt_DATA_ENCODE)&{struct.c_name}_encode,",
+            f"    .tickle_decode = (tt_DATA_DECODE)&{struct.c_name}_decode,",
+            f"    .tickle_free = (tt_DATA_FREE)&{struct.c_name}_free,",
+            "};",
+            "",
+            "// .typesupport_identifier is set on first access below, not here - a plain (non-",
+            "// address) extern const char* like rosidl_typesupport_tickle_c__identifier isn't a",
+            "// compile-time constant in C, so it can't be a static initializer (same reason real",
+            "// rosidl_typesupport_introspection_c-generated code does this the same way).",
+            f"static rosidl_message_type_support_t {handle_var} = {{",
+            f"    .data = &{callbacks_var},",
+            "    .func = get_message_typesupport_handle_function,",
+            "    .get_type_hash_func = NULL,",
+            "    .get_type_description_func = NULL,",
+            "    .get_type_description_sources_func = NULL,",
+            "};",
+            "",
+            "const rosidl_message_type_support_t *",
+            f"ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(rosidl_typesupport_tickle_c, {pkg}, {subfolder}, {type_name})(void) {{",
+            f"    if (!{handle_var}.typesupport_identifier) {{",
+            f"        {handle_var}.typesupport_identifier = rosidl_typesupport_tickle_c__identifier;",
+            "    }",
+            f"    return &{handle_var};",
+            "}",
+            "",
+        ]
+    )

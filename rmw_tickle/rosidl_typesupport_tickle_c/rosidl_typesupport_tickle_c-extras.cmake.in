@@ -1,0 +1,29 @@
+# generated from rosidl_typesupport_tickle_c/rosidl_typesupport_tickle_c-extras.cmake.in
+#
+# Run automatically whenever another package does find_package(rosidl_typesupport_tickle_c) -
+# same convention every other rosidl typesupport package's own CONFIG_EXTRAS file uses (compare
+# rosidl_typesupport_introspection_c-extras.cmake.in, ros2/rosidl @ jazzy) to register itself into
+# rosidl_generate_interfaces()'s own "rosidl_generate_idl_interfaces" ament_cmake extension point.
+
+# Generators must run in topological order (every generator finds its own dependencies first,
+# then registers itself - see rosidl_cmake/cmake/rosidl_generate_interfaces.cmake's own comment to
+# that effect); our own extension requires ${TARGET}__rosidl_generator_c to already exist (see
+# cmake/rosidl_typesupport_tickle_c_generate_interfaces.cmake's own guard), so make sure rosidl_
+# generator_c's extension is registered before ours.
+find_package(rosidl_generator_c QUIET)
+
+find_package(ament_cmake_core QUIET REQUIRED)
+ament_register_extension(
+  "rosidl_generate_idl_interfaces"
+  "rosidl_typesupport_tickle_c"
+  "rosidl_typesupport_tickle_c_generate_interfaces.cmake")
+
+# See this package's own top-level CMakeLists.txt for why this is an absolute path baked in at
+# *this* package's own configure time rather than a relative one.
+set(rosidl_typesupport_tickle_c_TICKLE_ROOT "@TICKLE_ROOT@")
+
+# tools/typesupport's tickle_typesupport Python package isn't an ament/colcon package of its own
+# (see this package's package.xml) - invoked as a plain module, assumed already importable
+# (`pip install <tickle repo>/tools/typesupport` ahead of time - this repo's own check-all.yml
+# CI does this before colcon build runs).
+set(rosidl_typesupport_tickle_c_PYTHON_MODULE "tickle_typesupport.ros2_cli")

@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>rosidl_typesupport_tickle_c</name>
+  <version>0.0.1</version>
+  <description>
+    Generates a TickLE-backed rosidl typesupport for .msg interfaces - registers with
+    rosidl_generate_interfaces() (rmw_tickle/PLAN.md's Milestone 1) so any ROS 2 interface
+    package picks it up automatically, the same way rosidl_typesupport_introspection_c does.
+  </description>
+  <maintainer email="halim9512@gmail.com">Harim Seong</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_core</buildtool_depend>
+
+  <depend>rosidl_cmake</depend>
+  <depend>rosidl_generator_c</depend>
+  <depend>rosidl_runtime_c</depend>
+  <depend>rosidl_typesupport_interface</depend>
+  <depend>python3</depend>
+
+  <!-- tools/typesupport's own tickle_typesupport Python package (ros2_cli.py, invoked by this
+       package's CMake extension via `python3 -m tickle_typesupport.ros2_cli`) isn't itself an
+       ament/colcon package - see this package's own CMakeLists.txt for how its location is
+       found instead. A real end-user build needs `pip install <tickle repo>/tools/typesupport`
+       done ahead of time (this session's own CI does it in check-all.yml, before colcon build
+       runs) - packaging tickle_typesupport as its own ament_cmake_python package is tracked as
+       follow-on work in rmw_tickle/PLAN.md, not solved here. -->
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
