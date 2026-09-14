@@ -109,7 +109,10 @@ jobs:
           # ROS 2 straight onto the runner's own filesystem via apt, so every header colcon's build
           # sees is a header clang-tidy can see afterward too - same convention every other
           # ros-tooling-based ROS 2 CI uses, and it brought colcon with it (part of the ROS 2 dev
-          # tools it installs), so nothing else to add here.
+          # tools it installs), so nothing else to add here. It doesn't put ament_cmake etc. on
+          # CMAKE_PREFIX_PATH by itself, though - every step needing them sources setup.bash, the
+          # same way a fresh terminal on a real ROS 2 install would.
+          source /opt/ros/jazzy/setup.bash
           colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
           # need to stay put for clang-tidy to lint everything else.
