@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789374792819,
+  "lastUpdate": 1789374795622,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3764,6 +3764,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.238,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4c358cacdec560103bc7dbddb973835cd84e20b3",
+          "message": "Fix check-all: build our own typesupport libraries shared, not static\n\nThe diagnostic step (e82e4a4) confirmed the ament-index registration itself\nwas already correct: the marker file existed at install/rosidl_typesupport_\ntickle_c/share/ament_index/resource_index/rosidl_typesupport_c/rosidl_\ntypesupport_tickle_c, and AMENT_PREFIX_PATH included that install prefix.\nSo the split colcon build call wasn't the actual fix for the earlier\nfailure - but the same diagnostic output also showed install/rosidl_\ntypesupport_tickle_c/lib/librosidl_typesupport_tickle_c.a: a *static*\narchive, CMake's own default absent an explicit BUILD_SHARED_LIBS=ON.\n\nrosidl_typesupport_c's own runtime dispatch (rosidl_typesupport_c__get_\nmessage_typesupport_handle_function) loads a message's specific typesupport\nimplementation via dlopen() by convention name at *runtime*, once multiple\ntypesupports are registered (true here regardless of what we ourselves\nfind_package() - /opt/ros/jazzy's own apt-installed packages, e.g.\nintrospection_c/fastrtps_c, are still globally ament-index-discoverable) -\nimpossible for a plain .a. /opt/ros/jazzy's own packages are already shared\n(standard for apt-packaged ROS 2); only our own two packages, built fresh\nin this job, needed -DBUILD_SHARED_LIBS=ON told explicitly. Removed the\ntemporary diagnostic lines now that they've served their purpose.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T17:32:23+09:00",
+          "tree_id": "d301e642814a50cdad73bd368b1d9c6940c981ba",
+          "url": "https://github.com/tsnlab/tickle/commit/4c358cacdec560103bc7dbddb973835cd84e20b3"
+        },
+        "date": 1789374794531,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.657,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.866,
             "unit": "Mbps"
           }
         ]
