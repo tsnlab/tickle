@@ -1,0 +1,14 @@
+# Snapshots of tools/typesupport's own generator output (see tests/test_golden.py) - not hand-
+# written code, so it keeps ROS 2's message/service naming (PascalCase types, PascalCase_verb
+# functions) rather than the project's own lower_case convention, and its codec ABI (tt_DATA_
+# ENCODE et al. in tickle.h) fixes each function pointer's signature across every message type,
+# so a parameter one particular message's body happens not to write through (e.g. a zero-field
+# request's _encode) can't be made const without breaking the shared typedef. These are exactly
+# the three checks M5 will make permanently disabled as examples/.clang-tidy once generated
+# codecs actually live under examples/ instead of here (see tools/typesupport/PLAN.md) - and
+# exactly what tools/typesupport/tests/test_lint.py already disables for its own on-the-fly-
+# generated copies. All other checks (bugprone-*, the rest of readability-*/misc-*/performance-*)
+# stay enabled via InheritParentConfig, so a real generator regression still fails `make lint`
+# here.
+InheritParentConfig: true
+Checks: '-readability-identifier-naming,-readability-magic-numbers,-readability-non-const-parameter'

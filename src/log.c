@@ -1,9 +1,21 @@
+/*
+ * Copyright (c) 2025-2026 TSN Lab, Inc.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 3, as published by the Free
+ * Software Foundation. A proprietary license is also available on request - see README.md.
+ */
+
 #include "log.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+
+#include <tickle/log.h>
 
 // Default log configuration
 tt_LogLevel tt_current_log_level = TT_LOG_INFO;

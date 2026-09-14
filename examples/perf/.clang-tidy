@@ -1,0 +1,15 @@
+# Generated (tools/typesupport, from the .msg/.srv in this same directory) - not hand-written
+# code, so it keeps ROS 2's message/service naming (PascalCase types, PascalCase_verb functions)
+# rather than the project's own lower_case convention, every offset/size/capacity in a wire codec
+# is exactly that (a wire number, not something naming would clarify), and its codec ABI (tt_
+# DATA_ENCODE et al. in tickle.h) fixes each function pointer's signature across every message
+# type, so a parameter one particular message's body happens not to write through (e.g. a
+# zero-field request's _encode) can't be made const without breaking the shared typedef. Exactly
+# what tools/typesupport/tests/golden/.clang-tidy already disables for the same generator's
+# on-the-fly-generated test copies (see tools/typesupport/PLAN.md's M5 milestone). All other
+# checks (bugprone-*, the rest of readability-*/misc-*/performance-*) stay enabled via
+# InheritParentConfig, so a real generator regression still fails `make lint` here - this
+# directory's hand-written drivers live one level up (examples/linux/, examples/freertos/) and
+# keep every check untouched.
+InheritParentConfig: true
+Checks: '-readability-identifier-naming,-readability-magic-numbers,-readability-non-const-parameter'

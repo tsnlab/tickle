@@ -1,23 +1,56 @@
+/*
+ * Copyright (c) 2025-2026 TSN Lab, Inc.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 3, as published by the Free
+ * Software Foundation. A proprietary license is also available on request - see README.md.
+ */
+
 #pragma once
+
+#include <stdint.h>
 
 #define tt_SECOND 1000000000ULL
 #define tt_MILLISECOND 1000000ULL
 #define tt_MICROSECOND 1000ULL
 
-#define tt_NODE_CYCLE tt_MILLISECOND                   // nanosecond
-#define tt_NODE_UPDATE_INTERVAL (10 * tt_SECOND)       // nanoseond  TODO: Temporary value for debugging
-#define tt_NODE_TX_INTERVAL tt_MILLISECOND             // nanoseond
+#define tt_NODE_CYCLE tt_MILLISECOND // nanosecond
+// How often a node re-broadcasts its endpoint list (discovery announce). The first announce goes
+// out ~tt_NODE_CYCLE after tt_Node_create(), and a node that hears a peer's announce for the
+// first time replies with its own straight away (see reply_with_own_announce() in tickle.c), so
+// mutual discovery is effectively immediate on a healthy link - this interval is the recovery
+// cadence for an announce lost to packet loss, or for a node that was already up when this one
+// started. 1s keeps that recovery quick while costing one small packet per node per second.
+#define tt_NODE_UPDATE_INTERVAL (1 * tt_SECOND) // nanosecond
+#define tt_NODE_TX_INTERVAL tt_MILLISECOND      // nanosecond
+// Reserved for a future reliable-QoS (ACKNACK) release - not read anywhere in this one; a
+// Topic's history_depth/deadline_duration/lifespan_duration (tickle.h) are reserved for the
+// same reason. Best-effort delivery is all this release does.
 #define tt_RELIABLE_DEADLINE 0                         // nanosecond, 0 is auto
 #define tt_RELIABLE_RETRY 3                            // count
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND)      // Network socket default receive timeout
+// Requested SO_SNDBUF/SO_RCVBUF size. The kernel silently clamps this to whatever
+// net.core.[rw]mem_max allows for an unprivileged process, so asking for more than that is
+// harmless - it's cheap insurance against drops under bursty send/receive on systems where the
+// ceiling is higher than the (often small, e.g. 208KB) distro default.
+#define tt_SOCKET_BUFFER_SIZE (1024 * 1024)
 
-#define tt_MAX_ENDPOINT_COUNT 256  // Maximum number of endpoints (data or services)
+#define tt_MAX_ENDPOINT_COUNT 256 // Maximum number of endpoints (data or services)
+// Size of tt_Node.endpoint_index (power of two, >= 2 * tt_MAX_ENDPOINT_COUNT so load stays
+// <= 0.5 for linear-probe lookups).
+#define tt_ENDPOINT_INDEX_SIZE 512
 #define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name
 #define tt_MAX_STRING_LENGTH 65535 // Maximum length of string
-#define tt_MAX_BUFFER_LENGTH 1480  // RX/TX buffering size to flush
+// RX/TX buffering size to flush: the largest UDP payload a standard 1500-byte Ethernet MTU
+// can carry without IP fragmentation. 1500 (MTU) - 20 (IPv4 header) - 8 (UDP header) = 1472.
+// Previously 1480, which is 8 bytes *larger* than that limit - a packet in the 1473-1480
+// byte range would pass this check yet still fragment at the IP layer on a standard network.
+#define tt_MAX_BUFFER_LENGTH 1472
 
 // Node ID values are the last byte of the IPv4 address on the local network.
 // Valid node IDs are 1..254, because 0 is reserved for invalid/unassigned and
@@ -27,6 +60,21 @@
 #define tt_MAX_SCHEDULER_LENGTH 128  // Scheduling queue
 #define tt_MAX_SERVER_CACHE_COUNT 64 // >= # of client
 
+// Threshold for how many known recipient nodes a Publisher/Client sends to individually before
+// switching to one broadcast instead. <= this many known peers -> unicast (tt_send_to() once per
+// peer); more than this many -> broadcast (tt_send() once). Zero known peers (nobody has
+// announced a matching endpoint yet) always broadcasts too, regardless of this threshold -
+// there's nothing to unicast to yet, so it falls back to today's discovery-by-broadcast behavior.
+#define tt_UNICAST_PEER_THRESHOLD 2
+
+// Fixed capacity of each Publisher's/Client's peers[] table (struct tt_Peer, tickle.h) - the
+// known set of remote nodes (IP:port) hosting a matching Subscriber/Server, learned from their
+// periodic UPDATE announces. Must stay > tt_UNICAST_PEER_THRESHOLD: once full, a never-seen
+// peer is silently dropped rather than tracked (see upsert_peer() in tickle.c) - safe only
+// because a full table already implies "more than the threshold", i.e. already broadcasting,
+// which still reaches that dropped peer too.
+#define tt_MAX_PEER_COUNT 8
+
 #define _tt_NODE_ADDRESS "0.0.0.0"
 #define _tt_NODE_PORT 8282
 #define _tt_NODE_BROADCAST "255.255.255.255"
@@ -35,6 +83,16 @@ struct _tt_Config {
     char* addr;
     int port;
     char* broadcast;
+    // tt_NODE_ID_INVALID (0, the default) = auto-detect via tt_get_node_id() (the last byte of
+    // the local address matching broadcast's subnet, per the comment above); any other value
+    // overrides it. Auto-detection needs each node to have its own distinct address in that
+    // subnet, which real separate hosts (or namespaces) give for free but a single shared network
+    // namespace can't - two processes on the same host/interface would otherwise both detect the
+    // same id and start silently dropping each other's packets as "self sent" (see
+    // process_packet() in tickle.c). An explicit override sidesteps that: e.g.
+    // platform/linux/test.sh runs both sides of a pair in one namespace over loopback, each
+    // started with a different id, without needing root for network namespaces at all.
+    int32_t node_id;
 };
 
 extern struct _tt_Config _tt_CONFIG;

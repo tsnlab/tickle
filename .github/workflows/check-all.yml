@@ -7,8 +7,6 @@ on:
 jobs:
   check-all:
     runs-on: ubuntu-latest
-    container:
-      image: rostooling/setup-ros-docker:ubuntu-noble-latest
     permissions:
       contents: read
       pull-requests: write
@@ -16,24 +14,104 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v2
+        with:
+          # third_party/FreeRTOS-Kernel and third_party/lwip hold the headers the synthesised
+          # src/hal_freertos.c compile-DB entry below points clang-tidy at.
+          submodules: true
 
       - name: Install build packages
         run: |
           sudo apt update
-          sudo apt install bear
+          sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Regenerate typesupport codecs and check for drift
+        run: |
+          pip install ./tools/typesupport
+          make regen
+          # A .msg/.srv edited without re-running `make regen`, or a generated .c/.h hand-edited
+          # directly (tools/typesupport/PLAN.md: "do not edit generated codecs") both show up
+          # here as an unexpected diff - fail the build rather than silently drifting.
+          git diff --exit-code -- examples/uint64 examples/set_bool examples/ping_pong examples/perf
 
       - name: Generate compile_commands.json
         run: |
           bear -- make all
-          mv compile_commands.json src
+          # `make all` builds only the Linux platform, so any FreeRTOS-only source - src/
+          # hal_freertos.c, and every examples/freertos/**/main_*.c role driver, each with its
+          # own role-specific -I (platform/freertos/Makefile's own ROLE_INCLUDES table) - would
+          # reach clang-tidy with no lwIP/picolibc/cross-target context and fail to even parse
+          # ('FreeRTOS.h' file not found). None has an entry to inherit flags from, so synthesise
+          # one each: the same cross-compile flags platform/freertos/Makefile's own `lint` target
+          # uses (--target instead of gcc's --specs=picolibc.specs, which clang ignores;
+          # -nostdinc + explicit -isystem so the host headers don't leak in and clash with
+          # picolibc's).
+          picolibc_inc="$(dpkg -L picolibc-riscv64-unknown-elf | grep -E '/include$' | head -1)"
+          gcc_inc="$(riscv64-unknown-elf-gcc -print-file-name=include)"
+          fr=platform/freertos
+
+          # file (relative to repo root) : role-specific extra -I (relative to $fr, matching
+          # platform/freertos/Makefile's ROLE_INCLUDES for that same file's MAIN_SRC/ROLE_SRCS) -
+          # each one is a generated-codec directory (examples/<proto>/, tools/typesupport/
+          # PLAN.md's M5 milestone), not the driver's own.
+          entries=(
+            "src/hal_freertos.c:"
+            "examples/freertos/ping_pong/main_ping.c:../../examples/ping_pong"
+            "examples/freertos/ping_pong/main_pong.c:../../examples/ping_pong"
+            "examples/freertos/uint64/main_publisher.c:../../examples/uint64"
+            "examples/freertos/uint64/main_subscriber.c:../../examples/uint64"
+            "examples/freertos/set_bool/main_client.c:../../examples/set_bool"
+            "examples/freertos/set_bool/main_server.c:../../examples/set_bool"
+            "examples/freertos/perf/main_perf_client.c:../../examples/perf"
+            "examples/freertos/perf/main_perf_server.c:../../examples/perf"
+          )
+
+          for entry in "${entries[@]}"; do
+            file="${entry%%:*}"
+            role_include="${entry#*:}"
+            args=(clang --target=riscv32-unknown-elf -nostdinc -ffreestanding -DTT_PLATFORM_FREERTOS \
+              -isystem "$picolibc_inc" -isystem "$gcc_inc" \
+              -I. -Iboard -Ilwip_arch)
+            [ -n "$role_include" ] && args+=("-I$role_include")
+            args+=(-I../../third_party/FreeRTOS-Kernel/include \
+              -I../../third_party/FreeRTOS-Kernel/portable/GCC/RISC-V \
+              -I../../third_party/lwip/src/include \
+              -I../../third_party/lwip/contrib/ports/freertos/include \
+              -I../../include -I../../src \
+              -c "$PWD/$file")
+            jq --arg root "$PWD" --arg fr "$fr" --arg file "$PWD/$file" --argjson args "$(printf '%s\n' "${args[@]}" | jq -R . | jq -s .)" \
+              '. + [{directory: ($root + "/" + $fr), file: $file, arguments: $args}]' \
+              compile_commands.json > compile_commands.tmp
+            mv compile_commands.tmp compile_commands.json
+          done
 
       - name: Generate compile_commands.json for rmw_tickle
         run: |
-          colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-          mv build/compile_commands.json rmw_tickle
+          # rmw_tickle needs a real ROS 2 environment (ament_cmake, rcutils, rmw, rosidl_runtime_c)
+          # colcon can find via `find_package` - rather than run the *whole* job inside a ROS
+          # Docker image (tried first; broke the plain `sudo apt install bear` step above with an
+          # unanswerable interactive prompt, since that image's apt isn't configured
+          # non-interactive by default, and would have put every other step's toolchain
+          # expectations - riscv64 cross-compiler, clang-tidy via cpp-linter-action - at risk of
+          # the same kind of surprise) run just this one build inside a throwaway container on the
+          # runner's own Docker daemon, exactly like a local dev machine without ROS installed
+          # would.
+          docker run --rm -v "$PWD:/ws" -w /ws rostooling/setup-ros-docker:ubuntu-noble-latest \
+            bash -c 'source /opt/ros/*/setup.bash && colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
+          # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
+          # need to stay put for clang-tidy to lint everything else.
+          jq -s 'add' compile_commands.json build/rmw_tickle/compile_commands.json > compile_commands.tmp
+          mv compile_commands.tmp compile_commands.json
 
       - name: Check all
         uses: tsnlab/check@main
         with:
           python_version: '3.12'
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # submodules: true (above) puts third_party/lwip's own shell scripts on disk; they
+          # aren't ours to lint. cpp-linter already auto-skips submodules; shellcheck needs telling.
+          shellcheck_ignore_paths: third_party

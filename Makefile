@@ -1,118 +1,77 @@
-INCLUDE=include
-CC=gcc
-AR=ar
-CFLAGS=-I$(INCLUDE) -Isrc -O0 -g
-LDFLAGS=
+# Thin cross-platform entry point - see platform/linux/Makefile for the actual native (Linux)
+# build (library, examples, unit tests, lint) and platform/freertos/Makefile for the FreeRTOS
+# cross-build. Neither platform's own build system lives at the repo root anymore - Linux is
+# treated as one platform among others here, exactly like FreeRTOS (see platform/linux/ vs
+# platform/freertos/). Everything below except test-linux/test-freertos/test-all (which are
+# inherently cross-platform) forwards to platform/linux/Makefile via .DEFAULT, so
+# `make`/`make test`/`make all`/... still work exactly as before from the repo root - only where
+# the resulting objects/binaries land changes (platform/linux/... instead of here).
 
-SRC=src
-OBJ=obj
-# Platform detection
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Linux)
-    PLATFORM := linux
-else
-    PLATFORM := generic
-endif
+.DEFAULT_GOAL := all
 
-# HAL source file based on platform
-HAL_SRC = $(SRC)/hal_$(PLATFORM).c
+.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean test-linux test-freertos test-all \
+        install uninstall fuzz sanitize regen
 
-# Automatically find all .c files in src directory, excluding hal.c files
-SRC_FILES = $(filter-out $(SRC)/hal_%.c, $(wildcard $(SRC)/*.c))
-# Add platform-specific HAL file
-SRC_FILES += $(HAL_SRC)
-OBJS = $(patsubst $(SRC)/%.c,$(OBJ)/%.o,$(SRC_FILES))
+all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize:
+	$(MAKE) -C platform/linux $@
 
-.PHONY: all library examples set_bool uint64 lint createns deletens runclient runserver runpublisher runsubscriber dump1 dump2 clean
+# Static lib + headers + a pkg-config file. Override PREFIX (default /usr/local) and/or DESTDIR
+# (staging root, for packaging) as usual: `make install PREFIX=/opt/tickle DESTDIR=/tmp/stage`.
+# There is no shared library - TickLE is meant to be linked statically (or vendored).
+PREFIX ?= /usr/local
+LIBDIR ?= $(PREFIX)/lib
+INCLUDEDIR ?= $(PREFIX)/include
 
-all:
-	$(MAKE) library
-	$(MAKE) examples
+install: library
+	install -d '$(DESTDIR)$(LIBDIR)' '$(DESTDIR)$(INCLUDEDIR)/tickle' '$(DESTDIR)$(LIBDIR)/pkgconfig'
+	install -m 644 platform/linux/libtickle.a '$(DESTDIR)$(LIBDIR)/'
+	install -m 644 include/tickle/*.h '$(DESTDIR)$(INCLUDEDIR)/tickle/'
+	sed -e 's|@PREFIX@|$(PREFIX)|g' -e 's|@LIBDIR@|$(LIBDIR)|g' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|g' \
+	    tickle.pc.in > '$(DESTDIR)$(LIBDIR)/pkgconfig/tickle.pc'
 
-library: libtickle.a
+uninstall:
+	rm -f '$(DESTDIR)$(LIBDIR)/libtickle.a' '$(DESTDIR)$(LIBDIR)/pkgconfig/tickle.pc'
+	rm -rf '$(DESTDIR)$(INCLUDEDIR)/tickle'
 
-examples: set_bool uint64
+# Anything not listed above (createns, deletens, runclient, runping, dump1, ... - see
+# platform/linux/netns.mk) also forwards, without needing to be individually kept in sync here.
+.DEFAULT:
+	$(MAKE) -C platform/linux $@
 
-set_bool: client server
+# A real round trip over Linux's own UDP sockets, with the two sides in two network namespaces
+# joined by a veth pair (real distinct addresses - needed to actually exercise the unicast paths;
+# see platform/linux/test.sh's own comment). Needs passwordless sudo for `ip`; the no-privilege
+# tier is `make test` (unit tests). Named for the platform under test, not the mechanism -
+# `test-<platform>` always runs platform/<platform>/test.sh.
+test-linux:
+	platform/linux/test.sh
 
-uint64: publisher subscriber
+# A real round trip under QEMU for the FreeRTOS platform - see platform/freertos/test.sh. Needs
+# the RISC-V toolchain (see platform/freertos/Makefile's own lint target for the exact packages).
+test-freertos:
+	platform/freertos/test.sh
 
-$(OBJ)/%.o: $(SRC)/%.c
-	mkdir -p $(dir $@)
-	$(CC) -c -o $@ $< $(CFLAGS)
+# Every test tier that's fully self-contained (no real hardware needed) in one target: unit
+# tests (mock HAL), a real Linux-HAL round trip over a veth-joined namespace pair (test-linux,
+# needs sudo for `ip`), and a real FreeRTOS-HAL round trip over emulated virtio-net
+# (test-freertos). The two Raspberry Pi HIL
+# performance test (.github/workflows/performance.yml) is deliberately not part of this - it
+# needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add
+# here.
+test-all: test test-linux test-freertos
 
-libtickle.a: $(OBJS)
-	$(AR) crv $@ $^
-
-client:  examples/set_bool/SetBool.c examples/set_bool/client.c libtickle.a
-	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/client.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
-
-server: examples/set_bool/SetBool.c examples/set_bool/server.c libtickle.a
-	$(CC) -o $@ examples/set_bool/SetBool.c examples/set_bool/server.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
-
-publisher:  examples/uint64/UInt64.c examples/uint64/publisher.c libtickle.a
-	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/publisher.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
-
-subscriber: examples/uint64/UInt64.c examples/uint64/subscriber.c libtickle.a
-	$(CC) -o $@ examples/uint64/UInt64.c examples/uint64/subscriber.c -L. -ltickle $(CFLAGS) $(LDFLAGS)
-
-lint:
-	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} \;
-	find . -name '*.[ch]' -exec clang-tidy {} -- -I$(INCLUDE) -I$(SRC) \;
-
-createns:
-# Ref: https://medium.com/@tech_18484/how-to-create-network-namespace-in-linux-host-83ad56c4f46f
-# create namespace
-	sudo ip netns add ns1
-	sudo ip netns add ns2
-# create cable
-	sudo ip link add veth1 type veth peer name veth2
-# attach cable
-	sudo ip link set veth1 netns ns1
-	sudo ip link set veth2 netns ns2
-# set ip
-	sudo ip -n ns1 addr add 192.168.10.1/24 dev veth1
-	sudo ip -n ns2 addr add 192.168.10.2/24 dev veth2
-# bring up interface
-	sudo ip -n ns1 link set veth1 up
-	sudo ip -n ns2 link set veth2 up
-# NS1 info
-	@echo "# Namespace #1"
-	sudo ip netns exec ns1 ip addr
-	sudo ip netns exec ns1 ip route
-	sudo ip netns exec ns1 ping -c 1 192.168.10.2
-# NS2 info
-	@echo "\n# Namespace #2"
-	sudo ip netns exec ns2 ip addr
-	sudo ip netns exec ns2 ip route
-	sudo ip netns exec ns2 ping -c 1 192.168.10.1
-
-deletens:
-	sudo ip netns delete ns1
-	sudo ip netns delete ns2
-
-runclient: client
-	sudo ip netns exec ns1 ./client
-
-runserver: server
-	sudo ip netns exec ns2 ./server
-
-runpublisher: publisher
-	sudo ip netns exec ns1 ./publisher
-
-runsubscriber: subscriber
-	sudo ip netns exec ns2 ./subscriber
-
-dump1:
-	sudo ip netns exec ns1 tcpdump -l -xxx -i veth1
-
-dump2:
-	sudo ip netns exec ns2 tcpdump -l -xxx -i veth2
-
-clean:
-	rm -rf $(OBJ)/*
-	rm -f libtickle.a
-	rm -f client
-	rm -f server
-	rm -f publisher
-	rm -f subscriber
+# Re-runs tools/typesupport over every real (non-test) interface, in place - each one flattened
+# into examples/<proto>/ alongside the .msg/.srv it's generated from (see tools/typesupport/
+# PLAN.md's M5 milestone: this is the only remaining reason to have Python/empy installed at
+# all - generated output is committed, so a plain `make`/`make test-all` never needs this
+# target or tools/typesupport's own venv). Needs `pip install -e tools/typesupport` (or
+# equivalent - see tools/typesupport/README.md) first; not part of any `all`/`test*` target so a
+# checkout with no Python still builds and tests everything from the committed output alone.
+# check-all.yml runs this in CI and fails the build on any diff, so a hand-edit of a generated
+# file (or a .msg/.srv edited without re-running this) doesn't silently drift.
+TICKLE_TYPESUPPORT ?= tickle-typesupport
+regen:
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/uint64 examples/uint64/UInt64.msg
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/set_bool examples/set_bool/SetBool.srv
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/ping_pong examples/ping_pong/PingPong.srv
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/perf examples/perf/Bulk.msg

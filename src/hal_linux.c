@@ -1,5 +1,16 @@
+/*
+ * Copyright (c) 2025-2026 TSN Lab, Inc.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 3, as published by the Free
+ * Software Foundation. A proprietary license is also available on request - see README.md.
+ */
+
 #include <errno.h>
 #include <ifaddrs.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -7,9 +18,13 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
-#include <bits/time.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+// struct iovec (tt_send_iov, below) - clang-tidy's IWYU mapping doesn't know this glibc symbol's
+// real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
+// if neither provided/needed the other; this is the correct, portable header regardless (see
+// readv(2)/writev(2)/sendmsg(2)).
+#include <sys/uio.h> // NOLINT(misc-include-cleaner)
 #include <tickle/config.h>
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
@@ -18,30 +33,31 @@
 #include "log.h"
 
 #define SEC_NS 1000000000LL
-#define US_NS 1000LL
-
-#define UNUSED(x) (void)(x)
+#define MS_NS 1000000LL
 
 struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
     .port = _tt_NODE_PORT,
     .broadcast = _tt_NODE_BROADCAST,
+    .node_id = tt_NODE_ID_INVALID, // auto-detect by default; see its own comment in config.h
 };
 
-uint64_t tt_get_ns() {
+uint64_t tt_get_ns(void) {
     struct timespec ts;
+    // CLOCK_REALTIME lives in a glibc-private header; <time.h> (included above) is the correct public header.
+    // NOLINTNEXTLINE(misc-include-cleaner)
     clock_gettime(CLOCK_REALTIME, &ts);
 
     return ((uint64_t)ts.tv_sec * SEC_NS) + ts.tv_nsec;
 }
 
-int32_t tt_get_node_id() {
+int32_t tt_get_node_id(void) {
     // Get unique node ID in the network using IP address x.x.x.id
     uint32_t broadcast_ip = inet_addr(_tt_CONFIG.broadcast);
 
     struct ifaddrs* ifaddrs;
     if (getifaddrs(&ifaddrs) != 0) {
-        perror("Cannot get network interfaces");
+        TT_LOG_ERROR("Cannot get network interfaces: %s", strerror(errno));
         return -1;
     }
 
@@ -71,7 +87,7 @@ int32_t tt_get_node_id() {
 tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
-        perror("Cannot create UDP socket");
+        TT_LOG_ERROR("Cannot create UDP socket: %s", strerror(errno));
         return tt_RET_IO_ERROR;
     }
 
@@ -79,26 +95,30 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // SOL_SOCKET/SO_* live in glibc-private headers; <sys/socket.h> (included above) is the correct public header.
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_REUSEADDR, (const void*)&optval, sizeof(int)) < 0) {
-        perror("Cannot set socket reuseaddr");
+        TT_LOG_ERROR("Cannot set socket reuseaddr: %s", strerror(errno));
+        tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
     optval = 1;
     // NOLINTNEXTLINE(misc-include-cleaner)
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
-        perror("Cannot set socket broadcast");
+        TT_LOG_ERROR("Cannot set socket broadcast: %s", strerror(errno));
+        tt_close(node);
         return tt_RET_IO_ERROR;
     }
 
-    struct timeval timeout; // NOLINT(misc-include-cleaner) -- provided transitively via <sys/socket.h>
-    timeout.tv_sec = 0;
-    timeout.tv_usec = tt_RECEIVE_TIMEOUT / US_NS; // nano to micro
-    node->hal.receive_timeout = tt_RECEIVE_TIMEOUT;
-
+    // Best-effort: the kernel clamps this to net.core.[rw]mem_max for an unprivileged process,
+    // so a failure or a smaller-than-requested result here isn't fatal, just less headroom
+    // against bursty drops.
+    int buffer_size = tt_SOCKET_BUFFER_SIZE;
     // NOLINTNEXTLINE(misc-include-cleaner)
-    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&timeout, sizeof(struct timeval)) < 0) {
-        perror("Cannot set socket receive timeout");
-        return tt_RET_IO_ERROR;
+    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_SNDBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
+        TT_LOG_WARNING("Cannot set socket send buffer size: %s", strerror(errno));
+    }
+    // NOLINTNEXTLINE(misc-include-cleaner)
+    if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
+        TT_LOG_WARNING("Cannot set socket receive buffer size: %s", strerror(errno));
     }
 
     struct sockaddr_in addr;
@@ -107,46 +127,105 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     addr.sin_port = htons(_tt_CONFIG.port);
 
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot binding socket: %s:%d", _tt_CONFIG.addr, _tt_CONFIG.port);
-        perror("Cannot binding socket\n");
+        TT_LOG_ERROR("Cannot bind socket to %s:%d: %s", _tt_CONFIG.addr, _tt_CONFIG.port, strerror(errno));
+        tt_close(node);
         return tt_RET_IO_ERROR;
     }
+
+    // Precompute the broadcast destination once instead of re-parsing _tt_CONFIG.broadcast with
+    // inet_addr() on every single tt_send() call.
+    node->hal.broadcast_addr.sin_family = AF_INET;
+    node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
+    node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
 
     return tt_RET_OK;
 }
 
 void tt_close(struct tt_Node* node) {
-    if (close(node->hal.sock) == -1) {
+    if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
     }
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
+    return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
+                           sizeof(struct sockaddr_in));
+}
+
+int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
-    addr.sin_port = htons(_tt_CONFIG.port);
+    addr.sin_addr.s_addr = htonl(ip);
+    addr.sin_port = htons(port);
 
     return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
 }
 
+int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
+                    uint32_t ip, uint16_t port) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+    struct iovec iov[2] = {
+        {.iov_base = (void*)hdr, .iov_len = hdr_len},
+        {.iov_base = (void*)body, .iov_len = body_len},
+    };
+
+    struct sockaddr_in unicast_addr;
+    struct msghdr msg = {0};
+    msg.msg_iov = iov;
+    msg.msg_iovlen = 2;
+    if (ip != 0) {
+        unicast_addr.sin_family = AF_INET;
+        unicast_addr.sin_addr.s_addr = htonl(ip);
+        unicast_addr.sin_port = htons(port);
+        msg.msg_name = &unicast_addr;
+        msg.msg_namelen = sizeof(unicast_addr);
+    } else {
+        msg.msg_name = &node->hal.broadcast_addr;
+        msg.msg_namelen = sizeof(node->hal.broadcast_addr);
+    }
+
+    return (int32_t)sendmsg(node->hal.sock, &msg, 0);
+}
+
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(struct sockaddr_in);
+    // Wait for readability with poll() instead of arming SO_RCVTIMEO via setsockopt() before
+    // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
+    // scheduled event is due next), and re-arming a socket option that often is pure overhead -
+    // poll() just takes the timeout as a plain argument, no socket mutation needed.
+    if (timeout >= 0) {
+        int timeout_ms;
+        if (timeout == 0) {
+            // This function's contract (see hal.h) is "0 for no timeout", i.e. block until data
+            // arrives - not "don't wait at all", which is what poll()'s own timeout=0 means.
+            timeout_ms = -1;
+        } else {
+            timeout_ms = (int)(timeout / MS_NS);
+            if (timeout_ms == 0) {
+                // Sub-millisecond positive timeouts would round down to 0, which poll() treats
+                // as "don't wait at all" - round up so a short-but-nonzero wait still waits.
+                timeout_ms = 1;
+            }
+        }
 
-    if (timeout >= 0 && node->hal.receive_timeout != timeout) {
-        struct timeval tval;
-        tval.tv_sec = timeout / SEC_NS;
-        tval.tv_usec = (timeout % SEC_NS) / US_NS; // nano to micro
-        uint64_t old_timeout = node->hal.receive_timeout;
-        node->hal.receive_timeout = timeout;
-
-        if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVTIMEO, (const void*)&tval, sizeof(struct timeval)) < 0) {
-            TT_LOG_WARNING("Cannot set timeout: %lu to %lu", old_timeout, timeout);
-            node->hal.receive_timeout = old_timeout;
+        // struct pollfd/POLLIN/poll() live in a glibc-private header; <poll.h> (included above) is
+        // the correct public header.
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        struct pollfd pfd = {.fd = node->hal.sock, .events = POLLIN, .revents = 0};
+        int poll_ret = poll(&pfd, 1, timeout_ms); // NOLINT(misc-include-cleaner)
+        if (poll_ret == 0) {
+            return -1; // Timeout
+        }
+        if (poll_ret < 0) {
+            // NOLINTNEXTLINE(misc-include-cleaner) -- EINTR lives in the same private header as EAGAIN below
+            if (errno == EINTR) {
+                return -1; // Treat an interrupted wait like a timeout; the caller just polls again
+            }
+            return -2; // I/O error
         }
     }
 
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(struct sockaddr_in);
     int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);
@@ -157,6 +236,27 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         // NOLINTNEXTLINE(misc-include-cleaner)
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return -1; // Timeout
+        }
+        return -2; // I/O error
+    }
+
+    return ret;
+}
+
+int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(struct sockaddr_in);
+    // MSG_DONTWAIT makes just this call non-blocking regardless of the socket's own mode - no
+    // poll() first, no socket-option re-arm.
+    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+
+    *ip = ntohl(addr.sin_addr.s_addr);
+    *port = ntohs(addr.sin_port);
+
+    if (ret < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -1; // Nothing waiting
         }
         return -2; // I/O error
     }
