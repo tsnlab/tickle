@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789360281044,
+  "lastUpdate": 1789360283776,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2744,6 +2744,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 898.088,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "65214ca07bf8a6583a91c74d9a9ad9a25658de02",
+          "message": "rmw_tickle: write the implementation plan (PLAN.md)\n\nCaptures the design philosophy (TickLE stays single-threaded and\nmalloc-free; rmw_tickle owns locking and allocation; the one core\nextension is a narrow blocking-poll wake primitive, not a workaround),\nthe supported subset (tools/typesupport's own out-of-scope list plus\nTickLE's single-datagram size ceiling), the QoS roadmap (local/rmw-only\nwork first, wire-protocol work last), and an 11-milestone build order\nfrom TickLE core extensions through packaging and a scoped test suite.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T13:30:31+09:00",
+          "tree_id": "f700c58e456ac729694986c6ba3f166cf9e766de",
+          "url": "https://github.com/tsnlab/tickle/commit/65214ca07bf8a6583a91c74d9a9ad9a25658de02"
+        },
+        "date": 1789360282718,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.61,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 890.833,
             "unit": "Mbps"
           }
         ]
