@@ -133,7 +133,14 @@ jobs:
           # Python 3.12 first on PATH, so that's the `python3` CMake finds instead. Give it
           # catkin_pkg too rather than fight over which python3 wins.
           source /opt/ros/jazzy/setup.bash
-          pip install catkin_pkg
+          # rosidl_typesupport_tickle_c_tests depends on rosidl_default_generators (the same way
+          # any real ROS 2 interface package would) - that pulls in rosidl_generator_py too (not
+          # something rosidl_typesupport_tickle_c itself needs), which needs NumPy's headers to
+          # configure. pip install rather than `apt install python3-numpy`, for the same reason as
+          # catkin_pkg right below: actions/setup-python's own Python 3.12 is first on PATH, so
+          # that's the python3 CMake's find_package(Python3) resolves to, not the system one -
+          # apt's python3-numpy would land in the latter, invisible to the former.
+          pip install numpy catkin_pkg
           colcon build \
             --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_c_tests \
             --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
