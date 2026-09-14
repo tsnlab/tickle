@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789374139011,
+  "lastUpdate": 1789374141788,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3628,6 +3628,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.665,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b9fb6606301d762f49ab724e8d0ed24992942aa0",
+          "message": "Fix check-all: split colcon build so AMENT_PREFIX_PATH updates in between\n\nThe remaining failure was a real one, not a build/link problem: test_\ndispatch's own assert(ours != NULL) fired - get_message_typesupport_handle()\ncouldn't find rosidl_typesupport_tickle_c in rosidl_typesupport_c's own\ndispatch table for msg/Simple, meaning rmw_tickle/PLAN.md's Milestone 1(c)\nregistration wasn't actually visible at generate time for this specific\nmessage despite rosidl_typesupport_tickle_c having already built and\ninstalled successfully earlier in the very same colcon build.\n\nRoot cause, confirmed by reading ament_cmake's own CMake source (ament/\nament_cmake @ rolling): get_used_typesupports() (rosidl_typesupport_c/cmake/\nget_used_typesupports.cmake) calls ament_index_get_resources(), which reads\ncandidate prefixes from the AMENT_PREFIX_PATH *environment variable*\n(ament_index_get_prefix_path.cmake) - a completely different mechanism from\nCMAKE_PREFIX_PATH, which is what find_package() itself resolves against and\nwhich colcon *does* extend across packages within a single build run. AMENT_\nPREFIX_PATH only grows when install/setup.bash is sourced - which is why\nfind_package(rosidl_typesupport_tickle_c REQUIRED) succeeded (proving\nnothing about ament index visibility) while the resource registration\nitself stayed invisible to a package built in the same colcon invocation.\n\nSplit into two colcon build calls with `source install/setup.bash` between\nthem: rmw_tickle + rosidl_typesupport_tickle_c first, then rosidl_\ntypesupport_tickle_c_tests (the one that actually calls rosidl_generate_\ninterfaces() and needs rosidl_typesupport_tickle_c's registration to be\nlive) second.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T17:21:29+09:00",
+          "tree_id": "749310f7c027a2d26db4d4e68293d5285cd7732f",
+          "url": "https://github.com/tsnlab/tickle/commit/b9fb6606301d762f49ab724e8d0ed24992942aa0"
+        },
+        "date": 1789374140711,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.621,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 894.549,
             "unit": "Mbps"
           }
         ]
