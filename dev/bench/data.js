@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789381321014,
+  "lastUpdate": 1789386783363,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2335,6 +2335,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "340ca74b0069cea5f8b99f8b0271d3f67e463844",
+          "message": "rosidl_typesupport_tickle_c: add .srv support (prerequisite for Milestone 4)\n\nMilestone 4 (rmw_create_service()/rmw_create_client()) needs a real\nrosidl_service_type_support_t to hand rmw_tickle, which rosidl_typesupport_\ntickle_c never generated - Milestone 1's CMake extension explicitly skipped\n.srv files. This is that prerequisite, built and verified the same way\nMilestone 1(a)-(c) were.\n\nA .srv's Request and Response are each an ordinary ROS 2 message in their\nown right (rosidl_generator_c generates them exactly like any other\nmessage, just sharing one <Name>.h public header instead of getting their\nown), so ros2_cli.py's new .srv branch reuses the *same* converter +\nmessage-typesupport-wrapper generation it already does for a plain .msg -\nonce for \"<Name>_Request\", once for \"<Name>_Response\" - both against the\none TickLE codec <Name>.h/.c pair tools/typesupport's own existing\nrender.render_service() already produces.\n\nNew ros2_adapter.render_service_type_support(): the service-level wrapper\ntying those two message handles into one rosidl_service_type_support_t via\nROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME - forward-declares and\ncalls the Request/Response accessor functions directly (both compiled into\nthe same interface package's build) rather than #including a generated\nheader for them, since rosidl_typesupport_c's own \"single typesupport\"\nshortcut path (the one real case that needs such a header) never actually\nruns against this package - see Milestone 1(c)'s own notes on the\ndlopen()-based multi-typesupport path being the one that matters here. New\nrosidl_typesupport_tickle_c/service_type_support.h: a private\nrosidl_typesupport_tickle_c_service_callbacks_t holding just the service's\nown ros_type_name (struct tt_Service.name's counterpart to a message's own)\n- request_typesupport/response_typesupport (rosidl's own standard fields)\nalready carry everything else.\n\nBug found and fixed while building this: ros2_header_path() derived a\nseparate header per struct (\"set_bool__request.h\"/\"set_bool__response.h\"),\nbut rosidl_generator_c actually emits *one* header per .srv (\"set_bool.h\",\nshared) - fixed by stripping a trailing _Request/_Response suffix before\nsnake-casing. Caught immediately by offline testing (ros2_cli.generate()\nagainst tests/fixtures_ros2/std_srvs/srv/SetBool.srv, a real vendored .srv,\nplus clang -fsyntax-only against hand-written rosidl_runtime_c/\nrosidl_typesupport_interface stand-ins - the same offline verification\napproach Milestone 1(a) established) before ever reaching CI.\n\nrosidl_typesupport_tickle_c_generate_interfaces.cmake: the .msg-only guard\nnow accepts .srv too, with the right OUTPUT/_generated_sources file list\nfor each (9 vs 5 files) and both msg/ and srv/ generated-output directories\non the include path.\n\nrosidl_typesupport_tickle_c_tests/srv/SimpleService.srv + test/\ntest_dispatch_srv.c (new): the .srv counterpart to test_dispatch.c, proving\nget_service_typesupport_handle() reaches a real generated service, and\nthat its own request_typesupport/response_typesupport in turn resolve\nthrough get_message_typesupport_handle() the same way a plain message's\ndoes. check-all.yml runs it alongside test_dispatch.c.\n\nNot yet verified against a real ROS 2 build - pending the next CI run.\nrmw_tickle's own rmw_create_service()/rmw_create_client() (Milestone 4\nitself) built on top of this is follow-on work, not included here.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T20:52:15+09:00",
+          "tree_id": "1a10008c1e9585785c16412442f7a3e669fcdce9",
+          "url": "https://github.com/tsnlab/tickle/commit/340ca74b0069cea5f8b99f8b0271d3f67e463844"
+        },
+        "date": 1789386781529,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.204,
             "unit": "ms"
           },
           {
