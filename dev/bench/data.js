@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789373679791,
+  "lastUpdate": 1789373682570,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3560,6 +3560,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 889.355,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "40a63fb1dabec592b2d4337f273f6bc696f0b012",
+          "message": "Fix check-all: doubled include path, TickLE headers missing post-install\n\ntest_dispatch.c's build failed with \"tickle/tickle.h: No such file or\ndirectory\" while reading /home/runner/.../install/rosidl_typesupport_\ntickle_c/include/rosidl_typesupport_tickle_c/rosidl_typesupport_tickle_c/\nmessage_type_support.h - a doubled rosidl_typesupport_tickle_c/ segment.\n\nTwo separate bugs, both mine:\n- install(DIRECTORY include/ DESTINATION include/rosidl_typesupport_tickle_c)\n  duplicated the subdirectory: include/ already contains its own\n  rosidl_typesupport_tickle_c/ subfolder, so this landed headers at\n  .../include/rosidl_typesupport_tickle_c/rosidl_typesupport_tickle_c/*.h.\n  Fixed to DESTINATION include, matching rmw_tickle/rmw_tickle/CMakeLists.\n  txt's own working convention (-I root is plain \"include\", callers write\n  #include \"rosidl_typesupport_tickle_c/identifier.h\" with the\n  subdirectory) - and the matching target_include_directories()/\n  ament_export_include_directories()/install(TARGETS ... INCLUDES\n  DESTINATION ...) entries, all previously \"include/rosidl_typesupport_\n  tickle_c\" (the -I root itself, wrong) instead of plain \"include\".\n- Once that was fixed, TICKLE_ROOT/include was still missing for any\n  consumer reached through find_package() (like rosidl_typesupport_tickle_c_\n  tests/test/test_dispatch.c) rather than this package's own build: it was\n  only added under $<BUILD_INTERFACE:...>, and an installed/imported target\n  only ever sees its INSTALL_INTERFACE. TickLE has no installed package of\n  its own to find_package() instead (same reasoning as TICKLE_ROOT's own\n  baked-in-absolute-path design in the extras.cmake.in), so this now sits\n  outside any interface generator expression, unconditional either way.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T17:13:51+09:00",
+          "tree_id": "d9d634a528a4a915787e487678c22b64794a66c2",
+          "url": "https://github.com/tsnlab/tickle/commit/40a63fb1dabec592b2d4337f273f6bc696f0b012"
+        },
+        "date": 1789373681510,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.657,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.665,
             "unit": "Mbps"
           }
         ]
