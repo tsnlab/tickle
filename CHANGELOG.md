@@ -8,7 +8,9 @@ number, `tt_VERSION`, which moves independently.
 
 ## [Unreleased]
 
-Targeting the first tagged release, `v1.0.0`.
+## [1.0.0] - 2026-09-14
+
+First tagged release.
 
 ### Added
 
@@ -29,7 +31,18 @@ Targeting the first tagged release, `v1.0.0`.
   `tools/typesupport/README.md` and DESIGN.md's "Interface serialization (TickLE CDR-4)" for the
   wire format it implements. Every one of TickLE's own example interfaces
   (`examples/{uint64,set_bool,ping_pong,perf}/*.msg`/`*.srv`) is generated this way now; `make
-  regen` re-runs it in place (see CONTRIBUTING.md's "Generated codecs").
+  regen` re-runs it in place (see CONTRIBUTING.md's "Generated codecs"). A bounded string
+  (`string<=N`, or a plain `string` with an explicit `# @capacity <N>` annotation) gets a real
+  `char[N+1]` buffer and a capacity check on encode/decode, the same as a variable array's
+  capacity - previously it silently generated the same alias-only `char*` a plain, unbounded
+  `string` does (see DESIGN.md's "Capacity" rule).
+- Discovery-learned unicast: a server's `CallResponse` unicasts straight back to its
+  `CallRequest`'s own sender instead of broadcasting an answer the rest of the segment never
+  asked for, and a `tt_Publisher`/`tt_Client` now does the same to each Subscriber/Server it
+  learns of via the periodic UPDATE announce, once it knows `tt_UNICAST_PEER_THRESHOLD` (default
+  2) or fewer of them - falls back to today's broadcast once there are more, or none yet known.
+  New `struct tt_Peer` and `tt_UNICAST_PEER_THRESHOLD` / `tt_MAX_PEER_COUNT` (`config.h`); see
+  DESIGN.md's "Discovery-learned peers: unicast to a few, broadcast to the rest".
 
 ### Changed
 
