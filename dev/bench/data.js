@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789390129323,
+  "lastUpdate": 1789390132314,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4648,6 +4648,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 903.948,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "55e6be94cd976b1c67c32f2036947fc0dba1e6ad",
+          "message": "Fix check-all: rmw_service.c needs tickle/config.h directly for tt_SECOND\n\nrmw_tickle.h now includes it too (previous commit), but misc-include-\ncleaner wants the .c file that actually names tt_SECOND to include it\ndirectly as well, not rely on a transitively-included header re-exporting\nit.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T21:48:00+09:00",
+          "tree_id": "4c84b3ddca9f9a80e114e331cf7140b837418c4a",
+          "url": "https://github.com/tsnlab/tickle/commit/55e6be94cd976b1c67c32f2036947fc0dba1e6ad"
+        },
+        "date": 1789390131215,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.592,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 902.905,
             "unit": "Mbps"
           }
         ]
