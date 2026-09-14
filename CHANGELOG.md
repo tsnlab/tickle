@@ -142,6 +142,22 @@ number, `tt_VERSION`, which moves independently.
   reproduces `rmw_implementation`'s own runtime loading (`dlopen("librmw_tickle.so")` +
   `dlsym("rmw_get_implementation_identifier")`) to prove selection actually works, not just that
   the ament_index marker's text looks right.
+- `rmw_get_zero_initialized_context()` (`rmw_tickle/src/rmw_init.c`), missing from the #20-era
+  scaffold the same way `rmw_get_serialization_format()` was (Milestone 2) - `rmw_init()`'s own
+  real contract requires it, but nothing had actually *called* `rmw_init()` until Milestone 10's
+  own tests did.
+- `rmw_tickle/PLAN.md`'s Milestone 9: a "Concept mapping" table (ROS 2/`rmw` concepts ↔ TickLE
+  ones) and a "Threading and locking model" summary added to PLAN.md, consolidating what was
+  previously only scattered across individual milestones' own prose and code comments.
+- A scoped test suite (`rmw_tickle/test/test_qos.c`, `test_node_lifecycle.c`,
+  `test_guard_condition_wait.c`) and a real `colcon test` CI step (`rmw_tickle/PLAN.md`'s
+  Milestone 10) - every QoS roadmap rejection `rmw_tickle_validate_qos_profile()` enforces, the
+  first real end-to-end `rmw_init()`/`rmw_create_node()`/`rmw_destroy_node()` exercise, and
+  Milestone 5's guard condition/wait_set design (including its edge-triggered "consumed once
+  observed ready" behavior) proven for real rather than only compiled and linked. A full
+  publish/subscribe/service round trip (a second node/peer) and the upstream `rmw_implementation`/
+  `test_rmw_implementation` conformance suites remain out of scope - no live multi-process test
+  infra exists yet for rmw_tickle, the same boundary every milestone through this one has kept.
 
 ## [1.0.0] - 2026-09-14
 

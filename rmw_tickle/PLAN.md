@@ -46,14 +46,62 @@ typesupport_tickle_c` generate-time error, or an `RMW_RET_UNSUPPORTED`-equivalen
 Rejected outright until implemented, in this order (local/`rmw`-only work first, TickLE
 wire-protocol work last):
 
-| # | Policy | What it needs | Where |
+| # | Policy | What it needs | Where | |
+|---|---|---|---|---|
+| 1 | `HISTORY` / `DEPTH` | A bounded per-subscription queue | `rmw_tickle` only | ✅ done (Milestone 7) - `qos_profile->depth` really sizes it; `KEEP_ALL` (unbounded) still rejected |
+| 2 | `DEADLINE` | Elapsed-time monitoring since last publish/receive | `rmw_tickle`, via `tt_Node_schedule()` | ⬜ rejected (Milestone 7) |
+| 3 | `LIVELINESS` | Per-entity liveliness, extending Phase 0's node-level timeout | Phase 0's mechanism, generalized | ⬜ rejected (Milestone 7) |
+| 4 | `DURABILITY` (`TRANSIENT_LOCAL`) | A retained-sample cache per publisher + backlog delivery to a newly-discovered subscriber | TickLE core | ⬜ rejected (Milestone 7) |
+| 5 | `RELIABILITY` (`RELIABLE`) | ACK/NACK + retransmission - the biggest lift here | TickLE core (`tt_RELIABLE_*`, already reserved - DESIGN.md's "Known limitations") | ⬜ rejected (Milestone 7) |
+| 6 | `LIFESPAN` | Expiring samples past an age - needs #1/#4's storage to already exist | TickLE core + `rmw_tickle` | ⬜ rejected (Milestone 7) |
+
+`rmw_tickle_validate_qos_profile()` (`src/rmw_qos.c`, Milestone 7) is what actually enforces "rejected until implemented" above - see that milestone's own row for the exact per-policy accepted-value list.
+
+## Concept mapping
+
+The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
+inline where they live; this table is only the *what maps to what*, for orientation before diving
+into either side.
+
+| ROS 2 / `rmw` concept | TickLE concept | `rmw_tickle` glue | Since |
 |---|---|---|---|
-| 1 | `HISTORY` / `DEPTH` | A bounded per-subscription queue | `rmw_tickle` only |
-| 2 | `DEADLINE` | Elapsed-time monitoring since last publish/receive | `rmw_tickle`, via `tt_Node_schedule()` |
-| 3 | `LIVELINESS` | Per-entity liveliness, extending Phase 0's node-level timeout | Phase 0's mechanism, generalized |
-| 4 | `DURABILITY` (`TRANSIENT_LOCAL`) | A retained-sample cache per publisher + backlog delivery to a newly-discovered subscriber | TickLE core |
-| 5 | `RELIABILITY` (`RELIABLE`) | ACK/NACK + retransmission - the biggest lift here | TickLE core (`tt_RELIABLE_*`, already reserved - DESIGN.md's "Known limitations") |
-| 6 | `LIFESPAN` | Expiring samples past an age - needs #1/#4's storage to already exist | TickLE core + `rmw_tickle` |
+| `rmw_context_t` | process-wide `_tt_CONFIG` (`include/tickle/config.h`) | `rmw_tickle_context_impl_t` (graph guard condition, shared wait condvar) | Milestone 0/2/5 |
+| `rmw_node_t` | `struct tt_Node` (exactly one per process today) | `rmw_tickle_node_t` (background poll thread, per-node mutex, embedded `struct tt_Discovery`) | Milestone 2/6 |
+| `rmw_publisher_t` | `struct tt_Publisher` + `struct tt_Topic` | `rmw_tickle_publisher_t` | Milestone 3 |
+| `rmw_subscription_t` | `struct tt_Subscriber` + `struct tt_Topic` | `rmw_tickle_subscriber_t` (own bounded queue, `queue_mutex`) | Milestone 3/7 |
+| `rmw_client_t` | `struct tt_Client` + `struct tt_Service` | `rmw_tickle_client_t` (`tt_CLIENT_CALLBACK` is already the async result rmw wants - no bridge needed) | Milestone 4 |
+| `rmw_service_t` | `struct tt_Server` + `struct tt_Service` | `rmw_tickle_service_t` (bounded blocking bridge - `tt_SERVER_CALLBACK` needs a synchronous response, rmw splits take/send in two) | Milestone 4 |
+| `rmw_guard_condition_t` | none (rmw-side only) | `rmw_tickle_guard_condition_t` (`atomic_bool has_triggered` + the owning context's shared condvar) | Milestone 5 |
+| `rmw_wait_set_t` | none (rmw-side only) | `rmw_tickle_wait_set_t` - no condvar of its own, waits on its context's shared one | Milestone 5 |
+| ROS graph discovery (node/pub/sub/service presence) | `struct tt_Discovery` (opt-in, Milestone 0(c)) | `rmw_graph.c` (`rmw_count_publishers()` et al.) scans it *and* `tickle_node.endpoints[]` for local entities `tt_Discovery` itself never records | Milestone 0(c)/6 |
+| ROS "topic/service name and type must both match to connect" | `tt_hash_id(type_name, endpoint_name)` | `struct tt_Topic`/`struct tt_Service`'s own `.name` = the ROS type name; `endpoint_name` param = the ROS topic/service name | Milestone 3/4 |
+| Node/topic/service *display names* | none - TickLE identifies a node purely by its numeric id, an endpoint purely by `tt_hash_id()` | `rmw_get_node_names()` can only ever report the local node itself - **documented gap**, not solved | Milestone 6 |
+
+## Threading and locking model
+
+Full rationale lives in `rmw_tickle.h`'s own doc comments (`rmw_tickle_node_t`, `rmw_tickle_context_impl_t`) -
+this is the short version for orientation:
+
+- **One background thread per node** loops `tt_Node_poll()`, holding `rmw_tickle_node_t.mutex` only
+  around each individual poll call - never across the blocking syscall underneath it beyond
+  `tt_RECEIVE_TIMEOUT`, and never across iterations.
+- **Every other entry point that touches `tickle_node`** (`rmw_publish()`, `rmw_send_request()`, a
+  service's `server_callback()`'s own TickLE-side calls, ...) must `tt_Node_interrupt()` *then* lock
+  `mutex` before doing so - the same pattern `rmw_destroy_node()` uses to stop the poll thread
+  cleanly. `tt_Node_interrupt()` is the one TickLE call explicitly safe to make without holding
+  `mutex` first.
+- **Each waitable entity owns its own fine-grained lock** for its own state (a subscriber's
+  `queue_mutex`, a client's `response_mutex`, a service's `request_mutex`) - separate from the node
+  mutex, since polling an already-arrived result shouldn't have to wait on the node mutex at all.
+- **One condition variable per context** (`rmw_tickle_context_impl_t.wait_mutex`/`.wait_cond`,
+  Milestone 5) is shared by every waitable entity belonging to it. `rmw_wait()` holds `wait_mutex`
+  continuously across its whole check-every-entity pass and into the actual wait call; a producer
+  (`subscriber_callback()` et al.) takes `wait_mutex` only *after* releasing its own entity-local
+  lock, just to broadcast - this ordering is what closes the lost-wakeup race between the two
+  without needing one single lock shared by everything. A service's `server_callback()` is the one
+  place this required care: it must release `request_mutex` *before* taking `wait_mutex` to
+  broadcast, then re-acquire it, or it would invert `rmw_wait()`'s own lock-nesting order and risk
+  an AB-BA deadlock.
 
 ## Milestones
 
@@ -68,8 +116,8 @@ wire-protocol work last):
 | **6** | 🔶 `rmw_get_node_names`/`rmw_get_node_names_with_enclaves`, `rmw_count_publishers`/`rmw_count_subscribers`, `rmw_service_server_is_available` (`src/rmw_graph.c`, new); graph-changed guard condition wired to 0(c)'s callback (`discovery_callback()`, `rmw_node.c`). `rmw_create_node()` now `tt_Node_set_discovery()`s an embedded `struct tt_Discovery` (`rmw_tickle_node_t.discovery`) right after `tt_Node_create()` succeeds, before the poll thread starts; `discovery_callback()` (fires from the poll thread on every appear/refresh/depart) unconditionally triggers `context_impl->graph_guard_condition` - rmw's own contract is "something changed, go re-query it", not "here's exactly what", so no finer-grained dispatch is needed. **Documented, not solved, gap**: TickLE's wire protocol carries no node-name concept at all, and Milestone 0(c)'s own `tt_DiscoveredEntity` never learns a remote node's display name either (only its endpoints' kind/name/type) - so `rmw_get_node_names()` can only ever truthfully report the *local* node each process itself created, never any other node actually visible on the segment (e.g. `ros2 node list` against a live graph would only ever show one node per process queried). `rmw_count_publishers()`/`_subscribers()`/`rmw_service_server_is_available()` each scan *two* places: `tt_Discovery` only ever records *remote* entities (other nodes' own announces - see its own doc comment), never this node's own locally-created ones, so `count_matching()` also scans `tickle_node.endpoints[]` directly for local matches rather than needing a separate local bookkeeping list. Scope note: only the deliverables the table explicitly names are implemented - the wider real-rmw graph-introspection surface (`rmw_get_topic_names_and_types()`, `rmw_get_publisher_names_and_types_by_node()`, `rmw_*_count_matched_*()`, `rmw_count_clients`/`rmw_count_services`, ...) is left unimplemented, matching the table's own trailing "..." - none of it is called by this rmw's own build, so nothing breaks by omission, only by an application that calls one of these functions directly. Not yet proven in real CI - see this row once it lands green | 0 | 🔶 in progress |
 | **7** | 🔶 QoS rejection logic in `rmw_create_publisher`/`rmw_create_subscription`/`rmw_create_client`/`rmw_create_service`: new shared `rmw_tickle_validate_qos_profile()` (`src/rmw_qos.c`) rejects (`RMW_RET_UNSUPPORTED` + `RMW_SET_ERROR_MSG`) any QoS policy the roadmap above hasn't implemented yet - `reliability` must be `BEST_EFFORT`/`SYSTEM_DEFAULT` (#5), `durability` must be `VOLATILE`/`SYSTEM_DEFAULT` (#4), `liveliness` must be `AUTOMATIC`/`SYSTEM_DEFAULT` with an unset `liveliness_lease_duration` (#3), `deadline`/`lifespan` must both be unset (#2/#6), and (subscriptions only) `history` must not be `KEEP_ALL` (#1, an unbounded queue this rmw can't allocate for) - called by all four `rmw_create_*()` functions right after their existing identifier check, before any real work. Roadmap item #1 (HISTORY/DEPTH) also got its "real depth" half done alongside the rejection logic: `rmw_tickle_subscriber_t.queue` is now allocated at `rmw_create_subscription()` time, sized from `qos_profile->depth` (falling back to the previous placeholder default, `RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH`, only when `depth` is `RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT`/unset), rather than a fixed compile-time array - `subscriber_callback()`/`rmw_take_with_info()`/`rmw_destroy_subscription()` updated to index it by `queue_capacity` instead of that old macro. Roadmap items #2-#6 themselves remain "rejected outright" as this milestone's own scope says - "implemented one at a time as separate follow-on work", not part of Milestone 7. Not yet proven in real CI - see this row once it lands green | 2, 3 | 🔶 in progress |
 | **8** | 🔶 Packaging: `<member_of_group>rmw_implementation_packages</member_of_group>` in `package.xml` (REP 149 metadata, the same convention every other real rmw implementation uses); `CMakeLists.txt` now `find_package(rmw_implementation_cmake REQUIRED)`s and calls `register_rmw_implementation("c:rosidl_typesupport_tickle_c")` - the real mechanism (not just documentation) behind the `share/ament_index/resource_index/rmw_typesupport/rmw_tickle` resource marker (content `rosidl_typesupport_tickle_c`) that `rmw_implementation_cmake`'s own `get_available_rmw_implementations()`/`get_default_rmw_implementation()` read at *someone else's* build time - install() of it is handled entirely inside `register_rmw_implementation()`/`ament_index_register_resource()`, nothing bespoke needed on rmw_tickle's own side. One language ("c") and one typesupport, matching "Supported subset" (no C++ or introspection typesupport). New `check-all.yml` step, "Verify RMW_IMPLEMENTATION=rmw_tickle selection works": reproduces the exact mechanism `rmw_implementation`'s own `functions.cpp` uses to load a selected rmw at runtime - `dlopen("librmw_tickle.so")` by the library's conventional name, then `dlsym()` for `rmw_get_implementation_identifier` and calls it, asserting it returns `"rmw_tickle"` - a real, if narrower than a full rclcpp/rcl round trip (no live two-process test infra exists yet for rmw_tickle, matching every other milestone's own "compile+link, not live network" verification depth), proof that the standard selection mechanism can actually find and load this rmw, not just that its ament_index marker's text content looks right. Not yet proven in real CI - see this row once it lands green | 1 | 🔶 in progress |
-| **9** | This document, kept current as the single place mapping `rmw` concepts to TickLE ones (`tt_Node`/`tt_Publisher`/...), scope/non-goals, threading/locking model, QoS and subset limits | ongoing | ⬜ |
-| **10** | A scoped test suite (only what "Supported subset" + the QoS roadmap actually cover - not full upstream conformance); an explicit xfail/skip list for `rmw_implementation`/`test_rmw_implementation` cases that are expected to fail rather than silently ignored; a real colcon build+test CI job (today's `check-all.yml` only builds `rmw_tickle` far enough to lint it) | 2–7 | ⬜ |
+| **9** | ✅ This document, kept current as the single place mapping `rmw` concepts to TickLE ones (`tt_Node`/`tt_Publisher`/...), scope/non-goals, threading/locking model, QoS and subset limits - "Concept mapping" and "Threading and locking model" sections added (above); "Supported subset"/"QoS roadmap"/the "Design philosophy" table already covered scope, non-goals, and QoS/subset limits from Milestone 0 onward. This row itself stays "ongoing" in spirit (every milestone above updates this document as it lands) even though the *dedicated sections* Milestone 9 specifically asked for are now in place | ongoing | ✅ done |
+| **10** | 🔶 A scoped test suite (`rmw_tickle/test/test_qos.c`/`test_node_lifecycle.c`/`test_guard_condition_wait.c`, only what "Supported subset" + the QoS roadmap actually cover, not full upstream conformance) and a real `colcon test` CI job (`check-all.yml`'s new "Run rmw_tickle's own test suite" step - every step before it only built `rmw_tickle` far enough to lint/link it, never actually ran `colcon test` against it). `test_qos.c` exercises every QoS roadmap rejection `rmw_tickle_validate_qos_profile()` (Milestone 7) enforces directly (no node needed - it's a pure predicate); `test_node_lifecycle.c` is the first real end-to-end `rmw_init()`/`rmw_create_node()`/`rmw_destroy_node()`/`rmw_shutdown()`/`rmw_context_fini()` exercise across this whole plan, which is what surfaced `rmw_get_zero_initialized_context()` missing entirely from the #20-era scaffold (fixed, `rmw_init.c`) - nothing had actually *called* `rmw_init()` before; `test_guard_condition_wait.c` proves Milestone 5's guard condition/wait_set design for real, including its edge-triggered "consumed once observed ready" behavior. **Not done**: the "explicit xfail/skip list for `rmw_implementation`/`test_rmw_implementation` cases" this milestone's own deliverable also asks for - integrating those upstream conformance suites needs a full rclcpp-adjacent build plus real multi-process test orchestration, a materially bigger lift than anything built so far, and is left as explicit follow-on work rather than attempted partially. A full publish/subscribe/service round trip (a second node/peer) is the same kind of gap, for the same reason - no live multi-process test infra exists yet for rmw_tickle, the boundary every milestone through this one has kept ("compile+link, not live network") | 2–7 | 🔶 in progress |
 
 Deferred, tracked here rather than solved now: **multiple ROS 2 nodes per process** (Milestone 2
 assumes one `tt_Node` per process; a component container wanting several ROS nodes in one process

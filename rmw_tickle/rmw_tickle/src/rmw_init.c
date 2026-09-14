@@ -44,6 +44,16 @@ rmw_init_options_t rmw_get_zero_initialized_init_options(void) {
     return init_options;
 }
 
+// Missing from the #20-era scaffold, same as rmw_get_serialization_format() was (Milestone 2) -
+// rmw_init()'s own real contract (rmw/init.h) requires the caller to have zero-initialized
+// `context` this way first; never actually exercised until Milestone 10's own rmw_init()-calling
+// tests surfaced the gap.
+rmw_context_t rmw_get_zero_initialized_context(void) {
+    rmw_context_t context;
+    memset(&context, 0, sizeof(context));
+    return context;
+}
+
 rmw_ret_t rmw_init_options_init(rmw_init_options_t* const init_options, rcutils_allocator_t allocator) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(init_options, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(allocator.allocate, RMW_RET_INVALID_ARGUMENT);

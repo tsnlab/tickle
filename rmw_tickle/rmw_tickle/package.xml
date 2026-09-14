@@ -26,6 +26,9 @@
        REP 149 metadata, not itself part of the CMake-time discovery mechanism above. -->
   <member_of_group>rmw_implementation_packages</member_of_group>
 
+  <!-- rmw_tickle/PLAN.md's Milestone 10: CMakeLists.txt's own ament_add_test() calls. -->
+  <test_depend>ament_cmake_test</test_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>

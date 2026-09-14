@@ -245,6 +245,20 @@ jobs:
           gcc -o /tmp/verify_rmw_load /tmp/verify_rmw_load.c -ldl
           /tmp/verify_rmw_load
 
+      - name: Run rmw_tickle's own test suite
+        run: |
+          # rmw_tickle/PLAN.md's Milestone 10 - a scoped test suite (test/test_qos.c, test/
+          # test_node_lifecycle.c, test/test_guard_condition_wait.c), plus this is what actually
+          # makes this "a real colcon build+test CI job": every step above this one only builds
+          # rmw_tickle far enough to lint/link it, never runs `colcon test` against it at all.
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          # `|| true`: colcon test-result --verbose below is the actual pass/fail gate (and prints
+          # a per-test breakdown) - letting a nonzero exit from `colcon test` itself short-circuit
+          # this step early would skip that breakdown on failure.
+          colcon test --packages-select rmw_tickle --event-handlers console_direct+ || true
+          colcon test-result --verbose
+
       - name: Check all
         uses: tsnlab/check@main
         with:

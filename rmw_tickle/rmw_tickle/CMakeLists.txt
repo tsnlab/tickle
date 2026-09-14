@@ -90,4 +90,27 @@ install(
   INCLUDES DESTINATION include
 )
 
+# rmw_tickle/PLAN.md's Milestone 10: a scoped test suite - only what "Supported subset" + the QoS
+# roadmap actually cover, not full upstream rmw_implementation/test_rmw_implementation conformance
+# (no live two-process publish/subscribe/service round trip test infra exists yet for rmw_tickle -
+# every prior milestone's own verification depth stopped at "compile+link", and this milestone's
+# own new tests stay within that same boundary: a real struct tt_Node is created in-process, but
+# nothing here talks to a second node/peer - see PLAN.md's own note on this gap).
+if(BUILD_TESTING)
+  find_package(ament_cmake_test REQUIRED)
+
+  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait)
+    add_executable(${_test_name} test/${_test_name}.c)
+    target_link_libraries(${_test_name} rmw_tickle Threads::Threads)
+    # GENERATE_RESULT_FOR_RETURN_CODE_ZERO: these are plain C executables (an assert()-per-check,
+    # exit 0/nonzero), not something that emits its own JUnit result file - ament_add_test()'s own
+    # run_test.py wrapper otherwise treats "no result file produced" as a failure regardless of
+    # the command's own exit code.
+    ament_add_test(${_test_name}
+      COMMAND "$<TARGET_FILE:${_test_name}>"
+      GENERATE_RESULT_FOR_RETURN_CODE_ZERO
+    )
+  endforeach()
+endif()
+
 ament_package()
