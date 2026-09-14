@@ -40,24 +40,24 @@ int main(void) {
     assert(ours != NULL);
     assert(ours->typesupport_identifier == rosidl_typesupport_tickle_c__identifier);
 
-    const rosidl_typesupport_tickle_c_message_callbacks_t* cb =
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks =
         (const rosidl_typesupport_tickle_c_message_callbacks_t*)ours->data;
-    assert(cb != NULL);
-    assert(cb->tickle_struct_size > 0 && cb->tickle_struct_size <= 64);
-    assert(cb->ros_struct_size == sizeof(struct rosidl_typesupport_tickle_c_tests__msg__Simple));
-    assert(strcmp(cb->ros_type_name, "rosidl_typesupport_tickle_c_tests/msg/Simple") == 0);
+    assert(callbacks != NULL);
+    assert(callbacks->tickle_struct_size > 0 && callbacks->tickle_struct_size <= 64);
+    assert(callbacks->ros_struct_size == sizeof(struct rosidl_typesupport_tickle_c_tests__msg__Simple));
+    assert(strcmp(callbacks->ros_type_name, "rosidl_typesupport_tickle_c_tests/msg/Simple") == 0);
 
     struct rosidl_typesupport_tickle_c_tests__msg__Simple ros_in;
     memset(&ros_in, 0, sizeof(ros_in));
-    ros_in.value = 42;
+    ros_in.value = 10;
 
     uint64_t tickle_storage[8] = {0}; // 64 bytes, naturally 8-byte aligned - see the assert above
-    assert(cb->to_tickle(&ros_in, tickle_storage));
+    assert(callbacks->to_tickle(&ros_in, tickle_storage));
 
     struct rosidl_typesupport_tickle_c_tests__msg__Simple ros_out;
     memset(&ros_out, 0, sizeof(ros_out));
-    assert(cb->from_tickle(tickle_storage, &ros_out));
-    assert(ros_out.value == 42);
+    assert(callbacks->from_tickle(tickle_storage, &ros_out));
+    assert(ros_out.value == 10);
 
     printf("rosidl_typesupport_tickle_c dispatch: PASS\n");
     return 0;

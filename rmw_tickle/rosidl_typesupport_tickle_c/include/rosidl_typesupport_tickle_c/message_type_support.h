@@ -43,13 +43,13 @@ typedef struct rosidl_typesupport_tickle_c_message_callbacks_t {
     // generated rmw_tickle nodes agree on the same hash for the same message type.
     const char* ros_type_name;
     size_t tickle_struct_size; // sizeof() the generated TickLE-side struct - lets rmw_tickle
-                                // allocate scratch storage generically, without needing a
-                                // per-message struct definition of its own
+                               // allocate scratch storage generically, without needing a
+                               // per-message struct definition of its own
     size_t ros_struct_size;    // sizeof() the rosidl_generator_c struct - same reason, for the ROS
-                                // 2 side (a subscriber's receive queue holds already-from_tickle()-
-                                // converted, independently-owned ROS messages - see rmw_tickle's
-                                // own rmw_subscription.c - so it needs to allocate these without a
-                                // per-message struct definition of its own either)
+                               // 2 side (a subscriber's receive queue holds already-from_tickle()-
+                               // converted, independently-owned ROS messages - see rmw_tickle's
+                               // own rmw_subscription.c - so it needs to allocate these without a
+                               // per-message struct definition of its own either)
     rosidl_typesupport_tickle_c_to_tickle_function to_tickle;
     rosidl_typesupport_tickle_c_from_tickle_function from_tickle;
     tt_DATA_ENCODE_SIZE tickle_encode_size;

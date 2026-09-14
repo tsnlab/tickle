@@ -14,14 +14,19 @@
 // network.
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
+#include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/types/rcutils_ret.h" // RCUTILS_RET_OK
 #include "rmw/error_handling.h"
+#include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/serialized_message.h"
 #include "rmw_tickle_c/rmw_tickle.h"
+#include "rosidl_runtime_c/message_type_support_struct.h"
+#include "rosidl_typesupport_tickle_c/message_type_support.h"
 
 rmw_ret_t rmw_serialize(const void* ros_message, const rosidl_message_type_support_t* type_support,
                         rmw_serialized_message_t* serialized_message) {
@@ -61,7 +66,8 @@ rmw_ret_t rmw_serialize(const void* ros_message, const rosidl_message_type_suppo
         }
     }
 
-    int32_t encoded = callbacks->tickle_encode(tickle_buf, serialized_message->buffer, (uint32_t)serialized_message->buffer_capacity);
+    int32_t encoded =
+        callbacks->tickle_encode(tickle_buf, serialized_message->buffer, (uint32_t)serialized_message->buffer_capacity);
     serialized_message->allocator.deallocate(tickle_buf, serialized_message->allocator.state);
     if (encoded != size) {
         RMW_SET_ERROR_MSG("tickle_encode() did not produce the expected size");
@@ -71,8 +77,8 @@ rmw_ret_t rmw_serialize(const void* ros_message, const rosidl_message_type_suppo
     return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_deserialize(const rmw_serialized_message_t* serialized_message, const rosidl_message_type_support_t* type_support,
-                          void* ros_message) {
+rmw_ret_t rmw_deserialize(const rmw_serialized_message_t* serialized_message,
+                          const rosidl_message_type_support_t* type_support, void* ros_message) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(serialized_message, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
 
@@ -91,8 +97,8 @@ rmw_ret_t rmw_deserialize(const rmw_serialized_message_t* serialized_message, co
     // true: rmw_serialize() (above) always encodes in the local machine's own native byte order -
     // there's no network framing/tt_Header magic to negotiate endianness against here, unlike the
     // real wire path (tickle.c's process_data(), which derives this from tt_is_native_endian()).
-    int32_t decoded =
-        callbacks->tickle_decode(tickle_buf, serialized_message->buffer, (uint32_t)serialized_message->buffer_length, true);
+    int32_t decoded = callbacks->tickle_decode(tickle_buf, serialized_message->buffer,
+                                               (uint32_t)serialized_message->buffer_length, true);
     if (decoded < 0) {
         RMW_SET_ERROR_MSG("tickle_decode() failed");
         allocator.deallocate(tickle_buf, allocator.state);
@@ -101,10 +107,10 @@ rmw_ret_t rmw_deserialize(const rmw_serialized_message_t* serialized_message, co
 
     // Same "ros_message assumed fresh/blank" caveat as rmw_subscription.c's own rmw_take_with_
     // info() - see its doc comment there.
-    bool ok = callbacks->from_tickle(tickle_buf, ros_message);
+    bool converted = callbacks->from_tickle(tickle_buf, ros_message);
     callbacks->tickle_free(tickle_buf);
     allocator.deallocate(tickle_buf, allocator.state);
-    if (!ok) {
+    if (!converted) {
         RMW_SET_ERROR_MSG("failed to convert TickLE wire struct to ROS message");
         return RMW_RET_ERROR;
     }

@@ -12,16 +12,23 @@
 // QoS (qos_profile) isn't validated or acted on yet beyond TickLE's own best-effort default -
 // Milestone 7's QoS roadmap is the explicit-rejection work, not this milestone.
 
+#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 
+#include <tickle/hal.h> // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
+#include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
+#include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
+#include "rosidl_runtime_c/message_type_support_struct.h"
+#include "rosidl_typesupport_tickle_c/message_type_support.h"
 
 rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
                                       const char* topic_name, const rmw_qos_profile_t* qos_profile,
@@ -93,9 +100,8 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // rmw_tickle.h's own rmw_tickle_node_t doc comment for the full contract.
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_mutex_lock(&node_impl->mutex);
-    tt_ret_t ret =
-        tt_Node_create_publisher(&node_impl->tickle_node, &pub_impl->tickle_publisher, &pub_impl->topic,
-                                 pub_impl->rmw_publisher.topic_name);
+    tt_ret_t ret = tt_Node_create_publisher(&node_impl->tickle_node, &pub_impl->tickle_publisher, &pub_impl->topic,
+                                            pub_impl->rmw_publisher.topic_name);
     pthread_mutex_unlock(&node_impl->mutex);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create_publisher() failed");
@@ -129,7 +135,8 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message, rmw_publisher_allocation_t* allocation) {
+rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
+                      rmw_publisher_allocation_t* allocation) {
     (void)allocation; // pre-allocated-message optimization, not implemented
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);

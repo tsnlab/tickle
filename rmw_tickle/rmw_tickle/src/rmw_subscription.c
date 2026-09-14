@@ -13,17 +13,24 @@
 // fixed placeholder queue depth (RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY, rmw_tickle.h) -
 // Milestone 7's QoS roadmap is the explicit-rejection/real-depth work, not this milestone.
 
+#include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
+#include <tickle/hal.h> // tt_ret_t/tt_RET_OK/tt_get_ns
 #include <tickle/tickle.h>
 
+#include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
+#include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
+#include "rosidl_runtime_c/message_type_support_struct.h"
+#include "rosidl_typesupport_tickle_c/message_type_support.h"
 
 // Runs on the node's poll thread, inside tt_Node_poll() (see rmw_node.c) - node->mutex is already
 // held by the caller. `data` (topic->data_size bytes, decoded by TickLE) may have string/array
@@ -58,7 +65,8 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     }
     size_t tail_index = (sub_impl->queue_head + sub_impl->queue_count) % RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY;
     sub_impl->queue[tail_index].ros_message = ros_message;
-    sub_impl->queue[tail_index].source_timestamp = time; // publisher's own wire timestamp - see tickle.c's process_data()
+    sub_impl->queue[tail_index].source_timestamp =
+        time; // publisher's own wire timestamp - see tickle.c's process_data()
     sub_impl->queue[tail_index].received_timestamp = tt_get_ns();
     sub_impl->queue[tail_index].publication_sequence_number = seq_no;
     sub_impl->queue[tail_index].reception_sequence_number = sub_impl->reception_sequence_number++;
