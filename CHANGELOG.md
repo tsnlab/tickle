@@ -48,9 +48,20 @@ number, `tt_VERSION`, which moves independently.
   compile and round-trip the generated converter against the real TickLE codec, covering scalars,
   fixed arrays, bounded/unbounded variable arrays (including over-capacity rejection), and
   bounded/unbounded strings (including over-capacity rejection) - clang-tidy-clean and
-  warning-free under the project's own `.clang-tidy`/`-Wall -Wextra`. Not yet checked against a
-  real ROS 2 install's actual header shapes, and not yet wired into an actual CMake build
-  (`rmw_tickle/PLAN.md`'s Milestone 1(b), still pending).
+  warning-free under the project's own `.clang-tidy`/`-Wall -Wextra`.
+- `rosidl_typesupport_tickle_c` (`rmw_tickle/PLAN.md`'s Milestone 1(b)+(c), built together): a
+  real, working ROS 2 typesupport package. Registers with `rosidl_generate_interfaces()`'s
+  `rosidl_generate_idl_interfaces` extension point and as an `ament_index` `"rosidl_typesupport_c"`
+  resource, so any ROS 2 interface package picks it up automatically just by
+  `find_package(rosidl_typesupport_tickle_c)` before generating its own interfaces - no explicit
+  second macro call needed. For each `.msg`, `python3 -m tickle_typesupport.ros2_cli` (new) writes
+  TickLE's own codec, `ros2_adapter`'s converter, and a `rosidl_message_type_support_t` wrapper
+  (`ros2_adapter.render_type_support()`, new) reachable through the exact standard
+  `get_message_typesupport_handle()` dispatch chain a real `rmw_create_publisher()` call uses -
+  proven, not just plausible: `rosidl_typesupport_tickle_c_tests` (new, a minimal real interface
+  package) calls that dispatch chain directly in CI and gets a working handle back. `.msg` only for
+  this first cut; `.srv`, nested-field converters, and packaging `tickle_typesupport` itself as an
+  installable `ament_cmake_python` package are tracked as follow-on work in `rmw_tickle/PLAN.md`.
 
 ## [1.0.0] - 2026-09-14
 
