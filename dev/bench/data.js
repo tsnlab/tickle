@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789371452278,
+  "lastUpdate": 1789371455275,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3473,6 +3473,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.014,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c5c7acf0df0ebd99f31ef27d8d5d28d7236e0cdc",
+          "message": "rmw_tickle Milestone 1(b)+(c): rosidl_typesupport_tickle_c, built together\n\nStarted 1(b) (the CMake package/macro wrapping ros2_adapter.py's converter)\nas planned - an explicit rosidl_typesupport_tickle_c_generate_interfaces()\nmacro call, with (c)'s automatic extension-point registration deferred as a\nstretch goal. Reading ros2/rosidl and ros2/rosidl_typesupport's own real\nCMake source (jazzy branch) turned up that this ordering doesn't work: the\nrosidl_message_type_support_t* handle rcl hands an rmw implementation is\nalways the one rosidl_typesupport_c builds for that specific message,\nlisting only whichever typesupport identifiers were registered as an\nament_index \"rosidl_typesupport_c\" resource (get_used_typesupports(),\nrosidl_typesupport_c/cmake/get_used_typesupports.cmake) *before* that\ninterface package's own rosidl_generate_interfaces() ran. Without that\nregistration, no amount of correct generated code is reachable from a real\nrmw_create_publisher() call - so (c) isn't an optional convenience on top\nof (b), it's a hard prerequisite, and both are built together here instead.\n\nNew rosidl_typesupport_tickle_c package:\n- CMakeLists.txt: ament_index_register_resource(\"rosidl_typesupport_c\")\n  (what get_used_typesupports() actually queries) + a small identifier.c\n  runtime library (rosidl_typesupport_tickle_c__identifier, same pattern as\n  rosidl_typesupport_introspection_c/src/identifier.c) + include/\n  message_type_support.h (this package's own private\n  rosidl_typesupport_tickle_c_message_callbacks_t - rosidl's typesupport\n  contract never inspects a handle's .data shape, so this only needs to\n  agree with rmw_tickle itself, reusing TickLE's own tt_DATA_ENCODE/\n  tt_DATA_DECODE/tt_DATA_ENCODE_SIZE/tt_DATA_FREE typedefs and the same\n  cast-a-per-type-function-to-a-generic-signature idiom examples/*/*.c's\n  own <Name>Topic definitions already use).\n- rosidl_typesupport_tickle_c-extras.cmake.in +\n  cmake/rosidl_typesupport_tickle_c_generate_interfaces.cmake:\n  ament_register_extension(\"rosidl_generate_idl_interfaces\", ...) - the\n  *current* extension point (rosidl_generate_interfaces.cmake's own\n  ament_execute_extensions() call; the identically-named-but-obsolete one\n  was replaced in Dashing) - registers a per-.msg add_custom_command\n  running the new `python3 -m tickle_typesupport.ros2_cli`, compiling\n  TickLE's own src/encoding.c/log.c straight into each interface package's\n  generated typesupport library (no installed ament/colcon TickLE package\n  exists to link against instead - same approach tools/typesupport/tests/\n  test_ros2_adapter.py's own offline round-trip test already uses).\n  rosidl_generate_interfaces_ABS_IDL_FILES turned out to hold rosidl_\n  adapter's *converted .idl* paths, not the original .msg tickle_typesupport\n  can actually parse - reconstructed from the known msg/<Name>.msg layout\n  instead of assumed to be usable directly.\n\ntickle_typesupport.ros2_adapter.render_type_support() (new): the\nrosidl_message_type_support_t wrapper + ROSIDL_TYPESUPPORT_INTERFACE__\nMESSAGE_SYMBOL_NAME-named accessor tying render_adapter()'s converter and\nTickLE's codec together. .typesupport_identifier is set lazily on first\naccess rather than in the static initializer - a plain extern const char*\nisn't a C constant expression, confirmed by hitting the same compiler error\nreal rosidl_typesupport_introspection_c-generated code works around the\nsame way (its own msg__type_support.c.em template, fetched from ros2/rosidl\n@ jazzy, doing exactly this). tickle_typesupport.ros2_cli (new): the CLI\nentry point the CMake extension invokes, tying cli.py's existing TickLE\ncodec generation together with ros2_adapter's two new pieces in one pass.\n\nNew rosidl_typesupport_tickle_c_tests package: a minimal real interface\n(msg/Simple.msg) whose test/test_dispatch.c proves reachability through the\n*exact* standard get_message_typesupport_handle() dispatch chain a real\nrmw_create_publisher() call would use, not just that generated code\ncompiles - the specific thing this whole detour was about. check-all.yml\nbuilds both new packages alongside rmw_tickle and runs this test as its own\nstep, before the lint pass.\n\nVerified everything not requiring a real ROS 2 install offline: ros2_cli.py\ngenerates all 5 files per message; the type-support wrapper's C syntax was\nchecked with clang -fsyntax-only against real rosidl_runtime_c/\nrosidl_typesupport_interface header text fetched from ros2/rosidl @ jazzy\n(not guessed) plus TickLE's own real tickle.h - zero warnings. The CMake\nextension-point mechanism itself (ament_register_extension/get_used_\ntypesupports/the .idl-vs-.msg path issue) could only be derived by reading\nros2/rosidl's and ros2/rosidl_typesupport's actual source, since this\nproject's own dev environment has no ROS 2 install at all - expect this to\nneed real CI iteration (ros-tooling/setup-ros) despite the research.\n\nKnown gaps for follow-on work, not solved here: .srv support (skipped with\na CMake warning), a nested message field's own converter/wrapper files, and\npackaging tickle_typesupport itself as an installable ament_cmake_python\npackage (a real end-user build currently needs `pip install <tickle repo>/\ntools/typesupport` done by hand ahead of time, same as check-all.yml's own\nCI already does).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T16:36:38+09:00",
+          "tree_id": "fde5c52e758ce97f461d9ce774e7474ed8295a64",
+          "url": "https://github.com/tsnlab/tickle/commit/c5c7acf0df0ebd99f31ef27d8d5d28d7236e0cdc"
+        },
+        "date": 1789371454152,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.013,
             "unit": "ms"
           }
         ]
