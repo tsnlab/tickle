@@ -187,13 +187,16 @@ jobs:
           # typesupport_tickle_c as a "rosidl_typesupport_c" ament_index resource (see that
           # package's own CMakeLists.txt) is that get_message_typesupport_handle() can reach it
           # the exact same way a real rmw_create_publisher() call would. rosidl_typesupport_
-          # tickle_c_tests/test/test_dispatch.c exercises precisely that chain (not just "the
-          # generated code compiles") - install/setup.bash is needed so the dynamic loader can
-          # find the shared library get_message_typesupport_handle_function() itself dlopen()s at
-          # runtime by convention name.
+          # tickle_c_tests/test/test_dispatch.c (a message) and test_dispatch_srv.c (Milestone 4 -
+          # a service, and transitively its own request/response messages via get_service_
+          # typesupport_handle()) exercise precisely that chain (not just "the generated code
+          # compiles") - install/setup.bash is needed so the dynamic loader can find the shared
+          # library get_message_typesupport_handle_function()/get_service_typesupport_handle_
+          # function() themselves dlopen() at runtime by convention name.
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch
+          ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_srv
 
       - name: Check all
         uses: tsnlab/check@main

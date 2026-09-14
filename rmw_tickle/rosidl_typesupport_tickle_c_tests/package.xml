@@ -29,6 +29,10 @@
   <depend>rosidl_generator_c</depend>
   <depend>rosidl_typesupport_c</depend>
   <depend>rosidl_typesupport_tickle_c</depend>
+  <!-- srv/SimpleService.srv - rosidl_generate_interfaces() itself requires this for any .srv
+       (rosidl_cmake/cmake/rosidl_generate_interfaces.cmake's own "Services depend on
+       service_msgs" check). -->
+  <depend>service_msgs</depend>
 
   <exec_depend>rosidl_runtime_c</exec_depend>
 

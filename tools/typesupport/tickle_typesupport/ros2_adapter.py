@@ -85,8 +85,17 @@ def _camel_to_snake(name):
 
 
 def ros2_header_path(ros_name):
-    """`pkg__msg__Type` -> `pkg/msg/type.h` (the header rosidl_generator_c itself would emit)."""
+    """`pkg__msg__Type` -> `pkg/msg/type.h` (the header rosidl_generator_c itself would emit).
+    A .srv's `pkg__srv__Type_Request`/`pkg__srv__Type_Response` both resolve to the *same*
+    `pkg/srv/type.h` - rosidl_generator_c generates one header per .srv (mirroring TickLE's own
+    render_service() putting both structs in one file), not one per request/response - the
+    `_Request`/`_Response` suffix is a *struct*-naming convention only, stripped here before
+    snake-casing so it doesn't leak into the file name too (e.g. "set_bool__request.h", wrong)."""
     pkg, subfolder, type_name = ros_name.split("__")
+    for suffix in ("_Request", "_Response"):
+        if type_name.endswith(suffix):
+            type_name = type_name[: -len(suffix)]
+            break
     return f"{pkg}/{subfolder}/{_camel_to_snake(type_name)}.h"
 
 
@@ -332,6 +341,88 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             f"ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(rosidl_typesupport_tickle_c, {pkg}, {subfolder}, {type_name})(void) {{",
             f"    if (!{handle_var}.typesupport_identifier) {{",
             f"        {handle_var}.typesupport_identifier = rosidl_typesupport_tickle_c__identifier;",
+            "    }",
+            f"    return &{handle_var};",
+            "}",
+            "",
+        ]
+    )
+
+
+def render_service_type_support(ros_service_name):
+    """Returns the .c source for <ros_service_name>__type_support.c - the service-level
+    counterpart to render_type_support() above: wraps a `rosidl_service_type_support_t` whose
+    `.request_typesupport`/`.response_typesupport` point directly at the two message-level
+    handles this same interface package's own `<..>_Request`/`<..>_Response` `render_type_
+    support()` output already provides, reached by calling their own `ROSIDL_TYPESUPPORT_
+    INTERFACE__MESSAGE_SYMBOL_NAME` accessor functions directly (forward-declared here, not
+    `#include`d from a generated header - see the comment in the generated output itself) -
+    real `rosidl_typesupport_introspection_c`-generated code reaches a nested type's own message
+    handle the exact same way. `ros_service_name` is "pkg__srv__Type" (NOT `..._Request`/
+    `..._Response` - those are derived here, matching cli.py's/adapt.py's own `f"{name}Request"`/
+    `f"{name}Response"` naming for the TickLE-side structs those two calls, in turn, wrap).
+
+    `.data` is this package's own private `rosidl_typesupport_tickle_c_service_callbacks_t`
+    (`rosidl_typesupport_tickle_c/service_type_support.h`) - deliberately minimal, since `.request_
+    typesupport`/`.response_typesupport` (rosidl's own, standard fields) already carry everything
+    needed to reach each side's own message callbacks via rmw_tickle's own rmw_tickle_get_message_
+    callbacks() - this only adds what neither side has: the service's own type name, which
+    TickLE's `struct tt_Service` needs the same way `struct tt_Topic` needs a message's own
+    `ros_type_name` (see render_type_support()'s own doc comment)."""
+    pkg, subfolder, type_name = ros_service_name.split("__")
+    request_ros_name = f"{ros_service_name}_Request"
+    response_ros_name = f"{ros_service_name}_Response"
+    callbacks_var = f"_{pkg}__{subfolder}__{type_name}__callbacks"
+    handle_var = f"_{pkg}__{subfolder}__{type_name}__handle"
+    return "\n".join(
+        [
+            "#include <stddef.h>",
+            "",
+            '#include "rosidl_runtime_c/message_type_support_struct.h"',
+            '#include "rosidl_runtime_c/service_type_support_struct.h"',
+            '#include "rosidl_typesupport_interface/macros.h"',
+            '#include "rosidl_typesupport_tickle_c/identifier.h"',
+            '#include "rosidl_typesupport_tickle_c/service_type_support.h"',
+            "",
+            "// Forward-declared rather than #included from a generated header (rosidl_typesupport_c's",
+            "// own \"single typesupport\" dispatch shortcut expects one, but that path never actually",
+            "// runs against this package - see rmw_tickle/PLAN.md's Milestone 1(c) notes on the",
+            "// dlopen()-based multi-typesupport path being the one that matters) - both functions are",
+            f"// defined in this same interface package's build, in {request_ros_name}__type_support.c",
+            f"// and {response_ros_name}__type_support.c.",
+            "const rosidl_message_type_support_t *",
+            f"ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(rosidl_typesupport_tickle_c, {pkg}, {subfolder}, {type_name}_Request)(void);",
+            "const rosidl_message_type_support_t *",
+            f"ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(rosidl_typesupport_tickle_c, {pkg}, {subfolder}, {type_name}_Response)(void);",
+            "",
+            f"static rosidl_typesupport_tickle_c_service_callbacks_t {callbacks_var} = {{",
+            f'    .ros_type_name = "{pkg}/{subfolder}/{type_name}",',
+            "};",
+            "",
+            "// .typesupport_identifier/.request_typesupport/.response_typesupport are set on first",
+            "// access below, not here - the identifier for the same reason as render_type_support()'s",
+            "// own message-level handle (a plain extern const char* isn't a C constant expression);",
+            "// the two typesupport pointers because calling another translation unit's accessor",
+            "// function isn't a constant expression either.",
+            f"static rosidl_service_type_support_t {handle_var} = {{",
+            f"    .data = &{callbacks_var},",
+            "    .func = get_service_typesupport_handle_function,",
+            "    .event_typesupport = NULL,",
+            "    .event_message_create_handle_function = NULL,",
+            "    .event_message_destroy_handle_function = NULL,",
+            "    .get_type_hash_func = NULL,",
+            "    .get_type_description_func = NULL,",
+            "    .get_type_description_sources_func = NULL,",
+            "};",
+            "",
+            "const rosidl_service_type_support_t *",
+            f"ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(rosidl_typesupport_tickle_c, {pkg}, {subfolder}, {type_name})(void) {{",
+            f"    if (!{handle_var}.typesupport_identifier) {{",
+            f"        {handle_var}.typesupport_identifier = rosidl_typesupport_tickle_c__identifier;",
+            f"        {handle_var}.request_typesupport =",
+            f"            ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(rosidl_typesupport_tickle_c, {pkg}, {subfolder}, {type_name}_Request)();",
+            f"        {handle_var}.response_typesupport =",
+            f"            ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(rosidl_typesupport_tickle_c, {pkg}, {subfolder}, {type_name}_Response)();",
             "    }",
             f"    return &{handle_var};",
             "}",

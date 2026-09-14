@@ -5,11 +5,11 @@
 # package's own CMake scope (PROJECT_NAME, CMAKE_CURRENT_SOURCE_DIR/_BINARY_DIR below are all
 # THAT package's, e.g. a real interface package like test_msgs - not this one).
 #
-# rmw_tickle/PLAN.md's Milestone 1(b)/(c) first cut: messages only (a .srv interface is skipped
-# with a warning below - .srv support follows once this is proven end-to-end in CI), and no
-# resolution of a message dependency's own nested type from another package (rosidl_generate_
-# interfaces_DEPENDENCY_PACKAGE_NAMES, below, is read only to satisfy that guard - not walked the
-# way rosidl_generator_c_generate_interfaces.cmake's own version is).
+# .msg and .srv only (an .action interface, or any other subfolder, is skipped with a warning
+# below) - no resolution of a message dependency's own nested type from another package (rosidl_
+# generate_interfaces_DEPENDENCY_PACKAGE_NAMES, below, is read only to satisfy the generator-
+# ordering guard just below - not walked the way rosidl_generator_c_generate_interfaces.cmake's
+# own version is).
 
 if(NOT TARGET ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
   message(FATAL_ERROR
@@ -37,12 +37,18 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   get_filename_component(_parent_folder "${_abs_idl_file}" DIRECTORY)
   get_filename_component(_parent_folder "${_parent_folder}" NAME)
   get_filename_component(_idl_name "${_abs_idl_file}" NAME_WE)
-  set(_msg_file "${CMAKE_CURRENT_SOURCE_DIR}/${_parent_folder}/${_idl_name}.msg")
 
-  if(NOT "${_parent_folder}" STREQUAL "msg" OR NOT EXISTS "${_msg_file}")
+  set(_src_file "")
+  if("${_parent_folder}" STREQUAL "msg")
+    set(_src_file "${CMAKE_CURRENT_SOURCE_DIR}/msg/${_idl_name}.msg")
+  elseif("${_parent_folder}" STREQUAL "srv")
+    set(_src_file "${CMAKE_CURRENT_SOURCE_DIR}/srv/${_idl_name}.srv")
+  endif()
+
+  if("${_src_file}" STREQUAL "" OR NOT EXISTS "${_src_file}")
     message(WARNING
-      "rosidl_typesupport_tickle_c: skipping '${_abs_idl_file}' - only .msg is supported so far "
-      "(rmw_tickle/PLAN.md's Milestone 1(b)/(c))")
+      "rosidl_typesupport_tickle_c: skipping '${_abs_idl_file}' - only .msg/.srv are supported "
+      "(rmw_tickle/PLAN.md's Milestone 1)")
     continue()
   endif()
 
@@ -50,24 +56,48 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   set(_ros_name "${PROJECT_NAME}__${_parent_folder}__${_idl_name}")
   set(_out_h "${_msg_output_dir}/${_idl_name}.h")
   set(_out_c "${_msg_output_dir}/${_idl_name}.c")
-  set(_adapter_h "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.h")
-  set(_adapter_c "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.c")
-  set(_ts_c "${_msg_output_dir}/${_ros_name}__type_support.c")
+
+  set(_outputs "${_out_h}" "${_out_c}")
+  set(_sources "${_out_c}")
+
+  if("${_parent_folder}" STREQUAL "msg")
+    list(APPEND _outputs
+      "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.h"
+      "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.c"
+      "${_msg_output_dir}/${_ros_name}__type_support.c")
+    list(APPEND _sources
+      "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.c"
+      "${_msg_output_dir}/${_ros_name}__type_support.c")
+  else() # srv - one adapter+type_support pair each for _Request and _Response, plus one more
+         # type_support.c tying them together into the rosidl_service_type_support_t itself -
+         # see ros2_cli.py's own module docstring for the full per-.srv output list.
+    foreach(_part "Request" "Response")
+      list(APPEND _outputs
+        "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.h"
+        "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.c"
+        "${_msg_output_dir}/${_ros_name}_${_part}__type_support.c")
+      list(APPEND _sources
+        "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.c"
+        "${_msg_output_dir}/${_ros_name}_${_part}__type_support.c")
+    endforeach()
+    list(APPEND _outputs "${_msg_output_dir}/${_ros_name}__type_support.c")
+    list(APPEND _sources "${_msg_output_dir}/${_ros_name}__type_support.c")
+  endif()
 
   add_custom_command(
-    OUTPUT "${_out_h}" "${_out_c}" "${_adapter_h}" "${_adapter_c}" "${_ts_c}"
+    OUTPUT ${_outputs}
     COMMAND Python3::Interpreter
     ARGS -m "${rosidl_typesupport_tickle_c_PYTHON_MODULE}"
       --package "${PROJECT_NAME}"
       --subfolder "${_parent_folder}"
       --name "${_idl_name}"
-      --input "${_msg_file}"
+      --input "${_src_file}"
       --outdir "${_msg_output_dir}"
-    DEPENDS "${_msg_file}"
+    DEPENDS "${_src_file}"
     COMMENT "Generating TickLE type support for ${_idl_name}"
     VERBATIM
   )
-  list(APPEND _generated_sources "${_out_c}" "${_adapter_c}" "${_ts_c}")
+  list(APPEND _generated_sources ${_sources})
 endforeach()
 
 # NOT return() here: ament_execute_extensions()/rosidl_generate_interfaces() are both macros, and
@@ -97,6 +127,7 @@ if(_generated_sources)
 
   target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
     "${_output_path}/msg"
+    "${_output_path}/srv"
     "${_generator_output_path}"
     "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/include"
   )

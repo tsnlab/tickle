@@ -1,0 +1,7 @@
+# A minimal service just for rosidl_typesupport_tickle_c_tests/test/test_dispatch_srv.c to round-
+# trip through the real dispatch chain, mirroring msg/Simple.msg's own reasoning: deliberately
+# trivial (one scalar field each side), since the field-by-field conversion logic itself is
+# already exhaustively covered offline by tools/typesupport/tests/test_ros2_adapter.py.
+bool request_value
+---
+bool response_value

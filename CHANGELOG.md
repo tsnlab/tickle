@@ -84,6 +84,14 @@ number, `tt_VERSION`, which moves independently.
   still on the roadmap (below), this is a fixed placeholder. `rosidl_typesupport_tickle_c/
   message_type_support.h` gained `ros_type_name`/`ros_struct_size` fields so `rmw_tickle` can size
   and name things generically without a per-message struct definition of its own.
+- `rosidl_typesupport_tickle_c` now generates `.srv` typesupport too (needed for
+  `rmw_tickle/PLAN.md`'s Milestone 4 - `rmw_create_client`/`rmw_create_service`): a `.srv`'s
+  Request and Response are each an ordinary ROS 2 message in their own right, so `ros2_cli.py`
+  generates the same converter+message-typesupport pair for both (sharing one TickLE codec
+  `<Name>.h/.c` pair, per `tools/typesupport`'s own existing `render_service()`), plus a new
+  `ros2_adapter.render_service_type_support()` tying them into one `rosidl_service_type_support_t`
+  via the standard `ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME` convention - new
+  `rosidl_typesupport_tickle_c/service_type_support.h`.
 
 ## [1.0.0] - 2026-09-14
 

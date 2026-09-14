@@ -31,20 +31,24 @@ find_package(rosidl_runtime_c REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Simple.msg"
+  "srv/SimpleService.srv"
 )
 
 if(BUILD_TESTING)
   # A plain add_executable() run as a manual CI step (check-all.yml), not ament_add_test() - this
-  # package exists solely to prove rmw_tickle/PLAN.md's Milestone 1(c) actually works end to end,
+  # package exists solely to prove rmw_tickle/PLAN.md's Milestone 1(c)/4 actually work end to end,
   # not as a long-lived part of the test suite that needs colcon test's full ament_cmake_test
   # machinery.
   add_executable(test_dispatch test/test_dispatch.c)
-  target_link_libraries(test_dispatch
-    "${PROJECT_NAME}__rosidl_generator_c"
-    "${PROJECT_NAME}__rosidl_typesupport_c"
-    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
-    rosidl_runtime_c::rosidl_runtime_c
-  )
+  add_executable(test_dispatch_srv test/test_dispatch_srv.c)
+  foreach(_test_target test_dispatch test_dispatch_srv)
+    target_link_libraries(${_test_target}
+      "${PROJECT_NAME}__rosidl_generator_c"
+      "${PROJECT_NAME}__rosidl_typesupport_c"
+      rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+      rosidl_runtime_c::rosidl_runtime_c
+    )
+  endforeach()
 endif()
 
 ament_package()
