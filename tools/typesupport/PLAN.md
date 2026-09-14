@@ -114,4 +114,9 @@ Pipeline: `parse (_rosidl_parser) → resolve nesteds → adapt → IR → layou
 | **M6** | array default values; README / CONTRIBUTING updates; `.action` / multi-dim arrays documented as out of scope | `make test-all` + HIL latency/throughput baseline recorded | ✅ |
 
 Out of scope: `.action`, multi-dimensional arrays, `wstring`, 128-bit, DDS/CDR wire
-compatibility, XCDR2, type hashes, introspection typesupport.
+compatibility, XCDR2, type hashes, introspection typesupport, arrays of strings, arrays of
+nested message types, defaults on a nested message field, and a bounded string's own capacity
+(`string<=N` is accepted but currently generates the exact same alias-only `char*` a plain
+`string` does - no fixed C buffer, no capacity check; see DESIGN.md's "Capacity" rule, which
+already notes this gap - nothing in TickLE's own four interfaces needs it yet). `adapt.py`
+raises a clear error for each of the first four rather than silently generating something wrong.

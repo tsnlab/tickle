@@ -29,14 +29,16 @@ test.sh` across a veth-joined pair of network namespaces (real distinct addresse
 `ip`), `platform/freertos/test.sh` under QEMU - which `make test-linux`/`make test-freertos` below
 run.
 
-`examples/` is organized by platform: `examples/linux/<protocol>/` holds each protocol's generated
-codec (e.g. `PingPong.{c,h}`) together with its argv-parsed POSIX driver (see "Run examples"
-below), and `examples/freertos/<protocol>/` holds just that protocol's FreeRTOS driver (a task with
-compile-time-fixed config - there's no argv on a flashed embedded target), cross-compiling the same
-codec straight out of `examples/linux/<protocol>/` rather than duplicating it. All four protocols
-(`uint64`, `set_bool`, `ping_pong`, `perf`) have a FreeRTOS driver, matching what `test-freertos`
-exercises. The loose `.msg`/`.srv` files directly under `examples/` are platform-neutral interface
-definitions, shared by every driver of every protocol.
+`examples/<protocol>/` (`uint64`, `set_bool`, `ping_pong`, `perf`) holds that protocol's
+platform-neutral interface definition (`.msg`/`.srv`) together with its generated codec (e.g.
+`PingPong.{c,h}`) - see [`tools/typesupport`](tools/typesupport/) and
+[CONTRIBUTING.md](CONTRIBUTING.md#generated-codecs); never hand-edit the generated `.c`/`.h`
+there, edit the `.msg`/`.srv` and run `make regen` instead. `examples/linux/<protocol>/` holds
+just that protocol's argv-parsed POSIX driver (see "Run examples" below), and
+`examples/freertos/<protocol>/` holds just its FreeRTOS driver (a task with compile-time-fixed
+config - there's no argv on a flashed embedded target) - both cross-compile against the same
+`examples/<protocol>/` codec rather than duplicating it. All four protocols have a FreeRTOS
+driver, matching what `test-freertos` exercises.
 
 ## Security & concurrency model
 
@@ -78,8 +80,9 @@ $ make all BUILD_TYPE=release
 ### Integrating the library
 
 `make library` produces `platform/linux/libtickle.a`; link that and add `include/` to your
-include path. There is no `make install` yet - vendor the tree, or copy `libtickle.a` +
-`include/tickle/` into your project.
+include path. `make install` (static lib + headers + a `tickle.pc` pkg-config file; `PREFIX`/
+`DESTDIR` overridable, `make uninstall` to remove) installs it properly - or vendor the tree, or
+copy `libtickle.a` + `include/tickle/` into your project directly, if you'd rather not.
 
 - **The public headers need C11** (`-std=c11` or newer - they use an anonymous union in
   `tt_Header`). They are otherwise `-pedantic`-clean.
@@ -241,30 +244,35 @@ will ever flush onto the wire, sized for precisely this reason. (It used to be d
 TickLE's own buffer check yet still fragmented at the IP layer on a standard network; it's
 now 1472 so that can't happen.)
 
-Each `BulkData` message costs a fixed amount of TickLE framing on top of its own payload
-before it reaches that UDP payload: `tt_Header` (4B, once per packet) + `SubmessageHeader`
-(4B) + `DataHeader` (16B) + `BulkData`'s own `seq`/`size` fields (8B) = **32 bytes**, assuming
-one message per packet. So the largest payload that still fits one frame unfragmented is:
+Each `BulkData` message costs a fixed amount of TickLE framing on top of its own payload before
+it reaches that UDP payload: `tt_Header` (4B, once per packet) + `SubmessageHeader` (4B) +
+`DataHeader` (16B) + `BulkData`'s own `seq` (4B) + its `payload` array's own `uint16` length
+prefix (2B) = **30 bytes**, assuming one message per packet. So the largest payload that still
+fits one frame unfragmented is:
 
 ```
-BULK_MAX_PAYLOAD_SIZE = tt_MAX_BUFFER_LENGTH - 32 = 1472 - 32 = 1440 bytes
+BULKDATA__PAYLOAD_CAPACITY = tt_MAX_BUFFER_LENGTH - 30 = 1472 - 30 = 1442 bytes
 ```
 
-(`Bulk.h` defines it exactly this way - derived from `tt_MAX_BUFFER_LENGTH` rather than
-hardcoded - so the two can't drift apart again.)
+(`examples/perf/Bulk.msg`'s `payload` field has no explicit bound - `tools/typesupport` derives
+this capacity for it automatically from `tt_MAX_BUFFER_LENGTH` and `BulkData`'s other fields,
+emitting it as `examples/perf/Bulk.h`'s own `#define BULKDATA__PAYLOAD_CAPACITY`, so the two
+can't drift apart. See "Interface serialization (TickLE CDR-4)" in DESIGN.md and
+`tools/typesupport/PLAN.md`'s "Capacity" rule for how.)
 
-`perf_client` defaults `-s` to exactly `BULK_MAX_PAYLOAD_SIZE` (1440) - the biggest packet this
-protocol can put on the wire without fragmenting - so every send makes the most of one frame.
-`-i` defaults to `0`, meaning no fixed schedule at all: publish as fast as `tt_Node_poll()`
-allows, which is the right default for a throughput benchmark. On real 10Base-T1S hardware
-the 10 Mbit/s link itself becomes the bottleneck well before max-size, unpaced sending would.
+`perf_client` defaults `-s` to exactly `BULKDATA__PAYLOAD_CAPACITY` (1442) - the biggest packet
+this protocol can put on the wire without fragmenting - so every send makes the most of one
+frame. `-i` defaults to `0`, meaning no fixed schedule at all: publish as fast as
+`tt_Node_poll()` allows, which is the right default for a throughput benchmark. On real
+10Base-T1S hardware the 10 Mbit/s link itself becomes the bottleneck well before max-size,
+unpaced sending would.
 
 Pass `-i` to target a specific rate instead of maxing out. To hit exactly the line rate at
 the default message size, for example:
 
 ```
-interval_seconds = (message_size + 32) * 8 / line_rate_bps
-                  = (1440 + 32) * 8 / 10,000,000 ≈ 0.0011776 sec
+interval_seconds = (message_size + 30) * 8 / line_rate_bps
+                  = (1442 + 30) * 8 / 10,000,000 ≈ 0.0011776 sec
 ```
 
 ```sh
