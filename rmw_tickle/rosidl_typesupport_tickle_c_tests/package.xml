@@ -17,10 +17,18 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>rosidl_default_generators</depend>
+  <!-- rosidl_default_generators (what a real interface package normally depends on) transitively
+       pulls in rosidl_generator_py/_rs and ament_cmake_python's own egg-build step - none of which
+       rosidl_typesupport_tickle_c needs, and which need Python packages (setuptools) this CI
+       environment's actions/setup-python interpreter doesn't have. rosidl_generator_c +
+       rosidl_typesupport_c are the two actually needed: the former for the message struct this
+       package's own test_dispatch.c includes, the latter for ROSIDL_GET_MSG_TYPE_SUPPORT()'s
+       standard dispatch entry point. -->
+  <depend>rosidl_generator_c</depend>
+  <depend>rosidl_typesupport_c</depend>
   <depend>rosidl_typesupport_tickle_c</depend>
 
-  <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>rosidl_runtime_c</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

@@ -13,7 +13,12 @@ if(NOT CMAKE_C_STANDARD)
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
+# Not rosidl_default_generators (what a real interface package normally depends on) - see this
+# package's own package.xml for why. rosidl_generator_c is what produces the message struct this
+# package's own test_dispatch.c includes; rosidl_typesupport_c is ROSIDL_GET_MSG_TYPE_SUPPORT()'s
+# own standard dispatch entry point.
+find_package(rosidl_generator_c REQUIRED)
+find_package(rosidl_typesupport_c REQUIRED)
 # Pulling this in (and find_package()-ing it, directly or transitively, before calling
 # rosidl_generate_interfaces() below) is what makes rosidl_generate_interfaces() below pick up
 # rosidl_typesupport_tickle_c automatically - see its own CMakeLists.txt's ament_index_register_
