@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789393328725,
+  "lastUpdate": 1789393688909,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2675,6 +2675,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.204,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "86282ee2f334a74e8b54d530b960360a9998c956",
+          "message": "rmw_tickle Milestones 9+10: PLAN.md consolidation + scoped test suite\n\nMilestone 9: PLAN.md gains a \"Concept mapping\" table (ROS 2/rmw concepts\n<-> TickLE ones) and a \"Threading and locking model\" summary, consolidating\nwhat was previously only scattered across individual milestones' own prose\nand code comments.\n\nMilestone 10: a scoped test suite (rmw_tickle/test/) plus a real `colcon\ntest` CI step - check-all.yml only built rmw_tickle far enough to lint/\nlink it before this. test_qos.c exercises every QoS roadmap rejection\nrmw_tickle_validate_qos_profile() enforces. test_node_lifecycle.c is the\nfirst real end-to-end rmw_init()/rmw_create_node()/rmw_destroy_node()\nexercise across this whole plan, which surfaced rmw_get_zero_initialized_\ncontext() missing entirely from the #20-era scaffold (fixed, rmw_init.c) -\nnothing had actually called rmw_init() before. test_guard_condition_wait.c\nproves Milestone 5's guard condition/wait_set design for real, including\nits edge-triggered \"consumed once observed ready\" behavior.\n\nNot done: an xfail/skip list for rmw_implementation/test_rmw_implementation\nconformance suites, and a live multi-process publish/subscribe/service\nround trip - both need materially more test infra than exists yet and are\nleft as explicit follow-on work, documented in PLAN.md rather than\nsilently skipped.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T22:47:21+09:00",
+          "tree_id": "792e3fc811a7ef2586aaddb314fc9804657ccfcc",
+          "url": "https://github.com/tsnlab/tickle/commit/86282ee2f334a74e8b54d530b960360a9998c956"
+        },
+        "date": 1789393687152,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
             "unit": "ms"
           },
           {
