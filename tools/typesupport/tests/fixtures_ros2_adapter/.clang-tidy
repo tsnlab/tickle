@@ -1,0 +1,9 @@
+# Hand-written stand-ins for what a real ROS 2 install's rosidl_runtime_c/rosidl_generator_c
+# would provide (see this directory's own README.md) - so they intentionally keep ROS 2's own
+# naming convention (PascalCase types, `__`-separated dunder names like
+# rosidl_runtime_c__String__assign) rather than this project's lower_case one. Same rationale as
+# tools/typesupport/tests/golden/.clang-tidy for the same reason applied to actual generator
+# output; all other checks (bugprone-*, the rest of readability-*/misc-*/performance-*) stay
+# enabled via InheritParentConfig.
+InheritParentConfig: true
+Checks: '-readability-identifier-naming'

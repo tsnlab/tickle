@@ -94,6 +94,22 @@ jobs:
             mv compile_commands.tmp compile_commands.json
           done
 
+          # tools/typesupport/tests/fixtures_ros2_adapter/'s hand-written rosidl_runtime_c/
+          # rosidl_generator_c stand-ins (see that directory's own README) cross-include each
+          # other via ROS 2's own relative-path convention (`#include "rosidl_runtime_c/
+          # string.h"`), but being test fixtures rather than anything `make all`/`bear` actually
+          # compiles, have no entry of their own in compile_commands.json - clang-tidy then can't
+          # resolve those includes at all ('file not found') rather than just flag a style issue.
+          # Synthesise one entry per header, same approach as the FreeRTOS block above.
+          fra=tools/typesupport/tests/fixtures_ros2_adapter
+          for f in rosidl_runtime_c/string.h rosidl_runtime_c/string_functions.h rosidl_runtime_c/primitives_sequence_functions.h test_msgs/msg/arrays.h test_msgs/msg/bounded_string.h; do
+            args=(clang -std=c11 -I"$PWD/$fra" -c "$PWD/$fra/$f")
+            jq --arg root "$PWD" --arg file "$PWD/$fra/$f" --argjson args "$(printf '%s\n' "${args[@]}" | jq -R . | jq -s .)" \
+              '. + [{directory: $root, file: $file, arguments: $args}]' \
+              compile_commands.json > compile_commands.tmp
+            mv compile_commands.tmp compile_commands.json
+          done
+
       - name: Generate compile_commands.json for rmw_tickle
         run: |
           # rmw_tickle needs a real ROS 2 environment (ament_cmake, rcutils, rmw, rosidl_runtime_c)
