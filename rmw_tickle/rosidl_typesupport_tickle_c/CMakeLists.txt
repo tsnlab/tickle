@@ -21,14 +21,28 @@ find_package(rosidl_typesupport_interface REQUIRED)
 # which could be anywhere in a colcon workspace - a relative path wouldn't resolve there.
 get_filename_component(TICKLE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
+# Headers live under include/rosidl_typesupport_tickle_c/ (matching the package name, like
+# rosidl_typesupport_introspection_c's own layout) - callers #include "rosidl_typesupport_tickle_c/
+# identifier.h" *with* that subdirectory, so the -I root below is plain include/ (BUILD_INTERFACE)
+# or plain "include" (INSTALL_INTERFACE, relative to this package's own install prefix) - matching
+# rmw_tickle/rmw_tickle/CMakeLists.txt's own established, working convention exactly. NOT
+# include/rosidl_typesupport_tickle_c as the -I root itself (that duplicates the subdirectory name
+# with install(DIRECTORY include/ DESTINATION include) below, producing .../rosidl_typesupport_
+# tickle_c/rosidl_typesupport_tickle_c/*.h - a real bug this comment exists because of).
 add_library(rosidl_typesupport_tickle_c src/identifier.c)
 target_include_directories(rosidl_typesupport_tickle_c PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<BUILD_INTERFACE:${TICKLE_ROOT}/include>
-  $<INSTALL_INTERFACE:include/rosidl_typesupport_tickle_c>
+  $<INSTALL_INTERFACE:include>
+  # Not $<BUILD_INTERFACE:...>-only: this package's own include/rosidl_typesupport_tickle_c/
+  # message_type_support.h needs <tickle/tickle.h> (tt_DATA_ENCODE et al.), and unlike the include/
+  # entries above, an *installed* consumer reached via find_package() only ever sees this target's
+  # INSTALL_INTERFACE, never its BUILD_INTERFACE - TickLE has no installed package of its own to
+  # find_package() instead (see TICKLE_ROOT's own comment above), so this needs to be unconditional
+  # rather than interface-gated, same absolute path either way.
+  "${TICKLE_ROOT}/include"
 )
 
-ament_export_include_directories("include/rosidl_typesupport_tickle_c")
+ament_export_include_directories("include")
 ament_export_libraries(rosidl_typesupport_tickle_c)
 ament_export_targets(export_rosidl_typesupport_tickle_c HAS_LIBRARY_TARGET)
 
@@ -41,8 +55,13 @@ ament_export_targets(export_rosidl_typesupport_tickle_c HAS_LIBRARY_TARGET)
 ament_index_register_resource("rosidl_typesupport_c")
 
 install(
+  # include/ already contains its own rosidl_typesupport_tickle_c/ subdirectory (include/
+  # rosidl_typesupport_tickle_c/identifier.h et al.) - DESTINATION include/rosidl_typesupport_
+  # tickle_c here would duplicate it (install/.../include/rosidl_typesupport_tickle_c/rosidl_
+  # typesupport_tickle_c/*.h), matching neither ament_export_include_directories() below nor what
+  # message_type_support.h's own #include "rosidl_typesupport_tickle_c/identifier.h" expects.
   DIRECTORY include/
-  DESTINATION include/rosidl_typesupport_tickle_c
+  DESTINATION include
 )
 
 install(
@@ -56,7 +75,7 @@ install(
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
-  INCLUDES DESTINATION include/rosidl_typesupport_tickle_c
+  INCLUDES DESTINATION include
 )
 
 if(BUILD_TESTING)
