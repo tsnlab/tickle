@@ -120,7 +120,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # submodules: true (above) puts third_party/lwip's own shell scripts on disk; they
           # aren't ours to lint. cpp-linter already auto-skips submodules; shellcheck needs telling.
-          # build/ is colcon's own generated output (ament boilerplate: local_setup.{bash,sh,zsh},
-          # colcon_command_prefix_build.sh, ...) from the rmw_tickle compile-db step above - not
-          # ours either, and gitignored besides.
-          shellcheck_ignore_paths: third_party build
+          # build/ and install/ are colcon's own generated output (ament boilerplate:
+          # local_setup.{bash,sh,zsh}, setup.{bash,sh,zsh}, package.{bash,sh}, ...) from the
+          # rmw_tickle compile-db step above - not ours either, and gitignored besides.
+          shellcheck_ignore_paths: third_party build install
