@@ -92,6 +92,20 @@ number, `tt_VERSION`, which moves independently.
   `ros2_adapter.render_service_type_support()` tying them into one `rosidl_service_type_support_t`
   via the standard `ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME` convention - new
   `rosidl_typesupport_tickle_c/service_type_support.h`.
+- `rmw_create_client()`/`rmw_destroy_client()`/`rmw_send_request()`/`rmw_take_response()`
+  (`rmw_tickle/src/rmw_client.c`) and `rmw_create_service()`/`rmw_destroy_service()`/
+  `rmw_take_request()`/`rmw_send_response()` (`rmw_tickle/src/rmw_service.c`)
+  (`rmw_tickle/PLAN.md`'s Milestone 4): `rmw_tickle` can now do services. The client side needs no
+  special bridging - TickLE's own `tt_CLIENT_CALLBACK` is already the async "call completed"
+  notification `rmw_take_response()`'s polling expects, the same pattern topic subscriptions
+  already use. The server side does: TickLE's `tt_SERVER_CALLBACK` must synchronously fill a
+  response and return, with no "send it later" API, while ROS 2's rmw contract splits that into
+  two independent calls a real rclcpp handler makes back-to-back - `server_callback()` bridges the
+  two with a bounded `pthread_cond_timedwait()` (`RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS`, 5s),
+  blocking the whole node's poll thread for that call's duration (near-zero cost for the
+  synchronous single-threaded-executor pattern this targets first; documented, not solved, for a
+  slow/deferred handler). Both sides mirror TickLE's own one-outstanding-call-at-a-time limit
+  directly rather than queueing several in-flight requests per client.
 
 ## [1.0.0] - 2026-09-14
 
