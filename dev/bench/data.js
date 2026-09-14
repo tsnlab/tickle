@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789375351419,
+  "lastUpdate": 1789375354628,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4443,6 +4443,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.013,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8f87b196cfc4a1d44978e4350bb91b73550c431c",
+          "message": "rmw_tickle Milestone 1(b)+(c): mark done, verified green in real CI\n\nCHANGELOG.md: record rosidl_typesupport_tickle_c as a real, working\ncapability now that check-all.yml's real ROS 2 CI (jazzy) has proven the\nwhole dispatch chain reachable end to end, not just offline-plausible.\n\nPLAN.md: Milestone 1 marked done. Recorded the handful of real CI round\ntrips it took beyond what reading rosidl's/CMake's own source predicted -\neach its own small ROS 2/CMake/colcon gotcha (rosidl_generator_type_\ndescription needing NumPy/lark regardless of typesupport choice; return()\ninside an ament_execute_extensions()-included file unwinding the caller's\nwhole macro scope; rosidl_generate_interfaces_ABS_IDL_FILES holding\nconverted .idl paths, not the original .msg; needing project(... C CXX);\ndoubled install include destinations; and rosidl_typesupport_c's own\ndlopen()-based runtime dispatch needing BUILD_SHARED_LIBS=ON, the least\nguessable one) - useful context for whoever tackles Milestone 2 next and\nhits similarly undocumented territory.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T17:41:45+09:00",
+          "tree_id": "13c613278fa847983764b795e7f8ffd1fee75571",
+          "url": "https://github.com/tsnlab/tickle/commit/8f87b196cfc4a1d44978e4350bb91b73550c431c"
+        },
+        "date": 1789375353260,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.014,
             "unit": "ms"
           }
         ]
