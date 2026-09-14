@@ -27,6 +27,7 @@
 #include "rmw/error_handling.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw/time.h" // rmw_time_point_value_t
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
