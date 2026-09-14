@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789362568937,
+  "lastUpdate": 1789363756542,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1621,6 +1621,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "240fc4067b47adb7c2b0542cb61672aa451faa2f",
+          "message": "Opt-in discovery API for graph introspection\n\nrmw_tickle/PLAN.md's Milestone 0(c) - the last piece of Milestone 0.\nEvery UPDATE decode_update_entities() sees was already discarded once\nit finished matching against local endpoints for peer tracking;\nnothing let a caller ask \"what remote entities exist at all\" for\n`ros2 topic list`-style introspection.\n\ntt_Node_set_discovery(node, discovery, callback, param) attaches a\ncaller-owned struct tt_Discovery (fixed capacity\ntt_MAX_DISCOVERED_ENTITIES, config.h, default 16, user-overridable) -\ndeliberately not embedded in struct tt_Node itself. Investigated\nmicro-ROS's own rmw_microxrcedds_c first: it's a thin XRCE-DDS client\nthat delegates essentially all real discovery/graph state to a\nseparate Agent process running full DDS elsewhere, never carrying that\nweight on the constrained device itself. If TickLE ever gets an\nanalogous split for FreeRTOS, the discovery cache belongs on whatever\nplays the Agent role (a full rmw_tickle node, presumably on Linux),\nnot on tt_Node - so tt_Node only holds a discovery pointer + callback\n+ param (3 pointers, +24 bytes measured), and a node nothing has\nattached to pays that alone regardless of platform.\n\ndecode_update_entities() upserts every remote entity it decodes\n(regardless of kind or whether a local endpoint matches) via the new\nupsert_discovered_entity(), firing the callback on appearance/refresh.\nforget_discovered_entities_from_source() mirrors forget_peers_from_\nsource() at both its existing call sites (a fresh, content-changed\nUPDATE; check_liveliness()'s timeout) to fire departed=true and clear\nthe entry. The callback itself is deliberately minimal (node_id,\nendpoint_id, kind, departed) - name/type are looked up separately via\ntt_Discovery_find() rather than paid for on every callback whether\nwanted or not.\n\ntests/test_discovery.c covers: no-op with nothing attached, record +\ncallback on a fresh announce, departure via both an explicit farewell\nUPDATE and the liveliness timeout, detaching stops future recording\nwithout clearing what's already there, and NULL-safety on the helpers.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T14:28:29+09:00",
+          "tree_id": "2760bbe014c795dc024ce010c516160bcc007d82",
+          "url": "https://github.com/tsnlab/tickle/commit/240fc4067b47adb7c2b0542cb61672aa451faa2f"
+        },
+        "date": 1789363754885,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.204,
             "unit": "ms"
           },
           {
