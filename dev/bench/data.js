@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789368940164,
+  "lastUpdate": 1789368943590,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3084,6 +3084,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.262,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3b8f4343a7f6cbd060fcab4240bb17589d80db4d",
+          "message": "Fix check-all: clang-tidy can't lint fixtures_ros2_adapter/'s new headers\n\nf0b3962's tests/fixtures_ros2_adapter/ headers cross-include each other via\nROS 2's own relative-path convention (#include \"rosidl_runtime_c/string.h\"),\nbut being test fixtures rather than anything make all/bear actually\ncompiles, had no entry in compile_commands.json - cpp-linter's clang-tidy\nthen couldn't resolve those includes at all ('file not found'), failing\ncheck-all outright instead of just flagging a style issue.\n\n- check-all.yml: synthesise a compile_commands.json entry per fixture\n  header (same approach already used there for FreeRTOS-only sources),\n  giving clang-tidy the -I it needs to resolve the relative includes.\n- tests/fixtures_ros2_adapter/.clang-tidy: disable readability-identifier-\n  naming for this directory only, same rationale and precedent as tests/\n  golden/.clang-tidy - these are hand-written stand-ins for real ROS 2\n  headers, so they intentionally keep ROS 2's own PascalCase/dunder naming\n  rather than this project's lower_case convention.\n\nVerified locally: synthesising the same compile_commands.json entries and\nrunning clang-tidy -p against each of the 5 fixture headers now resolves\nevery include and reports zero warnings.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T15:54:43+09:00",
+          "tree_id": "bce210e8078e603e04d5374082ef961d5756edc4",
+          "url": "https://github.com/tsnlab/tickle/commit/3b8f4343a7f6cbd060fcab4240bb17589d80db4d"
+        },
+        "date": 1789368941967,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.615,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 896.781,
             "unit": "Mbps"
           }
         ]
