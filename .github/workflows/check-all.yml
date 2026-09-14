@@ -111,8 +111,13 @@ jobs:
           # ros-tooling-based ROS 2 CI uses, and it brought colcon with it (part of the ROS 2 dev
           # tools it installs), so nothing else to add here. It doesn't put ament_cmake etc. on
           # CMAKE_PREFIX_PATH by itself, though - every step needing them sources setup.bash, the
-          # same way a fresh terminal on a real ROS 2 install would.
+          # same way a fresh terminal on a real ROS 2 install would. ament_cmake's own package.xml
+          # parsing shells out to `python3` expecting catkin_pkg (installed for the *system*
+          # python3 alongside ROS 2 itself) - but actions/setup-python above already put its own
+          # Python 3.12 first on PATH, so that's the `python3` CMake finds instead. Give it
+          # catkin_pkg too rather than fight over which python3 wins.
           source /opt/ros/jazzy/setup.bash
+          pip install catkin_pkg
           colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
           # need to stay put for clang-tidy to lint everything else.
