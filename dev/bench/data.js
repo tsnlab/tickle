@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789392975395,
+  "lastUpdate": 1789392978535,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4920,6 +4920,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 891.866,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9f6e07665b7727edec1a8588e2e7c5a0a15f26ef",
+          "message": "rmw_tickle Milestone 7: QoS rejection logic + real subscription queue depth\n\nrmw_tickle_validate_qos_profile() (rmw_qos.c, new) is called from all four\nrmw_create_*() functions (publisher/subscription/client/service) right\nafter their existing identifier check: reliability must be BEST_EFFORT,\ndurability must be VOLATILE, liveliness must be AUTOMATIC with no custom\nlease duration, deadline/lifespan must both be unset, and (subscriptions\nonly) history must not be KEEP_ALL - anything else is rejected outright\n(RMW_RET_UNSUPPORTED) rather than silently ignored, matching PLAN.md's own\n\"Design philosophy\" table.\n\nQoS roadmap item #1 (HISTORY/DEPTH) also got its \"real depth\" half done:\nrmw_tickle_subscriber_t.queue is now allocated at rmw_create_subscription()\ntime, sized from qos_profile->depth instead of a fixed compile-time array.\n\nAlso fixes check-all findings surfaced by this being the first commit to\ntouch rmw_node.c since the previous round (misc-include-cleaner: rmw/\nret_types.h, tickle/hal.h, rcutils/allocator.h needed directly) and\nrmw_graph.c (variable names too short - `ep`/`n` renamed to `endpoint`/\n`matched`; rcutils/allocator.h included but never spelled out directly).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T22:35:22+09:00",
+          "tree_id": "6ecc41a9d7b8f8e8056317b43d35fb59512f4343",
+          "url": "https://github.com/tsnlab/tickle/commit/9f6e07665b7727edec1a8588e2e7c5a0a15f26ef"
+        },
+        "date": 1789392977436,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.614,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 893.08,
             "unit": "Mbps"
           }
         ]
