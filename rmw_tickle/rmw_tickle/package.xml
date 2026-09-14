@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>rmw_tickle</name>
+  <version>0.0.1</version>
+  <description>RMW implementation backed by TickLE (see tsnlab/tickle)</description>
+  <maintainer email="halim9512@gmail.com">Harim Seong</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rcutils</depend>
+  <depend>rmw</depend>
+  <depend>rosidl_runtime_c</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

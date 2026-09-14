@@ -90,3 +90,10 @@ compile_commands.json
 /latency-jitter-benchmark.json
 /throughput-benchmark.json
 /tools/typesupport/.pytest_lint_tmp/
+
+# rmw_tickle/rmw_tickle's own colcon build output (`colcon build`, run either locally or by
+# check-all.yml's own compile_commands.json step) - not something to commit, same as
+# platform/{linux,freertos}'s own obj dirs above.
+/build/
+/install/
+/log/

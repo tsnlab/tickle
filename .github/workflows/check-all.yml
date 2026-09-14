@@ -24,6 +24,11 @@ jobs:
           sudo apt update
           sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf
 
+      - name: Set up ROS 2 (for rmw_tickle)
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -89,6 +94,36 @@ jobs:
             mv compile_commands.tmp compile_commands.json
           done
 
+      - name: Generate compile_commands.json for rmw_tickle
+        run: |
+          # rmw_tickle needs a real ROS 2 environment (ament_cmake, rcutils, rmw, rosidl_runtime_c)
+          # colcon can find via `find_package`. Tried running colcon inside a throwaway ROS Docker
+          # container instead of installing ROS onto the runner directly - twice: first the whole
+          # job in a container (broke the plain `sudo apt install bear` step above with an
+          # unanswerable interactive prompt); then just this one step in its own `docker run`
+          # (colcon succeeded, but clang-tidy - run on the *host*, by cpp-linter-action, below -
+          # could resolve our own headers fine once the container was mounted at the runner's own
+          # $PWD, but could never resolve rcutils/rmw/rosidl_runtime_c's own headers, because those
+          # only exist inside the `--rm`-and-gone container's /opt/ros, never on the host at all).
+          # `ros-tooling/setup-ros@v0.7` (above) sidesteps the whole class of problem: it installs
+          # ROS 2 straight onto the runner's own filesystem via apt, so every header colcon's build
+          # sees is a header clang-tidy can see afterward too - same convention every other
+          # ros-tooling-based ROS 2 CI uses, and it brought colcon with it (part of the ROS 2 dev
+          # tools it installs), so nothing else to add here. It doesn't put ament_cmake etc. on
+          # CMAKE_PREFIX_PATH by itself, though - every step needing them sources setup.bash, the
+          # same way a fresh terminal on a real ROS 2 install would. ament_cmake's own package.xml
+          # parsing shells out to `python3` expecting catkin_pkg (installed for the *system*
+          # python3 alongside ROS 2 itself) - but actions/setup-python above already put its own
+          # Python 3.12 first on PATH, so that's the `python3` CMake finds instead. Give it
+          # catkin_pkg too rather than fight over which python3 wins.
+          source /opt/ros/jazzy/setup.bash
+          pip install catkin_pkg
+          colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
+          # need to stay put for clang-tidy to lint everything else.
+          jq -s 'add' compile_commands.json build/rmw_tickle/compile_commands.json > compile_commands.tmp
+          mv compile_commands.tmp compile_commands.json
+
       - name: Check all
         uses: tsnlab/check@main
         with:
@@ -96,4 +131,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # submodules: true (above) puts third_party/lwip's own shell scripts on disk; they
           # aren't ours to lint. cpp-linter already auto-skips submodules; shellcheck needs telling.
-          shellcheck_ignore_paths: third_party
+          # build/ and install/ are colcon's own generated output (ament boilerplate:
+          # local_setup.{bash,sh,zsh}, setup.{bash,sh,zsh}, package.{bash,sh}, ...) from the
+          # rmw_tickle compile-db step above - not ours either, and gitignored besides.
+          shellcheck_ignore_paths: third_party build install
