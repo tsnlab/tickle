@@ -1,0 +1,118 @@
+name: rmw performance comparison
+
+# Manual only, for now - see .github/scripts/README-rmw-perf.md and rmw_tickle/PLAN.md's own
+# benchmark plan for why (no push/schedule trigger yet: runtime/stability on this rig aren't known
+# yet, and DESIGN.md's "no pull_request trigger, ever" rule for any self-hosted-runner workflow on
+# this public repo rules that one out permanently regardless).
+on:
+  workflow_dispatch:
+
+jobs:
+  compare:
+    # A different rig from `tickle-hil` (performance.yml) - one Ubuntu machine running a full
+    # ROS 2 stack, not a pair of Raspberry Pis running TickLE's own plain Makefile build. See
+    # .github/scripts/README-rmw-perf.md for what must already be provisioned on it before this
+    # workflow can do anything useful.
+    runs-on: [self-hosted, tickle-perf]
+    timeout-minutes: 30
+
+    env:
+      # rmw_tickle's own "Supported subset" (rmw_tickle/PLAN.md): only flat messages under
+      # TickLE's single-datagram ceiling (tt_MAX_BUFFER_LENGTH = 1472 bytes, include/tickle/
+      # config.h - no fragmentation) and no nested-message types (rosidl_typesupport_tickle_c
+      # doesn't generate for those yet). Array1k/Struct16/Struct256 are buildfarm_perf_tests' own
+      # smallest flat topics - see that repo's test/CMakeLists.txt for the full topic list this
+      # was chosen from.
+      PERF_TEST_TOPICS: "Array1k;Struct16;Struct256"
+      PERF_TEST_RMW_IMPLEMENTATIONS: "rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
+      # Short by buildfarm_perf_tests' own default (30s/topic) for a first pass across 3 topics x
+      # 3 rmws x 2 sync modes - revisit once real per-combo runtime on this rig is known.
+      PERF_TEST_RUNTIME: "10"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve workspace paths
+        run: |
+          # $HOME only resolves correctly inside a shell (a YAML `env:` value is a literal string,
+          # never shell-expanded, and `${{ github.workspace }}` is the checkout dir, not the
+          # runner's home) - GITHUB_ENV is the one way to compute this once and have every later
+          # step (and action input) see the real value as `$RMW_PERF_WS`/`${{ env.RMW_PERF_WS }}`.
+          # Must match .github/scripts/README-rmw-perf.md's own provisioning location exactly.
+          echo "RMW_PERF_WS=$HOME/rmw_perf_ws" >> "$GITHUB_ENV"
+
+      - name: Build rmw_tickle against the pre-provisioned ROS 2 + DDS-vendor underlay
+        run: |
+          # Sourcing order matters: base ROS 2 first, then the buildfarm_perf_tests/performance_
+          # test underlay (an overlay on top of it - see README-rmw-perf.md's own provisioning
+          # steps), then this repo's own fresh build becomes a second overlay on top of both.
+          source /opt/ros/jazzy/setup.bash
+          source "$RMW_PERF_WS/install/setup.bash"
+          colcon build \
+            --packages-select rmw_tickle rosidl_typesupport_tickle_c \
+            --cmake-args -DBUILD_SHARED_LIBS=ON
+          # BUILD_SHARED_LIBS=ON: rosidl_typesupport_c's own runtime dispatch dlopen()s a
+          # message's specific typesupport implementation by convention name - impossible for a
+          # plain .a static archive (see rmw_tickle/PLAN.md's Milestone 1(b)+(c) - the same fix
+          # check-all.yml's own colcon build needed for the identical reason).
+
+      - name: Rebuild buildfarm_perf_tests with rmw_tickle now visible
+        run: |
+          # get_available_rmw_implementations() (rmw_implementation_cmake) - what buildfarm_
+          # perf_tests' own test/CMakeLists.txt uses to discover installed rmws - runs at *this*
+          # package's own CMake configure time, reading whatever's in AMENT_PREFIX_PATH right now.
+          # It was already built once during one-time provisioning (README-rmw-perf.md), before
+          # rmw_tickle existed anywhere - so it has to be reconfigured/rebuilt here, every run,
+          # now that the previous step's overlay puts rmw_tickle in AMENT_PREFIX_PATH too. This is
+          # the one part of the pre-provisioned workspace CI does rebuild - performance_test and
+          # buildfarm_perf_tests' own other dependencies (test_msgs, rmw_dds_common,
+          # osrf_testing_tools_cpp, ...) are untouched, still the ones built during provisioning.
+          source /opt/ros/jazzy/setup.bash
+          source "$RMW_PERF_WS/install/setup.bash"
+          source install/setup.bash
+          # --build-base/--install-base explicitly: colcon's own defaults are relative to the
+          # *current directory* (this job's repo checkout), not to --base-paths - without these,
+          # build/install output would land inside the git checkout instead of alongside
+          # buildfarm_perf_tests' own sources in $RMW_PERF_WS, where every later step here (and
+          # README-rmw-perf.md's own provisioning) expects to find it.
+          colcon build \
+            --base-paths "$RMW_PERF_WS" \
+            --build-base "$RMW_PERF_WS/build" \
+            --install-base "$RMW_PERF_WS/install" \
+            --packages-select buildfarm_perf_tests \
+            --cmake-args \
+              -DPERF_TEST_TOPICS="$PERF_TEST_TOPICS" \
+              -DPERF_TEST_RMW_IMPLEMENTATIONS="$PERF_TEST_RMW_IMPLEMENTATIONS" \
+              -DPERF_TEST_RUNTIME="$PERF_TEST_RUNTIME" \
+            --cmake-force-configure
+
+      - name: Run the comparison
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source "$RMW_PERF_WS/install/setup.bash"
+          source install/setup.bash
+          # `|| true`: colcon test-result --verbose below is the actual pass/fail gate (and
+          # prints a per-test breakdown) - same reasoning as check-all.yml's own "Run rmw_tickle's
+          # own test suite" step.
+          colcon test \
+            --base-paths "$RMW_PERF_WS" \
+            --build-base "$RMW_PERF_WS/build" \
+            --install-base "$RMW_PERF_WS/install" \
+            --packages-select buildfarm_perf_tests \
+            --event-handlers console_direct+ || true
+          colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
+
+      # TODO: confirm this is actually where buildfarm_perf_tests' own PERF_TEST_RESULTS_BASE_PATH
+      # (test/add_performance_tests.cmake) lands once a real run has happened on a provisioned
+      # runner - this is deliberately a broad glob rather than a single exact path, since the
+      # precise layout hasn't been observed yet (see rmw_tickle/PLAN.md's own benchmark plan,
+      # stage 4's "highest-risk step" note - this whole workflow is unverified until then).
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rmw-perf-results
+          path: |
+            ${{ env.RMW_PERF_WS }}/build/buildfarm_perf_tests/**
+          if-no-files-found: warn
