@@ -460,6 +460,7 @@ static void pop_scheduler(struct tt_Node* node) {
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
+static void check_liveliness(struct tt_Node* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param);
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
 
@@ -477,6 +478,7 @@ static void reset_node_state(struct tt_Node* node) {
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         node->update_last_modified[i] = 0;
         node->update_seen[i] = false;
+        node->update_last_seen[i] = 0;
     }
 
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
@@ -506,6 +508,12 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
 
     if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_flush");
+        tt_close(node);
+        return tt_RET_OUT_OF_SCHEDULE;
+    }
+
+    if (!tt_Node_schedule(node, basetime + tt_NODE_UPDATE_INTERVAL, check_liveliness, NULL)) {
+        TT_LOG_ERROR("Cannot schedule check_liveliness");
         tt_close(node);
         return tt_RET_OUT_OF_SCHEDULE;
     }
@@ -1127,6 +1135,37 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
+// Runs once per tt_NODE_UPDATE_INTERVAL (schedule_periodic_tasks()'s own first-run comment
+// applies here too) - the timeout-based counterpart to process_update()'s content-change
+// dedup: a remote node whose announce hasn't been *heard at all* (not just unchanged) for
+// tt_LIVELINESS_MISS_THRESHOLD consecutive intervals is presumed gone, exactly as if it had sent
+// tt_Node_destroy()'s own farewell UPDATE - same forget_peers_from_source() cleanup, same
+// update_seen[]/update_last_modified[] reset so a later announce from the same node id is
+// treated as first contact again (reply_with_own_announce() fires, matching a genuinely new
+// node). Doesn't distinguish "crashed" from "network partitioned" from "just slow" - none of
+// those are observable from here, and DDS-style liveliness has the same limitation.
+static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(param);
+
+    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        if (!node->update_seen[i]) {
+            continue; // never heard from this node id at all - nothing to expire
+        }
+        if (time - node->update_last_seen[i] > (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) {
+            TT_LOG_WARNING("Node %d presumed dead (no UPDATE for %d consecutive intervals)", i,
+                           tt_LIVELINESS_MISS_THRESHOLD);
+            forget_peers_from_source(node, (uint8_t)i);
+            node->update_seen[i] = false;
+            node->update_last_modified[i] = 0;
+            node->update_last_seen[i] = 0;
+        }
+    }
+
+    if (!tt_Node_schedule(node, time + tt_NODE_UPDATE_INTERVAL, check_liveliness, NULL)) {
+        TT_LOG_ERROR("Cannot schedule check_liveliness");
+    }
+}
+
 // This periodic tick only ever flushes batched pub/sub content - a DATA submessage from
 // tt_Publisher_publish() and/or an UPDATE from node_update() - never a CallResponse (that always
 // flushes immediately from process_callrequest() itself instead). Broadcast is always correct
@@ -1255,6 +1294,11 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     TT_LOG_DEBUG("Update");
     TT_LOG_DEBUG("  last_modified: %lu", last_modified);
     TT_LOG_DEBUG("  entity_count: %u", update_header->entity_count);
+
+    // Liveliness (check_liveliness(), below) cares that *an* announce arrived, not whether its
+    // content changed - update this on every valid announce, including the "nothing changed"
+    // dedup case just below, unlike update_last_modified[] which only moves on real change.
+    node->update_last_seen[source] = tt_get_ns();
 
     if (node->update_seen[source] && node->update_last_modified[source] == last_modified) {
         return true; // nothing changed since the announce we last acted on

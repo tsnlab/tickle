@@ -75,6 +75,16 @@
 // which still reaches that dropped peer too.
 #define tt_MAX_PEER_COUNT 8
 
+// Liveliness: a remote node is considered gone once this many *consecutive* tt_NODE_UPDATE_
+// INTERVAL windows pass with no UPDATE announce heard from it at all - not merely no *change*
+// (see tt_Node's own update_last_seen[], tracked separately from update_last_modified[]/
+// update_seen[], which only move when the announced content itself changes). A single announce
+// lost to UDP packet loss is common and shouldn't immediately declare an otherwise-healthy node
+// dead; too high a value delays noticing a real departure (a crash, a pulled cable - anything
+// that skips tt_Node_destroy()'s own farewell UPDATE). 3 matches the conventional heartbeat-miss
+// default other discovery protocols use for the same reason.
+#define tt_LIVELINESS_MISS_THRESHOLD 3
+
 #define _tt_NODE_ADDRESS "0.0.0.0"
 #define _tt_NODE_PORT 8282
 #define _tt_NODE_BROADCAST "255.255.255.255"

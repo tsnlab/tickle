@@ -69,6 +69,13 @@ struct tt_Node {
     // malloc'd copy of the whole variable-length announce the way earlier versions did.
     uint64_t update_last_modified[tt_MAX_ENDPOINT_COUNT];
     bool update_seen[tt_MAX_ENDPOINT_COUNT];
+    // Per remote node (indexed the same way), the wall-clock time (tt_get_ns()) its most recent
+    // UPDATE announce was received - unlike update_last_modified[] above, this moves on *every*
+    // announce, including one whose content is unchanged from the last one acted on. Liveliness
+    // (check_liveliness() in tickle.c) is judged from this, not update_last_modified[]: a node
+    // whose endpoints never change still has to be heard from periodically, or it's presumed
+    // gone once tt_LIVELINESS_MISS_THRESHOLD announce intervals pass with nothing heard.
+    uint64_t update_last_seen[tt_MAX_ENDPOINT_COUNT];
 
     // 4-byte aligned so a decoded/encoded message payload (which sits at a fixed 4-multiple
     // offset past the framing headers) is itself 4-aligned - see "Interface serialization

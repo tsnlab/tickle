@@ -17,6 +17,14 @@ number, `tt_VERSION`, which moves independently.
   `tt_Node_poll()` in a loop and every other call (e.g. `rmw_publish()`) needs a way to get that
   thread's attention sooner than its current timeout would otherwise allow, without adding any
   locking inside TickLE itself.
+- Liveliness timeout: a remote node that stops sending its periodic UPDATE announce entirely
+  (not just an unchanged one - see `tt_Node`'s new `update_last_seen[]`, tracked separately from
+  the existing content-change `update_last_modified[]`/`update_seen[]`) is now presumed gone
+  after `tt_LIVELINESS_MISS_THRESHOLD` (config.h, default 3) consecutive announce intervals pass
+  with nothing heard - same cleanup as an explicit farewell UPDATE (peer-table entries dropped,
+  first-contact handling re-armed for a later announce from the same node id). `rmw_tickle/PLAN.md`'s
+  Milestone 0(b) - previously a node that crashed or was network-partitioned without sending
+  `tt_Node_destroy()`'s own farewell UPDATE lingered in every peer table forever.
 
 ## [1.0.0] - 2026-09-14
 
