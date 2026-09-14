@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -51,6 +52,21 @@ typedef struct rmw_tickle_node_t {
     struct tt_Node tickle_node;
     rcutils_allocator_t allocator;
     const rmw_context_t* context; // Store context reference
+
+    // rmw_tickle/PLAN.md's threading model ("TickLE" row: "Stays single-threaded per tt_Node...";
+    // "rmw_tickle" row: "Owns all lock/thread management. A background thread per node drives
+    // tt_Node_poll(); a per-node mutex serializes every other entry point (rmw_publish, ...)
+    // against it"). poll_thread loops tt_Node_poll(&tickle_node, tt_RECEIVE_TIMEOUT), holding
+    // `mutex` only around each individual call (not across iterations, and not while blocked in
+    // the syscall underneath it for longer than that short timeout - see rmw_node.c) - every
+    // other rmw_tickle_c entry point that touches tickle_node (rmw_publish() et al., Milestone
+    // 3+) must tt_Node_interrupt(&tickle_node) *then* lock `mutex` before doing so, the same
+    // pattern rmw_destroy_node() itself uses to stop poll_thread. tt_Node_interrupt() is the one
+    // tt_Node_* call explicitly safe to make without holding `mutex` first (see tickle.h's own
+    // doc comment on it).
+    pthread_t poll_thread;
+    pthread_mutex_t mutex;
+    volatile bool poll_thread_running;
 } rmw_tickle_node_t;
 
 // TickLE specific publisher data

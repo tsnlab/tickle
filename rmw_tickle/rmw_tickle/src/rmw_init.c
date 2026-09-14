@@ -32,6 +32,10 @@ const char* rmw_get_implementation_identifier(void) {
     return RMW_TICKLE_IDENTIFIER;
 }
 
+const char* rmw_get_serialization_format(void) {
+    return RMW_TICKLE_SERIALIZATION_FORMAT;
+}
+
 rmw_init_options_t rmw_get_zero_initialized_init_options(void) {
     rmw_init_options_t init_options;
     memset(&init_options, 0, sizeof(init_options));
