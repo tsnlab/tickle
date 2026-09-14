@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789389290943,
+  "lastUpdate": 1789389294084,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4512,6 +4512,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 893.417,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f4f18f1a0b597ee84221ff71de6f9b27fbb929a",
+          "message": "rmw_tickle Milestone 4: rmw_create_client/rmw_create_service and friends\n\nClient side needs no special bridging: TickLE's own tt_CLIENT_CALLBACK is\nalready the async \"call completed\" notification rmw_take_response()'s\npolling expects, the same pattern topic subscriptions already use.\n\nServer side needs one: TickLE's tt_SERVER_CALLBACK must synchronously fill\na response and return, with no \"send it later\" API of its own, while ROS\n2's rmw contract splits that into rmw_take_request()/rmw_send_response(),\ntwo independent calls a real rclcpp handler makes back-to-back.\nserver_callback() (rmw_service.c) bridges the two with a bounded\npthread_cond_timedwait() (RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS, 5s) -\nthis is the only technically viable design given TickLE's hard API\nconstraint, not one option among several, and its cost is near-zero for\nthe synchronous single-threaded-executor pattern this rmw targets first.\n\nBoth sides mirror TickLE's own one-outstanding-call-at-a-time limit\ndirectly rather than queueing several in-flight requests per client.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T21:33:56+09:00",
+          "tree_id": "41dead24a9e60cb1cc73ad9d2776ec0b2eeb3744",
+          "url": "https://github.com/tsnlab/tickle/commit/7f4f18f1a0b597ee84221ff71de6f9b27fbb929a"
+        },
+        "date": 1789389292902,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.626,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 897.913,
             "unit": "Mbps"
           }
         ]
