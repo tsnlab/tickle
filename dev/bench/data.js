@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789377935616,
+  "lastUpdate": 1789377938469,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4637,6 +4637,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.013,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "dcf07a2854887ed57e951ace93e034a570c2d505",
+          "message": "Fix check-all: mixed plain/keyword target_link_libraries on rmw_tickle\n\nament_target_dependencies() (called just above for rcutils/rmw/\nrosidl_runtime_c) internally uses the plain (non-keyword) target_link_\nlibraries() signature for this same target. My own target_link_libraries(\nrmw_tickle PUBLIC Threads::Threads) used the keyword form, which CMake\nrefuses to mix with plain-signature calls on the same target (\"All uses of\ntarget_link_libraries with a target must be either all-keyword or\nall-plain\"). Switched to the plain form to match.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T18:24:49+09:00",
+          "tree_id": "180c3cf17511f3024ce0528a77b362b76b28f08c",
+          "url": "https://github.com/tsnlab/tickle/commit/dcf07a2854887ed57e951ace93e034a570c2d505"
+        },
+        "date": 1789377937419,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
             "unit": "ms"
           }
         ]
