@@ -62,6 +62,18 @@ number, `tt_VERSION`, which moves independently.
   package) calls that dispatch chain directly in CI and gets a working handle back. `.msg` only for
   this first cut; `.srv`, nested-field converters, and packaging `tickle_typesupport` itself as an
   installable `ament_cmake_python` package are tracked as follow-on work in `rmw_tickle/PLAN.md`.
+- `rmw_create_node()`/`rmw_destroy_node()`/`rmw_node_get_graph_guard_condition()`
+  (`rmw_tickle/PLAN.md`'s Milestone 2, `rmw_tickle/src/rmw_node.c`): the first `rmw_tickle` entry
+  points to actually drive a real TickLE node's lifecycle. A background thread loops
+  `tt_Node_poll()`, holding a per-node mutex only around each individual call - every other entry
+  point that will touch the node (`rmw_publish()` et al., Milestone 3+) is meant to
+  `tt_Node_interrupt()` then lock that same mutex before doing so, the exact pattern
+  `rmw_destroy_node()` itself uses to stop the poll thread cleanly. Only one node per process for
+  now (`_tt_CONFIG`, `include/tickle/config.h`, is itself process-wide) - a second
+  `rmw_create_node()` call fails loudly rather than silently colliding with the first; multiple
+  ROS 2 nodes per process stays tracked as deferred work. Also filled in
+  `rmw_get_serialization_format()`, missing from PR #20's original scaffold despite its
+  identifier/macro already existing right next to it.
 
 ## [1.0.0] - 2026-09-14
 
