@@ -74,6 +74,16 @@ number, `tt_VERSION`, which moves independently.
   ROS 2 nodes per process stays tracked as deferred work. Also filled in
   `rmw_get_serialization_format()`, missing from PR #20's original scaffold despite its
   identifier/macro already existing right next to it.
+- `rmw_create_publisher()`/`rmw_publish()`, `rmw_create_subscription()`/`rmw_take(_with_info)()`,
+  `rmw_serialize()`/`rmw_deserialize()` (`rmw_tickle/PLAN.md`'s Milestone 3, `rmw_tickle/src/
+  rmw_publisher.c`/`rmw_subscription.c`/`rmw_serialize.c`/`rmw_typesupport.c`): `rmw_tickle` can
+  now actually move messages. A subscriber's callback runs on the node's background poll thread
+  and converts tickle->ros immediately (TickLE's own `decode()` aliases its receive buffer for
+  string/array fields, valid only until the callback returns), pushing the result into a
+  fixed-capacity per-subscriber queue `rmw_take()` pops from - QoS-driven real queue depth is
+  still on the roadmap (below), this is a fixed placeholder. `rosidl_typesupport_tickle_c/
+  message_type_support.h` gained `ros_type_name`/`ros_struct_size` fields so `rmw_tickle` can size
+  and name things generically without a per-message struct definition of its own.
 
 ## [1.0.0] - 2026-09-14
 
