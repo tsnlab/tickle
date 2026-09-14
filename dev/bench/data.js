@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789372518600,
+  "lastUpdate": 1789373070703,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1859,6 +1859,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.204,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d70b26ce9a86f73f49059ffbabb949e81b6195d8",
+          "message": "Fix check-all: trim rosidl_typesupport_tickle_c_tests deps, add lark\n\nrosidl_default_generators (what a real interface package normally depends\non) transitively pulls in rosidl_generator_py/_rs and ament_cmake_python's\nown egg-build step for this test package - none of which\nrosidl_typesupport_tickle_c itself needs, and which failed outright\n(ModuleNotFoundError: setuptools/lark) since this CI environment's\nactions/setup-python interpreter has neither. Swapped to depending only on\nwhat's actually needed: rosidl_generator_c (the message struct test/\ntest_dispatch.c includes) and rosidl_typesupport_c (ROSIDL_GET_MSG_TYPE_\nSUPPORT()'s own dispatch entry point).\n\nThat alone wasn't enough, though: rosidl_generator_c unconditionally\ndepends on rosidl_generator_type_description for every interface it\ngenerates regardless of which typesupports are involved, which needs both\nNumPy and lark - lark wasn't part of the earlier NumPy fix. pip install\nlark alongside it, same reasoning as numpy/catkin_pkg already there\n(actions/setup-python's own Python 3.12 is first on PATH, so that's the\npython3 CMake's find_package(Python3) resolves to - a system apt package\nwould land somewhere find_package(Python3) never looks).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T17:03:43+09:00",
+          "tree_id": "16e4856bbdec713178e01ba8732d74d2a710aba9",
+          "url": "https://github.com/tsnlab/tickle/commit/d70b26ce9a86f73f49059ffbabb949e81b6195d8"
+        },
+        "date": 1789373068450,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.206,
             "unit": "ms"
           },
           {
