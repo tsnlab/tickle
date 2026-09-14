@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789389845406,
+  "lastUpdate": 1789389848341,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4580,6 +4580,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 897.913,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d3940277a74156bbf4c3609e8805dfd28d07ef38",
+          "message": "Fix check-all: clang-format/clang-tidy findings in Milestone 4 Part B files\n\n- Drop unused \"rmw/time.h\" from rmw_client.c/rmw_service.c (copy-pasted\n  from rmw_subscription.c's own pattern; neither actually names\n  rmw_time_point_value_t directly).\n- pthread_t/pthread_mutex_t/pthread_cond_t and CLOCK_REALTIME are declared\n  through private glibc headers misc-include-cleaner attributes separately\n  from <pthread.h>/<time.h> themselves, despite those already being\n  included directly - same class of false positive hal_linux.c already\n  has NOLINTs for (EINTR/POLLIN). Add matching NOLINTs.\n- tt_SECOND needs <tickle/config.h> included directly in rmw_tickle.h,\n  not just transitively via <tickle/tickle.h>.\n- Replace two raw 1000000000L literals in rmw_service.c's deadline math\n  with tt_SECOND, the project's own existing name for that quantity\n  (readability-magic-numbers).\n- clang-format line-wrapping across all four files.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T21:43:15+09:00",
+          "tree_id": "1badc0681362355a2bc8529028dc81c8c703be76",
+          "url": "https://github.com/tsnlab/tickle/commit/d3940277a74156bbf4c3609e8805dfd28d07ef38"
+        },
+        "date": 1789389847230,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.634,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 903.948,
             "unit": "Mbps"
           }
         ]
