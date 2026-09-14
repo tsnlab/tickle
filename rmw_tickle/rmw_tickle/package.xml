@@ -12,6 +12,10 @@
   <depend>rcutils</depend>
   <depend>rmw</depend>
   <depend>rosidl_runtime_c</depend>
+  <!-- rmw_tickle/PLAN.md's Milestone 3: rmw_publisher.c/rmw_subscription.c/rmw_serialize.c/
+       rmw_typesupport.c resolve a real ROS 2 rosidl_message_type_support_t* down to this
+       package's own callback struct (rosidl_typesupport_tickle_c/message_type_support.h). -->
+  <depend>rosidl_typesupport_tickle_c</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

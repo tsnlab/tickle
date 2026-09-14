@@ -36,9 +36,20 @@ typedef bool (*rosidl_typesupport_tickle_c_to_tickle_function)(const void* ros_m
 typedef bool (*rosidl_typesupport_tickle_c_from_tickle_function)(const void* tickle_message, void* ros_message);
 
 typedef struct rosidl_typesupport_tickle_c_message_callbacks_t {
-    size_t tickle_struct_size; // sizeof() the generated TickLE-side struct - lets rmw_tickle (once
-                                // it exists - Milestone 2/3) allocate scratch storage generically,
-                                // without needing a per-message struct definition of its own
+    // "pkg/subfolder/Type" (e.g. "test_msgs/msg/Simple") - the same string tt_Topic.name needs
+    // (rmw_tickle/PLAN.md's Milestone 3: tt_hash_id(topic->name, endpoint_name) mixes in both the
+    // type and the ROS topic name, matching ROS 2's own "both type and topic name must match to
+    // connect" rule), stable and identical across every process/build so two independently
+    // generated rmw_tickle nodes agree on the same hash for the same message type.
+    const char* ros_type_name;
+    size_t tickle_struct_size; // sizeof() the generated TickLE-side struct - lets rmw_tickle
+                                // allocate scratch storage generically, without needing a
+                                // per-message struct definition of its own
+    size_t ros_struct_size;    // sizeof() the rosidl_generator_c struct - same reason, for the ROS
+                                // 2 side (a subscriber's receive queue holds already-from_tickle()-
+                                // converted, independently-owned ROS messages - see rmw_tickle's
+                                // own rmw_subscription.c - so it needs to allocate these without a
+                                // per-message struct definition of its own either)
     rosidl_typesupport_tickle_c_to_tickle_function to_tickle;
     rosidl_typesupport_tickle_c_from_tickle_function from_tickle;
     tt_DATA_ENCODE_SIZE tickle_encode_size;

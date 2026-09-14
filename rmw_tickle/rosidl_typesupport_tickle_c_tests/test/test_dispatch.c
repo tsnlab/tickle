@@ -44,6 +44,8 @@ int main(void) {
         (const rosidl_typesupport_tickle_c_message_callbacks_t*)ours->data;
     assert(cb != NULL);
     assert(cb->tickle_struct_size > 0 && cb->tickle_struct_size <= 64);
+    assert(cb->ros_struct_size == sizeof(struct rosidl_typesupport_tickle_c_tests__msg__Simple));
+    assert(strcmp(cb->ros_type_name, "rosidl_typesupport_tickle_c_tests/msg/Simple") == 0);
 
     struct rosidl_typesupport_tickle_c_tests__msg__Simple ros_in;
     memset(&ros_in, 0, sizeof(ros_in));

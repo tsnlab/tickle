@@ -9,6 +9,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rmw REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
+find_package(rosidl_typesupport_tickle_c REQUIRED)
 find_package(Threads REQUIRED)
 
 # TickLE itself isn't packaged as an ament/colcon package (it's a plain static-lib Makefile
@@ -21,6 +22,10 @@ set(TICKLE_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../src")
 add_library(rmw_tickle
   src/rmw_init.c
   src/rmw_node.c
+  src/rmw_typesupport.c
+  src/rmw_publisher.c
+  src/rmw_subscription.c
+  src/rmw_serialize.c
   # TickLE's own core (rmw_node.c's tt_Node_create()/_poll()/_interrupt()/_destroy() calls,
   # Milestone 2, are the first real use of it in this package - rmw_init.c only touched the
   # _tt_CONFIG global struct before this) - compiled straight in, same reason rosidl_typesupport_
@@ -44,6 +49,7 @@ ament_target_dependencies(rmw_tickle
   rcutils
   rmw
   rosidl_runtime_c
+  rosidl_typesupport_tickle_c
 )
 
 # Plain (non-keyword) signature, matching ament_target_dependencies() above's own internal
@@ -53,7 +59,7 @@ ament_target_dependencies(rmw_tickle
 target_link_libraries(rmw_tickle Threads::Threads)
 
 ament_export_targets(export_rmw_tickle HAS_LIBRARY_TARGET)
-ament_export_dependencies(rcutils rmw rosidl_runtime_c)
+ament_export_dependencies(rcutils rmw rosidl_runtime_c rosidl_typesupport_tickle_c)
 
 install(
   DIRECTORY include/
