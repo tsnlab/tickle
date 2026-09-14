@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789379793510,
+  "lastUpdate": 1789379796517,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4104,6 +4104,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.397,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3b3ced6deae9fa736d26ad809b34d7aaf7e4a948",
+          "message": "rmw_tickle Milestone 3: publish/subscribe, serialize/deserialize\n\nNew src/rmw_publisher.c: rmw_create_publisher()/rmw_destroy_publisher()/\nrmw_publish(). New src/rmw_subscription.c: rmw_create_subscription()/\nrmw_destroy_subscription()/rmw_take()/rmw_take_with_info(). New src/\nrmw_serialize.c: rmw_serialize()/rmw_deserialize(), sharing the same\nto/from-tickle conversion and TickLE CDR-4 codec calls rmw_publish() and\nthe subscriber callback use, just against a caller-owned byte buffer\ninstead of the network.\n\nNew src/rmw_typesupport.c: rmw_tickle_get_message_callbacks(), resolving a\nreal rosidl_message_type_support_t* down to rosidl_typesupport_tickle_c's\nown callback struct via the standard get_message_typesupport_handle()\ndispatch chain Milestone 1(c) proved reachable - shared by all three new\nfiles above.\n\nrosidl_typesupport_tickle_c/message_type_support.h gains ros_type_name/\nros_struct_size fields (ros2_adapter.render_type_support() now populates\nboth). tt_Topic.name is set to callbacks->ros_type_name (a generated-code\nstring literal, already satisfying tickle.h's \"stay valid and unmoved\"\nlifetime rule with no copy needed) - tt_hash_id(topic->name, endpoint_name)\nmixes in both the type and the ROS topic name (endpoint_name), matching ROS\n2's own \"type and topic name must both match to connect\" rule.\nros_struct_size lets a subscriber allocate independently-owned ROS message\nbuffers for its own receive queue without needing a per-message struct\ndefinition of its own.\n\nSubscriber design: subscriber_callback() runs on the node's poll thread,\ninside tt_Node_poll() (node->mutex already held) - TickLE's own decode()\naliases node->rx_buffer for string/array fields (DESIGN.md's \"Strings\"\nrule), valid only until the callback returns, so the tickle->ros conversion\n(callbacks->from_tickle(), which performs the actual deep copy via\nrosidl_runtime_c__String__assign() et al.) has to happen right there, not\ndeferred to whenever rmw_take() is next called - the resulting ROS message\nis independently owned from that point on, safe to push into a fixed-\ncapacity per-subscriber queue (RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY,\nrmw_tickle.h) guarded by its own mutex (separate from node->mutex, so\nrmw_take() - called from whichever thread the application uses - never\nwaits on it just to pop something already queued). QoS-driven real depth is\nMilestone 7's roadmap item #1, not this milestone; this is a fixed\nplaceholder KEEP_LAST-style capacity (10, ROS 2's own common default) that\ndrops the oldest queued message once full.\n\nEvery entry point that touches tickle_node follows the tt_Node_interrupt()-\nthen-lock pattern Milestone 2 established.\n\nKnown limitation, not solved here: rmw_take_with_info()/rmw_deserialize()\nassume `ros_message` is a fresh/blank buffer (true for rclcpp's own typical\nper-take std::allocate_shared<MessageT>(), the only path this rmw currently\nsupports - can_loan_messages is always false) - overwriting an already-\npopulated ros_message's own owned string/array fields would leak their old\nbacking buffers rather than fini() them first. Properly fixing that needs a\nper-message __fini() function pointer rosidl_typesupport_tickle_c doesn't\ngenerate yet.\n\nQoS (qos_profile) isn't validated or acted on yet beyond the placeholder\nqueue depth above - Milestone 7's roadmap is the explicit-rejection work.\n\nNot yet verified against a real ROS 2 build - pending the next CI run.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T18:55:44+09:00",
+          "tree_id": "b8240fea97cc1285e91f252f22904f0ff6a3ba24",
+          "url": "https://github.com/tsnlab/tickle/commit/3b3ced6deae9fa736d26ad809b34d7aaf7e4a948"
+        },
+        "date": 1789379795379,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.606,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 899.377,
             "unit": "Mbps"
           }
         ]
