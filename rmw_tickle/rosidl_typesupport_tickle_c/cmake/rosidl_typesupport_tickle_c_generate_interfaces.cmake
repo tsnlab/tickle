@@ -70,59 +70,65 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   list(APPEND _generated_sources "${_out_c}" "${_adapter_c}" "${_ts_c}")
 endforeach()
 
-if(NOT _generated_sources)
-  return()
-endif()
-
-set(_target_suffix "__rosidl_typesupport_tickle_c")
-add_library(${rosidl_generate_interfaces_TARGET}${_target_suffix} ${_generated_sources}
-  # TickLE's own generated codec (in ${_generated_sources} above) calls into its shared CDR-4
-  # runtime helpers - compiled straight into this per-interface-package library, same as tools/
-  # typesupport/tests/test_ros2_adapter.py's own offline round-trip test already does, since
-  # TickLE has no installed ament/colcon package of its own to link against instead (see this
-  # package's top-level CMakeLists.txt).
-  "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/src/encoding.c"
-  "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/src/log.c"
-)
-
-if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
-  set_target_properties(${rosidl_generate_interfaces_TARGET}${_target_suffix} PROPERTIES
-    C_STANDARD 11)
-endif()
-
-target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
-  "${_output_path}/msg"
-  "${_generator_output_path}"
-  "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/include"
-)
-
-target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
-  ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
-target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
-  rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
-  rosidl_runtime_c::rosidl_runtime_c
-  rosidl_typesupport_interface::rosidl_typesupport_interface)
-
-add_dependencies(
-  ${rosidl_generate_interfaces_TARGET}
-  ${rosidl_generate_interfaces_TARGET}${_target_suffix}
-)
-
-if(NOT rosidl_generate_interfaces_SKIP_INSTALL)
-  install(
-    TARGETS ${rosidl_generate_interfaces_TARGET}${_target_suffix}
-    EXPORT export_${rosidl_generate_interfaces_TARGET}${_target_suffix}
-    ARCHIVE DESTINATION lib
-    LIBRARY DESTINATION lib
-    RUNTIME DESTINATION bin
+# NOT return() here: ament_execute_extensions()/rosidl_generate_interfaces() are both macros, and
+# include() inside a macro runs in the *caller's* scope rather than a scope of its own (unlike a
+# function) - a return() here doesn't just exit this file, it unwinds the caller's own scope too,
+# silently skipping every extension registered after this one (rosidl_typesupport_c, rosidl_
+# typesupport_fastrtps_c/_cpp, rosidl_typesupport_introspection_cpp, ...) without any error of its
+# own - their own add_library() calls simply never ran, surfacing later as their targets having no
+# sources at all ("CMake Error: Cannot determine link language"). An if() the same size as
+# everything below it, indented one level deeper, avoids the whole hazard.
+if(_generated_sources)
+  set(_target_suffix "__rosidl_typesupport_tickle_c")
+  add_library(${rosidl_generate_interfaces_TARGET}${_target_suffix} ${_generated_sources}
+    # TickLE's own generated codec (in ${_generated_sources} above) calls into its shared CDR-4
+    # runtime helpers - compiled straight into this per-interface-package library, same as tools/
+    # typesupport/tests/test_ros2_adapter.py's own offline round-trip test already does, since
+    # TickLE has no installed ament/colcon package of its own to link against instead (see this
+    # package's top-level CMakeLists.txt).
+    "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/src/encoding.c"
+    "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/src/log.c"
   )
 
-  ament_export_targets(export_${rosidl_generate_interfaces_TARGET}${_target_suffix})
-  rosidl_export_typesupport_targets(${_target_suffix}
-    ${rosidl_generate_interfaces_TARGET}${_target_suffix})
+  if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
+    set_target_properties(${rosidl_generate_interfaces_TARGET}${_target_suffix} PROPERTIES
+      C_STANDARD 11)
+  endif()
 
-  ament_export_dependencies(
-    "rosidl_typesupport_tickle_c"
-    "rosidl_runtime_c"
-    "rosidl_typesupport_interface")
+  target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
+    "${_output_path}/msg"
+    "${_generator_output_path}"
+    "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/include"
+  )
+
+  target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
+    ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
+  target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
+    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+    rosidl_runtime_c::rosidl_runtime_c
+    rosidl_typesupport_interface::rosidl_typesupport_interface)
+
+  add_dependencies(
+    ${rosidl_generate_interfaces_TARGET}
+    ${rosidl_generate_interfaces_TARGET}${_target_suffix}
+  )
+
+  if(NOT rosidl_generate_interfaces_SKIP_INSTALL)
+    install(
+      TARGETS ${rosidl_generate_interfaces_TARGET}${_target_suffix}
+      EXPORT export_${rosidl_generate_interfaces_TARGET}${_target_suffix}
+      ARCHIVE DESTINATION lib
+      LIBRARY DESTINATION lib
+      RUNTIME DESTINATION bin
+    )
+
+    ament_export_targets(export_${rosidl_generate_interfaces_TARGET}${_target_suffix})
+    rosidl_export_typesupport_targets(${_target_suffix}
+      ${rosidl_generate_interfaces_TARGET}${_target_suffix})
+
+    ament_export_dependencies(
+      "rosidl_typesupport_tickle_c"
+      "rosidl_runtime_c"
+      "rosidl_typesupport_interface")
+  endif()
 endif()
