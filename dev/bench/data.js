@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789380323754,
+  "lastUpdate": 1789380773564,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2267,6 +2267,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.204,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "665636cc51b6a7a3f63592bbe54c2be520fbaf06",
+          "message": "Fix check-all: rmw_time_point_value_t needs rmw/time.h, not rmw/types.h\n\nLast remaining clang-tidy finding: rmw_time_point_value_t is typedef'd in\nrmw/time.h (rcutils_time_point_value_t aliased there), not rmw/types.h -\nrmw_subscription.c only had the latter.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T19:12:06+09:00",
+          "tree_id": "8f932201e3c6490f86817a73f202ede32442a264",
+          "url": "https://github.com/tsnlab/tickle/commit/665636cc51b6a7a3f63592bbe54c2be520fbaf06"
+        },
+        "date": 1789380771886,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.211,
             "unit": "ms"
           },
           {
