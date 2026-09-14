@@ -117,6 +117,16 @@ number, `tt_VERSION`, which moves independently.
   condition()`'s own guard condition is now a real, safely-waitable one (previously `.data ==
   NULL`, which would have crashed the moment any wait set checked it) - actually triggering it on
   a graph change is still Milestone 6.
+- `rmw_get_node_names()`/`rmw_get_node_names_with_enclaves()`/`rmw_count_publishers()`/
+  `rmw_count_subscribers()`/`rmw_service_server_is_available()` (`rmw_tickle/src/rmw_graph.c`,
+  new), plus the graph-changed guard condition now actually firing on a real graph change
+  (`rmw_node.c`'s `discovery_callback()`, wired into TickLE's own opt-in discovery API - Milestone
+  0(c)) (`rmw_tickle/PLAN.md`'s Milestone 6). `rmw_count_publishers()`/`_subscribers()`/
+  `rmw_service_server_is_available()` scan both TickLE's own remote-only discovery table and this
+  node's own local endpoint table, since the former never records this process's own
+  locally-created publishers/subscribers/servers. Documented gap: TickLE's wire protocol has no
+  node-name concept at all, so `rmw_get_node_names()` can only ever report the local node itself,
+  never other nodes actually visible on the segment.
 
 ## [1.0.0] - 2026-09-14
 

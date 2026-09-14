@@ -41,20 +41,20 @@ rmw_guard_condition_t* rmw_create_guard_condition(rmw_context_t* context) {
     }
 
     rcutils_allocator_t* allocator = &context->options.allocator;
-    rmw_tickle_guard_condition_t* gc = (rmw_tickle_guard_condition_t*)allocator->zero_allocate(
+    rmw_tickle_guard_condition_t* guard = (rmw_tickle_guard_condition_t*)allocator->zero_allocate(
         1, sizeof(rmw_tickle_guard_condition_t), allocator->state);
-    if (NULL == gc) {
+    if (NULL == guard) {
         RMW_SET_ERROR_MSG("failed to allocate rmw_tickle_guard_condition_t");
         return NULL;
     }
-    gc->context_impl = (rmw_tickle_context_impl_t*)context->impl;
-    atomic_init(&gc->has_triggered, false);
-    gc->allocator = *allocator;
+    guard->context_impl = (rmw_tickle_context_impl_t*)context->impl;
+    atomic_init(&guard->has_triggered, false);
+    guard->allocator = *allocator;
 
-    gc->rmw_guard_condition.implementation_identifier = RMW_TICKLE_IDENTIFIER;
-    gc->rmw_guard_condition.data = gc;
-    gc->rmw_guard_condition.context = context;
-    return &gc->rmw_guard_condition;
+    guard->rmw_guard_condition.implementation_identifier = RMW_TICKLE_IDENTIFIER;
+    guard->rmw_guard_condition.data = guard;
+    guard->rmw_guard_condition.context = context;
+    return &guard->rmw_guard_condition;
 }
 
 rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t* guard_condition) {
@@ -64,9 +64,9 @@ rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t* guard_condition) {
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
-    rmw_tickle_guard_condition_t* gc = (rmw_tickle_guard_condition_t*)guard_condition->data;
-    rcutils_allocator_t allocator = gc->allocator;
-    allocator.deallocate(gc, allocator.state);
+    rmw_tickle_guard_condition_t* guard = (rmw_tickle_guard_condition_t*)guard_condition->data;
+    rcutils_allocator_t allocator = guard->allocator;
+    allocator.deallocate(guard, allocator.state);
     return RMW_RET_OK;
 }
 
@@ -77,14 +77,14 @@ rmw_ret_t rmw_trigger_guard_condition(const rmw_guard_condition_t* guard_conditi
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
-    rmw_tickle_guard_condition_t* gc = (rmw_tickle_guard_condition_t*)guard_condition->data;
-    atomic_store(&gc->has_triggered, true);
+    rmw_tickle_guard_condition_t* guard = (rmw_tickle_guard_condition_t*)guard_condition->data;
+    atomic_store(&guard->has_triggered, true);
 
     // Wake anyone blocked in rmw_wait() on this context - see rmw_tickle_context_impl_t's own
     // doc comment for why the broadcast must happen while holding wait_mutex, even though
     // has_triggered itself is atomic and needs no lock of its own.
-    pthread_mutex_lock(&gc->context_impl->wait_mutex);
-    pthread_cond_broadcast(&gc->context_impl->wait_cond);
-    pthread_mutex_unlock(&gc->context_impl->wait_mutex);
+    pthread_mutex_lock(&guard->context_impl->wait_mutex);
+    pthread_cond_broadcast(&guard->context_impl->wait_cond);
+    pthread_mutex_unlock(&guard->context_impl->wait_mutex);
     return RMW_RET_OK;
 }

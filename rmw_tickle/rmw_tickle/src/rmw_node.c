@@ -19,12 +19,15 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <tickle/config.h> // tt_RECEIVE_TIMEOUT
 #include <tickle/tickle.h>
 
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
+#include "rmw/init.h" // rmw_context_t
 #include "rmw/rmw.h"
+#include "rmw/types.h" // rmw_node_t
 #include "rmw_tickle_c/rmw_tickle.h"
 
 // One process-wide _tt_CONFIG (include/tickle/config.h) means one tt_Node per process for now -
@@ -37,8 +40,33 @@ static atomic_bool g_tickle_node_created = false;
 // tt_RECEIVE_TIMEOUT (config.h, 100us) is what tt_Node_poll() itself substitutes for any
 // negative timeout - passed explicitly here (rather than -1, matching examples/*/*.c's own
 // top-level poll loops) so this file doesn't depend on that substitution as an implicit,
-// undocumented-at-the-call-site default.
-static const int64_t RMW_TICKLE_POLL_TIMEOUT_NS = tt_RECEIVE_TIMEOUT;
+// undocumented-at-the-call-site default. A macro (matching rmw_tickle.h's own RMW_TICKLE_*
+// constants), not a `static const` variable - readability-identifier-naming's ConstantCase
+// (lower_case) applies to the latter but not to a macro (MacroDefinitionCase: UPPER_CASE).
+#define RMW_TICKLE_POLL_TIMEOUT_NS tt_RECEIVE_TIMEOUT
+
+// rmw_tickle/PLAN.md's Milestone 6: "graph-changed guard condition wired to 0(c)'s callback".
+// Runs on the poll thread, node->mutex already held (tt_Node_set_discovery()'s own contract - this
+// fires from inside whichever tt_Node_poll() call just processed the UPDATE). node_id/endpoint_id/
+// kind/departed aren't needed here - rmw's own contract is just "something in the graph changed,
+// go re-query it", not "here's exactly what changed" (rmw_get_node_names() et al. are the
+// re-query), so this simply triggers the guard condition unconditionally on every appear/refresh/
+// depart - the same pattern rmw_trigger_guard_condition() (rmw_guard_condition.c) itself uses.
+static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind, bool departed,
+                               void* param) {
+    (void)node;
+    (void)node_id;
+    (void)endpoint_id;
+    (void)kind;
+    (void)departed;
+    rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)param;
+    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)node_impl->context->impl;
+
+    atomic_store(&context_impl->graph_guard_condition.has_triggered, true);
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+}
 
 static void* poll_thread_main(void* arg) {
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)arg;
@@ -55,7 +83,7 @@ static void* poll_thread_main(void* arg) {
     return NULL;
 }
 
-rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char* namespace_) {
+rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char* node_namespace) {
     if (NULL == context) {
         RMW_SET_ERROR_MSG("context is null");
         return NULL;
@@ -64,8 +92,8 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
         RMW_SET_ERROR_MSG("name is null");
         return NULL;
     }
-    if (NULL == namespace_) {
-        RMW_SET_ERROR_MSG("namespace_ is null");
+    if (NULL == node_namespace) {
+        RMW_SET_ERROR_MSG("node_namespace is null");
         return NULL;
     }
     if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
@@ -97,7 +125,7 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
     node_impl->rmw_node.data = node_impl;
     node_impl->rmw_node.context = context;
     node_impl->rmw_node.name = rcutils_strdup(name, *allocator);
-    node_impl->rmw_node.namespace_ = rcutils_strdup(namespace_, *allocator);
+    node_impl->rmw_node.namespace_ = rcutils_strdup(node_namespace, *allocator);
     if (NULL == node_impl->rmw_node.name || NULL == node_impl->rmw_node.namespace_) {
         RMW_SET_ERROR_MSG("failed to allocate node name/namespace");
         goto fail;
@@ -116,6 +144,16 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
     tt_ret_t ret = tt_Node_create(&node_impl->tickle_node);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create() failed");
+        pthread_mutex_destroy(&node_impl->mutex);
+        goto fail;
+    }
+
+    // discovery is already zeroed (zero_allocate() above) - tt_Node_set_discovery()'s own
+    // precondition. See rmw_tickle_node_t's own doc comment on the field.
+    ret = tt_Node_set_discovery(&node_impl->tickle_node, &node_impl->discovery, discovery_callback, node_impl);
+    if (ret != tt_RET_OK) {
+        RMW_SET_ERROR_MSG("tt_Node_set_discovery() failed");
+        tt_Node_destroy(&node_impl->tickle_node);
         pthread_mutex_destroy(&node_impl->mutex);
         goto fail;
     }

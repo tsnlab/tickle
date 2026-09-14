@@ -108,8 +108,8 @@ struct rmw_tickle_context_impl_t {
     // the waiter's last check and it actually starting to wait (the classic lost-wakeup race) -
     // the producer's attempt to lock wait_mutex simply blocks until the waiter reaches the wait
     // call, at which point the broadcast is guaranteed to be observed.
-    pthread_mutex_t wait_mutex;
-    pthread_cond_t wait_cond;
+    pthread_mutex_t wait_mutex; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
+    pthread_cond_t wait_cond;   // NOLINT(misc-include-cleaner)
 };
 
 // TickLE specific node data
@@ -133,6 +133,17 @@ typedef struct rmw_tickle_node_t {
     pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
     pthread_mutex_t mutex; // NOLINT(misc-include-cleaner)
     volatile bool poll_thread_running;
+
+    // rmw_tickle/PLAN.md's Milestone 6: opts this node into TickLE's own opt-in graph
+    // introspection (tt_Node_set_discovery(), Milestone 0(c)) - every remote Publisher/Subscriber/
+    // Client/Server this node hears announced, for rmw_count_publishers()/_subscribers()/rmw_
+    // service_server_is_available() (rmw_graph.c) to scan. Embedded rather than heap-allocated,
+    // matching struct tt_Discovery's own doc comment ("owned by the caller, e.g. embedded in an
+    // rmw wrapper's own node struct") - zero_allocate() above already satisfies tt_Node_set_
+    // discovery()'s own "must already be zeroed" precondition. Records only *remote* entities
+    // (other nodes' announces) - this node's own locally-created endpoints are counted separately,
+    // straight from tickle_node.endpoints[] (see rmw_graph.c's own count_matching()).
+    struct tt_Discovery discovery;
 } rmw_tickle_node_t;
 
 // TickLE specific publisher data

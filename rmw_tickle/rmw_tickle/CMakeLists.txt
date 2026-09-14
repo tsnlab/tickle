@@ -30,6 +30,7 @@ add_library(rmw_tickle
   src/rmw_service.c
   src/rmw_guard_condition.c
   src/rmw_wait_set.c
+  src/rmw_graph.c
   # TickLE's own core (rmw_node.c's tt_Node_create()/_poll()/_interrupt()/_destroy() calls,
   # Milestone 2, are the first real use of it in this package - rmw_init.c only touched the
   # _tt_CONFIG global struct before this) - compiled straight in, same reason rosidl_typesupport_
