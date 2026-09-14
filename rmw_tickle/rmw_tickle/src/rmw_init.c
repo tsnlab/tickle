@@ -14,10 +14,15 @@
 
 #include <tickle/config.h>
 
+#include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
-#include "rmw/rmw.h"
+#include "rmw/init.h"             // rmw_context_t, rmw_context_impl_t
+#include "rmw/init_options.h"     // rmw_init_options_t
+#include "rmw/ret_types.h"        // rmw_ret_t, RMW_RET_*
+#include "rmw/rmw.h"              // rmw_init/_shutdown/_context_fini, rmw_get_implementation_identifier, ...
+#include "rmw/security_options.h" // rmw_security_options_t
 #include "rmw_tickle_c/rmw_tickle.h"
 
 const char* const rmw_tickle_identifier = RMW_TICKLE_IDENTIFIER;

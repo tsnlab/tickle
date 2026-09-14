@@ -16,7 +16,9 @@
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
-#include "rmw/rmw.h"
+#include "rmw/init.h"  // rmw_context_t
+#include "rmw/types.h" // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t, rmw_service_t,
+                       // rmw_guard_condition_t, rmw_wait_set_t
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
 
@@ -42,10 +44,6 @@ typedef struct rmw_tickle_context_impl_t {
     // This can be extended with TickLE-specific context information
     int dummy; // Temporary field to avoid empty struct
 } rmw_tickle_context_impl_t;
-
-// RMW implementation functions
-const char* rmw_get_implementation_identifier(void);
-rmw_init_options_t rmw_get_zero_initialized_init_options(void);
 
 // TickLE specific node data
 typedef struct rmw_tickle_node_t {
