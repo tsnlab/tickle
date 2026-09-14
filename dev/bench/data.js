@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789371815498,
+  "lastUpdate": 1789372140523,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -1791,6 +1791,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.205,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f605a3324113a38f4d853019a5d12afe66537fc8",
+          "message": "Fix check-all: return() inside our extension aborted every later one\n\nrosidl_typesupport_tickle_c_tests's colcon build failed with \"CMake Error:\nCannot determine link language\" for OTHER packages' own generated\ntypesupport targets (rosidl_typesupport_c, rosidl_typesupport_fastrtps_c/\n_cpp, rosidl_typesupport_introspection_cpp) - none of which our code\ntouches directly. Root cause: ament_execute_extensions() and\nrosidl_generate_interfaces() are both CMake macros, and include() inside a\nmacro runs in the *caller's* scope rather than a scope of its own (unlike a\nfunction's). Our extension's `if(NOT _generated_sources) return() endif()`\nearly-exit therefore didn't just exit our own file - it unwound the whole\nenclosing rosidl_generate_interfaces() call, silently skipping every\nextension registered after ours in the same run (whichever those happened\nto be for that package) without any error of its own. Their own\nadd_library() calls simply never ran, which is what actually surfaced as\n\"link language\" errors on their targets much later.\n\nFixed by wrapping the rest of the file's logic in `if(_generated_sources)`\ninstead of returning early - same effect, without the scope-unwinding\nhazard. (`continue()` inside the earlier foreach loop is unaffected - that\none is loop-scoped, not file/caller-scoped, by design.)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T16:48:13+09:00",
+          "tree_id": "8a7180e5bad908f2804683eef0ba9ee977786079",
+          "url": "https://github.com/tsnlab/tickle/commit/f605a3324113a38f4d853019a5d12afe66537fc8"
+        },
+        "date": 1789372138849,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
             "unit": "ms"
           },
           {
