@@ -11,7 +11,6 @@
 #pragma once
 
 #include <byteswap.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

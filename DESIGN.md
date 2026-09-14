@@ -505,11 +505,16 @@ timeout. Added for `rmw_tickle` (`rmw_tickle/PLAN.md`'s Milestone 0), which need
 at a time - `rmw_tickle` just adds a mutex of its own around that single-thread rule, using this
 primitive so a call arriving on another thread (e.g. `rmw_publish()`) isn't stuck waiting for the
 poll thread's current, possibly long, timeout to expire on its own before it can acquire that
-mutex. Implemented identically on both platforms: a private loopback UDP socket `tt_receive()`
-polls alongside the real one, so `tt_wake_signal()` (`hal.h`) has something to write a byte to
-that wakes a blocked `poll()`/`select()` immediately - see `src/hal_linux.c`/`src/hal_freertos.c`'s
-own comments. The signal is "at least once, at or after the call to `tt_Node_interrupt()`," not
-"only if a call is currently blocked" - one sent while nothing is blocked is queued and delivered
+mutex. `tt_receive()` polls a second fd alongside the real socket, so `tt_wake_signal()` (`hal.h`)
+has something to signal that wakes a blocked `poll()`/`select()` immediately - what that fd
+actually is differs by platform: FreeRTOS+lwIP uses a private loopback UDP socket (`hal_
+freertos.c`), but Linux uses `eventfd(2)` instead of the same trick, because `platform/linux/
+test.sh` runs each side in its own network namespace with only the veth pair brought up (see
+`netns.mk`) - binding anything to `127.0.0.1` there fails, since that namespace's own `lo` is
+never brought up, and `eventfd` needs no address or interface at all. See `src/hal_linux.c`'s/
+`src/hal_freertos.c`'s own comments for each. The signal is "at least once, at or after the call
+to `tt_Node_interrupt()`," not "only if a call is currently blocked" - one sent while nothing is
+blocked is queued and delivered
 to whichever `tt_Node_poll()` call comes next instead of being dropped.
 
 ## Logging conventions

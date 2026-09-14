@@ -19,6 +19,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 // struct iovec (tt_send_iov, below) - clang-tidy's IWYU mapping doesn't know this glibc symbol's
 // real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
@@ -88,7 +89,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
     // tt_close() below happens after sock was already created successfully).
-    node->hal.wake_sock = -1;
+    node->hal.wake_fd = -1;
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -143,31 +144,12 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
     node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
 
-    // A private loopback socket tt_receive() also polls, purely so tt_wake_signal() has something
-    // to write to that wakes it up - see hal_linux.h's own comment on wake_sock/wake_addr. Bound
-    // to an ephemeral port (port 0), then read back via getsockname() so wake_addr knows what it
-    // actually got.
-    node->hal.wake_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (node->hal.wake_sock < 0) {
-        TT_LOG_ERROR("Cannot create wake socket: %s", strerror(errno));
-        tt_close(node);
-        return tt_RET_IO_ERROR;
-    }
-
-    struct sockaddr_in wake_bind_addr;
-    wake_bind_addr.sin_family = AF_INET;
-    wake_bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    wake_bind_addr.sin_port = 0;
-
-    if (bind(node->hal.wake_sock, (struct sockaddr*)&wake_bind_addr, sizeof(wake_bind_addr)) < 0) {
-        TT_LOG_ERROR("Cannot bind wake socket: %s", strerror(errno));
-        tt_close(node);
-        return tt_RET_IO_ERROR;
-    }
-
-    socklen_t wake_addr_len = sizeof(node->hal.wake_addr);
-    if (getsockname(node->hal.wake_sock, (struct sockaddr*)&node->hal.wake_addr, &wake_addr_len) < 0) {
-        TT_LOG_ERROR("Cannot get wake socket address: %s", strerror(errno));
+    // eventfd(2) tt_receive() also polls, purely so tt_wake_signal() has something to write to
+    // that wakes it up - see hal_linux.h's own comment on wake_fd for why this (rather than a
+    // loopback UDP socket, as hal_freertos.c uses) is what Linux needs specifically.
+    node->hal.wake_fd = eventfd(0, EFD_NONBLOCK);
+    if (node->hal.wake_fd < 0) {
+        TT_LOG_ERROR("Cannot create wake eventfd: %s", strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
@@ -179,8 +161,8 @@ void tt_close(struct tt_Node* node) {
     if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
     }
-    if (node->hal.wake_sock >= 0 && close(node->hal.wake_sock) < 0) {
-        TT_LOG_ERROR("Cannot close wake socket: %s", strerror(errno));
+    if (node->hal.wake_fd >= 0 && close(node->hal.wake_fd) < 0) {
+        TT_LOG_ERROR("Cannot close wake eventfd: %s", strerror(errno));
     }
 }
 
@@ -248,8 +230,8 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         // the correct public header.
         // NOLINTNEXTLINE(misc-include-cleaner)
         struct pollfd pfd[2] = {
-            {.fd = node->hal.sock, .events = POLLIN, .revents = 0},      // NOLINT(misc-include-cleaner)
-            {.fd = node->hal.wake_sock, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
+            {.fd = node->hal.sock, .events = POLLIN, .revents = 0},    // NOLINT(misc-include-cleaner)
+            {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
         };
         int poll_ret = poll(pfd, 2, timeout_ms); // NOLINT(misc-include-cleaner)
         if (poll_ret == 0) {
@@ -263,14 +245,12 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
             return -2; // I/O error
         }
         if (pfd[1].revents & POLLIN) { // NOLINT(misc-include-cleaner)
-            // tt_wake_signal() - drain the byte (its content carries no meaning) and report the
+            // tt_wake_signal() - drain the counter (its value carries no meaning) and report the
             // interrupt. If the real socket also happens to be ready this same call, it's still
             // readable (poll() is level-triggered) and gets picked up on the very next call - no
             // data loss, just one extra round trip.
-            uint8_t discard;
-            struct sockaddr_in from;
-            socklen_t from_len = sizeof(from);
-            (void)recvfrom(node->hal.wake_sock, &discard, sizeof(discard), 0, (struct sockaddr*)&from, &from_len);
+            uint64_t discard;
+            (void)read(node->hal.wake_fd, &discard, sizeof(discard));
             return -3; // Interrupted
         }
     }
@@ -316,12 +296,12 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
 }
 
 tt_ret_t tt_wake_signal(struct tt_Node* node) {
-    uint8_t one = 1;
-    // A send to our own wake_addr (set up in tt_bind()) - never blocks (UDP, and lwIP/the kernel
-    // both buffer at least one datagram), so this is safe to call from any thread, or from within
-    // a signal handler, without risking a deadlock against whatever tt_receive() might be doing.
-    if (sendto(node->hal.wake_sock, &one, sizeof(one), 0, (struct sockaddr*)&node->hal.wake_addr,
-               sizeof(node->hal.wake_addr)) < 0) {
+    uint64_t one = 1;
+    // eventfd's write() only ever blocks if the counter would overflow (~2^64 unconsumed
+    // signals) - never a real concern here, so this is safe to call from any thread, or from
+    // within a signal handler, without risking a deadlock against whatever tt_receive() might be
+    // doing.
+    if (write(node->hal.wake_fd, &one, sizeof(one)) < 0) {
         TT_LOG_ERROR("Cannot send wake signal: %s", strerror(errno));
         return tt_RET_IO_ERROR;
     }
