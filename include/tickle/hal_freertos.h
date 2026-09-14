@@ -19,4 +19,10 @@
 struct tt_hal {
     int sock;
     struct sockaddr_in broadcast_addr; // Precomputed once in tt_bind(), reused by every tt_send()
+    // Mirrors hal_linux.h's own wake_sock/wake_addr - see its comment. lwIP has
+    // LWIP_NETIF_LOOPBACK enabled (platform/freertos/lwipopts.h), so the same loopback-UDP-socket
+    // trick works here unchanged, keeping this file's own tt_receive() select()-based rather than
+    // needing a different, FreeRTOS-specific wake mechanism.
+    int wake_sock;
+    struct sockaddr_in wake_addr;
 };

@@ -1824,6 +1824,15 @@ static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip
         return true;
     }
 
+    if (len == -3) { // tt_Node_interrupt() - always ends the poll, even if woke_for_scheduler:
+                     // an explicit interrupt request must never be swallowed the way a plain
+                     // short wait for a due scheduler entry is, or the caller that asked to be
+                     // woken (tt_Node_interrupt()'s own caller, on another thread) could end up
+                     // waiting for however much longer the scheduler-driven work takes instead.
+        *result = tt_RET_INTERRUPTED;
+        return true;
+    }
+
     if (len < 0) { // I/O error
         *result = tt_RET_IO_ERROR;
         return true;
@@ -1895,6 +1904,13 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     }
 
     return tt_RET_TIMEOUT;
+}
+
+tt_ret_t tt_Node_interrupt(struct tt_Node* node) {
+    if (node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    return tt_wake_signal(node);
 }
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {

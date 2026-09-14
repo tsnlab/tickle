@@ -62,6 +62,10 @@ int32_t tt_get_node_id(void) {
 }
 
 tt_ret_t tt_bind(struct tt_Node* node) {
+    // See hal_linux.c's own tt_bind() comment on this same line - node->hal.sock relies on the
+    // identical "only touched after it's known-good" convention.
+    node->hal.wake_sock = -1;
+
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
         TT_LOG_ERROR("Cannot create UDP socket: %s", strerror(errno));
@@ -108,12 +112,45 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
     node->hal.broadcast_addr.sin_len = sizeof(node->hal.broadcast_addr);
 
+    // See hal_linux.c's own tt_bind() comment - a private loopback socket purely so
+    // tt_wake_signal() has something to write to that wakes up a blocked tt_receive().
+    // LWIP_NETIF_LOOPBACK is on (platform/freertos/lwipopts.h), so this works the same way here.
+    node->hal.wake_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (node->hal.wake_sock < 0) {
+        TT_LOG_ERROR("Cannot create wake socket: %s", strerror(errno));
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
+    struct sockaddr_in wake_bind_addr;
+    memset(&wake_bind_addr, 0, sizeof(wake_bind_addr));
+    wake_bind_addr.sin_family = AF_INET;
+    wake_bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    wake_bind_addr.sin_port = 0;
+    wake_bind_addr.sin_len = sizeof(wake_bind_addr);
+
+    if (bind(node->hal.wake_sock, (struct sockaddr*)&wake_bind_addr, sizeof(wake_bind_addr)) < 0) {
+        TT_LOG_ERROR("Cannot bind wake socket: %s", strerror(errno));
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
+    socklen_t wake_addr_len = sizeof(node->hal.wake_addr);
+    if (getsockname(node->hal.wake_sock, (struct sockaddr*)&node->hal.wake_addr, &wake_addr_len) < 0) {
+        TT_LOG_ERROR("Cannot get wake socket address: %s", strerror(errno));
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
     return tt_RET_OK;
 }
 
 void tt_close(struct tt_Node* node) {
     if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
+    }
+    if (node->hal.wake_sock >= 0 && close(node->hal.wake_sock) < 0) {
+        TT_LOG_ERROR("Cannot close wake socket: %s", strerror(errno));
     }
 }
 
@@ -183,8 +220,10 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         fd_set readfds;
         FD_ZERO(&readfds);
         FD_SET(node->hal.sock, &readfds);
+        FD_SET(node->hal.wake_sock, &readfds);
+        int maxfd = node->hal.sock > node->hal.wake_sock ? node->hal.sock : node->hal.wake_sock;
 
-        int select_ret = select(node->hal.sock + 1, &readfds, NULL, NULL, wait_time_ptr);
+        int select_ret = select(maxfd + 1, &readfds, NULL, NULL, wait_time_ptr);
         if (select_ret == 0) {
             return -1; // Timeout
         }
@@ -194,6 +233,15 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
                 return -1; // Treat an interrupted wait like a timeout; the caller just polls again
             }
             return -2; // I/O error
+        }
+        if (FD_ISSET(node->hal.wake_sock, &readfds)) {
+            // tt_wake_signal() - see hal_linux.c's tt_receive() for the reasoning (identical here,
+            // just select() instead of poll()).
+            uint8_t discard;
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            (void)recvfrom(node->hal.wake_sock, &discard, sizeof(discard), 0, (struct sockaddr*)&from, &from_len);
+            return -3; // Interrupted
         }
     }
 
@@ -252,4 +300,16 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     }
 
     return ret;
+}
+
+tt_ret_t tt_wake_signal(struct tt_Node* node) {
+    uint8_t one = 1;
+    // See hal_linux.c's tt_wake_signal() - identical reasoning (a send to our own loopback
+    // address never blocks, so this is safe from any task).
+    if (sendto(node->hal.wake_sock, &one, sizeof(one), 0, (struct sockaddr*)&node->hal.wake_addr,
+               sizeof(node->hal.wake_addr)) < 0) {
+        TT_LOG_ERROR("Cannot send wake signal: %s", strerror(errno));
+        return tt_RET_IO_ERROR;
+    }
+    return tt_RET_OK;
 }

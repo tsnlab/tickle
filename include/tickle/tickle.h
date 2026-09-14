@@ -332,6 +332,22 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
  * @return tt_ret_t
  */
 tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
+
+// The one exception to every other tt_Node_*/tt_Publisher_*/... call needing to come from the
+// same single thread (see this file's own "Concurrency" note, and DESIGN.md's) - this one is
+// specifically meant to be called from a *different* thread than whichever one is currently
+// blocked in tt_Node_poll(), to make that call return tt_RET_INTERRUPTED right away instead of
+// waiting out the rest of its timeout. Meant for a caller that drives tt_Node_poll() from a
+// dedicated thread with a long timeout, but sometimes needs that thread to come back and yield to
+// other work (e.g. a lock the poll thread also needs) sooner than the timeout would otherwise
+// allow. "At least once, at or after this call" - not "only if currently blocked": if nothing is
+// blocked in tt_Node_poll() right now, the signal is queued and delivered to whichever
+// tt_Node_poll() call comes *next* instead (even one that starts well after this call returns),
+// not silently dropped. A caller driving tt_Node_poll() in a continuous loop (the intended usage)
+// sees no difference either way; one that calls tt_Node_poll() only occasionally should account
+// for an earlier tt_Node_interrupt() still being able to cut its next, unrelated wait short.
+tt_ret_t tt_Node_interrupt(struct tt_Node* node);
+
 tt_ret_t tt_Node_destroy(struct tt_Node* node);
 
 #define tt_VERSION 1

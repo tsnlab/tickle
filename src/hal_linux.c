@@ -85,6 +85,11 @@ int32_t tt_get_node_id(void) {
 }
 
 tt_ret_t tt_bind(struct tt_Node* node) {
+    // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
+    // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
+    // tt_close() below happens after sock was already created successfully).
+    node->hal.wake_sock = -1;
+
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
         TT_LOG_ERROR("Cannot create UDP socket: %s", strerror(errno));
@@ -138,12 +143,44 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
     node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
 
+    // A private loopback socket tt_receive() also polls, purely so tt_wake_signal() has something
+    // to write to that wakes it up - see hal_linux.h's own comment on wake_sock/wake_addr. Bound
+    // to an ephemeral port (port 0), then read back via getsockname() so wake_addr knows what it
+    // actually got.
+    node->hal.wake_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (node->hal.wake_sock < 0) {
+        TT_LOG_ERROR("Cannot create wake socket: %s", strerror(errno));
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
+    struct sockaddr_in wake_bind_addr;
+    wake_bind_addr.sin_family = AF_INET;
+    wake_bind_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    wake_bind_addr.sin_port = 0;
+
+    if (bind(node->hal.wake_sock, (struct sockaddr*)&wake_bind_addr, sizeof(wake_bind_addr)) < 0) {
+        TT_LOG_ERROR("Cannot bind wake socket: %s", strerror(errno));
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
+    socklen_t wake_addr_len = sizeof(node->hal.wake_addr);
+    if (getsockname(node->hal.wake_sock, (struct sockaddr*)&node->hal.wake_addr, &wake_addr_len) < 0) {
+        TT_LOG_ERROR("Cannot get wake socket address: %s", strerror(errno));
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
     return tt_RET_OK;
 }
 
 void tt_close(struct tt_Node* node) {
     if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
+    }
+    if (node->hal.wake_sock >= 0 && close(node->hal.wake_sock) < 0) {
+        TT_LOG_ERROR("Cannot close wake socket: %s", strerror(errno));
     }
 }
 
@@ -210,8 +247,11 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         // struct pollfd/POLLIN/poll() live in a glibc-private header; <poll.h> (included above) is
         // the correct public header.
         // NOLINTNEXTLINE(misc-include-cleaner)
-        struct pollfd pfd = {.fd = node->hal.sock, .events = POLLIN, .revents = 0};
-        int poll_ret = poll(&pfd, 1, timeout_ms); // NOLINT(misc-include-cleaner)
+        struct pollfd pfd[2] = {
+            {.fd = node->hal.sock, .events = POLLIN, .revents = 0},      // NOLINT(misc-include-cleaner)
+            {.fd = node->hal.wake_sock, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
+        };
+        int poll_ret = poll(pfd, 2, timeout_ms); // NOLINT(misc-include-cleaner)
         if (poll_ret == 0) {
             return -1; // Timeout
         }
@@ -221,6 +261,17 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
                 return -1; // Treat an interrupted wait like a timeout; the caller just polls again
             }
             return -2; // I/O error
+        }
+        if (pfd[1].revents & POLLIN) { // NOLINT(misc-include-cleaner)
+            // tt_wake_signal() - drain the byte (its content carries no meaning) and report the
+            // interrupt. If the real socket also happens to be ready this same call, it's still
+            // readable (poll() is level-triggered) and gets picked up on the very next call - no
+            // data loss, just one extra round trip.
+            uint8_t discard;
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof(from);
+            (void)recvfrom(node->hal.wake_sock, &discard, sizeof(discard), 0, (struct sockaddr*)&from, &from_len);
+            return -3; // Interrupted
         }
     }
 
@@ -262,4 +313,17 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     }
 
     return ret;
+}
+
+tt_ret_t tt_wake_signal(struct tt_Node* node) {
+    uint8_t one = 1;
+    // A send to our own wake_addr (set up in tt_bind()) - never blocks (UDP, and lwIP/the kernel
+    // both buffer at least one datagram), so this is safe to call from any thread, or from within
+    // a signal handler, without risking a deadlock against whatever tt_receive() might be doing.
+    if (sendto(node->hal.wake_sock, &one, sizeof(one), 0, (struct sockaddr*)&node->hal.wake_addr,
+               sizeof(node->hal.wake_addr)) < 0) {
+        TT_LOG_ERROR("Cannot send wake signal: %s", strerror(errno));
+        return tt_RET_IO_ERROR;
+    }
+    return tt_RET_OK;
 }

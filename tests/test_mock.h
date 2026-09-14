@@ -43,6 +43,7 @@ int test_mock_send_call_count = 0;
 int test_mock_send_to_call_count = 0;
 uint32_t test_mock_send_to_last_ip = 0;
 uint16_t test_mock_send_to_last_port = 0;
+int test_mock_wake_signal_call_count = 0;
 #else
 extern uint64_t test_mock_now;
 extern int32_t test_mock_node_id;
@@ -54,6 +55,7 @@ extern int test_mock_send_call_count;
 extern int test_mock_send_to_call_count;
 extern uint32_t test_mock_send_to_last_ip;
 extern uint16_t test_mock_send_to_last_port;
+extern int test_mock_wake_signal_call_count;
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -68,6 +70,7 @@ static inline void test_mock_reset(void) {
     test_mock_send_to_call_count = 0;
     test_mock_send_to_last_ip = 0;
     test_mock_send_to_last_port = 0;
+    test_mock_wake_signal_call_count = 0;
 }
 
 #ifdef TEST_MOCK_DEFINE_STORAGE
@@ -87,6 +90,15 @@ tt_ret_t tt_bind(struct tt_Node* node) {
 
 void tt_close(struct tt_Node* node) {
     (void)node;
+}
+
+tt_ret_t tt_wake_signal(struct tt_Node* node) {
+    (void)node;
+    test_mock_wake_signal_call_count++;
+    // Nothing actually blocks in this mock's tt_receive() (it's a canned return value, not a
+    // real wait) - a test exercising tt_Node_interrupt()'s effect on tt_Node_poll() drives that
+    // directly by setting test_mock_receive_return = -3 instead.
+    return tt_RET_OK;
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {

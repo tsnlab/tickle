@@ -8,6 +8,16 @@ number, `tt_VERSION`, which moves independently.
 
 ## [Unreleased]
 
+### Added
+
+- `tt_Node_interrupt()`: wakes a blocking `tt_Node_poll()` call from another thread, returning
+  `tt_RET_INTERRUPTED` promptly instead of waiting out the rest of its timeout - the one
+  exception to a `tt_Node`'s otherwise-single-threaded rule (DESIGN.md's "Concurrency"). Built for
+  `rmw_tickle` (`rmw_tickle/PLAN.md`'s Milestone 0), where a dedicated thread drives
+  `tt_Node_poll()` in a loop and every other call (e.g. `rmw_publish()`) needs a way to get that
+  thread's attention sooner than its current timeout would otherwise allow, without adding any
+  locking inside TickLE itself.
+
 ## [1.0.0] - 2026-09-14
 
 First tagged release.

@@ -16,4 +16,10 @@
 struct tt_hal {
     int sock;
     struct sockaddr_in broadcast_addr; // Precomputed once in tt_bind(), reused by every tt_send()
+    // A private loopback UDP socket, bound to an ephemeral port and connected to nothing (its own
+    // address, wake_addr, is both endpoints) - tt_receive()'s poll() watches this alongside sock,
+    // and tt_wake_signal() sends it one byte to interrupt a blocked receive. -1 before tt_bind()
+    // creates it (or if creation fails partway through), so tt_close() knows not to close it.
+    int wake_sock;
+    struct sockaddr_in wake_addr; // 127.0.0.1:<wake_sock's own ephemeral port>, from getsockname()
 };

@@ -496,6 +496,22 @@ multi-threaded access to one node becomes a real requirement, that's a design de
 revisit properly - including which operations actually need mutual exclusion - not something
 to bolt back on piecemeal.
 
+`tt_Node_interrupt()` is the one narrow exception, not a reversal of the above: it doesn't add
+any locking or let a second thread touch node-owned state, it only lets a second thread make a
+blocking `tt_Node_poll()` call return `tt_RET_INTERRUPTED` promptly instead of waiting out its
+timeout. Added for `rmw_tickle` (`rmw_tickle/PLAN.md`'s Milestone 0), which needs it precisely
+*because* it keeps everything above true: a node stays driven by one dedicated thread running
+`tt_Node_poll()` in a loop, and every other entry point is still reached from exactly one thread
+at a time - `rmw_tickle` just adds a mutex of its own around that single-thread rule, using this
+primitive so a call arriving on another thread (e.g. `rmw_publish()`) isn't stuck waiting for the
+poll thread's current, possibly long, timeout to expire on its own before it can acquire that
+mutex. Implemented identically on both platforms: a private loopback UDP socket `tt_receive()`
+polls alongside the real one, so `tt_wake_signal()` (`hal.h`) has something to write a byte to
+that wakes a blocked `poll()`/`select()` immediately - see `src/hal_linux.c`/`src/hal_freertos.c`'s
+own comments. The signal is "at least once, at or after the call to `tt_Node_interrupt()`," not
+"only if a call is currently blocked" - one sent while nothing is blocked is queued and delivered
+to whichever `tt_Node_poll()` call comes next instead of being dropped.
+
 ## Logging conventions
 
 - `TT_LOG_DEBUG`/`INFO`/`WARNING`/`ERROR` check `tt_current_log_level` *before* calling through

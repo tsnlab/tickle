@@ -61,6 +61,9 @@ typedef enum tt_ret_t {
     tt_RET_IILEGAL_ENDPOINT_ID = -8,
     tt_RET_ILLEGAL_STATUS = -9,
     tt_RET_INVALID_ARGUMENT = -10, // NULL pointer, or an out-of-range size in a tt_Service/tt_Topic
+    tt_RET_INTERRUPTED = -11,      // tt_Node_poll() was woken by tt_Node_interrupt() rather than by
+                                   // data, a due scheduler entry, or its own timeout - see tt_Node_
+                                   // interrupt()'s own comment in tickle.h.
 } tt_ret_t;
 
 struct tt_Node;
@@ -98,7 +101,8 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
                     uint32_t ip, uint16_t port);
 /**
  * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
- * @return received bytes, -1 for timeout, other negative values for I/O error
+ * @return received bytes, -1 for timeout, -3 if woken by tt_wake_signal() rather than data,
+ *         other negative values for I/O error
  */
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout);
 
@@ -107,3 +111,12 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 // hands it the first packet, so a saturated receiver pays one poll() per drain rather than one
 // per packet. Returns received bytes, -1 if nothing is waiting, other negatives for I/O error.
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port);
+
+// Wakes a concurrent tt_receive() blocked on this node (from any thread, including this one - a
+// self-signal), making it return -3 immediately instead of waiting out the rest of its timeout.
+// Safe to call whether or not a call is currently blocked; if none is, the signal is simply
+// waiting for the next one (see each platform's own tt_bind()/tt_receive() for how - a
+// self-connected loopback UDP socket multiplexed alongside the real one, so both platforms share
+// the same poll()/select() call and neither needs a platform-specific wake primitive like
+// eventfd). tt_Node_interrupt() (tickle.h) is the public entry point that calls this.
+tt_ret_t tt_wake_signal(struct tt_Node* node);
