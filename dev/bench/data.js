@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789380320781,
+  "lastUpdate": 1789380323754,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4172,6 +4172,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 899.377,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ac3be2b9278880b139de76ff164e3d8f6840c9e5",
+          "message": "Fix check-all: clang-format/clang-tidy findings in Milestone 3 files\n\n56 clang-tidy + 5 clang-format findings on the first push, all in files\nthis commit touches (Milestone 3's new .c files, message_type_support.h's\nnew fields, and test_dispatch.c - re-linted because it changed, surfacing\na pre-existing issue nothing had triggered a re-lint on until now):\n\n- misc-include-cleaner: every new file relied on transitive inclusion\n  (mostly via rmw/rmw.h and rmw_tickle.h) for types it uses directly -\n  pthread_t/pthread_mutex_t/pthread_mutex_lock/_unlock/_init/_destroy\n  (<pthread.h>), tt_ret_t/tt_RET_OK/tt_get_ns (<tickle/hal.h>),\n  rmw_node_t/rmw_publisher_t/rmw_subscription_t/rmw_qos_profile_t/\n  rmw_publisher_options_t/rmw_subscription_options_t/\n  rmw_publisher_allocation_t/rmw_subscription_allocation_t/\n  rmw_message_info_t/rmw_time_point_value_t (rmw/types.h), rmw_ret_t/\n  RMW_RET_* (rmw/ret_types.h), rosidl_message_type_support_t\n  (rosidl_runtime_c/message_type_support_struct.h),\n  rosidl_typesupport_tickle_c_message_callbacks_t\n  (rosidl_typesupport_tickle_c/message_type_support.h), rcutils_allocator_t\n  (rcutils/allocator.h). Added all of them directly.\n- llvm-include-order: rmw_typesupport.c's #includes weren't alphabetized\n  (rmw_tickle_c/rmw_tickle.h needs to sort before rosidl_runtime_c/... -\n  '/' < '_').\n- readability-identifier-length: renamed rmw_serialize.c's `ok` to\n  `converted`, test_dispatch.c's `cb` to `callbacks` (>= 3 chars).\n- readability-magic-numbers: test_dispatch.c's `42` (not in this project's\n  own .clang-tidy IgnoredIntegerValues list) replaced with `10` (which is)\n  - a placeholder test value either way, no semantic loss.\n- clang-format: re-ran clang-format -style=file (this project's own\n  .clang-format) on every touched file and applied its output verbatim.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T19:04:30+09:00",
+          "tree_id": "aabdcf50695e4a3bb371ab567835b0e896c1cf8f",
+          "url": "https://github.com/tsnlab/tickle/commit/ac3be2b9278880b139de76ff164e3d8f6840c9e5"
+        },
+        "date": 1789380322610,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.636,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.474,
             "unit": "Mbps"
           }
         ]
