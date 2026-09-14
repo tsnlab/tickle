@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789361671917,
+  "lastUpdate": 1789361674784,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2812,6 +2812,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 890.833,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "560c55cb607196bd1475169f3f1a6f2c1051ca07",
+          "message": "tt_Node_interrupt(): wake a blocking tt_Node_poll() from another thread\n\nrmw_tickle/PLAN.md's Milestone 0(a). Adds a private loopback UDP\nsocket (wake_sock/wake_addr) that tt_receive() polls alongside the\nreal one on both platforms, plus tt_wake_signal() (HAL) and its\npublic wrapper tt_Node_interrupt() (tickle.h) to write to it -\npoll()/select() wakes immediately, tt_receive() reports -3, and\ntt_Node_poll() returns the new tt_RET_INTERRUPTED. This is the one\nexception to a tt_Node's single-threaded rule (DESIGN.md's\n\"Concurrency\"): it adds no locking and lets no second thread touch\nnode-owned state, it only shortens how long a blocked tt_Node_poll()\ncall waits before yielding control back. rmw_tickle needs this so a\ndedicated thread can drive tt_Node_poll() in a loop while other calls\n(rmw_publish()) don't have to wait out its current timeout to get its\nattention.\n\nVerified with a standalone two-thread program against the real Linux\nHAL (not part of the permanent suite - tests/test_*.c is whitebox/\nmock-only by design, see platform/linux/Makefile's own comment): a\ntt_Node_poll() blocked on a 10s timeout returns tt_RET_INTERRUPTED\nwithin ~200ms of another thread calling tt_Node_interrupt(). Also\nconfirmed the signal is \"at least once, at or after the call\" rather\nthan \"only if currently blocked\" - one sent before anything is\nblocked still cuts short the very next tt_Node_poll() call, which the\ndoc comments and DESIGN.md now say explicitly.\n\ntests/test_node_interrupt.c covers handle_receive_result()'s dispatch\n(an interrupt ends the poll even when a scheduler entry was also about\nto fire, unlike a plain timeout) and tt_Node_interrupt()'s own\nargument validation via the mock HAL. Full platform/freertos/test.sh\n(uint64/set_bool/ping_pong/perf) and make test/sanitize/lint all green.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T13:53:42+09:00",
+          "tree_id": "1a5661a4e60eeaa8e089e561f41204109d98764d",
+          "url": "https://github.com/tsnlab/tickle/commit/560c55cb607196bd1475169f3f1a6f2c1051ca07"
+        },
+        "date": 1789361673699,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.642,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 895.684,
             "unit": "Mbps"
           }
         ]
