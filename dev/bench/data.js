@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789392536166,
+  "lastUpdate": 1789392539106,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4852,6 +4852,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 895.006,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "562d3670bcb82959e9fc41754d46bc931c96c7fd",
+          "message": "rmw_tickle Milestone 6: node names/counts/service availability + graph guard condition\n\nrmw_get_node_names()/rmw_get_node_names_with_enclaves()/rmw_count_publishers()/\nrmw_count_subscribers()/rmw_service_server_is_available() (rmw_graph.c, new),\nplus the graph-changed guard condition actually firing now via TickLE's own\nMilestone 0(c) discovery callback (rmw_node.c's discovery_callback()).\n\nrmw_count_publishers()/_subscribers()/rmw_service_server_is_available() each\nscan two places: TickLE's tt_Discovery only ever records *remote* entities,\nnever this node's own locally-created ones, so count_matching() also scans\ntickle_node.endpoints[] directly for local matches.\n\nDocumented gap: TickLE's wire protocol carries no node-name concept at all,\nso rmw_get_node_names() can only ever report the local node itself.\n\nAlso fixes check-all findings surfaced by this being the first commit to\ntouch rmw_node.c since Milestone 2 (misc-include-cleaner: rmw/init.h,\nrmw/types.h, tickle/config.h needed directly; RMW_TICKLE_POLL_TIMEOUT_NS\nconverted from a static const variable to a macro, matching this package's\nother RMW_TICKLE_* constants, since readability-identifier-naming's\nConstantCase doesn't apply to macros; the `namespace_` parameter renamed to\nnode_namespace) and by rmw_guard_condition.c/rmw_tickle.h (Milestone 5,\nalready pushed): pthread_mutex_t/pthread_cond_t's first-occurrence-in-file\nNOLINT shifted onto context_impl's own wait_mutex/wait_cond once guard_\ncondition_t's definition moved earlier in rmw_tickle.h; `gc` renamed to\n`guard` (readability-identifier-length).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T22:28:04+09:00",
+          "tree_id": "fa17258b3df5a3ebce11e57ce3a09a2512826043",
+          "url": "https://github.com/tsnlab/tickle/commit/562d3670bcb82959e9fc41754d46bc931c96c7fd"
+        },
+        "date": 1789392538032,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.666,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 891.866,
             "unit": "Mbps"
           }
         ]
