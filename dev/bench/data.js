@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789392978535,
+  "lastUpdate": 1789393322114,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2641,6 +2641,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f7fdd44fe5cbecff30ecbbed97c645a55592abaf",
+          "message": "rmw_tickle Milestone 8: packaging (RMW_IMPLEMENTATION=rmw_tickle selection)\n\npackage.xml gains <member_of_group>rmw_implementation_packages</member_of_group>\n(REP 149 metadata, matching every other real rmw implementation).\nCMakeLists.txt now find_package(rmw_implementation_cmake)s and calls\nregister_rmw_implementation(\"c:rosidl_typesupport_tickle_c\") - the real\nmechanism (not just documentation) behind the ament_index resource marker\nrmw_implementation's own get_available_rmw_implementations()/\nget_default_rmw_implementation() read at someone else's build time.\n\nNew check-all.yml step reproduces rmw_implementation's own runtime rmw\nloading (dlopen(\"librmw_tickle.so\") + dlsym(\"rmw_get_implementation_\nidentifier\")) to prove RMW_IMPLEMENTATION=rmw_tickle selection actually\nworks end to end, not just that the marker's text content looks right.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T22:41:13+09:00",
+          "tree_id": "1e644886729ff6a8bf727a3ea2ae0573d2ecc51c",
+          "url": "https://github.com/tsnlab/tickle/commit/f7fdd44fe5cbecff30ecbbed97c645a55592abaf"
+        },
+        "date": 1789393319773,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.204,
             "unit": "ms"
           },
           {
