@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789396589835,
+  "lastUpdate": 1789396593162,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6286,6 +6286,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.012,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fc5658686c9fd175dba29453769ee8ef8a86ddd1",
+          "message": "Add rmw_tickle vs FastDDS vs CycloneDDS performance comparison workflow\n\nNew workflow_dispatch-only rmw-perf.yml, separate from performance.yml\n(the tickle-hil Raspberry Pi rig, which has no official ROS 2 build to\nrun this on): compares rmw_tickle against rmw_fastrtps_cpp and\nrmw_cyclonedds_cpp via ros2/buildfarm_perf_tests, on a new self-hosted\nrunner (tickle-perf label) on a dedicated Ubuntu dev server.\n\nbuildfarm_perf_tests auto-discovers installed rmw implementations via\nthe same ament_index \"rmw_typesupport\" resource rmw_tickle's own\nregister_rmw_implementation() call already registers (Milestone 8) - no\nfork of buildfarm_perf_tests needed, only PERF_TEST_TOPICS/\nPERF_TEST_RMW_IMPLEMENTATIONS cache overrides restricting the topic\nmatrix to flat messages under TickLE's single-datagram ceiling\n(tt_MAX_BUFFER_LENGTH, no fragmentation).\n\nREADME-rmw-perf.md documents the one-time provisioning this needs\n(ROS 2 Jazzy + rmw_cyclonedds_cpp + the buildfarm_perf_tests/\nperformance_test workspace) - none of which the workflow itself does;\nit only rebuilds rmw_tickle and reconfigures buildfarm_perf_tests\nitself each run.\n\nNot yet verified end to end - no runner is provisioned yet. Comparing\nat the rmw boundary (not raw DDS vs raw TickLE) matches how a real ROS\n2 user actually reaches FastDDS/CycloneDDS, but these results are a\nsame-host two-process comparison, not the real-network-medium\nmeasurement the tickle-hil rig's own native numbers are.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T23:35:31+09:00",
+          "tree_id": "896542e156d01f82e451d96675bad642bd3ec869",
+          "url": "https://github.com/tsnlab/tickle/commit/fc5658686c9fd175dba29453769ee8ef8a86ddd1"
+        },
+        "date": 1789396592106,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
             "unit": "ms"
           }
         ]
