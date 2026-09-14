@@ -1,11 +1,37 @@
+/*
+ * Copyright (c) 2025-2026 TSN Lab, Inc.
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 3, as published by the Free
+ * Software Foundation. A proprietary license is also available on request - see README.md.
+ */
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include <tickle/config.h>
 
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/rmw.h"
 #include "rmw_tickle_c/rmw_tickle.h"
+
+const char* const rmw_tickle_identifier = RMW_TICKLE_IDENTIFIER;
+const char* const rmw_tickle_serialization_format = RMW_TICKLE_SERIALIZATION_FORMAT;
+
+const char* rmw_get_implementation_identifier(void) {
+    return RMW_TICKLE_IDENTIFIER;
+}
+
+rmw_init_options_t rmw_get_zero_initialized_init_options(void) {
+    rmw_init_options_t init_options;
+    memset(&init_options, 0, sizeof(init_options));
+    return init_options;
+}
 
 rmw_ret_t rmw_init_options_init(rmw_init_options_t* const init_options, rcutils_allocator_t allocator) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(init_options, RMW_RET_INVALID_ARGUMENT);
@@ -97,7 +123,16 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
 
     context->impl = (rmw_context_impl_t*)impl;
 
-    _tt_CONFIG.broadcast = "192.168.10.255";
+    // _tt_CONFIG is one process-wide TickLE HAL config (include/tickle/config.h), not something
+    // rmw_init_options_t carries a slot for - a hardcoded subnet here would silently break every
+    // ROS 2 graph not on that exact network. TICKLE_BROADCAST_ADDR lets a deployment override the
+    // HAL's own compiled-in default (see src/hal_linux.c / src/hal_freertos.c) the same way
+    // examples/linux's drivers let `-b` do it for a CLI-driven process; unset, this leaves that
+    // default untouched instead of guessing.
+    char* broadcast_addr = getenv("TICKLE_BROADCAST_ADDR");
+    if (broadcast_addr != NULL) {
+        _tt_CONFIG.broadcast = broadcast_addr;
+    }
 
     return RMW_RET_OK;
 }
