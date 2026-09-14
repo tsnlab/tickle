@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789374441255,
+  "lastUpdate": 1789374444169,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4249,6 +4249,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.015,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e82e4a4b3d157ffb6dcec9fec7ad23ea2b68aa8b",
+          "message": "check-all: temporary diagnostics for the ament-index registration gap\n\nSplitting the colcon build call and sourcing install/setup.bash between\nthem (b9fb660) didn't fix test_dispatch's assert(ours != NULL) failure -\nsame failure, same line, even though that should have updated AMENT_PREFIX_\nPATH before rosidl_typesupport_tickle_c_tests's own build. Rather than\nguess again, print what's actually on disk and in the environment at that\npoint (marker file presence, AMENT_PREFIX_PATH value) so the next CI run's\nlog settles it directly. Will remove once the real cause is confirmed.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-14T17:26:34+09:00",
+          "tree_id": "8f50c867b2abc9fa36ad99bfefbf09ef7be5fe13",
+          "url": "https://github.com/tsnlab/tickle/commit/e82e4a4b3d157ffb6dcec9fec7ad23ea2b68aa8b"
+        },
+        "date": 1789374443083,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           }
         ]
