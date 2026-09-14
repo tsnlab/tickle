@@ -99,9 +99,15 @@ jobs:
           # expectations - riscv64 cross-compiler, clang-tidy via cpp-linter-action - at risk of
           # the same kind of surprise) run just this one build inside a throwaway container on the
           # runner's own Docker daemon, exactly like a local dev machine without ROS installed
-          # would.
-          docker run --rm -v "$PWD:/ws" -w /ws rostooling/setup-ros-docker:ubuntu-noble-latest \
-            bash -c 'source /opt/ros/*/setup.bash && colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
+          # would. `ubuntu-noble-latest` (tried first) is that project's bare OS-base tag - "ready
+          # to install ROS... but no actual ROS packages installed yet" (its own README) - hence
+          # no /opt/ros/*/setup.bash; ...-ros-jazzy-ros-base-latest is the tag that actually has
+          # ROS 2 Jazzy (the Noble-targeted distro) preinstalled. ros-base doesn't include colcon
+          # itself, so install that too.
+          docker run --rm -v "$PWD:/ws" -w /ws rostooling/setup-ros-docker:ubuntu-noble-ros-jazzy-ros-base-latest \
+            bash -c 'source /opt/ros/*/setup.bash && \
+              apt-get update && apt-get install -y python3-colcon-common-extensions && \
+              colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON'
           # Merge rather than overwrite - the entries above (native + synthesised FreeRTOS) still
           # need to stay put for clang-tidy to lint everything else.
           jq -s 'add' compile_commands.json build/rmw_tickle/compile_commands.json > compile_commands.tmp
