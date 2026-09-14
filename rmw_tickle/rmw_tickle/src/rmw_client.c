@@ -89,6 +89,9 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
+    if (rmw_tickle_validate_qos_profile(qos_policies, false) != RMW_RET_OK) {
+        return NULL; // error message already set
+    }
 
     rmw_tickle_service_typesupport_t callbacks;
     if (!rmw_tickle_get_service_callbacks(type_support, &callbacks)) {

@@ -9,9 +9,10 @@
  */
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_create_subscription()/rmw_destroy_subscription()/
-// rmw_take()/rmw_take_with_info(). QoS (qos_profile) isn't validated or acted on yet beyond a
-// fixed placeholder queue depth (RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY, rmw_tickle.h) -
-// Milestone 7's QoS roadmap is the explicit-rejection/real-depth work, not this milestone.
+// rmw_take()/rmw_take_with_info(). Milestone 7 added real QoS handling on top: rmw_tickle_
+// validate_qos_profile() (rmw_qos.c) rejects anything the QoS roadmap (PLAN.md) hasn't implemented
+// yet, and the surviving qos_profile->depth sizes the queue for real (see rmw_create_subscription()
+// below), replacing the fixed placeholder capacity this milestone originally shipped with.
 
 #include <pthread.h>
 #include <stddef.h>
@@ -56,15 +57,15 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     }
 
     pthread_mutex_lock(&sub_impl->queue_mutex);
-    if (sub_impl->queue_count == RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY) {
-        // Placeholder KEEP_LAST behavior (see rmw_tickle.h's own queue doc comment) - drop the
-        // oldest queued message to make room for this one.
+    if (sub_impl->queue_count == sub_impl->queue_capacity) {
+        // KEEP_LAST behavior (rmw_tickle_validate_qos_profile() rejects KEEP_ALL - see rmw_tickle.h's
+        // own queue doc comment) - drop the oldest queued message to make room for this one.
         rmw_tickle_queued_message_t* oldest = &sub_impl->queue[sub_impl->queue_head];
         sub_impl->allocator.deallocate(oldest->ros_message, sub_impl->allocator.state);
-        sub_impl->queue_head = (sub_impl->queue_head + 1) % RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY;
+        sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
-    size_t tail_index = (sub_impl->queue_head + sub_impl->queue_count) % RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY;
+    size_t tail_index = (sub_impl->queue_head + sub_impl->queue_count) % sub_impl->queue_capacity;
     sub_impl->queue[tail_index].ros_message = ros_message;
     sub_impl->queue[tail_index].source_timestamp =
         time; // publisher's own wire timestamp - see tickle.c's process_data()
@@ -106,6 +107,9 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
+    if (rmw_tickle_validate_qos_profile(qos_profile, true) != RMW_RET_OK) {
+        return NULL; // error message already set
+    }
 
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = rmw_tickle_get_message_callbacks(type_support);
     if (NULL == callbacks) {
@@ -133,8 +137,25 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->topic.data_decode = callbacks->tickle_decode;
     sub_impl->topic.data_free = callbacks->tickle_free;
 
+    // Milestone 7's QoS roadmap item #1 (HISTORY/DEPTH): qos_profile->depth sizes the queue for
+    // real, rather than a fixed compile-time bound - RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT (0, unset)
+    // falls back to the previous placeholder default. rmw_tickle_validate_qos_profile() above
+    // already rejected RMW_QOS_POLICY_HISTORY_KEEP_ALL (an unbounded queue), so `depth` is always
+    // the real, finite capacity to allocate here.
+    sub_impl->queue_capacity = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT
+                                   ? qos_profile->depth
+                                   : RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH;
+    sub_impl->queue = (rmw_tickle_queued_message_t*)allocator->zero_allocate(
+        sub_impl->queue_capacity, sizeof(rmw_tickle_queued_message_t), allocator->state);
+    if (NULL == sub_impl->queue) {
+        RMW_SET_ERROR_MSG("failed to allocate subscriber queue");
+        allocator->deallocate(sub_impl, allocator->state);
+        return NULL;
+    }
+
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
+        allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
     }
@@ -148,6 +169,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     if (NULL == sub_impl->rmw_subscription.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
+        allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
     }
@@ -161,6 +183,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("tt_Node_create_subscriber() failed");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
+        allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
     }
@@ -188,7 +211,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     pthread_mutex_lock(&sub_impl->queue_mutex);
     while (sub_impl->queue_count > 0) {
         sub_impl->allocator.deallocate(sub_impl->queue[sub_impl->queue_head].ros_message, sub_impl->allocator.state);
-        sub_impl->queue_head = (sub_impl->queue_head + 1) % RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY;
+        sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
     pthread_mutex_unlock(&sub_impl->queue_mutex);
@@ -196,6 +219,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
 
     rcutils_allocator_t allocator = sub_impl->allocator;
     allocator.deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator.state);
+    allocator.deallocate(sub_impl->queue, allocator.state);
     allocator.deallocate(sub_impl, allocator.state);
     return RMW_RET_OK;
 }
@@ -220,7 +244,7 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
         return RMW_RET_OK;
     }
     rmw_tickle_queued_message_t entry = sub_impl->queue[sub_impl->queue_head];
-    sub_impl->queue_head = (sub_impl->queue_head + 1) % RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY;
+    sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
     sub_impl->queue_count--;
     pthread_mutex_unlock(&sub_impl->queue_mutex);
 

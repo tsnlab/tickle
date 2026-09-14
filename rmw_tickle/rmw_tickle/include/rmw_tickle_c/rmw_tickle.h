@@ -23,9 +23,10 @@
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
-#include "rmw/init.h"  // rmw_context_t
-#include "rmw/types.h" // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t, rmw_service_t,
-                       // rmw_guard_condition_t, rmw_wait_set_t
+#include "rmw/init.h"      // rmw_context_t
+#include "rmw/ret_types.h" // rmw_ret_t
+#include "rmw/types.h"     // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t,
+                           // rmw_service_t, rmw_guard_condition_t, rmw_wait_set_t, rmw_qos_profile_t
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h" // rosidl_typesupport_tickle_c_message_callbacks_t
@@ -70,6 +71,14 @@ typedef struct rmw_tickle_service_typesupport_t {
 
 bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support,
                                       rmw_tickle_service_typesupport_t* out);
+
+// rmw_tickle/PLAN.md's Milestone 7: shared by rmw_create_publisher()/_subscription()/_client()/
+// _service() - rejects (RMW_RET_UNSUPPORTED + RMW_SET_ERROR_MSG) any QoS policy the "QoS roadmap"
+// table (PLAN.md) hasn't implemented yet, rather than silently ignoring it the way every create
+// function did through Milestone 6. `is_subscription` gates the one subscription-only check
+// (HISTORY/KEEP_ALL, an unbounded queue this rmw can't allocate for) - everything else applies to
+// every entity type's own qos_profile uniformly.
+rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, bool is_subscription);
 
 // Forward reference only (pointer field below) - rmw_tickle_context_impl_t's own full definition
 // needs rmw_tickle_guard_condition_t to already be complete (it embeds one), so the two are
@@ -161,14 +170,14 @@ typedef struct rmw_tickle_publisher_t {
     rcutils_allocator_t allocator;
 } rmw_tickle_publisher_t;
 
-// rmw_tickle/PLAN.md's Milestone 3 first cut: rmw_take()'s own bounded queue, holding already-
-// from_tickle()-converted, independently-owned ROS messages - see rmw_subscription.c's own
-// subscriber_callback() doc comment for why the conversion can't be deferred to rmw_take() time.
-// A fixed capacity rather than something QoS depth (rmw_qos_profile_t.depth) actually drives -
-// that's Milestone 7's QoS roadmap item #1 ("HISTORY/DEPTH - a bounded per-subscription queue"),
-// not yet wired in; this is a placeholder KEEP_LAST-style depth matching ROS 2's own common
-// default queue size until then.
-#define RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY 10
+// rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-
+// converted, independently-owned ROS messages - see rmw_subscription.c's own subscriber_callback()
+// doc comment for why the conversion can't be deferred to rmw_take() time. Milestone 7's QoS
+// roadmap item #1 ("HISTORY/DEPTH") wires the *capacity* (rmw_tickle_subscriber_t.queue_capacity,
+// below) to qos_profile->depth at rmw_create_subscription() time - this is just the fallback used
+// when depth is RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT (0, "unset"), matching ROS 2's own common
+// default queue size.
+#define RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH 10
 
 typedef struct rmw_tickle_queued_message_t {
     void* ros_message; // callbacks->ros_struct_size bytes, allocator-owned
@@ -193,7 +202,10 @@ typedef struct rmw_tickle_subscriber_t {
     // thread the application calls it from) both need this, and rmw_take() has no reason to wait
     // on the node mutex just to pop an already-queued message.
     pthread_mutex_t queue_mutex;
-    rmw_tickle_queued_message_t queue[RMW_TICKLE_SUBSCRIPTION_QUEUE_CAPACITY];
+    // queue_capacity entries, allocator-owned - sized from qos_profile->depth at rmw_create_
+    // subscription() time (Milestone 7's QoS roadmap item #1), not a fixed compile-time bound.
+    rmw_tickle_queued_message_t* queue;
+    size_t queue_capacity;
     size_t queue_head;
     size_t queue_count;
     uint64_t reception_sequence_number;

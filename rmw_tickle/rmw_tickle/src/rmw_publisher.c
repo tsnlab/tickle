@@ -53,6 +53,9 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
+    if (rmw_tickle_validate_qos_profile(qos_profile, false) != RMW_RET_OK) {
+        return NULL; // error message already set
+    }
 
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = rmw_tickle_get_message_callbacks(type_support);
     if (NULL == callbacks) {

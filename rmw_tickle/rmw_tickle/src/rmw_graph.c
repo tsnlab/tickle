@@ -36,7 +36,6 @@
 #include <tickle/config.h> // tt_NODE_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES
 #include <tickle/tickle.h>
 
-#include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rcutils/types/rcutils_ret.h"
@@ -131,22 +130,22 @@ static rmw_ret_t count_matching(const rmw_node_t* node, const char* topic_name, 
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_mutex_lock(&node_impl->mutex);
 
-    size_t n = 0;
+    size_t matched = 0;
     for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count; ++i) {
-        const struct tt_Endpoint* ep = node_impl->tickle_node.endpoints[i];
-        if (ep->kind == kind && strcmp(ep->name, topic_name) == 0) {
-            n++;
+        const struct tt_Endpoint* endpoint = node_impl->tickle_node.endpoints[i];
+        if (endpoint->kind == kind && strcmp(endpoint->name, topic_name) == 0) {
+            matched++;
         }
     }
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &node_impl->discovery.entities[i];
         if (entity->node_id != tt_NODE_ID_INVALID && entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
-            n++;
+            matched++;
         }
     }
 
     pthread_mutex_unlock(&node_impl->mutex);
-    *count = n;
+    *count = matched;
     return RMW_RET_OK;
 }
 
@@ -182,12 +181,12 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
 
     bool found = false;
     for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count && !found; ++i) {
-        const struct tt_Endpoint* ep = node_impl->tickle_node.endpoints[i];
+        const struct tt_Endpoint* endpoint = node_impl->tickle_node.endpoints[i];
         // A local endpoint has no separate "type name" of its own to compare here (tt_Endpoint
         // only carries the service/topic *name*, not its type - see struct tt_Endpoint) - a local
         // server matches on name+kind alone, mirroring how tt_Node_create_server() itself only
         // ever registers one server per (name), never per (name, type) pair on this side.
-        if (ep->kind == tt_KIND_SERVICE_SERVER && strcmp(ep->name, service_name) == 0) {
+        if (endpoint->kind == tt_KIND_SERVICE_SERVER && strcmp(endpoint->name, service_name) == 0) {
             found = true;
         }
     }

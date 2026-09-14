@@ -20,12 +20,15 @@
 #include <string.h>
 
 #include <tickle/config.h> // tt_RECEIVE_TIMEOUT
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
+#include "rcutils/allocator.h" // rcutils_allocator_t
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
-#include "rmw/init.h" // rmw_context_t
+#include "rmw/init.h"      // rmw_context_t
+#include "rmw/ret_types.h" // rmw_ret_t, RMW_RET_*
 #include "rmw/rmw.h"
 #include "rmw/types.h" // rmw_node_t
 #include "rmw_tickle_c/rmw_tickle.h"

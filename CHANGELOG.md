@@ -127,6 +127,14 @@ number, `tt_VERSION`, which moves independently.
   locally-created publishers/subscribers/servers. Documented gap: TickLE's wire protocol has no
   node-name concept at all, so `rmw_get_node_names()` can only ever report the local node itself,
   never other nodes actually visible on the segment.
+- QoS rejection logic (`rmw_tickle/src/rmw_qos.c`, new `rmw_tickle_validate_qos_profile()`),
+  called from `rmw_create_publisher()`/`_subscription()`/`_client()`/`_service()`
+  (`rmw_tickle/PLAN.md`'s Milestone 7): anything the QoS roadmap hasn't implemented yet
+  (`RELIABLE`, `TRANSIENT_LOCAL`, non-`AUTOMATIC` liveliness, a finite `deadline`/`lifespan`/
+  `liveliness_lease_duration`, `HISTORY_KEEP_ALL`) is now rejected outright
+  (`RMW_RET_UNSUPPORTED`) instead of silently ignored. `qos_profile->depth` now really sizes a
+  subscription's queue (allocated at `rmw_create_subscription()` time) instead of a fixed
+  placeholder capacity.
 
 ## [1.0.0] - 2026-09-14
 
