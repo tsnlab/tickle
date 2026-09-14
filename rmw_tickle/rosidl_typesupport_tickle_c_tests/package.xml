@@ -24,6 +24,8 @@
        rosidl_typesupport_c are the two actually needed: the former for the message struct this
        package's own test_dispatch.c includes, the latter for ROSIDL_GET_MSG_TYPE_SUPPORT()'s
        standard dispatch entry point. -->
+  <buildtool_depend>rosidl_cmake</buildtool_depend>
+
   <depend>rosidl_generator_c</depend>
   <depend>rosidl_typesupport_c</depend>
   <depend>rosidl_typesupport_tickle_c</depend>

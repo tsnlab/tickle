@@ -14,9 +14,12 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 # Not rosidl_default_generators (what a real interface package normally depends on) - see this
-# package's own package.xml for why. rosidl_generator_c is what produces the message struct this
-# package's own test_dispatch.c includes; rosidl_typesupport_c is ROSIDL_GET_MSG_TYPE_SUPPORT()'s
-# own standard dispatch entry point.
+# package's own package.xml for why. rosidl_cmake provides the rosidl_generate_interfaces() macro
+# itself (rosidl_default_generators only pulls it in transitively - dropping that means finding it
+# directly). rosidl_generator_c is what produces the message struct this package's own
+# test_dispatch.c includes; rosidl_typesupport_c is ROSIDL_GET_MSG_TYPE_SUPPORT()'s own standard
+# dispatch entry point.
+find_package(rosidl_cmake REQUIRED)
 find_package(rosidl_generator_c REQUIRED)
 find_package(rosidl_typesupport_c REQUIRED)
 # Pulling this in (and find_package()-ing it, directly or transitively, before calling
