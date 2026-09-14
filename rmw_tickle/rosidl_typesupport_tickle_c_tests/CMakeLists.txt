@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.8)
-project(rosidl_typesupport_tickle_c_tests C)
+# C CXX, not just C (unlike rmw_tickle/rmw_tickle/CMakeLists.txt's own C-only project(), which
+# never calls rosidl_generate_interfaces() at all): several of the *other* typesupport generators
+# rosidl_generate_interfaces() below invokes (rosidl_typesupport_c, rosidl_typesupport_fastrtps_c/
+# _cpp, rosidl_typesupport_introspection_cpp) generate .cpp sources regardless of this test
+# package's own C-only test/test_dispatch.c - without CXX enabled, CMake can't determine a link
+# language for any of their generated library targets at all ("Cannot determine link language"),
+# unrelated to our own rosidl_typesupport_tickle_c extension (C-only, and unaffected).
+project(rosidl_typesupport_tickle_c_tests C CXX)
 
 if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 11)
