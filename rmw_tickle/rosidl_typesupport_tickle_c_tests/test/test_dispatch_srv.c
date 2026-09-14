@@ -27,8 +27,10 @@
 
 #include "rosidl_typesupport_tickle_c_tests/srv/simple_service.h"
 
-static const rosidl_typesupport_tickle_c_message_callbacks_t* message_callbacks(const rosidl_message_type_support_t* top) {
-    const rosidl_message_type_support_t* ours = get_message_typesupport_handle(top, rosidl_typesupport_tickle_c__identifier);
+static const rosidl_typesupport_tickle_c_message_callbacks_t*
+message_callbacks(const rosidl_message_type_support_t* top) {
+    const rosidl_message_type_support_t* ours =
+        get_message_typesupport_handle(top, rosidl_typesupport_tickle_c__identifier);
     assert(ours != NULL);
     assert(ours->typesupport_identifier == rosidl_typesupport_tickle_c__identifier);
     return (const rosidl_typesupport_tickle_c_message_callbacks_t*)ours->data;
@@ -41,7 +43,8 @@ int main(void) {
         ROSIDL_GET_SRV_TYPE_SUPPORT(rosidl_typesupport_tickle_c_tests, srv, SimpleService);
     assert(top != NULL);
 
-    const rosidl_service_type_support_t* ours = get_service_typesupport_handle(top, rosidl_typesupport_tickle_c__identifier);
+    const rosidl_service_type_support_t* ours =
+        get_service_typesupport_handle(top, rosidl_typesupport_tickle_c__identifier);
     assert(ours != NULL);
     assert(ours->typesupport_identifier == rosidl_typesupport_tickle_c__identifier);
     assert(ours->request_typesupport != NULL);
@@ -52,8 +55,10 @@ int main(void) {
     assert(service_callbacks != NULL);
     assert(strcmp(service_callbacks->ros_type_name, "rosidl_typesupport_tickle_c_tests/srv/SimpleService") == 0);
 
-    const rosidl_typesupport_tickle_c_message_callbacks_t* request_callbacks = message_callbacks(ours->request_typesupport);
-    const rosidl_typesupport_tickle_c_message_callbacks_t* response_callbacks = message_callbacks(ours->response_typesupport);
+    const rosidl_typesupport_tickle_c_message_callbacks_t* request_callbacks =
+        message_callbacks(ours->request_typesupport);
+    const rosidl_typesupport_tickle_c_message_callbacks_t* response_callbacks =
+        message_callbacks(ours->response_typesupport);
     assert(request_callbacks->tickle_struct_size > 0 && request_callbacks->tickle_struct_size <= 64);
     assert(response_callbacks->tickle_struct_size > 0 && response_callbacks->tickle_struct_size <= 64);
 
