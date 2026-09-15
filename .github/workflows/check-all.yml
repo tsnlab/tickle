@@ -303,6 +303,15 @@ jobs:
           git -C test_ws/src/rmw_implementation apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/rmw_implementation_rmw_tickle.patch"
           git -C test_ws/src/rcl_interfaces apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/test_msgs_rmw_tickle.patch"
           source /opt/ros/jazzy/setup.bash
+          # This GitHub-hosted runner is fresh every run - ros-tooling/setup-ros installs rosdep
+          # itself but never actually initializes/updates its own sources cache, unlike a real
+          # persistent box (tickle-perf's own provisioning, README-rmw-perf.md, does this once by
+          # hand) - found the hard way via a real CI failure ("rosdep installation has not been
+          # initialized yet"). `rosdep init` itself fails loudly if a cache already exists (not the
+          # case here, but harmless to guard anyway); `rosdep update` alone is not enough on a truly
+          # fresh one.
+          sudo rosdep init || true
+          rosdep update --rosdistro jazzy
           # --from-paths narrowed to the three packages actually wanted, not the whole of either
           # clone: rmw_implementation's *other* package (also named rmw_implementation, confusingly
           # - the runtime dispatch one, not test_rmw_implementation) build_depends on all five DDS-
