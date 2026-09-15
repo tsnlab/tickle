@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789436784520,
+  "lastUpdate": 1789436787352,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5192,6 +5192,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.504,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "00c2afd167710ecf2590c43c90e0b1fce0c13a4c",
+          "message": "Fix rmw-perf.yml/docs: this rig's Ubuntu release has no Jazzy build\n\nChecked the actual runner (Ubuntu 26.04 \"resolute\") before running any\nsudo commands: packages.ros.org has no ros-jazzy-* binaries for\nresolute at all (Jazzy only goes up to noble/24.04) - only \"lyrical\" is\npublished there. Made the ROS distro name a workflow-level variable\n(ROS_DISTRO_NAME) instead of hardcoding jazzy, and documented how to\nverify a given runner's real distro name before provisioning rather\nthan assuming Ubuntu 24.04/Jazzy.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T10:45:34+09:00",
+          "tree_id": "bac109ed39ae835e49e744009661279fdc45d2f9",
+          "url": "https://github.com/tsnlab/tickle/commit/00c2afd167710ecf2590c43c90e0b1fce0c13a4c"
+        },
+        "date": 1789436786288,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.6,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.547,
             "unit": "Mbps"
           }
         ]
