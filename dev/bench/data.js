@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789487677815,
+  "lastUpdate": 1789487680911,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6314,6 +6314,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 900.647,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8766783b64722e2069277820296f9dc781bf326a",
+          "message": "Fix fourth check-all.yml run: source rmw_tickle's own install/ before test_msgs\n\ntest_publisher's own TestPublisherUse fixture failed to create a\nreal publisher: \"no rmw_tickle typesupport for this message type.\"\nThis repo's own install/ (rmw_tickle + rosidl_typesupport_tickle_c/\n_cpp, built by an earlier step) was being sourced *after* building\ntest_msgs, not before - test_msgs' own rosidl_generate_interfaces()\ncall generates rmw_tickle's own typesupport for BasicTypes et al.\nat *that* configure/build time, not lazily later. The exact same\n\"which typesupports were visible when this package configured\"\nordering trap this session already found and fixed once locally\n(a stale-shell/pipe-subshell variant of it) - missed here because\nthis step's own two-build sequence had the two source calls both\ngrouped after the first colcon build instead of split around it.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T00:53:43+09:00",
+          "tree_id": "2d9ea538853352cb1e4af6ffbb1ae05539238e92",
+          "url": "https://github.com/tsnlab/tickle/commit/8766783b64722e2069277820296f9dc781bf326a"
+        },
+        "date": 1789487679807,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.686,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 903.675,
             "unit": "Mbps"
           }
         ]
