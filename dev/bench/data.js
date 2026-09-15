@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789446580535,
+  "lastUpdate": 1789446583721,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6572,6 +6572,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/c78a82a620cc21b696c66cfd50934252dea13d16"
         },
         "date": 1789445509909,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2339b98613fb6ca07e3955f80f81bd9aec44978f",
+          "message": "Fix check-all.yml/rmw-perf.yml CI for rosidl_typesupport_tickle_cpp; add C++ reachability test\n\ncheck-all.yml's colcon build --packages-select didn't list the new package, so\nrmw_tickle's find_package(rosidl_typesupport_tickle_cpp REQUIRED) failed on CI\n(--packages-select builds exactly the named packages, not their dependencies).\nSame fix in rmw-perf.yml, which also had PERF_TEST_TOPICS still listing\nStruct256 (excluded during benchmark debugging - it embeds a nested Struct16\nfield, unsupported by rosidl_typesupport_tickle_c).\n\nNew rosidl_typesupport_tickle_c_tests/test/test_dispatch_cpp.cpp closes a real\nblind spot: the existing test_dispatch.c only ever exercised the C-only\nROSIDL_GET_MSG_TYPE_SUPPORT() dispatch entry point, never the C++-level\nrosidl_typesupport_cpp::get_message_type_support_handle<T>() a real rclcpp\nnode actually uses - which is exactly the path that was broken until the\nprevious commit's rosidl_typesupport_tickle_cpp package. Needed\nrosidl_generator_cpp/rosidl_typesupport_cpp added to rosidl_typesupport_\ntickle_c_tests' own deps, and a small tickle.h fix (_Alignas is a C11 keyword,\nnot valid C++ - replaced with a portable tt_ALIGNAS() macro) since this is the\nfirst time tickle.h has ever been included from a .cpp translation unit.\n\nAlso documents (README-rmw-perf.md) three local, not-yet-upstreamed patches\nthe tickle-perf runner's own ~/rmw_perf_ws needs - found and applied by hand\nwhile debugging the benchmark, now written down so re-provisioning (or a\nros2_dependencies.repos update, which would silently drop them) reproduces\nthe same working state: an Array1k/Struct16.msg symlink workaround for\nrosidl_typesupport_tickle_c_generate_interfaces.cmake's own custom-base-\ndirectory limitation, disabling rclcpp's internal rosout/parameter-service\nmachinery in performance_test's own NodeOptions, and disabling the\n~/get_type_description service via a ROS parameter in buildfarm_perf_tests'\nown launch template.\n\nAdds rmw_tickle/PLAN.md's Milestone 11 documenting all of the above.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T13:28:35+09:00",
+          "tree_id": "50696bbac86d8389c82a7119ae65c4f49c4a2238",
+          "url": "https://github.com/tsnlab/tickle/commit/2339b98613fb6ca07e3955f80f81bd9aec44978f"
+        },
+        "date": 1789446582641,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
