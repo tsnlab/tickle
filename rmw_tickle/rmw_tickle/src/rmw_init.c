@@ -58,6 +58,14 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* const init_options, rcutils_
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(init_options, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(allocator.allocate, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(allocator.deallocate, RMW_RET_INVALID_ARGUMENT);
+    // Initializing an already-initialized init_options (implementation_identifier already set by
+    // a prior rmw_init_options_init() call that was never rmw_init_options_fini()'d) is a real
+    // caller mistake rmw's own contract rejects (test_rmw_implementation's own test_init_options.
+    // cpp's "Initializing twice fails"), not something to silently re-stamp over.
+    if (NULL != init_options->implementation_identifier) {
+        RMW_SET_ERROR_MSG("init_options is already initialized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
 
     init_options->instance_id = 0;
     init_options->domain_id = 0;
@@ -77,10 +85,28 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(init_options, RMW_RET_INVALID_ARGUMENT);
     rcutils_allocator_t* allocator = &init_options->allocator;
     RCUTILS_CHECK_ALLOCATOR(allocator, return RMW_RET_INVALID_ARGUMENT);
+    // implementation_identifier is NULL both on a zero-initialized (never rmw_init_options_init()'d)
+    // init_options, and - now that this function itself clears it below - on an already-finalized
+    // one (test_rmw_implementation's own test_init_options.cpp's "Finalizing twice fails"). Either
+    // way that's a plain invalid argument, not "wrong rmw" (which needs a real, non-null, just
+    // incorrect identifier to mean anything) - and not something a bare strcmp() can safely be
+    // handed regardless.
+    if (NULL == init_options->implementation_identifier) {
+        RMW_SET_ERROR_MSG("init_options has already been finalized, or was never initialized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
     if (strcmp(init_options->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
         RMW_SET_ERROR_MSG("Implementation identifiers does not match");
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
+    // rmw_init_options_copy() below is the only place that ever heap-allocates enclave (via
+    // rcutils_strdup()) - free it here so a copied (not just a directly-init()'d) init_options
+    // doesn't leak it.
+    if (init_options->enclave != NULL) {
+        allocator->deallocate(init_options->enclave, allocator->state);
+        init_options->enclave = NULL;
+    }
+    init_options->implementation_identifier = NULL;
     return RMW_RET_OK;
 }
 
@@ -88,6 +114,14 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(src, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(dst, RMW_RET_INVALID_ARGUMENT);
 
+    // src->implementation_identifier being NULL means src itself was never initialized - a plain
+    // invalid argument (test_rmw_implementation's test_init_options.cpp's copy_with_bad_arguments
+    // exercises exactly this, distinct from a real-but-wrong identifier below) - and, same as
+    // everywhere else in this file, not safe to hand a bare strcmp() regardless.
+    if (NULL == src->implementation_identifier) {
+        RMW_SET_ERROR_MSG("src has not been initialized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
     if (strcmp(src->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
         RMW_SET_ERROR_MSG("Implementation identifiers does not match");
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
@@ -118,9 +152,25 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(options, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
+    // options->implementation_identifier is NULL if `options` was never passed through
+    // rmw_init_options_init() (still zero-initialized) - rmw's own contract (test_rmw_
+    // implementation's test_init_shutdown.cpp) treats that as a plain invalid argument, distinct
+    // from a non-null identifier that just names the wrong rmw (INCORRECT_RMW_IMPLEMENTATION).
+    if (NULL == options->implementation_identifier) {
+        RMW_SET_ERROR_MSG("options has not been initialized (implementation_identifier is null)");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
     if (strcmp(options->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    if (NULL == options->enclave) {
+        RMW_SET_ERROR_MSG("options->enclave is null");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    if (NULL != context->impl) {
+        RMW_SET_ERROR_MSG("context has already been initialized");
+        return RMW_RET_INVALID_ARGUMENT;
     }
 
     context->instance_id = 0;
@@ -194,10 +244,27 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
 rmw_ret_t rmw_shutdown(rmw_context_t* context) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
+    // context->implementation_identifier is NULL on a zero-initialized (never rmw_init()'d)
+    // context - see rmw_init()'s own comment on the same NULL-vs-wrong-identifier distinction.
+    if (NULL == context->implementation_identifier) {
+        RMW_SET_ERROR_MSG("context has not been initialized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
     if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
+    // NULL here means either never-initialized-past-the-identifier-check (shouldn't happen - the
+    // identifier is only ever set together with impl in rmw_init()) or already-finalized
+    // (rmw_context_fini() nulls it) - either way, nothing left to shut down.
+    if (NULL == context->impl) {
+        RMW_SET_ERROR_MSG("context has already been finalized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    // Idempotent by rmw's own contract (test_init_shutdown.cpp's "Shutdown twice should succeed")
+    // - just (re-)mark it, no different work needed the second time.
+    ((rmw_tickle_context_impl_t*)context->impl)->shutdown = true;
 
     return RMW_RET_OK;
 }
@@ -205,25 +272,51 @@ rmw_ret_t rmw_shutdown(rmw_context_t* context) {
 rmw_ret_t rmw_context_fini(rmw_context_t* const context) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
+    // See rmw_init()'s own comment on the same NULL-vs-wrong-identifier distinction -
+    // context->implementation_identifier is NULL on a zero-initialized (never rmw_init()'d)
+    // context.
+    if (NULL == context->implementation_identifier) {
+        RMW_SET_ERROR_MSG("context has not been initialized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
     if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
+    // NULL here means already finalized (this function itself is what nulls it, below) - rmw's
+    // own contract requires a second finalization to fail, not silently double-free/no-op
+    // (test_init_shutdown.cpp's "Finalization twice should fail").
+    if (NULL == context->impl) {
+        RMW_SET_ERROR_MSG("context has already been finalized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    // rmw's own contract: shutdown must precede finalization (test_init_shutdown.cpp's
+    // "Finalization w/o shutdown should fail") - shutdown itself doesn't null context->impl (it's
+    // idempotent and this function is still the one that owns freeing it), so this needs its own
+    // flag rather than reusing the impl-null check above.
+    if (!((rmw_tickle_context_impl_t*)context->impl)->shutdown) {
+        RMW_SET_ERROR_MSG("context must be shut down (rmw_shutdown()) before finalization");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
 
     // Free the context implementation
-    if (context->impl != NULL) {
-        rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)context->impl;
-        pthread_cond_destroy(&impl->wait_cond);
-        pthread_mutex_destroy(&impl->wait_mutex);
-        context->options.allocator.deallocate(context->impl, context->options.allocator.state);
-        context->impl = NULL;
-    }
+    rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)context->impl;
+    pthread_cond_destroy(&impl->wait_cond);
+    pthread_mutex_destroy(&impl->wait_mutex);
+    context->options.allocator.deallocate(context->impl, context->options.allocator.state);
+    context->impl = NULL;
 
-    // Finalize the init options
-    rmw_ret_t ret = rmw_init_options_fini(&context->options);
-    if (ret != RMW_RET_OK) {
-        return ret;
-    }
+    // context->options is only ever a shallow copy (`context->options = *options;`, rmw_init()
+    // above) of whatever the caller's own rmw_init_options_t still is - it does NOT own enclave
+    // (or anything else heap-allocated in it), so finalizing it here is not this function's job at
+    // all: the caller who originally rmw_init_options_init()'d that struct is the one who must
+    // rmw_init_options_fini() it, separately, whenever *they're* done with it (which may be well
+    // after this context itself is finalized - test_rmw_implementation's own test_init_shutdown.cpp
+    // does exactly that in its fixture's TearDown()). This function calling rmw_init_options_fini()
+    // on its own borrowed copy used to look harmless only because that function was a no-op past
+    // its own identifier check - once it started actually freeing enclave, doing so here as well
+    // produced a real double-free the moment a caller (correctly) finalized their own options too.
+    context->implementation_identifier = NULL;
 
     return RMW_RET_OK;
 }

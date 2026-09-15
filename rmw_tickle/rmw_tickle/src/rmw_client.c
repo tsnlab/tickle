@@ -85,7 +85,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         RMW_SET_ERROR_MSG("qos_policies is null");
         return NULL;
     }
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
@@ -174,8 +174,8 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
 rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0 ||
-        strcmp(client->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier) ||
+        !rmw_tickle_identifier_matches(client->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -200,7 +200,7 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request, 
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_request, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(sequence_id, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(client->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(client->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -248,7 +248,7 @@ rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* requ
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(request_header, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_response, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(client->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(client->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }

@@ -20,6 +20,7 @@
 #include <stdio.h>
 
 #include "rcutils/allocator.h"
+#include "rmw/enclave.h" // rmw_enclave_options_copy()
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/ret_types.h"
@@ -32,6 +33,11 @@ int main(void) {
 
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     assert(RMW_RET_OK == rmw_init_options_init(&options, allocator));
+    // See test_node_lifecycle.c's own comment on this same line - rmw_init() requires a non-NULL
+    // enclave (matching test_rmw_implementation's own test_init_shutdown.cpp contract), and it
+    // must be a real heap allocation (rmw_init_options_fini() below frees it), not a string
+    // literal.
+    assert(RMW_RET_OK == rmw_enclave_options_copy("/", &allocator, &options.enclave));
 
     rmw_context_t context = rmw_get_zero_initialized_context();
     assert(RMW_RET_OK == rmw_init(&options, &context));

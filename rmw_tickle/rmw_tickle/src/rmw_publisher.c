@@ -50,7 +50,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         RMW_SET_ERROR_MSG("publisher_options is null");
         return NULL;
     }
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
@@ -121,8 +121,8 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
 rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0 ||
-        strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier) ||
+        !rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -145,7 +145,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     (void)allocation; // pre-allocated-message optimization, not implemented
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -190,7 +190,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
 rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos_profile_t* qos) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -210,7 +210,7 @@ rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos
 rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t* gid) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(gid, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -236,10 +236,57 @@ rmw_ret_t rmw_publisher_event_init(rmw_event_t* rmw_event, const rmw_publisher_t
     (void)rmw_event;
     (void)event_type;
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
     RMW_SET_ERROR_MSG("rmw_tickle does not support any publisher QoS events yet");
+    return RMW_RET_UNSUPPORTED;
+}
+
+// Loaned (zero-copy) messages: rmw_publisher_t.can_loan_messages is always false (tt_Node_create_
+// publisher() never sets it true - no shared-memory/zero-copy transport exists), and unlike most
+// other not-yet-implemented rmw_*() extras, these three symbols still have to actually exist -
+// same reasoning as rmw_publisher_event_init() just above (an unresolved dlsym is fatal to
+// rmw_implementation's own dispatch, a returned RMW_RET_UNSUPPORTED is not). Found via test_rmw_
+// implementation's own TestPublisherUseLoan fixture, which calls all three expecting exactly this
+// return before GTEST_SKIP()-ing the rest of its own loan-specific test cases - a missing symbol
+// crashed that fixture's SetUp() outright (a NULL function pointer call) instead of failing a
+// single assertion.
+rmw_ret_t rmw_borrow_loaned_message(const rmw_publisher_t* publisher, const rosidl_message_type_support_t* type_support,
+                                    void** ros_message) {
+    (void)type_support;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    *ros_message = NULL;
+    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
+    return RMW_RET_UNSUPPORTED;
+}
+
+rmw_ret_t rmw_return_loaned_message_from_publisher(const rmw_publisher_t* publisher, void* loaned_message) {
+    (void)loaned_message;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
+    return RMW_RET_UNSUPPORTED;
+}
+
+rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros_message,
+                                     rmw_publisher_allocation_t* allocation) {
+    (void)ros_message;
+    (void)allocation;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
     return RMW_RET_UNSUPPORTED;
 }

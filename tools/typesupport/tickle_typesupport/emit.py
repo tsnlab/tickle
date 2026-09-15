@@ -30,6 +30,16 @@ _BSWAP = {2: "_tt_bswap_16", 4: "_tt_bswap_32", 8: "_tt_bswap_64"}
 _FLOAT_TYPES = {"float32", "float64"}
 
 
+def _c_string_literal(value):
+    """Python str -> a double-quoted C string literal body, safe to splice into an f-string's own
+    surrounding quotes. Found the hard way: a .msg default/constant string value containing a
+    literal '"' (or '\\') was spliced in completely unescaped (test_msgs' own Strings.msg has
+    exactly this), producing invalid C like "Hello"world!" instead of "Hello\\"world!" - breaks
+    the *following* string literal's own quoting too, not just this one, so the resulting error
+    can point at an unrelated later line."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+
+
 def emit_struct_fields(struct):
     """Field declarations only - the template wraps them in `#pragma pack(push, 4)` /
     `struct NAME { ... };` / `#pragma pack(pop)`. Plain field-ordered declarations are enough:
@@ -71,10 +81,16 @@ def emit_constants(struct):
     for constant in struct.constants:
         macro_name = f"{struct.c_name.upper()}__{constant.name}"
         if constant.scalar_type in ("string", "wstring"):
-            lines.append(f'static const char * const {macro_name} = "{constant.value}";')
+            lines.append(f'static const char * const {macro_name} = "{_c_string_literal(constant.value)}";')
         elif constant.scalar_type in _FLOAT_TYPES:
             ctype = model.SCALAR_CTYPE[constant.scalar_type]
             lines.append(f"static const {ctype} {macro_name} = {constant.value};")
+        elif constant.scalar_type == "bool":
+            # constant.value is a real Python bool here (parsed from the .msg's own rosidl_adapter
+            # spec) - an enumerator initializer needs the literal spelled the way emit_struct_
+            # fields' own bool defaults are (line ~618 below): "true"/"false", not str(True/False)'s
+            # capitalized Python spelling, which isn't valid C at all.
+            lines.append(f"enum {{ {macro_name} = {'true' if constant.value else 'false'} }};")
         else:
             lines.append(f"enum {{ {macro_name} = {constant.value} }};")
     return lines
@@ -610,9 +626,9 @@ def emit_init(struct):
             if f.capacity is not None:
                 # A bounded string's field is a real char[N+1] array (emit_struct_fields), not a
                 # pointer - can't assign a string literal to it, memcpy the default bytes in.
-                lines.append(f'memcpy(data->{f.name}, "{f.default}", {len(f.default) + 1});')
+                lines.append(f'memcpy(data->{f.name}, "{_c_string_literal(f.default)}", {len(f.default) + 1});')
             else:
-                lines.append(f'data->{f.name} = "{f.default}";')
+                lines.append(f'data->{f.name} = "{_c_string_literal(f.default)}";')
         elif f.kind == "array":
             for i, element in enumerate(f.default):
                 value = ("true" if element else "false") if f.scalar_type == "bool" else repr(element)

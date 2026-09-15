@@ -52,7 +52,7 @@ rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* nod
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node_names, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node_namespaces, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -116,7 +116,7 @@ static rmw_ret_t count_matching(const rmw_node_t* node, const char* topic_name, 
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(count, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -161,8 +161,8 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(is_available, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0 ||
-        strcmp(client->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier) ||
+        !rmw_tickle_identifier_matches(client->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }

@@ -59,7 +59,7 @@ rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_condition
         RMW_SET_ERROR_MSG("context is null");
         return NULL;
     }
-    if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(context->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
@@ -82,7 +82,7 @@ rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_condition
 
 rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(wait_set, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(wait_set->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(wait_set->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -196,7 +196,7 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
                    rmw_services_t* services, rmw_clients_t* clients, rmw_events_t* events, rmw_wait_set_t* wait_set,
                    const rmw_time_t* wait_timeout) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(wait_set, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(wait_set->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(wait_set->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }

@@ -104,7 +104,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("subscription_options is null");
         return NULL;
     }
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
@@ -196,8 +196,8 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
 rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscription) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0 ||
-        strcmp(subscription->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier) ||
+        !rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -232,7 +232,7 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(subscription->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -287,7 +287,7 @@ rmw_ret_t rmw_take(const rmw_subscription_t* subscription, void* ros_message, bo
 rmw_ret_t rmw_subscription_get_actual_qos(const rmw_subscription_t* subscription, rmw_qos_profile_t* qos) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(subscription->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -304,10 +304,60 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscrip
     (void)rmw_event;
     (void)event_type;
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(subscription->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
     RMW_SET_ERROR_MSG("rmw_tickle does not support any subscription QoS events yet");
+    return RMW_RET_UNSUPPORTED;
+}
+
+// See rmw_publisher.c's own loaned-message stubs (rmw_borrow_loaned_message() et al.) doc comment
+// - same reasoning, subscription side. Found the same way: test_rmw_implementation's own
+// TestSubscriptionUseLoan fixture calls all three expecting RMW_RET_UNSUPPORTED before GTEST_
+// SKIP()-ing the rest of its own loan-specific cases; a missing symbol crashed that fixture's
+// SetUp() outright instead of failing a single assertion.
+rmw_ret_t rmw_take_loaned_message(const rmw_subscription_t* subscription, void** loaned_message, bool* taken,
+                                  rmw_subscription_allocation_t* allocation) {
+    (void)allocation;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(loaned_message, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    *loaned_message = NULL;
+    *taken = false;
+    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
+    return RMW_RET_UNSUPPORTED;
+}
+
+rmw_ret_t rmw_take_loaned_message_with_info(const rmw_subscription_t* subscription, void** loaned_message, bool* taken,
+                                            rmw_message_info_t* message_info,
+                                            rmw_subscription_allocation_t* allocation) {
+    (void)message_info;
+    (void)allocation;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(loaned_message, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(taken, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    *loaned_message = NULL;
+    *taken = false;
+    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
+    return RMW_RET_UNSUPPORTED;
+}
+
+rmw_ret_t rmw_return_loaned_message_from_subscription(const rmw_subscription_t* subscription, void* loaned_message) {
+    (void)loaned_message;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
     return RMW_RET_UNSUPPORTED;
 }

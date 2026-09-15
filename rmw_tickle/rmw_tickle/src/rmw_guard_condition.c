@@ -35,7 +35,7 @@ rmw_guard_condition_t* rmw_create_guard_condition(rmw_context_t* context) {
         RMW_SET_ERROR_MSG("context is null");
         return NULL;
     }
-    if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(context->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
@@ -59,7 +59,7 @@ rmw_guard_condition_t* rmw_create_guard_condition(rmw_context_t* context) {
 
 rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t* guard_condition) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(guard_condition, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(guard_condition->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(guard_condition->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -72,7 +72,7 @@ rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t* guard_condition) {
 
 rmw_ret_t rmw_trigger_guard_condition(const rmw_guard_condition_t* guard_condition) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(guard_condition, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(guard_condition->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(guard_condition->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }

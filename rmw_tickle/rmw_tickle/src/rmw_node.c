@@ -32,6 +32,8 @@
 #include "rmw/ret_types.h" // rmw_ret_t, RMW_RET_*
 #include "rmw/rmw.h"
 #include "rmw/types.h" // rmw_node_t
+#include "rmw/validate_namespace.h"
+#include "rmw/validate_node_name.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 
 // One process-wide _tt_CONFIG (include/tickle/config.h) means one tt_Node per process for now -
@@ -129,8 +131,40 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
         RMW_SET_ERROR_MSG("node_namespace is null");
         return NULL;
     }
-    if (strcmp(context->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(context->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return NULL;
+    }
+    // Also never checked (found the same way, right next to the name/namespace gap below): a
+    // context that's already been rmw_shutdown() (but not yet rmw_context_fini()'d - a fully
+    // finalized one is already caught above, since rmw_context_fini() nulls implementation_
+    // identifier too) used to silently accept rmw_create_node() anyway - the exact same "wastes
+    // the one-node-per-process slot on a node the caller correctly expected to be rejected"
+    // problem as an invalid name/namespace, below.
+    if (((rmw_tickle_context_impl_t*)context->impl)->shutdown) {
+        RMW_SET_ERROR_MSG("context has been shut down");
+        return NULL;
+    }
+
+    // Neither was ever actually checked (test_rmw_implementation's own test_create_destroy_node.
+    // cpp's create_with_bad_arguments is what found this): an invalid name/namespace (spaces,
+    // reserved characters, ...) used to silently succeed instead of being rejected - and, worse,
+    // consumed the one-node-per-process slot just below on its way to being silently discarded by
+    // the caller, wedging every *later* test in the same process that needed to create a real one.
+    int validation_result = RMW_NODE_NAME_VALID;
+    size_t invalid_index = 0;
+    if (RMW_RET_OK != rmw_validate_node_name(name, &validation_result, &invalid_index)) {
+        return NULL; // rmw_validate_node_name() already set its own error message
+    }
+    if (RMW_NODE_NAME_VALID != validation_result) {
+        RMW_SET_ERROR_MSG(rmw_node_name_validation_result_string(validation_result));
+        return NULL;
+    }
+    if (RMW_RET_OK != rmw_validate_namespace(node_namespace, &validation_result, &invalid_index)) {
+        return NULL; // rmw_validate_namespace() already set its own error message
+    }
+    if (RMW_NAMESPACE_VALID != validation_result) {
+        RMW_SET_ERROR_MSG(rmw_namespace_validation_result_string(validation_result));
         return NULL;
     }
 
@@ -216,7 +250,7 @@ fail:
 
 rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
@@ -248,7 +282,7 @@ const rmw_guard_condition_t* rmw_node_get_graph_guard_condition(const rmw_node_t
         RMW_SET_ERROR_MSG("node is null");
         return NULL;
     }
-    if (strcmp(node->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+    if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }

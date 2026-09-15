@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h> // strcmp() - rmw_tickle_identifier_matches(), below
 
 #include <tickle/config.h> // tt_SECOND
 #include <tickle/tickle.h>
@@ -45,6 +46,17 @@ extern "C" {
 // External identifier variables
 extern const char* const rmw_tickle_identifier;
 extern const char* const rmw_tickle_serialization_format;
+
+// Every rmw_*_t entity's own implementation_identifier field (rmw_node_t, rmw_publisher_t, ...)
+// is NULL on a caller-supplied zero-initialized struct - a real, expected caller mistake rmw's
+// own contract requires rejecting cleanly (test_rmw_implementation's own *_with_bad_arguments
+// tests across test_create_destroy_node.cpp/test_publisher.cpp/test_subscription.cpp/etc.
+// construct exactly this), not something a bare strcmp() can safely be handed. Every rmw_tickle
+// source file's own `strcmp(x->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0` identifier
+// check should go through this instead of a bare strcmp().
+static inline bool rmw_tickle_identifier_matches(const char* identifier) {
+    return NULL != identifier && strcmp(identifier, RMW_TICKLE_IDENTIFIER) == 0;
+}
 
 // Shared by rmw_publisher.c/rmw_subscription.c/rmw_serialize.c (src/rmw_typesupport.c): resolves
 // a real ROS 2 rosidl_message_type_support_t* down to rosidl_typesupport_tickle_c's own callback
@@ -128,6 +140,13 @@ struct rmw_tickle_context_impl_t {
     // call, at which point the broadcast is guaranteed to be observed.
     pthread_mutex_t wait_mutex; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
     pthread_cond_t wait_cond;   // NOLINT(misc-include-cleaner)
+
+    // rmw's own lifecycle contract (rmw_init.c's rmw_shutdown()/rmw_context_fini()): shutdown must
+    // be called before finalization, shutdown itself is idempotent (calling it twice succeeds),
+    // and finalizing an already-finalized or never-shut-down context must fail cleanly rather than
+    // silently double-freeing - test_rmw_implementation's own test_init_shutdown.cpp exercises all
+    // of this directly. false until rmw_shutdown() sets it.
+    bool shutdown;
 };
 
 // TickLE specific node data
