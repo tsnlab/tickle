@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789447067278,
+  "lastUpdate": 1789447070281,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6669,6 +6669,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/2339b98613fb6ca07e3955f80f81bd9aec44978f"
         },
         "date": 1789446582641,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ca24d001c203fdba265e3751e6199e2e1959eb88",
+          "message": "Fix test_dispatch_cpp.cpp C++ lint findings (nullptr, trailing return type, ...)\n\ncheck-all.yml's own linter (this repo's first .cpp file, so no established\nconvention to follow yet) flagged: NULL vs nullptr, a C-style array instead\nof std::array<>, main(void) instead of a trailing-return-type main(), an\nunsorted #include block, and a static_cast whose target type auto could infer.\nRan clang-format + fixed the remaining clang-tidy finding by hand; re-verified\nthe test still passes.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T13:37:00+09:00",
+          "tree_id": "f32c4a971eafc84b363a987aca4e6fd5c92c0abe",
+          "url": "https://github.com/tsnlab/tickle/commit/ca24d001c203fdba265e3751e6199e2e1959eb88"
+        },
+        "date": 1789447069227,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
