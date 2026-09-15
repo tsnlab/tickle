@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789484589875,
+  "lastUpdate": 1789485585798,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3224,6 +3224,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8c90dee4896be5cabf2171afbb53891c66ff2ec9",
+          "message": "Fix first check-all.yml run: rmw_implementation needs jazzy, not rolling\n\nFirst real CI run of the previous two commits failed immediately:\nrmw/enclave.h doesn't exist on jazzy (this workflow's own ROS 2\ndistro) - rmw_enclave_options_copy() is a rolling-only addition my\nlocal dev box's own newer ROS 2 install has, but jazzy doesn't.\nThat API was in both my own two rmw_tickle test files (test_node_\nlifecycle.c/test_guard_condition_wait.c - switched to a direct\nrcutils_strdup(), the same primitive rmw_init_options_copy() itself\nalready uses) and, more importantly, would have hit the exact same\nwall inside test_rmw_implementation's own rolling-branch source the\nmoment it got further than this step - jazzy's own version of that\npackage already uses rcutils_strdup() directly for the same reason.\n\nRe-pointed rmw_implementation's clone at jazzy instead (test_\ninterface_files stays at rolling - no jazzy-specific fork of its\nown, and its content hasn't changed in a way that matters here) and\nregenerated rmw_implementation_rmw_tickle.patch against jazzy's own\nCMakeLists.txt/test_event.cpp/test_publisher.cpp/test_duration_\ninfinite.cpp, which differ enough from rolling's in exact structure\n(different gtest-registration macro names in several places) that\nthe rolling-based patch didn't apply as-is.\n\nVerified: patch applies cleanly to a fresh jazzy clone; rmw_tickle's\nown colcon test suite still passes with the rcutils_strdup() fix.\nThe jazzy-specific test_rmw_implementation build/run itself is\nstill only verified by this push's own CI run, not locally (no\njazzy ROS 2 install on this dev box) - the same push-and-watch\nverification this whole integration has used throughout.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T00:18:55+09:00",
+          "tree_id": "5afc0aaa55dbe7dbac3554c398b7967e51aa809d",
+          "url": "https://github.com/tsnlab/tickle/commit/8c90dee4896be5cabf2171afbb53891c66ff2ec9"
+        },
+        "date": 1789485583911,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 4,
             "unit": "%"
           }
         ]
