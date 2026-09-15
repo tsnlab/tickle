@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789452230914,
+  "lastUpdate": 1789468249994,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3020,6 +3020,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5a9cc6ddbb6dc87258486fcbe785b9ae09dcffb7",
+          "message": "Flush Publish immediately by default; switch tt_receive() to ppoll()\n\nChases rmw_tickle's own remaining latency gap to rmw_fastrtps_cpp/\nrmw_cyclonedds_cpp (the previous commit fixed a two-process benchmark\nsilently exchanging zero messages; this targets the ~13x-slower-than-DDS\nlatency that was still there once real data flowed: Array1k averaged\n~0.44ms vs DDS's ~0.03ms).\n\ntt_Publisher_publish() always batched (deferred to node_flush()'s next\ntt_NODE_TX_INTERVAL, 1ms) - the same tradeoff RPC already made the other way\n(tt_Client_call() has always flushed immediately, since a synchronous caller\ncan't wait on a periodic tick). New tt_Publisher.batch field (default false,\nset by tt_Node_create_publisher()) makes Publish mirror that default too:\nflush every call immediately, mirroring tt_Client_call()'s own peer-decision\nand shared-tx_buffer guard exactly. Batching is still available - set\npub->batch = true on a specific Publisher - for the one case immediate flush\ngenuinely costs something: a high-rate, many-small-messages stream. Measured\nboth sides, not guessed: a 1442-byte (MTU-filling) stream saw no throughput\nchange either way (at most one or two fit in tx_buffer regardless of\nbatching), but a 16-byte stream's own achievable throughput fell ~4.4x\nwithout batching (examples/linux/perf, uncapped rate).\n\ntt_receive() (hal_linux.c) switched poll() for ppoll(): poll()'s own timeout\nis a whole millisecond int, silently rounding any shorter wait *up* to a\nfull millisecond - a sub-millisecond scheduled tick (node_flush()'s own, in\nparticular) was getting throttled to roughly 10x its own requested wait.\nppoll() takes a real nanosecond-resolution struct timespec instead.\n\nMeasured together on a real rmw_tickle round trip (rmw-perf.yml's own\nbuildfarm_perf_tests benchmark, corrected for a stale-library methodology\ntrap found along the way - see rmw_tickle/PLAN.md's Milestone 13 for the\nfull story): Array1k two-process latency dropped ~9x (0.44ms -> 0.048ms),\nlanding within ~1.5x of both DDS vendors on the same rig, with zero message\nloss across all four Array1k/Struct16 x async/sync combinations.\n\ntests/test_publish_subscribe.c: existing test_node_flush_* cases now opt\ninto pub.batch = true (what they actually exercise - node_flush()'s own\ndecision logic, unchanged); new tests cover the immediate-flush default's\nown peer decision and shared-buffer guard directly.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T19:29:57+09:00",
+          "tree_id": "d15f7e0a751ea1960a70bbd58ef05a5d306f5c58",
+          "url": "https://github.com/tsnlab/tickle/commit/5a9cc6ddbb6dc87258486fcbe785b9ae09dcffb7"
+        },
+        "date": 1789468247831,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
             "unit": "%"
           }
         ]
