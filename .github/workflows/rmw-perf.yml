@@ -107,12 +107,20 @@ jobs:
           source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
           source install/setup.bash
-          # Restricted to buildfarm_perf_tests' own "two-process" test shape (-R, a ctest name
-          # regex passed through --ctest-args): the *only* shape that sidesteps rmw_tickle's own
-          # one-node-per-process limit (rmw_tickle/PLAN.md's Milestone 2 "Deferred" note) - the
-          # single-process/test_spinning/cross-vendor shapes all hit real, already-documented,
-          # out-of-scope gaps for rmw_tickle specifically (see PLAN.md's Milestone 11 row) that
-          # have nothing to do with this comparison and would otherwise fail every single push.
+          # Restricted to buildfarm_perf_tests' own "two-process, via ROS2/rmw" test shape (-R, a
+          # ctest name regex passed through --ctest-args) - the *only* shape that both sidesteps
+          # rmw_tickle's own one-node-per-process limit (rmw_tickle/PLAN.md's Milestone 2
+          # "Deferred" note) and actually compares the three rmws through the same rclcpp/rmw
+          # boundary a real ROS 2 user reaches them through. Excludes, deliberately: single-
+          # process/test_spinning/cross-vendor-ROS2 shapes, which all hit real, already-
+          # documented, out-of-scope gaps for rmw_tickle specifically (see PLAN.md's Milestone 11
+          # row); and - the reason for anchoring on "two_process_rmw_" rather than just
+          # "two_process" - buildfarm_perf_tests' own test/CMakeLists.txt *also* generates
+          # "two_process_FastRTPS_*"/"two_process_CycloneDDS_*" tests unconditionally, comparing
+          # each DDS vendor's raw *native* API against itself with no rmw/ROS2 involved at all (a
+          # different axis entirely, unrelated to this comparison, and not something rmw_tickle
+          # could ever join since it isn't a DDS vendor) - "rmw_" is present only in the ROS2-mode
+          # test names ("two_process_rmw_tickle_...", "two_process_rmw_fastrtps_cpp_...", ...).
           # `|| true`: colcon test-result --verbose below is the actual pass/fail gate (and
           # prints a per-test breakdown) - same reasoning as check-all.yml's own "Run rmw_tickle's
           # own test suite" step.
@@ -122,7 +130,7 @@ jobs:
             --install-base "$RMW_PERF_WS/install" \
             --packages-select buildfarm_perf_tests \
             --event-handlers console_direct+ \
-            --ctest-args -R two_process || true
+            --ctest-args -R two_process_rmw_ || true
           colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
 
       - name: Publish comparison table
