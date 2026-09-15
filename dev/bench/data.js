@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789473687267,
+  "lastUpdate": 1789474818093,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3117,6 +3117,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "74bce0564aef0403c7be250ae284d6fd837f2bca",
+          "message": "Expose tt_Publisher.batch on perf_client's own CLI (-B)\n\ntt_Publisher.batch already lets a caller opt back into the pre-\nMilestone-13 always-batch behavior; perf_client had no way to\nexercise it, so the ~4.4x small-message throughput cost of the new\nimmediate-flush default was only reachable by editing the example's\nsource. Add -B (cli_opts.h/.c's own TT_EXAMPLE_OPT_BATCH, mirroring\npub->batch one-to-one), defaulting to false to match the library's\nown default.\n\nRe-measured on real hardware with the new flag: an uncapped (-i 0),\nsmall (-s 16) flood without -B doesn't just send slower once\ndiscovery switches to per-message unicast - the receiver saw 100%\nloss. -B restored both throughput (~4x) and reliability (0.7% loss)\nby coalescing the flood into far fewer, larger packets - a much more\nconcrete illustration of DESIGN.md's existing \"Discovery-learned\npeers\" collapse warning than the old qualitative description alone.\nAlso fixed two sentences in that same DESIGN.md section left stale\nby Milestone 13: they described tt_Publisher_publish()'s own peer\ndecision as always deferred to node_flush(), which was true before\nthat milestone's new default, not after.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T21:19:26+09:00",
+          "tree_id": "790c5deb371f8db09136fec3d3f55ec7d99639d9",
+          "url": "https://github.com/tsnlab/tickle/commit/74bce0564aef0403c7be250ae284d6fd837f2bca"
+        },
+        "date": 1789474816218,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.208,
             "unit": "ms"
           },
           {
