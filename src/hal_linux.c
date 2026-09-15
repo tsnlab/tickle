@@ -12,7 +12,11 @@
 // this is defined (or _DEFAULT_SOURCE, which the same feature-test-macros(7) family covers too;
 // spelled out explicitly here rather than relying on whatever default dialect happens to define
 // it, since that's exactly the kind of implicit dependency this whole file's own build shouldn't
-// need to guess about).
+// need to guess about). The name/spelling is glibc's own feature-test-macro convention
+// (feature_test_macros(7)), not ours to rename - not tt_-prefixed, so this project's own
+// bugprone-reserved-identifier/readability-identifier-naming allowlists (.clang-tidy) don't cover
+// it; genuinely a reserved identifier, by design, by the C standard's own rules.
+// NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 #define _GNU_SOURCE
 
 #include <errno.h>
@@ -241,8 +245,9 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
             {.fd = node->hal.sock, .events = POLLIN, .revents = 0},    // NOLINT(misc-include-cleaner)
             {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
         };
-        // NOLINTNEXTLINE(misc-include-cleaner) -- sigmask=NULL: no signal-mask swap needed, only
-        // ppoll()'s own real (not millisecond-rounded) timeout resolution is what's wanted here.
+        // sigmask=NULL: no signal-mask swap needed, only ppoll()'s own real (not
+        // millisecond-rounded) timeout resolution is what's wanted here.
+        // NOLINTNEXTLINE(misc-include-cleaner)
         int poll_ret = ppoll(pfd, 2, timeout_ts_ptr, NULL);
         if (poll_ret == 0) {
             return -1; // Timeout
