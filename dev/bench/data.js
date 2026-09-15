@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789445510965,
+  "lastUpdate": 1789445514233,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5260,6 +5260,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.547,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c78a82a620cc21b696c66cfd50934252dea13d16",
+          "message": "Add rosidl_typesupport_tickle_cpp: rmw_tickle unreachable from real rclcpp nodes\n\nrclcpp's create_publisher<T>()/create_subscription<T>() always start from the\nC++-level \"rosidl_typesupport_cpp\" dispatch, whose per-message candidate list\nis fixed at generate time from whatever packages are registered as a\n\"rosidl_typesupport_cpp\" ament_index resource. Without an entry there,\nrosidl_typesupport_tickle_c was structurally unreachable from any real\nrclcpp C++ node - discovered while provisioning a benchmark comparing\nrmw_tickle against rmw_fastrtps_cpp/rmw_cyclonedds_cpp via\nros2/buildfarm_perf_tests, the first time this rmw was ever exercised via a\nreal rclcpp application instead of its own C-level unit tests.\n\nNew rosidl_typesupport_tickle_cpp package closes the gap: registers itself\nin that dispatch and, per message, delegates straight to the already-generated\nrosidl_typesupport_tickle_c symbol via a direct link-time call (not a second\ndispatch hop through rosidl_typesupport_cpp's own map-walking, which only\nfires for handles whose own identifier is literally \"rosidl_typesupport_cpp\").\n\nAlso fixes/adds what surfaced once real rclcpp nodes could actually reach\nrmw_tickle for the first time:\n- rmw_qos.c: accept RELIABLE for services/clients (tt_Client_call() already\n  retries regardless of requested QoS) - a real rclcpp::Node unconditionally\n  creates internal services (e.g. the type description service) at RELIABLE\n  with no way to opt out, so rejecting it made rmw_tickle unable to host any\n  real node at all.\n- rmw_publisher.c/rmw_subscription.c: implement rmw_publisher_get_actual_qos/\n  rmw_subscription_get_actual_qos, rmw_get_gid_for_publisher, and\n  rmw_publisher_event_init/rmw_subscription_event_init (returning\n  RMW_RET_UNSUPPORTED, per rmw/event.h's own documented contract) - all\n  called unconditionally by a real rclcpp::Publisher/Subscription\n  construction, unlike most other optional rmw_*() extras rclcpp probes and\n  tolerates the absence of.\n- CMakeLists.txt: ament_target_dependencies() has been fully removed on some\n  newer ROS 2 distros (found on the benchmark rig's own OS) - switched to\n  modern imported targets, matching real rmw_cyclonedds_cpp's own style.\n\nVerified end-to-end: two-process Array1k/Struct16 pub-sub round trips now\ncomplete successfully via buildfarm_perf_tests for rmw_tickle, alongside\nrmw_fastrtps_cpp and rmw_cyclonedds_cpp.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T13:10:52+09:00",
+          "tree_id": "602bbdfa0464f8ef1090714f472513581a4ad322",
+          "url": "https://github.com/tsnlab/tickle/commit/c78a82a620cc21b696c66cfd50934252dea13d16"
+        },
+        "date": 1789445513178,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.591,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.692,
             "unit": "Mbps"
           }
         ]
