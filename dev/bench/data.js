@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789474824358,
+  "lastUpdate": 1789477534542,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3151,6 +3151,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.208,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f7deeb56a56d00f23660b57b2182d196f962a4fe",
+          "message": "run_perf.sh: pass -B to perf_client's own small-message HIL run\n\nThis test was designed assuming node_flush() batches several\n100-byte messages per packet (its own doc comment, added before the\nPublisher-flush-immediately default existed) - it never got updated\nwhen that default changed. Confirmed on the gh-pages dashboard\nhistory: smallmsg_rate_msgs_s held steady at 450k-500k msg/sec for\nevery run before 5a9cc6d, then dropped to ~156k-167k in every run\nsince, unnoticed until now because nothing was comparing against the\nold baseline. Passing -B (added to perf_client this session)\nrestores the batched, per-message-CPU-bound regime this test is\nactually meant to measure - confirmed locally, ~600k msg/sec at the\nsame message size.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T22:04:44+09:00",
+          "tree_id": "38a241e303eaa76f7c91481fa4ea27dae8ba53ee",
+          "url": "https://github.com/tsnlab/tickle/commit/f7deeb56a56d00f23660b57b2182d196f962a4fe"
+        },
+        "date": 1789477532435,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.218,
             "unit": "ms"
           },
           {
