@@ -1,18 +1,28 @@
-# rmw performance comparison runner setup (`tickle-perf`)
+# rmw_tickle performance runner setup (`tickle-perf`)
 
-[`rmw-perf.yml`](../workflows/rmw-perf.yml) compares `rmw_tickle` against `rmw_fastrtps_cpp` and
-`rmw_cyclonedds_cpp` using [`ros2/buildfarm_perf_tests`](https://github.com/ros2/buildfarm_perf_tests)
-(which wraps [`ros2/performance_test`](https://github.com/ros2/performance_test)), on a self-hosted
-runner registered with the `tickle-perf` label. This is a **different rig from `tickle-hil`**
+[`rmw-perf.yml`](../workflows/rmw-perf.yml) tracks `rmw_tickle`'s own before/after performance
+using [`ros2/buildfarm_perf_tests`](https://github.com/ros2/buildfarm_perf_tests) (which wraps
+[`ros2/performance_test`](https://github.com/ros2/performance_test)), on a self-hosted runner
+registered with the `tickle-perf` label. This is a **different rig from `tickle-hil`**
 ([`README.md`](README.md)): one machine, not a pair of Raspberry Pis, and it runs a full ROS 2
-stack rather than TickLE's own plain Makefile build. Results here are a same-host, two-process
-comparison between `rmw` implementations - useful for relative/regression tracking between the
-three, not a real-target-network-medium measurement the way `tickle-hil`'s own numbers are (see
-`rmw_tickle/PLAN.md`'s benchmark plan for the full reasoning). Runs on every push to `main` (plus
-`workflow_dispatch` for an on-demand run) - each run's own Actions summary page shows a Markdown
-comparison table (`.github/scripts/rmw_perf_summary.py`, parsing `buildfarm_perf_tests`' own
-per-test `.benchmark.json` output), and the full raw CSV/PNG/JSON results are uploaded as a
-build artifact regardless.
+stack rather than TickLE's own plain Makefile build.
+
+**Not a cross-vendor comparison** - `PERF_TEST_RMW_IMPLEMENTATIONS` (`rmw-perf.yml`) is
+`rmw_tickle` only, deliberately. `buildfarm_perf_tests`' own "two-process" test shape launches
+both sides as local child processes via `launch_ros.actions.Node`, which has no remote-host
+launch capability at all - "two-process" always means one host, two OS processes, never two real
+hosts. That structurally favors any rmw with a same-host shared-memory transport (FastDDS and
+CycloneDDS both auto-negotiate one) over `rmw_tickle`, which only ever has real UDP sockets
+(`hal_linux.c`) - a byproduct of what TickLE actually targets (a real network medium, e.g.
+10Base-T1S), not a fair fight either way. So this rig exists to track `rmw_tickle`'s own
+regressions over time (still genuinely useful - it already caught two real wire-level bugs, see
+`rmw_tickle/PLAN.md`'s Milestone 12), not to produce an absolute "faster/slower than FastDDS/
+CycloneDDS" number - and it's *not* a real-target-network-medium measurement the way `tickle-hil`'s
+own numbers are either (see `rmw_tickle/PLAN.md`'s benchmark plan for the full reasoning). Runs on
+every push to `main` (plus `workflow_dispatch` for an on-demand run) - each run's own Actions
+summary page shows a Markdown table (`.github/scripts/rmw_perf_summary.py`, parsing
+`buildfarm_perf_tests`' own per-test `.benchmark.json` output), and the full raw CSV/PNG/JSON
+results are uploaded as a build artifact regardless.
 
 This only needs to be set up once per runner; a normal contributor never runs any of this by hand,
 and `rmw-perf.yml` itself never provisions anything - it only rebuilds `rmw_tickle`'s own two
@@ -53,12 +63,15 @@ packages against the workspace this doc sets up ahead of time.
    from above wherever the guide says e.g. `jazzy`. Install at least `ros-$ROS_DISTRO-ros-base`,
    plus explicitly:
    ```sh
-   sudo apt install ros-lyrical-rmw-cyclonedds-cpp python3-colcon-common-extensions python3-rosdep python3-vcstool
+   sudo apt install python3-colcon-common-extensions python3-rosdep python3-vcstool
    sudo rosdep init   # only if this machine has never run rosdep before
    rosdep update
    ```
-   `rmw_fastrtps_cpp` ships as part of `ros-base` already (it's the default `rmw`); `rmw_
-   cyclonedds_cpp` needs installing explicitly.
+   `rmw_fastrtps_cpp` ships as part of `ros-base` already (it's the default `rmw`). `ros-$ROS_
+   DISTRO-rmw-cyclonedds-cpp` is *not* needed by `rmw-perf.yml` itself (`PERF_TEST_RMW_
+   IMPLEMENTATIONS` there is `rmw_tickle` only - see this doc's own intro on why a cross-vendor
+   comparison on this same-host rig wouldn't be a fair one) - only install it if you also want to
+   run `buildfarm_perf_tests` by hand for some other, DDS-vendor-inclusive purpose.
 
 2. Build the `buildfarm_perf_tests`/`performance_test` underlay workspace - kept on disk
    permanently, rebuilt by hand only when you want to pick up upstream changes, never by CI:
@@ -79,11 +92,12 @@ packages against the workspace this doc sets up ahead of time.
    hand ahead of `vcs`/`rosdep`/`colcon` themselves being installed yet), `vcs import` on top is
    still safe - it no-ops on an already-up-to-date checkout.
 
-3. Confirm both DDS vendors are actually visible before moving on:
+3. Confirm `rmw_fastrtps_cpp` is visible before moving on (it's `buildfarm_perf_tests`' own
+   underlay build dependency regardless of which rmws `rmw-perf.yml` actually tests):
    ```sh
    source ~/rmw_perf_ws/install/setup.bash
    ros2 pkg list | grep rmw_
-   # expect to see rmw_fastrtps_cpp and rmw_cyclonedds_cpp (at minimum)
+   # expect to see rmw_fastrtps_cpp at minimum
    ```
 
 4. **Four local, TickLE-specific patches to the underlay's own sources** - found the hard way
@@ -202,6 +216,9 @@ needed) and repeat provisioning there.
   certainly isn't the one you assumed - re-run this doc's own "What's needed" section's `curl`
   check to find the actual `$ROS_DISTRO` name for this machine's real codename, don't guess from
   another machine's setup.
-- **A DDS vendor is "available" per `get_available_rmw_implementations()` but every run against it
-  fails**: re-run step 3 above to confirm it's genuinely installed and importable, not just present
-  as a stale `ament_index` marker from a partially-removed package.
+- **`rmw_tickle` isn't in `buildfarm_perf_tests`' generated test list at all**: `PERF_TEST_RMW_
+  IMPLEMENTATIONS` (a CMake `CACHE` variable) is what actually decides which rmws get test targets,
+  overriding `get_available_rmw_implementations()`'s own auto-detected default - confirm `rmw-perf.
+  yml`'s own env still has `rmw_tickle` in it, and that "Rebuild buildfarm_perf_tests with rmw_
+  tickle now visible" actually ran with `--cmake-force-configure` (a stale cache entry from before
+  `rmw_tickle` was installed would otherwise stick).

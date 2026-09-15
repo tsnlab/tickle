@@ -1,4 +1,9 @@
-name: rmw performance comparison
+name: rmw_tickle performance
+
+# Tracks rmw_tickle's own before/after performance via ros2/buildfarm_perf_tests - not a
+# cross-vendor comparison against rmw_fastrtps_cpp/rmw_cyclonedds_cpp (see PERF_TEST_RMW_
+# IMPLEMENTATIONS below and README-rmw-perf.md for why that comparison isn't a fair one on this
+# same-host rig).
 
 # push (main only) + workflow_dispatch - not pull_request, ever: DESIGN.md's "no pull_request
 # trigger, ever" rule for any workflow using a self-hosted-runner label on this public repo (see
@@ -38,7 +43,18 @@ jobs:
       # Struct16 field, so it's excluded here, not just "small enough" - see README-rmw-perf.md's
       # own provisioning notes on the Array1k/Struct16.msg symlink workaround this rig needs).
       PERF_TEST_TOPICS: "Array1k;Struct16"
-      PERF_TEST_RMW_IMPLEMENTATIONS: "rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
+      # rmw_tickle only - not a cross-vendor comparison. buildfarm_perf_tests' own "two-process"
+      # test shape launches both sides as local child processes via launch_ros.actions.Node, which
+      # has no remote-host launch capability at all - "two-process" always means one host, two OS
+      # processes, never two real hosts. That structurally favors any rmw with a same-host shared-
+      # memory transport (FastDDS/CycloneDDS both auto-negotiate one) over rmw_tickle, which only
+      # ever has real UDP sockets (hal_linux.c) - a byproduct of what TickLE targets (an actual
+      # network medium, e.g. 10Base-T1S) rather than a real deficiency, but not a fair fight either
+      # way. So this rig now tracks rmw_tickle's own before/after regressions only (still useful:
+      # it already caught two real wire-level bugs - PLAN.md's Milestone 12) rather than claiming
+      # an absolute "faster/slower than FastDDS/CycloneDDS" number this same-host setup can't
+      # honestly produce. See README-rmw-perf.md for the full reasoning.
+      PERF_TEST_RMW_IMPLEMENTATIONS: "rmw_tickle"
       # Short by buildfarm_perf_tests' own default (30s/topic) for a first pass across 2 topics x
       # 3 rmws x 2 sync modes - revisit once real per-combo runtime on this rig is known.
       PERF_TEST_RUNTIME: "10"
@@ -102,37 +118,37 @@ jobs:
               -DPERF_TEST_RUNTIME="$PERF_TEST_RUNTIME" \
             --cmake-force-configure
 
-      - name: Run the comparison
+      - name: Run the benchmark
         run: |
           source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
           source install/setup.bash
           # Restricted to buildfarm_perf_tests' own "two-process, via ROS2/rmw" test shape (-R, a
-          # ctest name regex passed through --ctest-args) - the *only* shape that both sidesteps
+          # ctest name regex passed through --ctest-args) - the *only* shape that sidesteps
           # rmw_tickle's own one-node-per-process limit (rmw_tickle/PLAN.md's Milestone 2
-          # "Deferred" note) and actually compares the three rmws through the same rclcpp/rmw
-          # boundary a real ROS 2 user reaches them through. Excludes, deliberately: single-
-          # process/test_spinning/cross-vendor-ROS2 shapes, which all hit real, already-
-          # documented, out-of-scope gaps for rmw_tickle specifically (see PLAN.md's Milestone 11
-          # row); and - the reason for anchoring on "two_process_rmw_" rather than just
-          # "two_process" - buildfarm_perf_tests' own test/CMakeLists.txt *also* generates
-          # "two_process_FastRTPS_*"/"two_process_CycloneDDS_*" tests unconditionally, comparing
-          # each DDS vendor's raw *native* API against itself with no rmw/ROS2 involved at all (a
-          # different axis entirely, unrelated to this comparison, and not something rmw_tickle
-          # could ever join since it isn't a DDS vendor) - "rmw_" is present only in the ROS2-mode
-          # test names ("two_process_rmw_tickle_...", "two_process_rmw_fastrtps_cpp_...", ...).
+          # "Deferred" note) and actually exercises rmw_tickle through the same rclcpp/rmw boundary
+          # a real ROS 2 user reaches it through. Excludes, deliberately: single-process/test_
+          # spinning shapes, which hit real, already-documented, out-of-scope gaps for rmw_tickle
+          # specifically (see PLAN.md's Milestone 11 row); and - the reason for anchoring on
+          # "two_process_rmw_" rather than just "two_process" - buildfarm_perf_tests' own test/
+          # CMakeLists.txt *also* generates "two_process_FastRTPS_*"/"two_process_CycloneDDS_*"
+          # tests unconditionally, each DDS vendor's raw *native* API against itself with no rmw/
+          # ROS2 involved at all (a different axis entirely, not something rmw_tickle could ever
+          # join since it isn't a DDS vendor, and not built here anyway now that PERF_TEST_RMW_
+          # IMPLEMENTATIONS above is rmw_tickle-only) - "rmw_" is present only in the ROS2-mode
+          # test names ("two_process_rmw_tickle_...").
           # Stale xunit.xml files from a *previous* run (this runner's own build tree persists
           # across runs, unlike a fresh GitHub-hosted checkout) linger here otherwise -
           # colcon test-result --verbose below scans every xunit.xml under --test-result-base
           # regardless of whether -R above re-ran it this time, so a past failure (e.g. one of
-          # the single-process/cross-vendor tests this job deliberately never runs) would fail
-          # this job forever after, even though nothing this job actually did produced it.
+          # the single-process tests this job deliberately never runs) would fail this job
+          # forever after, even though nothing this job actually did produced it.
           rm -rf "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results"
-          # This comparison's own numbers (published below regardless) are the actual point of
-          # this job, not a pass/fail gate on rmw_tickle's own relative performance - `|| true`
-          # on both colcon calls so one rmw doing worse than another (or a real environment
-          # hiccup) never blocks every future push's table from showing up. colcon test-result's
-          # own per-test breakdown still prints either way, for whoever reads this step's log.
+          # This benchmark's own numbers (published below regardless) are the actual point of
+          # this job, not a pass/fail gate - `|| true` on both colcon calls so one bad run (or a
+          # real environment hiccup) never blocks every future push's table from showing up.
+          # colcon test-result's own per-test breakdown still prints either way, for whoever
+          # reads this step's log.
           colcon test \
             --base-paths "$RMW_PERF_WS" \
             --build-base "$RMW_PERF_WS/build" \
@@ -142,7 +158,7 @@ jobs:
             --ctest-args -R two_process_rmw_ || true
           colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose || true
 
-      - name: Publish comparison table
+      - name: Publish benchmark table
         if: always()
         run: |
           # buildfarm_perf_tests' own per-test PERF_TEST_RESULTS_BASE_PATH (test/add_performance_
