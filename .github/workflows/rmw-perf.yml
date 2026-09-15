@@ -121,9 +121,18 @@ jobs:
           # different axis entirely, unrelated to this comparison, and not something rmw_tickle
           # could ever join since it isn't a DDS vendor) - "rmw_" is present only in the ROS2-mode
           # test names ("two_process_rmw_tickle_...", "two_process_rmw_fastrtps_cpp_...", ...).
-          # `|| true`: colcon test-result --verbose below is the actual pass/fail gate (and
-          # prints a per-test breakdown) - same reasoning as check-all.yml's own "Run rmw_tickle's
-          # own test suite" step.
+          # Stale xunit.xml files from a *previous* run (this runner's own build tree persists
+          # across runs, unlike a fresh GitHub-hosted checkout) linger here otherwise -
+          # colcon test-result --verbose below scans every xunit.xml under --test-result-base
+          # regardless of whether -R above re-ran it this time, so a past failure (e.g. one of
+          # the single-process/cross-vendor tests this job deliberately never runs) would fail
+          # this job forever after, even though nothing this job actually did produced it.
+          rm -rf "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results"
+          # This comparison's own numbers (published below regardless) are the actual point of
+          # this job, not a pass/fail gate on rmw_tickle's own relative performance - `|| true`
+          # on both colcon calls so one rmw doing worse than another (or a real environment
+          # hiccup) never blocks every future push's table from showing up. colcon test-result's
+          # own per-test breakdown still prints either way, for whoever reads this step's log.
           colcon test \
             --base-paths "$RMW_PERF_WS" \
             --build-base "$RMW_PERF_WS/build" \
@@ -131,7 +140,7 @@ jobs:
             --packages-select buildfarm_perf_tests \
             --event-handlers console_direct+ \
             --ctest-args -R two_process_rmw_ || true
-          colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
+          colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose || true
 
       - name: Publish comparison table
         if: always()
