@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789468249994,
+  "lastUpdate": 1789469830424,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3049,6 +3049,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d018a6f944a439bd43776db8e7f44c7890af0a51",
+          "message": "Fix clang-tidy findings on ppoll() switch (hal_linux.c)\n\n- _GNU_SOURCE needs NOLINT for bugprone-reserved-identifier and\n  readability-identifier-naming: it's glibc's own feature-test-macro\n  spelling, not ours to rename or add to the project's tt_-scoped\n  allowlists.\n- The misc-include-cleaner NOLINTNEXTLINE above the ppoll() call was\n  sitting on the first line of a two-line comment, so it suppressed\n  the (irrelevant) second comment line instead of the actual call.\n  Moved the explanatory comment above the NOLINTNEXTLINE so it lands\n  immediately before the code it's meant to cover.\n\nVerified locally: clang-tidy/clang-format clean on this file, make\ntest and make test-linux both pass.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T19:56:12+09:00",
+          "tree_id": "d5c0667a7f3af46b4d653944ab8b13e092bd85a3",
+          "url": "https://github.com/tsnlab/tickle/commit/d018a6f944a439bd43776db8e7f44c7890af0a51"
+        },
+        "date": 1789469828602,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.199,
             "unit": "ms"
           },
           {
