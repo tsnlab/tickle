@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789451980653,
+  "lastUpdate": 1789451983507,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5600,6 +5600,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 897.03,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f9398d034bb8f6cb946ebc4a82f8678b00b574f8",
+          "message": "Fix rmw-perf.yml: -R two_process also matched unrelated native-DDS tests\n\nbuildfarm_perf_tests' own test/CMakeLists.txt generates a second, unrelated\n\"two_process_FastRTPS_*\"/\"two_process_CycloneDDS_*\" test family comparing\neach DDS vendor's raw native API against itself (COMM=FastRTPS/CycloneDDS,\nno ROS2/rmw involved at all) - the plain \"two_process\" ctest regex matched\nthese too, and one of them (FastRTPS) was failing on this rig for reasons\nunrelated to rmw_tickle, failing the whole job on every push. Anchored on\n\"two_process_rmw_\" instead, which only the three actual ROS2-mode test\nfamilies (\"two_process_rmw_tickle_...\", \"..._rmw_fastrtps_cpp_...\",\n\"..._rmw_cyclonedds_cpp_...\") match.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T14:58:51+09:00",
+          "tree_id": "c490151b3cc271b34e4a8bebf42d1fc604e528cf",
+          "url": "https://github.com/tsnlab/tickle/commit/f9398d034bb8f6cb946ebc4a82f8678b00b574f8"
+        },
+        "date": 1789451982438,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.682,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 897.847,
             "unit": "Mbps"
           }
         ]
