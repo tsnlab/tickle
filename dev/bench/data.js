@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789451342041,
+  "lastUpdate": 1789451345067,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6771,6 +6771,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.012,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7e634aeb5ec8acfea54e1b76ee804724814e7b66",
+          "message": "Fix two real bugs found by making rmw-perf.yml's benchmark produce non-zero numbers\n\nA \"passing\" two-process buildfarm_perf_tests run for rmw_tickle turned out to\nhave exchanged exactly zero messages the whole time - assert_wait_for_\nsuccessful_exit() only checks the process exit code, never actual data flow.\nTwo separate, previously-hidden bugs were compounding:\n\n1. poll_thread_main()'s own lock()->tt_Node_poll()->unlock() loop re-locks\n   the same per-node mutex again immediately with no gap. glibc's mutex makes\n   no fairness guarantee, and under this pattern's short critical section and\n   high (~1000/s) call frequency, the poll thread can win the relock race\n   against a different, already-waiting thread (rmw_publish() et al.) for\n   tens to hundreds of milliseconds at a time - measured directly, not\n   inferred: publish() throughput collapsed from ~1000/s to single digits/sec.\n   sched_yield() does not fix it (Linux CFS treats it as close to a no-op); a\n   real nanosleep() between unlock() and the next lock() does, at negligible\n   cost (1us, versus the poll cycle's own ~1ms cadence).\n\n2. Two rmw_tickle processes on the same host derive the identical node id -\n   tt_get_node_id() auto-detects it from the last octet of the host's own\n   address, correct for two real separate hosts but not two processes\n   sharing one. Both sides then silently discarded 100% of each other's\n   traffic as \"self sent\" (process_datagram()'s own, pre-existing self-\n   rejection check). examples/linux/*'s own standalone binaries already\n   expose a -I node_id CLI flag for exactly this; added the equivalent as an\n   environment variable (TICKLE_NODE_ID, mirroring the existing\n   TICKLE_BROADCAST_ADDR) for callers like an rmw plugin with no CLI to\n   extend. rmw-perf.yml's own benchmark rig now sets a distinct value per\n   side (README-rmw-perf.md's provisioning patch).\n\nVerified: the same two-process Array1k/Struct16 runs now report real,\nnon-zero, sane latency/throughput/received-message-count numbers matching\nwhat was actually sent, for the first time.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T14:48:15+09:00",
+          "tree_id": "11954d6101e2e45a442577737b70ba0ad1408f14",
+          "url": "https://github.com/tsnlab/tickle/commit/7e634aeb5ec8acfea54e1b76ee804724814e7b66"
+        },
+        "date": 1789451344002,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           }
         ]
