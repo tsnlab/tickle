@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789486257411,
+  "lastUpdate": 1789486260592,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6178,6 +6178,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 904.4,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c0be832061c63e37c2988e205e4165df61d74585",
+          "message": "Fix second check-all.yml run: rosdep needs init+update on a fresh runner\n\nrosdep install failed outright (\"your rosdep installation has not\nbeen initialized yet\") - this GitHub-hosted runner is fresh every\nrun, and ros-tooling/setup-ros installs the rosdep tool itself but\nnever actually initializes or updates its sources cache (unlike\ntickle-perf's own persistent, once-provisioned box, README-rmw-perf.md,\nwhere this was done by hand ahead of time). Added rosdep init\n(guarded, since it fails loudly on an already-initialized cache -\nnot the case here, but harmless either way) + rosdep update before\nthe rosdep install call this step already had.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T00:30:05+09:00",
+          "tree_id": "e894ccae75f379903c62701a22fddebb9de114b0",
+          "url": "https://github.com/tsnlab/tickle/commit/c0be832061c63e37c2988e205e4165df61d74585"
+        },
+        "date": 1789486259432,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.606,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 897.865,
             "unit": "Mbps"
           }
         ]
