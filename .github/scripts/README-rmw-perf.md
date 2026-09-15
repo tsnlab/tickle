@@ -8,7 +8,11 @@ runner registered with the `tickle-perf` label. This is a **different rig from `
 stack rather than TickLE's own plain Makefile build. Results here are a same-host, two-process
 comparison between `rmw` implementations - useful for relative/regression tracking between the
 three, not a real-target-network-medium measurement the way `tickle-hil`'s own numbers are (see
-`rmw_tickle/PLAN.md`'s benchmark plan for the full reasoning).
+`rmw_tickle/PLAN.md`'s benchmark plan for the full reasoning). Runs on every push to `main` (plus
+`workflow_dispatch` for an on-demand run) - each run's own Actions summary page shows a Markdown
+comparison table (`.github/scripts/rmw_perf_summary.py`, parsing `buildfarm_perf_tests`' own
+per-test `.benchmark.json` output), and the full raw CSV/PNG/JSON results are uploaded as a
+build artifact regardless.
 
 This only needs to be set up once per runner; a normal contributor never runs any of this by hand,
 and `rmw-perf.yml` itself never provisions anything - it only rebuilds `rmw_tickle`'s own two
@@ -21,7 +25,8 @@ packages against the workspace this doc sets up ahead of time.
   [Adding self-hosted runners](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners)
   guide. Per `DESIGN.md`'s own "Security: no `pull_request` trigger, ever" rule (written for
   `tickle-hil` but stated as applying to *any* workflow using a self-hosted label on this public
-  repo) - `rmw-perf.yml` only triggers on `workflow_dispatch`, never `pull_request`.
+  repo) - `rmw-perf.yml` triggers on `push` (to `main` only) and `workflow_dispatch`, never
+  `pull_request`.
 - **A machine running Ubuntu**, with whichever ROS 2 distro packages.ros.org actually ships for
   *that exact* Ubuntu release - these are tied together (each ROS 2 distro officially targets one
   specific Ubuntu release; there's no single distro name that's "the" answer across every Ubuntu

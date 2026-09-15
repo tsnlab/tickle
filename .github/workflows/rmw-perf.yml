@@ -1,11 +1,19 @@
 name: rmw performance comparison
 
-# Manual only, for now - see .github/scripts/README-rmw-perf.md and rmw_tickle/PLAN.md's own
-# benchmark plan for why (no push/schedule trigger yet: runtime/stability on this rig aren't known
-# yet, and DESIGN.md's "no pull_request trigger, ever" rule for any self-hosted-runner workflow on
-# this public repo rules that one out permanently regardless).
+# push (main only) + workflow_dispatch - not pull_request, ever: DESIGN.md's "no pull_request
+# trigger, ever" rule for any workflow using a self-hosted-runner label on this public repo (see
+# .github/scripts/README.md) applies here exactly as it does to `tickle-hil`/performance.yml.
+# concurrency below serializes runs the same way performance.yml's own perf-main group does -
+# this rig only has one of everything (one build/install tree under ~/rmw_perf_ws, one runner),
+# so two overlapping runs would corrupt each other's in-progress rebuild.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: rmw-perf-main
+  cancel-in-progress: true
 
 jobs:
   compare:
@@ -31,7 +39,7 @@ jobs:
       # own provisioning notes on the Array1k/Struct16.msg symlink workaround this rig needs).
       PERF_TEST_TOPICS: "Array1k;Struct16"
       PERF_TEST_RMW_IMPLEMENTATIONS: "rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
-      # Short by buildfarm_perf_tests' own default (30s/topic) for a first pass across 3 topics x
+      # Short by buildfarm_perf_tests' own default (30s/topic) for a first pass across 2 topics x
       # 3 rmws x 2 sync modes - revisit once real per-combo runtime on this rig is known.
       PERF_TEST_RUNTIME: "10"
 
@@ -47,6 +55,7 @@ jobs:
           # step (and action input) see the real value as `$RMW_PERF_WS`/`${{ env.RMW_PERF_WS }}`.
           # Must match .github/scripts/README-rmw-perf.md's own provisioning location exactly.
           echo "RMW_PERF_WS=$HOME/rmw_perf_ws" >> "$GITHUB_ENV"
+          echo "RMW_PERF_RESULTS_DIR=$HOME/rmw_perf_ws/build/buildfarm_perf_tests/test_results/buildfarm_perf_tests" >> "$GITHUB_ENV"
 
       - name: Build rmw_tickle against the pre-provisioned ROS 2 + DDS-vendor underlay
         run: |
@@ -98,6 +107,12 @@ jobs:
           source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
           source install/setup.bash
+          # Restricted to buildfarm_perf_tests' own "two-process" test shape (-R, a ctest name
+          # regex passed through --ctest-args): the *only* shape that sidesteps rmw_tickle's own
+          # one-node-per-process limit (rmw_tickle/PLAN.md's Milestone 2 "Deferred" note) - the
+          # single-process/test_spinning/cross-vendor shapes all hit real, already-documented,
+          # out-of-scope gaps for rmw_tickle specifically (see PLAN.md's Milestone 11 row) that
+          # have nothing to do with this comparison and would otherwise fail every single push.
           # `|| true`: colcon test-result --verbose below is the actual pass/fail gate (and
           # prints a per-test breakdown) - same reasoning as check-all.yml's own "Run rmw_tickle's
           # own test suite" step.
@@ -106,14 +121,23 @@ jobs:
             --build-base "$RMW_PERF_WS/build" \
             --install-base "$RMW_PERF_WS/install" \
             --packages-select buildfarm_perf_tests \
-            --event-handlers console_direct+ || true
+            --event-handlers console_direct+ \
+            --ctest-args -R two_process || true
           colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
 
-      # TODO: confirm this is actually where buildfarm_perf_tests' own PERF_TEST_RESULTS_BASE_PATH
-      # (test/add_performance_tests.cmake) lands once a real run has happened on a provisioned
-      # runner - this is deliberately a broad glob rather than a single exact path, since the
-      # precise layout hasn't been observed yet (see rmw_tickle/PLAN.md's own benchmark plan,
-      # stage 4's "highest-risk step" note - this whole workflow is unverified until then).
+      - name: Publish comparison table
+        if: always()
+        run: |
+          # buildfarm_perf_tests' own per-test PERF_TEST_RESULTS_BASE_PATH (test/add_performance_
+          # tests.cmake) lands each *_results_<rmw>_<sync>_<topic>.benchmark.json here, one per
+          # two-process ctest that actually ran - see rmw_perf_summary.py's own doc comment for
+          # the exact filename shape it parses. GITHUB_STEP_SUMMARY renders as Markdown directly
+          # on this run's own Actions summary page - no separate dashboard needed for this first
+          # pass (rmw_tickle/PLAN.md's benchmark plan deliberately started with raw
+          # artifacts/no-dashboard; this is the smallest useful step up from that, still nothing
+          # bespoke to maintain).
+          python3 .github/scripts/rmw_perf_summary.py "$RMW_PERF_RESULTS_DIR" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload raw results
         if: always()
         uses: actions/upload-artifact@v4
