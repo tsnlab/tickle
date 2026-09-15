@@ -22,19 +22,33 @@ packages against the workspace this doc sets up ahead of time.
   guide. Per `DESIGN.md`'s own "Security: no `pull_request` trigger, ever" rule (written for
   `tickle-hil` but stated as applying to *any* workflow using a self-hosted label on this public
   repo) - `rmw-perf.yml` only triggers on `workflow_dispatch`, never `pull_request`.
-- **A machine running Ubuntu** (24.04, matching ROS 2 Jazzy's own officially supported platform -
-  Jazzy has no official Raspberry Pi OS build, which is why this rig exists separately from
-  `tickle-hil`'s own Raspberry Pi pair in the first place) with enough disk for a full ROS 2
-  install plus two DDS vendors plus a `performance_test` build - a few GB free is not enough,
-  budget double digits.
+- **A machine running Ubuntu**, with whichever ROS 2 distro packages.ros.org actually ships for
+  *that exact* Ubuntu release - these are tied together (each ROS 2 distro officially targets one
+  specific Ubuntu release; there's no single distro name that's "the" answer across every Ubuntu
+  version). **Do not assume Jazzy/Ubuntu 24.04** - the runner this was first provisioned on turned
+  out to be Ubuntu 26.04 ("resolute"), which has no Jazzy binaries at all (only up to "noble"/
+  24.04) - `ros-lyrical-*` is what's actually published for resolute. Check before installing
+  anything:
+  ```sh
+  . /etc/os-release; echo "$VERSION_CODENAME"
+  curl -s "http://packages.ros.org/ros2/ubuntu/dists/$VERSION_CODENAME/main/binary-amd64/Packages" \
+    | grep "^Package: ros-.*-ros-base$"
+  ```
+  Whatever distro name that last command prints is `$ROS_DISTRO` for every command below - this
+  doc uses `lyrical` throughout since that's what resolute actually has, but substitute your own
+  runner's real answer if it differs. With enough disk for a full ROS 2 install plus two DDS
+  vendors plus a `performance_test` build - a few GB free is not enough, budget double digits.
 
 ## One-time provisioning (as yourself, needs sudo - not the runner's own service account)
 
-1. Install ROS 2 Jazzy from the official apt repository - follow
-   [the official Ubuntu install guide](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html).
-   Install at least `ros-jazzy-ros-base`, plus explicitly:
+1. Install ROS 2 from the official apt repository - follow
+   [the official Ubuntu install guide](https://docs.ros.org/en/rolling/Installation/Ubuntu-Install-Debs.html)
+   (the generic/rolling version of the instructions, since the distro-specific guide pages don't
+   necessarily exist yet for a very new Ubuntu release either), substituting the real `$ROS_DISTRO`
+   from above wherever the guide says e.g. `jazzy`. Install at least `ros-$ROS_DISTRO-ros-base`,
+   plus explicitly:
    ```sh
-   sudo apt install ros-jazzy-rmw-cyclonedds-cpp python3-colcon-common-extensions python3-rosdep python3-vcstool
+   sudo apt install ros-lyrical-rmw-cyclonedds-cpp python3-colcon-common-extensions python3-rosdep python3-vcstool
    sudo rosdep init   # only if this machine has never run rosdep before
    rosdep update
    ```
@@ -46,7 +60,7 @@ packages against the workspace this doc sets up ahead of time.
    ```sh
    mkdir -p ~/rmw_perf_ws/src
    cd ~/rmw_perf_ws
-   source /opt/ros/jazzy/setup.bash
+   source /opt/ros/lyrical/setup.bash
    wget https://raw.githubusercontent.com/ros2/buildfarm_perf_tests/master/tools/ros2_dependencies.repos
    vcs import src < ros2_dependencies.repos
    rosdep install --from-paths src --ignore-src -y
@@ -55,7 +69,10 @@ packages against the workspace this doc sets up ahead of time.
    This is the same recipe as
    [buildfarm_perf_tests' own README](https://github.com/ros2/buildfarm_perf_tests#build) - nothing
    TickLE-specific yet. `rmw-perf.yml` expects this workspace at exactly `~/rmw_perf_ws` (override
-   via the workflow's own `RMW_PERF_WS` env var if it needs to live elsewhere).
+   via the workflow's own `RMW_PERF_WS` env var if it needs to live elsewhere). If `git clone`s of
+   `ros2_dependencies.repos`' two entries already exist under `~/rmw_perf_ws/src` (e.g. done by
+   hand ahead of `vcs`/`rosdep`/`colcon` themselves being installed yet), `vcs import` on top is
+   still safe - it no-ops on an already-up-to-date checkout.
 
 3. Confirm both DDS vendors are actually visible before moving on:
    ```sh
@@ -86,8 +103,12 @@ needed) and repeat provisioning there.
 
 - **`colcon build --packages-select rmw_tickle` can't find ROS 2 packages at all**: confirm
   `~/rmw_perf_ws/install/setup.bash` was actually sourced before `rmw-perf.yml`'s own build step -
-  see that workflow file's own comment on why it sources both `/opt/ros/jazzy/setup.bash` and this
+  see that workflow file's own comment on why it sources both the base ROS 2 `setup.bash` and this
   underlay's `setup.bash`, in that order.
+- **`apt install ros-$ROS_DISTRO-...` says the package doesn't exist**: your Ubuntu release almost
+  certainly isn't the one you assumed - re-run this doc's own "What's needed" section's `curl`
+  check to find the actual `$ROS_DISTRO` name for this machine's real codename, don't guess from
+  another machine's setup.
 - **A DDS vendor is "available" per `get_available_rmw_implementations()` but every run against it
   fails**: re-run step 3 above to confirm it's genuinely installed and importable, not just present
   as a stale `ament_index` marker from a partially-removed package.

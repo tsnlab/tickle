@@ -17,6 +17,12 @@ jobs:
     timeout-minutes: 30
 
     env:
+      # Not necessarily "jazzy" - each ROS 2 distro officially targets one specific Ubuntu release,
+      # and this rig's actual Ubuntu version dictates which one packages.ros.org has binaries for
+      # at all (see README-rmw-perf.md's own "What's needed" section for how this runner's real
+      # value was determined - Ubuntu 26.04 here has no Jazzy build, only "lyrical"). Update this
+      # if the runner ever moves to a different Ubuntu release.
+      ROS_DISTRO_NAME: lyrical
       # rmw_tickle's own "Supported subset" (rmw_tickle/PLAN.md): only flat messages under
       # TickLE's single-datagram ceiling (tt_MAX_BUFFER_LENGTH = 1472 bytes, include/tickle/
       # config.h - no fragmentation) and no nested-message types (rosidl_typesupport_tickle_c
@@ -47,7 +53,7 @@ jobs:
           # Sourcing order matters: base ROS 2 first, then the buildfarm_perf_tests/performance_
           # test underlay (an overlay on top of it - see README-rmw-perf.md's own provisioning
           # steps), then this repo's own fresh build becomes a second overlay on top of both.
-          source /opt/ros/jazzy/setup.bash
+          source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
           colcon build \
             --packages-select rmw_tickle rosidl_typesupport_tickle_c \
@@ -68,7 +74,7 @@ jobs:
           # the one part of the pre-provisioned workspace CI does rebuild - performance_test and
           # buildfarm_perf_tests' own other dependencies (test_msgs, rmw_dds_common,
           # osrf_testing_tools_cpp, ...) are untouched, still the ones built during provisioning.
-          source /opt/ros/jazzy/setup.bash
+          source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
           source install/setup.bash
           # --build-base/--install-base explicitly: colcon's own defaults are relative to the
@@ -89,7 +95,7 @@ jobs:
 
       - name: Run the comparison
         run: |
-          source /opt/ros/jazzy/setup.bash
+          source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
           source install/setup.bash
           # `|| true`: colcon test-result --verbose below is the actual pass/fail gate (and
