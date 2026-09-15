@@ -229,11 +229,15 @@ run_paired_test "latency" "pong" "ping" "-c $PING_COUNT -i $PING_INTERVAL" \
 run_paired_test "throughput" "perf_server" "perf_client" "-d $PERF_DURATION_SEC" \
     "$((PERF_DURATION_SEC + 30))"
 
-# Small-message run: 100-byte payloads that node_flush() batches several per packet, so this is
-# limited by per-message CPU work (encode/decode/lookup/callback) rather than link bandwidth -
-# the regime where internal optimizations show up as message rate even when a full-MTU run is
-# already at line rate. Reported as messages/sec (its Mbps is mostly framing overhead).
-run_paired_test "smallmsg" "perf_server" "perf_client" "-s $SMALL_MSG_SIZE -d $PERF_DURATION_SEC" \
+# Small-message run: 100-byte payloads, -B so node_flush() batches several per packet (perf_
+# client's own default flipped to flush-immediately, one packet per message - see DESIGN.md's
+# "RPC and Publish flush immediately by default; batching is opt-in" - which would otherwise make
+# this a link/syscall-bound measurement instead of the per-message-CPU-bound one it's meant to be).
+# With batching restored, this is limited by per-message CPU work (encode/decode/lookup/callback)
+# rather than link bandwidth - the regime where internal optimizations show up as message rate
+# even when a full-MTU run is already at line rate. Reported as messages/sec (its Mbps is mostly
+# framing overhead).
+run_paired_test "smallmsg" "perf_server" "perf_client" "-s $SMALL_MSG_SIZE -d $PERF_DURATION_SEC -B" \
     "$((PERF_DURATION_SEC + 30))"
 
 summarize
