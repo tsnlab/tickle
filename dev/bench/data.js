@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789451983507,
+  "lastUpdate": 1789452225095,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -2976,6 +2976,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/f9398d034bb8f6cb946ebc4a82f8678b00b574f8"
         },
         "date": 1789451975944,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "08f0d8065f792da840fbd8920953dddad631e51a",
+          "message": "Fix rmw-perf.yml: stale test_results from past runs failed every push\n\nThis runner's own build tree persists across runs (unlike a fresh GitHub-\nhosted checkout each time) - colcon test-result --verbose scans every\nxunit.xml under --test-result-base regardless of whether this run's own\n-R filter re-ran it, so a past failure (e.g. from an earlier single-process/\ncross-vendor test this job deliberately never runs, or from manual local\ntesting on this same rig) kept failing the job indefinitely. Clears\ntest_results before each run, and stops treating colcon test/test-result's\nown exit code as a hard gate at all - the comparison table (published\nregardless, via if: always()) is this job's actual deliverable, not a\npass/fail signal on one rmw's relative performance.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T15:02:58+09:00",
+          "tree_id": "389d62a60cc0a2cf1fb99f04586af1b64c12cb8b",
+          "url": "https://github.com/tsnlab/tickle/commit/08f0d8065f792da840fbd8920953dddad631e51a"
+        },
+        "date": 1789452223356,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
