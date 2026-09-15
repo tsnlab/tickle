@@ -332,6 +332,9 @@ Results are tracked over time and charted at the same page (below the status tab
 the workflow fails if latency more than doubles, or throughput drops to less than half, versus
 the last recorded run (`alert-threshold: "200%"` on each `github-action-benchmark` step).
 
+## Quality declarations
+- [`rmw_tickle`](rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md) - Quality Level 4 ([REP-2004](https://www.ros.org/reps/rep-2004.html))
+
 ## License
 GPLv3 or proprietary license on request. Every source file carries a
 `SPDX-License-Identifier: GPL-3.0-or-later` header; contact TSN Lab, Inc. for a proprietary
