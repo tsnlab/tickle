@@ -330,11 +330,19 @@ jobs:
           # apt-packaged system Python, that one doesn't ship setuptools preinstalled - found via a
           # real CI failure ("No module named 'setuptools'").
           python3 -m pip install --quiet setuptools
+          # This repo's own install/ (rmw_tickle + rosidl_typesupport_tickle_c/_cpp, built by an
+          # earlier step) has to be sourced *before* building test_msgs below, not after - test_
+          # msgs' own rosidl_generate_interfaces() call generates rmw_tickle's own typesupport for
+          # each message at *this* configure/build time (same mechanism buildfarm_perf_tests'
+          # own PERF_TEST_TOPICS messages go through), not lazily later when test_rmw_
+          # implementation itself builds - found the hard way locally earlier this same session
+          # (a stale-shell-ordering bug, not this specific line, but the identical underlying
+          # "which typesupports were visible when this package configured" trap).
+          source install/setup.bash
           colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
             --packages-select test_interface_files test_msgs \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
           source test_ws/install/setup.bash
-          source install/setup.bash
           colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
             --packages-select test_rmw_implementation --cmake-args -DCMAKE_BUILD_TYPE=Release
           source test_ws/install/setup.bash
