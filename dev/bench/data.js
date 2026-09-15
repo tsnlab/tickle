@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789451749438,
+  "lastUpdate": 1789451752243,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5532,6 +5532,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 896.948,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "463faaf090144e8bd30a182fb4521f06f31c0a18",
+          "message": "Run rmw-perf.yml on every push to main, publish a comparison table\n\nRequested: a per-push table comparing rmw_tickle/rmw_fastrtps_cpp/\nrmw_cyclonedds_cpp, not just an on-demand manual run. Adds a `push` (main\nonly - never pull_request, per DESIGN.md's self-hosted-runner rule) trigger\nalongside the existing workflow_dispatch, and a concurrency group so\noverlapping runs don't corrupt the shared ~/rmw_perf_ws build tree.\n\nNew .github/scripts/rmw_perf_summary.py parses buildfarm_perf_tests' own\nper-test *.benchmark.json output into one Markdown table (topic, sync mode,\nlatency, throughput, received message count) and the workflow writes it to\nGITHUB_STEP_SUMMARY - visible directly on each run's own Actions summary\npage, no separate dashboard needed for this first pass.\n\nAlso restricts colcon test to buildfarm_perf_tests' own \"two-process\" test\nshape (--ctest-args -R two_process): the only one that actually exercises a\nmeaningful rmw_tickle vs FastDDS vs CycloneDDS comparison - single-process,\ntest_spinning, and the cross-vendor tests all hit real, already-documented,\nout-of-scope gaps for rmw_tickle specifically (PLAN.md's Milestone 11 row)\nthat have nothing to do with this comparison and would otherwise fail the\njob on every single push.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T14:54:57+09:00",
+          "tree_id": "cf83fa1b48fa55e05cd5694e616e859e8d727ec9",
+          "url": "https://github.com/tsnlab/tickle/commit/463faaf090144e8bd30a182fb4521f06f31c0a18"
+        },
+        "date": 1789451751160,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.616,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 897.03,
             "unit": "Mbps"
           }
         ]
