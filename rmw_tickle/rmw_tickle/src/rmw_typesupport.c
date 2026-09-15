@@ -18,6 +18,7 @@
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 #include "rosidl_typesupport_tickle_c/service_type_support.h"
+#include "rosidl_typesupport_tickle_cpp/identifier.h"
 
 const rosidl_typesupport_tickle_c_message_callbacks_t*
 rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_support) {
@@ -26,8 +27,20 @@ rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_suppo
         return NULL;
     }
 
+    // A real rclcpp::Node's create_publisher<T>()/create_subscription<T>() never hand us a
+    // C-level type_support directly - they always start from the C++-level "rosidl_typesupport_
+    // cpp" dispatch, whose own per-message candidate list only ever contains whatever's registered
+    // as a "rosidl_typesupport_cpp" ament_index resource (rosidl_typesupport_tickle_cpp, see its
+    // own package.xml doc comment for the full story - this identifier is unreachable from rclcpp
+    // without it). Try that one first; fall back to the plain "_c" identifier for lower-level/
+    // C-only callers (e.g. a hand-rolled rcl C application, or a future rclc/micro-ROS consumer)
+    // that hand us an already-C-level type_support with no C++ wrapper to begin with.
     const rosidl_message_type_support_t* ours =
-        get_message_typesupport_handle(type_support, rosidl_typesupport_tickle_c__identifier);
+        get_message_typesupport_handle(type_support, rosidl_typesupport_tickle_cpp__identifier);
+    if (NULL == ours) {
+        rmw_reset_error();
+        ours = get_message_typesupport_handle(type_support, rosidl_typesupport_tickle_c__identifier);
+    }
     if (NULL == ours) {
         // Not a message this rmw_tickle_c build error - could be a real mismatch (a message that
         // uses a nested field, or a .srv - rosidl_typesupport_tickle_c doesn't generate a

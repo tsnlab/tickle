@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>rosidl_typesupport_tickle_cpp</name>
+  <version>0.0.1</version>
+  <description>
+    Thin C++-level companion to rosidl_typesupport_tickle_c. rclcpp's create_publisher()/
+    create_subscription() never hand rmw_create_publisher() a C-level rosidl_message_type_support_t
+    - they always start from the C++-level "rosidl_typesupport_cpp" dispatch, whose own per-message
+    candidate list is built at *generate* time from whichever packages are registered as a
+    "rosidl_typesupport_cpp" ament_index resource (see rosidl_typesupport_cpp's own idl__type_
+    support.cpp.em template - the exact same extension-point pattern rosidl_typesupport_fastrtps_cpp/
+    rosidl_typesupport_introspection_cpp already use). Without an entry in *that* list,
+    rosidl_typesupport_tickle_c is structurally unreachable from any real rclcpp C++ node, no
+    matter how correct its own C-level dispatch table is - this package exists purely to close that
+    gap by registering "rosidl_typesupport_tickle_cpp" there and, per message, delegating straight
+    through to the existing rosidl_typesupport_tickle_c symbol (no duplicated encode/decode logic -
+    see cmake/rosidl_typesupport_tickle_cpp_generate_interfaces.cmake).
+  </description>
+  <maintainer email="halim9512@gmail.com">Harim Seong</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_core</buildtool_depend>
+
+  <depend>rosidl_cmake</depend>
+  <depend>rosidl_generator_c</depend>
+  <depend>rosidl_runtime_c</depend>
+  <depend>rosidl_typesupport_c</depend>
+  <depend>rosidl_typesupport_cpp</depend>
+  <depend>rosidl_typesupport_interface</depend>
+  <depend>rosidl_typesupport_tickle_c</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

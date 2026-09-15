@@ -23,6 +23,7 @@
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
+#include "rmw/event.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/types.h"
@@ -53,7 +54,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
-    if (rmw_tickle_validate_qos_profile(qos_profile, false) != RMW_RET_OK) {
+    if (rmw_tickle_validate_qos_profile(qos_profile, RMW_TICKLE_ENTITY_PUBLISHER) != RMW_RET_OK) {
         return NULL; // error message already set
     }
 
@@ -75,6 +76,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     pub_impl->type_support = type_support;
     pub_impl->callbacks = callbacks;
     pub_impl->allocator = *allocator;
+    pub_impl->qos = *qos_profile;
 
     // topic.name is callbacks->ros_type_name - a generated-code string literal, so it already
     // satisfies tickle.h's "Lifetime / ownership" rule (stay valid and unmoved until tt_Publisher_
@@ -177,4 +179,67 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         return RMW_RET_ERROR;
     }
     return RMW_RET_OK;
+}
+
+// A real rclcpp::Publisher construction (rcl_publisher_init()) calls this unconditionally, not
+// just optionally/best-effort like most of the other rmw_publisher_*() extras - discovered while
+// provisioning rmw_tickle/PLAN.md's rmw-perf.yml benchmark rig (the first time this rmw was
+// exercised via a real rclcpp C++ node rather than this package's own C-level unit tests).
+// rmw_tickle never negotiates/downgrades a requested QoS policy, so "actual" is always just
+// whatever rmw_create_publisher() already validated and stored.
+rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos_profile_t* qos) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
+    if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
+    *qos = pub_impl->qos;
+    return RMW_RET_OK;
+}
+
+// Another call rcl_publisher_init() makes unconditionally (via rclcpp::Publisher's own
+// constructor, to populate every future rmw_message_info_t.publisher_gid it hands out) - see
+// rmw_publisher_get_actual_qos()'s own doc comment for how this was found. tt_Publisher's own
+// (node id, endpoint id) pair is already a unique-within-this-TickLE-network identity for this
+// publisher (see tickle.h's own struct tt_Endpoint doc comment on .id) - zero-extended into
+// gid.data's remaining bytes, matching rmw_subscription.c's own zeroed rmw_message_info_t.
+// publisher_gid for a received message from the *sending* side's point of view instead.
+rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t* gid) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(gid, RMW_RET_INVALID_ARGUMENT);
+    if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
+    memset(gid, 0, sizeof(*gid));
+    gid->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+    uint8_t node_id = pub_impl->node->tickle_node.id;
+    uint32_t endpoint_id = pub_impl->tickle_publisher.endpoint.id;
+    gid->data[0] = node_id;
+    memcpy(&gid->data[1], &endpoint_id, sizeof(endpoint_id));
+    return RMW_RET_OK;
+}
+
+// A real rclcpp::Publisher constructor calls this once per QoS event type NodeOptions/QoS asks
+// for (offered_deadline_missed, liveliness_lost, ...) - rmw_tickle doesn't implement any of them
+// yet (no deadline/liveliness/matched-count tracking - see rmw_qos.c's own QoS roadmap), and
+// RMW_RET_UNSUPPORTED is this API's own documented way to say exactly that (rmw/event.h) - unlike
+// most other not-yet-implemented rmw_*() extras, the *symbol* still has to exist (an unresolved
+// dlsym is fatal to rclcpp here, a returned RMW_RET_UNSUPPORTED is not).
+rmw_ret_t rmw_publisher_event_init(rmw_event_t* rmw_event, const rmw_publisher_t* publisher,
+                                   rmw_event_type_t event_type) {
+    (void)rmw_event;
+    (void)event_type;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    if (strcmp(publisher->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RMW_SET_ERROR_MSG("rmw_tickle does not support any publisher QoS events yet");
+    return RMW_RET_UNSUPPORTED;
 }

@@ -1,0 +1,85 @@
+// generated from rosidl_typesupport_tickle_cpp/resource/msg__type_support.cpp.in
+// generated code does not contain a copyright notice
+
+// A pure delegation shim - see rosidl_typesupport_tickle_cpp_generate_interfaces.cmake's own doc
+// comment for why this needs no per-field/per-message logic at all: it never touches the
+// message's own C or C++ struct layout, only borrows the *already-generated*
+// rosidl_typesupport_tickle_c handle's own .data (the real rosidl_typesupport_tickle_c_message_
+// callbacks_t*) for the exact same message, called directly (a real link-time symbol, not
+// dlopen-by-convention) since we're built in the same package as that handle.
+//
+// Not layered through ::rosidl_typesupport_cpp::get_message_typesupport_handle_function's own
+// type_support_map_t walk the way this file's very first draft tried: that function's map-walking
+// branch only ever fires when the *current* handle's own identifier is the literal string
+// "rosidl_typesupport_cpp" (a hardcoded comparison, see rosidl_typesupport_cpp/src/type_support_
+// dispatch.hpp's own get_typesupport_handle_function()) - it is not a generic "any handle can
+// nest one more level" primitive, so a handle identified as "rosidl_typesupport_tickle_cpp" can
+// never use it to reach anything beyond itself. rosidl_typesupport_fastrtps_cpp/introspection_cpp
+// sidestep this the same way: each embeds its OWN data directly rather than delegating further -
+// we do the same, just pointing at data someone else already built instead of building our own.
+
+#include <cstddef>
+
+#include "rosidl_runtime_c/message_type_support_struct.h"
+#include "rosidl_typesupport_interface/macros.h"
+#include "rosidl_typesupport_tickle_cpp/identifier.h"
+
+#include "@PKG_NAME@/@SUBFOLDER@/detail/@HEADER_NAME@__functions.h"
+
+extern "C" const rosidl_message_type_support_t *
+ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+  rosidl_typesupport_tickle_c, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)(void);
+
+namespace @PKG_NAME@
+{
+
+namespace @SUBFOLDER@
+{
+
+namespace rosidl_typesupport_tickle_cpp
+{
+
+// .data and .typesupport_identifier are both set on first access below, not here - .data needs
+// the real tickle_c handle's own .data (only available once that handle's own init-on-first-call
+// has run at least once), and a plain extern const char* identifier isn't a compile-time constant
+// in C++ either, same reason rosidl_typesupport_tickle_c's own generated code does this too.
+static rosidl_message_type_support_t _@IDL_NAME@_handle = {
+  nullptr,
+  nullptr,
+  get_message_typesupport_handle_function,  // self-match only (rosidl_runtime_c) - see this
+                                             // file's own top comment for why nothing fancier
+                                             // is needed or usable here
+  &@PKG_NAME@__@SUBFOLDER@__@IDL_NAME@__get_type_hash,
+  &@PKG_NAME@__@SUBFOLDER@__@IDL_NAME@__get_type_description,
+  &@PKG_NAME@__@SUBFOLDER@__@IDL_NAME@__get_type_description_sources,
+};
+
+}  // namespace rosidl_typesupport_tickle_cpp
+
+}  // namespace @SUBFOLDER@
+
+}  // namespace @PKG_NAME@
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+const rosidl_message_type_support_t *
+ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+  rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)(void)
+{
+  auto & handle = ::@PKG_NAME@::@SUBFOLDER@::rosidl_typesupport_tickle_cpp::_@IDL_NAME@_handle;
+  if (!handle.typesupport_identifier) {
+    const rosidl_message_type_support_t * tickle_c_handle =
+      ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+        rosidl_typesupport_tickle_c, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)();
+    handle.data = tickle_c_handle->data;
+    handle.typesupport_identifier = rosidl_typesupport_tickle_cpp__identifier;
+  }
+  return &handle;
+}
+
+#ifdef __cplusplus
+}
+#endif

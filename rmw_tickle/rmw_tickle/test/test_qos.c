@@ -36,39 +36,50 @@ static rmw_qos_profile_t valid_profile(void) {
 
 int main(void) {
     rmw_qos_profile_t qos = valid_profile();
-    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, false));
-    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, true));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
+    // RELIABLE is rejected for topics (Publisher/Subscriber have no retry mechanism at all) but
+    // accepted for services/clients - TickLE's own tt_Client_call() already retries every call up
+    // to tt_CALL_RETRY_COUNT times regardless of what QoS was requested, so this reflects existing
+    // behavior rather than adding anything new. Found to be a practical necessity, not just a
+    // nicety, while provisioning rmw-perf.yml's benchmark rig: a real rclcpp::Node unconditionally
+    // creates internal services (e.g. the type description service) at RELIABLE, with no way to
+    // opt out - rejecting it for every service would make rmw_tickle unable to host any real
+    // rclcpp node at all.
     qos = valid_profile();
     qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, false));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     qos = valid_profile();
     qos.durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, false));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     qos = valid_profile();
     qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, false));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     qos = valid_profile();
     qos.liveliness_lease_duration.sec = 1;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, false));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     qos = valid_profile();
     qos.deadline.sec = 1;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, false));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     qos = valid_profile();
     qos.lifespan.sec = 1;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, false));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     // KEEP_ALL is only rejected for a subscription (an unbounded reader queue) - a publisher/
     // client/service has no reader-side queue at all in this rmw's model, so it's harmless there.
     qos = valid_profile();
     qos.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, true));
-    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, false));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     printf("rmw_tickle_validate_qos_profile: PASS\n");
     return 0;

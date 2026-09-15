@@ -23,13 +23,29 @@
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 
-rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, bool is_subscription) {
-    // QoS roadmap #5 (RELIABILITY) - ACK/NACK + retransmission isn't built; only BEST_EFFORT
-    // (TickLE's own only mode today) is honest to accept.
-    if (RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT != qos_profile->reliability &&
-        RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT != qos_profile->reliability) {
-        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT for now "
-                          "- see rmw_tickle/PLAN.md's QoS roadmap #5 (RELIABILITY)");
+rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, rmw_tickle_entity_kind_t entity_kind) {
+    // QoS roadmap #5 (RELIABILITY): full ACK/NACK + retransmission (what a topic's Publisher/
+    // Subscriber would need) isn't built - a topic has no retry mechanism of any kind, so only
+    // BEST_EFFORT is honest to accept there. A service/client is different: TickLE's own tt_
+    // Client_call() *already* retries a call up to tt_CALL_RETRY_COUNT times (tt_CALL_RETRY_
+    // INTERVAL apart) regardless of what QoS was requested - a real, if bounded (not indefinite),
+    // delivery-assurance mechanism topics simply don't have. Accepting RELIABLE for services/
+    // clients reflects that existing behavior rather than adding anything new, and - found while
+    // provisioning rmw_tickle/PLAN.md's rmw-perf.yml benchmark rig - is a practical necessity, not
+    // just a nicety: a real rclcpp::Node unconditionally creates internal services (e.g. the type
+    // description service, `rcl_node_type_description_service_init()`) at `rmw_qos_profile_
+    // services_default` (RELIABLE), with no `rcl_node_options_t` flag to opt out - rejecting
+    // RELIABLE for every service would make rmw_tickle unable to host *any* real rclcpp node at
+    // all, not just ones that ask for it explicitly.
+    bool reliability_ok = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT == qos_profile->reliability ||
+                          RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT == qos_profile->reliability ||
+                          (RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT == entity_kind &&
+                           RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability);
+    if (!reliability_ok) {
+        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT (and, "
+                          "for services/clients, RELIABLE - backed by tt_Client_call()'s own "
+                          "bounded retry) for now - see rmw_tickle/PLAN.md's QoS roadmap #5 "
+                          "(RELIABILITY)");
         return RMW_RET_UNSUPPORTED;
     }
 
@@ -74,7 +90,7 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     // queue_capacity sizing), but KEEP_ALL asks for an *unbounded* queue, which a fixed-capacity
     // allocation can't provide - only meaningful for subscriptions (a service/client/publisher has
     // no reader-side queue at all in this rmw's model).
-    if (is_subscription && RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history) {
+    if (RMW_TICKLE_ENTITY_SUBSCRIPTION == entity_kind && RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history) {
         RMW_SET_ERROR_MSG("rmw_tickle doesn't support RMW_QOS_POLICY_HISTORY_KEEP_ALL (an unbounded "
                           "queue) - see rmw_tickle/PLAN.md's QoS roadmap #1 (HISTORY/DEPTH)");
         return RMW_RET_UNSUPPORTED;

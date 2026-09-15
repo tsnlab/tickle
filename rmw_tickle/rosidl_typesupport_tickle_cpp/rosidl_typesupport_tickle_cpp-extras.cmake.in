@@ -1,0 +1,19 @@
+# generated from rosidl_typesupport_tickle_cpp/rosidl_typesupport_tickle_cpp-extras.cmake.in
+#
+# Run automatically whenever another package does find_package(rosidl_typesupport_tickle_cpp) -
+# registers into rosidl_generate_interfaces()'s own "rosidl_generate_idl_interfaces" ament_cmake
+# extension point, same convention rosidl_typesupport_tickle_c's own extras.cmake.in already uses.
+
+# Our own extension (see cmake/rosidl_typesupport_tickle_cpp_generate_interfaces.cmake's own
+# guard) needs rosidl_generator_c's *and* rosidl_typesupport_tickle_c's own extensions to have
+# already run - rosidl_generate_interfaces() executes registered extensions in registration order
+# (see rosidl_cmake/cmake/rosidl_generate_interfaces.cmake's own comment to that effect), and
+# find_package() ordering here is what decides that.
+find_package(rosidl_generator_c QUIET)
+find_package(rosidl_typesupport_tickle_c QUIET)
+
+find_package(ament_cmake_core QUIET REQUIRED)
+ament_register_extension(
+  "rosidl_generate_idl_interfaces"
+  "rosidl_typesupport_tickle_cpp"
+  "rosidl_typesupport_tickle_cpp_generate_interfaces.cmake")

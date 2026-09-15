@@ -26,6 +26,7 @@
 #include "rcutils/error_handling.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
+#include "rmw/event.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/time.h" // rmw_time_point_value_t
@@ -107,7 +108,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return NULL;
     }
-    if (rmw_tickle_validate_qos_profile(qos_profile, true) != RMW_RET_OK) {
+    if (rmw_tickle_validate_qos_profile(qos_profile, RMW_TICKLE_ENTITY_SUBSCRIPTION) != RMW_RET_OK) {
         return NULL; // error message already set
     }
 
@@ -129,6 +130,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->type_support = type_support;
     sub_impl->callbacks = callbacks;
     sub_impl->allocator = *allocator;
+    sub_impl->qos = *qos_profile;
 
     sub_impl->topic.name = callbacks->ros_type_name; // see rmw_tickle_publisher_t.topic's own doc comment
     sub_impl->topic.data_size = (uint32_t)callbacks->tickle_struct_size;
@@ -279,4 +281,33 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
 rmw_ret_t rmw_take(const rmw_subscription_t* subscription, void* ros_message, bool* taken,
                    rmw_subscription_allocation_t* allocation) {
     return rmw_take_with_info(subscription, ros_message, taken, NULL, allocation);
+}
+
+// See rmw_publisher.c's own rmw_publisher_get_actual_qos() doc comment - same reasoning.
+rmw_ret_t rmw_subscription_get_actual_qos(const rmw_subscription_t* subscription, rmw_qos_profile_t* qos) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
+    if (strcmp(subscription->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
+    *qos = sub_impl->qos;
+    return RMW_RET_OK;
+}
+
+// See rmw_publisher.c's own rmw_publisher_event_init() doc comment - same reasoning, for
+// subscription-side QoS events (liveliness_changed, requested_deadline_missed, ...).
+rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscription_t* subscription,
+                                      rmw_event_type_t event_type) {
+    (void)rmw_event;
+    (void)event_type;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    if (strcmp(subscription->implementation_identifier, RMW_TICKLE_IDENTIFIER) != 0) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    RMW_SET_ERROR_MSG("rmw_tickle does not support any subscription QoS events yet");
+    return RMW_RET_UNSUPPORTED;
 }

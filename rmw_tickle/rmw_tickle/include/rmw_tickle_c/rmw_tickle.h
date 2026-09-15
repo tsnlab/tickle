@@ -72,13 +72,22 @@ typedef struct rmw_tickle_service_typesupport_t {
 bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support,
                                       rmw_tickle_service_typesupport_t* out);
 
+// rmw_create_publisher()/_subscription()/_client()/_service() each pass their own kind so rmw_
+// tickle_validate_qos_profile() can tell a topic (Publisher/Subscriber - no retry mechanism of any
+// kind) from a service/client (TickLE's own tt_Client_call() already retries up to tt_CALL_RETRY_
+// COUNT times, tt_CALL_RETRY_INTERVAL apart) - see that function's own comment on RELIABILITY for
+// why the distinction matters.
+typedef enum rmw_tickle_entity_kind_t {
+    RMW_TICKLE_ENTITY_PUBLISHER,
+    RMW_TICKLE_ENTITY_SUBSCRIPTION,
+    RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT,
+} rmw_tickle_entity_kind_t;
+
 // rmw_tickle/PLAN.md's Milestone 7: shared by rmw_create_publisher()/_subscription()/_client()/
 // _service() - rejects (RMW_RET_UNSUPPORTED + RMW_SET_ERROR_MSG) any QoS policy the "QoS roadmap"
 // table (PLAN.md) hasn't implemented yet, rather than silently ignoring it the way every create
-// function did through Milestone 6. `is_subscription` gates the one subscription-only check
-// (HISTORY/KEEP_ALL, an unbounded queue this rmw can't allocate for) - everything else applies to
-// every entity type's own qos_profile uniformly.
-rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, bool is_subscription);
+// function did through Milestone 6.
+rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, rmw_tickle_entity_kind_t entity_kind);
 
 // Forward reference only (pointer field below) - rmw_tickle_context_impl_t's own full definition
 // needs rmw_tickle_guard_condition_t to already be complete (it embeds one), so the two are
@@ -168,6 +177,10 @@ typedef struct rmw_tickle_publisher_t {
     const rosidl_message_type_support_t* type_support;
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks;
     rcutils_allocator_t allocator;
+    // The qos_profile rmw_create_publisher() was given, after rmw_tickle_validate_qos_profile()
+    // already accepted it - rmw_publisher_get_actual_qos() just returns this back verbatim, since
+    // this rmw never negotiates/downgrades a QoS policy the way a real DDS vendor might.
+    rmw_qos_profile_t qos;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-
@@ -209,6 +222,9 @@ typedef struct rmw_tickle_subscriber_t {
     size_t queue_head;
     size_t queue_count;
     uint64_t reception_sequence_number;
+    // See rmw_tickle_publisher_t.qos's own doc comment - same reasoning, for rmw_subscription_
+    // get_actual_qos().
+    rmw_qos_profile_t qos;
 } rmw_tickle_subscriber_t;
 
 // TickLE specific client data

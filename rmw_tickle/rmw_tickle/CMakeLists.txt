@@ -11,6 +11,7 @@ find_package(rmw REQUIRED)
 find_package(rmw_implementation_cmake REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_tickle_c REQUIRED)
+find_package(rosidl_typesupport_tickle_cpp REQUIRED)
 find_package(Threads REQUIRED)
 
 # TickLE itself isn't packaged as an ament/colcon package (it's a plain static-lib Makefile
@@ -52,29 +53,35 @@ target_include_directories(rmw_tickle PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(rmw_tickle
-  rcutils
-  rmw
-  rosidl_runtime_c
-  rosidl_typesupport_tickle_c
+# Modern imported-target style (matching how real rmw_cyclonedds_cpp/rmw_fastrtps_cpp already link
+# against these same packages) rather than ament_target_dependencies() - some ROS 2 distros (e.g.
+# "lyrical", found while provisioning rmw_tickle/PLAN.md's rmw-perf.yml benchmark rig) have removed
+# that macro entirely, not just reorganized which find_package() call provides it. One single
+# keyword-form call for everything, including Threads::Threads, sidesteps the plain-vs-keyword
+# target_link_libraries() mixing restriction the old two-call split existed to work around.
+target_link_libraries(rmw_tickle PUBLIC
+  rcutils::rcutils
+  rmw::rmw
+  rosidl_runtime_c::rosidl_runtime_c
+  rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+  rosidl_typesupport_tickle_cpp::rosidl_typesupport_tickle_cpp
+  Threads::Threads
 )
 
-# Plain (non-keyword) signature, matching ament_target_dependencies() above's own internal
-# target_link_libraries() calls for this same target - CMake refuses to mix the plain and
-# keyword (PUBLIC/PRIVATE/INTERFACE) signatures for one target across separate calls
-# ("All uses of target_link_libraries with a target must be either all-keyword or all-plain").
-target_link_libraries(rmw_tickle Threads::Threads)
-
 ament_export_targets(export_rmw_tickle HAS_LIBRARY_TARGET)
-ament_export_dependencies(rcutils rmw rosidl_runtime_c rosidl_typesupport_tickle_c)
+ament_export_dependencies(
+  rcutils rmw rosidl_runtime_c rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp)
 
-# rmw_tickle/PLAN.md's Milestone 8: registers the "rmw_typesupport"/"rmw_typesupport_c" ament_index
-# resources (share/ament_index/resource_index/rmw_typesupport/rmw_tickle, content "rosidl_
-# typesupport_tickle_c") that rmw_implementation_cmake's own get_available_rmw_implementations()/
-# get_default_rmw_implementation() read - the actual mechanism behind `RMW_IMPLEMENTATION=rmw_
-# tickle` selection, not just documentation. One language ("c"), one typesupport - matches this
-# package's own "Supported subset" (PLAN.md): no C++ typesupport, no introspection typesupport.
-register_rmw_implementation("c:rosidl_typesupport_tickle_c")
+# rmw_tickle/PLAN.md's Milestone 8: registers the "rmw_typesupport"/"rmw_typesupport_c"/
+# "rmw_typesupport_cpp" ament_index resources that rmw_implementation_cmake's own get_available_
+# rmw_implementations()/get_default_rmw_implementation() read - the actual mechanism behind
+# `RMW_IMPLEMENTATION=rmw_tickle` selection, not just documentation. Both languages now (see
+# rosidl_typesupport_tickle_cpp's own package.xml doc comment for why the "cpp" one had to be
+# added: rosidl_typesupport_tickle_c alone is unreachable from any real rclcpp C++ node) - no
+# introspection typesupport either way, matching this package's own "Supported subset" (PLAN.md).
+register_rmw_implementation(
+  "c:rosidl_typesupport_tickle_c"
+  "cpp:rosidl_typesupport_tickle_cpp")
 
 install(
   DIRECTORY include/
