@@ -18,6 +18,7 @@
 // unreachable from any real rclcpp application went undetected until a real benchmark (buildfarm_
 // perf_tests) actually exercised it - test_dispatch.c alone couldn't have caught it.
 
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -25,36 +26,36 @@
 
 #include <rosidl_runtime_c/message_type_support_struct.h>
 #include <rosidl_typesupport_cpp/message_type_support.hpp>
-#include <rosidl_typesupport_tickle_cpp/identifier.h>
 #include <rosidl_typesupport_tickle_c/message_type_support.h>
+#include <rosidl_typesupport_tickle_cpp/identifier.h>
 
-#include "rosidl_typesupport_tickle_c_tests/msg/simple.h"    // the C struct to_tickle/from_tickle actually use
-#include "rosidl_typesupport_tickle_c_tests/msg/simple.hpp"  // the C++ type a real rclcpp app passes
+#include "rosidl_typesupport_tickle_c_tests/msg/simple.h"   // the C struct to_tickle/from_tickle actually use
+#include "rosidl_typesupport_tickle_c_tests/msg/simple.hpp" // the C++ type a real rclcpp app passes
 
-int main(void) {
+auto main() -> int {
     // The exact handle a real rclcpp::create_publisher<Simple>()/create_subscription<Simple>()
     // call resolves internally, before ever reaching rmw_create_publisher()/rmw_create_
     // subscription() - see rosidl_typesupport_cpp/message_type_support.hpp's own declaration.
     const rosidl_message_type_support_t* top =
         rosidl_typesupport_cpp::get_message_type_support_handle<rosidl_typesupport_tickle_c_tests::msg::Simple>();
-    assert(top != NULL);
+    assert(top != nullptr);
     assert(strcmp(top->typesupport_identifier, "rosidl_typesupport_cpp") == 0);
 
     // Only reachable because rosidl_typesupport_tickle_cpp registered itself as a "rosidl_
     // typesupport_cpp" ament_index resource (see its own CMakeLists.txt) - without that, this
-    // call returns NULL regardless of whether rosidl_typesupport_tickle_c's own C-level dispatch
-    // (test_dispatch.c) is perfectly correct, which is exactly the bug this test guards against.
+    // call returns nullptr regardless of whether rosidl_typesupport_tickle_c's own C-level
+    // dispatch (test_dispatch.c) is perfectly correct, which is exactly the bug this test guards
+    // against.
     const rosidl_message_type_support_t* ours =
         get_message_typesupport_handle(top, rosidl_typesupport_tickle_cpp__identifier);
-    assert(ours != NULL);
+    assert(ours != nullptr);
     assert(ours->typesupport_identifier == rosidl_typesupport_tickle_cpp__identifier);
 
     // .data here is rosidl_typesupport_tickle_c's own real callbacks struct (borrowed directly,
     // not a second copy) - see rosidl_typesupport_tickle_cpp/resource/msg__type_support.cpp.in's
     // own doc comment for why it's reached this way instead of one more dispatch hop.
-    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks =
-        (const rosidl_typesupport_tickle_c_message_callbacks_t*)ours->data;
-    assert(callbacks != NULL);
+    const auto* callbacks = static_cast<const rosidl_typesupport_tickle_c_message_callbacks_t*>(ours->data);
+    assert(callbacks != nullptr);
     assert(callbacks->ros_struct_size == sizeof(struct rosidl_typesupport_tickle_c_tests__msg__Simple));
     assert(strcmp(callbacks->ros_type_name, "rosidl_typesupport_tickle_c_tests/msg/Simple") == 0);
 
@@ -62,12 +63,12 @@ int main(void) {
     memset(&ros_in, 0, sizeof(ros_in));
     ros_in.value = 10;
 
-    uint64_t tickle_storage[8] = {0}; // see test_dispatch.c's own sizing comment
-    assert(callbacks->to_tickle(&ros_in, tickle_storage));
+    std::array<uint64_t, 8> tickle_storage {}; // see test_dispatch.c's own sizing comment
+    assert(callbacks->to_tickle(&ros_in, tickle_storage.data()));
 
     struct rosidl_typesupport_tickle_c_tests__msg__Simple ros_out;
     memset(&ros_out, 0, sizeof(ros_out));
-    assert(callbacks->from_tickle(tickle_storage, &ros_out));
+    assert(callbacks->from_tickle(tickle_storage.data(), &ros_out));
     assert(ros_out.value == 10);
 
     printf("rosidl_typesupport_tickle_cpp dispatch (C++ entry point): PASS\n");
