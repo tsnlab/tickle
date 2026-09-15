@@ -289,13 +289,15 @@ jobs:
           # package.xml), unlike buildfarm_perf_tests' own two-DDS-vendor + performance_test
           # underlay - nothing here justifies a dedicated self-hosted runner.
           #
-          # Branches: rmw_implementation and test_interface_files at `rolling` (neither has an
-          # earlier jazzy-specific fork worth pinning to), rcl_interfaces at `jazzy` (matching this
-          # workflow's own ROS 2 distro, for test_msgs) - an intentionally mismatched pair, but the
-          # exact one verified end-to-end locally; rcl_interfaces' own `rolling` branch trimmed
-          # test_msgs down to a handful of DDS-security-key messages missing the classic BasicTypes/
-          # Constants/Empty/Strings set the tests here actually need.
-          git clone --branch rolling --depth 1 https://github.com/ros2/rmw_implementation test_ws/src/rmw_implementation
+          # Branches: rmw_implementation at `jazzy` (matching this workflow's own ROS 2 distro -
+          # `rolling`'s own version of test_rmw_implementation calls rmw_enclave_options_copy(),
+          # an API this distro's actual installed rmw package doesn't have yet, found the hard way
+          # via a real CI failure), test_interface_files at `rolling` (no jazzy-specific fork of
+          # its own, and its content this old hasn't needed one), rcl_interfaces at `jazzy` (for
+          # test_msgs - its own `rolling` branch trimmed test_msgs down to a handful of DDS-
+          # security-key messages missing the classic BasicTypes/Constants/Empty/Strings set the
+          # tests here actually need).
+          git clone --branch jazzy --depth 1 https://github.com/ros2/rmw_implementation test_ws/src/rmw_implementation
           git clone --branch rolling --depth 1 https://github.com/ros2/test_interface_files test_ws/src/test_interface_files
           git clone --branch jazzy --depth 1 https://github.com/ros2/rcl_interfaces test_ws/src/rcl_interfaces
           git -C test_ws/src/rmw_implementation apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/rmw_implementation_rmw_tickle.patch"

@@ -22,7 +22,7 @@
 #include <stdio.h>
 
 #include "rcutils/allocator.h"
-#include "rmw/enclave.h" // rmw_enclave_options_copy()
+#include "rcutils/strdup.h" // rcutils_strdup()
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/ret_types.h"
@@ -36,11 +36,12 @@ int main(void) {
     assert(RMW_RET_OK == rmw_init_options_init(&options, allocator));
     // rmw_init_options_init() itself leaves enclave NULL (a real caller, e.g. rcl_init(), always
     // sets one before calling rmw_init() - rmw_init() rejects a NULL enclave, matching test_rmw_
-    // implementation's own test_init_shutdown.cpp). A real heap allocation via rmw_enclave_options_
-    // copy() (a plain string-copy utility rmw itself implements, not something rmw_tickle needs to)
-    // - not a string literal: rmw_init_options_fini() below does free it, matching a real
-    // rcl_init()'s own enclave ownership.
-    assert(RMW_RET_OK == rmw_enclave_options_copy("/", &allocator, &options.enclave));
+    // implementation's own test_init_shutdown.cpp). A real heap allocation (rcutils_strdup(), the
+    // same primitive rmw_init_options_copy() itself uses - not rmw_enclave_options_copy(), which
+    // this ROS 2 distro's own rmw doesn't have yet) - not a string literal: rmw_init_options_fini()
+    // below does free it, matching a real rcl_init()'s own enclave ownership.
+    options.enclave = rcutils_strdup("/", allocator);
+    assert(NULL != options.enclave);
 
     rmw_context_t context = rmw_get_zero_initialized_context();
     assert(RMW_RET_OK == rmw_init(&options, &context));

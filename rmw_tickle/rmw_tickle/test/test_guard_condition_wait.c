@@ -20,7 +20,7 @@
 #include <stdio.h>
 
 #include "rcutils/allocator.h"
-#include "rmw/enclave.h" // rmw_enclave_options_copy()
+#include "rcutils/strdup.h" // rcutils_strdup()
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/ret_types.h"
@@ -37,7 +37,8 @@ int main(void) {
     // enclave (matching test_rmw_implementation's own test_init_shutdown.cpp contract), and it
     // must be a real heap allocation (rmw_init_options_fini() below frees it), not a string
     // literal.
-    assert(RMW_RET_OK == rmw_enclave_options_copy("/", &allocator, &options.enclave));
+    options.enclave = rcutils_strdup("/", allocator);
+    assert(NULL != options.enclave);
 
     rmw_context_t context = rmw_get_zero_initialized_context();
     assert(RMW_RET_OK == rmw_init(&options, &context));
