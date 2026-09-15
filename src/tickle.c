@@ -710,6 +710,7 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
+    pub->batch = false; // see tickle.h's own doc comment on this field for why this is the default
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
     }
@@ -1063,12 +1064,26 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
-    // Always batches (is_flush=false) - node_flush()'s own 1ms tick decides broadcast vs. unicast
-    // to pub->peers for the whole accumulated buffer at once (see its own comment on why that
-    // decision has to live there and not here: unicasting a single publish() immediately, tried
-    // and measured, collapsed a bulk/high-rate stream's real throughput by forgoing this
-    // batching entirely - node_flush() gets the traffic-reduction benefit without that cost).
-    if (!end_encode(node, submessage_header, false, NULL, 0)) {
+    // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
+    // it for why immediate is the default now): mirrors tt_Client_call()'s own peer decision and
+    // shared-tx_buffer guard exactly - unicast to pub->peers when there's a small enough known
+    // count (tt_UNICAST_PEER_THRESHOLD) *and* nothing else (e.g. a still-batched UPDATE announce
+    // from node_update()) was already sitting unflushed ahead of this DATA submessage, since
+    // unicasting would only reach these peers, not whatever else needs the whole segment.
+    // pub->batch == true keeps today's behavior unconditionally: never flush here, let
+    // node_flush()'s own tt_NODE_TX_INTERVAL tick decide broadcast vs. unicast for the whole
+    // accumulated buffer at once.
+    bool is_flush = !pub->batch;
+    const struct tt_Peer* peers = NULL;
+    uint8_t peer_count = 0;
+    if (is_flush) {
+        uint8_t count = count_peers(pub->peers);
+        if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header)) {
+            peers = pub->peers;
+            peer_count = count;
+        }
+    }
+    if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }

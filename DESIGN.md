@@ -288,16 +288,46 @@ converted, and the kernel treats `{0, 0}` as "block forever" for `SO_RCVTIMEO`, 
 immediately" - the root cause of both an inflated per-request latency and full hangs whenever a
 peer disappeared mid-run.
 
-## RPC flushes immediately; Publish batches
+## RPC and Publish flush immediately by default; batching is opt-in
 
 `tt_Client_call()`, `call_retry()`, and the server's response send all pass `is_flush=true` to
-`end_encode()`: the caller (or the peer waiting on a reply) is synchronously blocked, so
-neither leg of an RPC round trip can be left sitting in `tx_buffer` until `node_flush()`'s next
-`tt_NODE_TX_INTERVAL` (1ms) tick. `tt_Publisher_publish()` and the periodic `node_update()`
-announce still pass `is_flush=false` - pub/sub has no synchronous waiter, so opportunistic
-batching (flush only once the buffer would otherwise overflow) is free efficiency with no
-latency cost to anyone. This one change dropped measured RPC round-trip latency by ~6.7x (rtt
-avg 1.451ms → 0.217ms on the `ping`/`pong` example).
+`end_encode()` unconditionally: the caller (or the peer waiting on a reply) is synchronously
+blocked, so neither leg of an RPC round trip can be left sitting in `tx_buffer` until
+`node_flush()`'s next `tt_NODE_TX_INTERVAL` (1ms) tick. This one change dropped measured RPC
+round-trip latency by ~6.7x (rtt avg 1.451ms → 0.217ms on the `ping`/`pong` example).
+
+`tt_Publisher_publish()` mirrors this as its own *default* now (`tt_Publisher.batch == false`,
+set by `tt_Node_create_publisher()`) - measured on a real `rmw_tickle` round trip (`rmw_tickle/
+PLAN.md`'s `rmw-perf.yml` benchmark, a realistic ~1000 msg/s ROS 2 publish rate), dropping average
+two-process latency ~9x (0.44ms → 0.048ms), bringing it within ~1.5x of `rmw_fastrtps_cpp`/
+`rmw_cyclonedds_cpp` on the same rig (was ~13x slower before), with zero measured message loss.
+The periodic `node_update()` announce still always batches (`is_flush=false` unconditionally) -
+it's not latency-sensitive (nothing synchronously waits on it), and this is also what a batching
+Publisher's own deferred flush and this announce safely share one buffer under
+(`tx_has_pending_update`, see below).
+
+This makes an immediate-flush Publisher's own peer decision (unicast once discovery has matched
+`tt_UNICAST_PEER_THRESHOLD` or fewer Subscribers, same threshold/guard as below) fire on every
+`tt_Publisher_publish()` call instead of only at `node_flush()`'s own tick - **the "Discovery-
+learned peers" section right below documents a real, pre-existing risk this inherits unchanged,
+not one this introduces**: an *uncapped-rate* Publisher (`perf_client.c`'s own `-i 0` default, no
+rate limit) switching from broadcast to per-message unicast once discovery completes can outrun a
+receiver's own UDP socket buffer once self-receive no longer throttles the sender (measured on
+real hardware: ~95% receive collapse). Confirmed this session that a realistic, *rate-limited*
+publish loop (`rmw_tickle`'s own ~1000 msg/s above) doesn't reproduce it - the risk is specific to
+letting a Publisher run genuinely as fast as `tt_Node_poll()` allows, which was already true of
+`node_flush()`'s own existing unicast decision before this change, not new here.
+
+Setting `pub->batch = true` on a specific `tt_Publisher` opts it back into the pre-existing
+behavior instead: never flush from `tt_Publisher_publish()` itself, defer to `node_flush()`'s own
+tick exactly as every Publisher did before this field existed. This matters for one real, if
+unusual, case: a Publisher that calls `tt_Publisher_publish()` several times in a row for the same
+destination benefits from coalescing those into fewer, larger packets - measured (not guessed) on
+the same rig: a tight small-message (16-byte) stream's own achievable throughput fell ~4.4x
+(1.60M msg/s → 0.37M msg/s) when forced to flush immediately, one packet per message, instead of
+batching. A large message (close to `tt_MAX_BUFFER_LENGTH`, where at most one or two fit in
+`tx_buffer` at once regardless) saw no such cost either way - batching only pays for itself when
+several messages can actually share one packet.
 
 ## Discovery-learned peers: unicast to a few, broadcast to the rest
 

@@ -8,6 +8,13 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
+// ppoll() (tt_receive(), below) is a GNU/Linux extension - glibc's <poll.h> only declares it when
+// this is defined (or _DEFAULT_SOURCE, which the same feature-test-macros(7) family covers too;
+// spelled out explicitly here rather than relying on whatever default dialect happens to define
+// it, since that's exactly the kind of implicit dependency this whole file's own build shouldn't
+// need to guess about).
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <ifaddrs.h>
 #include <poll.h>
@@ -34,7 +41,6 @@
 #include "log.h"
 
 #define SEC_NS 1000000000LL
-#define MS_NS 1000000LL
 
 struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
@@ -207,33 +213,37 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
 }
 
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
-    // Wait for readability with poll() instead of arming SO_RCVTIMEO via setsockopt() before
+    // Wait for readability with ppoll() instead of arming SO_RCVTIMEO via setsockopt() before
     // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
     // scheduled event is due next), and re-arming a socket option that often is pure overhead -
-    // poll() just takes the timeout as a plain argument, no socket mutation needed.
+    // ppoll() just takes the timeout as a plain argument, no socket mutation needed. ppoll(), not
+    // plain poll(): poll()'s own timeout is a whole millisecond int, which silently rounds any
+    // shorter wait *up* to 1ms (a caller asking for e.g. tt_Node_poll()'s own default 100us
+    // effectively got throttled to roughly 10x that instead) - found the hard way benchmarking a
+    // real publish/subscribe round trip (rmw_tickle/PLAN.md's rmw-perf.yml). ppoll() takes a real
+    // struct timespec, so nothing shorter than a millisecond gets rounded at all.
     if (timeout >= 0) {
-        int timeout_ms;
-        if (timeout == 0) {
+        struct timespec* timeout_ts_ptr = NULL;
+        struct timespec timeout_ts;
+        if (timeout > 0) {
             // This function's contract (see hal.h) is "0 for no timeout", i.e. block until data
-            // arrives - not "don't wait at all", which is what poll()'s own timeout=0 means.
-            timeout_ms = -1;
-        } else {
-            timeout_ms = (int)(timeout / MS_NS);
-            if (timeout_ms == 0) {
-                // Sub-millisecond positive timeouts would round down to 0, which poll() treats
-                // as "don't wait at all" - round up so a short-but-nonzero wait still waits.
-                timeout_ms = 1;
-            }
+            // arrives - timeout_ts_ptr staying NULL is ppoll()'s own way to say exactly that, no
+            // special-cased sentinel value needed (unlike poll()'s own timeout=-1 convention).
+            timeout_ts.tv_sec = (time_t)(timeout / SEC_NS);
+            timeout_ts.tv_nsec = (long)(timeout % SEC_NS);
+            timeout_ts_ptr = &timeout_ts;
         }
 
-        // struct pollfd/POLLIN/poll() live in a glibc-private header; <poll.h> (included above) is
-        // the correct public header.
+        // struct pollfd/POLLIN/ppoll() live in a glibc-private header; <poll.h> (included above)
+        // is the correct public header.
         // NOLINTNEXTLINE(misc-include-cleaner)
         struct pollfd pfd[2] = {
             {.fd = node->hal.sock, .events = POLLIN, .revents = 0},    // NOLINT(misc-include-cleaner)
             {.fd = node->hal.wake_fd, .events = POLLIN, .revents = 0}, // NOLINT(misc-include-cleaner)
         };
-        int poll_ret = poll(pfd, 2, timeout_ms); // NOLINT(misc-include-cleaner)
+        // NOLINTNEXTLINE(misc-include-cleaner) -- sigmask=NULL: no signal-mask swap needed, only
+        // ppoll()'s own real (not millisecond-rounded) timeout resolution is what's wanted here.
+        int poll_ret = ppoll(pfd, 2, timeout_ts_ptr, NULL);
         if (poll_ret == 0) {
             return -1; // Timeout
         }

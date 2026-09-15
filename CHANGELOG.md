@@ -190,6 +190,18 @@ number, `tt_VERSION`, which moves independently.
   distros) replaced with modern imported targets, matching real `rmw_cyclonedds_cpp`'s own style.
 - `include/tickle/tickle.h`: `_Alignas` (a C11 keyword, not valid C++) replaced with a portable
   `tt_ALIGNAS()` macro so the header stays includable from C++ translation units.
+- `tt_Publisher_publish()` now flushes every call immediately by default (`tt_Publisher.batch`,
+  new field, defaults to `false`) instead of always batching until `node_flush()`'s next
+  `tt_NODE_TX_INTERVAL` (1ms) tick - see DESIGN.md's "RPC and Publish flush immediately by
+  default; batching is opt-in" for the measured ~9x real `rmw_tickle` round-trip latency drop
+  this produced (0.44ms → 0.048ms average, two-process). Set `pub->batch = true` on a specific
+  Publisher to opt back into the previous always-batch behavior - measured cost of *not* doing
+  that for a genuinely high-rate, many-small-messages stream: throughput fell ~4.4x (16-byte
+  messages, uncapped rate, `examples/linux/perf`). `tt_receive()` (`hal_linux.c`) switched from
+  `poll()` to `ppoll()` for the same reason from the other direction: `poll()`'s own timeout
+  is a whole millisecond, silently rounding any shorter wait *up* to 1ms; `ppoll()` takes a real
+  nanosecond-resolution `struct timespec`, so a sub-millisecond scheduled tick (`node_flush()`'s
+  own, in particular) no longer waits for a full millisecond it never asked for.
 
 ### Fixed
 

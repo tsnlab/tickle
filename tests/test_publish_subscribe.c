@@ -113,12 +113,14 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     node->endpoints[0] = (struct tt_Endpoint*)sub;
 }
 
-// Unlike tt_Client_call() (which flushes immediately - see test_client_call.c), publish batches:
-// it must only append to node->tx_buffer and bump pub->seq_no, never call tt_send() itself (see
-// DESIGN.md's "RPC flushes immediately; Publish batches"). This holds regardless of pub->peers -
-// the broadcast-vs-unicast decision for the batched content lives entirely in node_flush() (see
-// the test_node_flush_* cases below), not here.
-static void test_publish_buffers_without_flushing(void) {
+// pub->batch defaults to false (tt_Node_create_publisher() - here, init_publisher()'s own
+// memset() to 0 has the same effect), the same default RPC (tt_Client_call(), see
+// test_client_call.c) already had: tt_Publisher_publish() must flush immediately, not just
+// append to node->tx_buffer and wait for node_flush()'s next tick (DESIGN.md's "RPC and Publish
+// flush immediately by default; batching is opt-in"). No known peers here, so that flush must be
+// a broadcast - see test_publish_unicasts_to_known_peers_at_or_under_threshold below for the
+// peer-list case, which mirrors tt_Client_call()'s own equivalent decision exactly.
+static void test_publish_flushes_immediately_by_default(void) {
     test_mock_reset();
 
     struct tt_Node node;
@@ -131,9 +133,116 @@ static void test_publish_buffers_without_flushing(void) {
     tt_ret_t ret = tt_Publisher_publish(&pub, (struct tt_Data*)&value);
 
     EXPECT_EQ_INT(tt_RET_OK, ret);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);    // flushed immediately, as a broadcast
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // not a unicast - no known peers
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);    // and the buffer was reset by the flush
+    EXPECT_EQ_U32(1, (uint32_t)pub.seq_no);
+}
+
+// pub->batch == true opts a specific Publisher back into the pre-existing behavior: append to
+// node->tx_buffer and bump pub->seq_no, never call tt_send() itself, leaving node_flush()'s own
+// tt_NODE_TX_INTERVAL tick (see the test_node_flush_* cases below, which all set this too) to
+// decide broadcast vs. unicast for the whole accumulated buffer at once - the escape hatch for a
+// Publisher that really does call tt_Publisher_publish() several times in a row and would rather
+// coalesce those into fewer packets than minimize any one message's own latency.
+static void test_publish_batches_when_opted_in(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    pub.batch = true;
+
+    uint32_t value = 0x1234abcd;
+    tt_ret_t ret = tt_Publisher_publish(&pub, (struct tt_Data*)&value);
+
+    EXPECT_EQ_INT(tt_RET_OK, ret);
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count); // batched, not flushed
     EXPECT_TRUE(node.tx_tail > sizeof(struct tt_Header));  // something was appended
     EXPECT_EQ_U32(1, (uint32_t)pub.seq_no);
+}
+
+// At or under tt_UNICAST_PEER_THRESHOLD known peers, the immediate flush (pub->batch == false,
+// the default) must unicast to each of them instead of broadcasting - mirrors tt_Client_call()'s
+// own identical decision (test_client_call.c) exactly, now that Publish makes it too instead of
+// only ever deferring it to node_flush().
+static void test_publish_unicasts_to_known_peers_at_or_under_threshold(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+
+    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub.peers[1] = (struct tt_Peer) {.node_id = 3, .ip = 0xc0a80a03, .port = 8283};
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // one unicast per known peer
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);    // and no broadcast on top
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+}
+
+// More known peers than tt_UNICAST_PEER_THRESHOLD must fall back to broadcasting instead.
+static void test_publish_broadcasts_when_peer_count_exceeds_threshold(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+
+    for (int i = 0; i < tt_UNICAST_PEER_THRESHOLD + 1; i++) {
+        pub.peers[i] =
+            (struct tt_Peer) {.node_id = (uint8_t)(2 + i), .ip = 0xc0a80a00 + (uint8_t)(2 + i), .port = 8282};
+    }
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// The shared-tx_buffer guard: an immediate flush must not unicast (even with an otherwise
+// eligible peer count) when something else - a real, still-batched UPDATE announce from
+// node_update(), not just the tx_has_pending_update flag alone - is already sitting unflushed
+// ahead of this DATA submessage, since unicasting would only reach these peers, not the whole
+// segment that pending content needs. Mirrors tt_Client_call()'s own identical guard
+// (old_tx_tail == sizeof(struct tt_Header)).
+static void test_publish_falls_back_to_broadcast_when_buffer_not_empty(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    node_update(&node, 0, NULL); // really batches an UPDATE into tx_buffer, advancing tx_tail
+    EXPECT_TRUE(node.tx_tail > sizeof(struct tt_Header));
+
+    uint32_t value = 0x1234abcd;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    // publish() itself still flushes immediately here (pub->batch is still false) - it just must
+    // broadcast the combined buffer (UPDATE + DATA) rather than unicasting only to its own peers,
+    // which would have reached pub's Subscribers but not the rest of the segment the UPDATE needs.
+    // A trailing node_flush() call would be a no-op (nothing left to flush) - not needed to
+    // observe the result.
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
 }
 
 // A publish that can't fit in the remaining tx buffer must roll back to the pre-call tx_tail and
@@ -161,6 +270,9 @@ static void test_publish_rolls_back_on_out_of_buffer(void) {
 
 // node_flush() must broadcast (not unicast) when the Publisher has no known peers yet - the
 // pre-existing, unchanged default behavior discovery falls back to before it's learned anyone.
+// pub.batch = true opts this Publisher into the pre-1(publish-flushes-immediately) behavior so
+// there's actually something left for node_flush() itself to decide - see tickle.h's own doc
+// comment on tt_Publisher.batch.
 static void test_node_flush_broadcasts_with_no_known_peers(void) {
     test_mock_reset();
 
@@ -169,6 +281,7 @@ static void test_node_flush_broadcasts_with_no_known_peers(void) {
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
+    pub.batch = true;
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
@@ -183,9 +296,9 @@ static void test_node_flush_broadcasts_with_no_known_peers(void) {
 }
 
 // At or under tt_UNICAST_PEER_THRESHOLD known peers on the node's one Publisher, node_flush()
-// must unicast the whole batched buffer to each of them instead of broadcasting - batching (the
-// publish() call itself never flushes, see test_publish_buffers_without_flushing) is preserved;
-// only the destination changes at flush time.
+// must unicast the whole batched buffer to each of them instead of broadcasting - batching (opted
+// into via pub.batch = true - see test_publish_batches_when_opted_in) is preserved; only the
+// destination changes at flush time.
 static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold(void) {
     test_mock_reset();
 
@@ -194,6 +307,7 @@ static void test_node_flush_unicasts_to_known_publisher_peers_at_or_under_thresh
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
+    pub.batch = true;
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
@@ -220,6 +334,7 @@ static void test_node_flush_broadcasts_when_peer_count_exceeds_threshold(void) {
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
+    pub.batch = true;
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
@@ -249,6 +364,7 @@ static void test_node_flush_broadcasts_when_update_is_pending(void) {
     struct tt_Publisher pub;
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
+    pub.batch = true;
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
@@ -265,9 +381,12 @@ static void test_node_flush_broadcasts_when_update_is_pending(void) {
     EXPECT_TRUE(!node.tx_has_pending_update); // cleared - it just went out in that broadcast
 }
 
-// A node with more than one Publisher must keep broadcasting even if one of them has an
-// eligible peer count - tx_buffer could hold batched DATA from either Publisher, and unicasting
-// to just one's peers would misdirect (or simply drop, for the other Subscribers) the other's.
+// A node with more than one *batching* Publisher must keep broadcasting even if one of them has
+// an eligible peer count - tx_buffer could hold batched DATA from either Publisher, and
+// unicasting to just one's peers would misdirect (or simply drop, for the other Subscribers) the
+// other's. Only relevant to pub.batch == true Publishers at all: the default (immediate-flush)
+// ones never share a buffer window with another Publisher's own call in the first place - each
+// flushes (and resets tx_tail) before the next one's own call can begin.
 static void test_node_flush_broadcasts_when_multiple_publishers_on_node(void) {
     test_mock_reset();
 
@@ -278,6 +397,8 @@ static void test_node_flush_broadcasts_when_multiple_publishers_on_node(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub1, &node, &topic);
     init_publisher(&pub2, &node, &topic);
+    pub1.batch = true;
+    pub2.batch = true;
     node.endpoint_count = 2;
     node.endpoints[0] = (struct tt_Endpoint*)&pub1;
     node.endpoints[1] = (struct tt_Endpoint*)&pub2;
@@ -437,8 +558,12 @@ static void test_process_data_decode_failure_is_reported(void) {
 }
 
 int main(void) {
-    test_publish_buffers_without_flushing();
+    test_publish_flushes_immediately_by_default();
+    test_publish_batches_when_opted_in();
     test_publish_rolls_back_on_out_of_buffer();
+    test_publish_unicasts_to_known_peers_at_or_under_threshold();
+    test_publish_broadcasts_when_peer_count_exceeds_threshold();
+    test_publish_falls_back_to_broadcast_when_buffer_not_empty();
     test_node_flush_broadcasts_with_no_known_peers();
     test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold();
     test_node_flush_broadcasts_when_peer_count_exceeds_threshold();

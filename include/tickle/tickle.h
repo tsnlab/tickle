@@ -293,6 +293,18 @@ struct tt_Publisher { // extends endpoint
     // Known Subscribers matching this Publisher's topic, learned via UPDATE announces - see
     // tt_UNICAST_PEER_THRESHOLD.
     struct tt_Peer peers[tt_MAX_PEER_COUNT];
+
+    // false (tt_Node_create_publisher()'s own default): tt_Publisher_publish() flushes every call
+    // immediately, same as RPC already does (DESIGN.md's "RPC and Publish flush immediately by
+    // default; batching is opt-in") - lowest latency, and the right default for the common case of
+    // one message per publish() call, not several back-to-back to the same destination. true:
+    // batch instead, deferring to node_flush()'s own tt_NODE_TX_INTERVAL tick, exactly how every
+    // Publisher behaved before this field existed - set this on a specific Publisher that really
+    // does call tt_Publisher_publish() several times in a row (a real but unusual pattern) and
+    // would rather coalesce those into fewer, larger packets than minimize any one message's own
+    // latency. Set directly on the struct any time after tt_Node_create_publisher() returns it -
+    // same "caller-owned, plain field access" convention as peers[]/seq_no above.
+    bool batch;
 };
 
 struct tt_Subscriber;
