@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789473680879,
+  "lastUpdate": 1789473684207,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -7290,6 +7290,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.013,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "db7b7e64e720a22f92d1ca23b687889e5f371877",
+          "message": "Scope rmw-perf.yml down to rmw_tickle's own regression tracking\n\nbuildfarm_perf_tests' own \"two-process\" test shape launches both\nsides as local child processes via launch_ros.actions.Node, which\nhas no remote-host launch capability at all - it always means one\nhost, two OS processes, never two real hosts. That structurally\nfavors FastDDS/CycloneDDS, both of which auto-negotiate a same-host\nshared-memory transport rmw_tickle (real UDP sockets only) can't\nbenefit from - not a fair comparison, so Milestone 13's \"~1.5x of\nDDS\" number wasn't measuring what it looked like it was measuring.\n\nPERF_TEST_RMW_IMPLEMENTATIONS is now rmw_tickle only; rmw-perf.yml/\nREADME-rmw-perf.md/rmw_perf_summary.py updated to describe this rig\nas a regression tracker, not a cross-vendor comparison. Also\nrecorded (rmw_tickle/PLAN.md Milestone 14) that no credible\ncross-host alternative exists upstream - even the official ROS 2\nTSC's own RMW evaluation report runs on buildfarm_perf_tests and\nhas the same same-host caveat.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T21:00:19+09:00",
+          "tree_id": "397c6d37470864263bedb3f8b4cfdfc0e91de747",
+          "url": "https://github.com/tsnlab/tickle/commit/db7b7e64e720a22f92d1ca23b687889e5f371877"
+        },
+        "date": 1789473683049,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
             "unit": "ms"
           }
         ]
