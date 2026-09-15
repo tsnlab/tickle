@@ -268,6 +268,69 @@ jobs:
           colcon test --packages-select rmw_tickle --event-handlers console_direct+ || true
           colcon test-result --verbose
 
+      - name: Run the upstream rmw conformance suite (test_rmw_implementation) against rmw_tickle
+        run: |
+          # rmw_tickle/PLAN.md's Milestone 10 flagged this as its own "not done" item, and the
+          # follow-up research that found it confirmed it's not a TickLE-specific idea either:
+          # neither rmw_fastrtps_cpp's nor rmw_cyclonedds_cpp's own QUALITY_DECLARATION.md claims
+          # any test suite of their own for this - both point at this exact upstream package
+          # (ros2/rmw_implementation's test_rmw_implementation) for "Feature Testing"/"Public API
+          # Testing", and the official "Creating an rmw implementation" tutorial names it as *the*
+          # way to test a new rmw. Its own CMakeLists.txt auto-discovers every available rmw via
+          # rmw_implementation_cmake's call_for_each_rmw_implementation() (the same get_available_
+          # rmw_implementations() mechanism buildfarm_perf_tests already uses for rmw-perf.yml) -
+          # rmw_tickle needs no test executables of its own, only to be present in AMENT_PREFIX_PATH
+          # (already true - it was just built into install/ above) when this configures.
+          #
+          # Cloned fresh every run (this is a GitHub-hosted runner with no persistent state, unlike
+          # rmw-perf.yml's own tickle-perf underlay) rather than provisioned once - its own
+          # dependencies (rmw_dds_common, osrf_testing_tools_cpp, test_msgs, ament_cmake_ros) are
+          # all plain apt-installable ROS 2 packages (confirmed from test_rmw_implementation's own
+          # package.xml), unlike buildfarm_perf_tests' own two-DDS-vendor + performance_test
+          # underlay - nothing here justifies a dedicated self-hosted runner.
+          #
+          # Branches: rmw_implementation and test_interface_files at `rolling` (neither has an
+          # earlier jazzy-specific fork worth pinning to), rcl_interfaces at `jazzy` (matching this
+          # workflow's own ROS 2 distro, for test_msgs) - an intentionally mismatched pair, but the
+          # exact one verified end-to-end locally; rcl_interfaces' own `rolling` branch trimmed
+          # test_msgs down to a handful of DDS-security-key messages missing the classic BasicTypes/
+          # Constants/Empty/Strings set the tests here actually need.
+          git clone --branch rolling --depth 1 https://github.com/ros2/rmw_implementation test_ws/src/rmw_implementation
+          git clone --branch rolling --depth 1 https://github.com/ros2/test_interface_files test_ws/src/test_interface_files
+          git clone --branch jazzy --depth 1 https://github.com/ros2/rcl_interfaces test_ws/src/rcl_interfaces
+          git -C test_ws/src/rmw_implementation apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/rmw_implementation_rmw_tickle.patch"
+          git -C test_ws/src/rcl_interfaces apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/test_msgs_rmw_tickle.patch"
+          source /opt/ros/jazzy/setup.bash
+          # --from-paths narrowed to the three packages actually wanted, not the whole of either
+          # clone: rmw_implementation's *other* package (also named rmw_implementation, confusingly
+          # - the runtime dispatch one, not test_rmw_implementation) build_depends on all five DDS-
+          # vendor rmws including rmw_connextdds (proprietary, not apt-installable at all) - it's
+          # already on this runner anyway (part of ros-jazzy-ros-base, found via AMENT_PREFIX_PATH),
+          # nothing here needs to rebuild it from source. rcl_interfaces similarly ships several
+          # other packages (action_msgs, builtin_interfaces, ...) this step has no use for.
+          rosdep install --from-paths \
+            test_ws/src/rmw_implementation/test_rmw_implementation \
+            test_ws/src/test_interface_files \
+            test_ws/src/rcl_interfaces/test_msgs \
+            --ignore-src -y --rosdistro jazzy
+          colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
+            --packages-select test_interface_files test_msgs \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release
+          source test_ws/install/setup.bash
+          source install/setup.bash
+          colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
+            --packages-select test_rmw_implementation --cmake-args -DCMAKE_BUILD_TYPE=Release
+          source test_ws/install/setup.bash
+          # `-R "_rmw_tickle$"`: this same workspace's own test_msgs/test_rmw_implementation get
+          # rebuilt against whatever other rmws happen to be on this runner too (rmw_fastrtps_cpp,
+          # the jazzy default) via the same call_for_each_rmw_implementation() auto-discovery - only
+          # rmw_tickle's own results are this step's concern, not re-verifying FastDDS's already-
+          # covered-elsewhere conformance.
+          colcon test --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
+            --packages-select test_rmw_implementation --event-handlers console_direct+ \
+            --ctest-args -R "_rmw_tickle$" || true
+          colcon test-result --test-result-base test_ws/build --verbose
+
       - name: Check all
         uses: tsnlab/check@main
         with:
