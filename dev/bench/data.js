@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789484586669,
+  "lastUpdate": 1789484589875,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6042,6 +6042,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.736,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "67fee2895146c4cccf70641174319678788f33f4",
+          "message": "Add rmw_tickle's own QUALITY_DECLARATION.md (REP-2004)\n\nSame structure and section-level wording as rmw_fastrtps_cpp's/\nrmw_cyclonedds_cpp's own declarations (confirmed near-identical\nbetween the two), substituting honest facts for rmw_tickle rather\nthan copying claims that would be false for it: Quality Level 4\n(not 2 - version 0.0.1, not yet semver-stable; Linux-only CI, not\nall REP-2000 Tier 1 platforms; no documented DCO/CLA... wait, DCO\npolicy does exist via CONTRIBUTING.md; no coverage tracking\ninfrastructure), GPL-3.0-or-later (not Apache 2.0), and this\nrepository's own DESIGN.md/PLAN.md in place of ci.ros2.org/\ndocs.ros2.org links that don't apply here.\n\nNames test_rmw_implementation (wired into check-all.yml this same\nsession) and rmw_tickle's own scoped test suite for Feature/API\ntesting - and, honestly overachieving relative to both reference\nvendors on one point: rmw-perf.yml is a real performance-tracking\nCI job neither of them has for themselves (\"does not currently have\nperformance tests,\" their own words).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T23:51:50+09:00",
+          "tree_id": "0ad820797361d252b03d9c2fc2f0f7b2c845fc57",
+          "url": "https://github.com/tsnlab/tickle/commit/67fee2895146c4cccf70641174319678788f33f4"
+        },
+        "date": 1789484588647,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.622,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 893.965,
             "unit": "Mbps"
           }
         ]
