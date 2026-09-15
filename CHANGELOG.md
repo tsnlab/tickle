@@ -191,6 +191,29 @@ number, `tt_VERSION`, which moves independently.
 - `include/tickle/tickle.h`: `_Alignas` (a C11 keyword, not valid C++) replaced with a portable
   `tt_ALIGNAS()` macro so the header stays includable from C++ translation units.
 
+### Fixed
+
+- `rmw_tickle`'s own `poll_thread_main()` no longer starves `rmw_publish()` (and every other
+  entry point sharing the same per-node mutex) for tens to hundreds of milliseconds at a time
+  under sustained load - found by getting `rmw-perf.yml`'s benchmark to actually produce non-zero
+  numbers (a passing two-process run had silently exchanged zero messages the whole time).
+  `poll_thread_main()`'s own `lock()` -> `tt_Node_poll()` -> `unlock()` loop re-locked the same
+  mutex again immediately with no gap; glibc's mutex makes no fairness guarantee, and a thread
+  re-locking a mutex it just released can win the race against a different, already-waiting
+  thread's futex wake+reschedule far more often than intuition suggests, especially at this call
+  pattern's high frequency (~1000/s) and short critical section. A real (measured, not guessed)
+  `nanosleep()` between `unlock()` and the next `lock()` fixes it - `sched_yield()` does not
+  (Linux's CFS scheduler treats it as close to a no-op).
+- `TICKLE_NODE_ID` environment variable (`rmw_init.c`, mirroring the existing
+  `TICKLE_BROADCAST_ADDR`): two `rmw_tickle` nodes running on the *same host* (e.g. `buildfarm_
+  perf_tests`' own "two-process" test topology) previously derived the identical node id
+  (`tt_get_node_id()`'s own auto-detect uses the last octet of the host's address - correct for
+  two real separate hosts, not two processes sharing one), causing each to silently discard
+  100% of the other's traffic as "self sent" - a real, silent, zero-throughput failure with no
+  crash or error message. `examples/linux/*`'s own standalone binaries already had a `-I
+  node_id` CLI flag for exactly this; this is the equivalent for anything (like an rmw plugin)
+  with no CLI of its own to extend.
+
 ## [1.0.0] - 2026-09-14
 
 First tagged release.

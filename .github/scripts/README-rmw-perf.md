@@ -81,7 +81,7 @@ packages against the workspace this doc sets up ahead of time.
    # expect to see rmw_fastrtps_cpp and rmw_cyclonedds_cpp (at minimum)
    ```
 
-4. **Three local, TickLE-specific patches to the underlay's own sources** - found the hard way
+4. **Four local, TickLE-specific patches to the underlay's own sources** - found the hard way
    getting `rmw_tickle` through a real `buildfarm_perf_tests` run for the first time. None of
    these are upstreamed; they live only in this checkout of `~/rmw_perf_ws/src`, applied once here
    during provisioning (not by `rmw-perf.yml` on every run - that workflow only rebuilds
@@ -138,6 +138,29 @@ packages against the workspace this doc sets up ahead of time.
       time, one instance per rmw/topic/sync-mode combination) - the `@COMM@`/`@RMW_IMPLEMENTATION@`
       placeholders are substituted per-instance, so this guard only adds the extra args for
       `rmw_tickle` combinations, leaving FastDDS/CycloneDDS runs untouched.
+
+   d. **The two-process case needs each side given a distinct TickLE node id.** A tickle node's
+      own id defaults to the last octet of its host's own address (see `include/tickle/config.h`'s
+      own doc comment on `_tt_CONFIG.node_id`) - correct for two real separate hosts, but the
+      "two-process" test topology runs *both* sides on this one runner, so without an override
+      both sides derive the identical id and each silently discards the other's every packet as
+      "self sent" (`process_datagram()`, `tickle.c`) - not a hang or a crash, `perf_test` reports a
+      completed run with `received_messages: 0` for the whole duration. `TICKLE_NODE_ID` (an
+      environment variable read once in `rmw_init()`, mirroring `TICKLE_BROADCAST_ADDR` just above
+      it) is the override. In the same `generate_test_description()` function edited in (c), add
+      right after `tickle_ros_args`:
+      ```python
+      tickle_env_pub = (
+          {'TICKLE_NODE_ID': '101'}
+          if '@COMM@' == 'ROS2' and '@RMW_IMPLEMENTATION@' == 'rmw_tickle' else {})
+      tickle_env_sub = (
+          {'TICKLE_NODE_ID': '102'}
+          if '@COMM@' == 'ROS2' and '@RMW_IMPLEMENTATION@' == 'rmw_tickle' else {})
+      ```
+      then add `additional_env=tickle_env_pub` to `node_pub`'s own `Node(...)` call and
+      `additional_env=tickle_env_sub` to `node_under_test`'s - the specific numbers don't matter,
+      only that the two nodes get different ones. (The single-process case needs nothing here -
+      one process, one node, no id to collide with.)
 
    Re-running `colcon build` for `performance_test`/`buildfarm_perf_tests` (step 2's own command)
    after any of these picks the patches up - `rmw-perf.yml`'s own "Rebuild buildfarm_perf_tests

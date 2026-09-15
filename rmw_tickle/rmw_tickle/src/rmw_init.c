@@ -173,6 +173,21 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         _tt_CONFIG.broadcast = broadcast_addr;
     }
 
+    // Same reasoning as TICKLE_BROADCAST_ADDR just above, for _tt_CONFIG.node_id (config.h's own
+    // doc comment on that field spells out exactly this scenario): tt_get_node_id()'s auto-detect
+    // derives a node's id from the last octet of its own address on the broadcast subnet, which
+    // silently collides whenever two rmw_tickle processes share one host/interface (e.g.
+    // buildfarm_perf_tests' own "two_process" test topology, both sides on the same CI runner) -
+    // each then discards the other's every packet as "self sent" (process_datagram(), tickle.c).
+    // Real separate hosts need no override at all; examples/linux/*'s own standalone binaries
+    // already expose this as a `-I` CLI flag for exactly the same reason - an rmw plugin has no
+    // CLI of its own to extend, so this is the equivalent for anything that launches multiple
+    // rmw_tickle nodes on one host (e.g. rmw-perf.yml's own launch template).
+    char* node_id = getenv("TICKLE_NODE_ID");
+    if (node_id != NULL) {
+        _tt_CONFIG.node_id = atoi(node_id);
+    }
+
     return RMW_RET_OK;
 }
 

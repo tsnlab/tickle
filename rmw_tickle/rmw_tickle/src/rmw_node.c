@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #include <tickle/config.h> // tt_RECEIVE_TIMEOUT
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
@@ -71,6 +72,13 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
     pthread_mutex_unlock(&context_impl->wait_mutex);
 }
 
+// A deliberate, measured gap between one tt_Node_poll() cycle's unlock() and the next cycle's
+// lock() - see poll_thread_main()'s own comment on why. 1us was enough to fully restore publish()
+// throughput in that same benchmark (measured, not guessed) - negligible next to RMW_TICKLE_POLL_
+// TIMEOUT_NS's own ~1ms-rounded-up cadence (config.h/hal_linux.c), so it doesn't meaningfully
+// delay receive/flush responsiveness either, but real (nanosleep, not sched_yield()) - see below.
+#define RMW_TICKLE_POLL_THREAD_YIELD_NS tt_MICROSECOND
+
 static void* poll_thread_main(void* arg) {
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)arg;
     while (node_impl->poll_thread_running) {
@@ -82,6 +90,28 @@ static void* poll_thread_main(void* arg) {
         // failure either, so no per-code special-casing beyond the loop condition itself.
         tt_Node_poll(&node_impl->tickle_node, RMW_TICKLE_POLL_TIMEOUT_NS);
         pthread_mutex_unlock(&node_impl->mutex);
+
+        // Found the hard way, benchmarking a real sustained publish rate (rmw_tickle/PLAN.md's
+        // rmw-perf.yml): without a real gap here, this thread's own unlock()-then-immediately-
+        // relock() pattern starves any *other* thread blocked in pthread_mutex_lock() on the same
+        // mutex (rmw_publish() et al.) for tens to hundreds of milliseconds at a time - glibc's
+        // mutex makes no fairness guarantee, and a thread re-locking a mutex it just released can
+        // win the race against a parked waiter's own futex wake+reschedule far more often than
+        // intuition suggests, especially under this call pattern's extremely short critical
+        // section and high call frequency (~1000/s). Measured: publish() throughput at ~1000Hz
+        // dropped to single digits/sec without this; a plain sched_yield() here did *not* fix it
+        // (Linux's CFS scheduler treats it as close to a no-op) - only an actual timed sleep,
+        // forcing a real scheduler-mediated handoff, did. The cost is negligible: this thread's
+        // own poll cadence is already ~1ms (RMW_TICKLE_POLL_TIMEOUT_NS rounds up to tt_receive()'s
+        // own 1ms poll() minimum - see hal_linux.c), so 1us more here is in the noise, and doesn't
+        // touch actual network receive latency either way (a real incoming packet or tt_Node_
+        // interrupt() still wakes tt_Node_poll() itself promptly; this sleep only delays how soon
+        // *this thread* loops back to call it again).
+        struct timespec yield_duration = {
+            .tv_sec = 0,
+            .tv_nsec = RMW_TICKLE_POLL_THREAD_YIELD_NS,
+        };
+        nanosleep(&yield_duration, NULL);
     }
     return NULL;
 }
