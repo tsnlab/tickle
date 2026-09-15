@@ -16,6 +16,19 @@
 #include <tickle/config.h>
 #include <tickle/hal.h>
 
+// _Alignas is a C11 keyword, not a C++ one (C++11's own equivalent is the unprefixed `alignas`,
+// a real keyword there rather than a macro) - a plain `_Alignas` fails to parse under a C++
+// compiler (misread as a function declarator). This header is otherwise plain C11, safe to
+// #include from C++ (rmw_tickle/rosidl_typesupport_tickle_c both do) except for this one spot -
+// tt_ALIGNAS keeps it that way rather than requiring every C++ includer to pre-define _Alignas
+// itself.
+#ifdef __cplusplus
+#define tt_ALIGNAS(n) alignas(n)
+#else
+#include <stdalign.h> // _Alignas (C11) - already a keyword on most compilers, but not guaranteed
+#define tt_ALIGNAS(n) _Alignas(n)
+#endif
+
 // Library version (semantic). tt_VERSION further down is the on-the-wire *protocol* version and
 // moves independently. TICKLE_VERSION packs major/minor/patch for a single #if comparison, e.g.
 //   #if TICKLE_VERSION >= TICKLE_VERSION_MAKE(1, 2, 0)
@@ -92,7 +105,7 @@ struct tt_Node {
     // offset past the framing headers) is itself 4-aligned - see "Interface serialization
     // (TickLE CDR-4)" in DESIGN.md. tt_Node already has >= 8-byte alignment (it holds uint64_t
     // members); _Alignas keeps that true for these buffers regardless of member reordering.
-    _Alignas(4) uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
+    tt_ALIGNAS(4) uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t tx_tail;
     uint32_t tx_size;
     // Set whenever node_update()'s always-broadcast UPDATE announce is sitting batched,
@@ -101,7 +114,7 @@ struct tt_Node {
     // UPDATE has to reach the whole segment, not just a couple of known peers. See node_flush().
     bool tx_has_pending_update;
 
-    _Alignas(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
+    tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
     uint32_t rx_size;
 

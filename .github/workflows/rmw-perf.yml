@@ -26,10 +26,10 @@ jobs:
       # rmw_tickle's own "Supported subset" (rmw_tickle/PLAN.md): only flat messages under
       # TickLE's single-datagram ceiling (tt_MAX_BUFFER_LENGTH = 1472 bytes, include/tickle/
       # config.h - no fragmentation) and no nested-message types (rosidl_typesupport_tickle_c
-      # doesn't generate for those yet). Array1k/Struct16/Struct256 are buildfarm_perf_tests' own
-      # smallest flat topics - see that repo's test/CMakeLists.txt for the full topic list this
-      # was chosen from.
-      PERF_TEST_TOPICS: "Array1k;Struct16;Struct256"
+      # doesn't generate for those yet - confirmed the hard way: Struct256 embeds a nested
+      # Struct16 field, so it's excluded here, not just "small enough" - see README-rmw-perf.md's
+      # own provisioning notes on the Array1k/Struct16.msg symlink workaround this rig needs).
+      PERF_TEST_TOPICS: "Array1k;Struct16"
       PERF_TEST_RMW_IMPLEMENTATIONS: "rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
       # Short by buildfarm_perf_tests' own default (30s/topic) for a first pass across 3 topics x
       # 3 rmws x 2 sync modes - revisit once real per-combo runtime on this rig is known.
@@ -56,7 +56,7 @@ jobs:
           source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
           colcon build \
-            --packages-select rmw_tickle rosidl_typesupport_tickle_c \
+            --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp \
             --cmake-args -DBUILD_SHARED_LIBS=ON
           # BUILD_SHARED_LIBS=ON: rosidl_typesupport_c's own runtime dispatch dlopen()s a
           # message's specific typesupport implementation by convention name - impossible for a

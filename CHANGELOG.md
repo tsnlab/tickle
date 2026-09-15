@@ -158,6 +158,38 @@ number, `tt_VERSION`, which moves independently.
   publish/subscribe/service round trip (a second node/peer) and the upstream `rmw_implementation`/
   `test_rmw_implementation` conformance suites remain out of scope - no live multi-process test
   infra exists yet for rmw_tickle, the same boundary every milestone through this one has kept.
+- `rosidl_typesupport_tickle_cpp` (`rmw_tickle/PLAN.md`'s Milestone 11): closes a gap found while
+  provisioning a benchmark comparing `rmw_tickle` against `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp`
+  via `ros2/buildfarm_perf_tests` - `rclcpp::create_publisher<T>()`/`create_subscription<T>()`
+  always start from the C++-level `"rosidl_typesupport_cpp"` dispatch, which `rosidl_typesupport_
+  tickle_c` (Milestone 1) was never registered under, making it structurally unreachable from any
+  real rclcpp C++ node. The new package registers `"rosidl_typesupport_cpp"` and delegates
+  straight to the existing `rosidl_typesupport_tickle_c` symbol per message via a real link-time
+  call. `rmw_typesupport.c` now tries the new identifier first, falling back to the plain `"_c"`
+  one for lower-level/C-only callers. New `rosidl_typesupport_tickle_c_tests/test/test_dispatch_
+  cpp.cpp` exercises the actual rclcpp-style entry point, closing the blind spot `test_dispatch.c`'s
+  own C-only macro left open.
+- `rmw_publisher_get_actual_qos`/`rmw_subscription_get_actual_qos`, `rmw_get_gid_for_publisher`,
+  and `rmw_publisher_event_init`/`rmw_subscription_event_init` (`RMW_RET_UNSUPPORTED`, per `rmw/
+  event.h`'s own documented contract) - found missing by the same benchmark: a real `rclcpp::
+  Publisher`/`Subscription` construction calls all of these unconditionally, unlike most other
+  optional `rmw_*()` extras `rclcpp` merely probes and tolerates the absence of.
+- `.github/workflows/rmw-perf.yml` + `.github/scripts/README-rmw-perf.md`: a new self-hosted-
+  runner (`tickle-perf` label) workflow comparing `rmw_tickle`/`rmw_fastrtps_cpp`/
+  `rmw_cyclonedds_cpp` via `ros2/buildfarm_perf_tests`, `workflow_dispatch`-only for now.
+
+### Changed
+
+- `rmw_tickle_validate_qos_profile()` now takes an `rmw_tickle_entity_kind_t` instead of a plain
+  `bool is_subscription`, and accepts `RELIABLE` for services/clients specifically (backed by
+  `tt_Client_call()`'s own existing bounded retry) - a real `rclcpp::Node` unconditionally creates
+  internal services (e.g. the type description service) at `RELIABLE` with no way to opt out, so
+  rejecting it there would make `rmw_tickle` unable to host any real rclcpp node at all. Still
+  rejected for publishers/subscriptions (topics have no retry mechanism at all).
+- `rmw_tickle/CMakeLists.txt`: `ament_target_dependencies()` (fully removed on some newer ROS 2
+  distros) replaced with modern imported targets, matching real `rmw_cyclonedds_cpp`'s own style.
+- `include/tickle/tickle.h`: `_Alignas` (a C11 keyword, not valid C++) replaced with a portable
+  `tt_ALIGNAS()` macro so the header stays includable from C++ translation units.
 
 ## [1.0.0] - 2026-09-14
 

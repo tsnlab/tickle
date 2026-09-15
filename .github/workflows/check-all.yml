@@ -142,9 +142,9 @@ jobs:
           # first on PATH, so that's the python3 CMake's find_package(Python3) resolves to, not
           # the system one apt's packages would land in.
           pip install numpy lark catkin_pkg
-          # Two colcon build calls, not one covering all three packages: rosidl_typesupport_tickle_c_
-          # tests' own rosidl_generate_interfaces() call needs rosidl_typesupport_tickle_c to already
-          # be *discoverable via the ament index*, not just find_package()-able. A one-off diagnostic
+          # Two colcon build calls, not one covering all four packages: rosidl_typesupport_tickle_c_
+          # tests' own rosidl_generate_interfaces() call needs rosidl_typesupport_tickle_c/_cpp to
+          # already be *discoverable via the ament index*, not just find_package()-able. A one-off diagnostic
           # run (echoing AMENT_PREFIX_PATH and `find`ing the installed marker file right after
           # sourcing install/setup.bash below) confirmed colcon's own per-package environment
           # extension already gets this right even within one combined colcon build call - so this
@@ -164,7 +164,7 @@ jobs:
           # ros/jazzy's own apt-built packages are already shared (that's how apt-packaged ROS 2 is
           # always built) - only our own two packages, built fresh here, needed telling explicitly.
           colcon build \
-            --packages-select rmw_tickle rosidl_typesupport_tickle_c \
+            --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp \
             --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=ON
           source install/setup.bash
           colcon build \
@@ -178,10 +178,11 @@ jobs:
           # rosidl_typesupport_tickle_c's) - see rmw_tickle/PLAN.md's Milestone 1(c).
           jq -s 'add' compile_commands.json build/rmw_tickle/compile_commands.json \
             build/rosidl_typesupport_tickle_c/compile_commands.json \
+            build/rosidl_typesupport_tickle_cpp/compile_commands.json \
             build/rosidl_typesupport_tickle_c_tests/compile_commands.json > compile_commands.tmp
           mv compile_commands.tmp compile_commands.json
 
-      - name: Verify rosidl_typesupport_tickle_c is reachable through the standard dispatch chain
+      - name: Verify rosidl_typesupport_tickle_c/_cpp are reachable through the standard dispatch chain
         run: |
           # rmw_tickle/PLAN.md's Milestone 1(c) - the whole point of registering rosidl_
           # typesupport_tickle_c as a "rosidl_typesupport_c" ament_index resource (see that
@@ -193,10 +194,18 @@ jobs:
           # compiles") - install/setup.bash is needed so the dynamic loader can find the shared
           # library get_message_typesupport_handle_function()/get_service_typesupport_handle_
           # function() themselves dlopen() at runtime by convention name.
+          #
+          # test_dispatch_cpp exercises a *different* starting point - rosidl_typesupport_cpp::
+          # get_message_type_support_handle<T>(), the one a real rclcpp::Node actually uses - and
+          # exists because test_dispatch.c's own ROSIDL_GET_MSG_TYPE_SUPPORT() macro starts one
+          # level lower (rosidl_typesupport_c directly) and so never exercised the rosidl_
+          # typesupport_tickle_cpp gap that made rmw_tickle unreachable from any real rclcpp
+          # application until this package was added - see its own package.xml doc comment.
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_srv
+          ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_cpp
 
       - name: Verify RMW_IMPLEMENTATION=rmw_tickle selection works
         run: |

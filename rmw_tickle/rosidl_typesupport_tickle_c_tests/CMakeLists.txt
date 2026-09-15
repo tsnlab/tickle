@@ -28,6 +28,14 @@ find_package(rosidl_typesupport_c REQUIRED)
 # resource("rosidl_typesupport_c") and rmw_tickle/PLAN.md's Milestone 1(c).
 find_package(rosidl_typesupport_tickle_c REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
+# Same reasoning as rosidl_typesupport_tickle_c above, one dispatch level up - pulling these in
+# before rosidl_generate_interfaces() is what makes it also generate this message's C++-level
+# dispatch entry (rosidl_typesupport_cpp) with rosidl_typesupport_tickle_cpp as one of its
+# candidates, and rosidl_typesupport_tickle_cpp's own per-message wrapper on top of that - see
+# rosidl_typesupport_tickle_cpp's own package.xml doc comment.
+find_package(rosidl_generator_cpp REQUIRED)
+find_package(rosidl_typesupport_cpp REQUIRED)
+find_package(rosidl_typesupport_tickle_cpp REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Simple.msg"
@@ -49,6 +57,19 @@ if(BUILD_TESTING)
       rosidl_runtime_c::rosidl_runtime_c
     )
   endforeach()
+
+  # See test/test_dispatch_cpp.cpp's own doc comment for why this is a separate executable from
+  # test_dispatch above, not just an addition to it.
+  add_executable(test_dispatch_cpp test/test_dispatch_cpp.cpp)
+  target_link_libraries(test_dispatch_cpp
+    "${PROJECT_NAME}__rosidl_generator_c"
+    "${PROJECT_NAME}__rosidl_generator_cpp"
+    "${PROJECT_NAME}__rosidl_typesupport_cpp"
+    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+    rosidl_typesupport_tickle_cpp::rosidl_typesupport_tickle_cpp
+    rosidl_runtime_c::rosidl_runtime_c
+  )
+  set_target_properties(test_dispatch_cpp PROPERTIES CXX_STANDARD 17)
 endif()
 
 ament_package()

@@ -81,8 +81,71 @@ packages against the workspace this doc sets up ahead of time.
    # expect to see rmw_fastrtps_cpp and rmw_cyclonedds_cpp (at minimum)
    ```
 
+4. **Three local, TickLE-specific patches to the underlay's own sources** - found the hard way
+   getting `rmw_tickle` through a real `buildfarm_perf_tests` run for the first time. None of
+   these are upstreamed; they live only in this checkout of `~/rmw_perf_ws/src`, applied once here
+   during provisioning (not by `rmw-perf.yml` on every run - that workflow only rebuilds
+   `rmw_tickle`'s own packages and reconfigures `buildfarm_perf_tests`, per its own comments).
+
+   a. **`performance_test`'s own `Array1k.msg`/`Struct16.msg` need a standard-layout symlink.**
+      `performance_test`'s `CMakeLists.txt` uses `rosidl_generate_interfaces()`'s colon-prefixed
+      custom-base-directory syntax (`"${CMAKE_CURRENT_SOURCE_DIR}/src:msg/Array1k.msg"`, real file
+      at `src/msg/Array1k.msg`) - `rosidl_typesupport_tickle_c_generate_interfaces.cmake`'s own
+      path-derivation only understands the standard `<pkg>/msg/<Name>.msg` layout yet (a real,
+      not-yet-fixed limitation - not fixed here since a symlink workaround costs nothing and
+      touches nothing upstream):
+      ```sh
+      cd ~/rmw_perf_ws/src/performance_test/performance_test
+      mkdir -p msg
+      ln -s ../src/msg/Array1k.msg msg/Array1k.msg
+      ln -s ../src/msg/Struct16.msg msg/Struct16.msg
+      ```
+      (`Struct256.msg` deliberately has no symlink here - it embeds a nested `Struct16` field,
+      which `rosidl_typesupport_tickle_c` doesn't support yet - see `rmw-perf.yml`'s own
+      `PERF_TEST_TOPICS`, which excludes it for exactly this reason.)
+
+   b. **`performance_test`'s own nodes need several rclcpp internals disabled.** A real
+      `rclcpp::Node` unconditionally creates a `/rosout` publisher and parameter services/event
+      publisher, all at `RELIABLE` QoS - `rmw_tickle` only accepts `BEST_EFFORT` for topics (see
+      `rmw_tickle/PLAN.md`'s QoS roadmap). Edit
+      `~/rmw_perf_ws/src/performance_test/performance_test/src/communication_abstractions/resource_manager.cpp`,
+      changing:
+      ```cpp
+      auto options = rclcpp::NodeOptions();
+      ```
+      to:
+      ```cpp
+      auto options = rclcpp::NodeOptions().start_parameter_services(false).start_parameter_event_publisher(false).enable_rosout(false);
+      ```
+
+   c. **`buildfarm_perf_tests`' own launch template needs one more internal service disabled.**
+      The `~/get_type_description` service is *also* mandatory and `RELIABLE`, but - unlike (b) -
+      there's no `NodeOptions` flag for it, only a ROS **parameter** (`start_type_description_
+      service`, see `rclcpp`'s own `node_type_descriptions.cpp`). Edit
+      `~/rmw_perf_ws/src/buildfarm_perf_tests/test/test_performance.py.in`'s
+      `generate_test_description()` function: add, right after the existing `arguments = [...]`
+      assignment,
+      ```python
+      tickle_ros_args = ([
+          '--ros-args', '--param', 'start_type_description_service:=false',
+      ] if '@COMM@' == 'ROS2' and '@RMW_IMPLEMENTATION@' == 'rmw_tickle' else [])
+      ```
+      then append `+ tickle_ros_args` as the **last** element of both `node_pub`'s and
+      `node_under_test`'s own `arguments=...` lists (after `-s 0`/`-p 0`/`-l ...` respectively) -
+      it must come last, or `perf_test`'s own CLI parser misreads whatever follows `--ros-args` as
+      more ROS arguments instead of its own flags (`boost::program_options::invalid_option_value`).
+      This file is a template (`configure_file()`/`file(GENERATE)`-processed at CMake configure
+      time, one instance per rmw/topic/sync-mode combination) - the `@COMM@`/`@RMW_IMPLEMENTATION@`
+      placeholders are substituted per-instance, so this guard only adds the extra args for
+      `rmw_tickle` combinations, leaving FastDDS/CycloneDDS runs untouched.
+
+   Re-running `colcon build` for `performance_test`/`buildfarm_perf_tests` (step 2's own command)
+   after any of these picks the patches up - `rmw-perf.yml`'s own "Rebuild buildfarm_perf_tests
+   with rmw_tickle now visible" step forces a reconfigure every run regardless (`--cmake-force-
+   configure`), so (c) in particular always takes effect even without a manual rebuild first.
+
 `rmw-perf.yml` itself (run on every manual dispatch) builds `rmw_tickle`/`rosidl_typesupport_
-tickle_c` fresh on top of this underlay, then *does* reconfigure and rebuild `buildfarm_perf_tests`
+tickle_c`/`rosidl_typesupport_tickle_cpp` fresh on top of this underlay, then *does* reconfigure and rebuild `buildfarm_perf_tests`
 itself every run too - that package's own `get_available_rmw_implementations()` call runs at its
 CMake configure time, so it has to be re-run once `rmw_tickle` is newly visible in `AMENT_PREFIX_
 PATH`, with this run's own `PERF_TEST_TOPICS`/`PERF_TEST_RMW_IMPLEMENTATIONS` cache overrides. It
@@ -94,9 +157,11 @@ or a `buildfarm_perf_tests`/`performance_test` upstream change.
 
 ## Re-provisioning after an OS/ROS upgrade
 
-Steps 1-3 above are idempotent - re-running them after e.g. an Ubuntu point release or a fresh
-`ros2_dependencies.repos` upstream update is the whole procedure. If the runner ever moves to a
-different machine, register the new one with the same `tickle-perf` label (no workflow change
+Steps 1-3 above are idempotent - re-running them after e.g. an Ubuntu point release is the whole
+procedure. A fresh `ros2_dependencies.repos` upstream update (step 2) will overwrite step 4's own
+local patches to `performance_test`/`buildfarm_perf_tests` sources (they were never upstreamed) -
+re-apply step 4 after any `vcs import`/re-clone of `~/rmw_perf_ws/src`. If the runner ever moves to
+a different machine, register the new one with the same `tickle-perf` label (no workflow change
 needed) and repeat provisioning there.
 
 ## Troubleshooting

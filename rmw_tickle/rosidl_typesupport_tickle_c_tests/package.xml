@@ -29,6 +29,16 @@
   <depend>rosidl_generator_c</depend>
   <depend>rosidl_typesupport_c</depend>
   <depend>rosidl_typesupport_tickle_c</depend>
+  <!-- rosidl_generator_cpp/rosidl_typesupport_cpp: needed for test_dispatch_cpp.cpp, which
+       exercises the *actual* entry point a real rclcpp::Node uses (rosidl_typesupport_cpp::
+       get_message_type_support_handle<T>()) rather than the C-only ROSIDL_GET_MSG_TYPE_SUPPORT()
+       macro test_dispatch.c uses - the C-only path stayed reachable throughout the whole
+       rosidl_typesupport_tickle_cpp gap this test package's own history didn't catch, since it
+       never went through the C++ dispatch at all. See rosidl_typesupport_tickle_cpp's own
+       package.xml doc comment for the full story. -->
+  <depend>rosidl_generator_cpp</depend>
+  <depend>rosidl_typesupport_cpp</depend>
+  <depend>rosidl_typesupport_tickle_cpp</depend>
   <!-- srv/SimpleService.srv - rosidl_generate_interfaces() itself requires this for any .srv
        (rosidl_cmake/cmake/rosidl_generate_interfaces.cmake's own "Services depend on
        service_msgs" check). -->
