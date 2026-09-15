@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789486928845,
+  "lastUpdate": 1789486932038,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6246,6 +6246,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 897.865,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4cfd0a6e4498b18e5e7d77fa5352a6423c3a4aff",
+          "message": "Fix third check-all.yml run: test_msgs' own Python egg build needs setuptools\n\ntest_msgs failed to build: \"No module named 'setuptools'\", inside\nits own ament_cmake_python step (an egg build for Python bindings\nthis integration never actually uses). The earlier \"Set up Python\"\nstep's actions/setup-python@v5 puts a hosted-tool CPython first on\nPATH - unlike jazzy's own apt-packaged system Python, that one\ndoesn't ship setuptools preinstalled. pip install it before this\nbuild.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T00:41:16+09:00",
+          "tree_id": "5bc845686075ad7df13571f1263f0b46ac1e079a",
+          "url": "https://github.com/tsnlab/tickle/commit/4cfd0a6e4498b18e5e7d77fa5352a6423c3a4aff"
+        },
+        "date": 1789486930953,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.638,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 900.647,
             "unit": "Mbps"
           }
         ]
