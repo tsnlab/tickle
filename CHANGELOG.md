@@ -202,6 +202,12 @@ number, `tt_VERSION`, which moves independently.
   is a whole millisecond, silently rounding any shorter wait *up* to 1ms; `ppoll()` takes a real
   nanosecond-resolution `struct timespec`, so a sub-millisecond scheduled tick (`node_flush()`'s
   own, in particular) no longer waits for a full millisecond it never asked for.
+- `examples/linux/perf/perf_client.c`: new `-B` flag, `tt_Publisher.batch` exposed on the command
+  line (defaults off, matching the new default above) - the reproducible way to see both sides of
+  that same tradeoff. Confirmed again on real hardware: an uncapped (`-i 0`), small (`-s 16`)
+  flood without `-B` doesn't just send slower once discovery switches to per-message unicast, the
+  receiver saw 100% loss; `-B` restored both throughput (~4x) and reliability (0.7% loss) by
+  coalescing the same flood into far fewer, larger packets.
 
 ### Fixed
 

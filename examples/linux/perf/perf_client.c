@@ -100,7 +100,7 @@ static void print_summary(uint64_t start_time) {
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id]\n", prog);
     fprintf(stderr, "                [-s message_size_bytes] [-i interval_seconds] [-d duration_seconds]\n");
-    fprintf(stderr, "                [-n topic_name] [-l log_level]\n");
+    fprintf(stderr, "                [-n topic_name] [-l log_level] [-B]\n");
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
@@ -111,6 +111,10 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  -d  exit automatically after this many seconds (default 0 = run until Ctrl+C)\n");
     fprintf(stderr, "  -n  topic name to publish on (default bulk_topic)\n");
     fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
+    fprintf(stderr, "  -B  batch sends instead of flushing each one immediately (default: flush immediately -\n"
+                    "      pass -B for the old always-batch behavior, worth it when -i 0 floods many small\n"
+                    "      messages back-to-back - see DESIGN.md's \"RPC and Publish flush immediately by\n"
+                    "      default; batching is opt-in\")\n");
 }
 
 static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
@@ -124,9 +128,11 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->name = "bulk_topic";
     opts->log_level = TT_LOG_INFO;
     opts->log_level_set = false;
+    opts->batch = false;
 
     return tt_example_parse_args(argc, argv, opts,
-                                 TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_MESSAGE_SIZE);
+                                 TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_MESSAGE_SIZE |
+                                     TT_EXAMPLE_OPT_BATCH);
 }
 
 int main(int argc, char** argv) {
@@ -179,6 +185,11 @@ int main(int argc, char** argv) {
     if (ret != 0) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
+    }
+    pub.batch = opts.batch; // -B - see tt_Publisher.batch's own doc comment (tickle.h)
+    if (opts.batch) {
+        printf("Batching sends (node_flush()'s own tt_NODE_TX_INTERVAL cadence), not flushing "
+               "each one immediately\n");
     }
 
     const double bytes_per_mb = 1e6;

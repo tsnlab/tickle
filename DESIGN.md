@@ -327,7 +327,15 @@ the same rig: a tight small-message (16-byte) stream's own achievable throughput
 (1.60M msg/s → 0.37M msg/s) when forced to flush immediately, one packet per message, instead of
 batching. A large message (close to `tt_MAX_BUFFER_LENGTH`, where at most one or two fit in
 `tx_buffer` at once regardless) saw no such cost either way - batching only pays for itself when
-several messages can actually share one packet.
+several messages can actually share one packet. `examples/linux/perf/perf_client.c`'s own `-B`
+flag is this same field exposed on the command line (`opts.batch` → `pub.batch`, `cli_opts.h`'s
+`TT_EXAMPLE_OPT_BATCH`) - the reproducible way to see both sides of this number directly: an
+uncapped (`-i 0`), small (`-s 16`) flood loses far more than throughput without it. On this same
+dev-server rig, the *default* (no `-B`) didn't just send slower - once discovery matched the lone
+`perf_server` and switched to per-message unicast, the receiver saw **100% loss** (1 in ~12,500
+messages actually arriving), the "Discovery-learned peers" section below's own `-i 0`/uncapped-rate
+caveat in concrete numbers; `-B` restored both throughput (~4x higher sent rate) and reliability
+(0.7% loss) by coalescing that same flood into far fewer, larger packets.
 
 ## Discovery-learned peers: unicast to a few, broadcast to the rest
 
@@ -346,8 +354,8 @@ peer that's genuinely gone just goes back to behaving like an unanswered broadca
 
 At send time: 0 known peers (discovery hasn't matched yet) or more than the threshold both mean
 broadcast, exactly as before this feature existed. 1..`tt_UNICAST_PEER_THRESHOLD` known peers
-means unicast - but *where* that decision gets made differs by sender, because `tt_Publisher_
-publish()` batches (see below) while `tt_Client_call()` doesn't:
+means unicast - but *where* that decision gets made differs by sender, because a `tt_Publisher`
+can still be set to batch (`pub->batch = true`, see above) while `tt_Client_call()` never does:
 
 - **Client**: decided right in `tt_Client_call()`/`resend_call_request()`, since RPC already
   always flushes immediately regardless of destination - no batching to preserve or lose either
@@ -357,8 +365,15 @@ publish()` batches (see below) while `tt_Client_call()` doesn't:
   of letting `node_flush()`'s normal batching apply, collapsed real receive throughput by ~95% once
   discovery completed (many more, much smaller packets than the receive loop could keep up with) -
   sending got *faster* (no self-receive tax - see the section below), but almost nothing arrived.
-  The decision was moved into `node_flush()`'s own 1ms tick instead: batching stays exactly as it
-  is today, and only the eventual flush's destination changes. Two guards keep that safe, since
+  The decision was moved into `node_flush()`'s own 1ms tick instead: at the time, *every* Publisher
+  batched unconditionally, so this was the only place the decision could safely live. That's no
+  longer the whole story - "RPC and Publish flush immediately by default; batching is opt-in"
+  above changed `tt_Publisher_publish()`'s own default to flushing (and thus deciding its peers)
+  immediately again, the exact behavior rejected here - now safe *by default* only because it's
+  paired with rate-limited/realistic publish rates in practice (measured: doesn't reproduce at
+  rmw_tickle's ~1000 msg/s), with `pub->batch = true` as the explicit, opt-in way back to this
+  section's own original `node_flush()`-decided behavior for a Publisher that can't make that same
+  assumption. Two guards keep the batched path safe, since
   `tx_buffer` is shared across every endpoint on a node and a flush always sends it as one unit:
   `node->tx_has_pending_update` (set when `node_update()` batches its always-broadcast UPDATE
   announce, cleared once a flush actually sends it) forces broadcast while an UPDATE is still

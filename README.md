@@ -220,14 +220,20 @@ final `RESULT:` line when it stops (`-c`/`-d` elapsing, or Ctrl+C):
   eye or trend over time. The other side of each pair (`server`, `pong`, `publisher`,
   `perf_client`) has no verdict of its own to report - it just logs a plain completion count.
 
-`perf_client` takes two more flags to control what it sends:
+`perf_client` takes three more flags to control what it sends:
 
 ```sh
-$ ./perf_client [-s message_size_bytes] [-i interval_seconds]
+$ ./perf_client [-s message_size_bytes] [-i interval_seconds] [-B]
 ```
 
 - `-s` payload bytes per message (default/max: see "Message size: filling an Ethernet frame" below)
 - `-i` seconds to wait between sends (default: see below; `0` sends as fast as `tt_Node_poll()` allows instead of on a fixed schedule)
+- `-B` batch sends instead of flushing each one immediately (default: flush immediately, same as a
+  real `tt_Publisher` - `pub->batch` in `include/tickle/tickle.h`). Worth passing for an uncapped
+  (`-i 0`), small (`-s`) flood specifically: measured on real hardware, that combination without
+  `-B` doesn't just send slower once discovery switches the Publisher to per-message unicast, it
+  can lose nearly everything (see DESIGN.md's "RPC and Publish flush immediately by default;
+  batching is opt-in" and "Discovery-learned peers: unicast to a few, broadcast to the rest").
 
 ### Message size: filling an Ethernet frame
 

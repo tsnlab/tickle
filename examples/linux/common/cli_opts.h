@@ -30,6 +30,7 @@ enum tt_example_opt_flags {
     TT_EXAMPLE_OPT_DURATION = 1U << 2,        // -d: receivers only (perf_client too)
     TT_EXAMPLE_OPT_MESSAGE_SIZE = 1U << 3,    // -s: perf_client only
     TT_EXAMPLE_OPT_WARMUP_COOLDOWN = 1U << 4, // -w/-W: ping.c, perf_server.c only
+    TT_EXAMPLE_OPT_BATCH = 1U << 5,           // -B: perf_client only
 };
 
 struct tt_example_cli_options {
@@ -54,14 +55,24 @@ struct tt_example_cli_options {
     // (parsed the same way -i/-d already are) so this shared struct doesn't need two variants.
     double warmup;
     double cooldown;
+
+    // -B: perf_client only. Mirrors tt_Publisher.batch (tickle.h) one-to-one - false (this
+    // struct's own zero-init default, matching tt_Node_create_publisher()'s own default) sends
+    // every tt_Publisher_publish() call immediately, same as a real Publisher would by default;
+    // pass -B to instead batch, deferring to node_flush()'s own tt_NODE_TX_INTERVAL tick - the
+    // right choice for exactly the case DESIGN.md's own "RPC and Publish flush immediately by
+    // default; batching is opt-in" describes: sending many small messages back-to-back as fast as
+    // possible, where per-message flush overhead dominates over coalescing them into fewer, larger
+    // packets.
+    bool batch;
 };
 
 bool tt_example_parse_log_level(const char* str, tt_LogLevel* level);
 
 // Parses argv into opts, which the caller must have already filled with its own defaults (they
-// differ per example - see each example's own parse_args()). Only recognizes -c/-i/-d/-s if the
-// matching TT_EXAMPLE_OPT_* bit is set in `flags`; anything else unrecognized (including a
-// disabled one of those four) fails the same way an unknown flag does. Returns 0 on success,
+// differ per example - see each example's own parse_args()). Only recognizes -c/-i/-d/-s/-B if
+// the matching TT_EXAMPLE_OPT_* bit is set in `flags`; anything else unrecognized (including a
+// disabled one of those five) fails the same way an unknown flag does. Returns 0 on success,
 // non-zero if argv held an unrecognized/incomplete/rejected option - the caller is expected to
 // print its own usage and exit in that case.
 int tt_example_parse_args(int argc, char** argv, struct tt_example_cli_options* opts, uint32_t flags);
