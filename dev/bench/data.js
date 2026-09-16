@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789533672636,
+  "lastUpdate": 1789533675512,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -9869,6 +9869,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.00002029963902064732,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c047551a1b4e7b2b3fcf463f12135e730125a20b",
+          "message": "Fix lint findings in test_graph.c (uppercase suffixes, missing include, NOLINT)\n\ncheck-all.yml's cpp-linter caught these on the first push: 0u/1u literal suffixes\nneed to be 0U/1U, RCUTILS_RET_OK needs rcutils/types/rcutils_ret.h included\ndirectly, and fake_encode's payload parameter can't be made const without\nbreaking its match against tt_DATA_ENCODE's own fixed signature (NOLINT'd with\nan explanation, matching hal_linux.c's own precedent for a callback signature\nlint can't see the real constraint on).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T13:40:04+09:00",
+          "tree_id": "f120bf4966792784956a19f0ee02e70cfaebdf25",
+          "url": "https://github.com/tsnlab/tickle/commit/c047551a1b4e7b2b3fcf463f12135e730125a20b"
+        },
+        "date": 1789533674470,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.000270843505859375,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.988154411315918,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03046063014439174,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473572867257253,
             "unit": "Mbit/s"
           }
         ]
