@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789534147766,
+  "lastUpdate": 1789534163185,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -9700,6 +9700,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04711714285714286,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3367dbe3a92b930f86b1e0ae99e6be2e06f4be29",
+          "message": "Fix clang-format style violation (NOLINT comment pushed line past 120 cols)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T13:48:14+09:00",
+          "tree_id": "eceeaaabb4cbcf270670847e9784345e05d1735b",
+          "url": "https://github.com/tsnlab/tickle/commit/3367dbe3a92b930f86b1e0ae99e6be2e06f4be29"
+        },
+        "date": 1789534161204,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04977428571428572,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04946857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04905142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.046262857142857154,
             "unit": "ms"
           }
         ]
