@@ -1,8 +1,8 @@
 diff --git a/test_msgs/CMakeLists.txt b/test_msgs/CMakeLists.txt
-index 433833b..dab8d7d 100644
+index 433833b..19cc4ab 100644
 --- a/test_msgs/CMakeLists.txt
 +++ b/test_msgs/CMakeLists.txt
-@@ -22,13 +22,14 @@ find_package(rosidl_default_generators REQUIRED)
+@@ -22,13 +22,32 @@ find_package(rosidl_default_generators REQUIRED)
  find_package(test_interface_files REQUIRED)
  
  # TODO(sloretz) Change to test_msgs_interfaces when ros2/rosidl_typesupport#120 is fixed
@@ -12,6 +12,24 @@ index 433833b..dab8d7d 100644
 +# typesupport for (mirrors README-rmw-perf.md's own Struct256.msg exclusion for the same reason).
 +list(FILTER test_interface_files_MSG_FILES EXCLUDE REGEX
 +  ".*/(Nested|MultiNested|Arrays|WStrings|BoundedPlainSequences|BoundedSequences|UnboundedSequences)\\.msg$")
++
++# Local, rmw_tickle-specific patch (not upstream): rosidl_generate_interfaces() runs each
++# registered typesupport's own CMake extension in *registration* order, which is decided by
++# find_package() call order (rosidl_generate_interfaces.cmake's own comment: "generators must be
++# executed in topological order, which is ensured by every generator finding its dependencies
++# first and then registering itself as an extension"). rosidl_typesupport_tickle_cpp's own
++# extension requires rosidl_typesupport_tickle_c's to have already run (it delegates to symbols
++# the C one generates) and already find_package()s it first internally for exactly this reason -
++# but *whatever* generic mechanism is what gets either of these two third-party typesupports
++# discovered at all for a package (like this one) that never names either one explicitly doesn't
++# guarantee that same ordering between packages it discovers this way. rmw_tickle's own
++# rosidl_typesupport_tickle_c_tests sidesteps this by find_package()-ing both, in this exact
++# order, itself - doing the same here forces the same registration order regardless of whatever
++# order the generic discovery would have used on its own (found via a real CI failure: "The
++# 'rosidl_typesupport_tickle_c' extension must be executed before the 'rosidl_typesupport_tickle_
++# cpp' extension").
++find_package(rosidl_typesupport_tickle_c REQUIRED)
++find_package(rosidl_typesupport_tickle_cpp REQUIRED)
  rosidl_generate_interfaces(test_msgs
    ${test_interface_files_MSG_FILES}
 -  ${test_interface_files_SRV_FILES}
@@ -22,7 +40,7 @@ index 433833b..dab8d7d 100644
    DEPENDENCIES builtin_interfaces
    ADD_LINTER_TESTS
  )
-@@ -41,26 +42,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
+@@ -41,26 +60,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
  
  ament_export_targets(export_${PROJECT_NAME})
  
