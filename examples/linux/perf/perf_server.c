@@ -131,10 +131,23 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
         }
     }
 
-    bool gap = have_first && data->seq != expected_seq;
-    // Unsigned wraparound makes this correct even if seq itself has wrapped past UINT32_MAX.
-    uint32_t gap_count = gap ? data->seq - expected_seq : 0;
-    expected_seq = data->seq + 1;
+    // A forward jump (seq_delta > 0) means seq_delta messages between the old expected_seq and
+    // this one were never seen (yet) - a real best-effort drop, or one a RELIABLE Publisher/
+    // Subscriber (QoS roadmap #5) hasn't retransmitted yet. A *backward* one (seq_delta < 0) is a
+    // late arrival behind the current watermark - almost always a RELIABLE retransmission that
+    // successfully recovered an earlier gap - not a new drop, and must not rewind expected_seq:
+    // counting it again, or letting expected_seq regress, is what used to turn one recovered
+    // sample into a spurious multi-billion-message "gap" (plain unsigned data->seq - expected_seq
+    // underflowing) the instant RELIABLE's own reordering made a backward jump possible at all -
+    // found via run_perf.sh's real tc/netem loss-injection scenarios reporting ~100% loss_pct on
+    // *every* RELIABLE run regardless of actual loss. int32_t's own wraparound-correct
+    // subtraction (not a plain data->seq != expected_seq check) is what tells the two apart,
+    // since data->seq itself can wrap past UINT32_MAX too.
+    int32_t seq_delta = have_first ? (int32_t)(data->seq - expected_seq) : 0;
+    uint32_t gap_count = seq_delta > 0 ? (uint32_t)seq_delta : 0;
+    if (!have_first || seq_delta >= 0) {
+        expected_seq = data->seq + 1;
+    }
     have_first = true;
 
     interval_received_msgs++;
