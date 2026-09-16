@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789560156149,
+  "lastUpdate": 1789560172494,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10405,6 +10405,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04691142857142857,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "88e41226ecaf2ad0c2b0ff42dc28e6669b7bc394",
+          "message": "Add TickLE core support for RELIABLE pub/sub (QoS roadmap #5)\n\nFills in the ACKNACK/reliable-delivery primitive rmw_tickle/PLAN.md's QoS\nroadmap already reserved wire fields and constants for\n(tt_SUBMESSAGE_TYPE_ACKNACK, tt_AckNackHeader, tt_RELIABLE_DEADLINE/_RETRY):\na reliable Subscriber tracks a cumulative-ack watermark plus a 64-sample\nout-of-order bitmap, ACKNACKs a sender on a gap and retries up to\ntt_RELIABLE_RETRY times; a reliable Publisher opts in via a caller-owned\nstruct tt_ReliableCache (same convention as tt_Discovery) that retains the\nlast `depth` samples for retransmission on request. tt_AckNackHeader gains\nan endpoint_id field, matching tt_DataHeader/tt_CallRequestHeader/\ntt_CallResponseHeader's own convention, since it was the only per-entity\nsubmessage header without one.\n\nCovered by a new tests/test_reliable_pubsub.c (cache store/evict, gap\ndetection/closure, retry exhaustion, retransmit-on-ACKNACK); make test,\nmake sanitize, and the FreeRTOS cross-compile all pass.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T21:01:36+09:00",
+          "tree_id": "c847b524bb131f4f7be8081e6e6cebeb16826417",
+          "url": "https://github.com/tsnlab/tickle/commit/88e41226ecaf2ad0c2b0ff42dc28e6669b7bc394"
+        },
+        "date": 1789560169844,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.03725571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05385714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05480142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.050845714285714286,
             "unit": "ms"
           }
         ]
