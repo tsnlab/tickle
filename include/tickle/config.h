@@ -25,11 +25,22 @@
 // started. 1s keeps that recovery quick while costing one small packet per node per second.
 #define tt_NODE_UPDATE_INTERVAL (1 * tt_SECOND) // nanosecond
 #define tt_NODE_TX_INTERVAL tt_MILLISECOND      // nanosecond
-// Reserved for a future reliable-QoS (ACKNACK) release - not read anywhere in this one; a
-// Topic's history_depth/deadline_duration/lifespan_duration (tickle.h) are reserved for the
-// same reason. Best-effort delivery is all this release does.
-#define tt_RELIABLE_DEADLINE 0                         // nanosecond, 0 is auto
-#define tt_RELIABLE_RETRY 3                            // count
+// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
+// re-send interval (mirrors tt_CALL_RETRY_INTERVAL's role for RPC; 0 = auto, same convention as
+// struct tt_Service.call_retry_interval) and the max retransmit attempts a reliable Publisher
+// makes for one cached sample before giving up on it (mirrors tt_CALL_RETRY_COUNT). A Topic's
+// deadline_duration/lifespan_duration (tickle.h) are still reserved for #2/#6, not this.
+#define tt_RELIABLE_DEADLINE 0 // nanosecond, 0 is auto
+#define tt_RELIABLE_RETRY 3    // count
+// Max retained-sample cache depth for a RELIABLE Publisher's opt-in struct tt_ReliableCache
+// (tickle.h) - the fixed array dimension backing whatever depth a caller actually requests
+// (clamped to this at setup time, e.g. rmw_tickle from qos_profile->depth). Same "small hard
+// cap, caller picks a real value within it" trade-off as tt_MAX_PEER_COUNT/tt_MAX_SERVER_CACHE_COUNT.
+#define tt_MAX_RELIABLE_HISTORY 8
+// Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
+// wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
+// (tickle.c) don't compare against a bare 64.
+#define tt_RELIABLE_BITMAP_BITS 64
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)

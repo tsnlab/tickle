@@ -363,6 +363,29 @@ struct tt_Data {
     char reserved; // see tt_Request's own note - opaque base, one byte only to stay valid ISO C
 };
 
+// Opt-in per-Publisher retransmission cache for QoS roadmap #5 (RELIABILITY/RELIABLE,
+// rmw_tickle/PLAN.md) - caller-owned, the same convention as struct tt_Discovery
+// (tt_Node_set_discovery()): a best-effort Publisher (today's only mode) leaves
+// tt_Publisher.reliable_cache NULL and pays nothing for this; one that wants RELIABLE provides a
+// zeroed struct tt_ReliableCache of its own (stack/static/wherever, must stay valid and unmoved
+// until tt_Publisher_destroy() - same lifetime rule as every other tt_* struct) sized by `depth`
+// (1..tt_MAX_RELIABLE_HISTORY) and points reliable_cache at it - set directly any time after
+// tt_Node_create_publisher() returns, same "caller-owned, plain field access" convention as
+// pub->batch. tt_Publisher_publish() appends the raw encoded DATA submessage bytes here after
+// every successful send (KEEP_LAST eviction once `depth` slots are full); an incoming ACKNACK
+// (process_submessage()) looks samples up here by seq_no to retransmit.
+struct tt_ReliableCacheEntry {
+    uint32_t seq_no;
+    uint16_t len; // encoded submessage length in the matching buffers[] slot; 0 = empty slot
+    uint8_t retry;
+    uint8_t buffer[tt_MAX_BUFFER_LENGTH]; // raw encoded submessage bytes, resent verbatim on NACK
+};
+struct tt_ReliableCache {
+    uint16_t depth; // in-use ring capacity, 1..tt_MAX_RELIABLE_HISTORY
+    uint16_t next;  // next entries[] slot tt_Publisher_publish() writes into (mod depth)
+    struct tt_ReliableCacheEntry entries[tt_MAX_RELIABLE_HISTORY];
+};
+
 struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
@@ -386,6 +409,10 @@ struct tt_Publisher { // extends endpoint
     // latency. Set directly on the struct any time after tt_Node_create_publisher() returns it -
     // same "caller-owned, plain field access" convention as peers[]/seq_no above.
     bool batch;
+
+    // NULL (tt_Node_create_publisher()'s own default): best-effort, today's only behavior. Non-
+    // NULL: RELIABLE - see struct tt_ReliableCache's own doc comment above.
+    struct tt_ReliableCache* reliable_cache;
 };
 
 struct tt_Subscriber;
@@ -400,6 +427,41 @@ struct tt_Subscriber { // extends endpoint
 
     // transcation
     uint16_t seq_no;
+
+    // QoS roadmap #5 (RELIABILITY/RELIABLE) - false (tt_Node_create_subscriber()'s own default):
+    // best-effort, today's only behavior, process_data() doesn't touch ack_seq_no/received_bitmap
+    // at all. true: process_data() tracks delivery and sends ACKNACK back to the sending
+    // Publisher on a gap - set directly any time after tt_Node_create_subscriber() returns, same
+    // convention as tt_Publisher.batch/.reliable_cache.
+    bool reliable;
+    // Cumulative-ack watermark: the next wire seq_no not yet confirmed delivered to `callback` -
+    // every seq_no < ack_seq_no has been. Initialized to 1 by tt_Node_create_subscriber() since a
+    // Publisher's own seq_no starts posting from 1, never 0 (tt_Publisher_publish()'s
+    // data_header->seq_no = pub->seq_no + 1).
+    uint32_t ack_seq_no;
+    // bit j set: sample (ack_seq_no + 1 + j) has already been received out of order, ahead of the
+    // cumulative watermark - inverted (~received_bitmap) when building the wire ACKNACK's own
+    // "please resend" bitmap (tt_AckNackHeader), which uses the opposite bit direction.
+    uint64_t received_bitmap;
+    // Address an outstanding-gap ACKNACK retry (acknack_retry(), tickle.c) resends to - the most
+    // recent reliable DATA sender, since a scheduled retry fires outside process_packet()'s own
+    // call stack and so no longer has that packet's header/sender_ip/sender_port at hand. Scoped
+    // to one Publisher per reliable Subscriber (documented limitation, DESIGN.md/PLAN.md): with
+    // several Publishers on one topic, their independent seq_no streams would interleave and
+    // this single-watermark tracking would misjudge gaps - the common case rmw_tickle needs
+    // (one Publisher, one or more reliable Subscribers) is unaffected.
+    uint8_t reliable_sender_node_id;
+    uint32_t reliable_sender_ip;
+    uint16_t reliable_sender_port;
+    // How many ACKNACK retries have been sent for the *current* outstanding gap - reset to 0 when
+    // a new gap first opens, capped at tt_RELIABLE_RETRY (mirrors call_retry()'s own
+    // client->service->call_retry_count check) before this Subscriber gives up on that sample.
+    uint8_t reliable_retry;
+    // Whether acknack_retry() (tickle.c) currently has a tt_Node_schedule() entry pending for
+    // this Subscriber - mirrors struct tt_Client.cache's own "is a retry timer armed right now"
+    // role, needed so a burst of DATA packets while a gap is open doesn't schedule a new timer
+    // per packet.
+    bool reliable_acknack_scheduled;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -579,9 +641,12 @@ struct tt_DataHeader {
 } __attribute__((packed));
 
 struct tt_AckNackHeader {
-    uint32_t seq_no;
-    uint64_t bitmap;
-    // type + name
+    uint32_t endpoint_id; // target Publisher - same leading-field convention as tt_DataHeader/
+                          // tt_CallRequestHeader/tt_CallResponseHeader (one node can host many
+                          // endpoints, so the submessage receiver alone isn't enough)
+    uint32_t seq_no;      // cumulative ack: every seq_no below this was received
+    uint64_t bitmap;      // bit j set: (seq_no + j) is still missing, please resend - same
+                          // direction as RTPS's own AckNack SequenceNumberSet
 } __attribute__((packed));
 
 struct tt_CallRequestHeader {

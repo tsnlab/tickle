@@ -536,6 +536,11 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 static void check_liveliness(struct tt_Node* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param);
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
+// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
+static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
+static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub);
+static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
+                                uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port);
 
 static void reset_node_state(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
@@ -712,7 +717,8 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
-    pub->batch = false; // see tickle.h's own doc comment on this field for why this is the default
+    pub->batch = false;         // see tickle.h's own doc comment on this field for why this is the default
+    pub->reliable_cache = NULL; // best-effort by default - see tt_ReliableCache's own doc comment
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
     }
@@ -742,6 +748,12 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->node = node;
     sub->topic = topic;
     sub->callback = callback;
+    sub->reliable = false; // best-effort by default - see tickle.h's own doc comment
+    sub->ack_seq_no = 1;   // a Publisher's first sample is always seq_no 1, never 0
+    sub->received_bitmap = 0;
+    sub->reliable_sender_node_id = tt_NODE_ID_INVALID;
+    sub->reliable_retry = 0;
+    sub->reliable_acknack_scheduled = false;
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_RET_OK) {
@@ -1016,7 +1028,11 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     // with), and the message is big enough that a second one wouldn't fit in the same packet
     // anyway - i.e. batching has nothing to gain here. Small messages fall through to the staging
     // path so node_flush() can still pack several per packet.
-    if (pub->topic->data_encode_inplace != NULL && old_tx_tail == sizeof(struct tt_Header)) {
+    // A reliable Publisher (below) always needs the staging copy path so it has encoded bytes at
+    // a known tx_buffer location to save into reliable_cache - zero-copy publishes straight from
+    // the caller's own tt_Data, nothing to retain for a later retransmit.
+    if (pub->topic->data_encode_inplace != NULL && old_tx_tail == sizeof(struct tt_Header) &&
+        pub->reliable_cache == NULL) {
         const uint8_t* body = NULL;
         int32_t body_len = pub->topic->data_encode_inplace(data, &body);
         uint32_t standalone_len = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) +
@@ -1064,6 +1080,24 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     if (encoded_len < 0) {
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
+    }
+
+    // QoS roadmap #5 (RELIABILITY/RELIABLE) - snapshot the just-encoded DATA submessage (header
+    // through CDR) into the ring before end_encode() below, same "cache first, then flush" order
+    // tt_Client_call() already uses for its own single-slot cache. A later incoming ACKNACK
+    // (process_acknack()) resends this exact copy verbatim; KEEP_LAST eviction once `depth`
+    // slots are full (mirrors rmw_subscription.c's own queue eviction), not an error.
+    if (pub->reliable_cache != NULL) {
+        struct tt_ReliableCache* cache = pub->reliable_cache;
+        uint16_t depth =
+            (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+        size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+        struct tt_ReliableCacheEntry* cache_entry = &cache->entries[cache->next % depth];
+        _tt_memcpy(cache_entry->buffer, submessage_header, length);
+        cache_entry->seq_no = pub->seq_no + 1; // matches data_header->seq_no above
+        cache_entry->len = (uint16_t)length;
+        cache_entry->retry = 0;
+        cache->next = (cache->next + 1) % depth;
     }
 
     // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
@@ -1115,12 +1149,156 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
 
+    // Cancel any outstanding acknack_retry before this Subscriber (its own schedule param) goes
+    // away - same reasoning as tt_Client_destroy()'s own call_retry cancellation.
+    if (sub->reliable_acknack_scheduled) {
+        tt_Node_unschedule(sub->node, acknack_retry, sub);
+        sub->reliable_acknack_scheduled = false;
+    }
+
     if (remove_endpoint_from_node(sub->node, endpoint)) {
         sub->node->last_modified = tt_get_ns();
         return tt_RET_OK;
     }
 
     return tt_RET_IILEGAL_ENDPOINT_ID;
+}
+
+// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - encodes and unicasts one ACKNACK
+// submessage back to sub->reliable_sender_*, reporting sub->ack_seq_no/received_bitmap. Not
+// fatal on failure, same philosophy as resend_call_request()'s own comment: whichever caller
+// armed a retry (update_reliable_ack()/acknack_retry()) will just try again.
+static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
+    if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
+        return; // no reliable DATA seen yet to ack
+    }
+
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
+    struct tt_Peer target = {sub->reliable_sender_node_id, sub->reliable_sender_ip, sub->reliable_sender_port};
+    uint32_t old_tx_tail = node->tx_tail;
+
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_ACKNACK, target.node_id);
+    if (submessage_header == NULL) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+
+    struct tt_AckNackHeader* acknack_header = encode(node, sizeof(struct tt_AckNackHeader));
+    if (acknack_header == NULL) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+
+    acknack_header->endpoint_id = endpoint->id;
+    acknack_header->seq_no = sub->ack_seq_no;
+    acknack_header->bitmap = ~sub->received_bitmap; // wire direction is "please resend", opposite of received_bitmap
+
+    // Unicast straight back to whoever's DATA this acks - same "nothing else queued" guard as
+    // process_callrequest()'s own CallResponse. Falling back to broadcast when something else is
+    // already staged is still correct here: the submessage's own receiver field (target.node_id,
+    // not tt_SUBMESSAGE_ID_ALL) confines actual processing to that one node regardless of how the
+    // packet physically went out.
+    bool unicast = old_tx_tail == sizeof(struct tt_Header);
+    if (!end_encode(node, submessage_header, true, unicast ? &target : NULL, unicast ? 1 : 0)) {
+        rollback(node, old_tx_tail);
+    }
+}
+
+// Scheduled (tt_Node_schedule()) while sub has an outstanding gap (sub->received_bitmap != 0),
+// re-sending the ACKNACK on a timer for the case where no further DATA ever arrives to re-trigger
+// update_reliable_ack() itself. Mirrors call_retry()'s own schedule/reschedule/give-up shape.
+static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(time);
+
+    struct tt_Subscriber* sub = param;
+
+    if (sub->received_bitmap == 0) {
+        // A DATA arrival already closed the gap since this timer was armed.
+        sub->reliable_acknack_scheduled = false;
+        return;
+    }
+
+    if (++sub->reliable_retry > tt_RELIABLE_RETRY) {
+        TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
+        sub->reliable_acknack_scheduled = false;
+        sub->reliable_retry = 0;
+        // Skip past the unrecoverable hole so a future, unrelated gap can still be tracked
+        // instead of received_bitmap staying wedged on this one forever.
+        while (sub->received_bitmap != 0 && !(sub->received_bitmap & 1)) {
+            sub->received_bitmap >>= 1;
+            sub->ack_seq_no++;
+        }
+        if (sub->received_bitmap & 1) {
+            sub->received_bitmap >>= 1;
+            sub->ack_seq_no++;
+        }
+        return;
+    }
+
+    send_acknack(node, sub);
+
+    uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
+    if (!tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, sub)) {
+        TT_LOG_ERROR("Cannot schedule acknack_retry");
+        sub->reliable_acknack_scheduled = false;
+    }
+}
+
+// QoS roadmap #5 (RELIABILITY/RELIABLE) - called from process_data() for every DATA a reliable
+// Subscriber receives (no-op otherwise). Updates the cumulative-ack watermark/out-of-order
+// bitmap and, while a gap is open, keeps an ACKNACK flowing back to the sender.
+static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
+                                uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port) {
+    if (!sub->reliable) {
+        return;
+    }
+
+    sub->reliable_sender_node_id = sender_node_id;
+    sub->reliable_sender_ip = sender_ip;
+    sub->reliable_sender_port = sender_port;
+
+    if (seq_no < sub->ack_seq_no) {
+        return; // duplicate/old - already accounted for, e.g. a retransmit that arrived after we
+                // otherwise caught up on our own
+    }
+
+    if (seq_no == sub->ack_seq_no) {
+        sub->ack_seq_no++;
+        while (sub->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
+            sub->received_bitmap >>= 1;
+            sub->ack_seq_no++;
+        }
+    } else {
+        uint64_t offset = (uint64_t)seq_no - sub->ack_seq_no - 1;
+        if (offset < tt_RELIABLE_BITMAP_BITS) {
+            sub->received_bitmap |= (1ULL << offset);
+        } else {
+            TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u), not requesting it",
+                           seq_no - sub->ack_seq_no, sub->ack_seq_no);
+        }
+    }
+
+    if (sub->received_bitmap == 0) {
+        // No outstanding gap - a healthy stream needs no ACKNACK at all.
+        if (sub->reliable_acknack_scheduled) {
+            tt_Node_unschedule(node, acknack_retry, sub);
+            sub->reliable_acknack_scheduled = false;
+        }
+        sub->reliable_retry = 0;
+        return;
+    }
+
+    send_acknack(node, sub);
+
+    if (!sub->reliable_acknack_scheduled) {
+        sub->reliable_retry = 0;
+        uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
+        if (tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, sub)) {
+            sub->reliable_acknack_scheduled = true;
+        } else {
+            TT_LOG_ERROR("Cannot schedule acknack_retry");
+        }
+    }
 }
 
 // Encodes one UpdateEntity per non-NULL endpoint, up to UINT8_MAX of them. Returns the number
@@ -1430,8 +1608,8 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     return true;
 }
 
-static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                         uint32_t tail) {
+static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
+                         uint32_t sender_ip, uint16_t sender_port) {
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
     if (data_header == NULL) {
         TT_LOG_ERROR("Illegal DataHeader");
@@ -1455,6 +1633,12 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
     struct tt_Topic* topic = sub->topic;
     bool is_native = tt_is_native_endian(header);
+
+    // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op unless sub->reliable. Delivery to `callback`
+    // below is unconditional either way (reliable only adds a delivery *guarantee* via
+    // retransmission, not ordering - a late, retransmitted sample is still delivered whenever it
+    // arrives, out of its original order).
+    update_reliable_ack(node, sub, seq_no, header->source, sender_ip, sender_port);
 
     // Zero-copy path: hand the callback a tt_Data* aliasing rx_buffer directly, skipping the
     // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
@@ -2003,6 +2187,77 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     return true;
 }
 
+// QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
+// arrives here at whichever local Publisher it targets. Retransmits, straight back to the
+// sender, whichever requested (bitmap bit set) samples are still in that Publisher's own
+// reliable_cache; a sample already evicted (KEEP_LAST) or already retried past tt_RELIABLE_RETRY
+// is silently skipped - the Subscriber's own acknack_retry() gives up on its side independently.
+static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                            uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
+    struct tt_AckNackHeader* acknack_header = decode(node, buffer, &head, tail, sizeof(struct tt_AckNackHeader));
+    if (acknack_header == NULL) {
+        TT_LOG_ERROR("Illegal AckNackHeader");
+        return false;
+    }
+
+    uint32_t endpoint_id = rd32(header, acknack_header->endpoint_id);
+    uint32_t seq_no = rd32(header, acknack_header->seq_no);
+    uint64_t bitmap = rd64(header, acknack_header->bitmap);
+
+    TT_LOG_DEBUG("AckNack");
+    TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
+    TT_LOG_DEBUG("  seq_no: %u", seq_no);
+
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, endpoint_id);
+    if (endpoint == NULL) {
+        return true;
+    }
+
+    struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+    if (pub->reliable_cache == NULL) {
+        return true; // not a reliable Publisher (or a stale ack) - nothing cached to resend
+    }
+
+    struct tt_ReliableCache* cache = pub->reliable_cache;
+    uint16_t depth =
+        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+    struct tt_Peer target = {header->source, sender_ip, sender_port};
+
+    for (int bit = 0; bit < tt_RELIABLE_BITMAP_BITS; bit++) {
+        if (!(bitmap & (1ULL << bit))) {
+            continue;
+        }
+        uint32_t missing_seq_no = seq_no + (uint32_t)bit;
+
+        for (int i = 0; i < depth; i++) {
+            struct tt_ReliableCacheEntry* cache_entry = &cache->entries[i];
+            if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
+                continue;
+            }
+            if (cache_entry->retry >= tt_RELIABLE_RETRY) {
+                break; // give up on this one sample - the Subscriber's own retry cap will too
+            }
+
+            uint32_t old_tx_tail = node->tx_tail;
+            void* buf = encode(node, cache_entry->len);
+            if (buf == NULL) {
+                TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
+                rollback(node, old_tx_tail);
+                break;
+            }
+            _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+            if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, &target, 1)) {
+                rollback(node, old_tx_tail);
+            } else {
+                cache_entry->retry++;
+            }
+            break;
+        }
+    }
+
+    return true;
+}
+
 static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
                                uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
@@ -2010,8 +2265,10 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     // doesn't log again on top of that - only the type dispatch itself gets a message here.
     // sender_ip/sender_port (this packet's own source, from tt_receive() - see
     // handle_receive_result()) reach process_callrequest() (to unicast the CallResponse straight
-    // back) and process_update() (to learn/refresh a peer table entry - see decode_update_
-    // entities()'s own comment); the other cases don't need them.
+    // back), process_update() (to learn/refresh a peer table entry - see decode_update_
+    // entities()'s own comment), process_data() (to remember where a reliable Subscriber's own
+    // ACKNACK should go, QoS roadmap #5), and process_acknack() (to unicast a retransmit straight
+    // back the same way CallResponse does); process_callresponse() doesn't need them.
     //
     // self_sent (this whole packet's own header->source == node->id) only suppresses the two
     // topic-shaped types below, not CALLREQUEST/CALLRESPONSE - rmw_tickle/PLAN.md's own Milestone
@@ -2028,14 +2285,16 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         return true;
     case tt_SUBMESSAGE_TYPE_DATA:
         if (!self_sent) {
-            process_data(node, header, buffer, head, body_tail);
+            process_data(node, header, buffer, head, body_tail, sender_ip, sender_port);
         }
         return true;
     case tt_SUBMESSAGE_TYPE_ACKNACK:
-        // Reliable pub/sub isn't implemented in this release. Skip this one submessage and keep
-        // parsing the rest of the datagram rather than dropping the whole packet - a peer that
-        // does send ACKNACK will usually batch it alongside DATA/UPDATE we do understand.
-        TT_LOG_WARNING("ACKNACK submessage not supported in this release, skipping");
+        // QoS roadmap #5 (RELIABILITY/RELIABLE) - self_sent-guarded for the same reason as DATA/
+        // UPDATE above: a reliable Subscriber never sees its own co-located Publisher's DATA in
+        // the first place (self_sent-suppressed), so it never has anything to ack locally either.
+        if (!self_sent) {
+            process_acknack(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        }
         return true;
     case tt_SUBMESSAGE_TYPE_CALLREQUEST:
         process_callrequest(node, header, buffer, head, body_tail, sender_ip, sender_port);

@@ -491,7 +491,7 @@ static void test_process_data_dispatches_to_subscriber(void) {
 
     uint32_t tail = write_data(&node, 42, 12345, 0xdeadbeef);
 
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
     EXPECT_EQ_U32(12345, (uint32_t)last_time);
     EXPECT_EQ_U32(42, (uint32_t)last_seq_no);
@@ -525,7 +525,7 @@ static void test_process_data_unknown_endpoint_is_ignored(void) {
     data_header->timestamp = 1;
     uint32_t tail = sizeof(struct tt_DataHeader);
 
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(0, (uint32_t)subscriber_callback_count);
 }
 
@@ -552,7 +552,7 @@ static void test_process_data_decode_failure_is_reported(void) {
 
     uint32_t tail = write_data(&node, 1, 1, 0);
 
-    EXPECT_TRUE(!process_data(&node, &header, node.rx_buffer, 0, tail));
+    EXPECT_TRUE(!process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(0, (uint32_t)subscriber_callback_count);
     EXPECT_EQ_U32(0, (uint32_t)data_free_call_count);
 }
