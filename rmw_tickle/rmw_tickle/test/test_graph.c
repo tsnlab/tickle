@@ -38,6 +38,7 @@
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
+#include "rcutils/types/rcutils_ret.h" // RCUTILS_RET_OK
 #include "rcutils/types/string_array.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
@@ -51,7 +52,9 @@ static int32_t fake_encode_size(struct tt_Data* data) {
     (void)data;
     return 0;
 }
-static int32_t fake_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
+// payload can't be const: this must match tt_DATA_ENCODE's own fixed signature exactly, and a
+// real encoder does write through it (only this no-op stub never does).
+static int32_t fake_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) { // NOLINT(readability-non-const-parameter)
     (void)data;
     (void)payload;
     (void)len;
@@ -97,8 +100,8 @@ int main(void) {
     rcutils_string_array_t node_names = rcutils_get_zero_initialized_string_array();
     rcutils_string_array_t node_namespaces = rcutils_get_zero_initialized_string_array();
     assert(RMW_RET_OK == rmw_get_node_names(node, &node_names, &node_namespaces));
-    assert(1u == node_names.size);
-    assert(1u == node_namespaces.size);
+    assert(1U == node_names.size);
+    assert(1U == node_namespaces.size);
     assert(0 == strcmp(node_name, node_names.data[0]));
     assert(0 == strcmp(node_namespace, node_namespaces.data[0]));
     assert(RCUTILS_RET_OK == rcutils_string_array_fini(&node_names));
@@ -108,7 +111,7 @@ int main(void) {
     node_names = rcutils_get_zero_initialized_string_array();
     node_namespaces = rcutils_get_zero_initialized_string_array();
     assert(RMW_RET_OK == rmw_get_node_names_with_enclaves(node, &node_names, &node_namespaces, &enclaves));
-    assert(1u == enclaves.size);
+    assert(1U == enclaves.size);
     assert(0 == strcmp("/", enclaves.data[0]));
     assert(RCUTILS_RET_OK == rcutils_string_array_fini(&node_names));
     assert(RCUTILS_RET_OK == rcutils_string_array_fini(&node_namespaces));
@@ -118,9 +121,9 @@ int main(void) {
     const char* topic_name = "/test_graph_topic";
     size_t count = 0;
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
-    assert(0u == count);
+    assert(0U == count);
     assert(RMW_RET_OK == rmw_count_subscribers(node, topic_name, &count));
-    assert(0u == count);
+    assert(0U == count);
 
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
 
@@ -143,9 +146,9 @@ int main(void) {
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
-    assert(1u == count);
+    assert(1U == count);
     assert(RMW_RET_OK == rmw_count_subscribers(node, topic_name, &count));
-    assert(0u == count); // a publisher isn't a subscriber
+    assert(0U == count); // a publisher isn't a subscriber
 
     struct tt_Subscriber sub;
     tt_Node_interrupt(&node_impl->tickle_node);
@@ -155,13 +158,13 @@ int main(void) {
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
-    assert(1u == count);
+    assert(1U == count);
     assert(RMW_RET_OK == rmw_count_subscribers(node, topic_name, &count));
-    assert(1u == count);
+    assert(1U == count);
 
     // A different topic name still sees neither.
     assert(RMW_RET_OK == rmw_count_publishers(node, "/unrelated_topic", &count));
-    assert(0u == count);
+    assert(0U == count);
 
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_mutex_lock(&node_impl->mutex);
