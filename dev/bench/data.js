@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789601555815,
+  "lastUpdate": 1789601559045,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -7944,6 +7944,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.753,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]",
+            "email": "41898282+github-actions[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]",
+            "email": "41898282+github-actions[bot]@users.noreply.github.com"
+          },
+          "id": "d1f8525f27972e4b0bfa834dcda119a4c5664c9d",
+          "message": "Add setup-rpi-tc-sudoers.sh for run_perf.sh's tc/netem loss scenarios\n\nA copy-pasteable, visudo-validated script instead of manual sudoers\nediting instructions: installs /etc/sudoers.d/tickle-ci-tc granting the\nci user passwordless sudo for the tc binary only, then verifies the\ngrant actually works as that user before exiting. Runs directly on\nrpi#1 as root, or over SSH without copying the file first.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T23:26:16Z",
+          "url": "https://github.com/tsnlab/tickle/commit/d1f8525f27972e4b0bfa834dcda119a4c5664c9d"
+        },
+        "date": 1789601558006,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.581,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 893.197,
             "unit": "Mbps"
           }
         ]
