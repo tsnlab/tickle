@@ -18,20 +18,12 @@
 # Service. Deferred: this package's own benchmark motivation (rmw-perf.yml, PERF_TEST_TOPICS) only
 # exercises topics, not services - see rmw_tickle/PLAN.md's own note on this package.
 
-# TEMPORARY diagnostic (see check-all.yml CI investigation, remove once the CI-only ordering bug
-# is root-caused).
-message(STATUS "[tickle-debug] tickle_cpp_generate_interfaces.cmake: EXECUTING for target "
-  "${rosidl_generate_interfaces_TARGET}; full registration order was "
-  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'")
-
 if(NOT TARGET ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
   message(FATAL_ERROR
     "The 'rosidl_generator_c' extension must be executed before the "
     "'rosidl_typesupport_tickle_cpp' extension.")
 endif()
 if(NOT TARGET ${rosidl_generate_interfaces_TARGET}__rosidl_typesupport_tickle_c)
-  message(STATUS "[tickle-debug] tickle_cpp_generate_interfaces.cmake: tickle_c target MISSING "
-    "for ${rosidl_generate_interfaces_TARGET} - about to FATAL_ERROR")
   message(FATAL_ERROR
     "The 'rosidl_typesupport_tickle_c' extension must be executed before the "
     "'rosidl_typesupport_tickle_cpp' extension.")
@@ -48,8 +40,12 @@ set(_template_file
 set(_generated_sources "")
 
 foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
-  # Same "reconstruct the original .msg path from the adapted .idl one" reasoning as rosidl_
-  # typesupport_tickle_c's own extension - see its own comment on this for the full rationale.
+  # Same "recover the original .msg path from the adapted .idl one, via rosidl_generate_
+  # interfaces()'s own still-in-scope _non_idl_tuples" reasoning as rosidl_typesupport_tickle_c's
+  # own extension - see its own comment on this for the full rationale (found the hard way via
+  # the same real CI failure: the old CMAKE_CURRENT_SOURCE_DIR-only guess this used to make broke
+  # identically here, silently skipping every message instead of FATAL_ERROR-ing, since this
+  # extension only ever `continue()`s on a miss).
   get_filename_component(_parent_folder "${_abs_idl_file}" DIRECTORY)
   get_filename_component(_parent_folder "${_parent_folder}" NAME)
   get_filename_component(_idl_name "${_abs_idl_file}" NAME_WE)
@@ -57,8 +53,16 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   if(NOT "${_parent_folder}" STREQUAL "msg")
     continue() # .srv (deferred, see this file's own top comment) or .action (never supported)
   endif()
-  set(_src_file "${CMAKE_CURRENT_SOURCE_DIR}/msg/${_idl_name}.msg")
-  if(NOT EXISTS "${_src_file}")
+  set(_src_relpath "msg/${_idl_name}.msg")
+  set(_src_file "")
+  foreach(_non_idl_tuple ${_non_idl_tuples})
+    string(REGEX REPLACE "^.*:" "" _non_idl_relpath "${_non_idl_tuple}")
+    if("${_non_idl_relpath}" STREQUAL "${_src_relpath}")
+      string(REGEX REPLACE ":([^:]*)$" "/\\1" _src_file "${_non_idl_tuple}")
+      break()
+    endif()
+  endforeach()
+  if("${_src_file}" STREQUAL "" OR NOT EXISTS "${_src_file}")
     continue() # rosidl_typesupport_tickle_c's own extension already warned about this .idl file
   endif()
 

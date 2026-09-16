@@ -9,28 +9,11 @@
 # already run - rosidl_generate_interfaces() executes registered extensions in registration order
 # (see rosidl_cmake/cmake/rosidl_generate_interfaces.cmake's own comment to that effect), and
 # find_package() ordering here is what decides that.
-# TEMPORARY diagnostic (see check-all.yml CI investigation, remove once the CI-only ordering bug
-# is root-caused) - prints whether rosidl_typesupport_tickle_c is already registered *before* this
-# find_package(rosidl_typesupport_tickle_c QUIET) call runs, so the CI log shows whether this
-# find_package() call is actually the one triggering tickle_c's own registration, or a no-op
-# because something else already resolved tickle_c earlier (in which case that earlier resolution
-# is what actually decided registration order, not this line).
-message(STATUS "[tickle-debug] tickle_cpp-extras.cmake.in sourced for PROJECT_NAME=${PROJECT_NAME}; "
-  "AMENT_EXTENSIONS_rosidl_generate_idl_interfaces (before find_package(tickle_c)) = "
-  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'; "
-  "rosidl_typesupport_tickle_c_FOUND (before) = '${rosidl_typesupport_tickle_c_FOUND}'")
 find_package(rosidl_generator_c QUIET)
 find_package(rosidl_typesupport_tickle_c QUIET)
-message(STATUS "[tickle-debug] tickle_cpp-extras.cmake.in: after find_package(tickle_c QUIET), "
-  "AMENT_EXTENSIONS_rosidl_generate_idl_interfaces = "
-  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'; "
-  "rosidl_typesupport_tickle_c_FOUND (after) = '${rosidl_typesupport_tickle_c_FOUND}'")
 
 find_package(ament_cmake_core QUIET REQUIRED)
 ament_register_extension(
   "rosidl_generate_idl_interfaces"
   "rosidl_typesupport_tickle_cpp"
   "rosidl_typesupport_tickle_cpp_generate_interfaces.cmake")
-message(STATUS "[tickle-debug] tickle_cpp-extras.cmake.in: after self-register, "
-  "AMENT_EXTENSIONS_rosidl_generate_idl_interfaces = "
-  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'")

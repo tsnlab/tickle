@@ -11,12 +11,6 @@
 # ordering guard just below - not walked the way rosidl_generator_c_generate_interfaces.cmake's
 # own version is).
 
-# TEMPORARY diagnostic (see check-all.yml CI investigation, remove once the CI-only ordering bug
-# with rosidl_typesupport_tickle_cpp's own extension is root-caused).
-message(STATUS "[tickle-debug] tickle_c_generate_interfaces.cmake: EXECUTING for target "
-  "${rosidl_generate_interfaces_TARGET}; full registration order was "
-  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'")
-
 if(NOT TARGET ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
   message(FATAL_ERROR
     "The 'rosidl_generator_c' extension must be executed before the "
@@ -37,18 +31,33 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   # runs before any extension, including this one, so every generator only ever has to understand
   # one input format) - NOT the original .msg this package's own author actually wrote. tickle_
   # typesupport has no OMG IDL parser (only tickle_typesupport._rosidl_parser, the .msg/.srv line
-  # format), so reconstruct the original source path instead of parsing this one: rosidl_adapter
-  # mirrors the original relative layout (msg/<Name>.msg -> .../msg/<Name>.idl), so the parent
-  # folder name and stem below are the same regardless of which one this path actually is.
+  # format), so this extension needs the original source file back.
   get_filename_component(_parent_folder "${_abs_idl_file}" DIRECTORY)
   get_filename_component(_parent_folder "${_parent_folder}" NAME)
   get_filename_component(_idl_name "${_abs_idl_file}" NAME_WE)
 
+  # Found the hard way via a real CI failure: the original source is NOT reliably at
+  # CMAKE_CURRENT_SOURCE_DIR/<subfolder>/<name>.<ext> - that only holds for a package's *own*
+  # local message files. A package can (and test_msgs really does, for every message except its
+  # own Builtins.msg) pass in .msg/.srv files that physically live in a completely different
+  # package's own share directory (test_interface_files, in test_msgs' case) - rosidl_generate_
+  # interfaces() is a macro (not a function), so its own internal `_non_idl_tuples` variable
+  # (list of "<abs_base_path>:<relative_path>" tuples for every non-.idl file passed in, BEFORE
+  # rosidl_adapter ran - see rosidl_generate_interfaces.cmake's own comment on this tuple format)
+  # is still set in this exact scope when this extension runs. rosidl_adapter preserves both the
+  # relative path and the ordering, so matching this .idl file's own relative path (same parent
+  # folder + stem, original extension) against that list recovers the real original location
+  # regardless of which package it actually lives in.
+  set(_src_relpath "${_parent_folder}/${_idl_name}.${_parent_folder}")
   set(_src_file "")
-  if("${_parent_folder}" STREQUAL "msg")
-    set(_src_file "${CMAKE_CURRENT_SOURCE_DIR}/msg/${_idl_name}.msg")
-  elseif("${_parent_folder}" STREQUAL "srv")
-    set(_src_file "${CMAKE_CURRENT_SOURCE_DIR}/srv/${_idl_name}.srv")
+  if("${_parent_folder}" STREQUAL "msg" OR "${_parent_folder}" STREQUAL "srv")
+    foreach(_non_idl_tuple ${_non_idl_tuples})
+      string(REGEX REPLACE "^.*:" "" _non_idl_relpath "${_non_idl_tuple}")
+      if("${_non_idl_relpath}" STREQUAL "${_src_relpath}")
+        string(REGEX REPLACE ":([^:]*)$" "/\\1" _src_file "${_non_idl_tuple}")
+        break()
+      endif()
+    endforeach()
   endif()
 
   if("${_src_file}" STREQUAL "" OR NOT EXISTS "${_src_file}")
@@ -114,13 +123,6 @@ endforeach()
 # own - their own add_library() calls simply never ran, surfacing later as their targets having no
 # sources at all ("CMake Error: Cannot determine link language"). An if() the same size as
 # everything below it, indented one level deeper, avoids the whole hazard.
-# TEMPORARY diagnostic (see check-all.yml CI investigation) - confirms whether this extension ran
-# to completion but simply had nothing to generate for this package (empty _generated_sources),
-# as opposed to never running/registering at all.
-list(LENGTH _generated_sources _generated_sources_len)
-message(STATUS "[tickle-debug] tickle_c_generate_interfaces.cmake: loop done for "
-  "${rosidl_generate_interfaces_TARGET}; _generated_sources has ${_generated_sources_len} entries")
-
 if(_generated_sources)
   set(_target_suffix "__rosidl_typesupport_tickle_c")
   add_library(${rosidl_generate_interfaces_TARGET}${_target_suffix} ${_generated_sources}
