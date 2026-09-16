@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789600036720,
+  "lastUpdate": 1789600039608,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -7810,6 +7810,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 893.356,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1d7e68985c52a995e0fc5ca2befad737bf25fb9c",
+          "message": "Fix tc interface detection and add reliable-throughput columns to status table\n\nprobe_loss_testing() was resolving rpi#1's outgoing interface toward\nRPI_SERVER_HOST's *management* IP (ip route get), which found wlan0 on\nthe real rig - not the dedicated point-to-point link the actual TickLE\ntest traffic runs over (every example's own default -b broadcast,\n192.168.10.255, that this script never overrides). Routes to a new\nPERF_LINK_BROADCAST (defaults to that same 192.168.10.255) instead, so\ntc/netem loss actually lands on the link the test traffic uses.\n\nThe https://tsnlab.github.io/tickle/dev/bench/ status table (dashboard.py)\ngains three more Raspberry Pi columns: RELIABLE throughput at 1%/5%/10%\nloss, sourced from write_dashboard_fragment()'s new\nreliable_throughput_{1,5,10}pct_mbps fields (null/pending until rpi#1 has\nthe passwordless sudo tc access .github/scripts/README.md documents).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T08:06:04+09:00",
+          "tree_id": "cd1a465d40e17e3404f820fdd47de21c6c96b6c3",
+          "url": "https://github.com/tsnlab/tickle/commit/1d7e68985c52a995e0fc5ca2befad737bf25fb9c"
+        },
+        "date": 1789600038552,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.628,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 903.522,
             "unit": "Mbps"
           }
         ]
