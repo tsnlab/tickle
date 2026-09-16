@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789598612938,
+  "lastUpdate": 1789598615892,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10001,6 +10001,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/b18eee64510e4698d08c14635c8c79a79b771cc1"
         },
         "date": 1789569805705,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "881f6f4c90e9b74df39d7bc86d0392b64866fada",
+          "message": "Add reliable-QoS latency/loss perf scenarios (tc/netem, 1/5/10% loss)\n\nperf_server.c now reports one-way delivery latency (min/avg/max, plus\nRESULT's own avg_latency_ms) using the sender's wire timestamp already\nthreaded through bulk_callback() - NTP-dependent for its absolute value,\nbut a fair same-rig comparison across runs.\n\nrun_perf.sh gains tc/netem-based packet-loss injection on rpi#1's egress:\nprobe_loss_testing() checks for passwordless `sudo tc` there and, if\npresent, runs BEST_EFFORT vs RELIABLE perf_client/perf_server pairs at\n1%/5%/10% loss - this is where RELIABLE's retransmission actually costs\nsomething to measure, unlike the existing clean-link \"reliable\" scenario.\nResults land in a new job-summary comparison table and two more\ngithub-action-benchmark groups (performance.yml) - both throughput\n(gating) and latency (graphed only, same NTP caveat). Missing sudo access\ndegrades to skipping just this section, not the whole run.\n\nDocumented the new sudoers requirement in .github/scripts/README.md and\nthe new scenario/metric in the top-level README.md.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T07:42:25+09:00",
+          "tree_id": "665d46b651b49d55ba39386d1b6c240df6671850",
+          "url": "https://github.com/tsnlab/tickle/commit/881f6f4c90e9b74df39d7bc86d0392b64866fada"
+        },
+        "date": 1789598614829,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
