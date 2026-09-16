@@ -278,18 +278,6 @@ typedef struct rmw_tickle_client_t {
     int64_t next_sequence_id;
 } rmw_tickle_client_t;
 
-// rmw_service.c's own bridge (server_callback(), below) blocks the *whole node's* poll thread -
-// not just this one service - between taking a request (rmw_take_request()) and the matching
-// rmw_send_response(), because TickLE's own tt_SERVER_CALLBACK contract requires a response
-// synchronously, before returning, with no separate "send it later" API of its own (rmw_tickle/
-// PLAN.md's design philosophy keeps TickLE itself unmodified, so this is resolved entirely on the
-// rmw_tickle side). Bounded rather than indefinite specifically so an application bug (a taken
-// request whose handler never calls rmw_send_response() at all) degrades to "one slow/default
-// response, node briefly unresponsive" rather than "poll thread wedged forever" - matches how
-// quickly a synchronous rclcpp executor's own take-handle-send sequence normally completes, with
-// generous headroom for a real handler's own work.
-#define RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS (5 * tt_SECOND)
-
 // TickLE specific service data
 typedef struct rmw_tickle_service_t {
     rmw_service_t rmw_service; // RMW service structure (must be first)
@@ -302,22 +290,34 @@ typedef struct rmw_tickle_service_t {
     rcutils_allocator_t allocator;
 
     // rmw_take_request()/rmw_send_response() bridge (rmw_service.c) - see server_callback()'s own
-    // doc comment there for the full state machine this drives. Same single-outstanding-call
-    // limit as rmw_tickle_client_t's own (mirroring TickLE's tt_Server, which likewise only ever
-    // has one request in flight through a given server_callback() invocation at a time).
+    // doc comment there for the full handoff. Since TickLE core's own tt_CALL_DEFERRED/tt_Server_
+    // send_response() (Milestone 17) now separates "a request arrived" from "here's the answer"
+    // for real, this only ever guards a plain producer/consumer handoff between server_callback()
+    // (the poll thread) and rmw_take_request()/rmw_send_response() (whatever thread the ROS
+    // executor uses) - no condition variable needed anymore, nothing here ever waits on the other
+    // side. Still only one outstanding request at a time (mirroring rmw_tickle_client_t's own
+    // same limit) - a deliberate, documented, unchanged scope boundary (Milestone 17), not
+    // something this milestone tries to fix: server_callback() now rejects a second request
+    // outright while one is still un-answered, rather than the old design's "the whole poll
+    // thread is blocked so a second one can't even arrive" side effect.
     pthread_mutex_t request_mutex;
-    pthread_cond_t request_cond; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
-    bool request_available;      // server_callback() has a request waiting for rmw_take_request()
-    bool response_ready;         // rmw_send_response() has filled response_storage for it
+    bool request_available; // server_callback() has a request waiting for rmw_take_request()
     int64_t current_sequence_id;
+    // The TickLE-level identity of the currently-available/in-flight request - server_callback()
+    // sets it, rmw_send_response() reads it back to call tt_Server_send_response() with the right
+    // one. Meaningless (and never read) once request_available goes false without a response
+    // ever having been sent for it.
+    tt_RequestId pending_request_id;
     // ROS-shaped (request_callbacks->ros_struct_size bytes) - server_callback() converts TickLE's
     // own request (aliasing node->rx_buffer, same DESIGN.md "Strings" concern as rmw_subscription.
     // c's subscriber_callback()) into this *before* rmw_take_request() can see it.
     void* request_storage;
     // TickLE-shaped (response_callbacks->tickle_struct_size bytes, not ros_struct_size - the
     // opposite direction from request_storage above) - rmw_send_response() converts the
-    // application's ROS response into this; server_callback(), still waiting, then copies it
-    // verbatim into TickLE's own response out-parameter once woken.
+    // application's ROS response into this scratch buffer, then hands it straight to tt_Server_
+    // send_response(), which copies it into TickLE core's own pending-response slot immediately
+    // (see that function's own doc comment) - this doesn't need to outlive that one call the way
+    // it used to when server_callback() copied it back out itself, still waiting.
     void* response_storage;
     int64_t next_sequence_id;
 } rmw_tickle_service_t;

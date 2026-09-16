@@ -241,7 +241,7 @@ index c9d0341..2bd6b2c 100644
  
    void TearDown() override
 diff --git a/test_rmw_implementation/test/test_service.cpp b/test_rmw_implementation/test/test_service.cpp
-index 1962434..16e485f 100644
+index 1962434..636c481 100644
 --- a/test_rmw_implementation/test/test_service.cpp
 +++ b/test_rmw_implementation/test/test_service.cpp
 @@ -15,6 +15,7 @@
@@ -252,42 +252,7 @@ index 1962434..16e485f 100644
  
  #include "osrf_testing_tools_cpp/scope_exit.hpp"
  
-@@ -308,6 +309,20 @@ TEST_F(TestService, take_request_with_bad_arguments) {
- }
- 
- TEST_F(TestService, send_reponse_with_bad_arguments) {
-+  // Local, rmw_tickle-specific patch (not upstream): this test needs a real client->service
-+  // request round trip on one node, but TickLE's own process_packet() (src/tickle.c) drops any
-+  // packet whose source node id matches the local node's own id ("Self sent message") - correct
-+  // for topic pub/sub (a node already has its own published data locally, no need to hear it back
-+  // over the network), but wrong here: rmw_tickle's client and service both live on the exact
-+  // same tt_Node (Milestone 2's one-node-per-process model), so a client's own request datagram
-+  // is unconditionally discarded before the co-located service ever sees it - a newly-found, real
-+  // architectural gap (Milestone 16), not previously exercised since test_service.cpp/test_client.
-+  // cpp couldn't even compile against rmw_tickle before this same milestone. Left as follow-on
-+  // work, not fixed here.
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
-+
-   constexpr char service_name[] = "/test";
-   const rosidl_service_type_support_t * ts =
-     ROSIDL_GET_SRV_TYPE_SUPPORT(test_msgs, srv, BasicTypes);
-@@ -411,6 +426,13 @@ TEST_F(TestService, send_reponse_with_bad_arguments) {
- }
- 
- TEST_F(TestService, send_reponse_with_client_gone) {
-+  // Local, rmw_tickle-specific patch (not upstream): same real client->service round-trip gap as
-+  // send_reponse_with_bad_arguments above - see its own comment for the full root cause (TickLE's
-+  // own self-sent packet filter, src/tickle.c).
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
-+
-   constexpr char service_name[] = "/test";
-   const rosidl_service_type_support_t * ts =
-     ROSIDL_GET_SRV_TYPE_SUPPORT(test_msgs, srv, BasicTypes);
-@@ -507,6 +529,13 @@ TEST_F(TestService, send_reponse_with_client_gone) {
+@@ -507,6 +508,13 @@ TEST_F(TestService, send_reponse_with_client_gone) {
  }
  
  TEST_F(TestService, check_qos) {
