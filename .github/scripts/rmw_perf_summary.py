@@ -23,8 +23,16 @@ Each file is named performance_test_two_process_results_<rmw>_<sync>_<topic>.ben
 buildfarm_perf_tests' own test/add_performance_tests.cmake) - the rmw/sync/topic triple has to be
 parsed from the *filename*, not the JSON body, since the body's own single inner key (e.g.
 "rmw_tickle_Array1k") never includes the sync mode at all.
+
+--benchmark-json-dir additionally writes rmw-latency-benchmark.json/rmw-throughput-benchmark.json
+in benchmark-action/github-action-benchmark's own flat "custom" array format (see run_perf.sh's
+own write_benchmark_json() for the identical convention performance.yml already uses) - one array
+entry per (topic, sync) combination, so rmw-perf.yml can hand these straight to that action and
+get the same gh-pages dev/bench history/graphing performance.yml's own TickLE-core numbers
+already have, instead of only this run's own GITHUB_STEP_SUMMARY table (which has no history).
 """
 
+import argparse
 import glob
 import json
 import os
@@ -91,12 +99,48 @@ def render_markdown(rows):
     return "\n".join(lines) + "\n"
 
 
+def render_benchmark_json(rows):
+    """Returns (latency_entries, throughput_entries), each a list of {"name", "unit", "value"}
+    dicts - benchmark-action/github-action-benchmark's own "customSmallerIsBetter"/
+    "customBiggerIsBetter" input format. One entry per (topic, sync, rmw) combination, named so
+    each becomes its own line - and its own history graph - on the gh-pages dashboard rather than
+    all combinations collapsing into one indistinguishable series.
+    """
+    latency = []
+    throughput = []
+    for r in sorted(rows, key=lambda r: (r["topic"], r["sync"], r["rmw"])):
+        label = f"{r['rmw']} {r['topic']} {r['sync']}"
+        latency.append({"name": f"{label} latency", "unit": "ms", "value": r["latency_ms"]})
+        throughput.append(
+            {"name": f"{label} throughput", "unit": "Mbit/s", "value": r["throughput_mbit_s"]}
+        )
+    return latency, throughput
+
+
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <results_dir>", file=sys.stderr)
-        return 1
-    rows = load_rows(sys.argv[1])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("results_dir")
+    parser.add_argument(
+        "--benchmark-json-dir",
+        default=None,
+        help="also write rmw-latency-benchmark.json/rmw-throughput-benchmark.json here",
+    )
+    args = parser.parse_args()
+
+    rows = load_rows(args.results_dir)
     print(render_markdown(rows))
+
+    if args.benchmark_json_dir and rows:
+        # Skipped entirely (not just written empty) when there are no rows: an empty array would
+        # still get pushed to gh-pages by github-action-benchmark, permanently recording a gap in
+        # every later history graph for a run that produced no real numbers at all (e.g. this
+        # rig's own environment hiccup, not a real 0ms/0Mbit/s data point).
+        latency, throughput = render_benchmark_json(rows)
+        os.makedirs(args.benchmark_json_dir, exist_ok=True)
+        with open(os.path.join(args.benchmark_json_dir, "rmw-latency-benchmark.json"), "w") as f:
+            json.dump(latency, f, indent=2)
+        with open(os.path.join(args.benchmark_json_dir, "rmw-throughput-benchmark.json"), "w") as f:
+            json.dump(throughput, f, indent=2)
     return 0
 
 

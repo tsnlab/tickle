@@ -20,6 +20,9 @@ concurrency:
   group: rmw-perf-main
   cancel-in-progress: true
 
+permissions:
+  contents: write # github-action-benchmark pushes result history to gh-pages
+
 jobs:
   compare:
     # A different rig from `tickle-hil` (performance.yml) - one Ubuntu machine running a full
@@ -165,11 +168,50 @@ jobs:
           # tests.cmake) lands each *_results_<rmw>_<sync>_<topic>.benchmark.json here, one per
           # two-process ctest that actually ran - see rmw_perf_summary.py's own doc comment for
           # the exact filename shape it parses. GITHUB_STEP_SUMMARY renders as Markdown directly
-          # on this run's own Actions summary page - no separate dashboard needed for this first
-          # pass (rmw_tickle/PLAN.md's benchmark plan deliberately started with raw
-          # artifacts/no-dashboard; this is the smallest useful step up from that, still nothing
-          # bespoke to maintain).
-          python3 .github/scripts/rmw_perf_summary.py "$RMW_PERF_RESULTS_DIR" >> "$GITHUB_STEP_SUMMARY"
+          # on this run's own Actions summary page - useful on its own, but has no history (each
+          # run's table only ever shows that run's own numbers) - --benchmark-json-dir additionally
+          # writes rmw-{latency,throughput}-benchmark.json at the checkout root, in
+          # github-action-benchmark's own format, for the two steps below to hand to that action
+          # and get real gh-pages dev/bench history/graphing, the same way performance.yml's own
+          # TickLE-core numbers already have (rmw_tickle/PLAN.md's benchmark plan's original
+          # raw-artifacts/no-dashboard starting point, one step further).
+          python3 .github/scripts/rmw_perf_summary.py "$RMW_PERF_RESULTS_DIR" \
+            --benchmark-json-dir "$GITHUB_WORKSPACE" >> "$GITHUB_STEP_SUMMARY"
+
+      # fail-on-alert: false on both, matching the "Run the benchmark" step's own `|| true`
+      # philosophy above (this same-host rig's own numbers are for tracking rmw_tickle's before/
+      # after trend, not a release gate - see README-rmw-perf.md/this workflow's own top comment
+      # on why it isn't a fair cross-vendor comparison either) - a real regression should still be
+      # visible on the dashboard/chart, just never block a push on its own.
+      # hashFiles(...) != '' rather than a bare always(): a run that produced zero rows (e.g. a
+      # real environment hiccup on this rig) never writes rmw-latency-benchmark.json at all (see
+      # rmw_perf_summary.py's own comment on why an empty array is deliberately never written) -
+      # this action has no such guard of its own and would just error on a missing input file.
+      - name: Track rmw_tickle latency history
+        if: always() && hashFiles('rmw-latency-benchmark.json') != ''
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: rmw_tickle latency (buildfarm_perf_tests)
+          tool: customSmallerIsBetter
+          output-file-path: rmw-latency-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+
+      - name: Track rmw_tickle throughput history
+        if: always() && hashFiles('rmw-throughput-benchmark.json') != ''
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: rmw_tickle throughput (buildfarm_perf_tests)
+          tool: customBiggerIsBetter
+          output-file-path: rmw-throughput-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
 
       - name: Upload raw results
         if: always()
