@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789487680911,
+  "lastUpdate": 1789519132529,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3350,6 +3350,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/8766783b64722e2069277820296f9dc781bf326a"
         },
         "date": 1789487672406,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.201,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f5f59f7f3a6d121235344857a8c11c18af9fca3b",
+          "message": "Fix fifth check-all.yml run: force tickle_c-before-tickle_cpp for test_msgs\n\ntest_msgs' own rosidl_typesupport_tickle_cpp extension failed with\n\"The 'rosidl_typesupport_tickle_c' extension must be executed before\nthe 'rosidl_typesupport_tickle_cpp' extension\" - a real ordering\nrace, not a typo. rosidl_generate_interfaces() runs each registered\ntypesupport's own CMake extension in *registration* order, decided\nby find_package() call order; rosidl_typesupport_tickle_cpp's own\nextras.cmake.in already find_package()s rosidl_typesupport_tickle_c\nfirst internally for exactly this reason, but *whatever* generic\nmechanism gets either of our two typesupports discovered at all for\na package that never names either one explicitly (test_msgs doesn't)\nhas no ordering guarantee between packages it discovers this way -\nconfirmed the ordering really is environment-dependent: the exact\nsame combined `test_interface_files test_msgs` colcon build that\nfailed on jazzy CI built fine locally without this fix at all.\n\nrmw_tickle's own rosidl_typesupport_tickle_c_tests already sidesteps\nthis the same way real end users would have to: its own CMakeLists.txt\nexplicitly find_package()s rosidl_typesupport_tickle_c before\nrosidl_typesupport_tickle_cpp. Added the identical two lines to\ntest_msgs' own CMakeLists.txt via the patch, forcing that same\nregistration order regardless of whatever the generic discovery\nmechanism would have picked on its own.\n\nVerified: patch applies cleanly to a fresh jazzy clone; the same\n9/9 local pass as before, plus (deliberately, this time) the exact\ncombined `test_interface_files test_msgs` build check-all.yml itself\nuses, confirmed unaffected by the fix.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T09:38:05+09:00",
+          "tree_id": "8b56ff0701b42b2a4b0d5c809c559b601611c3d0",
+          "url": "https://github.com/tsnlab/tickle/commit/f5f59f7f3a6d121235344857a8c11c18af9fca3b"
+        },
+        "date": 1789519130644,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
