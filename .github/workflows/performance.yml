@@ -99,6 +99,42 @@ jobs:
           summary-always: true
           fail-on-alert: false
 
+      # tc/netem loss-injection scenarios (run_perf.sh's own probe_loss_testing()) - these two
+      # files only exist when rpi#1 has passwordless `sudo tc` set up (see .github/scripts/
+      # README.md); `if:` skips both steps cleanly rather than failing the job when they don't,
+      # since github-action-benchmark itself has no "skip if missing" input of its own. Each file
+      # holds six named entries (BEST_EFFORT/RELIABLE x 1%/5%/10% loss) in one group/graph rather
+      # than six separate ones - see run_perf.sh's own comment on why.
+      - name: Track loss-injection throughput history
+        if: ${{ hashFiles('loss-throughput-benchmark.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Throughput under packet loss (BEST_EFFORT vs RELIABLE)
+          tool: customBiggerIsBetter
+          output-file-path: loss-throughput-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: true
+          alert-threshold: "200%"
+
+      # One-way latency (perf_server.c's own new avg_latency_ms) is only as accurate as the two
+      # Pis' clock sync (NTP) - see perf_server.c's own comment - so, like rtt jitter and reliable
+      # loss_pct above, this is graphed but never gates the build on its own.
+      - name: Track loss-injection latency history
+        if: ${{ hashFiles('loss-latency-benchmark.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Latency under packet loss (BEST_EFFORT vs RELIABLE)
+          tool: customSmallerIsBetter
+          output-file-path: loss-latency-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+
       # run_perf.sh writes perf-frag.json (Raspberry Pi build/test outcome + the measured
       # numbers) even when it aborts early; hand it to the publish job below.
       - name: Upload dashboard fragment

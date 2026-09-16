@@ -28,6 +28,16 @@ contributor never runs any of this by hand.
   - `~/tickle` already `git clone`d (as the `ci` user) - `run_perf.sh` only ever `fetch`es +
     `reset --hard`s an existing checkout, it never clones one from scratch.
 
+  **rpi#1 only**, for `run_perf.sh`'s tc/netem loss-injection scenarios (QoS roadmap #5,
+  RELIABILITY vs BEST_EFFORT under real packet loss): the `ci` user needs passwordless `sudo tc`,
+  e.g. via `sudo visudo -f /etc/sudoers.d/tickle-ci-tc` containing:
+  ```
+  ci ALL=(root) NOPASSWD: /usr/sbin/tc
+  ```
+  `run_perf.sh`'s own `probe_loss_testing()` checks this (`sudo -n tc ...`) before running any of
+  these scenarios and just skips them - not the rest of the run - if it isn't set up, so this is
+  optional to get everything else in this document working, only needed for that one section.
+
 ## SSH key setup
 
 `run_perf.sh` SSHes into both Pis as `ci` using one key, shared between them:

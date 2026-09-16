@@ -102,6 +102,18 @@ static uint64_t total_dropped = 0;
 static uint64_t interval_received_msgs = 0;
 static uint64_t interval_received_bytes = 0;
 
+// One-way delivery latency: `time` (bulk_callback's own parameter) is the *sender's* clock at
+// publish (tt_Publisher_publish()'s data_header->timestamp = tt_get_ns() - tickle.c), so this is
+// only meaningful when both Pis' clocks are reasonably synchronized (NTP) - see README.md's own
+// caveat on this. Even without that, it's still a fair *relative* comparison across loss levels
+// and BEST_EFFORT vs RELIABLE on this same pair of machines, which is what run_perf.sh's own
+// loss-injection scenarios actually use it for - a fixed clock-offset error cancels out when
+// comparing two runs against each other, only the absolute number is suspect.
+static uint64_t latency_sum_ns = 0;
+static uint64_t latency_count = 0;
+static uint64_t latency_min_ns = UINT64_MAX;
+static uint64_t latency_max_ns = 0;
+
 static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, struct BulkData* data) {
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
 
@@ -134,6 +146,19 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
         total_received_msgs++;
         total_received_bytes += data->payload_count;
         total_dropped += gap_count;
+
+        uint64_t now = tt_get_ns();
+        if (now > time) { // guards a clock skew that would otherwise underflow this subtraction
+            uint64_t latency_ns = now - time;
+            latency_sum_ns += latency_ns;
+            latency_count++;
+            if (latency_ns < latency_min_ns) {
+                latency_min_ns = latency_ns;
+            }
+            if (latency_ns > latency_max_ns) {
+                latency_max_ns = latency_ns;
+            }
+        }
     }
 }
 
@@ -194,12 +219,21 @@ static void print_summary(uint64_t start_time) {
     uint64_t expected_total = total_received_msgs + total_dropped;
     double loss_pct = expected_total > 0 ? (percent_scale * (double)total_dropped / (double)expected_total) : 0.0;
 
+    const double ns_per_ms = 1e6;
+    double avg_latency_ms = latency_count > 0 ? (double)latency_sum_ns / (double)latency_count / ns_per_ms : 0.0;
+    double min_latency_ms = latency_count > 0 ? (double)latency_min_ns / ns_per_ms : 0.0;
+    double max_latency_ms = latency_count > 0 ? (double)latency_max_ns / ns_per_ms : 0.0;
+
     printf("\n--- bulk_topic receive statistics ---\n");
     printf("%s messages received, %s dropped, %.1f%% loss, %s MB, %.3f sec, avg %s Mbps\n",
            tt_format_grouped(total_received_msgs, recv_buf), tt_format_grouped(total_dropped, dropped_buf), loss_pct,
            tt_format_grouped_f3(megabytes, megabytes_buf), elapsed_s, tt_format_grouped_f3(avg_mbps, avg_mbps_buf));
-    printf("RESULT: recv=%s dropped=%s loss_pct=%.1f avg_mbps=%s\n", tt_format_grouped(total_received_msgs, recv_buf),
-           tt_format_grouped(total_dropped, dropped_buf), loss_pct, tt_format_grouped_f3(avg_mbps, avg_mbps_buf));
+    printf("one-way latency (sender clock -> here, NTP-dependent - see this file's own comment): "
+           "min/avg/max = %.3f/%.3f/%.3f ms\n",
+           min_latency_ms, avg_latency_ms, max_latency_ms);
+    printf("RESULT: recv=%s dropped=%s loss_pct=%.1f avg_mbps=%s avg_latency_ms=%.3f\n",
+           tt_format_grouped(total_received_msgs, recv_buf), tt_format_grouped(total_dropped, dropped_buf), loss_pct,
+           tt_format_grouped_f3(avg_mbps, avg_mbps_buf), avg_latency_ms);
 }
 
 static void print_usage(const char* prog) {

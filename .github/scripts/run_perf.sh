@@ -23,7 +23,30 @@ PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
 SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 
 LOG_DIR="$(mktemp -d)"
-trap 'rm -rf "$LOG_DIR"' EXIT
+
+# QoS roadmap #5 (RELIABILITY/RELIABLE) loss-injection scenarios: how BEST_EFFORT vs RELIABLE
+# actually behave under real packet loss, using Linux's own tc/netem on rpi#1's (the sender's)
+# egress toward rpi#2 - nothing TickLE-side, this is purely a network-layer fault injection.
+# Needs passwordless `sudo tc` on rpi#1 (see README.md's own "What's needed") - probed for below,
+# degrades to skipping just this section (not the whole run) if that isn't set up yet.
+LOSS_LEVELS_PCT="${LOSS_LEVELS_PCT:-1 5 10}"
+CLIENT_IFACE=""          # resolved below; set_loss() below is always a safe no-op while empty
+LOSS_TESTING_AVAILABLE=0 # 1 once both the interface and passwordless sudo tc are confirmed
+
+# pct == 0 clears any active netem qdisc instead of applying one - the one function both this
+# script's own loss-level loop and the exit trap below (a run that dies mid-loss-level must not
+# leave the *next* run on this same rig - latency/throughput/etc - silently lossy) share.
+set_loss() {
+    local pct="$1"
+    [ -z "$CLIENT_IFACE" ] && return 0
+    if [ "$pct" = "0" ]; then
+        ssh_run "$RPI_CLIENT_HOST" "sudo -n tc qdisc del dev $CLIENT_IFACE root" >/dev/null 2>&1 || true
+    else
+        ssh_run "$RPI_CLIENT_HOST" "sudo -n tc qdisc replace dev $CLIENT_IFACE root netem loss ${pct}%"
+    fi
+}
+
+trap 'set_loss 0; rm -rf "$LOG_DIR"' EXIT
 
 # Fragment the "Performance Test" workflow hands to .github/scripts/publish_dashboard.sh for the
 # Raspberry Pi row of https://tsnlab.github.io/tickle/dev/bench/. Seed it as a failure now and
@@ -143,6 +166,31 @@ run_paired_test() {
     wait "$server_pid" || true
 }
 
+# Resolves rpi#1's own outgoing interface toward rpi#2 (via `ip route get`, the same way the
+# kernel itself would pick one) and confirms `sudo tc` actually works non-interactively there -
+# `sudo -n` fails fast instead of hanging on a password prompt that can never be answered over a
+# non-interactive SSH session. Sets CLIENT_IFACE/LOSS_TESTING_AVAILABLE; never fails the script
+# itself (set -e-safe: every check here is the condition of an `if`), just leaves loss testing
+# unavailable with a clear reason logged.
+probe_loss_testing() {
+    CLIENT_IFACE=$(ssh_run "$RPI_CLIENT_HOST" "ip route get $RPI_SERVER_HOST" 2>/dev/null |
+        grep -oP 'dev \K\S+' | head -1 || true)
+    if [ -z "$CLIENT_IFACE" ]; then
+        echo "Could not resolve rpi#1's outgoing interface toward rpi#2 - skipping loss-injection scenarios" >&2
+        return
+    fi
+    echo "rpi#1 -> rpi#2 traffic goes out $CLIENT_IFACE"
+
+    if ssh_run "$RPI_CLIENT_HOST" "sudo -n tc qdisc replace dev $CLIENT_IFACE root netem loss 1%" >/dev/null 2>&1; then
+        set_loss 0
+        LOSS_TESTING_AVAILABLE=1
+    else
+        CLIENT_IFACE="" # also disarms set_loss()'s own exit-trap cleanup - nothing was ever applied
+        echo "rpi#1 cannot run 'sudo tc' non-interactively - skipping loss-injection scenarios" \
+            "(see .github/scripts/README.md's own sudoers requirement)" >&2
+    fi
+}
+
 summarize() {
     {
         echo "## Latency (ping / pong)"
@@ -170,6 +218,29 @@ summarize() {
         cat "$LOG_DIR/reliable_server.log"
         echo '```'
         echo
+        if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
+            echo "## RELIABLE vs BEST_EFFORT under packet loss (tc/netem, rpi#1's own egress)"
+            echo
+            echo "One-way latency is the receiver's clock minus the sender's own wire timestamp -"
+            echo "only as accurate as the two Pis' clock sync (NTP); read it as a same-rig relative"
+            echo "comparison across rows, not an absolute number. loss_pct is perf_server's own"
+            echo "expected_seq gap counter, which (see the \"reliable\" run's own comment above)"
+            echo "still counts a successfully-recovered-but-reordered RELIABLE sample as a gap."
+            echo
+            echo "| tc loss | mode | throughput (Mbps) | avg latency (ms) | loss_pct |"
+            echo "|---|---|---|---|---|"
+            for pct in $LOSS_LEVELS_PCT; do
+                for mode in besteffort reliable; do
+                    local log="$LOG_DIR/loss${pct}_${mode}_server.log"
+                    local mbps lat lp
+                    mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$log" 2>/dev/null | tail -1 | tr -d ',' || true)
+                    lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
+                    lp=$(grep -oP 'loss_pct=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
+                    echo "| ${pct}% | $mode | ${mbps:-N/A} | ${lat:-N/A} | ${lp:-N/A} |"
+                done
+            done
+            echo
+        fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"
         echo '```'
@@ -251,6 +322,30 @@ EOF
   {"name": "reliable loss_pct", "unit": "%", "value": $reliable_loss_pct}
 ]
 EOF
+
+    # tc/netem loss-injection scenarios (see probe_loss_testing()'s own comment on why these might
+    # not exist at all - no passwordless `sudo tc` on rpi#1 yet) - one named entry per (loss level,
+    # mode) combination, all three levels in the *same* two JSON files/benchmark groups (matching
+    # tool: customBiggerIsBetter/customSmallerIsBetter's own "one direction per file" constraint)
+    # rather than one file per level, so they render as one graph with six lines instead of six
+    # separate graphs.
+    if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
+        local throughput_entries="" latency_entries=""
+        for pct in $LOSS_LEVELS_PCT; do
+            for mode in besteffort reliable; do
+                local log="$LOG_DIR/loss${pct}_${mode}_server.log"
+                local mbps lat
+                mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$log" 2>/dev/null | tail -1 | tr -d ',' || true)
+                lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
+                [ -n "$throughput_entries" ] && throughput_entries="$throughput_entries,"
+                throughput_entries="$throughput_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"Mbps\", \"value\": ${mbps:-0}}"
+                [ -n "$latency_entries" ] && latency_entries="$latency_entries,"
+                latency_entries="$latency_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"ms\", \"value\": ${lat:-0}}"
+            done
+        done
+        printf '[%s]\n' "$throughput_entries" > loss-throughput-benchmark.json
+        printf '[%s]\n' "$latency_entries" > loss-latency-benchmark.json
+    fi
 }
 
 update_and_build
@@ -274,6 +369,30 @@ run_paired_test "throughput" "perf_server" "perf_client" "-d $PERF_DURATION_SEC"
 # fresh gap, left for whenever that distinction is actually needed.
 run_paired_test "reliable" "perf_server" "perf_client" "-d $PERF_DURATION_SEC -R" \
     "$((PERF_DURATION_SEC + 30))" "-R"
+
+# Loss-injection runs: BEST_EFFORT vs RELIABLE at each of LOSS_LEVELS_PCT, under real tc/netem
+# packet loss instead of a clean link - this is where RELIABLE's own retransmission is actually
+# expected to matter (on the clean-link "reliable" run above, it costs ~nothing to measure,
+# since nothing is ever lost to retransmit). perf_server.c's own one-way latency stat (this
+# file's own README/perf_server.c comment on its NTP-clock-sync caveat) is what makes this the
+# closest thing to a "reliable QoS latency" benchmark this rig has - RELIABLE's retransmit-then-
+# deliver path should show up as a measurably higher avg/max latency than BEST_EFFORT's
+# just-drop-it one as loss increases, which a one-way throughput number alone wouldn't reveal.
+probe_loss_testing
+if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
+    for pct in $LOSS_LEVELS_PCT; do
+        if ! set_loss "$pct"; then
+            echo "Failed to apply ${pct}% tc loss on rpi#1 - skipping this loss level" >&2
+            set_loss 0
+            continue
+        fi
+        run_paired_test "loss${pct}_besteffort" "perf_server" "perf_client" "-d $PERF_DURATION_SEC" \
+            "$((PERF_DURATION_SEC + 30))"
+        run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" "-d $PERF_DURATION_SEC -R" \
+            "$((PERF_DURATION_SEC + 30))" "-R"
+        set_loss 0
+    done
+fi
 
 # Small-message run: 100-byte payloads, -B so node_flush() batches several per packet (perf_
 # client's own default flipped to flush-immediately, one packet per message - see DESIGN.md's

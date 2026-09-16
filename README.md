@@ -215,10 +215,15 @@ final `RESULT:` line when it stops (`-c`/`-d` elapsing, or Ctrl+C):
   `RESULT: FAIL (...)` - did every call get answered / did every published message arrive, in
   order, with none dropped.
 - **Performance pairs** (`ping` for ping_pong, `perf_server` for perf) print the measurement
-  itself (`RESULT: rtt_avg_ms=... loss_pct=...` / `RESULT: recv=... avg_mbps=...`), not a
-  pass/fail verdict - there's no single right answer to compare against, only numbers to judge by
-  eye or trend over time. The other side of each pair (`server`, `pong`, `publisher`,
-  `perf_client`) has no verdict of its own to report - it just logs a plain completion count.
+  itself (`RESULT: rtt_avg_ms=... loss_pct=...` / `RESULT: recv=... avg_mbps=... avg_latency_ms=...`),
+  not a pass/fail verdict - there's no single right answer to compare against, only numbers to
+  judge by eye or trend over time. `avg_latency_ms` is a one-way delivery latency (the receiver's
+  clock minus the sender's own wire timestamp), so it's only as accurate as the two sides' clock
+  sync (NTP) - treat it as a same-rig relative comparison (e.g. BEST_EFFORT vs RELIABLE, or across
+  loss levels - see "Continuous performance testing" below) rather than an absolute number unless
+  the two machines are known to be tightly synced. The other side of each pair (`server`, `pong`,
+  `publisher`, `perf_client`) has no verdict of its own to report - it just logs a plain
+  completion count.
 
 `perf_client` takes four more flags to control what it sends:
 
@@ -334,6 +339,17 @@ server/receiver), via a self-hosted GitHub Actions runner:
 Results are tracked over time and charted at the same page (below the status table);
 the workflow fails if latency more than doubles, or throughput drops to less than half, versus
 the last recorded run (`alert-threshold: "200%"` on each `github-action-benchmark` step).
+
+**RELIABLE vs BEST_EFFORT under real packet loss** (QoS roadmap #5, `rmw_tickle/PLAN.md`):
+alongside the clean-link runs above, `run_perf.sh` also runs `perf_client`/`perf_server` at
+1%/5%/10% loss injected with Linux's own `tc`/`netem` on rpi#1's egress toward rpi#2 - once for
+each of BEST_EFFORT and RELIABLE at every level - and reports throughput plus `perf_server`'s new
+one-way delivery latency (`avg_latency_ms`) for each combination, both in the job summary's own
+comparison table and as further `github-action-benchmark` history. This is where RELIABLE's own
+retransmission is actually expected to cost something to measure - the clean-link "reliable" run
+above has nothing to retransmit. Needs passwordless `sudo tc` on rpi#1
+(`.github/scripts/README.md`'s own setup note); skipped (not a failure) on a runner where that
+isn't configured.
 
 ## Quality declarations
 - [`rmw_tickle`](rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md) - Quality Level 4 ([REP-2004](https://www.ros.org/reps/rep-2004.html))
