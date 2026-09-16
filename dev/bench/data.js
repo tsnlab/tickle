@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789527778583,
+  "lastUpdate": 1789527781481,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6790,6 +6790,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.654,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "da6ac7aa824e82243fdd6c3143cc892de27aa308",
+          "message": "Publish rmw_tickle's own perf numbers to the gh-pages dev/bench dashboard\n\nrmw-perf.yml's own GITHUB_STEP_SUMMARY table (rmw_perf_summary.py) only ever\nshows one run's own numbers - no history, unlike performance.yml's TickLE-core\nbenchmarks, which github-action-benchmark already tracks over time on gh-pages\n(dev/bench). rmw-perf.yml never had an equivalent, so there was nowhere to see\nrmw_tickle's own before/after trend across pushes.\n\nrmw_perf_summary.py's new --benchmark-json-dir option writes rmw-latency-\nbenchmark.json/rmw-throughput-benchmark.json in github-action-benchmark's own\nflat array format (matching run_perf.sh's existing convention), one entry per\n(topic, sync, rmw) combination so each shows up as its own history graph. Left\nunwritten (not written empty) when a run produces zero rows, so an environment\nhiccup never records a false 0ms/0Mbit/s history point.\n\nrmw-perf.yml gets two new steps mirroring performance.yml's own three, with\nfail-on-alert: false on both (unlike performance.yml's latency/throughput\ngroups) - this same-host rig's numbers are for tracking rmw_tickle's own trend,\nnever a release gate, matching the \"Run the benchmark\" step's own `|| true`\nphilosophy already documented there. Guarded with hashFiles(...) != '' rather\nthan a bare always(), since the action has no guard of its own against a\nmissing input file.\n\nVerified rmw_perf_summary.py's new JSON output against real local\nbuildfarm_perf_tests results (~/rmw_perf_ws) - correct format, correct values,\nand the zero-rows/empty-directory case correctly skips writing the files.",
+          "timestamp": "2026-09-16T12:02:01+09:00",
+          "tree_id": "3985a411043d8c6b0310e983fa86d512488dd8d6",
+          "url": "https://github.com/tsnlab/tickle/commit/da6ac7aa824e82243fdd6c3143cc892de27aa308"
+        },
+        "date": 1789527780443,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.618,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 892.521,
             "unit": "Mbps"
           }
         ]
