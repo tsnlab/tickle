@@ -158,9 +158,13 @@ rmw_ret_t rmw_count_subscribers(const rmw_node_t* node, const char* topic_name, 
 }
 
 rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_client_t* client, bool* is_available) {
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(is_available, RMW_RET_INVALID_ARGUMENT);
+    // RMW_RET_ERROR, not RMW_RET_INVALID_ARGUMENT - see rmw_destroy_wait_set()'s own comment
+    // (rmw_wait_set.c) for the identical doc-vs-real-implementations discrepancy; test_rmw_
+    // implementation's own TestClientUse.service_server_is_available_bad_args (Milestone 16)
+    // expects RMW_RET_ERROR for all three of these.
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_ERROR);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_ERROR);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(is_available, RMW_RET_ERROR);
     if (!rmw_tickle_identifier_matches(node->implementation_identifier) ||
         !rmw_tickle_identifier_matches(client->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);

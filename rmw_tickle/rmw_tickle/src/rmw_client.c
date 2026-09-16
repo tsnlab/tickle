@@ -37,6 +37,7 @@
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/types.h"
+#include "rmw/validate_full_topic_name.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
@@ -87,6 +88,17 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     }
     if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return NULL;
+    }
+    // See rmw_service.c's own rmw_create_service() for why this is needed - the identical gap,
+    // found by the same pass (Milestone 16) via test_client.cpp's own create_with_bad_arguments.
+    int validation_result = RMW_TOPIC_VALID;
+    size_t invalid_index = 0;
+    if (RMW_RET_OK != rmw_validate_full_topic_name(service_name, &validation_result, &invalid_index)) {
+        return NULL; // rmw_validate_full_topic_name() already set its own error message
+    }
+    if (RMW_TOPIC_VALID != validation_result) {
+        RMW_SET_ERROR_MSG(rmw_full_topic_name_validation_result_string(validation_result));
         return NULL;
     }
     if (rmw_tickle_validate_qos_profile(qos_policies, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT) != RMW_RET_OK) {

@@ -81,7 +81,13 @@ rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_condition
 }
 
 rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
-    RCUTILS_CHECK_ARGUMENT_FOR_NULL(wait_set, RMW_RET_INVALID_ARGUMENT);
+    // RMW_RET_ERROR, not RMW_RET_INVALID_ARGUMENT - rmw.h's own doc comment on this function says
+    // the latter, but test_rmw_implementation's own TestWaitSet.rmw_destroy_wait_set (Milestone 16)
+    // expects the former, matching what rmw_fastrtps_cpp's own __rmw_destroy_wait_set() actually
+    // does (RMW_CHECK_ARGUMENT_FOR_NULL(wait_set, RMW_RET_ERROR), confirmed by reading its real
+    // source) - the doc comment is the stale one here, not the two real implementations agreeing
+    // with the test.
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(wait_set, RMW_RET_ERROR);
     if (!rmw_tickle_identifier_matches(wait_set->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
