@@ -190,6 +190,12 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
+    // QoS roadmap #5 (RELIABILITY) - see tt_Subscriber.reliable's own doc comment (tickle.h).
+    // Plain field access, no allocation needed (unlike the Publisher side's reliable_cache) -
+    // process_data()/update_reliable_ack() (tickle.c) track ack state directly on tickle_
+    // subscriber itself.
+    sub_impl->tickle_subscriber.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
+
     return &sub_impl->rmw_subscription;
 }
 

@@ -28,28 +28,20 @@
 #include "rmw_tickle_c/rmw_tickle.h"
 
 rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, rmw_tickle_entity_kind_t entity_kind) {
-    // QoS roadmap #5 (RELIABILITY): full ACK/NACK + retransmission (what a topic's Publisher/
-    // Subscriber would need) isn't built - a topic has no retry mechanism of any kind, so only
-    // BEST_EFFORT is honest to accept there. A service/client is different: TickLE's own tt_
-    // Client_call() *already* retries a call up to tt_CALL_RETRY_COUNT times (tt_CALL_RETRY_
-    // INTERVAL apart) regardless of what QoS was requested - a real, if bounded (not indefinite),
-    // delivery-assurance mechanism topics simply don't have. Accepting RELIABLE for services/
-    // clients reflects that existing behavior rather than adding anything new, and - found while
-    // provisioning rmw_tickle/PLAN.md's rmw-perf.yml benchmark rig - is a practical necessity, not
-    // just a nicety: a real rclcpp::Node unconditionally creates internal services (e.g. the type
-    // description service, `rcl_node_type_description_service_init()`) at `rmw_qos_profile_
-    // services_default` (RELIABLE), with no `rcl_node_options_t` flag to opt out - rejecting
-    // RELIABLE for every service would make rmw_tickle unable to host *any* real rclcpp node at
-    // all, not just ones that ask for it explicitly.
+    // QoS roadmap #5 (RELIABILITY) - done. A service/client's RELIABLE was already backed by tt_
+    // Client_call()'s own pre-existing bounded retry (tt_CALL_RETRY_COUNT); a topic Publisher/
+    // Subscriber's RELIABLE is now backed by TickLE core's own ACKNACK + retransmission (struct
+    // tt_ReliableCache, tt_Subscriber.reliable - tickle.h) - see rmw_create_publisher()/rmw_
+    // create_subscription() for how qos_profile->depth/->reliability get threaded into it. Every
+    // rmw_qos_profile_t this validates has already had its own reliability requested explicitly
+    // (SYSTEM_DEFAULT/UNKNOWN aren't RELIABLE or BEST_EFFORT - both pass through unchanged below).
     bool reliability_ok = RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT == qos_profile->reliability ||
                           RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT == qos_profile->reliability ||
-                          (RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT == entity_kind &&
-                           RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability);
+                          RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
     if (!reliability_ok) {
-        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT (and, "
-                          "for services/clients, RELIABLE - backed by tt_Client_call()'s own "
-                          "bounded retry) for now - see rmw_tickle/PLAN.md's QoS roadmap #5 "
-                          "(RELIABILITY)");
+        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT and "
+                          "RMW_QOS_POLICY_RELIABILITY_RELIABLE - see rmw_tickle/PLAN.md's QoS "
+                          "roadmap #5 (RELIABILITY)");
         return RMW_RET_UNSUPPORTED;
     }
 

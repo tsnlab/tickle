@@ -199,6 +199,13 @@ typedef struct rmw_tickle_publisher_t {
     // already accepted it - rmw_publisher_get_actual_qos() just returns this back verbatim, since
     // this rmw never negotiates/downgrades a QoS policy the way a real DDS vendor might.
     rmw_qos_profile_t qos;
+    // QoS roadmap #5 (RELIABILITY) - NULL unless qos.reliability is RMW_QOS_POLICY_RELIABILITY_
+    // RELIABLE, in which case rmw_create_publisher() allocator->zero_allocate()s one (sized by
+    // qos.depth, clamped to tt_MAX_RELIABLE_HISTORY) and points tickle_publisher.reliable_cache
+    // at it - see struct tt_ReliableCache's own doc comment (tickle.h). Freed in rmw_destroy_
+    // publisher(); NULL is also this field's own "not reliable" sentinel, same as tickle_
+    // publisher.reliable_cache itself.
+    struct tt_ReliableCache* reliable_cache;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-

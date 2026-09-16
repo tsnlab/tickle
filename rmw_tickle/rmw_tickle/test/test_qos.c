@@ -40,18 +40,14 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
-    // RELIABLE is rejected for topics (Publisher/Subscriber have no retry mechanism at all) but
-    // accepted for services/clients - TickLE's own tt_Client_call() already retries every call up
-    // to tt_CALL_RETRY_COUNT times regardless of what QoS was requested, so this reflects existing
-    // behavior rather than adding anything new. Found to be a practical necessity, not just a
-    // nicety, while provisioning rmw-perf.yml's benchmark rig: a real rclcpp::Node unconditionally
-    // creates internal services (e.g. the type description service) at RELIABLE, with no way to
-    // opt out - rejecting it for every service would make rmw_tickle unable to host any real
-    // rclcpp node at all.
+    // RELIABLE is accepted for every entity kind now (QoS roadmap #5, done): services/clients via
+    // tt_Client_call()'s own pre-existing bounded retry, topics via TickLE core's own ACKNACK +
+    // retransmission (struct tt_ReliableCache/tt_Subscriber.reliable - tickle.h; see
+    // rmw_create_publisher()/rmw_create_subscription() for how this gets wired up).
     qos = valid_profile();
     qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     qos = valid_profile();

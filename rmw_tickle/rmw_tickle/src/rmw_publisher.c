@@ -9,14 +9,16 @@
  */
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_create_publisher()/rmw_destroy_publisher()/rmw_publish().
-// QoS (qos_profile) isn't validated or acted on yet beyond TickLE's own best-effort default -
-// Milestone 7's QoS roadmap is the explicit-rejection work, not this milestone.
+// rmw_tickle_validate_qos_profile() (rmw_qos.c, Milestone 7) is what rejects anything this rmw
+// doesn't support; rmw_create_publisher() below acts on the one policy that needs more than a
+// yes/no - RELIABILITY (QoS roadmap #5) - by wiring a struct tt_ReliableCache into the Publisher.
 
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 
-#include <tickle/hal.h> // tt_ret_t/tt_RET_OK
+#include <tickle/config.h> // tt_MAX_RELIABLE_HISTORY
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -115,6 +117,43 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
 
+    // QoS roadmap #5 (RELIABILITY) - see rmw_tickle_publisher_t.reliable_cache's own doc comment.
+    // depth defaults to tt_MAX_RELIABLE_HISTORY (the largest this build supports) when unset
+    // (RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT); an explicit depth past that cap is rejected outright
+    // rather than silently clamped, matching this package's own "Rejects anything outside the
+    // currently-supported set explicitly" design philosophy.
+    if (RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability) {
+        size_t depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
+                                                                                 : (size_t)tt_MAX_RELIABLE_HISTORY;
+        if (depth > (size_t)tt_MAX_RELIABLE_HISTORY) {
+            RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE publisher can retain at most "
+                              "tt_MAX_RELIABLE_HISTORY samples - see rmw_tickle/PLAN.md's QoS "
+                              "roadmap #5 (RELIABILITY)");
+            tt_Node_interrupt(&node_impl->tickle_node);
+            pthread_mutex_lock(&node_impl->mutex);
+            tt_Publisher_destroy(&pub_impl->tickle_publisher);
+            pthread_mutex_unlock(&node_impl->mutex);
+            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+            allocator->deallocate(pub_impl, allocator->state);
+            return NULL;
+        }
+
+        pub_impl->reliable_cache =
+            (struct tt_ReliableCache*)allocator->zero_allocate(1, sizeof(struct tt_ReliableCache), allocator->state);
+        if (NULL == pub_impl->reliable_cache) {
+            RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
+            tt_Node_interrupt(&node_impl->tickle_node);
+            pthread_mutex_lock(&node_impl->mutex);
+            tt_Publisher_destroy(&pub_impl->tickle_publisher);
+            pthread_mutex_unlock(&node_impl->mutex);
+            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+            allocator->deallocate(pub_impl, allocator->state);
+            return NULL;
+        }
+        pub_impl->reliable_cache->depth = (uint16_t)depth;
+        pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
+    }
+
     return &pub_impl->rmw_publisher;
 }
 
@@ -136,6 +175,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
+    allocator.deallocate(pub_impl->reliable_cache, allocator.state); // NULL is a no-op, see its own doc comment
     allocator.deallocate(pub_impl, allocator.state);
     return RMW_RET_OK;
 }
