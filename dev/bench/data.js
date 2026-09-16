@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789523968427,
+  "lastUpdate": 1789523971294,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6654,6 +6654,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 900.767,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "95e3a754016de4e97a460024be063de5fa030722",
+          "message": "Document Milestone 15's real CI root cause and confirmed-green result\n\ncheck-all.yml run 35045301504 is now fully green, including\ntest_rmw_implementation (9/9 rmw_tickle test binaries pass). Records finding\n(g) - the CMake source-path reconstruction bug that actually caused every\nprior CI round's failure, not extension ordering as the error text suggested\n- so a future reader doesn't have to re-derive it from git log.",
+          "timestamp": "2026-09-16T10:58:38+09:00",
+          "tree_id": "6e3e8af504cd77031797c3057ca6c3ede8335094",
+          "url": "https://github.com/tsnlab/tickle/commit/95e3a754016de4e97a460024be063de5fa030722"
+        },
+        "date": 1789523970216,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.626,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 895.551,
             "unit": "Mbps"
           }
         ]
