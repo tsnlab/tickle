@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789532381010,
+  "lastUpdate": 1789532383866,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -9499,6 +9499,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.000008446829659598215,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5b06c63fcf7594dc84a3033b665d54c5833a9a53",
+          "message": "Mark Milestone 16 done: confirmed green in real CI, 14/14 test_rmw_implementation\n\nDocuments the TearDown()-null-destroy fix, the two-layer GTEST_SKIP() gotcha, and\npromotes the co-located client/service self-sent-packet-filter finding to its own\nDeferred entry so it doesn't stay buried in Milestone 16's own prose.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T13:18:32+09:00",
+          "tree_id": "a5cab6b84b24744405f03f4d0a470318315c3ddd",
+          "url": "https://github.com/tsnlab/tickle/commit/5b06c63fcf7594dc84a3033b665d54c5833a9a53"
+        },
+        "date": 1789532382808,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9896975925990513,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030459676470075334,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473709106445312,
             "unit": "Mbit/s"
           }
         ]
