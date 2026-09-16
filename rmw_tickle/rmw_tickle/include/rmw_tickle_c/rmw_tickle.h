@@ -20,7 +20,6 @@
 #include <stdint.h>
 #include <string.h> // strcmp() - rmw_tickle_identifier_matches(), below
 
-#include <tickle/config.h> // tt_SECOND
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
