@@ -50,10 +50,12 @@ static int32_t stub_request_decode(struct tt_Request* request, const uint8_t* pa
 static void stub_request_free(struct tt_Request* request) {
     (void)request;
 }
-static int8_t stub_server_callback(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response) {
+static int8_t stub_server_callback(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response,
+                                   tt_RequestId request_id) {
     (void)server;
     (void)request;
     (void)response;
+    (void)request_id;
     self_sent_callback_count++;
     return 0;
 }

@@ -623,7 +623,7 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
 
 // A message struct sized 0 or larger than one datagram is a misconfiguration: on the receive
 // path the request/response/data is decoded into a stack buffer of exactly that size (see
-// process_data(), build_call_response(), process_callresponse()), and nothing on the wire can
+// process_data(), process_callrequest(), process_callresponse()), and nothing on the wire can
 // exceed tt_MAX_BUFFER_LENGTH anyway - the protocol doesn't fragment. Catch it here, at init,
 // instead of overflowing a task stack on the first message received.
 static bool valid_msg_size(uint32_t size) {
@@ -684,6 +684,8 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
     for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
         server->cache[i] = NULL;
         server->clean_scheduled[i] = false;
+        server->slot_state[i] = tt_SERVER_SLOT_EMPTY;
+        server->pending_timeout_scheduled[i] = false;
     }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
@@ -1574,30 +1576,24 @@ static struct tt_SubmessageHeader* resend_cached_response(struct tt_Node* node,
     return buf;
 }
 
-// No cached response yet: run the service callback fresh, then encode and cache a new
-// CallResponse. `old_tx_tail` is this submessage's start, for rolling back on a failure here.
-static struct tt_SubmessageHeader* build_call_response(struct tt_Node* node, struct tt_Header* header,
-                                                       struct tt_Server* server, uint16_t request_seq_no,
-                                                       uint8_t* buffer, uint32_t head, uint32_t tail,
-                                                       uint32_t old_tx_tail) {
+// Encodes and caches a CallResponse for a request whose return_code/response are already known -
+// either just computed synchronously (process_callrequest() calls this straight after a non-
+// deferred tt_SERVER_CALLBACK returns), or handed to us later by flush_pending_responses() for a
+// request whose callback returned tt_CALL_DEFERRED (Milestone 17, rmw_tickle/PLAN.md). Split out
+// from what used to be one function (build_call_response()) precisely so the callback-invocation
+// half (which decides whether an answer exists *yet* at all) stays separate from this, the
+// encode-what-already-exists half - `receiver`/`response` come from a live just-decoded packet in
+// the synchronous case, or from a pending slot's own stored fields in the deferred case, but this
+// function itself doesn't need to know which. `old_tx_tail` is this submessage's start, for
+// rolling back on a failure here.
+static struct tt_SubmessageHeader* encode_call_response(struct tt_Node* node, uint8_t receiver,
+                                                        struct tt_Server* server, uint16_t request_seq_no,
+                                                        int8_t return_code, struct tt_Response* response,
+                                                        uint32_t old_tx_tail) {
     struct tt_Service* service = server->service;
 
-    uint8_t request[service->request_size];
-    int32_t decoded =
-        service->request_decode((struct tt_Request*)request, buffer + head, tail - head, tt_is_native_endian(header));
-    if (decoded < 0) {
-        TT_LOG_ERROR("Cannot decode request: %d", decoded);
-        return NULL;
-    }
-
-    uint8_t response[service->response_size];
-    int8_t return_code = server->callback(server, (struct tt_Request*)request, (struct tt_Response*)response);
-    service->request_free((struct tt_Request*)request);
-
-    TT_LOG_DEBUG("  return_code: %d", return_code);
-
     // Header and SubmessageHeader
-    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE, header->source);
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_CALLRESPONSE, receiver);
     if (submessage_header == NULL) {
         return NULL;
     }
@@ -1616,7 +1612,7 @@ static struct tt_SubmessageHeader* build_call_response(struct tt_Node* node, str
 
     // CallRequestBody
     if (return_code == 0) {
-        int32_t cdr_len = service->response_encode_size((struct tt_Response*)response);
+        int32_t cdr_len = service->response_encode_size(response);
         if (cdr_len < 0 || cdr_len > tt_MAX_BUFFER_LENGTH) {
             TT_LOG_ERROR("response_encode_size returned %d (out of range)", cdr_len);
             rollback(node, old_tx_tail);
@@ -1628,8 +1624,8 @@ static struct tt_SubmessageHeader* build_call_response(struct tt_Node* node, str
             return NULL;
         }
 
-        int32_t encoded_len = service->response_encode((struct tt_Response*)response, cdr, (uint32_t)cdr_len);
-        service->response_free((struct tt_Response*)response);
+        int32_t encoded_len = service->response_encode(response, cdr, (uint32_t)cdr_len);
+        service->response_free(response);
 
         if (encoded_len < 0) {
             rollback(node, old_tx_tail);
@@ -1639,12 +1635,187 @@ static struct tt_SubmessageHeader* build_call_response(struct tt_Node* node, str
 
     // Cache submessage header before flush. set_server_cache() already logs its own reason on
     // failure, so nothing to add here.
-    if (!set_server_cache(server, submessage_header, header->source)) {
+    if (!set_server_cache(server, submessage_header, receiver)) {
         rollback(node, old_tx_tail);
         return NULL;
     }
 
     return submessage_header;
+}
+
+// Milestone 17 (rmw_tickle/PLAN.md): returns the index of server's own pending slot matching
+// (receiver, seq_no), or -1 if none. Matches a slot in *either* tt_SERVER_SLOT_PENDING or
+// tt_SERVER_SLOT_READY - a retry that arrives after tt_Server_send_response() already ran but
+// before the poll thread has flushed it out still shouldn't re-invoke the callback a second time.
+// Only pending_request_id[] itself needs no atomic care to read here (only ever written by the
+// poll thread, in defer_call_response() below - tt_Server_send_response() never touches it) - the
+// slot_state[] load guarding it does, since that field is also written from another thread.
+static int find_pending_slot(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (__atomic_load_n(&server->slot_state[i], __ATOMIC_ACQUIRE) == tt_SERVER_SLOT_EMPTY) {
+            continue;
+        }
+        if (server->pending_request_id[i].receiver == receiver && server->pending_request_id[i].seq_no == seq_no) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Timer callback (tt_Node_schedule(), Milestone 17): if a deferred request still hasn't been
+// answered by the time it fires, reclaim its slot rather than let it leak forever.
+// tt_Server_send_response()'s own compare-exchange against tt_SERVER_SLOT_PENDING loses cleanly
+// if it races against this, exactly like server_cache_clean() already reclaims an *answered*
+// slot's own retry-cache lifetime.
+static void pending_response_timeout(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(node);
+    UNUSED(time);
+
+    struct server_cache_clean_config* config = param;
+    struct tt_Server* server = config->server;
+    int slot = config->slot;
+
+    uint8_t expected = tt_SERVER_SLOT_PENDING;
+    if (__atomic_compare_exchange_n(&server->slot_state[slot], &expected, tt_SERVER_SLOT_EMPTY, false, __ATOMIC_RELAXED,
+                                    __ATOMIC_RELAXED)) {
+        TT_LOG_WARNING("Deferred service response for seq_no %d timed out, giving up",
+                       server->pending_request_id[slot].seq_no);
+    }
+    // else: tt_Server_send_response() already claimed this slot (now READY) - nothing to reclaim.
+    server->pending_timeout_scheduled[slot] = false;
+}
+
+// Allocates a pending slot for a request whose callback just returned tt_CALL_DEFERRED, so
+// tt_Server_send_response() has somewhere to find it later. Only ever called from the poll thread
+// (inside process_callrequest()), so slot *allocation* itself needs no atomics - only the final
+// publish (the slot_state[] store that makes this slot visible to tt_Server_send_response() on
+// another thread) does.
+static bool defer_call_response(struct tt_Server* server, tt_RequestId request_id, uint32_t sender_ip,
+                                uint16_t sender_port) {
+    int slot = -1;
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (__atomic_load_n(&server->slot_state[i], __ATOMIC_RELAXED) == tt_SERVER_SLOT_EMPTY) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        TT_LOG_ERROR("Out of server slots for a deferred response");
+        return false;
+    }
+
+    server->pending_request_id[slot] = request_id;
+    server->pending_sender_ip[slot] = sender_ip;
+    server->pending_sender_port[slot] = sender_port;
+    server->pending_timeout_config[slot].server = server;
+    server->pending_timeout_config[slot].slot = slot;
+
+    // Only publish once the timeout is guaranteed to run - same "don't publish an entry with no
+    // way to reclaim it" reasoning set_server_cache() already follows for its own timer.
+    if (!tt_Node_schedule(server->node, tt_get_ns() + tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, pending_response_timeout,
+                          &server->pending_timeout_config[slot])) {
+        TT_LOG_ERROR("Cannot schedule pending_response_timeout");
+        return false;
+    }
+    server->pending_timeout_scheduled[slot] = true;
+
+    // Release: everything written above must be visible to tt_Server_send_response() (another
+    // thread) once it observes this store via its own acquire load - the standard C11
+    // release/acquire handoff.
+    __atomic_store_n(&server->slot_state[slot], tt_SERVER_SLOT_PENDING, __ATOMIC_RELEASE);
+    return true;
+}
+
+tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_id, int8_t return_code,
+                                 struct tt_Response* response) {
+    if (server == NULL || response == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (__atomic_load_n(&server->slot_state[i], __ATOMIC_ACQUIRE) != tt_SERVER_SLOT_PENDING) {
+            continue;
+        }
+        if (server->pending_request_id[i].receiver != request_id.receiver ||
+            server->pending_request_id[i].seq_no != request_id.seq_no) {
+            continue;
+        }
+
+        // request_id is unique among outstanding requests, so this is the only slot that could
+        // ever match - safe to memcpy before the compare-exchange below claims it, since only the
+        // poll thread (pending_response_timeout()) could otherwise touch this slot concurrently,
+        // and it only ever *reclaims* (PENDING -> EMPTY), never overwrites pending_response_buf.
+        _tt_memcpy(server->pending_response_buf[i], response, server->service->response_size);
+        server->pending_return_code[i] = return_code;
+
+        uint8_t expected = tt_SERVER_SLOT_PENDING;
+        if (!__atomic_compare_exchange_n(&server->slot_state[i], &expected, tt_SERVER_SLOT_READY, false,
+                                         __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {
+            // Reclaimed (timed out) between the load above and now - too late.
+            return tt_RET_NOT_FOUND;
+        }
+
+        // Wake the poll thread promptly instead of leaving this READY slot waiting out
+        // tt_Node_poll()'s own normal receive timeout - same primitive and reasoning
+        // tt_Node_interrupt() already exists for (Phase 0).
+        tt_Node_interrupt(server->node);
+        return tt_RET_OK;
+    }
+
+    return tt_RET_NOT_FOUND;
+}
+
+// Encodes and sends every response tt_Server_send_response() has queued (slot_state[] ==
+// tt_SERVER_SLOT_READY) since the last time this ran, for every service server this node owns.
+// The actual CDR encode + node->tx_buffer write this library's single-thread-owns-tx_buffer
+// invariant (DESIGN.md's "Concurrency") requires happen here, on whichever thread is driving this
+// node's own tt_Node_poll() loop - never on whatever thread called tt_Server_send_response()
+// itself (see that function's own doc comment in tickle.h). Runs once at the top of every
+// tt_Node_poll() call, the same "drain everything already ready" spirit drain_rx() already has
+// for received datagrams.
+static void flush_pending_responses(struct tt_Node* node) {
+    for (uint32_t ep = 0; ep < node->endpoint_count; ep++) {
+        struct tt_Endpoint* endpoint = node->endpoints[ep];
+        if (endpoint->kind != tt_KIND_SERVICE_SERVER) {
+            continue;
+        }
+        struct tt_Server* server = (struct tt_Server*)endpoint;
+
+        for (int slot = 0; slot < tt_MAX_SERVER_CACHE_COUNT; slot++) {
+            if (__atomic_load_n(&server->slot_state[slot], __ATOMIC_ACQUIRE) != tt_SERVER_SLOT_READY) {
+                continue;
+            }
+
+            tt_RequestId request_id = server->pending_request_id[slot];
+            uint32_t sender_ip = server->pending_sender_ip[slot];
+            uint16_t sender_port = server->pending_sender_port[slot];
+            int8_t return_code = server->pending_return_code[slot];
+
+            uint32_t old_tx_tail = node->tx_tail;
+            struct tt_SubmessageHeader* submessage_header =
+                encode_call_response(node, request_id.receiver, server, request_id.seq_no, return_code,
+                                     (struct tt_Response*)server->pending_response_buf[slot], old_tx_tail);
+
+            // Reclaim the slot regardless of encode success - a failure here is already logged by
+            // encode_call_response() itself, and retrying it from this same stale slot on the
+            // next poll() call would just fail identically forever.
+            __atomic_store_n(&server->slot_state[slot], tt_SERVER_SLOT_EMPTY, __ATOMIC_RELAXED);
+
+            if (submessage_header == NULL) {
+                continue;
+            }
+
+            // Same unicast-when-possible optimization process_callrequest() already applies to a
+            // synchronous response - see its own comment for the full reasoning (only safe when
+            // tx_buffer was otherwise empty before this one response).
+            struct tt_Peer sender_peer = {request_id.receiver, sender_ip, sender_port};
+            bool unicast_to_sender = old_tx_tail == sizeof(struct tt_Header);
+            if (!end_encode(node, submessage_header, true, unicast_to_sender ? &sender_peer : NULL,
+                            unicast_to_sender ? 1 : 0)) {
+                rollback(node, old_tx_tail);
+            }
+        }
+    }
 }
 
 static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
@@ -1671,15 +1842,57 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
 
     struct tt_Server* server = (struct tt_Server*)endpoint;
 
+    // Milestone 17 (rmw_tickle/PLAN.md): a retry for a request already deferred (callback
+    // returned tt_CALL_DEFERRED, no answer computed yet) must not re-invoke the callback a second
+    // time - the real answer is already on its way, whenever tt_Server_send_response() gets
+    // called. Checked before the cache lookup below since a deferred-then-answered request only
+    // ever gets *cached* once flush_pending_responses() has actually sent it.
+    if (find_pending_slot(server, header->source, seq_no) >= 0) {
+        TT_LOG_DEBUG("CallRequest retry for a still-deferred response, ignoring");
+        return true;
+    }
+
     // Check cache
     struct tt_SubmessageHeader* cached = get_server_cache(server, header->source, seq_no);
     uint32_t old_tx_tail = node->tx_tail;
 
-    struct tt_SubmessageHeader* submessage_header =
-        cached != NULL ? resend_cached_response(node, cached)
-                       : build_call_response(node, header, server, seq_no, buffer, head, tail, old_tx_tail);
-    if (submessage_header == NULL) {
-        return false;
+    struct tt_SubmessageHeader* submessage_header;
+    if (cached != NULL) {
+        submessage_header = resend_cached_response(node, cached);
+        if (submessage_header == NULL) {
+            return false;
+        }
+    } else {
+        struct tt_Service* service = server->service;
+
+        uint8_t request[service->request_size];
+        int32_t decoded = service->request_decode((struct tt_Request*)request, buffer + head, tail - head,
+                                                  tt_is_native_endian(header));
+        if (decoded < 0) {
+            TT_LOG_ERROR("Cannot decode request: %d", decoded);
+            return false;
+        }
+
+        uint8_t response[service->response_size];
+        tt_RequestId request_id = {header->source, seq_no};
+        int8_t return_code =
+            server->callback(server, (struct tt_Request*)request, (struct tt_Response*)response, request_id);
+        service->request_free((struct tt_Request*)request);
+
+        TT_LOG_DEBUG("  return_code: %d", return_code);
+
+        if (return_code == tt_CALL_DEFERRED) {
+            // Nothing to encode/send yet - tt_Server_send_response() (any thread, any time up to
+            // tt_SERVER_DEFERRED_RESPONSE_TIMEOUT from now) and flush_pending_responses() (the
+            // poll thread, once that call happens) do the rest.
+            return defer_call_response(server, request_id, sender_ip, sender_port);
+        }
+
+        submessage_header = encode_call_response(node, header->source, server, seq_no, return_code,
+                                                 (struct tt_Response*)response, old_tx_tail);
+        if (submessage_header == NULL) {
+            return false;
+        }
     }
 
     // Unicast the response straight back to whoever's request we just decoded, instead of
@@ -2003,6 +2216,12 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     if (timeout < 0) {
         timeout = tt_RECEIVE_TIMEOUT;
     }
+
+    // Milestone 17 (rmw_tickle/PLAN.md): send whatever tt_Server_send_response() queued since the
+    // last call, before doing anything else this call - same "drain what's ready first" spirit as
+    // the scheduler/RX handling below, and importantly *before* this call might otherwise block in
+    // tt_receive() for up to `timeout` with a real response already sitting there ready to go out.
+    flush_pending_responses(node);
 
     uint64_t time = tt_get_ns();
 

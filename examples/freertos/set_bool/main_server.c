@@ -28,8 +28,9 @@ static struct tt_Node node;
 static struct tt_Server server;
 
 static int8_t set_bool_callback(struct tt_Server* server_endpoint, struct SetBoolRequest* request,
-                                struct SetBoolResponse* response) {
+                                struct SetBoolResponse* response, tt_RequestId request_id) {
     (void)server_endpoint;
+    (void)request_id; // answered synchronously below, no need to defer
     printf("server: request data=%d\n", request->data);
 
     // message just echoes request->data back as text - "Succeed"/"Failed" read too easily as the

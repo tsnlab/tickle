@@ -562,6 +562,64 @@ to `tt_Node_interrupt()`," not "only if a call is currently blocked" - one sent 
 blocked is queued and delivered
 to whichever `tt_Node_poll()` call comes next instead of being dropped.
 
+## Deferred service responses: a second, narrower exception to "single-threaded per node"
+
+`tt_Server_send_response()` (`tickle.h`/`tickle.c`, `rmw_tickle/PLAN.md`'s Milestone 17) is
+deliberately callable from a thread other than the one driving a node's own `tt_Node_poll()`
+loop - a real, if narrow, second exception to the "Concurrency" section above, added for the same
+class of reason `tt_Node_interrupt()` already is one: a real requirement (here, `rmw_tickle`'s own
+`rmw_send_response()` - a real ROS 2 service handler can run on whatever thread its executor
+uses, not necessarily the one polling TickLE) that genuinely can't be satisfied by keeping every
+call on the poll thread, without reintroducing the internal locking this design deliberately
+rejected once already (PR #11/#13, see above).
+
+**The problem this closes**: a `tt_SERVER_CALLBACK` used to have to answer synchronously, inside
+the very `tt_Node_poll()` call that received the request - `build_call_response()`'s own `response`
+buffer was a plain stack array, gone the instant the callback returned, and nothing in TickLE core
+could suspend and later resume a call already in progress. `rmw_tickle`'s own `rmw_service.c`
+papered over the mismatch between that and `rmw`'s own two-call `rmw_take_request()`/
+`rmw_send_response()` contract by blocking inside the callback itself
+(`pthread_cond_timedwait()`) until the ROS handler answered - which meant `tt_Node_poll()` itself
+couldn't return, and *nothing else that node owned* (other subscriptions, other services, due
+scheduler entries) could make progress meanwhile, for up to that bridge's own timeout.
+
+**The primitive, without a new lock**: a `tt_SERVER_CALLBACK` may now return `tt_CALL_DEFERRED`
+instead of a real return code, meaning "I'll answer this later, maybe from another thread."
+`process_callrequest()` then reserves one of `struct tt_Server`'s own fixed `tt_MAX_SERVER_CACHE_
+COUNT` slots (Milestone 17 gave that array a second, parallel purpose: tracking a request that's
+been *received* but not yet *answered*, distinct from the pre-existing `cache[]`/`cache_buf[]`
+pair, which only ever holds an *already-answered* response kept for retry resends) and arms a
+`tt_Node_schedule()` timeout on it, so a deferred request that's never answered doesn't leak a
+slot forever - the same reclaim pattern `server_cache_clean()` already established for the
+retry-cache's own lifetime, just with a much longer default (`tt_SERVER_DEFERRED_RESPONSE_
+TIMEOUT`, 5s - waiting on an *application* to compute an answer, not on a network round trip).
+
+`tt_Server_send_response()`, called later from any thread, finds that slot by `tt_RequestId`
+(just `(receiver, seq_no)` - the same pair `get_server_cache()` already keys an answered response
+by, reused rather than inventing a second handle concept) and does exactly two things to
+server-owned state: a plain `memcpy` of the caller's response bytes into that slot's own fixed
+buffer (never malloc'd, matching every other RPC path in this library), and a
+release-store-guarded state transition (`tt_SERVER_SLOT_PENDING` -> `tt_SERVER_SLOT_READY`) via
+GCC/Clang's `__atomic_*` builtins - deliberately *not* a `<stdatomic.h>` `_Atomic`-qualified
+field, since `tickle.h` has to stay includable from C++ (`rosidl_typesupport_tickle_c`/`_cpp`
+both do) and `<stdatomic.h>` isn't a C++ header at all; the builtins need no special header or
+type qualifier on either side to work correctly. It never touches `node->tx_buffer`/`tx_tail` or
+any other node-owned encode state - the real CDR encode and the actual `sendto()` still happen
+only on the poll thread, in `flush_pending_responses()`, called once at the very top of every
+`tt_Node_poll()` (the same "drain everything already ready before doing anything else" spirit
+`drain_rx()` already has for received datagrams) - so the single-thread-owns-`tx_buffer`
+invariant this whole design relies on stays exactly as true as it was before this primitive
+existed. `tt_Server_send_response()` finishes by calling the existing `tt_Node_interrupt()`, so a
+poll thread that's currently blocked in `tt_receive()` notices and flushes the real answer
+promptly instead of waiting out its own timeout - reusing that primitive's own already-established
+"wake the poll thread from another thread, without adding a lock" contract rather than inventing a
+second one.
+
+A retry for a request that's already deferred (the client hasn't seen an answer yet, so it asks
+again) must not re-invoke the callback a second time - `find_pending_slot()` checks for one before
+`process_callrequest()` would otherwise fall through to a fresh callback call, the same
+`get_server_cache()` already does for a request that's already been *answered*.
+
 ## Logging conventions
 
 - `TT_LOG_DEBUG`/`INFO`/`WARNING`/`ERROR` check `tt_current_log_level` *before* calling through

@@ -41,8 +41,9 @@ static uint32_t handled = 0;
 // Silent per-request, like pong.c's own pong_callback() - the client side is the one that prints
 // (and verifies) each call, see set_bool_callback() in client.c.
 static int8_t set_bool_callback(struct tt_Server* server, struct SetBoolRequest* request,
-                                struct SetBoolResponse* response) {
+                                struct SetBoolResponse* response, tt_RequestId request_id) {
     (void)server;
+    (void)request_id; // answered synchronously below, no need to defer
 
     // message just echoes request->data back as text - "Succeed"/"Failed" read too easily as the
     // *test's* own pass/fail verdict (which is set_bool_callback() in client.c's RESULT line, not

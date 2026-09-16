@@ -257,10 +257,12 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
 
 // --- CALLREQUEST from a reverse-endian client: server answers with the right seq_no ---
 
-static int8_t srv_cb(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response) {
+static int8_t srv_cb(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response,
+                     tt_RequestId request_id) {
     (void)server;
     (void)request;
     (void)response;
+    (void)request_id;
     return 0;
 }
 static int32_t req_decode(struct tt_Request* request, const uint8_t* payload, uint32_t len, bool native) {

@@ -39,8 +39,9 @@ static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* p
 static uint32_t handled = 0;
 
 static int8_t pong_callback(struct tt_Server* server, struct PingPongRequest* request,
-                            struct PingPongResponse* response) {
+                            struct PingPongResponse* response, tt_RequestId request_id) {
     (void)server;
+    (void)request_id; // answered synchronously below, no need to defer
     response->seq = request->seq;
     response->timestamp = request->timestamp;
     handled++;

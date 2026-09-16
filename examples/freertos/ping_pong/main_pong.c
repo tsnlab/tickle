@@ -28,8 +28,9 @@ static struct tt_Node node;
 static struct tt_Server server;
 
 static int8_t pong_callback(struct tt_Server* server_endpoint, struct PingPongRequest* request,
-                            struct PingPongResponse* response) {
+                            struct PingPongResponse* response, tt_RequestId request_id) {
     (void)server_endpoint;
+    (void)request_id; // answered synchronously below, no need to defer
     printf("pong: request seq=%lu\n", (unsigned long)request->seq);
     response->seq = request->seq;
     response->timestamp = request->timestamp;

@@ -63,6 +63,10 @@ typedef enum tt_ret_t {
     tt_RET_INTERRUPTED = -11,      // tt_Node_poll() was woken by tt_Node_interrupt() rather than by
                                    // data, a due scheduler entry, or its own timeout - see tt_Node_
                                    // interrupt()'s own comment in tickle.h.
+    tt_RET_NOT_FOUND = -12,        // tt_Server_send_response()'s own request_id doesn't match any
+                                   // request still waiting on a response - already answered, timed
+                                   // out, or never deferred in the first place. See tickle.h's own
+                                   // tt_Server_send_response() doc comment.
 } tt_ret_t;
 
 struct tt_Node;

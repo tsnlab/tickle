@@ -210,11 +210,29 @@ struct tt_Client { // extends endpoint
 struct tt_Server;
 struct tt_Request;
 
-typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request,
-                                     struct tt_Response* response);
+// Identifies one specific request a tt_SERVER_CALLBACK was invoked for - opaque to the callback
+// beyond stashing it away and handing it back to tt_Server_send_response() later (Milestone 17,
+// rmw_tickle/PLAN.md). Deliberately just (receiver, seq_no): the same pair get_server_cache()
+// already keys a *finished* response by, so a deferred (not yet answered) request reuses that
+// same identification instead of inventing a second, parallel handle concept.
+typedef struct tt_RequestId {
+    uint8_t receiver;
+    uint16_t seq_no;
+} tt_RequestId;
 
-// Identifies which server/slot a scheduled server_cache_clean timer belongs to. Embedded (one
-// per slot) in struct tt_Server so scheduling that timer never needs a malloc either.
+// Passed as `return_code` from a tt_SERVER_CALLBACK to mean "don't encode/send a response for
+// this request yet - I'll answer it later via tt_Server_send_response(), possibly from a
+// different thread." `response` is ignored in that case (the callback hasn't filled it in).
+// Reserved the same way tt_CALL_TIMEOUT is (see its own comment) - not a real application return
+// code.
+#define tt_CALL_DEFERRED ((int8_t)-127)
+
+typedef int8_t (*tt_SERVER_CALLBACK)(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response,
+                                     tt_RequestId request_id);
+
+// Identifies which server/slot a scheduled timer (server_cache_clean, or Milestone 17's own
+// pending-response timeout) belongs to. Embedded (one per slot) in struct tt_Server so scheduling
+// either timer never needs a malloc.
 struct server_cache_clean_config {
     struct tt_Server* server;
     int slot;
@@ -232,7 +250,70 @@ struct tt_Server { // extends endpoint
     struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT]; // NULL when slot i is unused
     struct server_cache_clean_config clean_config[tt_MAX_SERVER_CACHE_COUNT];
     bool clean_scheduled[tt_MAX_SERVER_CACHE_COUNT]; // Whether clean_config[i]'s timer is pending
+
+    // Milestone 17: one slot per request whose callback returned tt_CALL_DEFERRED - tracked
+    // separately from cache[]/cache_buf[] above, which only ever holds an *already-answered*
+    // response kept around for retry resends; a deferred request has no encoded response yet, so
+    // it needs its own (receiver, seq_no) key instead of one recovered from encoded bytes.
+    //
+    // slot_state[] is the only field here tt_Server_send_response() (callable from *any* thread,
+    // not just the one driving this node's own tt_Node_poll() loop - see that function's own doc
+    // comment) ever touches, and only through __atomic_* builtins, never a plain read/write - it
+    // is deliberately declared as plain uint8_t, not C11 _Atomic, because this header must stay
+    // includable from C++ (rosidl_typesupport_tickle_c/_cpp both do - see tt_ALIGNAS's own
+    // comment above for the identical constraint) and <stdatomic.h> is not a C++ header at all.
+    // GCC/Clang's __atomic builtins need no special header or type qualifier on either side to
+    // work correctly, unlike <stdatomic.h>'s own _Atomic(T) wrapper type.
+    uint8_t slot_state[tt_MAX_SERVER_CACHE_COUNT]; // tt_SERVER_SLOT_EMPTY/_PENDING/_READY
+    tt_RequestId pending_request_id[tt_MAX_SERVER_CACHE_COUNT];
+    uint32_t pending_sender_ip[tt_MAX_SERVER_CACHE_COUNT];   // for the same unicast-the-response
+    uint16_t pending_sender_port[tt_MAX_SERVER_CACHE_COUNT]; // optimization process_callrequest() uses
+    int8_t pending_return_code[tt_MAX_SERVER_CACHE_COUNT];   // tt_Server_send_response()'s own return_code arg
+    uint8_t pending_response_buf[tt_MAX_SERVER_CACHE_COUNT][tt_MAX_BUFFER_LENGTH]; // raw tt_Response bytes
+    struct server_cache_clean_config pending_timeout_config[tt_MAX_SERVER_CACHE_COUNT];
+    bool pending_timeout_scheduled[tt_MAX_SERVER_CACHE_COUNT];
 };
+
+// slot_state[] values - see struct tt_Server's own field comment on why these guard a plain
+// uint8_t via __atomic builtins instead of a C11 _Atomic-qualified type.
+#define tt_SERVER_SLOT_EMPTY 0   // unused, available for a new deferred request
+#define tt_SERVER_SLOT_PENDING 1 // received, callback returned tt_CALL_DEFERRED, no response yet
+#define tt_SERVER_SLOT_READY 2   // tt_Server_send_response() filled pending_response_buf[i]
+
+// Answers a request whose tt_SERVER_CALLBACK previously returned tt_CALL_DEFERRED for the given
+// request_id - typically called later, from a different thread than the one driving this node's
+// own tt_Node_poll() loop (e.g. whatever thread a ROS 2 executor happens to run a service handler
+// on), which is the entire reason this function exists rather than just answering synchronously
+// like a non-deferred tt_SERVER_CALLBACK already can. See rmw_tickle/PLAN.md's Milestone 17 for
+// the full design rationale (why TickLE core, not just rmw_tickle, needs this primitive) and
+// DESIGN.md's "Concurrency" section for why this can still be called from another thread without
+// adding a lock to struct tt_Node/tt_Server anywhere else: this function, and *only* this
+// function among every other tt_Server_*/tt_Node_* entry point, is allowed to touch server-owned
+// state from a thread other than the one driving tt_Node_poll() - and even then, only slot_state[]
+// itself (via __atomic builtins) and the one slot's own pending_response_buf[i]/pending_request_id[i]
+// (safe to write racily-with-respect-to-the-poll-thread because that thread never reads them
+// until it has *itself* observed slot_state[i] == tt_SERVER_SLOT_READY via an acquire load, which
+// synchronizes-with this function's own release store of that same value - the standard C11
+// release/acquire handoff pattern). It never touches node->tx_buffer/tx_tail or any other
+// node-owned encode state directly - the actual CDR encode-and-send happens later, from the poll
+// thread itself, the next time tt_Node_poll() runs (interrupted early via tt_Node_interrupt(),
+// the same primitive Phase 0 already added for the analogous "wake the poll thread promptly from
+// another thread" need).
+//
+// return_code is whatever a synchronous tt_SERVER_CALLBACK would otherwise have returned itself
+// (it couldn't - it returned tt_CALL_DEFERRED instead, precisely so the real answer could be
+// computed later, possibly on another thread, which is what this call now provides). response is
+// only ever *copied* here (a plain byte copy, sized server->service->response_size, into a fixed
+// per-slot buffer - never malloc'd) - the real CDR encode into node->tx_buffer happens later, on
+// the poll thread, so the caller does not need to keep response alive past this call returning,
+// matching every other *_encode-style callback argument in this library.
+//
+// Returns tt_RET_OK once the response is queued for the poll thread to send (not once it has
+// actually gone out - matching tt_Publisher_publish()'s own "queued, not yet necessarily
+// flushed" contract), or tt_RET_NOT_FOUND if request_id doesn't match any request still waiting
+// on a response (already answered by a previous call, already timed out, or was never deferred).
+tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_id, int8_t return_code,
+                                 struct tt_Response* response);
 
 // tt_Request / tt_Response / tt_Data are opaque bases: the application defines the real,
 // generated struct for its own message type and hands the library a pointer to it, which the

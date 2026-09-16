@@ -33,7 +33,15 @@
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
-#define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND)      // Network socket default receive timeout
+// How long a tt_SERVER_CALLBACK that returned tt_CALL_DEFERRED has to eventually call
+// tt_Server_send_response() before the slot reserved for it is reclaimed (Milestone 17,
+// rmw_tickle/PLAN.md) - deliberately much longer than tt_SERVER_CACHE_TIMEOUT above, which times
+// out re-sending an *already-computed* answer to a retrying client, not waiting on the
+// application to compute one in the first place. Matches rmw_tickle's own pre-existing
+// RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS default (rmw_tickle.h) - not a coincidence, that value
+// was standing in for this exact primitive not existing yet.
+#define tt_SERVER_DEFERRED_RESPONSE_TIMEOUT (5 * tt_SECOND)
+#define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // Network socket default receive timeout
 // Requested SO_SNDBUF/SO_RCVBUF size. The kernel silently clamps this to whatever
 // net.core.[rw]mem_max allows for an unprivileged process, so asking for more than that is
 // harmless - it's cheap insurance against drops under bursty send/receive on systems where the
