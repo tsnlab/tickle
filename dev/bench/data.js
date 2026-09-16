@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789519911748,
+  "lastUpdate": 1789519914710,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8163,6 +8163,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.014,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "72b5d055df34eba389ad49f54c5c5acfab64d4cf",
+          "message": "Fix sixth check-all.yml run: tickle_c/_cpp find_package() must go first\n\nSame \"extension must be executed before\" error as the previous\ncommit, unchanged - moving the explicit find_package(rosidl_\ntypesupport_tickle_c)/find_package(rosidl_typesupport_tickle_cpp)\npair to just before rosidl_generate_interfaces() wasn't enough.\nfind_package() only actually processes a package's own Config/\nextras files (and only *then* runs ament_register_extension()) the\nfirst time it's resolved in a given CMake configure - by the time\nthat line ran, something upstream of it (almost certainly find_\npackage(rosidl_default_generators)'s own transitive discovery,\nright below) had already resolved both typesupports itself, in the\nwrong order, and a later explicit find_package() on an already-\nresolved package is a no-op regardless of what order it's called in.\n\nMoved both find_package() calls to the very top of the file,\nstrictly before find_package(rosidl_default_generators) and every\nother find_package() in it - now genuinely first, not just\npositioned before the one CMake macro that actually needs them.\n\nVerified: builds locally (still can't reproduce the ordering bug\nitself here - confirmed environment-dependent, same as before);\n9/9 rmw_tickle test_rmw_implementation pass, unaffected.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T09:51:04+09:00",
+          "tree_id": "c6d46192d05ae2a31728f3bf76b63e61f9102008",
+          "url": "https://github.com/tsnlab/tickle/commit/72b5d055df34eba389ad49f54c5c5acfab64d4cf"
+        },
+        "date": 1789519913663,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           }
         ]
