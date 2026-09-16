@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789525480308,
+  "lastUpdate": 1789525483202,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8551,6 +8551,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.015,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4e953b4b2a5a75cfcf4d3b4c4ad6e96fa5de65a9",
+          "message": "Add a Markdown summary table for test_rmw_implementation's own rmw_tickle results\n\nrmw-perf.yml's own rmw_perf_summary.py already turns its raw benchmark JSON into\na GITHUB_STEP_SUMMARY table so a run's Actions summary page shows the numbers\ndirectly, not just the console log - check-all.yml's own new conformance suite\nstep (test_rmw_implementation) had no equivalent, only colcon test-result\n--verbose's own console output.\n\nNew rmw_conformance_summary.py parses each *__rmw_tickle.gtest.xml JUnit result\nfile colcon writes (one per test executable: test_init_shutdown, test_publisher,\n...) into one pass/skip/fail-count table, appended to GITHUB_STEP_SUMMARY right\nafter colcon test-result's own console-only verbose report.\n\ncolcon test-result --verbose's own exit code is now captured (`&& ... || ...`,\nnot a bare call) rather than left to `bash -e` to abort the step on - a real\ntest failure needs the summary table written *before* the step still correctly\nfails, not instead of failing.",
+          "timestamp": "2026-09-16T11:23:45+09:00",
+          "tree_id": "980cc8f95a673edf4d77e4466cd3ec414ae3ef92",
+          "url": "https://github.com/tsnlab/tickle/commit/4e953b4b2a5a75cfcf4d3b4c4ad6e96fa5de65a9"
+        },
+        "date": 1789525482156,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.008,
             "unit": "ms"
           }
         ]
