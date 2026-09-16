@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789551248882,
+  "lastUpdate": 1789551254928,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10424,6 +10424,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.000016076224190848215,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8ff6db87a328c12d8fb0933e90e5d325d44ce05f",
+          "message": "Switch rmw_service.c over to TickLE core's own deferred-response primitive\n\nMilestone 17 (rmw_tickle/PLAN.md), phase 2: server_callback() no longer blocks\nthe poll thread waiting for rmw_send_response() - it converts the incoming\nrequest, stashes its tt_RequestId, and returns tt_CALL_DEFERRED immediately.\nrmw_send_response() converts the ROS response and calls tt_Server_send_response()\ndirectly; TickLE core's own poll-thread drain does the real encode and send, and\nits own tt_SERVER_DEFERRED_RESPONSE_TIMEOUT replaces the rmw-side\nRMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS bridge entirely (removed).\n\nOne thing the old blocking design got for free that this one has to do\nexplicitly: the whole poll thread being stuck inside one server_callback() call\nmeant a second CallRequest for the same service simply couldn't arrive while the\nfirst was outstanding. server_callback() now rejects a second request outright\nwhile one is still un-answered, preserving the same single-outstanding-request\nlimit rmw_tickle_client_t already has - a deliberate, unchanged scope boundary,\nnot something this milestone set out to fix.\n\nrmw_tickle_service_t drops request_cond/response_ready (nothing waits on\nanything anymore) and gains pending_request_id (what server_callback() hands\nrmw_send_response() to call tt_Server_send_response() with).\n\nAlso removes the two rmw_tickle-specific GTEST_SKIP()s on TestService's own\nsend_reponse_with_bad_arguments/send_reponse_with_client_gone\n(rmw-conformance-patches) - both were skipped for the self-sent-packet-filter\nbug the previous commit already fixed, not anything this milestone's own\nblocking-bridge problem caused; now that both are fixed, these are real\nclient->service round trips this pass can finally prove work end to end.\n\nVerified locally: rmw_tickle builds clean against a real ROS 2 (lyrical)\ninstall (BUILD_SHARED_LIBS=ON), its own test_qos/test_node_lifecycle/\ntest_guard_condition_wait/test_graph all still pass, clang-format clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T18:32:55+09:00",
+          "tree_id": "07b1bb2d0d81841f730c6102e6486e06114dead7",
+          "url": "https://github.com/tsnlab/tickle/commit/8ff6db87a328c12d8fb0933e90e5d325d44ce05f"
+        },
+        "date": 1789551251359,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.0001415525163922991,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9816675186157227,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03038311004638672,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030464989798409597,
             "unit": "Mbit/s"
           }
         ]
