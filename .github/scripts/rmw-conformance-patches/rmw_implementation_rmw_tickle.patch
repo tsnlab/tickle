@@ -162,7 +162,7 @@ index 52bd6fc..1e5d889 100644
  
    void TearDown() override
 diff --git a/test_rmw_implementation/test/test_graph_api.cpp b/test_rmw_implementation/test/test_graph_api.cpp
-index 19354fe..ad7a75f 100644
+index 19354fe..e7528b9 100644
 --- a/test_rmw_implementation/test/test_graph_api.cpp
 +++ b/test_rmw_implementation/test/test_graph_api.cpp
 @@ -14,6 +14,8 @@
@@ -174,7 +174,7 @@ index 19354fe..ad7a75f 100644
  #include "osrf_testing_tools_cpp/scope_exit.hpp"
  
  #include "rcutils/allocator.h"
-@@ -51,6 +53,16 @@ protected:
+@@ -51,15 +53,31 @@ protected:
      ASSERT_EQ(RMW_RET_OK, ret) << rcutils_get_error_string().str;
      node = rmw_create_node(&context, node_name, node_namespace);
      ASSERT_NE(nullptr, node) << rcutils_get_error_string().str;
@@ -191,6 +191,24 @@ index 19354fe..ad7a75f 100644
      other_node = rmw_create_node(&context, node_name, node_namespace);
      ASSERT_NE(nullptr, other_node) << rcutils_get_error_string().str;
    }
+ 
+   void TearDown() override
+   {
+-    rmw_ret_t ret = rmw_destroy_node(other_node);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_node(node);
++    // Local, rmw_tickle-specific patch (not upstream): other_node is never created when this
++    // fixture's own SetUp() above skips for rmw_tickle - guard its teardown the same way, rather
++    // than destroying a node that was never created (TearDown() itself always runs regardless of
++    // whether SetUp() called GTEST_SKIP()).
++    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") != 0) {
++      rmw_ret_t ret = rmw_destroy_node(other_node);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++    }
++    rmw_ret_t ret = rmw_destroy_node(node);
+     EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+     ret = rmw_shutdown(&context);
+     EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
 diff --git a/test_rmw_implementation/test/test_publisher.cpp b/test_rmw_implementation/test/test_publisher.cpp
 index c9d0341..2bd6b2c 100644
 --- a/test_rmw_implementation/test/test_publisher.cpp
@@ -284,7 +302,7 @@ index 1962434..16e485f 100644
    const rosidl_service_type_support_t * ts =
      ROSIDL_GET_SRV_TYPE_SUPPORT(test_msgs, srv, BasicTypes);
 diff --git a/test_rmw_implementation/test/test_unique_identifiers.cpp b/test_rmw_implementation/test/test_unique_identifiers.cpp
-index 14bbfc1..3004737 100644
+index 14bbfc1..abbd515 100644
 --- a/test_rmw_implementation/test/test_unique_identifiers.cpp
 +++ b/test_rmw_implementation/test/test_unique_identifiers.cpp
 @@ -14,6 +14,8 @@
@@ -313,8 +331,95 @@ index 14bbfc1..3004737 100644
      rmw_publisher_options_t options = rmw_get_default_publisher_options();
      constexpr char topic_name[] = "/test0";
      pub = rmw_create_publisher(node, ts, topic_name, &qos_profile, &options);
+@@ -58,11 +70,17 @@ protected:
+ 
+   void TearDown() override
+   {
+-    rmw_ret_t ret = rmw_destroy_publisher(node, pub);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_client(node, client);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_node(node);
++    // Local, rmw_tickle-specific patch (not upstream): pub/client are never created when this
++    // fixture's own SetUp() above skips for rmw_tickle - guard their teardown the same way,
++    // rather than destroying entities that were never created (TearDown() itself always runs
++    // regardless of whether SetUp() called GTEST_SKIP()).
++    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") != 0) {
++      rmw_ret_t ret = rmw_destroy_publisher(node, pub);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++      ret = rmw_destroy_client(node, client);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++    }
++    rmw_ret_t ret = rmw_destroy_node(node);
+     EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+     ret = rmw_shutdown(&context);
+     EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+@@ -207,6 +225,15 @@ protected:
+   void SetUp() override
+   {
+     TestUniqueIdentifierAPI::SetUp();
++
++    // Local, rmw_tickle-specific patch (not upstream): GTEST_SKIP() inside the base fixture's own
++    // SetUp() above only returns from *that* function call - it does not stop this override's own
++    // remaining code from running next (gtest only checks the skip flag after this whole override
++    // returns), so `node` above is still null here unless this is repeated.
++    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
++      GTEST_SKIP();
++    }
++
+     rmw_publisher_options_t options = rmw_get_default_publisher_options();
+     constexpr char topic1_name[] = "/test0";
+     first_pub_for_topic1 = rmw_create_publisher(
+@@ -220,10 +247,12 @@ protected:
+ 
+   void TearDown() override
+   {
+-    rmw_ret_t ret = rmw_destroy_publisher(node, second_pub_for_topic1);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_publisher(node, first_pub_for_topic1);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") != 0) {
++      rmw_ret_t ret = rmw_destroy_publisher(node, second_pub_for_topic1);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++      ret = rmw_destroy_publisher(node, first_pub_for_topic1);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++    }
+     TestUniqueIdentifierAPI::TearDown();
+   }
+ 
+@@ -264,6 +293,13 @@ protected:
+   void SetUp() override
+   {
+     TestUniqueIdentifierAPI::SetUp();
++
++    // Local, rmw_tickle-specific patch (not upstream): see TestUniqueIdentifiersForMultiple
++    // Publishers's own identical comment above for why this repeats the base fixture's own skip.
++    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
++      GTEST_SKIP();
++    }
++
+     constexpr char service_name[] = "/test_service1";
+     first_client_for_service1 = rmw_create_client(
+       node, srv_ts, service_name, &qos_profile);
+@@ -276,10 +312,12 @@ protected:
+ 
+   void TearDown() override
+   {
+-    rmw_ret_t ret = rmw_destroy_client(node, first_client_for_service1);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_client(node, second_client_for_service1);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") != 0) {
++      rmw_ret_t ret = rmw_destroy_client(node, first_client_for_service1);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++      ret = rmw_destroy_client(node, second_client_for_service1);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++    }
+     TestUniqueIdentifierAPI::TearDown();
+   }
+ 
 diff --git a/test_rmw_implementation/test/test_wait_set.cpp b/test_rmw_implementation/test/test_wait_set.cpp
-index a4d0aed..7555d0a 100644
+index a4d0aed..e483525 100644
 --- a/test_rmw_implementation/test/test_wait_set.cpp
 +++ b/test_rmw_implementation/test/test_wait_set.cpp
 @@ -14,6 +14,8 @@
@@ -344,3 +449,37 @@ index a4d0aed..7555d0a 100644
      constexpr char topic_name[] = "/test";
      const rosidl_message_type_support_t * message_ts =
        ROSIDL_GET_MSG_TYPE_SUPPORT(test_msgs, msg, BasicTypes);
+@@ -128,17 +141,22 @@ protected:
+ 
+   void TearDown() override
+   {
+-    rmw_ret_t ret = rmw_event_fini(&event);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_client(node, client);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_service(node, srv);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_subscription(node, sub);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_guard_condition(gc);
+-    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+-    ret = rmw_destroy_node(node);
++    // Local, rmw_tickle-specific patch (not upstream): event/client/srv/sub/gc are never created
++    // when this fixture's own SetUp() above skips for rmw_tickle - guard their teardown the same
++    // way (TearDown() itself always runs regardless of whether SetUp() called GTEST_SKIP()).
++    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") != 0) {
++      rmw_ret_t ret = rmw_event_fini(&event);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++      ret = rmw_destroy_client(node, client);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++      ret = rmw_destroy_service(node, srv);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++      ret = rmw_destroy_subscription(node, sub);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++      ret = rmw_destroy_guard_condition(gc);
++      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
++    }
++    rmw_ret_t ret = rmw_destroy_node(node);
+     EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
+     TestWaitSet::TearDown();
+   }
