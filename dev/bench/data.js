@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789601930393,
+  "lastUpdate": 1789601933540,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8010,6 +8010,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 893.197,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "541b00aee82161822eb1d9f2838b91b509e7b40b",
+          "message": "Fix perf_server.c's gap counter treating a RELIABLE recovery as ~100% loss\n\nbulk_callback()'s drop counter computed data->seq - expected_seq\nunconditionally whenever they differed. Once RELIABLE's own retransmission\nmade a *late* arrival possible (a recovered sample arriving after later,\nin-order ones already advanced expected_seq past it), that subtraction\nwent backward and underflowed as unsigned arithmetic, turning one\nrecovered sample into a multi-billion-message \"gap\" - found via\nrun_perf.sh's real tc/netem loss-injection scenarios reporting ~100%\nloss_pct on every RELIABLE run regardless of the actual 1/5/10% injected.\n\nNow uses a signed, wraparound-correct seq_delta: only a forward jump\n(seq_delta > 0) counts as a gap and advances expected_seq; a backward one\n(a late/recovered arrival) counts as neither, matching the mild \"still\ncounts once\" overcounting this was always meant to have, not a\ncatastrophic one.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T08:36:31+09:00",
+          "tree_id": "5824c5a02820c583aa8249630238659b484c8198",
+          "url": "https://github.com/tsnlab/tickle/commit/541b00aee82161822eb1d9f2838b91b509e7b40b"
+        },
+        "date": 1789601932169,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.582,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 902.835,
             "unit": "Mbps"
           }
         ]
