@@ -1,5 +1,5 @@
 diff --git a/test_rmw_implementation/CMakeLists.txt b/test_rmw_implementation/CMakeLists.txt
-index 3fde428..b114c4d 100644
+index 3fde428..49b05be 100644
 --- a/test_rmw_implementation/CMakeLists.txt
 +++ b/test_rmw_implementation/CMakeLists.txt
 @@ -71,29 +71,29 @@ if(BUILD_TESTING)
@@ -55,127 +55,7 @@ index 3fde428..b114c4d 100644
  
    ament_add_gtest_executable(test_publisher_allocator
      test/test_publisher_allocator.cpp
-@@ -111,60 +111,65 @@ if(BUILD_TESTING)
-     rmw_implementation::rmw_implementation
-   )
- 
--  ament_add_gtest_executable(test_wait_set
--    test/test_wait_set.cpp
--  )
--  target_link_libraries(test_wait_set
--    osrf_testing_tools_cpp::memory_tools
--    rcutils::rcutils
--    rmw::rmw
--    rmw_implementation::rmw_implementation
--    ${test_msgs_TARGETS}
--  )
--
--  ament_add_gtest_executable(test_graph_api
--    test/test_graph_api.cpp
--  )
--  target_link_libraries(test_graph_api
--    osrf_testing_tools_cpp::memory_tools
--    rcutils::rcutils
--    rmw::rmw
--    rmw_implementation::rmw_implementation
--    ${test_msgs_TARGETS}
--  )
--
--  ament_add_gtest_executable(test_unique_identifiers
--    test/test_unique_identifiers.cpp
--  )
--  target_link_libraries(test_unique_identifiers
--    osrf_testing_tools_cpp::memory_tools
--    rcutils::rcutils
--    rmw::rmw
--    rmw_implementation::rmw_implementation
--    ${test_msgs_TARGETS}
--  )
--
--  ament_add_gtest_executable(test_service
--    test/test_service.cpp
--  )
--  target_link_libraries(test_service
--    osrf_testing_tools_cpp::memory_tools
--    rcutils::rcutils
--    rmw::rmw
--    rmw_implementation::rmw_implementation
--    ${test_msgs_TARGETS}
--  )
--
--  ament_add_gtest_executable(test_client
--    test/test_client.cpp
--  )
--  target_link_libraries(test_client
--    osrf_testing_tools_cpp::memory_tools
--    rcutils::rcutils
--    rmw::rmw
--    rmw_implementation::rmw_implementation
--    ${test_msgs_TARGETS}
--  )
-+  # ament_add_gtest_executable(test_wait_set
-+  #   test/test_wait_set.cpp
-+  # )
-+  # target_link_libraries(test_wait_set
-+  #   osrf_testing_tools_cpp::memory_tools
-+  #   rcutils::rcutils
-+  #   rmw::rmw
-+  #   rmw_implementation::rmw_implementation
-+  #   ${test_msgs_TARGETS}
-+  # )
-+
-+  # ament_add_gtest_executable(test_graph_api
-+  #   test/test_graph_api.cpp
-+  # )
-+  # target_link_libraries(test_graph_api
-+  #   osrf_testing_tools_cpp::memory_tools
-+  #   rcutils::rcutils
-+  #   rmw::rmw
-+  #   rmw_implementation::rmw_implementation
-+  #   ${test_msgs_TARGETS}
-+  # )
-+
-+  # ament_add_gtest_executable(test_unique_identifiers
-+  #   test/test_unique_identifiers.cpp
-+  # )
-+  # target_link_libraries(test_unique_identifiers
-+  #   osrf_testing_tools_cpp::memory_tools
-+  #   rcutils::rcutils
-+  #   rmw::rmw
-+  #   rmw_implementation::rmw_implementation
-+  #   ${test_msgs_TARGETS}
-+  # )
-+
-+  # Local, rmw_tickle-specific patch (not upstream): test_service.cpp/test_client.cpp both need
-+  # test_msgs/srv/basic_types.h - rosidl_typesupport_tickle_cpp deliberately left .srv support out
-+  # of its own first cut (see its own CMake extension's top comment; rmw_tickle/PLAN.md's
-+  # Milestone 11 row), so these two don't even compile against rmw_tickle yet. Commented out
-+  # rather than built-and-skipped, since the failure here is at compile time, not runtime.
-+  # ament_add_gtest_executable(test_service
-+  #   test/test_service.cpp
-+  # )
-+  # target_link_libraries(test_service
-+  #   osrf_testing_tools_cpp::memory_tools
-+  #   rcutils::rcutils
-+  #   rmw::rmw
-+  #   rmw_implementation::rmw_implementation
-+  #   ${test_msgs_TARGETS}
-+  # )
-+  #
-+  # ament_add_gtest_executable(test_client
-+  #   test/test_client.cpp
-+  # )
-+  # target_link_libraries(test_client
-+  #   osrf_testing_tools_cpp::memory_tools
-+  #   rcutils::rcutils
-+  #   rmw::rmw
-+  #   rmw_implementation::rmw_implementation
-+  #   ${test_msgs_TARGETS}
-+  # )
- 
-   ament_add_gtest_executable(test_qos_profile_check_compatible
-     test/test_qos_profile_check_compatible.cpp
-@@ -223,18 +228,18 @@ if(BUILD_TESTING)
+@@ -223,18 +223,18 @@ if(BUILD_TESTING)
          ${rmw_implementation_env_var}
      )
  
@@ -185,18 +65,19 @@ index 3fde428..b114c4d 100644
 -      ENV
 -        ${rmw_implementation_env_var}
 -    )
+-
+-    ament_add_gtest_test(test_serialize_deserialize
+-      TEST_NAME test_serialize_deserialize${target_suffix}
+-      ENV
+-        ${rmw_implementation_env_var}
+-    )
 +    # ament_add_gtest_test(test_subscription
 +    #   TEST_NAME test_subscription${target_suffix}
 +    #   TIMEOUT 120
 +    #   ENV
 +    #     ${rmw_implementation_env_var}
 +    # )
- 
--    ament_add_gtest_test(test_serialize_deserialize
--      TEST_NAME test_serialize_deserialize${target_suffix}
--      ENV
--        ${rmw_implementation_env_var}
--    )
++
 +    # ament_add_gtest_test(test_serialize_deserialize
 +    #   TEST_NAME test_serialize_deserialize${target_suffix}
 +    #   ENV
@@ -205,65 +86,6 @@ index 3fde428..b114c4d 100644
  
      ament_add_gtest_test(test_publisher_allocator
        TEST_NAME test_publisher_allocator${target_suffix}
-@@ -248,37 +253,27 @@ if(BUILD_TESTING)
-         ${rmw_implementation_env_var}
-     )
- 
--    ament_add_gtest_test(test_wait_set
--      TEST_NAME test_wait_set${target_suffix}
--      ENV
--        ${rmw_implementation_env_var}
--    )
--
--    ament_add_gtest_test(test_graph_api
--      TEST_NAME test_graph_api${target_suffix}
--      TIMEOUT 120
--      ENV
--        ${rmw_implementation_env_var}
--    )
--
--    ament_add_gtest_test(test_unique_identifiers
--      TEST_NAME test_unique_identifiers${target_suffix}
--      ENV
--        ${rmw_implementation_env_var}
--    )
--
--    ament_add_gtest_test(test_service
--      TEST_NAME test_service${target_suffix}
--      ENV
--        ${rmw_implementation_env_var}
--    )
--
--    ament_add_gtest_test(test_client
--      TEST_NAME test_client${target_suffix}
--      TIMEOUT 120
--      ENV
--        ${rmw_implementation_env_var}
--    )
-+    # ament_add_gtest_test(test_wait_set
-+    #   TEST_NAME test_wait_set${target_suffix}
-+    #   ENV
-+    #     ${rmw_implementation_env_var}
-+    # )
-+
-+    # ament_add_gtest_test(test_graph_api
-+    #   TEST_NAME test_graph_api${target_suffix}
-+    #   TIMEOUT 120
-+    #   ENV
-+    #     ${rmw_implementation_env_var}
-+    # )
-+
-+    # ament_add_gtest_test(test_unique_identifiers
-+    #   TEST_NAME test_unique_identifiers${target_suffix}
-+    #   ENV
-+    #     ${rmw_implementation_env_var}
-+    # )
-+
-+    # test_service/test_client themselves are commented out above (need test_msgs/srv, rmw_tickle
-+    # doesn't generate .srv typesupport yet) - nothing to register a ctest for here either.
- 
-     ament_add_gtest_test(test_qos_profile_check_compatible
-       TEST_NAME test_qos_profile_check_compatible${target_suffix}
 diff --git a/test_rmw_implementation/test/test_duration_infinite.cpp b/test_rmw_implementation/test/test_duration_infinite.cpp
 index 6cb841a..5428c14 100644
 --- a/test_rmw_implementation/test/test_duration_infinite.cpp

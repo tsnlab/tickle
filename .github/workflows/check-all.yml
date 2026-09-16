@@ -195,17 +195,20 @@ jobs:
           # library get_message_typesupport_handle_function()/get_service_typesupport_handle_
           # function() themselves dlopen() at runtime by convention name.
           #
-          # test_dispatch_cpp exercises a *different* starting point - rosidl_typesupport_cpp::
-          # get_message_type_support_handle<T>(), the one a real rclcpp::Node actually uses - and
-          # exists because test_dispatch.c's own ROSIDL_GET_MSG_TYPE_SUPPORT() macro starts one
-          # level lower (rosidl_typesupport_c directly) and so never exercised the rosidl_
-          # typesupport_tickle_cpp gap that made rmw_tickle unreachable from any real rclcpp
-          # application until this package was added - see its own package.xml doc comment.
+          # test_dispatch_cpp/test_dispatch_srv_cpp exercise a *different* starting point -
+          # rosidl_typesupport_cpp::get_message_type_support_handle<T>()/get_service_type_support_
+          # handle<T>(), the ones a real rclcpp::Node/Client/Service actually use - and exist
+          # because test_dispatch.c/test_dispatch_srv.c's own ROSIDL_GET_MSG_TYPE_SUPPORT()/
+          # ROSIDL_GET_SRV_TYPE_SUPPORT() macros start one level lower (rosidl_typesupport_c
+          # directly) and so never exercised the rosidl_typesupport_tickle_cpp gap that made
+          # rmw_tickle unreachable from any real rclcpp application until this package was added -
+          # see its own package.xml doc comment.
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_srv
           ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_cpp
+          ./build/rosidl_typesupport_tickle_c_tests/test_dispatch_srv_cpp
 
       - name: Verify RMW_IMPLEMENTATION=rmw_tickle selection works
         run: |

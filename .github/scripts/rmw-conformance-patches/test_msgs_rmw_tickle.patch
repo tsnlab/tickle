@@ -1,8 +1,8 @@
 diff --git a/test_msgs/CMakeLists.txt b/test_msgs/CMakeLists.txt
-index 433833b..a129d99 100644
+index 433833b..5dab87e 100644
 --- a/test_msgs/CMakeLists.txt
 +++ b/test_msgs/CMakeLists.txt
-@@ -22,13 +22,17 @@ find_package(rosidl_default_generators REQUIRED)
+@@ -22,13 +22,22 @@ find_package(rosidl_default_generators REQUIRED)
  find_package(test_interface_files REQUIRED)
  
  # TODO(sloretz) Change to test_msgs_interfaces when ros2/rosidl_typesupport#120 is fixed
@@ -10,14 +10,18 @@ index 433833b..a129d99 100644
 +# nested message types, arrays of nested types, or wstring yet - exclude the test_interface_files
 +# messages that use them, keeping only the flat/plain-type subset rmw_tickle can actually generate
 +# typesupport for (mirrors README-rmw-perf.md's own Struct256.msg exclusion for the same reason).
-+# Also drops SRV/ACTION/IDL files and the two action-only entries below (msg/Builtins.msg,
++# Also drops ACTION/IDL files and the two action-only entries below (msg/Builtins.msg,
 +# action/NestedMessage.action) - rmw_tickle has no action support at all (see rmw_client.c/
-+# rmw_service.c) and no .srv typesupport wired into this local rig yet either.
++# rmw_service.c). SRV_FILES is kept (rosidl_typesupport_tickle_cpp now generates .srv typesupport
++# too - rmw_tickle/PLAN.md's Milestone 11 row), filtered the same way: Arrays.srv uses arrays of
++# nested message types (BasicTypes[3]/Constants[3]/Defaults[3]), the same unsupported grammar as
++# the excluded .msg files above - BasicTypes.srv/Empty.srv are both flat/plain-type and kept.
 +list(FILTER test_interface_files_MSG_FILES EXCLUDE REGEX
 +  ".*/(Nested|MultiNested|Arrays|WStrings|BoundedPlainSequences|BoundedSequences|UnboundedSequences)\\.msg$")
++list(FILTER test_interface_files_SRV_FILES EXCLUDE REGEX ".*/Arrays\\.srv$")
  rosidl_generate_interfaces(test_msgs
    ${test_interface_files_MSG_FILES}
--  ${test_interface_files_SRV_FILES}
+   ${test_interface_files_SRV_FILES}
 -  ${test_interface_files_ACTION_FILES}
 -  ${test_interface_files_IDL_FILES}
 -  "msg/Builtins.msg"
@@ -25,7 +29,7 @@ index 433833b..a129d99 100644
    DEPENDENCIES builtin_interfaces
    ADD_LINTER_TESTS
  )
-@@ -41,26 +45,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
+@@ -41,26 +50,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
  
  ament_export_targets(export_${PROJECT_NAME})
  

@@ -1,0 +1,98 @@
+// generated from rosidl_typesupport_tickle_cpp/resource/srv__type_support.cpp.in
+// generated code does not contain a copyright notice
+
+// A pure delegation shim one level up from msg__type_support.cpp.in - see that file's own top
+// comment for the full rationale (rosidl_typesupport_cpp's own map-walking dispatch can't nest a
+// second hop, so this borrows rosidl_typesupport_tickle_c's own already-generated service handle's
+// .data directly instead). rmw_tickle_get_service_callbacks() (src/rmw_typesupport.c) only ever
+// looks up the plain "rosidl_typesupport_tickle_c" identifier via get_service_typesupport_handle()
+// - unlike the message-level lookup one call below it, it never tries a "_cpp" identifier first -
+// so only .data needs to come from the tickle_c handle. .request_typesupport/.response_typesupport
+// instead point at the CPP-level Request/Response message handles (this same package's own
+// msg__type_support.cpp.in shims, generated alongside this file for the exact same .srv - see
+// rosidl_typesupport_tickle_cpp_generate_interfaces.cmake), matching real
+// rosidl_typesupport_fastrtps_cpp's own srv__type_support.cpp.em convention (its request_
+// typesupport/response_typesupport come from get_message_type_support_handle<Request/Response>(),
+// the C++-level accessor, not the C one) - this is also what lets a real rclcpp::Client<T>/
+// Service<T> reach the C++-level Request/Response typesupport straight off the service handle,
+// without a second dispatch hop.
+
+#include <cstddef>
+
+#include "rosidl_runtime_c/service_type_support_struct.h"
+#include "rosidl_typesupport_interface/macros.h"
+#include "rosidl_typesupport_tickle_cpp/identifier.h"
+
+extern "C" const rosidl_service_type_support_t *
+ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
+  rosidl_typesupport_tickle_c, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)(void);
+
+extern "C" const rosidl_message_type_support_t *
+ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+  rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@_Request)(void);
+extern "C" const rosidl_message_type_support_t *
+ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+  rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@_Response)(void);
+
+namespace @PKG_NAME@
+{
+
+namespace @SUBFOLDER@
+{
+
+namespace rosidl_typesupport_tickle_cpp
+{
+
+// Same "set everything lazily on first access, not here" reasoning as msg__type_support.cpp.in's
+// own handle - none of .data/.typesupport_identifier/.request_typesupport/.response_typesupport
+// are compile-time constants in C++ (each needs another translation unit's own accessor called,
+// or another handle's own .data already having been set by ITS first access).
+static rosidl_service_type_support_t _@IDL_NAME@_handle = {
+  nullptr,
+  nullptr,
+  get_service_typesupport_handle_function,  // self-match only - see msg__type_support.cpp.in
+  nullptr,
+  nullptr,
+  nullptr,  // event_typesupport - no event/introspection support, matches the tickle_c handle
+  nullptr,  // event_message_create_handle_function
+  nullptr,  // event_message_destroy_handle_function
+  nullptr,  // get_type_hash_func
+  nullptr,  // get_type_description_func
+  nullptr,  // get_type_description_sources_func
+};
+
+}  // namespace rosidl_typesupport_tickle_cpp
+
+}  // namespace @SUBFOLDER@
+
+}  // namespace @PKG_NAME@
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+const rosidl_service_type_support_t *
+ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
+  rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)(void)
+{
+  auto & handle = ::@PKG_NAME@::@SUBFOLDER@::rosidl_typesupport_tickle_cpp::_@IDL_NAME@_handle;
+  if (!handle.typesupport_identifier) {
+    const rosidl_service_type_support_t * tickle_c_handle =
+      ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
+        rosidl_typesupport_tickle_c, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)();
+    handle.data = tickle_c_handle->data;
+    handle.request_typesupport =
+      ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+        rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@_Request)();
+    handle.response_typesupport =
+      ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
+        rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@_Response)();
+    handle.typesupport_identifier = rosidl_typesupport_tickle_cpp__identifier;
+  }
+  return &handle;
+}
+
+#ifdef __cplusplus
+}
+#endif

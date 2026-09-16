@@ -70,6 +70,19 @@ if(BUILD_TESTING)
     rosidl_runtime_c::rosidl_runtime_c
   )
   set_target_properties(test_dispatch_cpp PROPERTIES CXX_STANDARD 17)
+
+  # See test/test_dispatch_srv_cpp.cpp's own doc comment - the .srv counterpart to test_dispatch_
+  # cpp.cpp above, one dispatch level up from test_dispatch_srv.c's own C-level entry point.
+  add_executable(test_dispatch_srv_cpp test/test_dispatch_srv_cpp.cpp)
+  target_link_libraries(test_dispatch_srv_cpp
+    "${PROJECT_NAME}__rosidl_generator_c"
+    "${PROJECT_NAME}__rosidl_generator_cpp"
+    "${PROJECT_NAME}__rosidl_typesupport_cpp"
+    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
+    rosidl_typesupport_tickle_cpp::rosidl_typesupport_tickle_cpp
+    rosidl_runtime_c::rosidl_runtime_c
+  )
+  set_target_properties(test_dispatch_srv_cpp PROPERTIES CXX_STANDARD 17)
 endif()
 
 ament_package()
