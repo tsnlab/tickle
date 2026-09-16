@@ -354,7 +354,18 @@ jobs:
           colcon test --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
             --packages-select test_rmw_implementation --event-handlers console_direct+ \
             --ctest-args -R "_rmw_tickle$" || true
-          colcon test-result --test-result-base test_ws/build --verbose
+          # `|| true` + a saved exit code, not a bare call: this step runs under `bash -e`, so a
+          # real test failure here would otherwise abort the script before the summary table
+          # below ever gets written - the one time that table is most worth having. Still exits
+          # non-zero at the very end so a real regression still fails the job, same as before.
+          colcon test-result --test-result-base test_ws/build --verbose && test_result_exit=0 || test_result_exit=$?
+          # Same treatment rmw-perf.yml's own rmw_perf_summary.py already gives the performance
+          # numbers - a Markdown table on this run's own Actions summary page, not just the
+          # console log above, so a skim of the summary tab shows pass/skip/fail counts directly.
+          echo "## rmw_tickle conformance (test_rmw_implementation)" >> "$GITHUB_STEP_SUMMARY"
+          python3 .github/scripts/rmw_conformance_summary.py \
+            test_ws/build/test_rmw_implementation/test_results >> "$GITHUB_STEP_SUMMARY"
+          exit "$test_result_exit"
 
       - name: Check all
         uses: tsnlab/check@main
