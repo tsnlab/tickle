@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789531409019,
+  "lastUpdate": 1789531424303,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8995,6 +8995,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04995,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5f33a5db35dbe7809753d954f011a0e512e15580",
+          "message": "Fix real bugs found by enabling test_service/test_client/test_graph_api/etc.\n\nReal, previously-hidden gaps surfaced now that the 5 test_rmw_implementation executables\nMilestone 16 restored actually run (not just compile) against rmw_tickle:\n\n- rmw_create_service()/rmw_create_client() never validated service_name beyond a NULL\n  check (empty/spaces/relative names silently succeeded) - fixed via\n  rmw_validate_full_topic_name(), mirroring rmw_create_node()'s own Milestone 15 fix.\n- rmw_destroy_wait_set()/rmw_service_server_is_available() returned RMW_RET_INVALID_ARGUMENT\n  for a NULL argument, matching rmw.h's own doc comment but not the real convention both\n  the test suite and rmw_fastrtps_cpp's own source agree on (RMW_RET_ERROR) - fixed.\n- Found (not fixed - a TickLE-core routing design question deserving its own pass):\n  TickLE's process_packet() unconditionally drops any packet whose source matches the\n  receiving node's own id, which also blocks a client and its co-located service (the\n  only topology rmw_tickle's one-node-per-process model allows) from ever reaching each\n  other. The two round-trip tests this breaks are skipped with a comment citing the real\n  cause, not just \"documented gap\".\n- TestGraphAPI (second node), TestWaitSetUse (event support), TestUniqueIdentifierAPI\n  (RELIABLE publisher), TestService/TestClient.check_qos (deadline/lifespan/liveliness)\n  all skipped - each traces to an already-documented QoS/architecture gap.\n\nVerified locally: rmw_tickle's own test_qos/test_node_lifecycle/test_guard_condition_wait\nstill pass, and rmw_service.c/rmw_client.c/rmw_wait_set.c/rmw_graph.c compile cleanly.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T13:02:28+09:00",
+          "tree_id": "194a3cbb90b4fdcf0b721d4d4dd40b54278e0b69",
+          "url": "https://github.com/tsnlab/tickle/commit/5f33a5db35dbe7809753d954f011a0e512e15580"
+        },
+        "date": 1789531422262,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.051835714285714284,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04845857142857142,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04761714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.047877142857142854,
             "unit": "ms"
           }
         ]
