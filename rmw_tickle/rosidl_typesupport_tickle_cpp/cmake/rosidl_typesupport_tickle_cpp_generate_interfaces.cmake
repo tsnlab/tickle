@@ -18,12 +18,20 @@
 # Service. Deferred: this package's own benchmark motivation (rmw-perf.yml, PERF_TEST_TOPICS) only
 # exercises topics, not services - see rmw_tickle/PLAN.md's own note on this package.
 
+# TEMPORARY diagnostic (see check-all.yml CI investigation, remove once the CI-only ordering bug
+# is root-caused).
+message(STATUS "[tickle-debug] tickle_cpp_generate_interfaces.cmake: EXECUTING for target "
+  "${rosidl_generate_interfaces_TARGET}; full registration order was "
+  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'")
+
 if(NOT TARGET ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
   message(FATAL_ERROR
     "The 'rosidl_generator_c' extension must be executed before the "
     "'rosidl_typesupport_tickle_cpp' extension.")
 endif()
 if(NOT TARGET ${rosidl_generate_interfaces_TARGET}__rosidl_typesupport_tickle_c)
+  message(STATUS "[tickle-debug] tickle_cpp_generate_interfaces.cmake: tickle_c target MISSING "
+    "for ${rosidl_generate_interfaces_TARGET} - about to FATAL_ERROR")
   message(FATAL_ERROR
     "The 'rosidl_typesupport_tickle_c' extension must be executed before the "
     "'rosidl_typesupport_tickle_cpp' extension.")

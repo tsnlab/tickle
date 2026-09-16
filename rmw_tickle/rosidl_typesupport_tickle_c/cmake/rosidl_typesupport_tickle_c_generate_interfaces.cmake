@@ -11,6 +11,12 @@
 # ordering guard just below - not walked the way rosidl_generator_c_generate_interfaces.cmake's
 # own version is).
 
+# TEMPORARY diagnostic (see check-all.yml CI investigation, remove once the CI-only ordering bug
+# with rosidl_typesupport_tickle_cpp's own extension is root-caused).
+message(STATUS "[tickle-debug] tickle_c_generate_interfaces.cmake: EXECUTING for target "
+  "${rosidl_generate_interfaces_TARGET}; full registration order was "
+  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'")
+
 if(NOT TARGET ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
   message(FATAL_ERROR
     "The 'rosidl_generator_c' extension must be executed before the "
@@ -108,6 +114,13 @@ endforeach()
 # own - their own add_library() calls simply never ran, surfacing later as their targets having no
 # sources at all ("CMake Error: Cannot determine link language"). An if() the same size as
 # everything below it, indented one level deeper, avoids the whole hazard.
+# TEMPORARY diagnostic (see check-all.yml CI investigation) - confirms whether this extension ran
+# to completion but simply had nothing to generate for this package (empty _generated_sources),
+# as opposed to never running/registering at all.
+list(LENGTH _generated_sources _generated_sources_len)
+message(STATUS "[tickle-debug] tickle_c_generate_interfaces.cmake: loop done for "
+  "${rosidl_generate_interfaces_TARGET}; _generated_sources has ${_generated_sources_len} entries")
+
 if(_generated_sources)
   set(_target_suffix "__rosidl_typesupport_tickle_c")
   add_library(${rosidl_generate_interfaces_TARGET}${_target_suffix} ${_generated_sources}

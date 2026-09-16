@@ -13,6 +13,13 @@
 find_package(rosidl_generator_c QUIET)
 
 find_package(ament_cmake_core QUIET REQUIRED)
+# TEMPORARY diagnostic (see check-all.yml CI investigation, remove once the CI-only ordering bug
+# between this registration and rosidl_typesupport_tickle_cpp's own is root-caused) - prints
+# the extension list *before* this package appends itself, so the CI log directly shows whether
+# rosidl_typesupport_tickle_cpp somehow already registered ahead of us for this PROJECT_NAME.
+message(STATUS "[tickle-debug] tickle_c-extras.cmake.in sourced for PROJECT_NAME=${PROJECT_NAME}; "
+  "AMENT_EXTENSIONS_rosidl_generate_idl_interfaces (before append) = "
+  "'${AMENT_EXTENSIONS_rosidl_generate_idl_interfaces}'")
 ament_register_extension(
   "rosidl_generate_idl_interfaces"
   "rosidl_typesupport_tickle_c"
