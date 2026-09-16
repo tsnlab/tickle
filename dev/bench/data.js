@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789530167327,
+  "lastUpdate": 1789530170305,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8745,6 +8745,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.011,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "73447af03b2e4080a4c07dab435356161ef6d27d",
+          "message": "Add .srv support to rosidl_typesupport_tickle_cpp, unblocking 5 test_rmw_implementation cases\n\nrosidl_typesupport_tickle_cpp only generated C++-reachable typesupport for messages\n(Milestone 11's deliberately deferred scope) - a service's own Request/Response, and the\nservice handle itself, were unreachable from a real rclcpp::Client<T>/Service<T>. New\nresource/srv__type_support.cpp.in mirrors the existing msg-level delegation shim one level\nup, reusing the same msg template for a service's Request/Response (ordinary messages in\nrosidl_generator_c's own eyes) and tying them together via\nROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME, matching real rosidl_typesupport_fastrtps_cpp's\nown convention. New test_dispatch_srv_cpp.cpp proves reachability from\nrosidl_typesupport_cpp::get_service_type_support_handle<T>(), the real rclcpp entry point -\nclosing the exact blind spot Milestone 11 left open.\n\nThis unblocks 5 test_rmw_implementation executables (test_service, test_client, test_wait_set,\ntest_graph_api, test_unique_identifiers) that only needed test_msgs/srv/basic_types.h and were\ncommented out at compile time - restored in rmw_implementation_rmw_tickle.patch, and\ntest_msgs_rmw_tickle.patch now generates test_msgs' own BasicTypes.srv/Empty.srv again\n(Arrays.srv stays excluded - arrays of nested message types, the same unsupported grammar as\nthe excluded .msg files).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T12:41:53+09:00",
+          "tree_id": "45d59a32910d198bac814f012078137fb47a9ebc",
+          "url": "https://github.com/tsnlab/tickle/commit/73447af03b2e4080a4c07dab435356161ef6d27d"
+        },
+        "date": 1789530169257,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.044,
             "unit": "ms"
           }
         ]
