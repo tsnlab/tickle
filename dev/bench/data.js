@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789531996562,
+  "lastUpdate": 1789532001895,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -9314,6 +9314,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030456270490373884,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "426da0d77be1ff4b22b9883beacf0299a6a583f5",
+          "message": "Fix TearDown() null-destroys masking otherwise-correct GTEST_SKIP()s\n\nGTEST_SKIP() inside SetUp() is just a return statement: it correctly aborts SetUp()\nand (for a fixture gtest calls directly) skips the test body, but TearDown() still\nruns regardless - and every newly-skipped fixture's own TearDown() unconditionally\ndestroyed a resource that skip left uncreated (other_node, pub/client, event/client/\nsrv/sub/gc), turning a clean skip into a spurious failure. Guarded each with the same\nidentifier check.\n\nAlso found a second layer of the same bug: TestUniqueIdentifiersForMultiplePublishers/\nClients call TestUniqueIdentifierAPI::SetUp() as a plain function, not through virtual\ndispatch - GTEST_SKIP() there only returns from that call, not from the derived\noverride, so execution continued into rmw_create_publisher(nullptr, ...) and failed\nfor real. Added the identical skip check to both derived SetUp()s too.\n\nConfirmed via real CI log (run 35054078522): every fixture's own SetUp() reported the\ncorrect \"Skipped\" line at its GTEST_SKIP() call site, with every subsequent failure\ntraced to a TearDown() line number - not the test body itself.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T13:12:01+09:00",
+          "tree_id": "db7df388ce9f85d3a938bf82a7d9047986070113",
+          "url": "https://github.com/tsnlab/tickle/commit/426da0d77be1ff4b22b9883beacf0299a6a583f5"
+        },
+        "date": 1789531998438,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9901116234915597,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9905334200177874,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030438968113490512,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.000008446829659598215,
             "unit": "Mbit/s"
           }
         ]
