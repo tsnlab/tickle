@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789519917637,
+  "lastUpdate": 1789521785870,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3418,6 +3418,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/72b5d055df34eba389ad49f54c5c5acfab64d4cf"
         },
         "date": 1789519910002,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "36b1dbd2f0d4dce205baba4292a6de4eab237a00",
+          "message": "Add temporary CMake diagnostics for the CI-only tickle_c/tickle_cpp ordering bug\n\nTwo fix attempts (find_package() right before rosidl_generate_interfaces(), then\nmoved to the very top of test_msgs/CMakeLists.txt) both failed identically on CI\nand neither is reproducible locally (confirmed twice with the exact same combined\nbuild command). Rather than guess a third fix blind, add message(STATUS ...) to\nboth extras.cmake.in files and both generate_interfaces.cmake files so the next\nCI run's own log shows the real AMENT_EXTENSIONS_rosidl_generate_idl_interfaces\nregistration order and FOUND state for test_msgs specifically, instead of relying\non the local \"lyrical\" env (which reproduces neither the bug nor, therefore, an\nauthoritative view of the fix).\n\nVerified locally on rosidl_typesupport_tickle_c_tests (which also calls both\nfind_package()s, in the same order, and has never hit this bug): the diagnostics\nprint correctly and show tickle_c registering before tickle_cpp as expected there\n- confirming the instrumentation itself is sound, not just adding noise.",
+          "timestamp": "2026-09-16T10:22:14+09:00",
+          "tree_id": "6202e3c5892ea1a6bdab401222ca1388a3329d6c",
+          "url": "https://github.com/tsnlab/tickle/commit/36b1dbd2f0d4dce205baba4292a6de4eab237a00"
+        },
+        "date": 1789521783956,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
