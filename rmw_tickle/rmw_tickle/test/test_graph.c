@@ -54,7 +54,8 @@ static int32_t fake_encode_size(struct tt_Data* data) {
 }
 // payload can't be const: this must match tt_DATA_ENCODE's own fixed signature exactly, and a
 // real encoder does write through it (only this no-op stub never does).
-static int32_t fake_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) { // NOLINT(readability-non-const-parameter)
+// NOLINTNEXTLINE(readability-non-const-parameter)
+static int32_t fake_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
     (void)data;
     (void)payload;
     (void)len;
