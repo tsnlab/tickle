@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789601250722,
+  "lastUpdate": 1789601253479,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -11719,6 +11719,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030334745134626116,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d1f8525f27972e4b0bfa834dcda119a4c5664c9d",
+          "message": "Add setup-rpi-tc-sudoers.sh for run_perf.sh's tc/netem loss scenarios\n\nA copy-pasteable, visudo-validated script instead of manual sudoers\nediting instructions: installs /etc/sudoers.d/tickle-ci-tc granting the\nci user passwordless sudo for the tc binary only, then verifies the\ngrant actually works as that user before exiting. Runs directly on\nrpi#1 as root, or over SSH without copying the file first.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T08:26:16+09:00",
+          "tree_id": "c38cf6418459df2d39433641750452e1ccdeb2cf",
+          "url": "https://github.com/tsnlab/tickle/commit/d1f8525f27972e4b0bfa834dcda119a4c5664c9d"
+        },
+        "date": 1789601247215,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9899779728480748,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9903977257864816,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030478204999651228,
             "unit": "Mbit/s"
           }
         ]
