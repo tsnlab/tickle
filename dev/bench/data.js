@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789551942488,
+  "lastUpdate": 1789551959530,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10123,6 +10123,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04837000000000001,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1c10ad88d0a57ab90c25a5352da27f113cbf4386",
+          "message": "Drop unused tickle/config.h include (its only user, tt_SECOND, is gone)\n\nRMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS was the only thing using tt_SECOND in\nthis header - removed along with the rest of the old blocking bridge in the\nprevious commit, leaving this include unused (misc-include-cleaner caught it\nin real CI).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T18:44:48+09:00",
+          "tree_id": "ff391e277cf292709dc26459dfd3b8f0dbfcbf24",
+          "url": "https://github.com/tsnlab/tickle/commit/1c10ad88d0a57ab90c25a5352da27f113cbf4386"
+        },
+        "date": 1789551955235,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05366142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04794857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04538999999999999,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04565857142857143,
             "unit": "ms"
           }
         ]
