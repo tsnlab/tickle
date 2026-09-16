@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789535107866,
+  "lastUpdate": 1789535112734,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10239,6 +10239,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030433927263532366,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f47f31913730ea5fa6f52a007c8801d3d96f2fa",
+          "message": "Let a co-located client reach its own co-located service (self-sent RPC)\n\nprocess_packet() unconditionally dropped any packet whose header->source matched\nthe receiving node's own id (\"Self sent message\") - correct for topic pub/sub (a\nnode already has its own published data locally) but wrong for a client and\nservice sharing one tt_Node, the only topology rmw_tickle's one-node-per-process\nmodel allows: the client's own request datagram was discarded before the\nco-located service ever saw it. Found while chasing test_rmw_implementation's own\nTestService round-trip failures (Milestone 16).\n\nThreads a self_sent flag from process_packet() down through process_one_submessage()\ninto process_submessage(), which now only suppresses UPDATE/DATA (topic pub/sub,\nunchanged) while letting CALLREQUEST/CALLRESPONSE (RPC) through regardless of\nsender - RPC has no separate in-process delivery path, the datagrams are the only\npath.\n\nNew tests/test_malformed_packets.c cases prove both halves at the process_packet()\nlevel directly: a self-sent CALLREQUEST now reaches the server (confirmed the test\ncatches the regression by reverting the fix and re-running), and a self-sent DATA\nsubmessage is still correctly ignored. make test/make sanitize (ASan+UBSan) pass;\nclang-format/clang-tidy clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T14:03:58+09:00",
+          "tree_id": "056a80e64a5655972598cd0c03f9d654bcabb576",
+          "url": "https://github.com/tsnlab/tickle/commit/7f47f31913730ea5fa6f52a007c8801d3d96f2fa"
+        },
+        "date": 1789535109831,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9899791990007673,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9831703730991909,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.000016348702566964285,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.000016076224190848215,
             "unit": "Mbit/s"
           }
         ]
