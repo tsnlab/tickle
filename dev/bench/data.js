@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789551962495,
+  "lastUpdate": 1789552320103,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3933,6 +3933,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.21,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ea8f9c9db748ce19f0a57785c796b3acfd16d52d",
+          "message": "Mark Milestone 17 done: real client-service round trip confirmed in CI\n\nDocuments the final locking/capacity/timeout/retry decisions, and the closing\nproof: TestService.send_reponse_with_bad_arguments/send_reponse_with_client_gone\n(the exact two tests Milestone 16 had to skip) now pass for real (run\n35081147702) - the first live rmw_tickle request/response round trip ever\nproven end to end, not just compile+link depth.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T18:51:11+09:00",
+          "tree_id": "58532c136e2351084dce0a9d88c5d60b97795c8f",
+          "url": "https://github.com/tsnlab/tickle/commit/ea8f9c9db748ce19f0a57785c796b3acfd16d52d"
+        },
+        "date": 1789552317330,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
             "unit": "ms"
           },
           {
