@@ -206,7 +206,7 @@ static void print_usage(const char* prog) {
     fprintf(stderr,
             "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id]\n"
             "          [-d duration_seconds] [-w warmup_seconds] [-W cooldown_seconds]\n"
-            "          [-n topic_name] [-l log_level]\n",
+            "          [-n topic_name] [-l log_level] [-R]\n",
             prog);
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
@@ -218,6 +218,8 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "      actually exiting (default 0 = stop immediately)\n");
     fprintf(stderr, "  -n  topic name to subscribe to (default bulk_topic)\n");
     fprintf(stderr, "  -l  log level: debug|info|warning|error|none (default info)\n");
+    fprintf(stderr, "  -R  RELIABLE instead of BEST_EFFORT delivery (QoS roadmap #5, rmw_tickle/PLAN.md) -\n"
+                    "      must match perf_client's own -R\n");
 }
 
 static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
@@ -231,8 +233,10 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->name = "bulk_topic";
     opts->log_level = TT_LOG_INFO;
     opts->log_level_set = false;
+    opts->reliable = false;
 
-    return tt_example_parse_args(argc, argv, opts, TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_WARMUP_COOLDOWN);
+    return tt_example_parse_args(argc, argv, opts,
+                                 TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_WARMUP_COOLDOWN | TT_EXAMPLE_OPT_RELIABLE);
 }
 
 int main(int argc, char** argv) {
@@ -279,6 +283,10 @@ int main(int argc, char** argv) {
     if (ret != 0) {
         printf("Cannot create subscriber: %d\n", ret);
         return ret;
+    }
+    if (opts.reliable) {
+        sub.reliable = true; // -R - see tt_Subscriber.reliable's own doc comment (tickle.h)
+        printf("RELIABLE delivery\n");
     }
 
     uint64_t start_time = tt_get_ns();

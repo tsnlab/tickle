@@ -68,6 +68,37 @@ jobs:
           fail-on-alert: true
           alert-threshold: "200%"
 
+      # QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - same -R run as the best-effort
+      # throughput one above, tracking RELIABLE delivery's own throughput cost.
+      - name: Track reliable throughput history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Reliable throughput (perf_client/perf_server -R)
+          tool: customBiggerIsBetter
+          output-file-path: reliable-throughput-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: true
+          alert-threshold: "200%"
+
+      # Split from the group above the same way latency jitter is split from latency: a different
+      # alert direction, and - since run_perf.sh's own "reliable" scenario comment explains this
+      # isn't a clean recovered-vs-lost measurement yet - not something that should fail the build
+      # on its own either. Still tracked/graphed (summary-always, auto-push).
+      - name: Track reliable loss history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Reliable loss_pct (perf_client/perf_server -R)
+          tool: customSmallerIsBetter
+          output-file-path: reliable-loss-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+
       # run_perf.sh writes perf-frag.json (Raspberry Pi build/test outcome + the measured
       # numbers) even when it aborts early; hand it to the publish job below.
       - name: Upload dashboard fragment

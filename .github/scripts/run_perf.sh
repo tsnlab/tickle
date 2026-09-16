@@ -125,10 +125,10 @@ update_and_build() {
 # the repo split into platform/linux/ + platform/freertos/), not the repo root - update_and_build
 # still runs `make all` from the root, which forwards there.
 run_paired_test() {
-    local label="$1" server_bin="$2" client_bin="$3" client_args="$4" server_safety_sec="$5"
+    local label="$1" server_bin="$2" client_bin="$3" client_args="$4" server_safety_sec="$5" server_args="${6:-}"
 
     echo "== $label =="
-    ssh_run "$RPI_SERVER_HOST" "cd ~/$REMOTE_DIR/platform/linux && ./$server_bin -d $server_safety_sec" \
+    ssh_run "$RPI_SERVER_HOST" "cd ~/$REMOTE_DIR/platform/linux && ./$server_bin -d $server_safety_sec $server_args" \
         > "$LOG_DIR/${label}_server.log" 2>&1 &
     local server_pid=$!
 
@@ -160,6 +160,16 @@ summarize() {
         cat "$LOG_DIR/throughput_server.log"
         echo '```'
         echo
+        echo "## RELIABLE throughput (QoS roadmap #5, rmw_tickle/PLAN.md)"
+        echo "### Sender (rpi#1)"
+        echo '```'
+        cat "$LOG_DIR/reliable_client.log"
+        echo '```'
+        echo "### Receiver (rpi#2)"
+        echo '```'
+        cat "$LOG_DIR/reliable_server.log"
+        echo '```'
+        echo
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"
         echo '```'
@@ -183,7 +193,7 @@ summarize() {
 # github-action-benchmark's "custom" JSON format, so a later step can hand them
 # straight to that action without this script knowing anything about benchmark storage.
 write_benchmark_json() {
-    local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps
+    local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps reliable_send_mbps reliable_recv_mbps reliable_loss_pct
 
     rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
     rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
@@ -193,6 +203,11 @@ write_benchmark_json() {
     # JSON number below would make it invalid JSON, not just a formatting choice.
     send_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_client.log" | tr -d ',')
     recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_server.log" | tr -d ',')
+    reliable_send_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/reliable_client.log" | tr -d ',')
+    reliable_recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/reliable_server.log" | tr -d ',')
+    # perf_server.c's "RESULT: ... loss_pct=X.X" - see run_paired_test's own "reliable" call
+    # comment on why this isn't a clean recovered-vs-lost measurement yet.
+    reliable_loss_pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/reliable_server.log" | tail -1)
 
     cat > latency-benchmark.json <<EOF
 [
@@ -219,6 +234,23 @@ EOF
   {"name": "recv throughput", "unit": "Mbps", "value": $recv_mbps}
 ]
 EOF
+
+    cat > reliable-throughput-benchmark.json <<EOF
+[
+  {"name": "reliable send throughput", "unit": "Mbps", "value": $reliable_send_mbps},
+  {"name": "reliable recv throughput", "unit": "Mbps", "value": $reliable_recv_mbps}
+]
+EOF
+
+    # Split from reliable-throughput-benchmark.json above for the same reason latency-jitter is
+    # split from latency-benchmark.json: a different alert direction (smaller is better) - and,
+    # since this number isn't a clean recovered-vs-lost measurement yet (see this file's own
+    # "reliable" run_paired_test comment), it shouldn't be able to fail the build on its own either.
+    cat > reliable-loss-benchmark.json <<EOF
+[
+  {"name": "reliable loss_pct", "unit": "%", "value": $reliable_loss_pct}
+]
+EOF
 }
 
 update_and_build
@@ -228,6 +260,20 @@ run_paired_test "latency" "pong" "ping" "-c $PING_COUNT -i $PING_INTERVAL" \
 
 run_paired_test "throughput" "perf_server" "perf_client" "-d $PERF_DURATION_SEC" \
     "$((PERF_DURATION_SEC + 30))"
+
+# RELIABLE run: QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - same shape as the
+# best-effort "throughput" run above, but both sides pass -R so perf_client's Publisher retains
+# samples for retransmission and perf_server's Subscriber ACKNACKs on a gap. Tracks reliable
+# delivery's own throughput cost against best-effort - NOT a clean loss/no-loss comparison:
+# perf_server.c's own drop counter (bulk_callback()'s expected_seq check) predates this feature
+# and isn't retransmission-aware, so a sample that *was* successfully recovered but arrived late
+# (out of its original seq_no order) still counts as a gap there, same as a never-recovered one
+# would. Read reliable-run throughput here as the real number; read its loss_pct as "how often
+# reordering happened", not "how much data never arrived" - the latter would need perf_server.c
+# itself taught to recognize a late, out-of-order arrival as a recovered duplicate rather than a
+# fresh gap, left for whenever that distinction is actually needed.
+run_paired_test "reliable" "perf_server" "perf_client" "-d $PERF_DURATION_SEC -R" \
+    "$((PERF_DURATION_SEC + 30))" "-R"
 
 # Small-message run: 100-byte payloads, -B so node_flush() batches several per packet (perf_
 # client's own default flipped to flush-immediately, one packet per message - see DESIGN.md's

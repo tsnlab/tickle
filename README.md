@@ -220,10 +220,10 @@ final `RESULT:` line when it stops (`-c`/`-d` elapsing, or Ctrl+C):
   eye or trend over time. The other side of each pair (`server`, `pong`, `publisher`,
   `perf_client`) has no verdict of its own to report - it just logs a plain completion count.
 
-`perf_client` takes three more flags to control what it sends:
+`perf_client` takes four more flags to control what it sends:
 
 ```sh
-$ ./perf_client [-s message_size_bytes] [-i interval_seconds] [-B]
+$ ./perf_client [-s message_size_bytes] [-i interval_seconds] [-B] [-R]
 ```
 
 - `-s` payload bytes per message (default/max: see "Message size: filling an Ethernet frame" below)
@@ -234,6 +234,9 @@ $ ./perf_client [-s message_size_bytes] [-i interval_seconds] [-B]
   `-B` doesn't just send slower once discovery switches the Publisher to per-message unicast, it
   can lose nearly everything (see DESIGN.md's "RPC and Publish flush immediately by default;
   batching is opt-in" and "Discovery-learned peers: unicast to a few, broadcast to the rest").
+- `-R` RELIABLE instead of BEST_EFFORT delivery (QoS roadmap #5, `rmw_tickle/PLAN.md`) - retains
+  published samples in a `struct tt_ReliableCache` for retransmission when the matching
+  `perf_server` (also needs its own `-R`) ACKNACKs a gap.
 
 ### Message size: filling an Ethernet frame
 
