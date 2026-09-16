@@ -310,13 +310,14 @@ paced accurately since it's comfortably larger than that ceiling.
 
 **<https://tsnlab.github.io/tickle/dev/bench/>** carries a single per-platform status table -
 did it compile, did each test tier pass, and (for the hardware-in-the-loop row) the latest
-measured throughput / latency / small-message rate - refreshed on every push to `main`:
+measured throughput / latency / small-message rate / RELIABLE throughput under 1%/5%/10% packet
+loss - refreshed on every push to `main`:
 
-| Platform | Build | Unit tests | Integration test | Throughput | Latency RTT | Small-msg rate |
-|---|---|---|---|---|---|---|
-| Linux x86-64 | ✅ | ✅ | ✅ (HAL over network namespaces) | – | – | – |
-| FreeRTOS RISC-V (QEMU) | ✅ | – | ✅ (HAL over emulated virtio-net) | – | – | – |
-| Raspberry Pi (HIL, arm64) | ✅ | – | ✅ (ping/pong over real Ethernet) | measured | measured | measured |
+| Platform | Build | Unit tests | Integration test | Throughput | Latency RTT | Small-msg rate | Reliable Tput@1%/5%/10% loss |
+|---|---|---|---|---|---|---|---|
+| Linux x86-64 | ✅ | ✅ | ✅ (HAL over network namespaces) | – | – | – | – |
+| FreeRTOS RISC-V (QEMU) | ✅ | – | ✅ (HAL over emulated virtio-net) | – | – | – | – |
+| Raspberry Pi (HIL, arm64) | ✅ | – | ✅ (ping/pong over real Ethernet) | measured | measured | measured | measured (needs `sudo tc` on rpi#1 - see `.github/scripts/README.md`) |
 
 The Linux / FreeRTOS rows come from [`test-all.yml`](.github/workflows/test-all.yml) (each tier
 is its own step now, so the table can pinpoint which broke); the Raspberry Pi row and all the
@@ -349,7 +350,8 @@ comparison table and as further `github-action-benchmark` history. This is where
 retransmission is actually expected to cost something to measure - the clean-link "reliable" run
 above has nothing to retransmit. Needs passwordless `sudo tc` on rpi#1
 (`.github/scripts/README.md`'s own setup note); skipped (not a failure) on a runner where that
-isn't configured.
+isn't configured - the status table's own three loss-level columns just stay "·" (pending) until
+it is.
 
 ## Quality declarations
 - [`rmw_tickle`](rmw_tickle/rmw_tickle/QUALITY_DECLARATION.md) - Quality Level 4 ([REP-2004](https://www.ros.org/reps/rep-2004.html))

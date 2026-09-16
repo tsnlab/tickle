@@ -17,6 +17,14 @@ SSH_USER="ci"
 SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
 REMOTE_DIR="tickle"
 
+# RPI_CLIENT_HOST/RPI_SERVER_HOST above are the Pis' *management* addresses (this script's own
+# SSH target) - a separate network from the dedicated point-to-point link the actual TickLE test
+# traffic runs over, which every example binary this script runs defaults its own `-b` broadcast
+# address to (examples/linux/common/cli_opts.c) and this script never overrides. probe_loss_
+# testing() below needs *that* link's own interface on rpi#1, not whichever one happens to route
+# toward RPI_SERVER_HOST's management IP (that could be a shared Wi-Fi/LAN uplink instead).
+PERF_LINK_BROADCAST="${PERF_LINK_BROADCAST:-192.168.10.255}"
+
 PING_COUNT="${PING_COUNT:-50}"
 PING_INTERVAL="${PING_INTERVAL:-0.1}"
 PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
@@ -58,6 +66,7 @@ printf '{"build":"fail","integration":"fail","commit":"%s","commit_short":"%s","
 
 write_dashboard_fragment() {
     local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps integ smsg_rate smsg_recv smsg_dur
+    local reliable_1pct_mbps reliable_5pct_mbps reliable_10pct_mbps
 
     rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
     rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
@@ -66,6 +75,15 @@ write_dashboard_fragment() {
     recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_server.log" | tr -d ',' || true)
     smsg_recv=$(grep -oP 'recv=\K[\d,]+' "$LOG_DIR/smallmsg_server.log" | tail -1 | tr -d ',' || true)
     smsg_dur=$(grep -oP '[\d.]+(?= sec, avg)' "$LOG_DIR/smallmsg_server.log" | tail -1 || true)
+    # Status-table columns for the tc/netem loss-injection scenarios (see probe_loss_testing()'s
+    # own comment on why these three specific files might not exist at all) - RELIABLE's own
+    # recv-side throughput at each fixed loss level, matching LOSS_LEVELS_PCT's own "1 5 10"
+    # default exactly (a change to that default needs matching field/column renames here and in
+    # dashboard.py's _row()/render_block(), not handled generically on purpose - three fixed
+    # columns are simpler than a dynamic-width table for a rig that's never actually changed this).
+    reliable_1pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss1_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
+    reliable_5pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss5_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
+    reliable_10pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss10_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
 
     # A round trip happened at all (ping got replies, throughput parsed) => integration pass.
     integ=fail
@@ -90,7 +108,10 @@ write_dashboard_fragment() {
   "rtt_avg_ms": ${rtt_avg:-null},
   "rtt_mdev_ms": ${rtt_mdev:-null},
   "loss_pct": ${loss_pct:-null},
-  "smallmsg_rate_msgs_s": ${smsg_rate}
+  "smallmsg_rate_msgs_s": ${smsg_rate},
+  "reliable_throughput_1pct_mbps": ${reliable_1pct_mbps:-null},
+  "reliable_throughput_5pct_mbps": ${reliable_5pct_mbps:-null},
+  "reliable_throughput_10pct_mbps": ${reliable_10pct_mbps:-null}
 }
 EOF
 }
@@ -166,20 +187,21 @@ run_paired_test() {
     wait "$server_pid" || true
 }
 
-# Resolves rpi#1's own outgoing interface toward rpi#2 (via `ip route get`, the same way the
-# kernel itself would pick one) and confirms `sudo tc` actually works non-interactively there -
-# `sudo -n` fails fast instead of hanging on a password prompt that can never be answered over a
-# non-interactive SSH session. Sets CLIENT_IFACE/LOSS_TESTING_AVAILABLE; never fails the script
-# itself (set -e-safe: every check here is the condition of an `if`), just leaves loss testing
-# unavailable with a clear reason logged.
+# Resolves rpi#1's own outgoing interface for the dedicated rpi#1<->rpi#2 test link (routing to
+# PERF_LINK_BROADCAST, not RPI_SERVER_HOST - see that variable's own comment on why those two can
+# differ) and confirms `sudo tc` actually works non-interactively there - `sudo -n` fails fast
+# instead of hanging on a password prompt that can never be answered over a non-interactive SSH
+# session. Sets CLIENT_IFACE/LOSS_TESTING_AVAILABLE; never fails the script itself (set -e-safe:
+# every check here is the condition of an `if`), just leaves loss testing unavailable with a
+# clear reason logged.
 probe_loss_testing() {
-    CLIENT_IFACE=$(ssh_run "$RPI_CLIENT_HOST" "ip route get $RPI_SERVER_HOST" 2>/dev/null |
+    CLIENT_IFACE=$(ssh_run "$RPI_CLIENT_HOST" "ip route get $PERF_LINK_BROADCAST" 2>/dev/null |
         grep -oP 'dev \K\S+' | head -1 || true)
     if [ -z "$CLIENT_IFACE" ]; then
-        echo "Could not resolve rpi#1's outgoing interface toward rpi#2 - skipping loss-injection scenarios" >&2
+        echo "Could not resolve rpi#1's outgoing interface for $PERF_LINK_BROADCAST - skipping loss-injection scenarios" >&2
         return
     fi
-    echo "rpi#1 -> rpi#2 traffic goes out $CLIENT_IFACE"
+    echo "rpi#1's test-link traffic (toward $PERF_LINK_BROADCAST) goes out $CLIENT_IFACE"
 
     if ssh_run "$RPI_CLIENT_HOST" "sudo -n tc qdisc replace dev $CLIENT_IFACE root netem loss 1%" >/dev/null 2>&1; then
         set_loss 0

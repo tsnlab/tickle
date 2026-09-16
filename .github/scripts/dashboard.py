@@ -137,6 +137,13 @@ def _row(entry):
     tput = f"{send}/{recv}" if send and recv else None
     rtt = _num(pf.get("rtt_avg_ms"), "{:.2f}")
     msg = _num(pf.get("smallmsg_rate_msgs_s"), "{:,.0f}")
+    # QoS roadmap #5 (RELIABILITY) tc/netem loss-injection scenarios (run_perf.sh's own
+    # probe_loss_testing()) - RELIABLE's own recv-side throughput at each fixed loss level. Only
+    # present once a run's rpi#1 has passwordless `sudo tc` set up; None (rendered "·") otherwise,
+    # same as every other perf field before a first successful HIL run.
+    rel1 = _num(pf.get("reliable_throughput_1pct_mbps"), "{:.0f}")
+    rel5 = _num(pf.get("reliable_throughput_5pct_mbps"), "{:.0f}")
+    rel10 = _num(pf.get("reliable_throughput_10pct_mbps"), "{:.0f}")
 
     def bt_cell(d, key):
         return _cell(d.get(key, "") if has_bt else "")
@@ -144,15 +151,17 @@ def _row(entry):
     def pf_cell(key):
         return _cell(pf.get(key, "") if has_pf else "")
 
+    def pf_txt(value):
+        return _txt(value) if has_pf else '<td class="s-pending">·</td>'
+
     return (
         f'<tr><th><a href="{commit_url}"><code>{html.escape(short)}</code></a></th>'
         f"<td>{_fmt_date(entry.get('date'))}</td>"
         + bt_cell(lin, "build") + bt_cell(lin, "unit") + bt_cell(lin, "integration")
         + bt_cell(fr, "build") + bt_cell(fr, "integration")
         + pf_cell("build") + pf_cell("integration")
-        + (_txt(tput) if has_pf else '<td class="s-pending">·</td>')
-        + (_txt(rtt) if has_pf else '<td class="s-pending">·</td>')
-        + (_txt(msg) if has_pf else '<td class="s-pending">·</td>')
+        + pf_txt(tput) + pf_txt(rtt) + pf_txt(msg)
+        + pf_txt(rel1) + pf_txt(rel5) + pf_txt(rel10)
         + "</tr>"
     )
 
@@ -160,7 +169,7 @@ def _row(entry):
 def render_block(status):
     history = status.get("history") or []
     body = "\n".join(_row(e) for e in history) or (
-        '<tr><td colspan="12" style="text-align:center;color:#999">no runs recorded yet</td></tr>'
+        '<tr><td colspan="15" style="text-align:center;color:#999">no runs recorded yet</td></tr>'
     )
     updated = html.escape(status.get("updated", ""))
     return f"""{MARK_BEGIN}
@@ -183,12 +192,13 @@ def render_block(status):
         <th rowspan="2">Commit</th><th rowspan="2">Date (UTC)</th>
         <th colspan="3">Linux x86-64</th>
         <th colspan="2">FreeRTOS RISC-V (QEMU)</th>
-        <th colspan="5">Raspberry Pi (HIL, arm64)</th>
+        <th colspan="8">Raspberry Pi (HIL, arm64)</th>
       </tr>
       <tr>
         <th>Build</th><th>Unit</th><th>Integ.</th>
         <th>Build</th><th>Integ.</th>
         <th>Build</th><th>Integ.</th><th>Tput ↑/↓<br>Mbps</th><th>RTT<br>ms</th><th>Small-msg<br>msg/s</th>
+        <th>Reliable<br>Tput@1%</th><th>Reliable<br>Tput@5%</th><th>Reliable<br>Tput@10%</th>
       </tr>
     </thead>
     <tbody>
