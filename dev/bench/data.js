@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789569809924,
+  "lastUpdate": 1789569812935,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -11121,6 +11121,42 @@ window.BENCHMARK_DATA = {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030386379786900113,
             "unit": "Mbit/s"
+          }
+        ]
+      }
+    ],
+    "Reliable throughput (perf_client/perf_server -R)": [
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b18eee64510e4698d08c14635c8c79a79b771cc1",
+          "message": "Reflect RELIABLE pub/sub into rmw_tickle (QoS roadmap #5 done)\n\nrmw_tickle_validate_qos_profile() now accepts RMW_QOS_POLICY_RELIABILITY_\nRELIABLE for publishers/subscriptions, not just services/clients.\nrmw_create_publisher() allocates a struct tt_ReliableCache (sized from\nqos_profile->depth, defaulting to and capped at tt_MAX_RELIABLE_HISTORY -\nan explicit depth past that cap is rejected outright, not silently\nclamped) and wires it into the new TickLE core primitive;\nrmw_create_subscription() just sets tickle_subscriber.reliable. Updates\nrmw_tickle's own test_qos.c to match, and closes out QoS roadmap #5 in\nPLAN.md as Milestone 18.\n\nVerified against a real ROS 2 (lyrical) install: colcon build with\nBUILD_SHARED_LIBS=ON, colcon test --packages-select rmw_tickle (all 4\npass), clang-format/clang-tidy clean against the real compile_commands.json.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T23:42:18+09:00",
+          "tree_id": "99c3093ffb1905e8fca8a0518ea3924e2c5d09c0",
+          "url": "https://github.com/tsnlab/tickle/commit/b18eee64510e4698d08c14635c8c79a79b771cc1"
+        },
+        "date": 1789569811821,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.724,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 897.407,
+            "unit": "Mbps"
           }
         ]
       }
