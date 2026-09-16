@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789523149730,
+  "lastUpdate": 1789523152782,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6586,6 +6586,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 891.65,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "646814ca7092d150ac967aff82117c973419f68c",
+          "message": "Fix seventh check-all.yml run: recover the real original .msg/.srv path\n\nThe diagnostics added last commit turned out unnecessary - the CI log already had\nthe answer once read carefully: rosidl_typesupport_tickle_c's own extension WAS\nrunning (and running first, in the right order), but its \"reconstruct the\noriginal .msg path from the adapted .idl one\" logic guessed\nCMAKE_CURRENT_SOURCE_DIR/msg/<name>.msg for every message, which is only correct\nfor a package's *own* local message files. test_msgs passes in .msg files that\nphysically live in a completely different package (test_interface_files) via\nabsolute-tuple paths - the guess missed every single one of them (confirmed via\nthe CI log's own \"skipping ... only .msg/.srv are supported\" warning, printed for\nevery message in the set), so _generated_sources ended up empty, the\nrosidl_typesupport_tickle_c target was never created, and\nrosidl_typesupport_tickle_cpp's own (correct) existence check on that target\nfailed - producing an error that named \"ordering\" but was actually just a\ntarget that legitimately never got built at all. Local repro never caught this\nbecause an earlier debugging session had left hand-created local copies of\nthese .msg files sitting in ~/rmw_test_ws's test_msgs/msg/, which the guess\nhappened to match by accident.\n\nReal fix: rosidl_generate_interfaces() is a macro (not a function), so its own\ninternal _non_idl_tuples variable - the \"<abs_base_path>:<relative_path>\" tuple\nlist for every non-.idl file passed in, before rosidl_adapter ran - is still set\nin the calling package's scope when our extension executes. Look up the adapted\n.idl file's own relative path in that list instead of guessing\nCMAKE_CURRENT_SOURCE_DIR, in both rosidl_typesupport_tickle_c's and\nrosidl_typesupport_tickle_cpp's own extensions (the latter had the identical\nwrong guess, silently skipping instead of erroring since it only ever\ncontinue()s on a miss).\n\nAlso reverts the two previous (\"ordering\") fix attempts and this round's own\ntemporary diagnostics, now understood to have been solving the wrong problem,\nand regenerates test_msgs_rmw_tickle.patch without them.\n\nVerified against real (not hand-modified) clones this time: fresh `git clone\n--branch jazzy rcl_interfaces` + `--branch rolling test_interface_files`, patch\napplied, `colcon build --packages-select test_interface_files test_msgs`\nsucceeds and generates real .c/.cpp typesupport for BasicTypes/Constants/\nDefaults/Empty/Strings - the exact build this fix targets, previously\nunreproducible locally because of the stale hand-created files above (now\nunderstood why, and no longer relied on for validation).",
+          "timestamp": "2026-09-16T10:44:54+09:00",
+          "tree_id": "fd92e51573bab4f22a006aaae5df2f69762d2c82",
+          "url": "https://github.com/tsnlab/tickle/commit/646814ca7092d150ac967aff82117c973419f68c"
+        },
+        "date": 1789523151671,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.585,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 900.767,
             "unit": "Mbps"
           }
         ]
