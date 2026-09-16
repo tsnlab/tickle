@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789533675512,
+  "lastUpdate": 1789534141735,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -3792,6 +3792,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/c047551a1b4e7b2b3fcf463f12135e730125a20b"
         },
         "date": 1789533649699,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.199,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3367dbe3a92b930f86b1e0ae99e6be2e06f4be29",
+          "message": "Fix clang-format style violation (NOLINT comment pushed line past 120 cols)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T13:48:14+09:00",
+          "tree_id": "eceeaaabb4cbcf270670847e9784345e05d1735b",
+          "url": "https://github.com/tsnlab/tickle/commit/3367dbe3a92b930f86b1e0ae99e6be2e06f4be29"
+        },
+        "date": 1789534139842,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
