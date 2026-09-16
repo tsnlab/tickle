@@ -1792,19 +1792,31 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 
 static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
-                               uint32_t sender_ip, uint16_t sender_port) {
+                               uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
     // Each process_X() below already logs its own specific reason on failure, so this switch
     // doesn't log again on top of that - only the type dispatch itself gets a message here.
     // sender_ip/sender_port (this packet's own source, from tt_receive() - see
     // handle_receive_result()) reach process_callrequest() (to unicast the CallResponse straight
     // back) and process_update() (to learn/refresh a peer table entry - see decode_update_
     // entities()'s own comment); the other cases don't need them.
+    //
+    // self_sent (this whole packet's own header->source == node->id) only suppresses the two
+    // topic-shaped types below, not CALLREQUEST/CALLRESPONSE - rmw_tickle/PLAN.md's own Milestone
+    // 17 finding: a client and its service can end up on the exact same tt_Node (the only
+    // topology rmw_tickle's one-node-per-process model allows), and RPC has no separate in-
+    // process delivery path the way "a node already has its own published data locally" is true
+    // for pub/sub - the request/response datagrams *are* the only path, so suppressing them here
+    // made a co-located client structurally unable to ever reach its own service.
     switch (submessage_header->type) {
     case tt_SUBMESSAGE_TYPE_UPDATE:
-        process_update(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        if (!self_sent) {
+            process_update(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        }
         return true;
     case tt_SUBMESSAGE_TYPE_DATA:
-        process_data(node, header, buffer, head, body_tail);
+        if (!self_sent) {
+            process_data(node, header, buffer, head, body_tail);
+        }
         return true;
     case tt_SUBMESSAGE_TYPE_ACKNACK:
         // Reliable pub/sub isn't implemented in this release. Skip this one submessage and keep
@@ -1849,7 +1861,7 @@ enum submessage_walk_result { SUBMSG_ERROR, SUBMSG_DONE, SUBMSG_CONTINUE };
 // Decodes and dispatches one submessage starting at *head, advancing *head past it.
 static enum submessage_walk_result process_one_submessage(struct tt_Node* node, struct tt_Header* header,
                                                           uint8_t* buffer, uint32_t* head, uint32_t tail,
-                                                          uint32_t sender_ip, uint16_t sender_port) {
+                                                          uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
     struct tt_SubmessageHeader* submessage_header =
         decode(node, buffer, head, tail, sizeof(struct tt_SubmessageHeader));
     if (submessage_header == NULL) {
@@ -1872,7 +1884,8 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
 
     const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
     if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
-        !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port)) {
+        !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port,
+                            self_sent)) {
         return SUBMSG_ERROR;
     }
 
@@ -1892,16 +1905,16 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
         return false;
     }
 
-    // Self sent message
-    if (header->source == node->id) {
-        TT_LOG_DEBUG("Self sent packet");
-        return true;
-    }
-    TT_LOG_DEBUG("source: %d", header->source);
+    // Self sent message - no longer short-circuited here: see process_submessage()'s own comment
+    // on why this now only suppresses the topic-shaped types (UPDATE/DATA), not CALLREQUEST/
+    // CALLRESPONSE, and so has to be threaded down per-submessage rather than dropping the whole
+    // packet up front.
+    bool self_sent = header->source == node->id;
+    TT_LOG_DEBUG("source: %d%s", header->source, self_sent ? " (self)" : "");
 
     while (true) {
         enum submessage_walk_result result =
-            process_one_submessage(node, header, buffer, &head, tail, sender_ip, sender_port);
+            process_one_submessage(node, header, buffer, &head, tail, sender_ip, sender_port, self_sent);
         if (result == SUBMSG_DONE) {
             break;
         }

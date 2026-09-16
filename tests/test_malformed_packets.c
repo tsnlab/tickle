@@ -26,10 +26,136 @@
 
 #define LOCAL_NODE_ID 1
 #define REMOTE_NODE_ID 2
+#define ENDPOINT_ID 0xaabbccdd
 
 static void init_node(struct tt_Node* node) {
     memset(node, 0, sizeof(*node));
     node->id = LOCAL_NODE_ID;
+}
+
+// rmw_tickle/PLAN.md's Milestone 17: proves process_packet()'s own self-sent handling is scoped
+// per-submessage-type, not per-packet - a co-located client and service on the exact same
+// tt_Node (this test's own LOCAL_NODE_ID for both sides at once) must still be able to talk to
+// each other, unlike a node hearing its own topic pub/sub broadcast back.
+
+static int self_sent_callback_count = 0;
+
+static int32_t stub_request_decode(struct tt_Request* request, const uint8_t* payload, const uint32_t len,
+                                   bool is_native_endian) {
+    (void)request;
+    (void)payload;
+    (void)is_native_endian;
+    return (int32_t)len;
+}
+static void stub_request_free(struct tt_Request* request) {
+    (void)request;
+}
+static int8_t stub_server_callback(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response) {
+    (void)server;
+    (void)request;
+    (void)response;
+    self_sent_callback_count++;
+    return 0;
+}
+static int32_t stub_response_encode_size(struct tt_Response* response) {
+    (void)response;
+    return 1;
+}
+static int32_t stub_response_encode(struct tt_Response* response, uint8_t* payload, const uint32_t len) {
+    (void)response;
+    if (len < 1) {
+        return -1;
+    }
+    payload[0] = 0;
+    return 1;
+}
+static void stub_response_free(struct tt_Response* response) {
+    (void)response;
+}
+
+static void init_node_service_server(struct tt_Node* node, struct tt_Service* service, struct tt_Server* server) {
+    memset(node, 0, sizeof(*node));
+    node->id = LOCAL_NODE_ID;
+    node->tx_tail = sizeof(struct tt_Header);
+    node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
+
+    memset(service, 0, sizeof(*service));
+    service->name = "test_service";
+    service->request_size = 1;
+    service->response_size = 1;
+    service->request_decode = stub_request_decode;
+    service->request_free = stub_request_free;
+    service->response_encode_size = stub_response_encode_size;
+    service->response_encode = stub_response_encode;
+    service->response_free = stub_response_free;
+
+    memset(server, 0, sizeof(*server));
+    server->endpoint.kind = tt_KIND_SERVICE_SERVER;
+    server->endpoint.id = ENDPOINT_ID;
+    server->node = node;
+    server->service = service;
+    server->callback = stub_server_callback;
+
+    node->endpoint_count = 1;
+    node->endpoints[0] = (struct tt_Endpoint*)server;
+}
+
+// Appends a CallRequestHeader + 1-byte body at `offset` (matching test_process_callrequest.c's
+// own write_callrequest(), which writes the same shape straight at rx_buffer's start).
+static uint32_t append_callrequest_header(uint8_t* buf, uint32_t offset, uint32_t endpoint_id, uint16_t seq_no) {
+    struct tt_CallRequestHeader* callrequest_header = (struct tt_CallRequestHeader*)(buf + offset);
+    callrequest_header->endpoint_id = endpoint_id;
+    callrequest_header->seq_no = seq_no;
+    callrequest_header->retry = 0;
+    callrequest_header->reserved = 0;
+    uint32_t body_offset = offset + sizeof(struct tt_CallRequestHeader);
+    buf[body_offset] = 0xab; // 1-byte request body (service->request_size == 1)
+    return body_offset + 1;
+}
+
+static int self_sent_subscriber_callback_count = 0;
+
+static void stub_self_sent_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
+                                               struct tt_Data* data) {
+    (void)subscriber;
+    (void)time;
+    (void)seq_no;
+    (void)data;
+    self_sent_subscriber_callback_count++;
+}
+// Real (if trivial) implementations, not left NULL: if the self-sent-still-ignored invariant this
+// test guards ever regresses, it should fail cleanly via the callback-count assertion below, not
+// crash the whole test binary on a NULL function pointer call inside process_data().
+static int32_t stub_topic_data_decode(struct tt_Data* data, const uint8_t* payload, const uint32_t len,
+                                      bool is_native_endian) {
+    (void)data;
+    (void)payload;
+    (void)is_native_endian;
+    return (int32_t)len;
+}
+static void stub_topic_data_free(struct tt_Data* data) {
+    (void)data;
+}
+
+static void init_node_topic_subscriber(struct tt_Node* node, struct tt_Topic* topic, struct tt_Subscriber* sub) {
+    memset(node, 0, sizeof(*node));
+    node->id = LOCAL_NODE_ID;
+
+    memset(topic, 0, sizeof(*topic));
+    topic->name = "test_topic";
+    topic->data_size = sizeof(uint32_t);
+    topic->data_decode = stub_topic_data_decode;
+    topic->data_free = stub_topic_data_free;
+
+    memset(sub, 0, sizeof(*sub));
+    sub->endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub->endpoint.id = ENDPOINT_ID;
+    sub->node = node;
+    sub->topic = topic;
+    sub->callback = stub_self_sent_subscriber_callback;
+
+    node->endpoint_count = 1;
+    node->endpoints[0] = (struct tt_Endpoint*)sub;
 }
 
 static void write_header(uint8_t* buf, uint16_t magic, uint8_t version, uint8_t source) {
@@ -198,6 +324,51 @@ static void test_accepts_two_valid_data_submessages(void) {
     EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
 }
 
+// Milestone 17: a self-sent CALLREQUEST (client and service co-located on the same tt_Node)
+// must still reach the registered server - process_packet()'s own self-sent suppression is
+// scoped to UPDATE/DATA only, not RPC.
+static void test_self_sent_callrequest_reaches_server(void) {
+    self_sent_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Server server;
+    init_node_service_server(&node, &service, &server);
+
+    uint8_t buf[128];
+    write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION, LOCAL_NODE_ID); // self-sent: source == node->id
+    uint32_t offset = sizeof(struct tt_Header);
+    uint32_t body_start = offset + sizeof(struct tt_SubmessageHeader);
+    uint32_t body_end = append_callrequest_header(buf, body_start, ENDPOINT_ID, 1);
+    append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_CALLREQUEST, tt_SUBMESSAGE_ID_ALL,
+                             (uint16_t)(body_end - offset));
+
+    EXPECT_TRUE(process_packet(&node, buf, 0, body_end, 0, 0));
+    EXPECT_EQ_U32(1, (uint32_t)self_sent_callback_count);
+}
+
+// Milestone 17's own flip side: a self-sent DATA submessage (this node hearing its own topic
+// broadcast back) must still be ignored, exactly as before this milestone - only CALLREQUEST/
+// CALLRESPONSE lost their self-sent suppression, not pub/sub.
+static void test_self_sent_data_is_still_ignored(void) {
+    self_sent_subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_topic_subscriber(&node, &topic, &sub);
+
+    uint8_t buf[128];
+    write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION, LOCAL_NODE_ID); // self-sent: source == node->id
+    uint32_t offset = sizeof(struct tt_Header);
+    uint16_t data_len = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader);
+    offset = append_submessage_header(buf, offset, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL, data_len);
+    offset = append_data_header(buf, offset, ENDPOINT_ID, 1);
+
+    EXPECT_TRUE(process_packet(&node, buf, 0, offset, 0, 0));
+    EXPECT_EQ_U32(0, (uint32_t)self_sent_subscriber_callback_count);
+}
+
 int main(void) {
     test_rejects_truncated_header();
     test_rejects_bad_magic();
@@ -208,6 +379,8 @@ int main(void) {
     test_skips_unknown_submessage_type_and_continues();
     test_skips_acknack_and_continues();
     test_accepts_two_valid_data_submessages();
+    test_self_sent_callrequest_reaches_server();
+    test_self_sent_data_is_still_ignored();
 
     if (test_result() != 0) {
         return 1;

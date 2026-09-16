@@ -136,14 +136,24 @@ assumes one `tt_Node` per process; a component container wanting several ROS nod
 would need one `tt_Node` - own socket, own poll thread - per node, which works but hasn't been
 built or measured).
 
-**A co-located client can never reach its own co-located service** (found by Milestone 16,
-point (c)): TickLE's own `process_packet()` (`src/tickle.c`) unconditionally drops any packet
-whose `header->source` equals the receiving node's own id ("Self sent message") - correct for
-topic pub/sub, wrong for a client and service sharing one `tt_Node` (the only topology
-rmw_tickle's one-node-per-process model allows), since the client's own request datagram is
-discarded before the co-located service ever sees it. Fixing this needs a TickLE-core routing
-decision (scope self-sent suppression per-submessage-type - skip it for `tt_CLIENT_CALLBACK`/
-`tt_SERVER_CALLBACK` traffic, keep it for topics) - a dedicated pass, not attempted here.
+**RESOLVED** (was: "a co-located client can never reach its own co-located service", found by
+Milestone 16, point (c)): TickLE's own `process_packet()` (`src/tickle.c`) used to unconditionally
+drop any packet whose `header->source` equalled the receiving node's own id ("Self sent message")
+- correct for topic pub/sub, wrong for a client and service sharing one `tt_Node` (the only
+topology rmw_tickle's one-node-per-process model allows), since the client's own request datagram
+was discarded before the co-located service ever saw it. Fixed by threading a `self_sent` flag
+down from `process_packet()` through `process_one_submessage()` into `process_submessage()`
+itself, which now only suppresses `tt_SUBMESSAGE_TYPE_UPDATE`/`tt_SUBMESSAGE_TYPE_DATA` (topic
+pub/sub - unaffected, still self-filtered exactly as before) while letting
+`tt_SUBMESSAGE_TYPE_CALLREQUEST`/`tt_SUBMESSAGE_TYPE_CALLRESPONSE` (RPC) through regardless of
+sender, since RPC has no separate in-process delivery path the way a node "already has its own
+published data locally" is true for pub/sub - the request/response datagrams are the only path.
+New `tests/test_malformed_packets.c` cases (`test_self_sent_callrequest_reaches_server`,
+`test_self_sent_data_is_still_ignored`) prove both halves directly at the `process_packet()`
+level (whitebox, no `rmw_tickle` involved) - confirmed the first one actually catches the
+regression by temporarily reverting the fix and re-running (`expected 1, got 0`), not just that
+it passes with the fix in place. Verified: full `make test`/`make sanitize` (ASan+UBSan) still
+pass, `clang-format`/`clang-tidy` clean on both changed files.
 
 ## Build order
 
