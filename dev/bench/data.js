@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789533262671,
+  "lastUpdate": 1789533265711,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -9133,6 +9133,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.009,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b09200170afcd87698bfd01734969f2686e62979",
+          "message": "Close Milestone 6: exercise rmw_graph.c's real behavior locally\n\ntest_rmw_implementation's own TestGraphAPI needs a second node in one process for\nevery one of its 15 cases (Milestone 2's one-node-per-process limit), so it's\nskipped wholesale for rmw_tickle (Milestone 16) - nothing upstream ever exercises\nrmw_count_publishers()/_subscribers()/rmw_get_node_names()'s own real behavior.\n\nNew test/test_graph.c closes this the same way Milestone 10's own local suite\nalready covers what upstream can't: creates a raw tt_Publisher/tt_Subscriber\ndirectly via tt_Node_create_publisher()/tt_Node_create_subscriber() on the node's\nown embedded tt_Node (bypassing rosidl/typesupport, unneeded at this level), then\nasserts rmw_count_publishers()/_subscribers()/rmw_get_node_names() see the right\ncounts and names - not just that they reject bad arguments.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-16T13:33:34+09:00",
+          "tree_id": "f5007b9cde16f8376f8f816712cdb0ccd22fa382",
+          "url": "https://github.com/tsnlab/tickle/commit/b09200170afcd87698bfd01734969f2686e62979"
+        },
+        "date": 1789533264441,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.011,
             "unit": "ms"
           }
         ]
