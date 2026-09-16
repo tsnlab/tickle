@@ -29,14 +29,19 @@ contributor never runs any of this by hand.
     `reset --hard`s an existing checkout, it never clones one from scratch.
 
   **rpi#1 only**, for `run_perf.sh`'s tc/netem loss-injection scenarios (QoS roadmap #5,
-  RELIABILITY vs BEST_EFFORT under real packet loss): the `ci` user needs passwordless `sudo tc`,
-  e.g. via `sudo visudo -f /etc/sudoers.d/tickle-ci-tc` containing:
+  RELIABILITY vs BEST_EFFORT under real packet loss): the `ci` user needs passwordless `sudo tc`.
+  [`setup-rpi-tc-sudoers.sh`](setup-rpi-tc-sudoers.sh) does this - copy it to rpi#1 and run it
+  there as root (`sudo bash setup-rpi-tc-sudoers.sh`), or run it directly over SSH without
+  copying anything first:
+  ```sh
+  ssh <user>@<rpi#1> 'sudo bash -s' < .github/scripts/setup-rpi-tc-sudoers.sh
   ```
-  ci ALL=(root) NOPASSWD: /usr/sbin/tc
-  ```
-  `run_perf.sh`'s own `probe_loss_testing()` checks this (`sudo -n tc ...`) before running any of
-  these scenarios and just skips them - not the rest of the run - if it isn't set up, so this is
-  optional to get everything else in this document working, only needed for that one section.
+  It installs a `visudo`-validated `/etc/sudoers.d/tickle-ci-tc` granting `ci` passwordless sudo
+  for the `tc` binary only (not a blanket `NOPASSWD:ALL`), then verifies the grant actually works
+  before exiting. `run_perf.sh`'s own `probe_loss_testing()` checks this (`sudo -n tc ...`) before
+  running any of these scenarios and just skips them - not the rest of the run - if it isn't set
+  up, so this is optional to get everything else in this document working, only needed for that
+  one section.
 
 ## SSH key setup
 
