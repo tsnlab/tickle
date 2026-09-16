@@ -1,6 +1,25 @@
 {
   "history": [
     {
+      "commit": "3367dbe3a92b930f86b1e0ae99e6be2e06f4be29",
+      "commit_short": "3367dbe3a",
+      "date": "2026-09-16T04:48Z",
+      "perf": {
+        "build": "pass",
+        "commit": "3367dbe3a92b930f86b1e0ae99e6be2e06f4be29",
+        "commit_short": "3367dbe3a",
+        "date": "2026-09-16T04:48Z",
+        "integration": "pass",
+        "loss_pct": 2,
+        "rtt_avg_ms": 0.199,
+        "rtt_mdev_ms": 0.008,
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35057018764",
+        "smallmsg_rate_msgs_s": 486403,
+        "throughput_recv_mbps": 902.637,
+        "throughput_send_mbps": 937.689
+      }
+    },
+    {
       "buildtest": {
         "branch": "main",
         "commit": "c047551a1b4e7b2b3fcf463f12135e730125a20b",
@@ -1101,45 +1120,7 @@
         "throughput_recv_mbps": 902.962,
         "throughput_send_mbps": 937.682
       }
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "c78a82a620cc21b696c66cfd50934252dea13d16",
-        "commit_short": "c78a82a",
-        "date": "2026-09-15T04:19Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/34927836614"
-      },
-      "commit": "c78a82a620cc21b696c66cfd50934252dea13d16",
-      "commit_short": "c78a82a",
-      "date": "2026-09-15T04:11Z",
-      "perf": {
-        "build": "pass",
-        "commit": "c78a82a620cc21b696c66cfd50934252dea13d16",
-        "commit_short": "c78a82a6",
-        "date": "2026-09-15T04:11Z",
-        "integration": "pass",
-        "loss_pct": 0,
-        "rtt_avg_ms": 0.204,
-        "rtt_mdev_ms": 0.012,
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/34927836644",
-        "smallmsg_rate_msgs_s": 500625,
-        "throughput_recv_mbps": 901.692,
-        "throughput_send_mbps": 937.591
-      }
     }
   ],
-  "updated": "2026-09-16 04:48 UTC"
+  "updated": "2026-09-16 04:49 UTC"
 }
