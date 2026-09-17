@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789654848760,
+  "lastUpdate": 1789654852100,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8894,6 +8894,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 900.953,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fcace762594c59c99a23fdd239587094554db2a2",
+          "message": "Mask ACKNACK's bitmap to the confirmed window instead of requesting all 64 bits\n\nFound the real dominant cause of the elevated loss_pct: run_perf.sh's own\ndiagnostic summary (previous commits) showed the Subscriber's own give-up/\nskip logic never even firing (0 occurrences of both), while the Publisher\nlogged ~4,000 \"not found in reliable_cache\" ACKNACK requests against a run of\nonly ~500 total messages sent - and those requests spanned the *entire*\nsequence range (seq_no 10 through 563), not just genuine loss.\n\nsend_acknack() built the wire bitmap as a bare `~sub->received_bitmap` -\ninverting all tt_RELIABLE_BITMAP_BITS (64) bits whenever received_bitmap had\nonly a few bits set. That requests retransmission of every position up to 63\nahead of ack_seq_no regardless of whether the Publisher has even sent that far\nyet. The Publisher's own cache lookup can't distinguish \"evicted\" from \"never\nsent\" - both show up identically as \"not found\" - so nearly every ACKNACK\nwas mostly noise: a handful of genuine gap requests buried in dozens of\nrequests for sequence numbers that didn't exist yet. Sent on every new DATA\narrival while any gap is open (not just the 5ms retry timer), this multiplied\ninto thousands of pointless cache scans and log lines, which likely also\ndelayed real work (genuine retransmits, new sends) enough to contribute to\nthe very loss being measured.\n\nFix: mask the inverted bitmap to bits at or below the highest bit actually\nconfirmed received (out-of-order) so far - anything beyond that hasn't been\nconfirmed to exist, so there's nothing to legitimately request yet. Added\nhighest_received_bit() (shared with skip_unrecoverable_backlog(), which\nalready needed the identical scan) to compute that boundary.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:18:15+09:00",
+          "tree_id": "384eb7b51d8e393ad87c3403ca0a5ec61d201831",
+          "url": "https://github.com/tsnlab/tickle/commit/fcace762594c59c99a23fdd239587094554db2a2"
+        },
+        "date": 1789654851006,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.629,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.407,
             "unit": "Mbps"
           }
         ]
