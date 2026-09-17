@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789656859047,
+  "lastUpdate": 1789656862172,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -16935,6 +16935,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/07eed089e53e8eb6e0011c242afd2c47a2b9bb1c"
         },
         "date": 1789656371252,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "29aec0792ce68b331e4f9b1a6649dd0355ce5ce4",
+          "message": "Add a seen-seq bitset to check if track_arrival() ever actually saw the drop\n\nRuled out that tickle.c's own watermark is also stuck: advance_ack_seq_no()'s\nown jump log (previous commit) shows it racing steadily past the equivalent\nframing position while perf_server.c's expected_seq stays pinned - which,\ngiven ack_seq_no is a cumulative watermark, should be impossible unless the\ndata genuinely never reached bulk_callback() (matching the late-arrival\ndiagnostic's own finding), or track_arrival()'s own accounting has a bug\nindependent of delivery.\n\nAdds seen_seq, a plain bitset marked in bulk_callback() for every data->seq\nit's ever actually invoked with - independent of expected_seq/pending_bitmap.\nChecked (was_seen(expected_seq)) at the exact moment a seq_no gets counted as\ndropped, in both of this file's own drop paths (track_arrival()'s overflow\nbranch and finalize_gap_tracking()). If it comes back 1, the application\ngenuinely received this seq_no and the bug is in this file's own gap\naccounting, not upstream; if 0, it proves delivery itself failed.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:51:39+09:00",
+          "tree_id": "1b1c556bceefaee4d6ea36d700569fb525a6340a",
+          "url": "https://github.com/tsnlab/tickle/commit/29aec0792ce68b331e4f9b1a6649dd0355ce5ce4"
+        },
+        "date": 1789656861054,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
