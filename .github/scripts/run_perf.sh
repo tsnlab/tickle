@@ -308,6 +308,8 @@ summarize() {
             echo "Giving up on a reliable sample: $(grep -c 'Giving up on a reliable sample' "$worst_server" 2>/dev/null || echo 0)"
             echo "skip_unrecoverable_backlog fired: $(grep -c 'skip_unrecoverable_backlog:' "$worst_server" 2>/dev/null || echo 0)"
             echo "gap too large to track: $(grep -c 'gap too large to track' "$worst_server" 2>/dev/null || echo 0)"
+            echo "no matching subscriber endpoint (silent drop before delivery): $(grep -c 'no matching subscriber endpoint' "$worst_server" 2>/dev/null || echo 0)"
+            grep 'no matching subscriber endpoint' "$worst_server" 2>/dev/null | head -10 || true
             echo "all skip_unrecoverable_backlog lines:"
             grep 'skip_unrecoverable_backlog:' "$worst_server" 2>/dev/null || true
             echo "first 5 'gap too large to track' lines:"

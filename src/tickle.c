@@ -1748,6 +1748,12 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id);
     if (endpoint == NULL) {
+        // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - a completely
+        // silent drop otherwise: no callback, no update_reliable_ack(), no log. Checking whether
+        // this is why a RELIABLE gap's data never reaches the application even though tickle.c's
+        // own retransmit/ack bookkeeping (process_acknack(), acknack_retry()) reports success.
+        TT_LOG_WARNING("process_data: no matching subscriber endpoint for endpoint_id %08x, seq_no %u (dropped)",
+                       endpoint_id, seq_no);
         return true;
     }
 
