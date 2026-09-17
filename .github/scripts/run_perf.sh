@@ -42,23 +42,27 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # this constant was meant to expose; some other small, fixed-time (not fixed-message-count, since
 # it stayed a constant *fraction* as message count scaled with 1/interval) artifact - most likely
 # discovery/registration startup timing - dominates every one of those four attempts completely.
-# Jumping straight to 0 (firehose, "as fast as poll() allows" - same default the clean-link
-# throughput/reliable runs already use) next as a bounding experiment rather than continuing to
-# halve: a firehose rate is *known* to break RELIABLE badly (tt_MAX_RELIABLE_HISTORY overwritten
-# many times before an ACKNACK's own round trip can return), so this establishes the *other* end
-# of the range in one step - once both ends are known, the actual working value should be
-# interpolable without several more halving rounds. Confirmed empirically on real hardware at
-# every step so far (this comment's own history): reasoning about exact recovery-vs-eviction
-# timing analytically hasn't landed the right value in any attempt yet - this is a deliberate,
-# temporary bounding probe, not expected to be the final value either.
+# 0 (firehose, "as fast as poll() allows") confirmed the other end of the range: RELIABLE's own
+# loss_pct jumped to ~10-14% at *every* tc loss level (1%/5%/10% alike, no longer differentiating
+# by level at all, just uniformly broken) and ran *worse* than BEST_EFFORT's own - the mechanism's
+# ACKNACK/retransmit traffic is now pure overhead added to an already-saturated link, exactly this
+# comment's own original warning. At ~903 Mbps best-effort throughput and ~1500 bytes/message,
+# that's roughly a 13 microsecond effective interval - so the working range to find a real
+# eviction-vs-recovery race in is somewhere between 0.5ms (confirmed clean, four steps back) and
+# ~13us (confirmed broken), a ~37x span. Trying the geometric mean of that range next (~80us)
+# rather than continuing a binary/halving search from either end, since both directions are now
+# bounded. Confirmed empirically on real hardware at every step so far (this comment's own
+# history): reasoning about exact recovery-vs-eviction timing analytically hasn't landed the right
+# value in any attempt yet - this is still a search step, not expected to be the final value.
 #
 # Separately (and unaffected by any of this): a faster send interval also raises the sample count
 # for the same PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct
 # around tc's actual configured percentage too (it has no retry mechanism to blur the picture, so
 # more samples is a direct accuracy win via less binomial sampling noise) - confirmed at 5ms, 2ms,
 # 1ms, and 0.5ms already (1%/5%/10% configured consistently comes back within ~0.5 points of the
-# actual target).
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0}"
+# actual target); firehose's own besteffort row (1.0/5.0/10.0) confirms the same holds even at the
+# extreme.
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00008}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
