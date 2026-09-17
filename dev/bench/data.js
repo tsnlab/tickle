@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789689041564,
+  "lastUpdate": 1789689044427,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -18079,6 +18079,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 823.843,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b2b37e08fd2570154a0283d5a445a580083cc6e9",
+          "message": "Jump the loss-injection send interval to firehose (0) as a bounding probe\n\n20ms, 5ms, 2ms, and 1ms (a 20x range across four halving steps) all landed\nRELIABLE's own loss_pct at the identical ~0.1%, independent of both this\ninterval and tc's own configured loss level - too flat to be the cache-\neviction-vs-recovery-latency race this constant was meant to expose; some\nother small, fixed-time artifact (most likely discovery/registration startup\ntiming, since it stayed a constant fraction as message count scaled with\n1/interval) dominates every attempt so far instead.\n\nJumping straight to 0 (firehose, \"as fast as poll() allows\") rather than\ncontinuing to halve: a firehose rate is known to break RELIABLE badly\n(tt_MAX_RELIABLE_HISTORY overwritten many times before an ACKNACK's own\nround trip can return), so this establishes the other end of the range in\none step. Once both ends are known, the actual working value should be\ninterpolable without several more halving rounds.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:48:05+09:00",
+          "tree_id": "830db31a9cb6eeab8c54d3fac1a509bb7e4f228c",
+          "url": "https://github.com/tsnlab/tickle/commit/b2b37e08fd2570154a0283d5a445a580083cc6e9"
+        },
+        "date": 1789689043355,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.61,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 824.006,
             "unit": "Mbps"
           }
         ]
