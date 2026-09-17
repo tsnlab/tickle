@@ -1,6 +1,30 @@
 {
   "history": [
     {
+      "buildtest": {
+        "branch": "main",
+        "commit": "9ea4c8eb326b1a3049842e24cdfb53c756ea6595",
+        "commit_short": "9ea4c8e",
+        "date": "2026-09-17T18:14Z",
+        "rows": {
+          "freertos": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "n/a"
+          },
+          "linux": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "pass"
+          }
+        },
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35256784747"
+      },
+      "commit": "9ea4c8eb326b1a3049842e24cdfb53c756ea6595",
+      "commit_short": "9ea4c8e",
+      "date": "2026-09-17T18:14Z"
+    },
+    {
       "commit": "dab252687825cb8f1710bbea8ec302076b78056a",
       "commit_short": "dab252687",
       "date": "2026-09-17T18:11Z",
@@ -1140,45 +1164,7 @@
         "throughput_recv_mbps": 903.522,
         "throughput_send_mbps": 937.597
       }
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "1c10ad88d0a57ab90c25a5352da27f113cbf4386",
-        "commit_short": "1c10ad8",
-        "date": "2026-09-16T09:53Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35081147685"
-      },
-      "commit": "1c10ad88d0a57ab90c25a5352da27f113cbf4386",
-      "commit_short": "1c10ad8",
-      "date": "2026-09-16T09:45Z",
-      "perf": {
-        "build": "pass",
-        "commit": "1c10ad88d0a57ab90c25a5352da27f113cbf4386",
-        "commit_short": "1c10ad88d",
-        "date": "2026-09-16T09:45Z",
-        "integration": "pass",
-        "loss_pct": 2,
-        "rtt_avg_ms": 0.21,
-        "rtt_mdev_ms": 0.045,
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35081147782",
-        "smallmsg_rate_msgs_s": 440760,
-        "throughput_recv_mbps": 902.897,
-        "throughput_send_mbps": 937.73
-      }
     }
   ],
-  "updated": "2026-09-17 18:11 UTC"
+  "updated": "2026-09-17 18:14 UTC"
 }
