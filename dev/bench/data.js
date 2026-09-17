@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789650373070,
+  "lastUpdate": 1789650834810,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -11853,6 +11853,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04990857142857143,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a722addd55bfbff5ca809411b46817c288990c56",
+          "message": "Give each reliable gap its own retry budget instead of a shared one\n\nTheoretical model: with tt_RELIABLE_RETRY retries plus the original\nsend, a lost sample gets (tt_RELIABLE_RETRY + 1) independent delivery\nattempts, each subject to the link's own loss probability p - so it\nshould only be permanently lost with probability p^(tt_RELIABLE_RETRY +\n1), which is close to 0% for any p a real link sees (e.g. p=0.1 ->\n0.01%). Real loss-injection numbers were nowhere near that.\n\nRoot cause: sub->reliable_retry was one counter shared across a whole\n\"gap episode\" (from the first out-of-order arrival until\nreceived_bitmap fully clears), not given fresh to each individual\nmissing sequence number. update_reliable_ack()'s exact-match branch\nonly reset it when the *entire* bitmap cleared - if a second, later\ngap was still open when an earlier one resolved, the second inherited\nhowever many attempts the first had already used instead of its own\nfull budget. Under bursty/correlated loss (two losses close enough\ntogether to overlap in time, which random per-packet drops produce\noften enough to matter at 5-10% loss) samples were being written off\nwith far fewer than tt_RELIABLE_RETRY real attempts.\n\nFix: advance_ack_seq_no() now resets reliable_retry unconditionally -\nwhatever gap is oldest next is a different sample and deserves its own\nfull budget. Also extracted maybe_arm_acknack_retry() (shared by\nupdate_reliable_ack() and acknack_retry()'s own give-up path) so giving\nup on one gap immediately starts requesting whatever gap remains,\ninstead of waiting on the next unrelated DATA arrival to notice. New\ntests/test_reliable_pubsub.c case reproduces the exact shape: burn part\nof the budget on an older gap, let it resolve while a different one\nremains open, and check the survivor still gets a full, independent\nbudget.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:12:45+09:00",
+          "tree_id": "5ee8a65721f413a1e8585c6022778d36003155b7",
+          "url": "https://github.com/tsnlab/tickle/commit/a722addd55bfbff5ca809411b46817c288990c56"
+        },
+        "date": 1789650832733,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04894142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05006142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05656571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04651857142857143,
             "unit": "ms"
           }
         ]
