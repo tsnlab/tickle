@@ -190,9 +190,10 @@ run; new `tests/test_reliable_pubsub.c` case reproduces the exact shape directly
 own windowed gap counter (added for these same loss scenarios) had the same missing-realignment
 shape plus two more off-by-ones (an overflow branch undercounting by one, `finalize_gap_tracking()`
 never counting the watermark position itself) - fixed the same way, validated against a battery of
-hand-traced scenarios before applying. Confirmed on real hardware after the fix: RELIABLE's
-`loss_pct` now runs at roughly half or better of BEST_EFFORT's at every injected level (e.g. 10%
-loss: BEST_EFFORT 10.6%, RELIABLE 4.3%), with RELIABLE's own one-way latency rising as loss
+hand-traced scenarios before applying. Confirmed on real hardware after *both* fixes landed
+together: RELIABLE's `loss_pct` now runs far below BEST_EFFORT's at every injected level beyond
+the lightest one (5% loss: BEST_EFFORT 6.0%, RELIABLE 1.4%; 10% loss: BEST_EFFORT 10.6%, RELIABLE
+1.6% - a ~5-7x reduction, not just "roughly half"), with RELIABLE's own one-way latency rising as loss
 increases (BEST_EFFORT's stays flat, since it never waits on anything) - the expected shape for
 this feature. A new `loss-percent-benchmark.json`/"Track loss-injection loss_pct history" graph
 (not gating - a modest ~500-message sample against `tc`/`netem`'s own random per-packet drops is
