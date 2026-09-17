@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789655956998,
+  "lastUpdate": 1789655960554,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14946,6 +14946,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.000012670244489397322,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "facb84684ef9fb250b07e07eb9aea2c3098050d0",
+          "message": "Add TEMPORARY diagnostic for process_data()'s silent endpoint-lookup drop\n\nThe previous commit's late-arrival diagnostic proved the stuck seq_nos never\narrive at perf_server's bulk_callback() - not even late - while tickle.c's\nown RELIABLE bookkeeping shows 0 give-ups and 60 successful retransmits.\nThose two facts only make sense together if the data is reaching the\nSubscriber's process_data() but never reaching the application callback.\n\nprocess_data() has exactly one completely silent early-return: when\nfind_endpoint() can't find a matching Subscriber for the decoded endpoint_id,\nit returns true with no log at all - before update_reliable_ack() and before\nthe application callback. If that's somehow firing specifically for\nretransmitted samples (e.g. something about the cached raw bytes vs. a fresh\nencode), it would explain both halves of the puzzle: tickle.c's own ACK\nbookkeeping never even runs for it (which is a separate question from why\n0 give-ups showed up, but rules this path out or in), and the application\nnever sees it.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:38:08+09:00",
+          "tree_id": "3c38af92f10c659eec6b23ea7bff980534a87e86",
+          "url": "https://github.com/tsnlab/tickle/commit/facb84684ef9fb250b07e07eb9aea2c3098050d0"
+        },
+        "date": 1789655959451,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905334200177874,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9903992244175502,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03042548043387277,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030465126037597656,
             "unit": "Mbit/s"
           }
         ]
