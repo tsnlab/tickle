@@ -109,8 +109,58 @@ static uint32_t expected_seq = 0;
 // vs. tickle.c's "+j"): tickle.c's has to match tt_AckNackHeader's own wire format exactly for a
 // trivial `~received_bitmap` inversion to stay correct; this one is purely an in-process counter
 // with no wire encoding step, so it keeps its own original, simpler-to-derive convention instead.
-#define GAP_WINDOW_BITS 64
-static uint64_t pending_bitmap = 0;
+//
+// 256 bits (4 words), not tickle.c's own 64: a QoS roadmap #5 loss-injection investigation found
+// this file's own accounting was the dominant source of "loss" under real tc/netem 5-10% loss -
+// not tickle.c's RELIABLE mechanism, which a dedicated seen_seq bitset (below) proved *was*
+// delivering every single sample this file ever counted as dropped (was_seen(expected_seq) was 1
+// at every overflow). The recovery just legitimately took longer than a 64-message/~1.3s window
+// sometimes: every new DATA arrival re-sends the Subscriber's own ACKNACK while any gap is open
+// (tickle.c's maybe_arm_acknack_retry()), not only its 5ms retry timer, so a burst of several
+// losses close together can take a few round-trips to fully drain even though no single sample
+// ever exhausts its own tt_RELIABLE_RETRY budget. 256 messages (~5.1s at this rig's own 20ms/msg
+// loss-scenario pacing) comfortably covers what was actually observed (worst case ~90 messages).
+#define GAP_WORD_BITS 64
+#define GAP_WINDOW_WORDS 4
+#define GAP_WINDOW_BITS (GAP_WINDOW_WORDS * GAP_WORD_BITS)
+static uint64_t pending_bitmap[GAP_WINDOW_WORDS] = {0};
+
+static bool gap_bit_get(unsigned bit) {
+    return ((pending_bitmap[bit / GAP_WORD_BITS] >> (bit % GAP_WORD_BITS)) & 1) != 0;
+}
+
+static void gap_bit_set(unsigned bit) {
+    pending_bitmap[bit / GAP_WORD_BITS] |= (1ULL << (bit % GAP_WORD_BITS));
+}
+
+static void gap_bit_clear(unsigned bit) {
+    pending_bitmap[bit / GAP_WORD_BITS] &= ~(1ULL << (bit % GAP_WORD_BITS));
+}
+
+static bool gap_pending_any(void) {
+    for (int i = 0; i < GAP_WINDOW_WORDS; i++) {
+        if (pending_bitmap[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void gap_clear_all(void) {
+    for (int i = 0; i < GAP_WINDOW_WORDS; i++) {
+        pending_bitmap[i] = 0;
+    }
+}
+
+// Shifts the whole GAP_WINDOW_BITS-wide window right by 1 - bit j always means "received
+// (expected_seq + 1 + j)", so every advance of expected_seq needs the whole array realigned by
+// exactly one position (see track_arrival()'s own comment on why this must be unconditional).
+static void gap_shift_right_1(void) {
+    for (int i = 0; i < GAP_WINDOW_WORDS - 1; i++) {
+        pending_bitmap[i] = (pending_bitmap[i] >> 1) | (pending_bitmap[i + 1] << (GAP_WORD_BITS - 1));
+    }
+    pending_bitmap[GAP_WINDOW_WORDS - 1] >>= 1;
+}
 static uint64_t first_recv_time = 0; // ns timestamp of the first real message - anchors warm-up,
                                      // not this process's own start_time (see this file's own
                                      // comment: perf_server's -d intentionally runs longer than
@@ -172,9 +222,9 @@ static uint32_t track_arrival(uint32_t seq) {
         // bit still tracking a *different*, still-outstanding gap silently drifted by one
         // position the moment any earlier gap got filled this way, without ever crashing or
         // erroring - just quietly asking for (or reporting on) the wrong sequence number.
-        pending_bitmap >>= 1;
-        while (pending_bitmap & 1) { // absorb whatever out-of-order run already follows it
-            pending_bitmap >>= 1;
+        gap_shift_right_1();
+        while (gap_bit_get(0)) { // absorb whatever out-of-order run already follows it
+            gap_shift_right_1();
             expected_seq++;
         }
         return 0;
@@ -187,35 +237,27 @@ static uint32_t track_arrival(uint32_t seq) {
         // folded into the windowed bitmap instead of a one-shot decision.
         uint32_t behind = (uint32_t)(-delta);
         if (behind <= GAP_WINDOW_BITS) {
-            pending_bitmap &= ~(1ULL << (behind - 1));
+            gap_bit_clear(behind - 1);
         }
-        // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - does the missing
-        // seq_no genuinely never arrive at all (proving the loss is real, at the network/tickle.c
-        // level), or does it show up here late, after expected_seq already moved on without it
-        // (proving delivery itself is fine and the miscount is in this file's own accounting)?
-        printf("DIAG track_arrival late-arrival: seq=%u behind=%u expected_seq=%u\n", seq, behind, expected_seq);
         return 0;
     }
     if ((uint32_t)delta <= GAP_WINDOW_BITS) {
-        pending_bitmap |= (1ULL << ((uint32_t)delta - 1)); // deferred - might still be retransmitted
+        gap_bit_set((uint32_t)delta - 1); // deferred - might still be retransmitted
         return 0;
     }
 
     // Gap wider than the tracking window - give up on it immediately rather than sliding the
-    // window bit by bit. Realistically never hit at this rig's own loss rates/message sizes:
-    // GAP_WINDOW_BITS is already far more slack than RELIABLE's own tt_MAX_RELIABLE_HISTORY (8)
-    // or retry budget could ever fill. `delta` values are missing - expected_seq itself plus the
-    // delta-1 that follow it up to (but not including) seq, which just arrived - and
-    // expected_seq itself is never covered by any bit (bit 0 means expected_seq+1, not
-    // expected_seq), so no adjustment for it is needed here the way finalize_gap_tracking() below
-    // needs one.
+    // window bit by bit. `delta` values are missing - expected_seq itself plus the delta-1 that
+    // follow it up to (but not including) seq, which just arrived - and expected_seq itself is
+    // never covered by any bit (bit 0 means expected_seq+1, not expected_seq), so no adjustment
+    // for it is needed here the way finalize_gap_tracking() below needs one.
     uint32_t dropped_now = (uint32_t)delta;
-    for (int i = 0; i < GAP_WINDOW_BITS; i++) {
-        if (pending_bitmap & (1ULL << i)) {
+    for (unsigned i = 0; i < GAP_WINDOW_BITS; i++) {
+        if (gap_bit_get(i)) {
             dropped_now--; // already confirmed received - don't also call it dropped
         }
     }
-    pending_bitmap = 0;
+    gap_clear_all();
     // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - printf, not a
     // tickle/log.h call: perf_server.c only has the public API (tt_log_set_level()), not the
     // internal TT_LOG_WARNING() macro tickle.c itself uses.
@@ -228,27 +270,27 @@ static uint32_t track_arrival(uint32_t seq) {
 // Called once, from print_summary() - anything still waiting in the window when the run ends (no
 // more data coming to either confirm or resolve it) is now given up on for good.
 static uint32_t finalize_gap_tracking(void) {
-    if (pending_bitmap == 0) {
+    if (!gap_pending_any()) {
         return 0;
     }
     // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - see track_arrival()'s
     // own overflow-branch diagnostic for why printf, not a tickle/log.h call.
-    printf("DIAG finalize_gap_tracking: expected_seq=%u pending_bitmap=%016llx was_seen(expected_seq)=%d\n",
-           expected_seq, (unsigned long long)pending_bitmap, (int)was_seen(expected_seq));
+    printf("DIAG finalize_gap_tracking: expected_seq=%u was_seen(expected_seq)=%d\n", expected_seq,
+           (int)was_seen(expected_seq));
     // expected_seq itself is a confirmed-missing slot whenever anything is pending ahead of it
     // (that's exactly what a nonzero pending_bitmap here means) - it's never covered by a bit of
     // its own (bit 0 means expected_seq+1), so it needs its own explicit +1.
     uint32_t dropped_now = 1;
     int highest = GAP_WINDOW_BITS - 1;
-    while (highest >= 0 && !((pending_bitmap >> highest) & 1)) {
+    while (highest >= 0 && !gap_bit_get((unsigned)highest)) {
         highest--;
     }
     for (int i = 0; i <= highest; i++) {
-        if (!((pending_bitmap >> i) & 1)) {
+        if (!gap_bit_get((unsigned)i)) {
             dropped_now++;
         }
     }
-    pending_bitmap = 0;
+    gap_clear_all();
     return dropped_now;
 }
 
