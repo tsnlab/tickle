@@ -32,22 +32,24 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # The loss-injection scenarios' own send interval - deliberately *not* PERF_DURATION_SEC's own
 # "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use.
 # tt_MAX_RELIABLE_HISTORY (8 samples, config.h) holds 8 * this interval worth of wall-clock time
-# before an entry is evicted; a first attempt at 20ms (~160ms window) and a second at 5ms (~40ms)
-# both left RELIABLE's own loss_pct indistinguishable from 0 at every tc loss level, 1% through
-# 10% alike - detection is immediate (the very next packet's own arrival re-triggers
-# maybe_arm_acknack_retry(), not just the 5ms retry timer), so real recovery latency turned out to
-# be well under even the 5ms attempt's own conservative tt_RELIABLE_RETRY-based estimate. 2ms
-# narrows the window to ~16ms - close enough to a real recovery's own actual latency (RTT a few ms
-# each way plus one send interval's own detection delay) that 10%'s higher chance of a second loss
-# landing close behind the first should occasionally outrun it, while 1%/5%'s dominant single,
-# isolated losses should still mostly recover. Confirmed empirically on real hardware (this
-# comment's own history): reasoning about exact recovery-vs-eviction timing analytically wasn't
-# reliable enough on its own to land the right value in one attempt.
-# Also raises the sample count for the same PERF_DURATION_SEC well into the thousands, which
-# tightens BEST_EFFORT's own loss_pct around tc's actual configured percentage too (it has no
-# retry mechanism to blur the picture, so more samples is a direct accuracy win via less binomial
-# sampling noise) - confirmed at the 5ms step already (1%/5%/10% configured came back 1.0/5.3/9.8).
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.002}"
+# before an entry is evicted; 20ms (~160ms window), 5ms (~40ms), and 2ms (~16ms) all landed
+# RELIABLE's own loss_pct at the exact same ~0.1% regardless of tc's own 1%/5%/10% - a flat,
+# loss-probability-independent number that small is almost certainly a fixed few-message artifact
+# (e.g. discovery-registration startup timing), not the cache-eviction-vs-recovery-latency race
+# this constant was meant to tune at all: real recovery, detected on the very next packet's own
+# arrival (maybe_arm_acknack_retry()), not just the 5ms retry timer, turned out to be fast enough
+# that even a 16ms window never became the bottleneck. 1ms (~8ms window) pushes past that - real
+# RTT (a few ms each way) plus one interval's own detection delay is now comparable to the window
+# itself, so a genuine cache-eviction race should finally start to show, more so at 10% than at
+# 1%/5%. Confirmed empirically on real hardware at each step (this comment's own history):
+# reasoning about exact recovery-vs-eviction timing analytically wasn't precise enough to land the
+# right value in one attempt, or apparently in three.
+# Also raises the sample count for the same PERF_DURATION_SEC into the thousands, which tightens
+# BEST_EFFORT's own loss_pct around tc's actual configured percentage too (it has no retry
+# mechanism to blur the picture, so more samples is a direct accuracy win via less binomial
+# sampling noise) - confirmed at 5ms and 2ms already (1%/5%/10% configured came back within ~0.5
+# points of the actual target both times).
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.001}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
