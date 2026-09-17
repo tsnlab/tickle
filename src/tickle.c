@@ -1176,6 +1176,18 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
 // submessage back to sub->reliable_sender_*, reporting sub->ack_seq_no/received_bitmap. Not
 // fatal on failure, same philosophy as resend_call_request()'s own comment: whichever caller
 // armed a retry (update_reliable_ack()/acknack_retry()) will just try again.
+// Highest bit index set in a tt_Subscriber's own received_bitmap (bit j: "received(ack_seq_no +
+// j)" - see struct tt_Subscriber's own doc comment, tickle.h), or -1 if none are set. Shared by
+// send_acknack() and skip_unrecoverable_backlog() below - both need "how far ahead does anything
+// *confirmed* reach", not just "which bits happen to be 0".
+static int highest_received_bit(uint64_t received_bitmap) {
+    int highest = tt_RELIABLE_BITMAP_BITS - 1;
+    while (highest >= 0 && !((received_bitmap >> (unsigned)highest) & 1)) {
+        highest--;
+    }
+    return highest;
+}
+
 static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
     if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
         return; // no reliable DATA seen yet to ack
@@ -1199,7 +1211,23 @@ static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
 
     acknack_header->endpoint_id = endpoint->id;
     acknack_header->seq_no = sub->ack_seq_no;
-    acknack_header->bitmap = ~sub->received_bitmap; // wire direction is "please resend", opposite of received_bitmap
+    // wire direction is "please resend", opposite of received_bitmap - but masked to bits below
+    // the highest *confirmed* arrival: a bare ~received_bitmap requested every one of all
+    // tt_RELIABLE_BITMAP_BITS positions whenever received_bitmap had only a few bits set,
+    // including positions the Publisher hasn't even sent yet (not "evicted", just nonexistent so
+    // far) - the Publisher can't tell those apart from a genuinely lost sample, so they showed up
+    // identically as "not found in reliable_cache", swamping every real one out. Found via
+    // run_perf.sh's real loss-injection scenarios: the Publisher's own diagnostic saw ~4,000
+    // "not found" ACKNACKs against a run of only ~500 total messages - only possible if most
+    // requests were for seq_nos that were never sent, not actually lost ones.
+    int highest = highest_received_bit(sub->received_bitmap);
+    uint64_t request_mask = 0;
+    if (highest >= tt_RELIABLE_BITMAP_BITS - 1) {
+        request_mask = ~0ULL; // highest is the top bit - avoid a 64-bit shift's own UB below
+    } else if (highest >= 0) {
+        request_mask = (1ULL << (highest + 1)) - 1;
+    }
+    acknack_header->bitmap = ~sub->received_bitmap & request_mask;
 
     // Unicast straight back to whoever's DATA this acks - same "nothing else queued" guard as
     // process_callrequest()'s own CallResponse. Falling back to broadcast when something else is
@@ -1301,10 +1329,7 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
         return; // nothing else known to be ahead - nothing to skip
     }
 
-    int highest = tt_RELIABLE_BITMAP_BITS - 1;
-    while (highest >= 0 && !((sub->received_bitmap >> (unsigned)highest) & 1)) {
-        highest--;
-    }
+    int highest = highest_received_bit(sub->received_bitmap);
     // highest's own absolute sequence number is ack_seq_no + highest (received_bitmap's own bit
     // j means "received(ack_seq_no + j)" - see struct tt_Subscriber's own doc comment, tickle.h).
     uint32_t highest_seq_no = sub->ack_seq_no + (uint32_t)highest;
