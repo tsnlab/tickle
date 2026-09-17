@@ -192,6 +192,10 @@ static uint32_t track_arrival(uint32_t seq) {
         }
     }
     pending_bitmap = 0;
+    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - printf, not a
+    // tickle/log.h call: perf_server.c only has the public API (tt_log_set_level()), not the
+    // internal TT_LOG_WARNING() macro tickle.c itself uses.
+    printf("DIAG track_arrival overflow: expected_seq=%u seq=%u dropped_now=%u\n", expected_seq, seq, dropped_now);
     expected_seq = seq + 1;
     return dropped_now;
 }
@@ -202,6 +206,10 @@ static uint32_t finalize_gap_tracking(void) {
     if (pending_bitmap == 0) {
         return 0;
     }
+    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - see track_arrival()'s
+    // own overflow-branch diagnostic for why printf, not a tickle/log.h call.
+    printf("DIAG finalize_gap_tracking: expected_seq=%u pending_bitmap=%016llx\n", expected_seq,
+           (unsigned long long)pending_bitmap);
     // expected_seq itself is a confirmed-missing slot whenever anything is pending ahead of it
     // (that's exactly what a nonzero pending_bitmap here means) - it's never covered by a bit of
     // its own (bit 0 means expected_seq+1), so it needs its own explicit +1.

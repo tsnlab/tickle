@@ -316,6 +316,16 @@ summarize() {
             grep 'gap too large to track' "$worst_server" 2>/dev/null | tail -5 || true
             echo '```'
             echo
+            # TEMPORARY (QoS roadmap #5 loss-injection investigation): perf_server.c's own gap
+            # tracking (track_arrival()/finalize_gap_tracking(), independent of tickle.c's own
+            # RELIABLE mechanism) - which seq_no(s) it actually counted as dropped, and whether
+            # that happened via the overflow branch (during the run) or finalize (run ended with
+            # something still pending, unresolved).
+            echo "### DEBUG: rpi#2 perf_server.c's own drop accounting, worst loss level"
+            echo '```'
+            grep -E 'DIAG track_arrival overflow|DIAG finalize_gap_tracking' "$worst_server" 2>/dev/null || true
+            echo '```'
+            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"
