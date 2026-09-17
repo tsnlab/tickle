@@ -29,29 +29,36 @@ PING_COUNT="${PING_COUNT:-50}"
 PING_INTERVAL="${PING_INTERVAL:-0.1}"
 PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
 SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
-# The loss-injection scenarios' own send interval - deliberately *not* PERF_DURATION_SEC's own
-# "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use.
-# tt_MAX_RELIABLE_HISTORY (8 samples, config.h) holds 8 * this interval worth of wall-clock time
-# before an entry is evicted, which was the working theory for what to tune here - but 20ms
-# (~160ms window), 5ms (~40ms), 2ms (~16ms), and 1ms (~8ms) all landed RELIABLE's own loss_pct at
-# the *exact same* ~0.1% regardless of tc's own 1%/5%/10%, across four send rates spanning a 20x
-# range. A number that flat, that consistently independent of both tc's own loss probability and
-# this interval, is no longer explainable as the cache-eviction-vs-recovery-latency race this
-# constant was meant to tune - it's some other fixed, small, roughly-constant-*fraction* source
-# (scales with message count, not a fixed few messages regardless of it - ruling out a one-off
-# startup race at a *fixed* absolute cost) that plain interval-narrowing hasn't touched at all.
-# Continuing to halve past the point where the last four attempts moved nothing might still find
-# where real eviction-race loss actually starts (a firehose send rate is *known* to break RELIABLE
-# badly per this comment's own original warning, so somewhere between 1ms and "as fast as poll()
-# allows" the mechanism must eventually degrade) - 0.5ms next, same empirical, one-step-at-a-time
-# approach as every prior step (this comment's own history): reasoning about exact recovery-vs-
-# eviction timing analytically hasn't landed the right value in any of the four attempts so far.
-# Separately (and unaffected by any of this): raises the sample count for the same
-# PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct around tc's
-# actual configured percentage too (it has no retry mechanism to blur the picture, so more samples
-# is a direct accuracy win via less binomial sampling noise) - confirmed at 5ms, 2ms, and 1ms
-# already (1%/5%/10% configured consistently comes back within ~0.5 points of the actual target).
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.0005}"
+# The loss-injection scenarios' own send interval.
+#
+# tt_MAX_RELIABLE_HISTORY (8 samples, config.h) holding 8 * (send interval) worth of wall-clock
+# time before an entry is evicted was the working theory for what to tune here, to find a rate
+# where RELIABLE's own retransmission just barely keeps up at low tc loss but starts occasionally
+# losing the race at high tc loss - RELIABLE's own reported loss_pct should then differentiate
+# across tc's own 1%/5%/10% instead of independently flatlining at whatever a clean run's own
+# residual (non-tc-loss) artifact rate is. 20ms (~160ms window) through 1ms (~8ms window) - a 20x
+# range in four halving steps - all landed on the *exact same* ~0.1% regardless of tc's own loss
+# level, which is far too flat and far too independent of both variables to be the eviction race
+# this constant was meant to expose; some other small, fixed-time (not fixed-message-count, since
+# it stayed a constant *fraction* as message count scaled with 1/interval) artifact - most likely
+# discovery/registration startup timing - dominates every one of those four attempts completely.
+# Jumping straight to 0 (firehose, "as fast as poll() allows" - same default the clean-link
+# throughput/reliable runs already use) next as a bounding experiment rather than continuing to
+# halve: a firehose rate is *known* to break RELIABLE badly (tt_MAX_RELIABLE_HISTORY overwritten
+# many times before an ACKNACK's own round trip can return), so this establishes the *other* end
+# of the range in one step - once both ends are known, the actual working value should be
+# interpolable without several more halving rounds. Confirmed empirically on real hardware at
+# every step so far (this comment's own history): reasoning about exact recovery-vs-eviction
+# timing analytically hasn't landed the right value in any attempt yet - this is a deliberate,
+# temporary bounding probe, not expected to be the final value either.
+#
+# Separately (and unaffected by any of this): a faster send interval also raises the sample count
+# for the same PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct
+# around tc's actual configured percentage too (it has no retry mechanism to blur the picture, so
+# more samples is a direct accuracy win via less binomial sampling noise) - confirmed at 5ms, 2ms,
+# 1ms, and 0.5ms already (1%/5%/10% configured consistently comes back within ~0.5 points of the
+# actual target).
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
