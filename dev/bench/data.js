@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789653697282,
+  "lastUpdate": 1789653775869,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4509,6 +4509,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.211,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d7a1ed90d02650102034d286ef675e4c4fd91724",
+          "message": "Add TEMPORARY diagnostics for skip_unrecoverable_backlog() and the Subscriber log\n\nThe shutdown-race fix (previous commit) didn't move loss_pct at all - still\nexactly 0.6/1.4/1.4 at 1%/5%/10% tc loss, and the Publisher's own \"not found\nin reliable_cache\" ACKNACK requests span roughly half the run's whole sequence\nrange (e.g. 348-563 of ~500 total), not just the last few messages. That rules\nout a tail-of-run-only effect and points back at something in the give-up/\nskip mechanism itself not keeping pace once a gap opens.\n\nAdds a diagnostic log to skip_unrecoverable_backlog() (old -> new ack_seq_no,\nand the highest known seq_no it computed that jump from) and, since\nacknack_retry()'s own give-up log only ever fires on the Subscriber (perf_\nserver, not perf_client), a matching temporary rpi#2 (Subscriber) log dump in\nrun_perf.sh next to the existing rpi#1 (Publisher) one - so both sides of one\ngap episode are visible in the same CI run instead of only the Publisher's.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:00:22+09:00",
+          "tree_id": "aecab30882bcbc0a629b95155bbcfa6712461de4",
+          "url": "https://github.com/tsnlab/tickle/commit/d7a1ed90d02650102034d286ef675e4c4fd91724"
+        },
+        "date": 1789653773633,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
             "unit": "ms"
           },
           {
