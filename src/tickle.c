@@ -1305,6 +1305,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 // bug above: real tc/netem loss-injection runs recovering measurably worse than
 // p^(tt_RELIABLE_RETRY + 1) predicts for a single isolated loss.
 static void advance_ack_seq_no(struct tt_Subscriber* sub) {
+    uint32_t old_ack_seq_no = sub->ack_seq_no; // TEMPORARY diagnostic (see below)
     sub->ack_seq_no++;
     sub->received_bitmap >>= 1;
     while (sub->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
@@ -1312,6 +1313,16 @@ static void advance_ack_seq_no(struct tt_Subscriber* sub) {
         sub->ack_seq_no++;
     }
     sub->reliable_retry = 0;
+    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - only for a non-trivial
+    // jump (more than a plain single in-order advance), to see whether tickle.c's own watermark
+    // is *also* periodically stuck-then-jumping (matching perf_server.c's own expected_seq
+    // pattern - pointing at a genuinely slow retransmission) or advances smoothly the whole time
+    // (pointing at a delivery-order mismatch between tickle.c's watermark and when the
+    // application callback actually fires, instead).
+    if (sub->ack_seq_no - old_ack_seq_no > 1) {
+        TT_LOG_WARNING("advance_ack_seq_no: jumped %u -> %u (absorbed %u)", old_ack_seq_no, sub->ack_seq_no,
+                       sub->ack_seq_no - old_ack_seq_no - 1);
+    }
 }
 
 // Called only from acknack_retry()'s own give-up path, right after advance_ack_seq_no() - never
