@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789608440524,
+  "lastUpdate": 1789650180481,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -11668,6 +11668,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04486428571428571,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "25e57c243c03896a540ad5f5e142bda59012d3be",
+          "message": "Document the ACKNACK bitmap alignment bug fix in PLAN.md (Milestone 18)\n\nFollow-up note on the just-fixed watermark-advance/bitmap-realignment\nbug and the tc/netem loss-injection scenarios that found it, plus the\nconfirmed real-hardware numbers after the fix.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:01:50+09:00",
+          "tree_id": "cb7e18a214c426e3f488340631a7d0168973f12c",
+          "url": "https://github.com/tsnlab/tickle/commit/25e57c243c03896a540ad5f5e142bda59012d3be"
+        },
+        "date": 1789650178200,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04447285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.047527142857142865,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.047099999999999996,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.03355142857142857,
             "unit": "ms"
           }
         ]
