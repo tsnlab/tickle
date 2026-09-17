@@ -281,21 +281,24 @@ summarize() {
                 done
             done
             echo
-            # TEMPORARY (QoS roadmap #5 loss-injection investigation): raw sender (Publisher) log
-            # for the worst-case level, including process_acknack()'s own per-retransmit
-            # diagnostics (tickle.c) - remove once RELIABLE's own loss_pct is understood/fixed.
-            echo "### DEBUG: rpi#1 (Publisher) log, worst loss level"
+            # TEMPORARY (QoS roadmap #5 loss-injection investigation): the diagnostic lines only
+            # (not the whole log - a `tail -c` of the raw log was cutting off exactly the events
+            # under investigation, buried under a high volume of report()'s own once-a-second
+            # lines and other diagnostics earlier in the run) from both sides, worst loss level.
+            # process_acknack()'s own per-retransmit diagnostics run on the Publisher; acknack_
+            # retry()'s own give-up log, skip_unrecoverable_backlog()'s own diagnostic, and
+            # update_reliable_ack()'s own "gap too large to track" warning all run on the
+            # Subscriber only (tickle.c) - remove this whole block once loss_pct is understood/fixed.
+            echo "### DEBUG: rpi#1 (Publisher) diagnostic lines, worst loss level"
             echo '```'
-            tail -c 100000 "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_client.log" 2>/dev/null || true
+            grep -E 'Retransmitted seq_no|not found in reliable_cache|already retried' \
+                "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_client.log" 2>/dev/null | tail -300 || true
             echo '```'
             echo
-            # TEMPORARY (QoS roadmap #5 loss-injection investigation): same, but the receiver
-            # (Subscriber) side - acknack_retry()'s own give-up log and skip_unrecoverable_
-            # backlog()'s own diagnostic (tickle.c) only ever run here, not on the Publisher side
-            # dumped above.
-            echo "### DEBUG: rpi#2 (Subscriber) log, worst loss level"
+            echo "### DEBUG: rpi#2 (Subscriber) diagnostic lines, worst loss level"
             echo '```'
-            tail -c 100000 "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_server.log" 2>/dev/null || true
+            grep -E 'Giving up on a reliable sample|skip_unrecoverable_backlog|gap too large to track' \
+                "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_server.log" 2>/dev/null | tail -300 || true
             echo '```'
             echo
         fi
