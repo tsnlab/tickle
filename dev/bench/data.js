@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789654372952,
+  "lastUpdate": 1789654376085,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8826,6 +8826,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.452,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b2916d261253a4bab9e765db6659bbf5a847c6f9",
+          "message": "Summarize the diagnostic lines instead of dumping a tail of them\n\ntail -300 on the grep output made the previous commit's own worst-case-level\ndump look tail-concentrated regardless of the real distribution, since it\ncould only ever show the *last* 300 matches - no way to tell from that output\nalone whether the underlying problem was actually clustered near the end of\nthe run or spread throughout it. Compute counts and the full seq_no range\ninstead (grep -c, sort -n | sed -n '1p;$p'), plus a first-5/last-5 sample of\nthe actual lines - small, fixed-size CI output that still answers \"where do\nthese happen\" without truncation bias.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:10:20+09:00",
+          "tree_id": "451e725149f0079b6e5ee1d48fa0019ec85b14b8",
+          "url": "https://github.com/tsnlab/tickle/commit/b2916d261253a4bab9e765db6659bbf5a847c6f9"
+        },
+        "date": 1789654374899,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.608,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 900.953,
             "unit": "Mbps"
           }
         ]
