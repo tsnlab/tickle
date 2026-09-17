@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789652657865,
+  "lastUpdate": 1789652660849,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14455,6 +14455,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ca1ee779c9ae846393c8bf9ce14c6abf5035c4d7"
         },
         "date": 1789651980948,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "042dc75f6759a1ac097a0179cbc7d3ed66c14c6f",
+          "message": "Only bulk-skip unrecoverable backlog at give-up time, not on every arrival\n\nca1ee77 tried fast-forwarding update_reliable_ack() past unrecoverable gaps\nreactively, on every out-of-order arrival more than tt_MAX_RELIABLE_HISTORY\nahead of ack_seq_no. Real hardware CI confirmed this had no measurable\neffect (diagnostic counts stayed exactly 969/17 \"not found in cache\" vs\n\"retransmitted\", identical to before the fix): since both the incoming\nseq_no and the computed fast-forward target increase in lockstep as new\nmessages keep arriving, ack_seq_no ends up permanently pinned exactly\ntt_MAX_RELIABLE_HISTORY - 1 behind the latest arrival, with every new\nmessage re-triggering the same fast-forward and pre-empting ack_seq_no's\nown tt_RELIABLE_RETRY cycle before it ever gets a fair chance to resolve.\n\nMove the bulk-skip into a new skip_unrecoverable_backlog(), called only\nfrom acknack_retry()'s give-up branch after the current watermark's own\nretries are already exhausted. This never pre-empts an in-progress retry\ncycle - it only clears out backlog that's already hopeless by the time\ngive-up naturally happens.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:41:48+09:00",
+          "tree_id": "c7e8fb160f40bfbfd67cc9547ed15ccbc7d6bc82",
+          "url": "https://github.com/tsnlab/tickle/commit/042dc75f6759a1ac097a0179cbc7d3ed66c14c6f"
+        },
+        "date": 1789652659752,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
