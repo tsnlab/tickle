@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789651445506,
+  "lastUpdate": 1789651448777,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -13096,6 +13096,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046894073486328,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "edf7e9eb05c44467f1f0f972ba482d266a46293d",
+          "message": "Add temporary diagnostics for the remaining RELIABLE loss_pct gap\n\nReal loss-injection numbers are still far from the p^(tt_RELIABLE_RETRY\n+ 1) theoretical model even after the bitmap-alignment and retry-budget\nfixes, so this adds per-retransmit/give-up/evicted logging to\nprocess_acknack() and surfaces the Publisher's own raw log for the\nworst loss level in the job summary - to be removed once the remaining\ngap is actually understood.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:22:56+09:00",
+          "tree_id": "9e7c7ee58ac1eec440d63b512b1b534feaa6c083",
+          "url": "https://github.com/tsnlab/tickle/commit/edf7e9eb05c44467f1f0f972ba482d266a46293d"
+        },
+        "date": 1789651447650,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9902372360229492,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9887027740478516,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030456134251185825,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030438695635114397,
             "unit": "Mbit/s"
           }
         ]
