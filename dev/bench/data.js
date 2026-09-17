@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789650363408,
+  "lastUpdate": 1789650366624,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -13767,6 +13767,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.558,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "73318d0353f2df68a8ed424b56f7a478c52650d7",
+          "message": "Update PLAN.md's cited loss_pct numbers with the fully-fixed measurement\n\nThe previous note's numbers were from before perf_server.c's own\noverflow/finalize off-by-ones were also fixed. With both fixes landed\ntogether, the real improvement is far larger (10% loss: RELIABLE 1.6%\nvs BEST_EFFORT's 10.6%, not the earlier 4.3% reading).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:02:34+09:00",
+          "tree_id": "9e4417464f138c3003c67ed5b21131e282e8b06b",
+          "url": "https://github.com/tsnlab/tickle/commit/73318d0353f2df68a8ed424b56f7a478c52650d7"
+        },
+        "date": 1789650365526,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0.549,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0.557,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0.503,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.558,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0.504,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.561,
             "unit": "Mbps"
           }
         ]
