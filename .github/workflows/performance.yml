@@ -105,6 +105,14 @@ jobs:
       # since github-action-benchmark itself has no "skip if missing" input of its own. Each file
       # holds six named entries (BEST_EFFORT/RELIABLE x 1%/5%/10% loss) in one group/graph rather
       # than six separate ones - see run_perf.sh's own comment on why.
+      #
+      # Never gates the build (fail-on-alert: false, unlike the clean-link throughput group
+      # above): LOSS_TEST_INTERVAL_SEC's own send rate (run_perf.sh) is a deliberate methodology
+      # choice, not a stable target throughput to alert on regressions against - changing it (as
+      # this scenario's own history already did once, firehose -> 20ms-paced) makes the absolute
+      # number jump on purpose, which a 200%-regression alert can't tell apart from a real one.
+      # The number that actually matters here is the BEST_EFFORT-vs-RELIABLE comparison *within*
+      # one run (the job summary's own table), not this trend line's own slope.
       - name: Track loss-injection throughput history
         if: ${{ hashFiles('loss-throughput-benchmark.json') != '' }}
         uses: benchmark-action/github-action-benchmark@v1
@@ -116,8 +124,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           summary-always: true
-          fail-on-alert: true
-          alert-threshold: "200%"
+          fail-on-alert: false
 
       # One-way latency (perf_server.c's own new avg_latency_ms) is only as accurate as the two
       # Pis' clock sync (NTP) - see perf_server.c's own comment - so, like rtt jitter and reliable
