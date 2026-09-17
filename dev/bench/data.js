@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789688712826,
+  "lastUpdate": 1789688715917,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -21571,6 +21571,60 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/67da041654d20d5a288b5366062abdaf80602ad9"
         },
         "date": 1789688399870,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9d2fc373a2fc43ea8ce6cba78698d1aec32b3770",
+          "message": "Narrow the loss-injection send interval once more, 1ms -> 0.5ms\n\n20ms, 5ms, 2ms, and 1ms all landed RELIABLE's own loss_pct at the identical\n~0.1%, independent of both tc's own configured loss and this interval across\na 20x range - no longer explainable as the cache-eviction-vs-recovery-latency\nrace this constant was meant to tune (that theory predicted the number would\nmove as the window narrowed; it never has). A firehose send rate is known to\nbreak RELIABLE badly (this file's own original warning comment), so\nsomewhere between 1ms and \"as fast as poll() allows\" the mechanism must\nstill degrade - continuing the same halving approach to find where.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:42:29+09:00",
+          "tree_id": "4b817ef2a606aa8fb896b4b93f824ea0988dcf9b",
+          "url": "https://github.com/tsnlab/tickle/commit/9d2fc373a2fc43ea8ce6cba78698d1aec32b3770"
+        },
+        "date": 1789688714853,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
