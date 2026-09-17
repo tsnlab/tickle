@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789651985391,
+  "lastUpdate": 1789651988500,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -15105,6 +15105,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 6.897,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ca1ee779c9ae846393c8bf9ce14c6abf5035c4d7",
+          "message": "Fast-forward past unrecoverable gaps instead of creeping one at a time\n\nDiagnostic logging (previous commit) showed the real dominant bug: real\ntc/netem loss-injection runs built up backlogs of several dozen\nsequence numbers \"requested, not found in cache\" - not because\nretransmission was failing on isolated losses, but because a gap wider\nthan the Publisher's own reliable_cache depth could only ever shrink\none position per tt_RELIABLE_RETRY cycle (acknack_retry()'s give-up\npath). Every position beyond tt_MAX_RELIABLE_HISTORY behind the newest\nknown sample is *provably* already evicted (KEEP_LAST) the instant that\nsample is seen at all - nothing will ever un-evict it - yet the old\ncode spent a full retry cycle discovering that the slow way, one\nposition at a time, while real time (and the Publisher's own cache)\nkept moving on regardless. That backlog's own resulting ACKNACK/\nretransmit traffic likely added self-inflicted congestion on top of\nthe actual injected loss too.\n\nupdate_reliable_ack() now fast-forwards ack_seq_no straight to the\noldest still-plausibly-cached position the instant a sample that far\nahead arrives, in one step. New tests/test_reliable_pubsub.c case\nreproduces the shape directly (a single arrival tt_MAX_RELIABLE_HISTORY\n+ 5 ahead of the watermark) and checks the jump lands exactly on the\noldest recoverable position, not one creeping increment. Added a\n_Static_assert guarding the invariant this now relies on\n(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:30:30+09:00",
+          "tree_id": "a47d6ab2e7f63d17b2592a6d3ded9722777b49c7",
+          "url": "https://github.com/tsnlab/tickle/commit/ca1ee779c9ae846393c8bf9ce14c6abf5035c4d7"
+        },
+        "date": 1789651987411,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 13.516,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 16.673,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 16.644,
             "unit": "ms"
           }
         ]
