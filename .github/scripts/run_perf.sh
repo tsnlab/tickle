@@ -272,6 +272,14 @@ summarize() {
                 done
             done
             echo
+            # TEMPORARY (QoS roadmap #5 loss-injection investigation): raw sender (Publisher) log
+            # for the worst-case level, including process_acknack()'s own per-retransmit
+            # diagnostics (tickle.c) - remove once RELIABLE's own loss_pct is understood/fixed.
+            echo "### DEBUG: rpi#1 (Publisher) log, worst loss level"
+            echo '```'
+            tail -c 100000 "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_client.log" 2>/dev/null || true
+            echo '```'
+            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"

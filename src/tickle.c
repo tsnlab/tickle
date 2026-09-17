@@ -2264,12 +2264,18 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
         }
         uint32_t missing_seq_no = seq_no + (uint32_t)bit;
 
+        bool found = false;
         for (int i = 0; i < depth; i++) {
             struct tt_ReliableCacheEntry* cache_entry = &cache->entries[i];
             if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
                 continue;
             }
+            found = true;
             if (cache_entry->retry >= tt_RELIABLE_RETRY) {
+                // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - see
+                // run_perf.sh's own loss-injection scenario comment.
+                TT_LOG_WARNING("ACKNACK for seq_no %u already retried %d/%d times, giving up", missing_seq_no,
+                               cache_entry->retry, tt_RELIABLE_RETRY);
                 break; // give up on this one sample - the Subscriber's own retry cap will too
             }
 
@@ -2285,8 +2291,16 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
                 rollback(node, old_tx_tail);
             } else {
                 cache_entry->retry++;
+                // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation).
+                TT_LOG_WARNING("Retransmitted seq_no %u (attempt %d/%d)", missing_seq_no, cache_entry->retry,
+                               tt_RELIABLE_RETRY);
             }
             break;
+        }
+        if (!found) {
+            // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - requested but
+            // no longer cached (evicted by KEEP_LAST, or never cached at all e.g. a stale ack).
+            TT_LOG_WARNING("ACKNACK requested seq_no %u, not found in reliable_cache (evicted?)", missing_seq_no);
         }
     }
 
