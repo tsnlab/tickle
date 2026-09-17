@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789654057676,
+  "lastUpdate": 1789654060864,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -15199,6 +15199,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/d7a1ed90d02650102034d286ef675e4c4fd91724"
         },
         "date": 1789653788075,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4611ed14eee130270fdade42fdfad79a577e2def",
+          "message": "Grep the diagnostic lines instead of tail -c'ing the raw log\n\nThe previous commit's rpi#2 (Subscriber) log dump came back with none of the\ngive-up/skip diagnostics at all - just report()'s own once-a-second lines and\nthe final summary. tail -c 100000 was keeping only the tail of what turned out\nto be a much larger log file (both sides log a diagnostic line per ACKNACK\nbit, and there were nearly a thousand of those on the Publisher side alone\nlast run), so the actual events under investigation, which happen earlier in\nthe run, were already cut off before the file ever reached run_perf.sh's own\nLOG_DIR. Grep for the diagnostic lines by pattern instead - independent of how\nlarge the surrounding log is, and only what's actually needed for this\ninvestigation.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:04:58+09:00",
+          "tree_id": "d006cd8160feb87b1c3c7493c8daa43ec68ab19c",
+          "url": "https://github.com/tsnlab/tickle/commit/4611ed14eee130270fdade42fdfad79a577e2def"
+        },
+        "date": 1789654059754,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
