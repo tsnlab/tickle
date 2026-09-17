@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789652670724,
+  "lastUpdate": 1789653349485,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -12417,6 +12417,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.06083,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4748c1432ddbef452d1278cb26e0c30826b8154d",
+          "message": "Fix clang-tidy complexity, close a test-harness shutdown race dragging down RELIABLE's loss_pct\n\nprocess_acknack() tripped clang-tidy's cognitive-complexity threshold (26 > 25)\nonce the previous commit's TEMPORARY diagnostics were added, failing Check all.\nSplit the per-bit lookup/retry/retransmit chain into its own\nretransmit_reliable_sample() to bring it back under the threshold.\n\nSeparately, kept digging into why RELIABLE's loss_pct plateaued well above\np^(tt_RELIABLE_RETRY + 1) even after every previous bug fix: it landed on the\n*same* value (1.4%) at both 5% and 10% tc loss, which doesn't fit anything\nproportional to loss probability - it fits a fixed number of tail-end losses\nper run instead. Root cause was in the test harness, not tickle.c: perf_client\nexits (tt_Node_destroy()) the instant its -d duration elapses, and run_perf.sh\nsends the server SIGINT immediately after, with perf_server's own -W cooldown\ndefaulting to 0 - so any message lost in roughly the last RTT-plus-retry-budget\nof a run has no chance to recover: the Publisher is already gone to answer a\nlate ACKNACK, and the Subscriber gives up on it (or never gets to) before\nfinalize_gap_tracking() runs.\n\nFixes:\n- perf_client.c: stop sending immediately when a stop trigger fires, but keep\n  polling (and answering ACKNACKs) for RELIABLE_SHUTDOWN_GRACE_SEC more before\n  actually exiting - 0 for BEST_EFFORT, unchanged. print_summary()'s own\n  elapsed-time anchor moved to when sending stopped, not process exit, so this\n  doesn't dilute the reported avg Mbps.\n- run_perf.sh: pass perf_server's existing -W to the loss-injection scenarios\n  (LOSS_TEST_COOLDOWN_SEC, matching magnitude to the client's own grace) so the\n  server doesn't finalize a still-recoverable gap out from under a retransmit\n  that's still in flight.\n- Also extracted run_send_loop() out of perf_client's main() - the grace-period\n  bookkeeping alone tipped main() over the same clang-tidy threshold.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:54:36+09:00",
+          "tree_id": "a7a3cff7bae8902b0fce590dcd273e29d88795e9",
+          "url": "https://github.com/tsnlab/tickle/commit/4748c1432ddbef452d1278cb26e0c30826b8154d"
+        },
+        "date": 1789653347261,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04931571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04606285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.07664285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04720714285714286,
             "unit": "ms"
           }
         ]
