@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789655218709,
+  "lastUpdate": 1789655222056,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -17597,6 +17597,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 14.916,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "84e329a5714adf012fb1a69cc85a0fc88d7ac548",
+          "message": "Add TEMPORARY diagnostics for perf_server.c's own drop accounting\n\nThe bitmap-masking fix (previous commit) eliminated the \"not found\" spam\nentirely and confirmed every tracked RELIABLE gap is now resolving via\nsuccessful retransmission (0 give-ups, 0 skip_unrecoverable_backlog fires) -\nbut loss_pct barely moved (still ~0.8/1.2/1.4 at 1%/5%/10%). Since tickle.c's\nown mechanism isn't failing, the remaining loss must be coming from\nperf_server.c's own gap accounting (track_arrival()/finalize_gap_tracking()),\nwhich is independent of tickle.c and doesn't care *why* something never\narrived - including the original \"still recovering when the run ended\"\nshutdown-race concern the grace-period fix (a few commits back) was meant to\nclose.\n\nAdds a printf-based diagnostic (perf_server.c only has the public\ntt_log_set_level() API, not tickle.c's own internal TT_LOG_WARNING() macro)\nto both of perf_server.c's own drop paths - the overflow branch (a gap wider\nthan GAP_WINDOW_BITS, during the run) and finalize_gap_tracking() (run ended\nwith something still pending) - showing exactly which seq_no(s) get counted\nand by which path, plus a matching run_perf.sh dump.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:24:10+09:00",
+          "tree_id": "def1ddfdd05f09d8bfc7ced81515aec6c3b980b7",
+          "url": "https://github.com/tsnlab/tickle/commit/84e329a5714adf012fb1a69cc85a0fc88d7ac548"
+        },
+        "date": 1789655220889,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 17.629,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 18.112,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 18.064,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 19.309,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 18.472,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 21.047,
             "unit": "ms"
           }
         ]
