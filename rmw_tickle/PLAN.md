@@ -200,6 +200,59 @@ this feature. A new `loss-percent-benchmark.json`/"Track loss-injection loss_pct
 expected to be noisy run to run) tracks this comparison over time alongside the job summary's own
 per-push table.**
 
+**Second follow-up round: closing the gap to the theoretical model.** RTT is the retry interval,
+so with `tt_RELIABLE_RETRY = 3` (4 independent transmission attempts, since ACKNACKs travel
+`rpi#2`→`rpi#1` and aren't subject to the loss `tc`/`netem` injects only on `rpi#1`'s own egress)
+RELIABLE's true loss should be `p^4` - effectively 0 at every level `run_perf.sh` tests. The prior
+round's own 1.4-1.6% numbers were still far above that. Chased it through five more real bugs,
+each found by pushing real fixes to `main` and reading back real hardware CI results rather than
+reasoning from the code alone:
+1. A backlog-cascade bug: once a gap exceeded `tt_MAX_RELIABLE_HISTORY` (8), the give-up mechanism
+   could only advance `ack_seq_no` one position per `tt_RELIABLE_RETRY` cycle while new messages
+   kept arriving at roughly the same rate, so an initial small gap grew into an unbounded backlog
+   of positions already evicted from the Publisher's cache. A first fix attempt (fast-forwarding
+   reactively on every far-ahead arrival) measurably did nothing on real hardware - it just pinned
+   `ack_seq_no` exactly `tt_MAX_RELIABLE_HISTORY - 1` behind the latest arrival forever, pre-empting
+   its own retry cycle before it could resolve. The working fix moved the bulk-skip
+   (`skip_unrecoverable_backlog()`) to only ever run from `acknack_retry()`'s own give-up path,
+   after the current watermark's fair attempts were already exhausted - never reactively.
+2. `send_acknack()` built its wire bitmap as a bare `~received_bitmap`, inverting all
+   `tt_RELIABLE_BITMAP_BITS` (64) bits whenever only a few were set - requesting retransmission of
+   every position up to 63 ahead of `ack_seq_no` regardless of whether the Publisher had even sent
+   that far yet. The Publisher's cache lookup can't tell "evicted" from "never sent"; both looked
+   like `loss_pct`-relevant activity, and a real run showed ~4,000 such requests against only ~500
+   total messages sent. Fixed by masking the inverted bitmap to bits at or below the highest bit
+   actually confirmed received so far (new `highest_received_bit()`, shared with
+   `skip_unrecoverable_backlog()`, which already needed the identical scan).
+3. A test-harness shutdown race, not a TickLE-core bug: `perf_client.c` tore its node down the
+   instant its own `-d` duration elapsed, and `run_perf.sh` sent `perf_server` `SIGINT` immediately
+   after, with `perf_server.c`'s own `-W` cooldown defaulting to 0 - so a message lost in roughly
+   the last retry-budget-worth of a run had no time to recover: the Publisher was already gone to
+   answer a late ACKNACK. Fixed with a `RELIABLE_SHUTDOWN_GRACE_SEC` grace period on the client
+   (stop sending, keep answering ACKNACKs a while longer) and by actually passing `-W` to
+   `perf_server` from the loss-injection scenarios.
+4. The real dominant cause, found only after the above three landed and `loss_pct` barely moved:
+   `perf_server.c`'s own gap-tracking window (`GAP_WINDOW_BITS`, a plain `uint64_t`) gave a
+   recovering gap only ~1.3s before forcibly writing it off as dropped. A dedicated diagnostic (a
+   bitset marking every `seq` the application ever actually received, independent of the gap
+   tracker) proved every single sample this file ever counted as dropped *had* been delivered -
+   RELIABLE's own mechanism was never failing, just occasionally taking a few round-trips longer
+   than 64 messages to fully drain a burst of correlated loss (since every new DATA arrival
+   re-sends the Subscriber's own ACKNACK while any gap is open, not only its 5ms retry timer).
+   Widened the window to a 1024-message (16-word) array with matching bit-manipulation helpers -
+   longer than `PERF_DURATION_SEC` itself, so the window can no longer be the bottleneck.
+Confirmed on real hardware: RELIABLE's own `loss_pct` is now flat at ~0.2% across 1%/5%/10% tc
+loss - independent of loss probability, the signature of a fixed, rare artifact (most likely
+discovery-registration startup timing) rather than genuine unrecovered data loss, and as close to
+the `p^4` theoretical model as this rig's own test tooling can currently resolve. Every TEMPORARY
+diagnostic added during this investigation (extra logging in `tickle.c`'s RELIABLE path, the
+seen-seq bitset and `DIAG` printfs in `perf_server.c`, the worst-loss-level debug dump in
+`run_perf.sh`) was removed once it had served its purpose - the code that remains is the fixes
+above, nothing else. Verified the same way as every other change on this branch: `make
+test`/`make sanitize`/`platform/freertos` build/`clang-format`/`clang-tidy` locally before every
+push, real hardware CI (`Check all`/`Test all`/`Performance Test`/`rmw_tickle performance`) as the
+final authority.
+
 ## Build order
 
 0 and 1 in parallel → 2 → 3 and 4 (parallel) and 5 (parallel, only needs 2) → 6 (only needs 0) →
