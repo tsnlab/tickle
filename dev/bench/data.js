@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789650923611,
+  "lastUpdate": 1789651445506,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -11994,6 +11994,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04651857142857143,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "edf7e9eb05c44467f1f0f972ba482d266a46293d",
+          "message": "Add temporary diagnostics for the remaining RELIABLE loss_pct gap\n\nReal loss-injection numbers are still far from the p^(tt_RELIABLE_RETRY\n+ 1) theoretical model even after the bitmap-alignment and retry-budget\nfixes, so this adds per-retransmit/give-up/evicted logging to\nprocess_acknack() and surfaces the Publisher's own raw log for the\nworst loss level in the job summary - to be removed once the remaining\ngap is actually understood.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:22:56+09:00",
+          "tree_id": "9e7c7ee58ac1eec440d63b512b1b534feaa6c083",
+          "url": "https://github.com/tsnlab/tickle/commit/edf7e9eb05c44467f1f0f972ba482d266a46293d"
+        },
+        "date": 1789651442908,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.12101285714285713,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04835428571428572,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04770428571428571,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.049012857142857136,
             "unit": "ms"
           }
         ]
