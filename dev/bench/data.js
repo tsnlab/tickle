@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789689367497,
+  "lastUpdate": 1789689370633,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -23665,6 +23665,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 11.7,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "af35a7f1a16ada056fd33945b5f28c2d4124d295",
+          "message": "Interpolate the loss-injection send interval to ~80us (geometric mean of the bounded range)\n\nFirehose (0) confirmed the other end of the range: RELIABLE's own loss_pct\njumped to ~10-14% at every tc loss level (no longer differentiating by level\nat all) and ran worse than BEST_EFFORT's - pure ACKNACK/retransmit overhead\non an already-saturated link, per this file's own original warning. At\n~903 Mbps best-effort throughput and ~1500 bytes/message, that's roughly a\n13 microsecond effective interval. With 0.5ms confirmed clean (four halving\nsteps back) and ~13us confirmed broken, the working range is a ~37x span -\ntrying the geometric mean (~80us) next instead of continuing a one-sided\nhalving search now that both ends are bounded.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:53:16+09:00",
+          "tree_id": "342f98676c5a09f5ee2cb304d4bf3cb752fd0981",
+          "url": "https://github.com/tsnlab/tickle/commit/af35a7f1a16ada056fd33945b5f28c2d4124d295"
+        },
+        "date": 1789689369555,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0.9,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 3.8,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 8.8,
             "unit": "%"
           }
         ]
