@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789650180481,
+  "lastUpdate": 1789650183610,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -12638,6 +12638,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046894073486328,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "25e57c243c03896a540ad5f5e142bda59012d3be",
+          "message": "Document the ACKNACK bitmap alignment bug fix in PLAN.md (Milestone 18)\n\nFollow-up note on the just-fixed watermark-advance/bitmap-realignment\nbug and the tc/netem loss-injection scenarios that found it, plus the\nconfirmed real-hardware numbers after the fix.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T22:01:50+09:00",
+          "tree_id": "cb7e18a214c426e3f488340631a7d0168973f12c",
+          "url": "https://github.com/tsnlab/tickle/commit/25e57c243c03896a540ad5f5e142bda59012d3be"
+        },
+        "date": 1789650182491,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9903960909162249,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9904229300362724,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03041703360421317,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.00001239776611328125,
             "unit": "Mbit/s"
           }
         ]
