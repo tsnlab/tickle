@@ -30,23 +30,24 @@ PING_INTERVAL="${PING_INTERVAL:-0.1}"
 PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
 SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # The loss-injection scenarios' own send interval - deliberately *not* PERF_DURATION_SEC's own
-# "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use, and
-# deliberately faster than a first, more conservative 20ms attempt: tt_MAX_RELIABLE_HISTORY (8
-# samples, config.h) holding 8 * this interval worth of wall-clock time before an entry is
-# evicted, at 20ms that was a ~160ms window - far more slack than a single lost sample's own
-# worst-case recovery time (tt_RELIABLE_RETRY=3 retries * tt_CALL_RETRY_INTERVAL=5ms + a real RTT,
-# a few ms on this rig - perf_server.c's own avg_latency_ms - so ~20ms worst case), so RELIABLE's
-# own loss_pct came back indistinguishable from 0 at every tc loss level, 1% through 10% alike -
-# correct, but not useful for seeing the mechanism's own limit. 5ms narrows that cache window to
-# ~40ms: still comfortable margin for the isolated single losses that dominate at 1%/5% tc loss
-# (so those should still recover essentially perfectly), but tight enough that 10%'s own higher
-# chance of a second loss landing close behind the first should occasionally outrun it - showing a
-# little real, unrecovered loss at the highest level instead of a flat, uninformative 0 everywhere.
-# Also quadruples the sample count for the same PERF_DURATION_SEC (~2,000 messages instead of
-# ~500), which tightens BEST_EFFORT's own loss_pct around tc's actual configured percentage too
-# (binomial sampling noise shrinks with more trials) - it has no retry mechanism to blur the
-# picture, so it's the more direct check that tc/netem itself is behaving as configured.
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.005}"
+# "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use.
+# tt_MAX_RELIABLE_HISTORY (8 samples, config.h) holds 8 * this interval worth of wall-clock time
+# before an entry is evicted; a first attempt at 20ms (~160ms window) and a second at 5ms (~40ms)
+# both left RELIABLE's own loss_pct indistinguishable from 0 at every tc loss level, 1% through
+# 10% alike - detection is immediate (the very next packet's own arrival re-triggers
+# maybe_arm_acknack_retry(), not just the 5ms retry timer), so real recovery latency turned out to
+# be well under even the 5ms attempt's own conservative tt_RELIABLE_RETRY-based estimate. 2ms
+# narrows the window to ~16ms - close enough to a real recovery's own actual latency (RTT a few ms
+# each way plus one send interval's own detection delay) that 10%'s higher chance of a second loss
+# landing close behind the first should occasionally outrun it, while 1%/5%'s dominant single,
+# isolated losses should still mostly recover. Confirmed empirically on real hardware (this
+# comment's own history): reasoning about exact recovery-vs-eviction timing analytically wasn't
+# reliable enough on its own to land the right value in one attempt.
+# Also raises the sample count for the same PERF_DURATION_SEC well into the thousands, which
+# tightens BEST_EFFORT's own loss_pct around tc's actual configured percentage too (it has no
+# retry mechanism to blur the picture, so more samples is a direct accuracy win via less binomial
+# sampling noise) - confirmed at the 5ms step already (1%/5%/10% configured came back 1.0/5.3/9.8).
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.002}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
