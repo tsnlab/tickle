@@ -170,6 +170,11 @@ static uint32_t track_arrival(uint32_t seq) {
         if (behind <= GAP_WINDOW_BITS) {
             pending_bitmap &= ~(1ULL << (behind - 1));
         }
+        // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - does the missing
+        // seq_no genuinely never arrive at all (proving the loss is real, at the network/tickle.c
+        // level), or does it show up here late, after expected_seq already moved on without it
+        // (proving delivery itself is fine and the miscount is in this file's own accounting)?
+        printf("DIAG track_arrival late-arrival: seq=%u behind=%u expected_seq=%u\n", seq, behind, expected_seq);
         return 0;
     }
     if ((uint32_t)delta <= GAP_WINDOW_BITS) {

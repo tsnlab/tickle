@@ -324,6 +324,10 @@ summarize() {
             echo "### DEBUG: rpi#2 perf_server.c's own drop accounting, worst loss level"
             echo '```'
             grep -E 'DIAG track_arrival overflow|DIAG finalize_gap_tracking' "$worst_server" 2>/dev/null || true
+            echo
+            echo "late-arrivals with behind >= 30 (did the stuck seq_no ever actually show up, just late?):"
+            grep -P 'DIAG track_arrival late-arrival: seq=\d+ behind=([3-9]\d|\d{3,})\b' "$worst_server" 2>/dev/null || true
+            echo "total late-arrival diagnostics: $(grep -c 'DIAG track_arrival late-arrival' "$worst_server" 2>/dev/null || echo 0)"
             echo '```'
             echo
         fi
