@@ -32,24 +32,26 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # The loss-injection scenarios' own send interval - deliberately *not* PERF_DURATION_SEC's own
 # "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use.
 # tt_MAX_RELIABLE_HISTORY (8 samples, config.h) holds 8 * this interval worth of wall-clock time
-# before an entry is evicted; 20ms (~160ms window), 5ms (~40ms), and 2ms (~16ms) all landed
-# RELIABLE's own loss_pct at the exact same ~0.1% regardless of tc's own 1%/5%/10% - a flat,
-# loss-probability-independent number that small is almost certainly a fixed few-message artifact
-# (e.g. discovery-registration startup timing), not the cache-eviction-vs-recovery-latency race
-# this constant was meant to tune at all: real recovery, detected on the very next packet's own
-# arrival (maybe_arm_acknack_retry()), not just the 5ms retry timer, turned out to be fast enough
-# that even a 16ms window never became the bottleneck. 1ms (~8ms window) pushes past that - real
-# RTT (a few ms each way) plus one interval's own detection delay is now comparable to the window
-# itself, so a genuine cache-eviction race should finally start to show, more so at 10% than at
-# 1%/5%. Confirmed empirically on real hardware at each step (this comment's own history):
-# reasoning about exact recovery-vs-eviction timing analytically wasn't precise enough to land the
-# right value in one attempt, or apparently in three.
-# Also raises the sample count for the same PERF_DURATION_SEC into the thousands, which tightens
-# BEST_EFFORT's own loss_pct around tc's actual configured percentage too (it has no retry
-# mechanism to blur the picture, so more samples is a direct accuracy win via less binomial
-# sampling noise) - confirmed at 5ms and 2ms already (1%/5%/10% configured came back within ~0.5
-# points of the actual target both times).
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.001}"
+# before an entry is evicted, which was the working theory for what to tune here - but 20ms
+# (~160ms window), 5ms (~40ms), 2ms (~16ms), and 1ms (~8ms) all landed RELIABLE's own loss_pct at
+# the *exact same* ~0.1% regardless of tc's own 1%/5%/10%, across four send rates spanning a 20x
+# range. A number that flat, that consistently independent of both tc's own loss probability and
+# this interval, is no longer explainable as the cache-eviction-vs-recovery-latency race this
+# constant was meant to tune - it's some other fixed, small, roughly-constant-*fraction* source
+# (scales with message count, not a fixed few messages regardless of it - ruling out a one-off
+# startup race at a *fixed* absolute cost) that plain interval-narrowing hasn't touched at all.
+# Continuing to halve past the point where the last four attempts moved nothing might still find
+# where real eviction-race loss actually starts (a firehose send rate is *known* to break RELIABLE
+# badly per this comment's own original warning, so somewhere between 1ms and "as fast as poll()
+# allows" the mechanism must eventually degrade) - 0.5ms next, same empirical, one-step-at-a-time
+# approach as every prior step (this comment's own history): reasoning about exact recovery-vs-
+# eviction timing analytically hasn't landed the right value in any of the four attempts so far.
+# Separately (and unaffected by any of this): raises the sample count for the same
+# PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct around tc's
+# actual configured percentage too (it has no retry mechanism to blur the picture, so more samples
+# is a direct accuracy win via less binomial sampling noise) - confirmed at 5ms, 2ms, and 1ms
+# already (1%/5%/10% configured consistently comes back within ~0.5 points of the actual target).
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.0005}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
