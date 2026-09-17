@@ -1,6 +1,28 @@
 {
   "history": [
     {
+      "commit": "84e329a5714adf012fb1a69cc85a0fc88d7ac548",
+      "commit_short": "84e329a57",
+      "date": "2026-09-17T14:26Z",
+      "perf": {
+        "build": "pass",
+        "commit": "84e329a5714adf012fb1a69cc85a0fc88d7ac548",
+        "commit_short": "84e329a57",
+        "date": "2026-09-17T14:26Z",
+        "integration": "pass",
+        "loss_pct": 2,
+        "reliable_throughput_10pct_mbps": 0.509,
+        "reliable_throughput_1pct_mbps": 0.486,
+        "reliable_throughput_5pct_mbps": 0.505,
+        "rtt_avg_ms": 0.201,
+        "rtt_mdev_ms": 0.01,
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35233322408",
+        "smallmsg_rate_msgs_s": 463197,
+        "throughput_recv_mbps": 900.581,
+        "throughput_send_mbps": 937.715
+      }
+    },
+    {
       "buildtest": {
         "branch": "main",
         "commit": "fcace762594c59c99a23fdd239587094554db2a2",
@@ -1135,45 +1157,7 @@
         "throughput_recv_mbps": 885.195,
         "throughput_send_mbps": 937.675
       }
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "5f33a5db35dbe7809753d954f011a0e512e15580",
-        "commit_short": "5f33a5d",
-        "date": "2026-09-16T04:10Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35054078560"
-      },
-      "commit": "5f33a5db35dbe7809753d954f011a0e512e15580",
-      "commit_short": "5f33a5d",
-      "date": "2026-09-16T04:03Z",
-      "perf": {
-        "build": "pass",
-        "commit": "5f33a5db35dbe7809753d954f011a0e512e15580",
-        "commit_short": "5f33a5db3",
-        "date": "2026-09-16T04:03Z",
-        "integration": "pass",
-        "loss_pct": 2,
-        "rtt_avg_ms": 0.208,
-        "rtt_mdev_ms": 0.046,
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35054078499",
-        "smallmsg_rate_msgs_s": 500873,
-        "throughput_recv_mbps": 904.635,
-        "throughput_send_mbps": 937.586
-      }
     }
   ],
-  "updated": "2026-09-17 14:26 UTC"
+  "updated": "2026-09-17 14:27 UTC"
 }
