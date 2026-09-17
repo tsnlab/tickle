@@ -283,6 +283,43 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
     EXPECT_TRUE(sub.received_bitmap == 0);
 }
 
+// Regression test for a third real bug found via run_perf.sh's own tc/netem loss-injection
+// scenarios: a gap wider than tt_MAX_RELIABLE_HISTORY used to only ever shrink one position per
+// tt_RELIABLE_RETRY cycle (acknack_retry()'s own give-up path) even though every position beyond
+// the Publisher's own retained-cache depth is *provably* unrecoverable the instant a sample that
+// far ahead is seen at all - nothing will ever un-evict it. Left alone, real time (and the
+// Publisher's own cache) kept moving on regardless, so an initial small gap under real loss grew
+// into a many-dozen-sequence-number backlog of "requested, not found in cache" ACKNACKs instead
+// of resolving in a bounded number of retries. update_reliable_ack() must now fast-forward past
+// the unrecoverable range in a single step instead.
+static void test_reliable_subscribe_fast_forwards_past_unrecoverable_gap(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    EXPECT_EQ_U32(1, sub.ack_seq_no);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // seq_no 14 is (tt_MAX_RELIABLE_HISTORY + 5) ahead of the watermark (1) - seq_no 1..6 are
+    // guaranteed already evicted from any Publisher's reliable_cache by the time seq_no 14 exists
+    // at all (KEEP_LAST, depth <= tt_MAX_RELIABLE_HISTORY), only 7..13 could still plausibly be
+    // cached.
+    uint32_t tail = write_data(&node, 14, 1400, 14);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // Fast-forwarded straight to 14 - tt_MAX_RELIABLE_HISTORY + 1 = 7 (the oldest position that
+    // could plausibly still be recovered), not crept forward one at a time from 1.
+    EXPECT_EQ_U32((uint32_t)(14 - tt_MAX_RELIABLE_HISTORY + 1), sub.ack_seq_no);
+    // bit (tt_MAX_RELIABLE_HISTORY - 1): ack_seq_no + (tt_MAX_RELIABLE_HISTORY - 1) = 14, the
+    // sample that triggered this - still correctly tracked as received, not lost in the jump.
+    EXPECT_TRUE(sub.received_bitmap == (1ULL << (tt_MAX_RELIABLE_HISTORY - 1)));
+}
+
 // acknack_retry() must keep re-sending up to tt_RELIABLE_RETRY times, then give up: skip past
 // the unrecoverable hole (so an unrelated future gap can still be tracked) and stop rescheduling
 // itself - mirrors test_client_call.c's own test_call_retry_exhausted_reports_timeout.
@@ -427,6 +464,7 @@ int main(void) {
     test_reliable_subscribe_in_order_no_acknack();
     test_reliable_subscribe_gap_then_close();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
+    test_reliable_subscribe_fast_forwards_past_unrecoverable_gap();
     test_acknack_retry_exhausted_gives_up();
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();

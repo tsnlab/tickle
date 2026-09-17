@@ -36,6 +36,11 @@ _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallResponseHeader)) % 4 == 0,
 _Static_assert(offsetof(struct tt_Node, tx_buffer) % 4 == 0, "tx_buffer not 4-aligned in tt_Node");
 _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Node");
 #undef TT_FRAMING_HDR
+// update_reliable_ack()'s own fast-forward-past-the-unrecoverable-range logic (QoS roadmap #5)
+// always lands at offset == tt_MAX_RELIABLE_HISTORY - 1 afterwards, which must still fit
+// tt_Subscriber.received_bitmap's own tt_RELIABLE_BITMAP_BITS-wide window.
+_Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
+               "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
 
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
@@ -1325,12 +1330,30 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         advance_ack_seq_no(sub);
     } else {
         uint64_t offset = (uint64_t)seq_no - sub->ack_seq_no;
-        if (offset < tt_RELIABLE_BITMAP_BITS) {
-            sub->received_bitmap |= (1ULL << offset);
-        } else {
-            TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u), not requesting it",
-                           seq_no - sub->ack_seq_no, sub->ack_seq_no);
+        // Anything more than tt_MAX_RELIABLE_HISTORY behind this arrival is *guaranteed* already
+        // evicted from the Publisher's own KEEP_LAST reliable_cache (same compile-time constant
+        // on both sides, the largest depth any Publisher can ever be configured with) - no amount
+        // of retrying will ever recover it. Without this, ack_seq_no only crept forward one
+        // position per tt_RELIABLE_RETRY cycle (acknack_retry()'s own give-up path) even for
+        // positions already known-hopeless, and meanwhile real time (and the Publisher's own
+        // cache) kept moving on regardless - found via real tc/netem loss-injection runs
+        // building an *unbounded* backlog of "requested, not found in cache" (up to several dozen
+        // sequence numbers deep) instead of resolving each gap in a bounded number of retries,
+        // which likely also added self-inflicted congestion (repeatedly retrying/requesting
+        // things that could never succeed) on top of the actual injected loss. Skip the
+        // unrecoverable range in one step instead of one position at a time.
+        if (offset >= tt_MAX_RELIABLE_HISTORY) {
+            uint32_t new_ack_seq_no = seq_no - tt_MAX_RELIABLE_HISTORY + 1;
+            uint32_t skipped = new_ack_seq_no - sub->ack_seq_no;
+            sub->received_bitmap = skipped < tt_RELIABLE_BITMAP_BITS ? (sub->received_bitmap >> skipped) : 0;
+            sub->ack_seq_no = new_ack_seq_no;
+            sub->reliable_retry = 0; // whatever's now oldest is a different sample - fresh budget
+            offset = (uint64_t)seq_no - sub->ack_seq_no;
         }
+        // Always in range here: either the fast-forward above just bounded offset to exactly
+        // tt_MAX_RELIABLE_HISTORY - 1, or it was already < tt_MAX_RELIABLE_HISTORY to begin with -
+        // both provably < tt_RELIABLE_BITMAP_BITS (this file's own _Static_assert above).
+        sub->received_bitmap |= (1ULL << offset);
     }
 
     maybe_arm_acknack_retry(node, sub);
