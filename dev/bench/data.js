@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789688404947,
+  "lastUpdate": 1789688618278,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14717,6 +14717,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04569142857142857,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9d2fc373a2fc43ea8ce6cba78698d1aec32b3770",
+          "message": "Narrow the loss-injection send interval once more, 1ms -> 0.5ms\n\n20ms, 5ms, 2ms, and 1ms all landed RELIABLE's own loss_pct at the identical\n~0.1%, independent of both tc's own configured loss and this interval across\na 20x range - no longer explainable as the cache-eviction-vs-recovery-latency\nrace this constant was meant to tune (that theory predicted the number would\nmove as the window narrowed; it never has). A firehose send rate is known to\nbreak RELIABLE badly (this file's own original warning comment), so\nsomewhere between 1ms and \"as fast as poll() allows\" the mechanism must\nstill degrade - continuing the same halving approach to find where.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:42:29+09:00",
+          "tree_id": "4b817ef2a606aa8fb896b4b93f824ea0988dcf9b",
+          "url": "https://github.com/tsnlab/tickle/commit/9d2fc373a2fc43ea8ce6cba78698d1aec32b3770"
+        },
+        "date": 1789688616136,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04771428571428571,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.12538571428571427,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05050285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04408857142857143,
             "unit": "ms"
           }
         ]
