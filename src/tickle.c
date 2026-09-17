@@ -540,6 +540,7 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot);
 static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
 static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub);
 static void advance_ack_seq_no(struct tt_Subscriber* sub);
+static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* sub);
 static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port);
 
@@ -1222,13 +1223,15 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     if (++sub->reliable_retry > tt_RELIABLE_RETRY) {
         TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
         sub->reliable_acknack_scheduled = false;
-        sub->reliable_retry = 0;
         // Give up on ack_seq_no itself - the same "advance past it" advance_ack_seq_no() already
         // does for a real receipt, since from here on it makes no difference *why* nothing more
         // is waiting on it. A different, still-outstanding gap further ahead in the window (if
         // any) is untouched - it gets its own full tt_RELIABLE_RETRY budget against whatever
-        // ack_seq_no ends up being next, not a batch write-off in one go.
+        // ack_seq_no ends up being next (advance_ack_seq_no()'s own reset of reliable_retry is
+        // what actually grants that fresh budget) - and, unlike leaving it to the next DATA
+        // arrival to notice, maybe_arm_acknack_retry() below starts requesting it immediately.
         advance_ack_seq_no(sub);
+        maybe_arm_acknack_retry(node, sub);
         return;
     }
 
@@ -1252,12 +1255,51 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 // retransmission itself was failing, but because the ACKNACK requests it was reacting to were
 // silently asking for the wrong sequence numbers (already-received ones) while dropping the
 // genuinely still-missing one off the request entirely.
+//
+// Also resets reliable_retry to 0 unconditionally - whatever is now the oldest outstanding gap
+// (if any remain - received_bitmap may still be nonzero here) is a *different* sample than the
+// one reliable_retry was counting attempts against, and deserves its own full tt_RELIABLE_RETRY
+// budget, not whatever was left over. Before this reset lived here, two losses close enough
+// together that a second gap was still open when the first resolved would make the second one
+// inherit however many attempts the first had already used - found the same way as the bitmap
+// bug above: real tc/netem loss-injection runs recovering measurably worse than
+// p^(tt_RELIABLE_RETRY + 1) predicts for a single isolated loss.
 static void advance_ack_seq_no(struct tt_Subscriber* sub) {
     sub->ack_seq_no++;
     sub->received_bitmap >>= 1;
     while (sub->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
         sub->received_bitmap >>= 1;
         sub->ack_seq_no++;
+    }
+    sub->reliable_retry = 0;
+}
+
+// Shared by update_reliable_ack() (a new/changed gap) and acknack_retry()'s own give-up path (the
+// gap just written off might not have been the only one outstanding): unschedules cleanly once
+// nothing is left to ask for, or sends an ACKNACK for whatever's still missing and (re-)arms the
+// retry timer if one isn't already running. Splitting this out means a give-up no longer leaves a
+// remaining, different gap waiting on the next DATA arrival before anything asks for it again.
+static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* sub) {
+    if (sub->received_bitmap == 0) {
+        // No outstanding gap - a healthy stream needs no ACKNACK at all.
+        if (sub->reliable_acknack_scheduled) {
+            tt_Node_unschedule(node, acknack_retry, sub);
+            sub->reliable_acknack_scheduled = false;
+        }
+        sub->reliable_retry = 0;
+        return;
+    }
+
+    send_acknack(node, sub);
+
+    if (!sub->reliable_acknack_scheduled) {
+        sub->reliable_retry = 0;
+        uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
+        if (tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, sub)) {
+            sub->reliable_acknack_scheduled = true;
+        } else {
+            TT_LOG_ERROR("Cannot schedule acknack_retry");
+        }
     }
 }
 
@@ -1291,27 +1333,7 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         }
     }
 
-    if (sub->received_bitmap == 0) {
-        // No outstanding gap - a healthy stream needs no ACKNACK at all.
-        if (sub->reliable_acknack_scheduled) {
-            tt_Node_unschedule(node, acknack_retry, sub);
-            sub->reliable_acknack_scheduled = false;
-        }
-        sub->reliable_retry = 0;
-        return;
-    }
-
-    send_acknack(node, sub);
-
-    if (!sub->reliable_acknack_scheduled) {
-        sub->reliable_retry = 0;
-        uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
-        if (tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, sub)) {
-            sub->reliable_acknack_scheduled = true;
-        } else {
-            TT_LOG_ERROR("Cannot schedule acknack_retry");
-        }
-    }
+    maybe_arm_acknack_retry(node, sub);
 }
 
 // Encodes one UpdateEntity per non-NULL endpoint, up to UINT8_MAX of them. Returns the number

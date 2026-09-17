@@ -315,6 +315,57 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     EXPECT_EQ_U32(7, sub.ack_seq_no); // skipped past seq_no 5, absorbed the already-known 6 too
 }
 
+// Regression test for a second real bug found via run_perf.sh's own tc/netem loss-injection
+// scenarios: reliable_retry used to be one counter shared across a whole "gap episode" (from the
+// first out-of-order arrival until received_bitmap fully clears), so a *different*, still-
+// outstanding gap inherited however many attempts an earlier one in the same episode had already
+// used, instead of its own full tt_RELIABLE_RETRY budget. Two losses close enough together that a
+// second gap was still open when the first resolved would then get written off far sooner than
+// intended - measurably raising real-world loss_pct above what p^(tt_RELIABLE_RETRY + 1) predicts
+// for isolated losses. Reproduces the exact shape: burn part of the budget on the *older* gap,
+// let it resolve while a *different* one remains, and check the survivor still gets a full,
+// independent budget.
+static void test_acknack_retry_budget_resets_for_next_gap(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1); // in order
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, sub.ack_seq_no);
+
+    tail = write_data(&node, 4, 400, 4); // seq_no 2, 3 missing - opens the first gap
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(sub.reliable_acknack_scheduled);
+
+    acknack_retry(&node, tt_get_ns(), &sub); // burn 2 of the 3 retries on seq_no 2's own gap
+    acknack_retry(&node, tt_get_ns(), &sub);
+    EXPECT_EQ_U32(2, (uint32_t)sub.reliable_retry);
+
+    tail = write_data(&node, 2, 200, 2); // seq_no 2 recovers - a *different* gap (seq_no 3) remains
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, sub.ack_seq_no);      // now waiting on 3, not 2
+    EXPECT_TRUE(sub.received_bitmap != 0); // still a gap (3 missing, 4 already in)
+    // Without the fix, this would read 2 (inherited from seq_no 2's own already-used attempts)
+    // instead of a fresh budget for the new watermark.
+    EXPECT_EQ_U32(0, (uint32_t)sub.reliable_retry);
+
+    // seq_no 3's own gap must get a full, independent tt_RELIABLE_RETRY budget.
+    for (int i = 0; i < tt_RELIABLE_RETRY; i++) {
+        acknack_retry(&node, tt_get_ns(), &sub);
+        EXPECT_TRUE(sub.reliable_acknack_scheduled); // not given up yet
+    }
+    acknack_retry(&node, tt_get_ns(), &sub); // exceeds the cap now
+    EXPECT_TRUE(!sub.reliable_acknack_scheduled);
+}
+
 // An incoming ACKNACK requesting a seq_no still in a reliable Publisher's cache must be
 // retransmitted, unicast straight back to whoever sent the ACKNACK.
 static void test_process_acknack_retransmits_cached_sample(void) {
@@ -377,6 +428,7 @@ int main(void) {
     test_reliable_subscribe_gap_then_close();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
+    test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();
     test_process_acknack_ignored_for_besteffort_publisher();
 
