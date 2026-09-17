@@ -142,6 +142,25 @@ jobs:
           summary-always: true
           fail-on-alert: false
 
+      # The most direct evidence QoS roadmap #5 (RELIABILITY) actually works: BEST_EFFORT's own
+      # loss_pct vs RELIABLE's, side by side at each injected loss level. Never gates the build -
+      # loss_pct here is perf_server.c's own measured count over a modest (~500 message) sample at
+      # LOSS_TEST_INTERVAL_SEC's own pacing, so run-to-run variance against tc/netem's own random
+      # per-packet drops is expected and shouldn't fail a push on its own, same reasoning as
+      # reliable loss_pct/latency jitter above.
+      - name: Track loss-injection loss_pct history
+        if: ${{ hashFiles('loss-percent-benchmark.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Loss under packet loss (BEST_EFFORT vs RELIABLE)
+          tool: customSmallerIsBetter
+          output-file-path: loss-percent-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+
       # run_perf.sh writes perf-frag.json (Raspberry Pi build/test outcome + the measured
       # numbers) even when it aborts early; hand it to the publish job below.
       - name: Upload dashboard fragment

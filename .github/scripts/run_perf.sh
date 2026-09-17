@@ -362,21 +362,27 @@ EOF
     # rather than one file per level, so they render as one graph with six lines instead of six
     # separate graphs.
     if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
-        local throughput_entries="" latency_entries=""
+        local throughput_entries="" latency_entries="" percent_entries=""
         for pct in $LOSS_LEVELS_PCT; do
             for mode in besteffort reliable; do
                 local log="$LOG_DIR/loss${pct}_${mode}_server.log"
-                local mbps lat
+                local mbps lat lp
                 mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$log" 2>/dev/null | tail -1 | tr -d ',' || true)
                 lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
+                lp=$(grep -oP 'loss_pct=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
                 [ -n "$throughput_entries" ] && throughput_entries="$throughput_entries,"
                 throughput_entries="$throughput_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"Mbps\", \"value\": ${mbps:-0}}"
                 [ -n "$latency_entries" ] && latency_entries="$latency_entries,"
                 latency_entries="$latency_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"ms\", \"value\": ${lat:-0}}"
+                [ -n "$percent_entries" ] && percent_entries="$percent_entries,"
+                percent_entries="$percent_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"%\", \"value\": ${lp:-0}}"
             done
         done
         printf '[%s]\n' "$throughput_entries" > loss-throughput-benchmark.json
         printf '[%s]\n' "$latency_entries" > loss-latency-benchmark.json
+        # The most direct evidence of QoS roadmap #5 actually working: BEST_EFFORT's own loss_pct
+        # vs RELIABLE's, side by side at each injected loss level, tracked over time.
+        printf '[%s]\n' "$percent_entries" > loss-percent-benchmark.json
     fi
 }
 

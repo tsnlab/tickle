@@ -75,6 +75,23 @@ static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* p
 
 static bool have_first = false;
 static uint32_t expected_seq = 0;
+// A forward gap used to be counted as dropped the instant it was skipped over, which never gave
+// a RELIABLE Publisher/Subscriber's own retransmission (QoS roadmap #5) any chance to actually
+// land before being written off - every recovered sample still counted once, permanently, making
+// RELIABLE's own reported loss_pct look barely better (once its earlier ~100%-from-underflow bug
+// was fixed) than BEST_EFFORT's, when the real recovery rate on this rig's own real hardware
+// (RTT far under tt_RELIABLE_DEADLINE's own auto retry interval, tt_MAX_RELIABLE_HISTORY=8 comfortably
+// covering it at the 20ms/msg pacing run_perf.sh's loss scenarios use) turned out to be far higher.
+// pending_bitmap below defers that judgment instead - bit j set: (expected_seq + 1 + j) has
+// already been received, out of order ahead of the watermark. The same problem, and the same
+// underlying fix (an update advancing the watermark must also realign the bitmap - see
+// track_arrival()'s own comment), as tt_Subscriber's own ack_seq_no/received_bitmap tracking
+// (tickle.c) - but a deliberately different bit-to-sequence-number offset (this file's own "+1+j"
+// vs. tickle.c's "+j"): tickle.c's has to match tt_AckNackHeader's own wire format exactly for a
+// trivial `~received_bitmap` inversion to stay correct; this one is purely an in-process counter
+// with no wire encoding step, so it keeps its own original, simpler-to-derive convention instead.
+#define GAP_WINDOW_BITS 64
+static uint64_t pending_bitmap = 0;
 static uint64_t first_recv_time = 0; // ns timestamp of the first real message - anchors warm-up,
                                      // not this process's own start_time (see this file's own
                                      // comment: perf_server's -d intentionally runs longer than
@@ -114,6 +131,94 @@ static uint64_t latency_count = 0;
 static uint64_t latency_min_ns = UINT64_MAX;
 static uint64_t latency_max_ns = 0;
 
+// Tracks one arrival's effect on expected_seq/pending_bitmap, deferring a forward gap's "is this
+// really lost" judgment for up to GAP_WINDOW_BITS more messages instead of counting it the instant
+// it's skipped over. Returns how many messages should now count as permanently, newly dropped - 0
+// most of the time; a gap only resolves to a real drop once it falls out the far end of the
+// window, either right here (the overflow branch) or in finalize_gap_tracking() at the very end
+// of the run.
+static uint32_t track_arrival(uint32_t seq) {
+    if (!have_first) {
+        expected_seq = seq + 1;
+        return 0;
+    }
+
+    int32_t delta = (int32_t)(seq - expected_seq);
+    if (delta == 0) {
+        expected_seq++;
+        // Realign: bit j must always mean "received(expected_seq + j)", including j=0 - so this
+        // needs its own unconditional shift right here, not only inside the while loop below.
+        // Missing this shift is exactly the bug tt_Subscriber's own update_reliable_ack()
+        // (tickle.c) had until this same run_perf.sh loss-injection scenario surfaced it: every
+        // bit still tracking a *different*, still-outstanding gap silently drifted by one
+        // position the moment any earlier gap got filled this way, without ever crashing or
+        // erroring - just quietly asking for (or reporting on) the wrong sequence number.
+        pending_bitmap >>= 1;
+        while (pending_bitmap & 1) { // absorb whatever out-of-order run already follows it
+            pending_bitmap >>= 1;
+            expected_seq++;
+        }
+        return 0;
+    }
+    if (delta < 0) {
+        // A late arrival behind the current watermark - almost always a RELIABLE retransmission
+        // that successfully recovered an earlier gap. Clear its pending bit (it turned out not to
+        // be lost after all) rather than rewinding expected_seq or counting it again - the same
+        // underflow-avoidance reasoning this function's own predecessor already needed, just
+        // folded into the windowed bitmap instead of a one-shot decision.
+        uint32_t behind = (uint32_t)(-delta);
+        if (behind <= GAP_WINDOW_BITS) {
+            pending_bitmap &= ~(1ULL << (behind - 1));
+        }
+        return 0;
+    }
+    if ((uint32_t)delta <= GAP_WINDOW_BITS) {
+        pending_bitmap |= (1ULL << ((uint32_t)delta - 1)); // deferred - might still be retransmitted
+        return 0;
+    }
+
+    // Gap wider than the tracking window - give up on it immediately rather than sliding the
+    // window bit by bit. Realistically never hit at this rig's own loss rates/message sizes:
+    // GAP_WINDOW_BITS is already far more slack than RELIABLE's own tt_MAX_RELIABLE_HISTORY (8)
+    // or retry budget could ever fill. `delta` values are missing - expected_seq itself plus the
+    // delta-1 that follow it up to (but not including) seq, which just arrived - and
+    // expected_seq itself is never covered by any bit (bit 0 means expected_seq+1, not
+    // expected_seq), so no adjustment for it is needed here the way finalize_gap_tracking() below
+    // needs one.
+    uint32_t dropped_now = (uint32_t)delta;
+    for (int i = 0; i < GAP_WINDOW_BITS; i++) {
+        if (pending_bitmap & (1ULL << i)) {
+            dropped_now--; // already confirmed received - don't also call it dropped
+        }
+    }
+    pending_bitmap = 0;
+    expected_seq = seq + 1;
+    return dropped_now;
+}
+
+// Called once, from print_summary() - anything still waiting in the window when the run ends (no
+// more data coming to either confirm or resolve it) is now given up on for good.
+static uint32_t finalize_gap_tracking(void) {
+    if (pending_bitmap == 0) {
+        return 0;
+    }
+    // expected_seq itself is a confirmed-missing slot whenever anything is pending ahead of it
+    // (that's exactly what a nonzero pending_bitmap here means) - it's never covered by a bit of
+    // its own (bit 0 means expected_seq+1), so it needs its own explicit +1.
+    uint32_t dropped_now = 1;
+    int highest = GAP_WINDOW_BITS - 1;
+    while (highest >= 0 && !((pending_bitmap >> highest) & 1)) {
+        highest--;
+    }
+    for (int i = 0; i <= highest; i++) {
+        if (!((pending_bitmap >> i) & 1)) {
+            dropped_now++;
+        }
+    }
+    pending_bitmap = 0;
+    return dropped_now;
+}
+
 static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, struct BulkData* data) {
     (void)seq_no; // truncated to 16 bits by the framework; data->seq is the real 32-bit one
 
@@ -131,23 +236,7 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
         }
     }
 
-    // A forward jump (seq_delta > 0) means seq_delta messages between the old expected_seq and
-    // this one were never seen (yet) - a real best-effort drop, or one a RELIABLE Publisher/
-    // Subscriber (QoS roadmap #5) hasn't retransmitted yet. A *backward* one (seq_delta < 0) is a
-    // late arrival behind the current watermark - almost always a RELIABLE retransmission that
-    // successfully recovered an earlier gap - not a new drop, and must not rewind expected_seq:
-    // counting it again, or letting expected_seq regress, is what used to turn one recovered
-    // sample into a spurious multi-billion-message "gap" (plain unsigned data->seq - expected_seq
-    // underflowing) the instant RELIABLE's own reordering made a backward jump possible at all -
-    // found via run_perf.sh's real tc/netem loss-injection scenarios reporting ~100% loss_pct on
-    // *every* RELIABLE run regardless of actual loss. int32_t's own wraparound-correct
-    // subtraction (not a plain data->seq != expected_seq check) is what tells the two apart,
-    // since data->seq itself can wrap past UINT32_MAX too.
-    int32_t seq_delta = have_first ? (int32_t)(data->seq - expected_seq) : 0;
-    uint32_t gap_count = seq_delta > 0 ? (uint32_t)seq_delta : 0;
-    if (!have_first || seq_delta >= 0) {
-        expected_seq = data->seq + 1;
-    }
+    uint32_t gap_count = track_arrival(data->seq);
     have_first = true;
 
     interval_received_msgs++;
@@ -226,6 +315,10 @@ static void print_summary(uint64_t start_time) {
     uint64_t window_start = have_first ? first_recv_time + (uint64_t)(warmup_s * (double)tt_SECOND) : start_time;
     uint64_t window_end = stopping ? cooldown_start : tt_get_ns();
     double elapsed_s = window_end > window_start ? (double)(window_end - window_start) / (double)tt_SECOND : 0.0;
+
+    // Nothing more is coming now - anything track_arrival() was still deferring judgment on (a
+    // gap that might yet have been a RELIABLE retransmission still in flight) is given up on.
+    total_dropped += finalize_gap_tracking();
 
     double megabytes = (double)total_received_bytes / bytes_per_mb;
     double avg_mbps = elapsed_s > 0.0 ? ((double)total_received_bytes * 8) / bytes_per_mb / elapsed_s : 0.0;
