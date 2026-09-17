@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789603923414,
+  "lastUpdate": 1789603926492,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -12773,6 +12773,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 680.357,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6a88de084e4165766a230cc6de2e4f6aa0741c42",
+          "message": "Pace loss-injection scenarios at 20ms/msg instead of firehose rate\n\nAt perf_client's firehose default (-i 0, as fast as poll() allows),\ntt_MAX_RELIABLE_HISTORY's 8-sample retained cache gets overwritten many\ntimes over before an ACKNACK round trip can complete, so a NACKed sample\nis almost always already evicted by the time a retry asks for it -\nRELIABLE's own retransmission never gets a real chance to recover\nanything. Confirmed on real hardware: the previous firehose-rate version\nof this scenario reported RELIABLE's own loss_pct *higher* than\nBEST_EFFORT's at every loss level, not lower.\n\nNew LOSS_TEST_INTERVAL_SEC (default 0.02s) paces just these scenarios -\ncomfortably longer than this rig's own one-way latency (a few ms,\nperf_server.c's own avg_latency_ms) - leaving the clean-link\nthroughput/reliable scenarios at their existing firehose rate, since\nthey're about maximum throughput, not recovery behavior.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T09:09:35+09:00",
+          "tree_id": "8c034d993b8d4f93880c5562fc9978ba2ec7b657",
+          "url": "https://github.com/tsnlab/tickle/commit/6a88de084e4165766a230cc6de2e4f6aa0741c42"
+        },
+        "date": 1789603925337,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0.542,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 1.329,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0.511,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 1.197,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0.493,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 1.099,
             "unit": "Mbps"
           }
         ]
