@@ -281,59 +281,6 @@ summarize() {
                 done
             done
             echo
-            # TEMPORARY (QoS roadmap #5 loss-injection investigation): the diagnostic lines only
-            # (not the whole log - a `tail -c` of the raw log was cutting off exactly the events
-            # under investigation, buried under a high volume of report()'s own once-a-second
-            # lines and other diagnostics earlier in the run) from both sides, worst loss level.
-            # process_acknack()'s own per-retransmit diagnostics run on the Publisher; acknack_
-            # retry()'s own give-up log, skip_unrecoverable_backlog()'s own diagnostic, and
-            # update_reliable_ack()'s own "gap too large to track" warning all run on the
-            # Subscriber only (tickle.c) - remove this whole block once loss_pct is understood/fixed.
-            local worst_client="$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_client.log"
-            local worst_server="$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_server.log"
-            echo "### DEBUG: rpi#1 (Publisher) diagnostic summary, worst loss level"
-            echo '```'
-            echo "Retransmitted seq_no: $(grep -c 'Retransmitted seq_no' "$worst_client" 2>/dev/null || echo 0)"
-            echo "not found in reliable_cache: $(grep -c 'not found in reliable_cache' "$worst_client" 2>/dev/null || echo 0)"
-            echo "already retried (Publisher gave up): $(grep -c 'already retried' "$worst_client" 2>/dev/null || echo 0)"
-            echo "seq_no range of 'not found': $(grep -oP 'not found in reliable_cache.*|ACKNACK requested seq_no \K[0-9]+' "$worst_client" 2>/dev/null | sort -n | sed -n '1p;$p' | tr '\n' ' ')"
-            echo "first 5 'not found' lines:"
-            grep 'not found in reliable_cache' "$worst_client" 2>/dev/null | head -5 || true
-            echo "last 5 'not found' lines:"
-            grep 'not found in reliable_cache' "$worst_client" 2>/dev/null | tail -5 || true
-            echo '```'
-            echo
-            echo "### DEBUG: rpi#2 (Subscriber) diagnostic summary, worst loss level"
-            echo '```'
-            echo "Giving up on a reliable sample: $(grep -c 'Giving up on a reliable sample' "$worst_server" 2>/dev/null || echo 0)"
-            echo "skip_unrecoverable_backlog fired: $(grep -c 'skip_unrecoverable_backlog:' "$worst_server" 2>/dev/null || echo 0)"
-            echo "gap too large to track: $(grep -c 'gap too large to track' "$worst_server" 2>/dev/null || echo 0)"
-            echo "no matching subscriber endpoint (silent drop before delivery): $(grep -c 'no matching subscriber endpoint' "$worst_server" 2>/dev/null || echo 0)"
-            grep 'no matching subscriber endpoint' "$worst_server" 2>/dev/null | head -10 || true
-            echo "advance_ack_seq_no jumps (tickle.c's own watermark, not perf_server.c's expected_seq):"
-            grep 'advance_ack_seq_no: jumped' "$worst_server" 2>/dev/null || true
-            echo "all skip_unrecoverable_backlog lines:"
-            grep 'skip_unrecoverable_backlog:' "$worst_server" 2>/dev/null || true
-            echo "first 5 'gap too large to track' lines:"
-            grep 'gap too large to track' "$worst_server" 2>/dev/null | head -5 || true
-            echo "last 5 'gap too large to track' lines:"
-            grep 'gap too large to track' "$worst_server" 2>/dev/null | tail -5 || true
-            echo '```'
-            echo
-            # TEMPORARY (QoS roadmap #5 loss-injection investigation): perf_server.c's own gap
-            # tracking (track_arrival()/finalize_gap_tracking(), independent of tickle.c's own
-            # RELIABLE mechanism) - which seq_no(s) it actually counted as dropped, and whether
-            # that happened via the overflow branch (during the run) or finalize (run ended with
-            # something still pending, unresolved).
-            echo "### DEBUG: rpi#2 perf_server.c's own drop accounting, worst loss level"
-            echo '```'
-            grep -E 'DIAG track_arrival overflow|DIAG finalize_gap_tracking' "$worst_server" 2>/dev/null || true
-            echo
-            echo "late-arrivals with behind >= 30 (did the stuck seq_no ever actually show up, just late?):"
-            grep -P 'DIAG track_arrival late-arrival: seq=\d+ behind=([3-9]\d|\d{3,})\b' "$worst_server" 2>/dev/null || true
-            echo "total late-arrival diagnostics: $(grep -c 'DIAG track_arrival late-arrival' "$worst_server" 2>/dev/null || echo 0)"
-            echo '```'
-            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"

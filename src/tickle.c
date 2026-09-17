@@ -1305,7 +1305,6 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 // bug above: real tc/netem loss-injection runs recovering measurably worse than
 // p^(tt_RELIABLE_RETRY + 1) predicts for a single isolated loss.
 static void advance_ack_seq_no(struct tt_Subscriber* sub) {
-    uint32_t old_ack_seq_no = sub->ack_seq_no; // TEMPORARY diagnostic (see below)
     sub->ack_seq_no++;
     sub->received_bitmap >>= 1;
     while (sub->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
@@ -1313,16 +1312,6 @@ static void advance_ack_seq_no(struct tt_Subscriber* sub) {
         sub->ack_seq_no++;
     }
     sub->reliable_retry = 0;
-    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - only for a non-trivial
-    // jump (more than a plain single in-order advance), to see whether tickle.c's own watermark
-    // is *also* periodically stuck-then-jumping (matching perf_server.c's own expected_seq
-    // pattern - pointing at a genuinely slow retransmission) or advances smoothly the whole time
-    // (pointing at a delivery-order mismatch between tickle.c's watermark and when the
-    // application callback actually fires, instead).
-    if (sub->ack_seq_no - old_ack_seq_no > 1) {
-        TT_LOG_WARNING("advance_ack_seq_no: jumped %u -> %u (absorbed %u)", old_ack_seq_no, sub->ack_seq_no,
-                       sub->ack_seq_no - old_ack_seq_no - 1);
-    }
 }
 
 // Called only from acknack_retry()'s own give-up path, right after advance_ack_seq_no() - never
@@ -1348,7 +1337,6 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
         return; // still within a plausibly-recoverable window - let it resolve normally
     }
 
-    uint32_t old_ack_seq_no = sub->ack_seq_no; // TEMPORARY diagnostic (see below)
     uint32_t new_ack_seq_no = highest_seq_no - tt_MAX_RELIABLE_HISTORY + 1;
     uint32_t skipped = new_ack_seq_no - sub->ack_seq_no;
     sub->received_bitmap = skipped < tt_RELIABLE_BITMAP_BITS ? (sub->received_bitmap >> skipped) : 0;
@@ -1357,9 +1345,6 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
         sub->received_bitmap >>= 1;
         sub->ack_seq_no++;
     }
-    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation).
-    TT_LOG_WARNING("skip_unrecoverable_backlog: %u -> %u (highest known %u)", old_ack_seq_no, sub->ack_seq_no,
-                   highest_seq_no);
 }
 
 // Shared by update_reliable_ack() (a new/changed gap) and acknack_retry()'s own give-up path (the
@@ -1759,12 +1744,6 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id);
     if (endpoint == NULL) {
-        // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - a completely
-        // silent drop otherwise: no callback, no update_reliable_ack(), no log. Checking whether
-        // this is why a RELIABLE gap's data never reaches the application even though tickle.c's
-        // own retransmit/ack bookkeeping (process_acknack(), acknack_retry()) reports success.
-        TT_LOG_WARNING("process_data: no matching subscriber endpoint for endpoint_id %08x, seq_no %u (dropped)",
-                       endpoint_id, seq_no);
         return true;
     }
 
@@ -2325,50 +2304,6 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
     return true;
 }
 
-// Retransmits missing_seq_no straight back to target if it's still in cache (KEEP_LAST, depth
-// entries) and hasn't already been retried past tt_RELIABLE_RETRY times. Split out of
-// process_acknack() below purely to keep that function's own cognitive complexity under
-// clang-tidy's threshold - the per-bit ACKNACK loop plus this lookup/retry/retransmit chain
-// together tripped it once the TEMPORARY diagnostics (QoS roadmap #5 loss-injection
-// investigation) were added. Returns whether missing_seq_no was found in the cache at all
-// (regardless of whether the retry cap then stopped an actual resend) - process_acknack()'s own
-// "not found" diagnostic depends on that distinction, not just "was anything sent".
-static bool retransmit_reliable_sample(struct tt_Node* node, struct tt_ReliableCache* cache, uint16_t depth,
-                                       uint32_t missing_seq_no, struct tt_Peer* target) {
-    for (int i = 0; i < depth; i++) {
-        struct tt_ReliableCacheEntry* cache_entry = &cache->entries[i];
-        if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
-            continue;
-        }
-        if (cache_entry->retry >= tt_RELIABLE_RETRY) {
-            // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - see
-            // run_perf.sh's own loss-injection scenario comment.
-            TT_LOG_WARNING("ACKNACK for seq_no %u already retried %d/%d times, giving up", missing_seq_no,
-                           cache_entry->retry, tt_RELIABLE_RETRY);
-            return true; // give up on this one sample - the Subscriber's own retry cap will too
-        }
-
-        uint32_t old_tx_tail = node->tx_tail;
-        void* buf = encode(node, cache_entry->len);
-        if (buf == NULL) {
-            TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
-            rollback(node, old_tx_tail);
-            return true;
-        }
-        _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
-        if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
-            rollback(node, old_tx_tail);
-        } else {
-            cache_entry->retry++;
-            // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation).
-            TT_LOG_WARNING("Retransmitted seq_no %u (attempt %d/%d)", missing_seq_no, cache_entry->retry,
-                           tt_RELIABLE_RETRY);
-        }
-        return true;
-    }
-    return false;
-}
-
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
 // arrives here at whichever local Publisher it targets. Retransmits, straight back to the
 // sender, whichever requested (bitmap bit set) samples are still in that Publisher's own
@@ -2410,10 +2345,30 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
             continue;
         }
         uint32_t missing_seq_no = seq_no + (uint32_t)bit;
-        if (!retransmit_reliable_sample(node, cache, depth, missing_seq_no, &target)) {
-            // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - requested but
-            // no longer cached (evicted by KEEP_LAST, or never cached at all e.g. a stale ack).
-            TT_LOG_WARNING("ACKNACK requested seq_no %u, not found in reliable_cache (evicted?)", missing_seq_no);
+
+        for (int i = 0; i < depth; i++) {
+            struct tt_ReliableCacheEntry* cache_entry = &cache->entries[i];
+            if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
+                continue;
+            }
+            if (cache_entry->retry >= tt_RELIABLE_RETRY) {
+                break; // give up on this one sample - the Subscriber's own retry cap will too
+            }
+
+            uint32_t old_tx_tail = node->tx_tail;
+            void* buf = encode(node, cache_entry->len);
+            if (buf == NULL) {
+                TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
+                rollback(node, old_tx_tail);
+                break;
+            }
+            _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+            if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, &target, 1)) {
+                rollback(node, old_tx_tail);
+            } else {
+                cache_entry->retry++;
+            }
+            break;
         }
     }
 

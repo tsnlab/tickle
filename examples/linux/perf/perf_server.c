@@ -73,25 +73,6 @@ static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* p
     begin_stopping(node, time);
 }
 
-// TEMPORARY (QoS roadmap #5 loss-injection investigation) - independent of expected_seq/
-// pending_bitmap below: marks every data->seq bulk_callback() is ever actually invoked with, so a
-// "dropped" seq_no's own drop diagnostics can check whether the application genuinely never saw
-// it (a real delivery failure) or saw it just fine while this file's own gap accounting somehow
-// still missed it (a bug in track_arrival()/finalize_gap_tracking() instead). Covers seq 0..8191 -
-// comfortably more than this rig's own loss-scenario message counts.
-#define SEEN_SEQ_MAX 8192
-static uint8_t seen_seq[SEEN_SEQ_MAX / 8];
-
-static void mark_seen(uint32_t seq) {
-    if (seq < SEEN_SEQ_MAX) {
-        seen_seq[seq / 8] |= (uint8_t)(1U << (seq % 8));
-    }
-}
-
-static bool was_seen(uint32_t seq) {
-    return seq < SEEN_SEQ_MAX && (seen_seq[seq / 8] & (uint8_t)(1U << (seq % 8))) != 0;
-}
-
 static bool have_first = false;
 static uint32_t expected_seq = 0;
 // A forward gap used to be counted as dropped the instant it was skipped over, which never gave
@@ -112,11 +93,12 @@ static uint32_t expected_seq = 0;
 //
 // 1024 bits (16 words), not tickle.c's own 64: a QoS roadmap #5 loss-injection investigation
 // found this file's own accounting was the dominant source of "loss" under real tc/netem 5-10%
-// loss - not tickle.c's RELIABLE mechanism, which a dedicated seen_seq bitset (below) proved *was*
-// delivering every single sample this file ever counted as dropped (was_seen(expected_seq) was 1
-// at every overflow, and remained 1 even after widening this window from 64 to a first attempt at
-// 256 bits - rare bursts of correlated loss could still occasionally outlast even that). Every new
-// DATA arrival re-sends the Subscriber's own ACKNACK while any gap is open (tickle.c's
+// loss - not tickle.c's RELIABLE mechanism, which a dedicated seen-seq bitset (temporary,
+// since removed) proved *was* delivering every single sample this file ever counted as dropped
+// (a "was it ever actually seen" check was 1 at every overflow, and remained 1 even after
+// widening this window from 64 to a first attempt at 256 bits - rare bursts of correlated loss
+// could still occasionally outlast even that). Every new DATA arrival re-sends the Subscriber's
+// own ACKNACK while any gap is open (tickle.c's
 // maybe_arm_acknack_retry()), not only its 5ms retry timer, so a burst of several losses close
 // together can take a few round-trips to fully drain even though no single sample ever exhausts
 // its own tt_RELIABLE_RETRY budget. 1024 messages (~20s at this rig's own 20ms/msg loss-scenario
@@ -261,11 +243,6 @@ static uint32_t track_arrival(uint32_t seq) {
         }
     }
     gap_clear_all();
-    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - printf, not a
-    // tickle/log.h call: perf_server.c only has the public API (tt_log_set_level()), not the
-    // internal TT_LOG_WARNING() macro tickle.c itself uses.
-    printf("DIAG track_arrival overflow: expected_seq=%u seq=%u dropped_now=%u was_seen(expected_seq)=%d\n",
-           expected_seq, seq, dropped_now, (int)was_seen(expected_seq));
     expected_seq = seq + 1;
     return dropped_now;
 }
@@ -276,10 +253,6 @@ static uint32_t finalize_gap_tracking(void) {
     if (!gap_pending_any()) {
         return 0;
     }
-    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation) - see track_arrival()'s
-    // own overflow-branch diagnostic for why printf, not a tickle/log.h call.
-    printf("DIAG finalize_gap_tracking: expected_seq=%u was_seen(expected_seq)=%d\n", expected_seq,
-           (int)was_seen(expected_seq));
     // expected_seq itself is a confirmed-missing slot whenever anything is pending ahead of it
     // (that's exactly what a nonzero pending_bitmap here means) - it's never covered by a bit of
     // its own (bit 0 means expected_seq+1), so it needs its own explicit +1.
@@ -314,7 +287,6 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
         }
     }
 
-    mark_seen(data->seq); // TEMPORARY diagnostic (see seen_seq's own comment)
     uint32_t gap_count = track_arrival(data->seq);
     have_first = true;
 
