@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789604558926,
+  "lastUpdate": 1789604561965,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -13075,6 +13075,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 1.099,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "376f0f5e26542dd4d44e06421b12d621086d15e9",
+          "message": "Stop gating the build on loss-injection throughput history\n\nThe 20ms-paced send rate (previous commit) intentionally reports a much\nlower absolute throughput than the firehose-rate history already\nrecorded for this same benchmark group, which github-action-benchmark's\nown 200% regression alert correctly (if unhelpfully) flagged and failed\nthe build on. The pacing is a deliberate methodology choice, not a\ntarget to hold steady across commits - the number that actually matters\nhere is the BEST_EFFORT-vs-RELIABLE comparison within one run (the job\nsummary's own table), not this trend line's own slope. Matches the\nsame fail-on-alert: false treatment already given to rtt jitter and\nreliable loss_pct for an analogous reason.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T09:20:10+09:00",
+          "tree_id": "d8a77b127775080e68d59df0d0fbbfc0f32e288d",
+          "url": "https://github.com/tsnlab/tickle/commit/376f0f5e26542dd4d44e06421b12d621086d15e9"
+        },
+        "date": 1789604560890,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0.547,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 1.36,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0.509,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 1.259,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0.496,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 1.219,
             "unit": "Mbps"
           }
         ]
