@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789687797421,
+  "lastUpdate": 1789688000273,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14435,6 +14435,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04768,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "bc2a9e37898c112fc207739448c05a7e31e2a0be",
+          "message": "Narrow the loss-injection send interval further, 5ms -> 2ms\n\nThe 5ms attempt (previous commit) nailed BEST_EFFORT's own accuracy (1%/5%/\n10% configured came back 1.0/5.3/9.8) but RELIABLE's loss_pct was still flat\nat 0.1% across all three levels - real recovery latency turned out to be\nwell under that attempt's own conservative tt_RELIABLE_RETRY-based estimate,\nsince detection is immediate (the next packet's own arrival re-triggers\nmaybe_arm_acknack_retry(), not just the 5ms retry timer) rather than waiting\nout a full retry cycle. Narrowing further to 2ms (~16ms cache window) to get\ncloser to real recovery latency (RTT each way plus one interval's own\ndetection delay) - close enough that 10%'s higher chance of a second loss\nlanding close behind the first should occasionally outrun it, while 1%/5%'s\ndominant isolated losses should still mostly recover.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:32:11+09:00",
+          "tree_id": "c88bb0b4ef8c2a1b0112de3b2578507b4dfbeb33",
+          "url": "https://github.com/tsnlab/tickle/commit/bc2a9e37898c112fc207739448c05a7e31e2a0be"
+        },
+        "date": 1789687998004,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05005857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05503999999999999,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04657571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.045822857142857144,
             "unit": "ms"
           }
         ]
