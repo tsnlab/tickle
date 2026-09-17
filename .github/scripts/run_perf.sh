@@ -289,6 +289,15 @@ summarize() {
             tail -c 100000 "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_client.log" 2>/dev/null || true
             echo '```'
             echo
+            # TEMPORARY (QoS roadmap #5 loss-injection investigation): same, but the receiver
+            # (Subscriber) side - acknack_retry()'s own give-up log and skip_unrecoverable_
+            # backlog()'s own diagnostic (tickle.c) only ever run here, not on the Publisher side
+            # dumped above.
+            echo "### DEBUG: rpi#2 (Subscriber) log, worst loss level"
+            echo '```'
+            tail -c 100000 "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_server.log" 2>/dev/null || true
+            echo '```'
+            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"

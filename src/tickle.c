@@ -1312,6 +1312,7 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
         return; // still within a plausibly-recoverable window - let it resolve normally
     }
 
+    uint32_t old_ack_seq_no = sub->ack_seq_no; // TEMPORARY diagnostic (see below)
     uint32_t new_ack_seq_no = highest_seq_no - tt_MAX_RELIABLE_HISTORY + 1;
     uint32_t skipped = new_ack_seq_no - sub->ack_seq_no;
     sub->received_bitmap = skipped < tt_RELIABLE_BITMAP_BITS ? (sub->received_bitmap >> skipped) : 0;
@@ -1320,6 +1321,9 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
         sub->received_bitmap >>= 1;
         sub->ack_seq_no++;
     }
+    // TEMPORARY diagnostic (QoS roadmap #5 loss-injection investigation).
+    TT_LOG_WARNING("skip_unrecoverable_backlog: %u -> %u (highest known %u)", old_ack_seq_no, sub->ack_seq_no,
+                   highest_seq_no);
 }
 
 // Shared by update_reliable_ack() (a new/changed gap) and acknack_retry()'s own give-up path (the
