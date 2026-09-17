@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789608353890,
+  "lastUpdate": 1789608356939,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -12453,6 +12453,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030473300388881137,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5b93ffb5d21055727b2181337f8c4c9fee42e28c",
+          "message": "Fix perf_server.c's own gap-tracking math and track loss_pct in CI\n\nperf_server.c's windowed gap tracker (added when the loss-injection\nscenarios were introduced) copied the same missing-realignment shape\ntickle.c's own ACKNACK bug had, plus two more off-by-ones: the overflow\nbranch wrote off (delta - 1) messages instead of delta, and\nfinalize_gap_tracking() never counted expected_seq itself (never covered\nby any bit, by construction) as one of the still-missing slots. Fixed\nall three, validated against a battery of hand-traced scenarios\n(recovered/never-recovered/interleaved/window-overflow gaps) before\napplying.\n\nAlso adds the most direct evidence QoS roadmap #5 (RELIABILITY) actually\nworks: a new loss-percent-benchmark.json/\"Track loss-injection loss_pct\nhistory\" group graphing BEST_EFFORT's own loss_pct against RELIABLE's,\nside by side at each injected loss level - not gating (same reasoning as\nthe existing reliable loss_pct/latency jitter groups: a modest sample\nsize against tc/netem's own random per-packet drops is expected to be\nnoisy run to run).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T10:24:44+09:00",
+          "tree_id": "58a1e50caf7fffd05a237d4b525b2d44ff82c18d",
+          "url": "https://github.com/tsnlab/tickle/commit/5b93ffb5d21055727b2181337f8c4c9fee42e28c"
+        },
+        "date": 1789608355902,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9898345129830497,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.0005405970982142857,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030469485691615512,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03046894073486328,
             "unit": "Mbit/s"
           }
         ]
