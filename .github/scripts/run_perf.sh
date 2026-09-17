@@ -289,16 +289,31 @@ summarize() {
             # retry()'s own give-up log, skip_unrecoverable_backlog()'s own diagnostic, and
             # update_reliable_ack()'s own "gap too large to track" warning all run on the
             # Subscriber only (tickle.c) - remove this whole block once loss_pct is understood/fixed.
-            echo "### DEBUG: rpi#1 (Publisher) diagnostic lines, worst loss level"
+            local worst_client="$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_client.log"
+            local worst_server="$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_server.log"
+            echo "### DEBUG: rpi#1 (Publisher) diagnostic summary, worst loss level"
             echo '```'
-            grep -E 'Retransmitted seq_no|not found in reliable_cache|already retried' \
-                "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_client.log" 2>/dev/null | tail -300 || true
+            echo "Retransmitted seq_no: $(grep -c 'Retransmitted seq_no' "$worst_client" 2>/dev/null || echo 0)"
+            echo "not found in reliable_cache: $(grep -c 'not found in reliable_cache' "$worst_client" 2>/dev/null || echo 0)"
+            echo "already retried (Publisher gave up): $(grep -c 'already retried' "$worst_client" 2>/dev/null || echo 0)"
+            echo "seq_no range of 'not found': $(grep -oP 'not found in reliable_cache.*|ACKNACK requested seq_no \K[0-9]+' "$worst_client" 2>/dev/null | sort -n | sed -n '1p;$p' | tr '\n' ' ')"
+            echo "first 5 'not found' lines:"
+            grep 'not found in reliable_cache' "$worst_client" 2>/dev/null | head -5 || true
+            echo "last 5 'not found' lines:"
+            grep 'not found in reliable_cache' "$worst_client" 2>/dev/null | tail -5 || true
             echo '```'
             echo
-            echo "### DEBUG: rpi#2 (Subscriber) diagnostic lines, worst loss level"
+            echo "### DEBUG: rpi#2 (Subscriber) diagnostic summary, worst loss level"
             echo '```'
-            grep -E 'Giving up on a reliable sample|skip_unrecoverable_backlog|gap too large to track' \
-                "$LOG_DIR/loss${LOSS_LEVELS_PCT##* }_reliable_server.log" 2>/dev/null | tail -300 || true
+            echo "Giving up on a reliable sample: $(grep -c 'Giving up on a reliable sample' "$worst_server" 2>/dev/null || echo 0)"
+            echo "skip_unrecoverable_backlog fired: $(grep -c 'skip_unrecoverable_backlog:' "$worst_server" 2>/dev/null || echo 0)"
+            echo "gap too large to track: $(grep -c 'gap too large to track' "$worst_server" 2>/dev/null || echo 0)"
+            echo "all skip_unrecoverable_backlog lines:"
+            grep 'skip_unrecoverable_backlog:' "$worst_server" 2>/dev/null || true
+            echo "first 5 'gap too large to track' lines:"
+            grep 'gap too large to track' "$worst_server" 2>/dev/null | head -5 || true
+            echo "last 5 'gap too large to track' lines:"
+            grep 'gap too large to track' "$worst_server" 2>/dev/null | tail -5 || true
             echo '```'
             echo
         fi
