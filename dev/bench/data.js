@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789656376225,
+  "lastUpdate": 1789656379504,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -18665,6 +18665,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 20.501,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "07eed089e53e8eb6e0011c242afd2c47a2b9bb1c",
+          "message": "Add TEMPORARY diagnostic for advance_ack_seq_no()'s own jump size\n\nRuled out the endpoint-lookup-drop hypothesis (previous commit): 0\noccurrences in the loss10_reliable run specifically (the matches found\nearlier were from unrelated test phases' own startup race, before discovery\nregisters the subscriber - a separate, known, harmless thing).\n\nThe stuck-gap width in perf_server.c's own accounting is suspiciously\nconsistent at ~65 (GAP_WINDOW_BITS + 1) every time, which is exactly where\nthat file's own tracking window is forced to give up regardless of whether\nthe underlying retransmission was moments away from succeeding. This\ndiagnostic checks whether tickle.c's own ack_seq_no is *also* periodically\nstuck-then-jumping in near lockstep (pointing at a genuinely slow\nretransmission upstream of both) or advances smoothly the whole time\n(pointing at a mismatch between tickle.c's own watermark progress and when\ndata actually reaches the application callback, instead).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:43:29+09:00",
+          "tree_id": "ef6110687ae1c2618342858fc2a6a5b3e0f6ed6e",
+          "url": "https://github.com/tsnlab/tickle/commit/07eed089e53e8eb6e0011c242afd2c47a2b9bb1c"
+        },
+        "date": 1789656378371,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 17.519,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 17.827,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 17.484,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 18.278,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 17.454,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 20.422,
             "unit": "ms"
           }
         ]
