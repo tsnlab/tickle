@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789668526982,
+  "lastUpdate": 1789668669641,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4883,6 +4883,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "dab252687825cb8f1710bbea8ec302076b78056a",
+          "message": "Document the second RELIABLE loss_pct follow-up round in PLAN.md\n\nRecords the five real bugs found and fixed while chasing RELIABLE's own\nloss_pct down toward the p^(tt_RELIABLE_RETRY + 1) theoretical model\n(backlog-cascade give-up timing, the ACKNACK bitmap's own over-wide request,\na test-harness shutdown race, and perf_server.c's own too-narrow gap-tracking\nwindow), following the same documentation style as Milestone 18's first\nfollow-up round.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T03:07:29+09:00",
+          "tree_id": "5babc92f3e55c7510b6d2497577dbbe3a32f1e50",
+          "url": "https://github.com/tsnlab/tickle/commit/dab252687825cb8f1710bbea8ec302076b78056a"
+        },
+        "date": 1789668667238,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.201,
             "unit": "ms"
           },
           {
