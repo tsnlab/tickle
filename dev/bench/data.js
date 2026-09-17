@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789688304855,
+  "lastUpdate": 1789688382282,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4985,6 +4985,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.205,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "67da041654d20d5a288b5366062abdaf80602ad9",
+          "message": "Narrow the loss-injection send interval again, 2ms -> 1ms\n\n20ms, 5ms, and 2ms all landed RELIABLE's own loss_pct at the identical ~0.1%\nregardless of tc's own 1%/5%/10% - a flat, loss-probability-independent\nnumber that small is almost certainly a fixed few-message artifact, not the\ncache-eviction-vs-recovery-latency race this constant is meant to tune at\nall. Real recovery (detected on the very next packet's own arrival, not just\nthe 5ms retry timer) is evidently fast enough that even a 16ms cache window\n(tt_MAX_RELIABLE_HISTORY=8 * 2ms) never became the bottleneck. Halving again\nto 1ms (~8ms window) puts real RTT plus one interval's own detection delay\nin the same ballpark as the window itself, which should finally start a\ngenuine eviction race - more so at 10% tc loss than at 1%/5%.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:37:13+09:00",
+          "tree_id": "14460dfb43be5f752befa928c4de9fde64ae4af2",
+          "url": "https://github.com/tsnlab/tickle/commit/67da041654d20d5a288b5366062abdaf80602ad9"
+        },
+        "date": 1789688379742,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.201,
             "unit": "ms"
           },
           {
