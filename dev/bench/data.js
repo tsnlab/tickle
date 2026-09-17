@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789687776350,
+  "lastUpdate": 1789687779271,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -12517,6 +12517,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/dab252687825cb8f1710bbea8ec302076b78056a"
         },
         "date": 1789668671849,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.01,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "11c877b269d3cfcfcb9860e6d08cf936733dc7cb",
+          "message": "Restructure the loss-injection summary table for direct BEST_EFFORT/RELIABLE comparison, speed up the send interval\n\nTable: one row per tc loss level with BEST_EFFORT and RELIABLE columns side\nby side (loss_pct first, then throughput, then latency) instead of two\nalternating rows per level - each metric now compares directly without\nhaving to line up separate rows.\n\nInterval: RELIABLE's own loss_pct is now flat at ~0.2% regardless of tc loss\nlevel (1% through 10% alike) - correct given the fixes on this branch, but\nuninformative, since the 20ms send interval gives tt_MAX_RELIABLE_HISTORY's\nown 8-sample cache a ~160ms window, far more slack than a single lost\nsample's worst-case recovery time (~20ms: tt_RELIABLE_RETRY=3 retries *\ntt_CALL_RETRY_INTERVAL=5ms + a real RTT). Narrowing the interval to 5ms\nshrinks that cache window to ~40ms - still comfortable for the isolated\nsingle losses that dominate at 1%/5% tc loss, but tight enough that 10%'s\nhigher chance of a second loss landing close behind the first should\noccasionally outrun it, showing a little real, unrecovered loss at the\nhighest level instead of a flat 0 everywhere. Also quadruples the sample\ncount for the same PERF_DURATION_SEC (~2,000 messages instead of ~500),\ntightening BEST_EFFORT's own loss_pct around tc's actual configured\npercentage too (it has no retry mechanism to blur the picture, so more\nsamples is a direct accuracy win via less binomial sampling noise).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:27:07+09:00",
+          "tree_id": "bcce18aaba29fdcb6226766f55a5ad6d6e8f3fb0",
+          "url": "https://github.com/tsnlab/tickle/commit/11c877b269d3cfcfcb9860e6d08cf936733dc7cb"
+        },
+        "date": 1789687778209,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
