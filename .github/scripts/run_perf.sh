@@ -30,15 +30,23 @@ PING_INTERVAL="${PING_INTERVAL:-0.1}"
 PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
 SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # The loss-injection scenarios' own send interval - deliberately *not* PERF_DURATION_SEC's own
-# "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use. At a
-# firehose send rate, tt_MAX_RELIABLE_HISTORY (8 samples, config.h) gets overwritten many times
-# over before an ACKNACK's round trip can ever come back, so a NACKed sample is usually already
-# evicted by the time it's requested - RELIABLE's own retransmission never gets a real chance to
-# recover anything, and its ACKNACK/retransmit traffic just adds load to an already-lossy link on
-# top of that. 20ms comfortably covers a real round trip on this rig (avg one-way latency here is
-# a few ms - perf_server.c's own avg_latency_ms) so a NACKed sample should still be in cache when
-# the retry arrives.
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.02}"
+# "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use, and
+# deliberately faster than a first, more conservative 20ms attempt: tt_MAX_RELIABLE_HISTORY (8
+# samples, config.h) holding 8 * this interval worth of wall-clock time before an entry is
+# evicted, at 20ms that was a ~160ms window - far more slack than a single lost sample's own
+# worst-case recovery time (tt_RELIABLE_RETRY=3 retries * tt_CALL_RETRY_INTERVAL=5ms + a real RTT,
+# a few ms on this rig - perf_server.c's own avg_latency_ms - so ~20ms worst case), so RELIABLE's
+# own loss_pct came back indistinguishable from 0 at every tc loss level, 1% through 10% alike -
+# correct, but not useful for seeing the mechanism's own limit. 5ms narrows that cache window to
+# ~40ms: still comfortable margin for the isolated single losses that dominate at 1%/5% tc loss
+# (so those should still recover essentially perfectly), but tight enough that 10%'s own higher
+# chance of a second loss landing close behind the first should occasionally outrun it - showing a
+# little real, unrecovered loss at the highest level instead of a flat, uninformative 0 everywhere.
+# Also quadruples the sample count for the same PERF_DURATION_SEC (~2,000 messages instead of
+# ~500), which tightens BEST_EFFORT's own loss_pct around tc's actual configured percentage too
+# (binomial sampling noise shrinks with more trials) - it has no retry mechanism to blur the
+# picture, so it's the more direct check that tc/netem itself is behaving as configured.
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.005}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
@@ -262,23 +270,27 @@ summarize() {
         if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
             echo "## RELIABLE vs BEST_EFFORT under packet loss (tc/netem, rpi#1's own egress)"
             echo
-            echo "One-way latency is the receiver's clock minus the sender's own wire timestamp -"
-            echo "only as accurate as the two Pis' clock sync (NTP); read it as a same-rig relative"
-            echo "comparison across rows, not an absolute number. loss_pct is perf_server's own"
-            echo "expected_seq gap counter, which (see the \"reliable\" run's own comment above)"
-            echo "still counts a successfully-recovered-but-reordered RELIABLE sample as a gap."
+            echo "One row per tc loss level, BEST_EFFORT and RELIABLE side by side so each metric"
+            echo "compares directly - no need to line up separate rows. One-way latency is the"
+            echo "receiver's clock minus the sender's own wire timestamp - only as accurate as the"
+            echo "two Pis' clock sync (NTP); read it as a same-rig relative comparison, not an"
+            echo "absolute number. loss_pct is perf_server's own expected_seq gap counter, which"
+            echo "(see the \"reliable\" run's own comment above) still counts a"
+            echo "successfully-recovered-but-reordered RELIABLE sample as a gap."
             echo
-            echo "| tc loss | mode | throughput (Mbps) | avg latency (ms) | loss_pct |"
-            echo "|---|---|---|---|---|"
+            echo "| tc loss | loss_pct (besteffort) | loss_pct (reliable) | throughput Mbps (besteffort) | throughput Mbps (reliable) | avg latency ms (besteffort) | avg latency ms (reliable) |"
+            echo "|---|---|---|---|---|---|---|"
             for pct in $LOSS_LEVELS_PCT; do
-                for mode in besteffort reliable; do
-                    local log="$LOG_DIR/loss${pct}_${mode}_server.log"
-                    local mbps lat lp
-                    mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$log" 2>/dev/null | tail -1 | tr -d ',' || true)
-                    lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
-                    lp=$(grep -oP 'loss_pct=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
-                    echo "| ${pct}% | $mode | ${mbps:-N/A} | ${lat:-N/A} | ${lp:-N/A} |"
-                done
+                local be_log="$LOG_DIR/loss${pct}_besteffort_server.log"
+                local rel_log="$LOG_DIR/loss${pct}_reliable_server.log"
+                local be_mbps be_lat be_lp rel_mbps rel_lat rel_lp
+                be_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$be_log" 2>/dev/null | tail -1 | tr -d ',' || true)
+                be_lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$be_log" 2>/dev/null | tail -1 || true)
+                be_lp=$(grep -oP 'loss_pct=\K[\d.]+' "$be_log" 2>/dev/null | tail -1 || true)
+                rel_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$rel_log" 2>/dev/null | tail -1 | tr -d ',' || true)
+                rel_lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$rel_log" 2>/dev/null | tail -1 || true)
+                rel_lp=$(grep -oP 'loss_pct=\K[\d.]+' "$rel_log" 2>/dev/null | tail -1 || true)
+                echo "| ${pct}% | ${be_lp:-N/A} | ${rel_lp:-N/A} | ${be_mbps:-N/A} | ${rel_mbps:-N/A} | ${be_lat:-N/A} | ${rel_lat:-N/A} |"
             done
             echo
         fi
