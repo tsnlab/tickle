@@ -39,6 +39,15 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # a few ms - perf_server.c's own avg_latency_ms) so a NACKed sample should still be in cache when
 # the retry arrives.
 LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.02}"
+# perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
+# perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
+# zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
+# perf_client.c's matching RELIABLE_SHUTDOWN_GRACE_SEC keeps the *sending* side alive just as long,
+# so a late ACKNACK for one of the last few samples still gets a real retransmit. Found the same
+# way as the fix this comment sits next to: reliable's own loss_pct plateaued at the *same* value
+# at two different tc loss levels, which a shutdown race explains far better than anything
+# proportional to loss probability would.
+LOSS_TEST_COOLDOWN_SEC="${LOSS_TEST_COOLDOWN_SEC:-1.5}"
 
 LOG_DIR="$(mktemp -d)"
 
@@ -435,9 +444,9 @@ if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
             continue
         fi
         run_paired_test "loss${pct}_besteffort" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC" \
-            "$((PERF_DURATION_SEC + 30))"
+            "$((PERF_DURATION_SEC + 30))" "-W $LOSS_TEST_COOLDOWN_SEC"
         run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R" \
-            "$((PERF_DURATION_SEC + 30))" "-R"
+            "$((PERF_DURATION_SEC + 30))" "-R -W $LOSS_TEST_COOLDOWN_SEC"
         set_loss 0
     done
 fi

@@ -32,18 +32,61 @@
 // specific interval instead (e.g. to target a specific Mbps for a given -s).
 #define DEFAULT_INTERVAL_SECONDS 0.0
 
-static volatile sig_atomic_t g_interrupted = 0;
+static volatile sig_atomic_t g_interrupted = 0; // a stop trigger fired (duration elapsed, or Ctrl+C)
+static volatile sig_atomic_t g_exit_now = 0;    // the main loop's actual exit condition
 
-static void handle_sigint(int sig) {
-    (void)sig;
-    g_interrupted = 1;
-}
+static bool stopping = false;
+static uint64_t stop_time = 0; // when stopping began - print_summary()'s own "elapsed" anchor,
+                               // so shutdown_grace_s's drain doesn't dilute the reported avg Mbps
 
-static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+// RELIABLE's own retransmission (QoS roadmap #5) needs this Publisher to still be around to
+// respond to a Subscriber's ACKNACK for one of the last few messages sent - tt_Node_destroy()
+// right when sending stops used to tear it down immediately, silently dropping any
+// then-still-recovering loss near the end of *every* run regardless of tc's own configured loss
+// rate. Found via run_perf.sh's real loss-injection scenarios: reliable's own loss_pct plateaued
+// well above the p^(tt_RELIABLE_RETRY + 1) theoretical model even after every other known bug
+// (rmw_tickle/PLAN.md, Milestone 18) was fixed, and landed on the *same* value at two different
+// loss levels - a fixed few tail-end losses per run, independent of p, matched a shutdown race far
+// better than anything left in tickle.c's own RELIABLE logic. tt_RELIABLE_RETRY full give-up
+// cycles (tt_CALL_RETRY_INTERVAL apart) fit comfortably inside this with room for real RTT.
+// 0 for BEST_EFFORT - costs nothing, matches the exit-immediately behavior it always had.
+#define RELIABLE_SHUTDOWN_GRACE_SEC 1.0
+static double shutdown_grace_s = 0.0;
+
+static void finish_grace_period(struct tt_Node* node, uint64_t time, void* param) {
     (void)node;
     (void)time;
     (void)param;
+    g_exit_now = 1;
+}
+
+// Stops sending immediately but - unlike the exit-right-away behavior this used to have - only
+// actually exits after shutdown_grace_s more (0 for BEST_EFFORT, so this is a no-op change for
+// it). Idempotent, and safe to call from either a scheduled callback (handle_duration_elapsed,
+// which has `node`/`time` on hand) or the main loop noticing g_interrupted after a signal handler
+// set it (which doesn't - signal handlers may only touch a volatile sig_atomic_t, not call this).
+static void begin_stopping(struct tt_Node* node, uint64_t time) {
+    if (stopping) {
+        return;
+    }
+    stopping = true;
     g_interrupted = 1;
+    stop_time = time;
+    if (shutdown_grace_s <= 0.0) {
+        g_exit_now = 1;
+        return;
+    }
+    tt_Node_schedule(node, time + (uint64_t)(shutdown_grace_s * (double)tt_SECOND), finish_grace_period, NULL);
+}
+
+static void handle_sigint(int sig) {
+    (void)sig;
+    g_interrupted = 1; // begin_stopping() itself needs `node` - the main loop calls it instead
+}
+
+static void handle_duration_elapsed(struct tt_Node* node, uint64_t time, void* param) {
+    (void)param;
+    begin_stopping(node, time);
 }
 
 static struct BulkData bulk = {0}; // static: zero-initialized, reused for every publish
@@ -91,7 +134,10 @@ static void print_summary(uint64_t start_time) {
     char megabytes_buf[TT_GROUPED_F3_BUF_LEN];
     char avg_mbps_buf[TT_GROUPED_F3_BUF_LEN];
     const double bytes_per_mb = 1e6;
-    double elapsed_s = (double)(tt_get_ns() - start_time) / (double)tt_SECOND;
+    // stop_time (when sending stopped), not tt_get_ns() (now) - shutdown_grace_s's own drain
+    // period runs between those two and sends nothing, so using "now" here would dilute avg_mbps
+    // by however long that drain took, understating reported RELIABLE throughput for no reason.
+    double elapsed_s = (double)(stop_time - start_time) / (double)tt_SECOND;
     double megabytes = (double)total_sent_bytes / bytes_per_mb;
     double avg_mbps = elapsed_s > 0.0 ? ((double)total_sent_bytes * 8) / bytes_per_mb / elapsed_s : 0.0;
 
@@ -142,6 +188,45 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     return tt_example_parse_args(argc, argv, opts,
                                  TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_MESSAGE_SIZE |
                                      TT_EXAMPLE_OPT_BATCH | TT_EXAMPLE_OPT_RELIABLE);
+}
+
+// Split out of main() purely to keep that function's own cognitive complexity under clang-tidy's
+// threshold - adding !stopping/g_interrupted handling for shutdown_grace_s (see its own doc
+// comment) tipped main() over once combined with its already-substantial setup sequence.
+static void run_send_loop(struct tt_Node* node, struct tt_Publisher* pub, uint64_t next_send_time,
+                          uint64_t send_interval_ns, int64_t poll_timeout) {
+    tt_ret_t ret = tt_RET_OK;
+    while (!g_exit_now && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+        // One publish attempt per due tick, then let poll() flush/schedule/receive: pacing
+        // comes from comparing wall-clock time against next_send_time, not from a tight
+        // send-more-if-you-can loop (that would starve poll()). Gated on !stopping too - once a
+        // stop trigger has fired, no new sends during the shutdown_grace_s drain below, only
+        // servicing whatever ACKNACKs are still arriving for what was already sent.
+        uint64_t now = tt_get_ns();
+        if (!stopping && now >= next_send_time) {
+            tt_ret_t pub_ret = tt_Publisher_publish(pub, (struct tt_Data*)&bulk);
+            if (pub_ret == tt_RET_OK) {
+                bulk.seq++;
+                total_sent_msgs++;
+                total_sent_bytes += bulk.payload_count;
+                interval_sent_msgs++;
+                interval_sent_bytes += bulk.payload_count;
+            } else if (pub_ret == tt_RET_OUT_OF_BUFFER) {
+                total_buffer_full++;
+            }
+            next_send_time += send_interval_ns;
+        }
+
+        ret = tt_Node_poll(node, poll_timeout);
+
+        // Checked here (right after poll() returns), not waited on elsewhere: this runs every
+        // iteration regardless of how long until the next scheduled report()/finish_grace_period,
+        // so Ctrl+C is caught right away rather than up to a poll cycle late - same reasoning as
+        // perf_server.c's own main loop.
+        if (g_interrupted && !stopping) {
+            begin_stopping(node, tt_get_ns());
+        }
+    }
 }
 
 int main(int argc, char** argv) {
@@ -202,7 +287,8 @@ int main(int argc, char** argv) {
     }
     if (opts.reliable) {
         reliable_cache.depth = tt_MAX_RELIABLE_HISTORY;
-        pub.reliable_cache = &reliable_cache; // -R - see tt_Publisher.reliable_cache's own doc comment
+        pub.reliable_cache = &reliable_cache;           // -R - see tt_Publisher.reliable_cache's own doc comment
+        shutdown_grace_s = RELIABLE_SHUTDOWN_GRACE_SEC; // see shutdown_grace_s's own doc comment
         printf("RELIABLE delivery (retained-sample cache depth %d)\n", tt_MAX_RELIABLE_HISTORY);
     }
 
@@ -231,28 +317,7 @@ int main(int argc, char** argv) {
     // idle between sends, so the wait lets it service inbound traffic without spinning a core.
     const int64_t poll_timeout = send_interval_ns == 0 ? 0 : -1;
 
-    ret = tt_RET_OK;
-    while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        // One publish attempt per due tick, then let poll() flush/schedule/receive: pacing
-        // comes from comparing wall-clock time against next_send_time, not from a tight
-        // send-more-if-you-can loop (that would starve poll() - and this interrupt check).
-        uint64_t now = tt_get_ns();
-        if (now >= next_send_time) {
-            tt_ret_t pub_ret = tt_Publisher_publish(&pub, (struct tt_Data*)&bulk);
-            if (pub_ret == tt_RET_OK) {
-                bulk.seq++;
-                total_sent_msgs++;
-                total_sent_bytes += bulk.payload_count;
-                interval_sent_msgs++;
-                interval_sent_bytes += bulk.payload_count;
-            } else if (pub_ret == tt_RET_OUT_OF_BUFFER) {
-                total_buffer_full++;
-            }
-            next_send_time += send_interval_ns;
-        }
-
-        ret = tt_Node_poll(&node, poll_timeout);
-    }
+    run_send_loop(&node, &pub, next_send_time, send_interval_ns, poll_timeout);
 
     print_summary(start_time);
 
