@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789655520515,
+  "lastUpdate": 1789655523948,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14761,6 +14761,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.00001239776611328125,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "42dcd35ea52b131c0afa0dedd031ce50c20fdfd5",
+          "message": "Add a late-arrival diagnostic to prove whether the stuck seq_no ever shows up\n\nThe previous commit's drop accounting showed something unexpected: perf_\nserver's own expected_seq gets stuck for ~65-message-wide stretches (roughly\nperiodic, every ~70-80 messages) even though tickle.c's own RELIABLE\nmechanism reports 0 give-ups and 0 not-found - meaning tickle.c believes\nevery requested sample was successfully retransmitted. That's a contradiction\nif the retransmission genuinely never reaches perf_server's own bulk_callback.\n\nAdds a diagnostic to track_arrival()'s existing delta<0 (\"late arrival, clear\nits pending bit\") branch, and a run_perf.sh filter for ones with behind >= 30\n- specifically: does the *stuck* seq_no ever show up this way, just very\nlate? If it never does, the data genuinely never reaches the application\ncallback despite tickle.c's own bookkeeping believing it succeeded, which\nwould point at something between process_acknack()'s retransmit and\nprocess_data()'s delivery, not at the ACKNACK/retry logic itself.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:30:51+09:00",
+          "tree_id": "29a9337967c4b2aaf1310831a7dea0599080da6c",
+          "url": "https://github.com/tsnlab/tickle/commit/42dcd35ea52b131c0afa0dedd031ce50c20fdfd5"
+        },
+        "date": 1789655522661,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9903999056134906,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9902563095092773,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030460357666015625,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.000012670244489397322,
             "unit": "Mbit/s"
           }
         ]
