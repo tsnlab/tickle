@@ -346,9 +346,16 @@ alongside the clean-link runs above, `run_perf.sh` also runs `perf_client`/`perf
 1%/5%/10% loss injected with Linux's own `tc`/`netem` on rpi#1's egress toward rpi#2 - once for
 each of BEST_EFFORT and RELIABLE at every level - and reports throughput plus `perf_server`'s new
 one-way delivery latency (`avg_latency_ms`) for each combination, both in the job summary's own
-comparison table and as further `github-action-benchmark` history. This is where RELIABLE's own
-retransmission is actually expected to cost something to measure - the clean-link "reliable" run
-above has nothing to retransmit. Needs passwordless `sudo tc` on rpi#1
+comparison table and as further `github-action-benchmark` history. Paced at
+`LOSS_TEST_INTERVAL_SEC` (20ms by default, not the clean-link runs' own firehose "as fast as
+`poll()` allows") specifically so a NACKed sample is still likely to be in the reliable
+Publisher's own retained-sample cache (`tt_MAX_RELIABLE_HISTORY`, 8 by default) by the time a
+retry actually asks for it - at firehose rates that cache gets overwritten many times over before
+one ACKNACK round trip can complete, so RELIABLE's own retransmission never gets a real chance to
+recover anything (confirmed the hard way: an earlier version of this scenario ran at firehose
+rate and reported RELIABLE's own loss *higher* than BEST_EFFORT's, not lower). This is where
+RELIABLE's own retransmission is actually expected to cost something to measure - the clean-link
+"reliable" run above has nothing to retransmit. Needs passwordless `sudo tc` on rpi#1
 (`.github/scripts/README.md`'s own setup note); skipped (not a failure) on a runner where that
 isn't configured - the status table's own three loss-level columns just stay "·" (pending) until
 it is.

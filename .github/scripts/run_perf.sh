@@ -29,6 +29,16 @@ PING_COUNT="${PING_COUNT:-50}"
 PING_INTERVAL="${PING_INTERVAL:-0.1}"
 PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
 SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
+# The loss-injection scenarios' own send interval - deliberately *not* PERF_DURATION_SEC's own
+# "-i 0" (as fast as poll() allows) default the clean-link throughput/reliable runs use. At a
+# firehose send rate, tt_MAX_RELIABLE_HISTORY (8 samples, config.h) gets overwritten many times
+# over before an ACKNACK's round trip can ever come back, so a NACKed sample is usually already
+# evicted by the time it's requested - RELIABLE's own retransmission never gets a real chance to
+# recover anything, and its ACKNACK/retransmit traffic just adds load to an already-lossy link on
+# top of that. 20ms comfortably covers a real round trip on this rig (avg one-way latency here is
+# a few ms - perf_server.c's own avg_latency_ms) so a NACKed sample should still be in cache when
+# the retry arrives.
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.02}"
 
 LOG_DIR="$(mktemp -d)"
 
@@ -395,11 +405,13 @@ run_paired_test "reliable" "perf_server" "perf_client" "-d $PERF_DURATION_SEC -R
 # Loss-injection runs: BEST_EFFORT vs RELIABLE at each of LOSS_LEVELS_PCT, under real tc/netem
 # packet loss instead of a clean link - this is where RELIABLE's own retransmission is actually
 # expected to matter (on the clean-link "reliable" run above, it costs ~nothing to measure,
-# since nothing is ever lost to retransmit). perf_server.c's own one-way latency stat (this
-# file's own README/perf_server.c comment on its NTP-clock-sync caveat) is what makes this the
-# closest thing to a "reliable QoS latency" benchmark this rig has - RELIABLE's retransmit-then-
-# deliver path should show up as a measurably higher avg/max latency than BEST_EFFORT's
-# just-drop-it one as loss increases, which a one-way throughput number alone wouldn't reveal.
+# since nothing is ever lost to retransmit). Paced at LOSS_TEST_INTERVAL_SEC (see its own comment
+# on why this isn't the firehose "-i 0" the clean-link runs use) rather than run at max throughput,
+# since the point here is measuring how well RELIABLE actually recovers under loss, not how fast
+# it goes. perf_server.c's own one-way latency stat (its own NTP-clock-sync caveat) is what makes
+# this the closest thing to a "reliable QoS latency" benchmark this rig has - RELIABLE's
+# retransmit-then-deliver path should show up as a measurably higher avg/max latency than
+# BEST_EFFORT's just-drop-it one as loss increases, which throughput/loss_pct alone wouldn't reveal.
 probe_loss_testing
 if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
     for pct in $LOSS_LEVELS_PCT; do
@@ -408,9 +420,9 @@ if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
             set_loss 0
             continue
         fi
-        run_paired_test "loss${pct}_besteffort" "perf_server" "perf_client" "-d $PERF_DURATION_SEC" \
+        run_paired_test "loss${pct}_besteffort" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC" \
             "$((PERF_DURATION_SEC + 30))"
-        run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" "-d $PERF_DURATION_SEC -R" \
+        run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R" \
             "$((PERF_DURATION_SEC + 30))" "-R"
         set_loss 0
     done
