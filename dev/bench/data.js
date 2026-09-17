@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789655617405,
+  "lastUpdate": 1789655620412,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -17953,6 +17953,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 21.047,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "42dcd35ea52b131c0afa0dedd031ce50c20fdfd5",
+          "message": "Add a late-arrival diagnostic to prove whether the stuck seq_no ever shows up\n\nThe previous commit's drop accounting showed something unexpected: perf_\nserver's own expected_seq gets stuck for ~65-message-wide stretches (roughly\nperiodic, every ~70-80 messages) even though tickle.c's own RELIABLE\nmechanism reports 0 give-ups and 0 not-found - meaning tickle.c believes\nevery requested sample was successfully retransmitted. That's a contradiction\nif the retransmission genuinely never reaches perf_server's own bulk_callback.\n\nAdds a diagnostic to track_arrival()'s existing delta<0 (\"late arrival, clear\nits pending bit\") branch, and a run_perf.sh filter for ones with behind >= 30\n- specifically: does the *stuck* seq_no ever show up this way, just very\nlate? If it never does, the data genuinely never reaches the application\ncallback despite tickle.c's own bookkeeping believing it succeeded, which\nwould point at something between process_acknack()'s retransmit and\nprocess_data()'s delivery, not at the ACKNACK/retry logic itself.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:30:51+09:00",
+          "tree_id": "29a9337967c4b2aaf1310831a7dea0599080da6c",
+          "url": "https://github.com/tsnlab/tickle/commit/42dcd35ea52b131c0afa0dedd031ce50c20fdfd5"
+        },
+        "date": 1789655619337,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 22.613,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 22.733,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 22.367,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 23.137,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 21.948,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 24.062,
             "unit": "ms"
           }
         ]
