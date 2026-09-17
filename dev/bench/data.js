@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789657609515,
+  "lastUpdate": 1789668444704,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14109,6 +14109,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.046002857142857144,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9ea4c8eb326b1a3049842e24cdfb53c756ea6595",
+          "message": "Remove TEMPORARY diagnostics now that RELIABLE's loss_pct gap is understood\n\nThe investigation concluded: RELIABLE's own reported loss_pct (once far\nabove the p^(tt_RELIABLE_RETRY + 1) theoretical model) is now flat at ~0.2%\nacross 1/5/10% tc loss levels, independent of loss probability - the\nsignature of a fixed, rare measurement/startup artifact rather than genuine\nunrecovered loss, confirmed directly by a seen-seq bitset showing every\ncounted \"drop\" had actually been delivered. tickle.c's own RELIABLE\nmechanism itself was never the problem; every real bug found along the way\n(the ACKNACK bitmap requesting nonexistent future positions, the test\nharness's own shutdown race, and perf_server.c's own too-narrow tracking\nwindow) has already been fixed in prior commits on this branch.\n\nStrips out every logging/instrumentation addition marked TEMPORARY during\nthat investigation, keeping only the underlying fixes:\n- tickle.c: removes the jump/skip diagnostics from advance_ack_seq_no() and\n  skip_unrecoverable_backlog(), the silent-drop log in process_data(), and\n  the per-retransmit logging in process_acknack() - merging\n  retransmit_reliable_sample() back inline now that the diagnostics that\n  pushed it over clang-tidy's cognitive-complexity threshold are gone.\n- perf_server.c: removes the seen_seq bitset/mark_seen()/was_seen() and the\n  two DIAG printf calls - keeps the widened (1024-message) gap-tracking\n  window, which is the actual fix.\n- run_perf.sh: removes the worst-loss-level diagnostic-summary dump,\n  restoring the plain RELIABLE-vs-BEST_EFFORT loss table.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T03:06:15+09:00",
+          "tree_id": "bf5b211da950b2e79324f8bc506a3f929f4e57d8",
+          "url": "https://github.com/tsnlab/tickle/commit/9ea4c8eb326b1a3049842e24cdfb53c756ea6595"
+        },
+        "date": 1789668442677,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.047612857142857144,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.048071428571428564,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.045302857142857145,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04469428571428572,
             "unit": "ms"
           }
         ]
