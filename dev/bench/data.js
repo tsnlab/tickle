@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789657506809,
+  "lastUpdate": 1789657584743,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -4849,6 +4849,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.205,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c6ce8ff7859b7ac2567798129e46e69db5b42ff4",
+          "message": "Widen perf_server.c's gap-tracking window again, 256 -> 1024 messages\n\nThe 256-bit window (previous commit) already cut RELIABLE's own reported\nloss_pct dramatically (from ~1.4-1.8% down to 0.2-0.6% at 1/5/10% tc loss),\nconfirming the earlier diagnosis. But the one remaining overflow and the one\nremaining finalize_gap_tracking() event in that same run *still* both showed\nwas_seen(expected_seq)=1 - even 256 messages (~5.1s) occasionally isn't\nenough for a rare, more-correlated burst of loss to fully drain.\n\n1024 messages (~20s at this rig's own 20ms/msg loss-scenario pacing) is\nlonger than run_perf.sh's own PERF_DURATION_SEC run length outright, so the\nwindow itself can no longer be the bottleneck for this test - at essentially\nno cost (128 bytes). Whatever loss_pct remains after this should be much\ncloser to genuine, unrecovered loss instead of a measurement artifact.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T00:03:54+09:00",
+          "tree_id": "0b29be0afced55fcc3f3b1ae037931035ef1cf41",
+          "url": "https://github.com/tsnlab/tickle/commit/c6ce8ff7859b7ac2567798129e46e69db5b42ff4"
+        },
+        "date": 1789657582307,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
             "unit": "ms"
           },
           {
