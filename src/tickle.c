@@ -539,6 +539,7 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
 static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub);
+static void advance_ack_seq_no(struct tt_Subscriber* sub);
 static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port);
 
@@ -1222,16 +1223,12 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
         TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
         sub->reliable_acknack_scheduled = false;
         sub->reliable_retry = 0;
-        // Skip past the unrecoverable hole so a future, unrelated gap can still be tracked
-        // instead of received_bitmap staying wedged on this one forever.
-        while (sub->received_bitmap != 0 && !(sub->received_bitmap & 1)) {
-            sub->received_bitmap >>= 1;
-            sub->ack_seq_no++;
-        }
-        if (sub->received_bitmap & 1) {
-            sub->received_bitmap >>= 1;
-            sub->ack_seq_no++;
-        }
+        // Give up on ack_seq_no itself - the same "advance past it" advance_ack_seq_no() already
+        // does for a real receipt, since from here on it makes no difference *why* nothing more
+        // is waiting on it. A different, still-outstanding gap further ahead in the window (if
+        // any) is untouched - it gets its own full tt_RELIABLE_RETRY budget against whatever
+        // ack_seq_no ends up being next, not a batch write-off in one go.
+        advance_ack_seq_no(sub);
         return;
     }
 
@@ -1241,6 +1238,26 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     if (!tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, sub)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
         sub->reliable_acknack_scheduled = false;
+    }
+}
+
+// Confirms sub->ack_seq_no itself (whether just received, or - acknack_retry()'s own call site -
+// given up on after too many retries) and advances past it, keeping received_bitmap correctly
+// realigned: bit j always means "received(ack_seq_no + j)", matching tt_AckNackHeader's own wire
+// convention exactly (see struct tt_Subscriber's own doc comment, tickle.h) - which is why this
+// shifts once *unconditionally* for this first step, not only inside the while loop below. A
+// previous version only shifted inside the while loop, silently misaligning every subsequent
+// bit's meaning by one position after any exact-match advance - found via run_perf.sh's real
+// tc/netem loss-injection scenarios reporting RELIABLE recovering only partially, not because
+// retransmission itself was failing, but because the ACKNACK requests it was reacting to were
+// silently asking for the wrong sequence numbers (already-received ones) while dropping the
+// genuinely still-missing one off the request entirely.
+static void advance_ack_seq_no(struct tt_Subscriber* sub) {
+    sub->ack_seq_no++;
+    sub->received_bitmap >>= 1;
+    while (sub->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
+        sub->received_bitmap >>= 1;
+        sub->ack_seq_no++;
     }
 }
 
@@ -1263,13 +1280,9 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     }
 
     if (seq_no == sub->ack_seq_no) {
-        sub->ack_seq_no++;
-        while (sub->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
-            sub->received_bitmap >>= 1;
-            sub->ack_seq_no++;
-        }
+        advance_ack_seq_no(sub);
     } else {
-        uint64_t offset = (uint64_t)seq_no - sub->ack_seq_no - 1;
+        uint64_t offset = (uint64_t)seq_no - sub->ack_seq_no;
         if (offset < tt_RELIABLE_BITMAP_BITS) {
             sub->received_bitmap |= (1ULL << offset);
         } else {

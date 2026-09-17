@@ -222,7 +222,7 @@ static void test_reliable_subscribe_gap_then_close(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(2, sub.ack_seq_no);         // still waiting on 2
-    EXPECT_TRUE(sub.received_bitmap == 1ULL); // bit 0 -> seq_no 3 (ack_seq_no + 1 + 0) received early
+    EXPECT_TRUE(sub.received_bitmap == 2ULL); // bit 1 -> seq_no 3 (ack_seq_no + 1) received early
     EXPECT_TRUE(sub.reliable_acknack_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // immediate ACKNACK
     EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
@@ -234,6 +234,53 @@ static void test_reliable_subscribe_gap_then_close(void) {
     EXPECT_EQ_U32(4, sub.ack_seq_no); // 2 lands, then absorbs the already-buffered bit for 3
     EXPECT_TRUE(sub.received_bitmap == 0);
     EXPECT_TRUE(!sub.reliable_acknack_scheduled);
+}
+
+// Regression test for a real bug found via run_perf.sh's own tc/netem loss-injection scenarios:
+// update_reliable_ack()'s exact-match branch used to advance ack_seq_no without also shifting
+// received_bitmap, silently misaligning every bit still tracking a *different*, still-outstanding
+// gap above it - by one position, permanently - the moment any earlier gap got filled by an exact
+// watermark match while later out-of-order samples were already buffered. On real hardware this
+// made ACKNACK requests silently point at already-received sequence numbers instead of the
+// genuinely missing one, capping RELIABLE's own recovery rate far below what tt_MAX_RELIABLE_HISTORY
+// and the retry budget should have allowed. This reproduces that exact shape: two out-of-order
+// arrivals buffered ahead of a gap, then the gap's own exact-match arrival, then checks the
+// bitmap still correctly tracks the *other* two samples afterwards - not a corrupted mix.
+static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, sub.ack_seq_no); // in order so far
+
+    tail = write_data(&node, 4, 400, 4); // seq_no 2, 3 both missing
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 5, 500, 5);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, sub.ack_seq_no);          // 2 still the watermark - neither 4 nor 5 fill it
+    EXPECT_TRUE(sub.received_bitmap == 12ULL); // bits 2,3: (ack_seq_no+2)=4, (ack_seq_no+3)=5
+
+    tail = write_data(&node, 2, 200, 2); // fills the watermark itself via an exact match
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    // ack_seq_no advances to 3 (only 2 was confirmed - 3 is still missing, so it must NOT jump
+    // any further); the bitmap must re-align to keep tracking 4 and 5 correctly relative to the
+    // new watermark, not silently start claiming 5 and 6 are the ones already received.
+    EXPECT_EQ_U32(3, sub.ack_seq_no);
+    EXPECT_TRUE(sub.received_bitmap == 6ULL); // bits 1,2: (ack_seq_no+1)=4, (ack_seq_no+2)=5
+
+    tail = write_data(&node, 3, 300, 3); // the last real gap closes
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(6, sub.ack_seq_no); // 3 lands, then absorbs the already-buffered 4 and 5 too
+    EXPECT_TRUE(sub.received_bitmap == 0);
 }
 
 // acknack_retry() must keep re-sending up to tt_RELIABLE_RETRY times, then give up: skip past
@@ -249,7 +296,7 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     init_subscriber_registered_on_node(&sub, &node, &topic);
 
     sub.ack_seq_no = 5;
-    sub.received_bitmap = 1ULL; // seq_no 5 still missing, seq_no 6 already received
+    sub.received_bitmap = 2ULL; // seq_no 5 still missing, seq_no 6 already received (bit j: ack_seq_no + j)
     sub.reliable_sender_node_id = REMOTE_NODE_ID;
     sub.reliable_sender_ip = TEST_SENDER_IP;
     sub.reliable_sender_port = TEST_SENDER_PORT;
@@ -265,7 +312,7 @@ static void test_acknack_retry_exhausted_gives_up(void) {
 
     EXPECT_TRUE(!sub.reliable_acknack_scheduled);
     EXPECT_TRUE(sub.received_bitmap == 0);
-    EXPECT_EQ_U32(6, sub.ack_seq_no); // skipped past seq_no 5, landed on the already-known 6
+    EXPECT_EQ_U32(7, sub.ack_seq_no); // skipped past seq_no 5, absorbed the already-known 6 too
 }
 
 // An incoming ACKNACK requesting a seq_no still in a reliable Publisher's cache must be
@@ -328,6 +375,7 @@ int main(void) {
     test_reliable_publish_caches_and_evicts();
     test_reliable_subscribe_in_order_no_acknack();
     test_reliable_subscribe_gap_then_close();
+    test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
     test_process_acknack_retransmits_cached_sample();
     test_process_acknack_ignored_for_besteffort_publisher();

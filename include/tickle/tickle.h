@@ -439,9 +439,12 @@ struct tt_Subscriber { // extends endpoint
     // Publisher's own seq_no starts posting from 1, never 0 (tt_Publisher_publish()'s
     // data_header->seq_no = pub->seq_no + 1).
     uint32_t ack_seq_no;
-    // bit j set: sample (ack_seq_no + 1 + j) has already been received out of order, ahead of the
-    // cumulative watermark - inverted (~received_bitmap) when building the wire ACKNACK's own
-    // "please resend" bitmap (tt_AckNackHeader), which uses the opposite bit direction.
+    // bit j set: sample (ack_seq_no + j) has already been received out of order, ahead of the
+    // cumulative watermark - matches tt_AckNackHeader's own "bit j: seq_no + j" wire convention
+    // exactly (bit 0 is ack_seq_no itself, always 0 here since ack_seq_no only ever advances once
+    // confirmed received - see update_reliable_ack()'s own comment on why that still needs its
+    // own explicit realigning shift, not just a plain compare), so building the wire "please
+    // resend" bitmap is a straight ~received_bitmap, no additional offset.
     uint64_t received_bitmap;
     // Address an outstanding-gap ACKNACK retry (acknack_retry(), tickle.c) resends to - the most
     // recent reliable DATA sender, since a scheduled retry fires outside process_packet()'s own
