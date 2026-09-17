@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789657338633,
+  "lastUpdate": 1789657341945,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -16458,6 +16458,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 822.119,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "73bee4c6a06f25fd3815c23484497a23dfd17a8a",
+          "message": "Widen perf_server.c's own gap-tracking window from 64 to 256 messages\n\nThe seen-seq bitset (previous commit) delivered the decisive result: at\nevery single overflow event, was_seen(expected_seq) was 1 - the application\ngenuinely received every sample this file ever counted as dropped. RELIABLE's\nown reported loss_pct (~1-2% even at low tc loss levels) was never real data\nloss - tickle.c's RELIABLE mechanism has been recovering everything all\nalong. The bug was entirely in this file's own measurement: GAP_WINDOW_BITS\n(64, a plain uint64_t) gave a recovering gap only ~1.3s (at this rig's own\n20ms/msg loss-scenario pacing) before being forcibly written off, and a burst\nof several losses close together - each individually recoverable, none ever\nexhausting its own tt_RELIABLE_RETRY budget - can legitimately take a few\nround-trips longer than that to fully drain, since every new DATA arrival\nre-sends the Subscriber's own ACKNACK while any gap is open (tickle.c's\nmaybe_arm_acknack_retry()), not only its 5ms retry timer.\n\nReplaces the single uint64_t pending_bitmap with a 4-word (256-bit, ~5.1s)\narray and matching gap_bit_get()/gap_bit_set()/gap_bit_clear()/\ngap_shift_right_1()/gap_pending_any()/gap_clear_all() helpers - track_arrival()\nand finalize_gap_tracking() now operate on it through these instead of raw\nuint64_t ops, otherwise unchanged in logic. 256 messages comfortably covers\nthe worst case actually observed (~90 messages) with real headroom.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T23:59:42+09:00",
+          "tree_id": "6b0287c28d658fe241ab6e08d0cf30d2e90a7363",
+          "url": "https://github.com/tsnlab/tickle/commit/73bee4c6a06f25fd3815c23484497a23dfd17a8a"
+        },
+        "date": 1789657340861,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.613,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 822.325,
             "unit": "Mbps"
           }
         ]
