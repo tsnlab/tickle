@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789601945583,
+  "lastUpdate": 1789603843096,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -11245,6 +11245,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.046984285714285715,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6a88de084e4165766a230cc6de2e4f6aa0741c42",
+          "message": "Pace loss-injection scenarios at 20ms/msg instead of firehose rate\n\nAt perf_client's firehose default (-i 0, as fast as poll() allows),\ntt_MAX_RELIABLE_HISTORY's 8-sample retained cache gets overwritten many\ntimes over before an ACKNACK round trip can complete, so a NACKed sample\nis almost always already evicted by the time a retry asks for it -\nRELIABLE's own retransmission never gets a real chance to recover\nanything. Confirmed on real hardware: the previous firehose-rate version\nof this scenario reported RELIABLE's own loss_pct *higher* than\nBEST_EFFORT's at every loss level, not lower.\n\nNew LOSS_TEST_INTERVAL_SEC (default 0.02s) paces just these scenarios -\ncomfortably longer than this rig's own one-way latency (a few ms,\nperf_server.c's own avg_latency_ms) - leaving the clean-link\nthroughput/reliable scenarios at their existing firehose rate, since\nthey're about maximum throughput, not recovery behavior.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T09:09:35+09:00",
+          "tree_id": "8c034d993b8d4f93880c5562fc9978ba2ec7b657",
+          "url": "https://github.com/tsnlab/tickle/commit/6a88de084e4165766a230cc6de2e4f6aa0741c42"
+        },
+        "date": 1789603841201,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.061290000000000004,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.048005714285714284,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05190142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.050571428571428566,
             "unit": "ms"
           }
         ]
