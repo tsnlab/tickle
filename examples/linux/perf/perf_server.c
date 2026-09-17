@@ -110,18 +110,21 @@ static uint32_t expected_seq = 0;
 // trivial `~received_bitmap` inversion to stay correct; this one is purely an in-process counter
 // with no wire encoding step, so it keeps its own original, simpler-to-derive convention instead.
 //
-// 256 bits (4 words), not tickle.c's own 64: a QoS roadmap #5 loss-injection investigation found
-// this file's own accounting was the dominant source of "loss" under real tc/netem 5-10% loss -
-// not tickle.c's RELIABLE mechanism, which a dedicated seen_seq bitset (below) proved *was*
+// 1024 bits (16 words), not tickle.c's own 64: a QoS roadmap #5 loss-injection investigation
+// found this file's own accounting was the dominant source of "loss" under real tc/netem 5-10%
+// loss - not tickle.c's RELIABLE mechanism, which a dedicated seen_seq bitset (below) proved *was*
 // delivering every single sample this file ever counted as dropped (was_seen(expected_seq) was 1
-// at every overflow). The recovery just legitimately took longer than a 64-message/~1.3s window
-// sometimes: every new DATA arrival re-sends the Subscriber's own ACKNACK while any gap is open
-// (tickle.c's maybe_arm_acknack_retry()), not only its 5ms retry timer, so a burst of several
-// losses close together can take a few round-trips to fully drain even though no single sample
-// ever exhausts its own tt_RELIABLE_RETRY budget. 256 messages (~5.1s at this rig's own 20ms/msg
-// loss-scenario pacing) comfortably covers what was actually observed (worst case ~90 messages).
+// at every overflow, and remained 1 even after widening this window from 64 to a first attempt at
+// 256 bits - rare bursts of correlated loss could still occasionally outlast even that). Every new
+// DATA arrival re-sends the Subscriber's own ACKNACK while any gap is open (tickle.c's
+// maybe_arm_acknack_retry()), not only its 5ms retry timer, so a burst of several losses close
+// together can take a few round-trips to fully drain even though no single sample ever exhausts
+// its own tt_RELIABLE_RETRY budget. 1024 messages (~20s at this rig's own 20ms/msg loss-scenario
+// pacing) exceeds this rig's own loss-scenario run length (PERF_DURATION_SEC, run_perf.sh) outright
+// - the tracking window can no longer be the bottleneck; genuinely making it this run's whole
+// deferred-judgment horizon, at effectively no cost (128 bytes).
 #define GAP_WORD_BITS 64
-#define GAP_WINDOW_WORDS 4
+#define GAP_WINDOW_WORDS 16
 #define GAP_WINDOW_BITS (GAP_WINDOW_WORDS * GAP_WORD_BITS)
 static uint64_t pending_bitmap[GAP_WINDOW_WORDS] = {0};
 
