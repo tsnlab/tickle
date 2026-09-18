@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789733382750,
+  "lastUpdate": 1789733458133,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -19040,6 +19040,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 async latency",
             "value": 0.04644857142857143,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "749da16f21e5400675c286aa2e5729cfe8863318",
+          "message": "Document the re-tested find_endpoint() == NULL diagnostic's real (negative) result\n\nThe silent-startup-drop hypothesis is confirmed real as a phenomenon (firehose\nscenarios show clusters of sequential early-seq_no drops right at run start),\nbut ruled out as an explanation for Milestone 18's own residual ~0.1%\nloss_pct floor: the paced loss1/5/10_reliable scenarios that actually produce\nthat floor saw only 1/0/0 such drops, and the one occurrence wasn't even in\nthe startup window (seq_no 9004, deep into an already-healthy stream).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:09:17+09:00",
+          "tree_id": "f9934062e3bf7c4a89e0f325c27bed8b07dcc545",
+          "url": "https://github.com/tsnlab/tickle/commit/749da16f21e5400675c286aa2e5729cfe8863318"
+        },
+        "date": 1789733456967,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04881714285714285,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.047395714285714284,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04427142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.047721428571428574,
             "unit": "ms"
           }
         ]
