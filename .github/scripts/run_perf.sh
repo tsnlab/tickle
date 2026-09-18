@@ -115,6 +115,7 @@ printf '{"build":"fail","integration":"fail","commit":"%s","commit_short":"%s","
 write_dashboard_fragment() {
     local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps integ smsg_rate smsg_recv smsg_dur
     local reliable_1pct_mbps reliable_5pct_mbps reliable_10pct_mbps
+    local be_loss_1pct be_loss_5pct be_loss_10pct rel_loss_1pct rel_loss_5pct rel_loss_10pct
 
     rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
     rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
@@ -132,6 +133,16 @@ write_dashboard_fragment() {
     reliable_1pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss1_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
     reliable_5pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss5_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
     reliable_10pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss10_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
+    # BEST_EFFORT vs RELIABLE loss_pct at each level - the same direct comparison the job summary's
+    # own table (summarize(), above) shows per push, mirrored here so the persistent dashboard
+    # (https://tsnlab.github.io/tickle/dev/bench/) carries it across runs too, not just the one-off
+    # step summary. Same three fixed loss levels as the throughput fields just above.
+    be_loss_1pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss1_besteffort_server.log" 2>/dev/null | tail -1 || true)
+    be_loss_5pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss5_besteffort_server.log" 2>/dev/null | tail -1 || true)
+    be_loss_10pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss10_besteffort_server.log" 2>/dev/null | tail -1 || true)
+    rel_loss_1pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss1_reliable_server.log" 2>/dev/null | tail -1 || true)
+    rel_loss_5pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss5_reliable_server.log" 2>/dev/null | tail -1 || true)
+    rel_loss_10pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss10_reliable_server.log" 2>/dev/null | tail -1 || true)
 
     # A round trip happened at all (ping got replies, throughput parsed) => integration pass.
     integ=fail
@@ -159,7 +170,13 @@ write_dashboard_fragment() {
   "smallmsg_rate_msgs_s": ${smsg_rate},
   "reliable_throughput_1pct_mbps": ${reliable_1pct_mbps:-null},
   "reliable_throughput_5pct_mbps": ${reliable_5pct_mbps:-null},
-  "reliable_throughput_10pct_mbps": ${reliable_10pct_mbps:-null}
+  "reliable_throughput_10pct_mbps": ${reliable_10pct_mbps:-null},
+  "besteffort_loss_1pct_pct": ${be_loss_1pct:-null},
+  "besteffort_loss_5pct_pct": ${be_loss_5pct:-null},
+  "besteffort_loss_10pct_pct": ${be_loss_10pct:-null},
+  "reliable_loss_1pct_pct": ${rel_loss_1pct:-null},
+  "reliable_loss_5pct_pct": ${rel_loss_5pct:-null},
+  "reliable_loss_10pct_pct": ${rel_loss_10pct:-null}
 }
 EOF
 }

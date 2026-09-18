@@ -145,6 +145,19 @@ def _row(entry):
     rel5 = _num(pf.get("reliable_throughput_5pct_mbps"), "{:.0f}")
     rel10 = _num(pf.get("reliable_throughput_10pct_mbps"), "{:.0f}")
 
+    # BEST_EFFORT vs RELIABLE loss_pct at each level, side by side in one cell ("besteffort /
+    # reliable") - the same direct comparison run_perf.sh's own job-summary table shows per push,
+    # carried into the persistent dashboard here. None (rendered "·") if either side is missing,
+    # same convention every other perf field already uses before a first successful HIL run.
+    def loss_pair(pct):
+        be = _num(pf.get(f"besteffort_loss_{pct}pct_pct"), "{:.1f}")
+        rel = _num(pf.get(f"reliable_loss_{pct}pct_pct"), "{:.1f}")
+        return f"{be} / {rel}" if be is not None and rel is not None else None
+
+    loss1 = loss_pair(1)
+    loss5 = loss_pair(5)
+    loss10 = loss_pair(10)
+
     def bt_cell(d, key):
         return _cell(d.get(key, "") if has_bt else "")
 
@@ -162,6 +175,7 @@ def _row(entry):
         + pf_cell("build") + pf_cell("integration")
         + pf_txt(tput) + pf_txt(rtt) + pf_txt(msg)
         + pf_txt(rel1) + pf_txt(rel5) + pf_txt(rel10)
+        + pf_txt(loss1) + pf_txt(loss5) + pf_txt(loss10)
         + "</tr>"
     )
 
@@ -169,7 +183,7 @@ def _row(entry):
 def render_block(status):
     history = status.get("history") or []
     body = "\n".join(_row(e) for e in history) or (
-        '<tr><td colspan="15" style="text-align:center;color:#999">no runs recorded yet</td></tr>'
+        '<tr><td colspan="18" style="text-align:center;color:#999">no runs recorded yet</td></tr>'
     )
     updated = html.escape(status.get("updated", ""))
     return f"""{MARK_BEGIN}
@@ -192,13 +206,14 @@ def render_block(status):
         <th rowspan="2">Commit</th><th rowspan="2">Date (UTC)</th>
         <th colspan="3">Linux x86-64</th>
         <th colspan="2">FreeRTOS RISC-V (QEMU)</th>
-        <th colspan="8">Raspberry Pi (HIL, arm64)</th>
+        <th colspan="11">Raspberry Pi (HIL, arm64)</th>
       </tr>
       <tr>
         <th>Build</th><th>Unit</th><th>Integ.</th>
         <th>Build</th><th>Integ.</th>
         <th>Build</th><th>Integ.</th><th>Tput ↑/↓<br>Mbps</th><th>RTT<br>ms</th><th>Small-msg<br>msg/s</th>
         <th>Reliable<br>Tput@1%</th><th>Reliable<br>Tput@5%</th><th>Reliable<br>Tput@10%</th>
+        <th>Loss@1%<br>(BE / Rel)</th><th>Loss@5%<br>(BE / Rel)</th><th>Loss@10%<br>(BE / Rel)</th>
       </tr>
     </thead>
     <tbody>
