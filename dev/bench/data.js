@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789735503075,
+  "lastUpdate": 1789735506395,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -23019,6 +23019,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030460357666015625,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "090c79c86e3904b5d41d287835a33e8d84193da1",
+          "message": "Fix perf_server.c's own track_arrival() false-positive drop counting\n\nFound via PLAN.md's Milestone 18 residual loss_pct floor investigation's own\nground-truth seen_seq[] diagnostic: for loss1/5/10_reliable, track_arrival()\nreported 32/38/54 dropped while a direct scan found only 0/0/3 genuinely\nmissing - the windowed heuristic was massively over-counting, and that\nover-counting (not real RELIABLE-level loss) is almost certainly the actual\n~0.1% floor this whole investigation has been chasing.\n\nRoot cause: the delta==0 (exact-match) branch shifts pending_bitmap *before*\nchecking bit0 for the next absorb - copied from tt_Subscriber's own\nadvance_ack_seq_no() (tickle.c), which is correct there under its own \"+j\"\nbit convention, but wrong here under this file's own deliberately different\n\"+1+j\" convention (see this file's own comment on why the offset differs).\nShifting first silently discards bit0's real meaning - whether the position\nexpected_seq was just advanced *to* had already arrived out of order - every\ntime a recovered gap's own immediate successor had already arrived (an\nunremarkable, frequent shape under real RELIABLE recovery). That position\nthen stays permanently \"unconfirmed\" until a later overflow/finalize event\nmiscounts it as a genuine drop.\n\nFixed to check-then-shift instead. A standalone simulation (2000 trials, 0%\nreal loss, ~5% of arrivals reordered by up to 20 positions - the realistic\nRELIABLE-recovery shape) confirms: the old code reported a false drop on\n100% of trials; the fixed code matches ground truth exactly except for a\nhandful of trials where the synthetic shuffle's own compounding swaps\noccasionally exceeded GAP_WINDOW_BITS (1024), a test-harness artifact, not a\nremaining bug.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:43:53+09:00",
+          "tree_id": "ecb9ce2a02691fe65cca9f4964b8e77c8925388f",
+          "url": "https://github.com/tsnlab/tickle/commit/090c79c86e3904b5d41d287835a33e8d84193da1"
+        },
+        "date": 1789735505205,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9885589054652623,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9678897857666016,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030460357666015625,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473709106445312,
             "unit": "Mbit/s"
           }
         ]
