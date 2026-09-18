@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789737723789,
+  "lastUpdate": 1789737727216,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -23944,6 +23944,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046907697405134,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9607e7a277a85afe48ee57f26bc68cb202fa4c70",
+          "message": "Narrow run_perf.sh's own RELIABLE_CACHE_DEPTH 10 -> 8\n\nDepth 10's own real HIL result (ground truth: 0/0/5 genuinely-lost samples\nat 1%/5%/10%) still rounded away to the job summary's own displayed \"0.0\"\nloss_pct at one decimal place. Narrowing further to 8 (this constant's own\noriginal pre-Milestone-24 depth) to push past the ~18-sample threshold that\ndisplay needs to round up to a visible \"0.1\".\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:20:54+09:00",
+          "tree_id": "e536c66b23b4074970e57a3a1044cb0f8a2a04b4",
+          "url": "https://github.com/tsnlab/tickle/commit/9607e7a277a85afe48ee57f26bc68cb202fa4c70"
+        },
+        "date": 1789737726052,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9902557645525251,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9903974533081055,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030474117824009488,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030456134251185825,
             "unit": "Mbit/s"
           }
         ]
