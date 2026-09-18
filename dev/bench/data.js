@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789738926707,
+  "lastUpdate": 1789738929902,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24314,6 +24314,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046471732003348,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4b8d2c559973c42d5c70f796de21e87f743eaf8d",
+          "message": "Document Milestone 26: post-Milestone-25 loss-injection harness re-tuning\n\nReal HIL search across depth (64/16/10/8) and interval (280us/140us) landed\non depth=8 (via the new -K flag) + 140us, producing a real, visibly nonzero\nloss10_reliable loss_pct (0.0 -> 0.3) while loss1/5_reliable stay clean -\nthe target differentiation shape.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:40:56+09:00",
+          "tree_id": "911153f5b79dcaa2769b252fab1e64ab1a9ed9cd",
+          "url": "https://github.com/tsnlab/tickle/commit/4b8d2c559973c42d5c70f796de21e87f743eaf8d"
+        },
+        "date": 1789738928769,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9904068538120815,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9899733407156808,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030456134251185825,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030460357666015625,
             "unit": "Mbit/s"
           }
         ]
