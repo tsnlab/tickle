@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789737825166,
+  "lastUpdate": 1789737828808,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -38410,6 +38410,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 9.8,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9607e7a277a85afe48ee57f26bc68cb202fa4c70",
+          "message": "Narrow run_perf.sh's own RELIABLE_CACHE_DEPTH 10 -> 8\n\nDepth 10's own real HIL result (ground truth: 0/0/5 genuinely-lost samples\nat 1%/5%/10%) still rounded away to the job summary's own displayed \"0.0\"\nloss_pct at one decimal place. Narrowing further to 8 (this constant's own\noriginal pre-Milestone-24 depth) to push past the ~18-sample threshold that\ndisplay needs to round up to a visible \"0.1\".\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:20:54+09:00",
+          "tree_id": "e536c66b23b4074970e57a3a1044cb0f8a2a04b4",
+          "url": "https://github.com/tsnlab/tickle/commit/9607e7a277a85afe48ee57f26bc68cb202fa4c70"
+        },
+        "date": 1789737827617,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
             "unit": "%"
           },
           {
