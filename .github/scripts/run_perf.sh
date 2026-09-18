@@ -45,15 +45,18 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # 0 (firehose) confirmed the other end: RELIABLE's own loss_pct jumped to ~10-14% at *every* tc
 # loss level, no longer differentiating by level at all, and ran *worse* than BEST_EFFORT's own -
 # pure ACKNACK/retransmit overhead on an already-saturated link, this comment's own original
-# warning. Between the two ends, the transition turned out to be a sharp cliff sitting almost
-# entirely inside the 10% tc loss row specifically, not a smooth slope across all three: 80us
-# overshot badly (0.9%/3.8%/8.8% at 1%/5%/10%), 350us landed flat back at ~0.1% everywhere, 170us
-# kept 1%/5% at that same clean ~0.1% but sent 10% all the way to 9.8% (matching BEST_EFFORT's own
-# ~10.1% outright - a full cliff, not partial loss), and 280us found a real partial point on that
-# same cliff (1%/5% still ~0.1%, 10% at 5.2% - real, but roughly half of BEST_EFFORT's own rate,
-# more than "a little"). Nudging once more toward the clean (350us) side to land closer to a small
-# but genuinely nonzero loss at 10% specifically, while keeping 1%/5% at their own already-settled
-# ~0.1% - 310us next.
+# warning. Between the two ends sits a sharp cliff almost entirely inside the 10% tc loss row
+# specifically, not a smooth slope across all three - real hardware search results, narrowest gap
+# first: 310us and 350us both landed flat at RELIABLE's own clean ~0.1% for every level; 280us kept
+# 1%/5% at that same ~0.1% but put 10% at a real, partial 5.2% (BEST_EFFORT's own rate there is
+# ~10%); 170us pushed 10% all the way to 9.8%, matching BEST_EFFORT outright (a full cliff, not
+# partial); 80us and below overshoot badly enough that even 1% fails to recover much of anything.
+# 280us is the value here: 1%/5% land clean, 10% shows real, meaningfully-partial (not
+# catastrophic) loss - the qualitative shape asked for. The 280-to-310us gap flipping from
+# "partial loss" to "fully clean" in just 30us confirms this cliff is close to a step function,
+# not a gradual ramp - a few points of run-to-run jitter in 10%'s own reported loss_pct here should
+# be expected (this rig's own real timing, not a bug), but the *shape* (1%/5% clean, 10% not)
+# should hold up run to run even if the exact 10% number moves around some.
 #
 # Separately (and unaffected by any of this): a faster send interval also raises the sample count
 # for the same PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct
@@ -62,7 +65,7 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # 1ms, and 0.5ms already (1%/5%/10% configured consistently comes back within ~0.5 points of the
 # actual target); firehose's own besteffort row (1.0/5.0/10.0) confirms the same holds even at the
 # extreme.
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00031}"
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00028}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
