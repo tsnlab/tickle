@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789691600120,
+  "lastUpdate": 1789691603046,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26535,6 +26535,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 8,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ac7b3a7d6c15a5c0893bbfe0854cc4920de2a53f",
+          "message": "Fold a third 280us data point into the send-interval comment\n\nA third run at 280us came back 5%=1.7%/10%=8.0%, not the previous two runs'\n5%=0.1% - so this cliff's own noise extends further than just 10%'s exact\nnumber varying (5.2%/9.6%/8.0%): occasionally 5% drifts too. What holds up\nacross all three runs is the qualitative shape (1% always clean, 10% never\nis, loss trending up with tc's own configured level) rather than any\nspecific number at 5%/10%. Documented that averaging multiple runs per loss\nlevel would be the more principled fix for tighter reproducibility, since no\nsingle fixed interval stopped this cliff's own position from drifting.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T09:30:32+09:00",
+          "tree_id": "c9de7cea3e7c358483cc31fba4c2ab4cb5d8b49d",
+          "url": "https://github.com/tsnlab/tickle/commit/ac7b3a7d6c15a5c0893bbfe0854cc4920de2a53f"
+        },
+        "date": 1789691601978,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.8,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 3.3,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 2.7,
             "unit": "%"
           }
         ]
