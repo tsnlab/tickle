@@ -43,7 +43,8 @@
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rmw/error_handling.h"
-#include "rmw/init.h" // rmw_context_t
+#include "rmw/event.h" // rmw_event_t, RMW_EVENT_* - check_events()
+#include "rmw/init.h"  // rmw_context_t
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/time.h" // rmw_time_t
@@ -178,15 +179,52 @@ static bool check_guard_conditions(rmw_guard_conditions_t* guard_conditions, boo
     return any_ready;
 }
 
-// rmw_tickle doesn't implement rmw_*_event_init() yet (no PLAN.md milestone covers events) - this
-// array should always be empty in practice; handled defensively (never ready) rather than assumed.
-static void finalize_events(rmw_events_t* events) {
+// QoS roadmap #2 (DEADLINE) + #3 (LIVELINESS) - the rmw_tickle_event_status_t whose unread_count
+// governs this rmw_event_t's own readiness, or NULL for an event type this rmw doesn't implement
+// (degrades to "never ready" rather than crashing - rmw_publisher_event_init()/rmw_subscription_
+// event_init() already refuse to hand out an rmw_event_t for anything not covered here, so this
+// should only ever see the four cases below, but a defensive default costs nothing).
+static rmw_tickle_event_status_t* event_status_for(const rmw_event_t* event) {
+    switch (event->event_type) {
+    case RMW_EVENT_OFFERED_DEADLINE_MISSED:
+        return &((rmw_tickle_publisher_t*)event->data)->deadline_missed;
+    case RMW_EVENT_LIVELINESS_LOST:
+        return &((rmw_tickle_publisher_t*)event->data)->liveliness_lost;
+    case RMW_EVENT_REQUESTED_DEADLINE_MISSED:
+        return &((rmw_tickle_subscriber_t*)event->data)->deadline_missed;
+    case RMW_EVENT_LIVELINESS_CHANGED: {
+        rmw_tickle_liveliness_changed_status_t* status = &((rmw_tickle_subscriber_t*)event->data)->liveliness_changed;
+        // Ready if *either* side has something unread - rmw_take_event() (rmw_event.c) reads
+        // both alive/not_alive in one call, so readiness only needs to reflect "is there
+        // anything at all to report," not which side.
+        return atomic_load(&status->alive.unread_count) > 0 ? &status->alive : &status->not_alive;
+    }
+    default:
+        return NULL;
+    }
+}
+
+// An event's own "ready" state is consumed by a *separate* rmw_take_event() call the app makes
+// after rmw_wait() returns - not by rmw_wait() itself - exactly like check_subscriptions()'s own
+// queue_count > 0 peek that rmw_take() (not rmw_wait()) actually drains. So, unlike check_guard_
+// conditions() above, finalize here still only *peeks*: it nulls out entries that aren't ready
+// (same contract every other check_*() follows) but never mutates unread_count itself.
+static bool check_events(rmw_events_t* events, bool finalize) {
     if (NULL == events) {
-        return;
+        return false;
     }
+    bool any_ready = false;
     for (size_t i = 0; i < events->event_count; ++i) {
-        events->events[i] = NULL;
+        const rmw_event_t* event = (const rmw_event_t*)events->events[i];
+        rmw_tickle_event_status_t* status = event_status_for(event);
+        bool ready = NULL != status && atomic_load(&status->unread_count) > 0;
+        if (ready) {
+            any_ready = true;
+        } else if (finalize) {
+            events->events[i] = NULL;
+        }
     }
+    return any_ready;
 }
 
 static void finalize_all(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
@@ -195,7 +233,7 @@ static void finalize_all(rmw_subscriptions_t* subscriptions, rmw_guard_condition
     check_guard_conditions(guard_conditions, true);
     check_services(services, true);
     check_clients(clients, true);
-    finalize_events(events);
+    check_events(events, true);
 }
 
 rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
@@ -226,7 +264,8 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
         bool ready_gcs = check_guard_conditions(guard_conditions, false);
         bool ready_svcs = check_services(services, false);
         bool ready_clients = check_clients(clients, false);
-        if (ready_subs || ready_gcs || ready_svcs || ready_clients) {
+        bool ready_events = check_events(events, false);
+        if (ready_subs || ready_gcs || ready_svcs || ready_clients || ready_events) {
             finalize_all(subscriptions, guard_conditions, services, clients, events);
             pthread_mutex_unlock(&context_impl->wait_mutex);
             return RMW_RET_OK;

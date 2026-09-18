@@ -15,11 +15,13 @@
 // below), replacing the fixed placeholder capacity this milestone originally shipped with.
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
-#include <tickle/hal.h> // tt_ret_t/tt_RET_OK/tt_get_ns
+#include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK/tt_get_ns
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -43,6 +45,17 @@
 // is next called: callbacks->from_tickle() is what actually performs the deep copy (rosidl_
 // runtime_c__String__assign() et al. - see ros2_adapter.py's own emit_from_tickle() doc comment),
 // producing a ROS message independently owned from that point on, safe to queue for later.
+// Wakes anyone blocked in rmw_wait() - shared by subscriber_callback() (a newly queued message),
+// check_subscription_deadline() (a fresh deadline miss), and check_subscription_liveliness() (an
+// alive_count change) - same wait_mutex/wait_cond broadcast pattern every one of them needs, for
+// the identical reason (rmw_tickle_context_impl_t's own doc comment, rmw_tickle.h).
+static void wake_wait_cond(rmw_tickle_node_t* node_impl) {
+    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)node_impl->context->impl;
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+}
+
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     rmw_tickle_subscriber_t* sub_impl =
         (rmw_tickle_subscriber_t*)((char*)tt_sub - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
@@ -56,6 +69,12 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
         sub_impl->allocator.deallocate(ros_message, sub_impl->allocator.state);
         return;
     }
+
+    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_subscriber_t.last_activity_time's own doc
+    // comment. This function already runs under node->mutex (its own module doc comment above),
+    // the same lock check_subscription_deadline() reads this under - harmless to set even when
+    // deadline_period_ns is 0 (unused in that case).
+    sub_impl->last_activity_time = tt_get_ns();
 
     pthread_mutex_lock(&sub_impl->queue_mutex);
     if (sub_impl->queue_count == sub_impl->queue_capacity) {
@@ -76,13 +95,59 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     sub_impl->queue_count++;
     pthread_mutex_unlock(&sub_impl->queue_mutex);
 
-    // Wake anyone blocked in rmw_wait() on this queue becoming non-empty - see rmw_tickle_
-    // context_impl_t's own doc comment (rmw_tickle.h) for why the broadcast must happen under
-    // wait_mutex even though queue_count itself is guarded by the separate queue_mutex above.
-    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)sub_impl->node->context->impl;
-    pthread_mutex_lock(&context_impl->wait_mutex);
-    pthread_cond_broadcast(&context_impl->wait_cond);
-    pthread_mutex_unlock(&context_impl->wait_mutex);
+    // Wake anyone blocked in rmw_wait() on this queue becoming non-empty - wake_wait_cond()'s own
+    // doc comment explains why the broadcast must happen under wait_mutex even though queue_count
+    // itself is guarded by the separate queue_mutex above.
+    wake_wait_cond(sub_impl->node);
+}
+
+// QoS roadmap #2 (DEADLINE) - see rmw_publisher.c's own check_publisher_deadline() doc comment,
+// same reasoning/threading, for a Subscription's REQUESTED_DEADLINE_MISSED instead.
+static void check_subscription_deadline(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node;
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
+    if (time - sub_impl->last_activity_time >= sub_impl->deadline_period_ns) {
+        atomic_fetch_add(&sub_impl->deadline_missed.total_count, 1);
+        atomic_fetch_add(&sub_impl->deadline_missed.unread_count, 1);
+        wake_wait_cond(sub_impl->node); // see its own doc comment
+    }
+    // Deadline monitoring simply stops here on a reschedule failure - see rmw_publisher.c's own
+    // check_publisher_deadline() doc comment on this same pattern.
+    (void)tt_Node_schedule(&sub_impl->node->tickle_node, time + sub_impl->deadline_period_ns,
+                           check_subscription_deadline, sub_impl);
+}
+
+// QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED's own periodic check, generalizing
+// check_liveliness()'s (tickle.c) existing per-node peer-death detection into "how many
+// Publishers on my topic are alive right now" (rmw_tickle_count_matching_locked(), rmw_graph.c).
+// Fires from inside tt_Node_poll() - poll_thread already holds node->mutex (rmw_tickle_node_t's
+// own doc comment) - so this calls the *_locked() variant directly, never count_matching()/
+// rmw_count_publishers() (which take that same mutex themselves and would self-deadlock here -
+// see rmw_tickle_count_matching_locked()'s own doc comment, rmw_tickle.h).
+static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node;
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
+    size_t current = rmw_tickle_count_matching_locked(sub_impl->node, sub_impl->rmw_subscription.topic_name,
+                                                      tt_KIND_TOPIC_PUBLISHER);
+    rmw_tickle_liveliness_changed_status_t* status = &sub_impl->liveliness_changed;
+    if ((int)current > status->last_alive_count) {
+        int delta = (int)current - status->last_alive_count;
+        atomic_fetch_add(&status->alive.total_count, delta);
+        atomic_fetch_add(&status->alive.unread_count, delta);
+        wake_wait_cond(sub_impl->node);
+    } else if ((int)current < status->last_alive_count) {
+        int delta = status->last_alive_count - (int)current;
+        atomic_fetch_add(&status->not_alive.total_count, delta);
+        atomic_fetch_add(&status->not_alive.unread_count, delta);
+        wake_wait_cond(sub_impl->node);
+    }
+    atomic_store(&status->alive_count, (int)current);
+    status->last_alive_count = (int)current;
+
+    // Liveliness monitoring simply stops here on a reschedule failure - same reasoning as check_
+    // subscription_deadline()'s own identical pattern just above.
+    (void)tt_Node_schedule(&sub_impl->node->tickle_node, time + sub_impl->liveliness_lease_ns,
+                           check_subscription_liveliness, sub_impl);
 }
 
 rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
@@ -196,6 +261,22 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // subscriber itself.
     sub_impl->tickle_subscriber.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
 
+    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_subscriber_t.deadline_period_ns's own doc
+    // comment. rmw_qos.c already accepted any finite qos.deadline; RMW_QOS_DEADLINE_DEFAULT
+    // ({0,0}) leaves deadline_period_ns at its zero_allocate() default (0 = not requested).
+    rmw_duration_t deadline_ns = rmw_time_total_nsec(qos_profile->deadline);
+    if (deadline_ns > 0) {
+        sub_impl->deadline_period_ns = (uint64_t)deadline_ns;
+        sub_impl->last_activity_time = tt_get_ns();
+        tt_Node_interrupt(&node_impl->tickle_node);
+        pthread_mutex_lock(&node_impl->mutex);
+        // A failure here just leaves deadline monitoring inactive for this Subscription - see
+        // rmw_publisher.c's own check_publisher_deadline() doc comment on this same pattern.
+        (void)tt_Node_schedule(&node_impl->tickle_node, tt_get_ns() + sub_impl->deadline_period_ns,
+                               check_subscription_deadline, sub_impl);
+        pthread_mutex_unlock(&node_impl->mutex);
+    }
+
     return &sub_impl->rmw_subscription;
 }
 
@@ -212,6 +293,15 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
 
     tt_Node_interrupt(&sub_impl->node->tickle_node);
     pthread_mutex_lock(&sub_impl->node->mutex);
+    // QoS roadmap #2/#3 (DEADLINE/LIVELINESS) - cancel any still-armed check before the
+    // subscriber it closes over is freed below; both are no-ops if never started (tt_Node_
+    // unschedule() just finds nothing matching).
+    if (sub_impl->deadline_period_ns != 0) {
+        tt_Node_unschedule(&sub_impl->node->tickle_node, check_subscription_deadline, sub_impl);
+    }
+    if (sub_impl->liveliness_lease_ns != 0) {
+        tt_Node_unschedule(&sub_impl->node->tickle_node, check_subscription_liveliness, sub_impl);
+    }
     tt_Subscriber_destroy(&sub_impl->tickle_subscriber);
     pthread_mutex_unlock(&sub_impl->node->mutex);
 
@@ -304,18 +394,48 @@ rmw_ret_t rmw_subscription_get_actual_qos(const rmw_subscription_t* subscription
 }
 
 // See rmw_publisher.c's own rmw_publisher_event_init() doc comment - same reasoning, for
-// subscription-side QoS events (liveliness_changed, requested_deadline_missed, ...).
+// subscription-side QoS events. QoS roadmap #2 (DEADLINE) and #3 (LIVELINESS) are done -
+// RMW_EVENT_REQUESTED_DEADLINE_MISSED/RMW_EVENT_LIVELINESS_CHANGED are real, queryable events now
+// (rmw_take_event(), rmw_event.c); anything else still returns RMW_RET_UNSUPPORTED.
 rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscription_t* subscription,
                                       rmw_event_type_t event_type) {
-    (void)rmw_event;
-    (void)event_type;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(rmw_event, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
     if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
-    RMW_SET_ERROR_MSG("rmw_tickle does not support any subscription QoS events yet");
-    return RMW_RET_UNSUPPORTED;
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
+    switch (event_type) {
+    case RMW_EVENT_REQUESTED_DEADLINE_MISSED:
+        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+        rmw_event->data = sub_impl;
+        rmw_event->event_type = event_type;
+        return RMW_RET_OK;
+    case RMW_EVENT_LIVELINESS_CHANGED:
+        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+        rmw_event->data = sub_impl;
+        rmw_event->event_type = event_type;
+        // Lazy, idempotent start (see rmw_tickle_subscriber_t.liveliness_lease_ns's own doc
+        // comment) - only the first rmw_subscription_event_init() call for this event type
+        // actually arms the periodic check; a later one just rewires the same rmw_event_t.
+        if (sub_impl->liveliness_lease_ns == 0) {
+            rmw_duration_t lease_ns = rmw_time_total_nsec(sub_impl->qos.liveliness_lease_duration);
+            sub_impl->liveliness_lease_ns =
+                lease_ns > 0 ? (uint64_t)lease_ns : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
+            tt_Node_interrupt(&sub_impl->node->tickle_node);
+            pthread_mutex_lock(&sub_impl->node->mutex);
+            // A failure here just leaves liveliness monitoring inactive for this
+            // Subscription - same reasoning as the deadline scheduling above.
+            (void)tt_Node_schedule(&sub_impl->node->tickle_node, tt_get_ns() + sub_impl->liveliness_lease_ns,
+                                   check_subscription_liveliness, sub_impl);
+            pthread_mutex_unlock(&sub_impl->node->mutex);
+        }
+        return RMW_RET_OK;
+    default:
+        RMW_SET_ERROR_MSG("rmw_tickle does not support this subscription QoS event yet");
+        return RMW_RET_UNSUPPORTED;
+    }
 }
 
 // See rmw_publisher.c's own loaned-message stubs (rmw_borrow_loaned_message() et al.) doc comment

@@ -14,11 +14,12 @@
 // yes/no - RELIABILITY (QoS roadmap #5) - by wiring a struct tt_ReliableCache into the Publisher.
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
 #include <tickle/config.h> // tt_MAX_RELIABLE_HISTORY
-#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK, tt_get_ns()
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -28,10 +29,39 @@
 #include "rmw/event.h"
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw/time.h" // rmw_time_total_nsec() - QoS roadmap #2 (DEADLINE)
 #include "rmw/types.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
+
+// QoS roadmap #2 (DEADLINE) - runs once per pub_impl->deadline_period_ns (rescheduled
+// unconditionally every time, a steady period, matching DDS's own "one miss per elapsed period
+// with no write" semantics), checking whether rmw_publish() updated last_activity_time since the
+// last check. Fires from inside tt_Node_poll() - poll_thread already holds node->mutex around
+// that whole call (rmw_tickle_node_t's own doc comment) - so last_activity_time is safe to read
+// here without a separate lock, same as rmw_publish() writing it under that same lock.
+static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node;
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)param;
+    if (time - pub_impl->last_activity_time >= pub_impl->deadline_period_ns) {
+        atomic_fetch_add(&pub_impl->deadline_missed.total_count, 1);
+        atomic_fetch_add(&pub_impl->deadline_missed.unread_count, 1);
+        // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/
+        // wait_cond subscriber_callback() (rmw_subscription.c) already broadcasts on for a newly
+        // queued message, for the identical reason (rmw_tickle_context_impl_t's own doc comment,
+        // rmw_tickle.h).
+        rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)pub_impl->node->context->impl;
+        pthread_mutex_lock(&context_impl->wait_mutex);
+        pthread_cond_broadcast(&context_impl->wait_cond);
+        pthread_mutex_unlock(&context_impl->wait_mutex);
+    }
+    // Deadline monitoring simply stops here on a reschedule failure (tt_MAX_SCHEDULER_LENGTH
+    // exhausted) - no logging facility in this package to report it through, and no return path
+    // out of a scheduled void callback anyway.
+    (void)tt_Node_schedule(&pub_impl->node->tickle_node, time + pub_impl->deadline_period_ns, check_publisher_deadline,
+                           pub_impl);
+}
 
 rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
                                       const char* topic_name, const rmw_qos_profile_t* qos_profile,
@@ -191,6 +221,22 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         pub_impl->tickle_publisher.durable_cache = pub_impl->durable_cache;
     }
 
+    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.deadline_period_ns's own doc comment.
+    // rmw_qos.c already accepted any finite qos.deadline; RMW_QOS_DEADLINE_DEFAULT ({0,0}) leaves
+    // deadline_period_ns at its zero_allocate() default (0 = not requested, no cost).
+    rmw_duration_t deadline_ns = rmw_time_total_nsec(qos_profile->deadline);
+    if (deadline_ns > 0) {
+        pub_impl->deadline_period_ns = (uint64_t)deadline_ns;
+        pub_impl->last_activity_time = tt_get_ns();
+        tt_Node_interrupt(&node_impl->tickle_node);
+        pthread_mutex_lock(&node_impl->mutex);
+        // A failure here (tt_MAX_SCHEDULER_LENGTH exhausted) just leaves deadline monitoring
+        // inactive for this Publisher - no logging facility in this package to report it through.
+        (void)tt_Node_schedule(&node_impl->tickle_node, tt_get_ns() + pub_impl->deadline_period_ns,
+                               check_publisher_deadline, pub_impl);
+        pthread_mutex_unlock(&node_impl->mutex);
+    }
+
     return &pub_impl->rmw_publisher;
 }
 
@@ -207,6 +253,12 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 
     tt_Node_interrupt(&pub_impl->node->tickle_node);
     pthread_mutex_lock(&pub_impl->node->mutex);
+    // QoS roadmap #2 (DEADLINE) - cancel a still-armed check before the publisher it closes over
+    // is freed below; a no-op if deadline_period_ns was never set (tt_Node_unschedule() just finds
+    // nothing matching).
+    if (pub_impl->deadline_period_ns != 0) {
+        tt_Node_unschedule(&pub_impl->node->tickle_node, check_publisher_deadline, pub_impl);
+    }
     tt_Publisher_destroy(&pub_impl->tickle_publisher);
     pthread_mutex_unlock(&pub_impl->node->mutex);
 
@@ -248,6 +300,12 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     tt_Node_interrupt(&pub_impl->node->tickle_node);
     pthread_mutex_lock(&pub_impl->node->mutex);
     tt_ret_t ret = tt_Publisher_publish(&pub_impl->tickle_publisher, (struct tt_Data*)tickle_buf);
+    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.last_activity_time's own doc comment.
+    // Under the same lock check_publisher_deadline() reads it under, harmless to set even when
+    // deadline_period_ns is 0 (unused in that case).
+    if (ret == tt_RET_OK) {
+        pub_impl->last_activity_time = tt_get_ns();
+    }
     pthread_mutex_unlock(&pub_impl->node->mutex);
 
     pub_impl->allocator.deallocate(tickle_buf, pub_impl->allocator.state);
@@ -304,22 +362,32 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
 }
 
 // A real rclcpp::Publisher constructor calls this once per QoS event type NodeOptions/QoS asks
-// for (offered_deadline_missed, liveliness_lost, ...) - rmw_tickle doesn't implement any of them
-// yet (no deadline/liveliness/matched-count tracking - see rmw_qos.c's own QoS roadmap), and
-// RMW_RET_UNSUPPORTED is this API's own documented way to say exactly that (rmw/event.h) - unlike
-// most other not-yet-implemented rmw_*() extras, the *symbol* still has to exist (an unresolved
-// dlsym is fatal to rclcpp here, a returned RMW_RET_UNSUPPORTED is not).
+// for (offered_deadline_missed, liveliness_lost, ...). QoS roadmap #2 (DEADLINE) and #3
+// (LIVELINESS) are done - RMW_EVENT_OFFERED_DEADLINE_MISSED/RMW_EVENT_LIVELINESS_LOST are real,
+// queryable events now (rmw_take_event(), rmw_event.c); everything else this rmw hasn't
+// implemented still returns RMW_RET_UNSUPPORTED, this API's own documented way to say exactly
+// that (rmw/event.h) - unlike most other not-yet-implemented rmw_*() extras, the *symbol* itself
+// still has to exist (an unresolved dlsym is fatal to rclcpp here, a returned RMW_RET_UNSUPPORTED
+// is not).
 rmw_ret_t rmw_publisher_event_init(rmw_event_t* rmw_event, const rmw_publisher_t* publisher,
                                    rmw_event_type_t event_type) {
-    (void)rmw_event;
-    (void)event_type;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(rmw_event, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
-    RMW_SET_ERROR_MSG("rmw_tickle does not support any publisher QoS events yet");
-    return RMW_RET_UNSUPPORTED;
+    switch (event_type) {
+    case RMW_EVENT_OFFERED_DEADLINE_MISSED:
+    case RMW_EVENT_LIVELINESS_LOST:
+        rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+        rmw_event->data = publisher->data;
+        rmw_event->event_type = event_type;
+        return RMW_RET_OK;
+    default:
+        RMW_SET_ERROR_MSG("rmw_tickle does not support this publisher QoS event yet");
+        return RMW_RET_UNSUPPORTED;
+    }
 }
 
 // Loaned (zero-copy) messages: rmw_publisher_t.can_loan_messages is always false (tt_Node_create_

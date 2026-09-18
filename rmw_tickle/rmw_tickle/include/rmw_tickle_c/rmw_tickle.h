@@ -182,6 +182,45 @@ typedef struct rmw_tickle_node_t {
     struct tt_Discovery discovery;
 } rmw_tickle_node_t;
 
+// rmw_graph.c's own count_matching()'s core scan, exposed lock-free for QoS roadmap #3
+// (LIVELINESS)'s own RMW_EVENT_LIVELINESS_CHANGED periodic check (rmw_subscription.c) to call
+// directly. That check runs from a tt_Node_schedule() callback, which fires from *inside*
+// tt_Node_poll() - already called with node_impl->mutex held by poll_thread (rmw_tickle_node_t's
+// own doc comment above) - so it must NOT take that mutex itself the way count_matching() (used
+// by rmw_count_publishers()/_subscribers(), called from an arbitrary application thread) does;
+// doing so would self-deadlock (mutex is a plain, non-recursive pthread_mutex_t - rmw_node.c's
+// own rmw_create_node()). Never call this from anywhere except the poll thread itself.
+size_t rmw_tickle_count_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind);
+
+// QoS roadmap #2 (DEADLINE) + #3 (LIVELINESS) - shared by every status this rmw tracks below.
+// total_count: cumulative, atomic (rmw_take_event(), rmw_event.c, reads it; only ever incremented,
+// always from the poll thread's own scheduled check - see rmw_publisher.c/rmw_subscription.c).
+// unread_count: how much of total_count hasn't been reported via rmw_take_event() yet -
+// atomic_exchange(0) there (that call's own *_count_change), atomic_load-only peek for rmw_wait()
+// readiness (rmw_wait_set.c's own check_events()) - same peek(never mutates)-vs-finalize(consumes)
+// split check_guard_conditions() already established; a peek must never consume, since rmw_wait()
+// itself doesn't drain an event the way a separate rmw_take_event() call does (mirrors rmw_wait()
+// peeking rmw_tickle_subscriber_t.queue_count, never popping it - only rmw_take() does that).
+typedef struct rmw_tickle_event_status_t {
+    atomic_int total_count;
+    atomic_int unread_count;
+} rmw_tickle_event_status_t;
+
+// RMW_EVENT_LIVELINESS_CHANGED's own status (rmw_subscription.c) - one field wider than plain
+// rmw_tickle_event_status_t above: alive_count is a live snapshot, not a delta.
+typedef struct rmw_tickle_liveliness_changed_status_t {
+    atomic_int alive_count;              // current count from rmw_tickle_count_matching_locked(),
+                                         // not cumulative - read directly by rmw_take_event()
+    rmw_tickle_event_status_t alive;     // .total_count/.unread_count track alive_count_change
+    rmw_tickle_event_status_t not_alive; // .total_count/.unread_count track not_alive_count_change
+    // TickLE's own tt_Discovery never keeps a tombstone for a peer check_liveliness() (tickle.c)
+    // presumed dead - it's just removed, not recorded as "known but dead" - so not_alive_count
+    // itself (a live snapshot, not a delta) has no TickLE-core data behind it and is always
+    // reported as 0 by rmw_take_event(). Documented limitation, not a bug - not_alive.total_count/
+    // unread_count (the *change*, which this rmw can and does track) are still real.
+    int last_alive_count; // plain, poll-thread-only - the periodic check's own previous reading
+} rmw_tickle_liveliness_changed_status_t;
+
 // TickLE specific publisher data
 typedef struct rmw_tickle_publisher_t {
     rmw_publisher_t rmw_publisher; // RMW publisher structure (must be first)
@@ -214,6 +253,23 @@ typedef struct rmw_tickle_publisher_t {
     // (or on struct tt_Subscriber itself) - durability is purely a Publisher-side decision, a
     // Subscription just receives whatever backlog arrives.
     struct tt_DurableCache* durable_cache;
+
+    // QoS roadmap #2 (DEADLINE) - deadline_period_ns == 0 (rmw_create_publisher()'s own default):
+    // not requested, no tt_Node_schedule() entry ever armed, costs nothing. Non-zero: qos.deadline
+    // in nanoseconds; last_activity_time (tt_get_ns() at creation, updated by rmw_publish() on
+    // every successful send) is compared against it by a periodic scheduled check - see
+    // rmw_publisher.c's own RMW_EVENT_OFFERED_DEADLINE_MISSED handling. Both fields are only ever
+    // touched under node->mutex (rmw_publish() already holds it; the scheduled check runs from
+    // inside tt_Node_poll(), which poll_thread also holds it around - rmw_tickle_node_t's own doc
+    // comment) - deadline_missed's own counts are the only part read cross-thread, hence atomic.
+    uint64_t deadline_period_ns;
+    uint64_t last_activity_time;
+    rmw_tickle_event_status_t deadline_missed;
+
+    // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_LOST. Always total_count == 0 - see
+    // rmw_publisher.c's own rmw_publisher_event_init() doc comment for why this is a structural,
+    // honest limitation (not a placeholder bug) rather than something a future pass would "finish".
+    rmw_tickle_event_status_t liveliness_lost;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-
@@ -258,6 +314,26 @@ typedef struct rmw_tickle_subscriber_t {
     // See rmw_tickle_publisher_t.qos's own doc comment - same reasoning, for rmw_subscription_
     // get_actual_qos().
     rmw_qos_profile_t qos;
+
+    // QoS roadmap #2 (DEADLINE) - RMW_EVENT_REQUESTED_DEADLINE_MISSED. Same shape/threading as
+    // rmw_tickle_publisher_t's own deadline_period_ns/last_activity_time/deadline_missed - see
+    // their own doc comment - last_activity_time here is updated by subscriber_callback() (also
+    // poll-thread, already under node->mutex) on every real received sample instead.
+    uint64_t deadline_period_ns;
+    uint64_t last_activity_time;
+    rmw_tickle_event_status_t deadline_missed;
+
+    // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED. liveliness_lease_ns == 0: no
+    // periodic check has been started yet - rmw_subscription_event_init() starts it lazily
+    // (idempotent) the first time this event type is actually requested, at either qos.liveliness_
+    // lease_duration (if finite) or tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL (rmw_
+    // qos.c's own accepted floor - rechecking faster than that can never usefully change the
+    // answer, since that's TickLE core's own fastest possible peer-death detection latency). See
+    // rmw_subscription.c's own handling for the full mechanism, and rmw_tickle_liveliness_
+    // changed_status_t's own doc comment (above) for what alive_count/not_alive_count can and
+    // can't honestly report.
+    uint64_t liveliness_lease_ns;
+    rmw_tickle_liveliness_changed_status_t liveliness_changed;
 } rmw_tickle_subscriber_t;
 
 // TickLE specific client data

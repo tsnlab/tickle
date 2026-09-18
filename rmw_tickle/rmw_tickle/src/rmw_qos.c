@@ -19,6 +19,9 @@
 #include <stdint.h> // uint64_t - duration_offered_satisfies_requested()'s own nanosecond math
 #include <stdio.h>  // snprintf() - rmw_qos_profile_check_compatible()'s own `reason` buffer
 
+#include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL - see Milestone
+                           // 18's own note on why this needs a direct include, not just tickle.h
+
 #include "rcutils/error_handling.h" // RCUTILS_CHECK_ARGUMENT_FOR_NULL
 #include "rmw/error_handling.h"
 #include "rmw/qos_profiles.h" // rmw_qos_profile_check_compatible(), rmw_qos_compatibility_type_t
@@ -65,27 +68,39 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
         return RMW_RET_UNSUPPORTED;
     }
 
-    // QoS roadmap #3 (LIVELINESS) - only Phase 0's node-level timeout exists, matching AUTOMATIC;
-    // no per-entity liveliness (MANUAL_BY_TOPIC et al.) has been built on top of it yet.
+    // QoS roadmap #3 (LIVELINESS) - done, AUTOMATIC only. MANUAL_BY_TOPIC/_BY_NODE stay rejected -
+    // both need an explicit "I'm still alive" assertion API (rmw_publisher_assert_liveliness())
+    // with no TickLE-core mechanism behind it, unlike AUTOMATIC (backed by generalizing check_
+    // liveliness()'s own existing per-node peer-death detection - see rmw_subscription.c's own
+    // RMW_EVENT_LIVELINESS_CHANGED handling).
     if (RMW_QOS_POLICY_LIVELINESS_AUTOMATIC != qos_profile->liveliness &&
         RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT != qos_profile->liveliness) {
-        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_LIVELINESS_AUTOMATIC for now - "
-                          "see rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
-        return RMW_RET_UNSUPPORTED;
-    }
-    if (!rmw_time_equal(qos_profile->liveliness_lease_duration,
-                        (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT)) {
-        RMW_SET_ERROR_MSG("rmw_tickle doesn't support a custom liveliness_lease_duration yet - see "
+        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_LIVELINESS_AUTOMATIC - see "
                           "rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
-
-    // QoS roadmap #2 (DEADLINE) - no elapsed-time monitoring since last publish/receive exists.
-    if (!rmw_time_equal(qos_profile->deadline, (rmw_time_t)RMW_QOS_DEADLINE_DEFAULT)) {
-        RMW_SET_ERROR_MSG("rmw_tickle doesn't support a finite DEADLINE yet - see rmw_tickle/"
-                          "PLAN.md's QoS roadmap #2 (DEADLINE)");
+    // A custom lease_duration is accepted, but only down to tt_LIVELINESS_MISS_THRESHOLD *
+    // tt_NODE_UPDATE_INTERVAL - TickLE core's own fastest possible peer-death detection latency
+    // (check_liveliness(), tickle.c). Rejected explicitly below that floor rather than silently
+    // rounding it up to what TickLE can actually honor - same "reject, don't silently downgrade"
+    // philosophy as RELIABLE's/DURABLE's own depth-cap rejection. DEFAULT (unspecified, {0,0}) and
+    // an explicit RMW_DURATION_INFINITE both mean "no constraint" - always accepted.
+    if (!rmw_time_equal(qos_profile->liveliness_lease_duration,
+                        (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT) &&
+        !rmw_time_equal(qos_profile->liveliness_lease_duration, (rmw_time_t)RMW_DURATION_INFINITE) &&
+        rmw_time_total_nsec(qos_profile->liveliness_lease_duration) <
+            (rmw_duration_t)((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL)) {
+        RMW_SET_ERROR_MSG("rmw_tickle's own liveliness_lease_duration floor is "
+                          "tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL (TickLE core's "
+                          "fastest possible peer-death detection) - see rmw_tickle/PLAN.md's QoS "
+                          "roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
+
+    // QoS roadmap #2 (DEADLINE) - done. Any finite value is accepted: a purely local rmw_tickle-
+    // side timer (tt_Node_schedule(), no TickLE wire/network cadence to be bounded by) - see
+    // rmw_publisher.c/rmw_subscription.c's own RMW_EVENT_OFFERED_DEADLINE_MISSED/REQUESTED_
+    // DEADLINE_MISSED handling.
 
     // QoS roadmap #6 (LIFESPAN) - needs #1/#4's storage to already exist, neither does.
     if (!rmw_time_equal(qos_profile->lifespan, (rmw_time_t)RMW_QOS_LIFESPAN_DEFAULT)) {

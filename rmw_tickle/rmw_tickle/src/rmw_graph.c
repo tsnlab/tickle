@@ -110,6 +110,34 @@ rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node, rcutils_strin
     return RMW_RET_OK;
 }
 
+// The actual scan, shared by count_matching() below and rmw_tickle_count_matching_locked()
+// (rmw_tickle.h - RMW_EVENT_LIVELINESS_CHANGED's own periodic check, rmw_subscription.c). Assumes
+// node_impl->mutex is already held by the caller - see rmw_tickle_count_matching_locked()'s own
+// doc comment for why that one can't take it itself.
+static size_t count_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind) {
+    size_t matched = 0;
+    for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count; ++i) {
+        const struct tt_Endpoint* endpoint = node_impl->tickle_node.endpoints[i];
+        if (endpoint->kind == kind && strcmp(endpoint->name, topic_name) == 0) {
+            matched++;
+        }
+    }
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        const struct tt_DiscoveredEntity* entity = &node_impl->discovery.entities[i];
+        if (entity->node_id != tt_NODE_ID_INVALID && entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
+            matched++;
+        }
+    }
+    return matched;
+}
+
+// rmw_tickle.h's own declaration - see this file's own module doc comment for why both the local
+// endpoint table and the remote discovery table need scanning. Callable from any thread except
+// the poll thread itself mid-tt_Node_poll() (see count_matching_locked()'s own doc comment).
+size_t rmw_tickle_count_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind) {
+    return count_matching_locked(node_impl, topic_name, kind);
+}
+
 // Shared by rmw_count_publishers()/rmw_count_subscribers() - see this file's own module doc
 // comment for why both the local endpoint table and the remote discovery table need scanning.
 static rmw_ret_t count_matching(const rmw_node_t* node, const char* topic_name, uint8_t kind, size_t* count) {
@@ -129,21 +157,7 @@ static rmw_ret_t count_matching(const rmw_node_t* node, const char* topic_name, 
     // doc comment).
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_mutex_lock(&node_impl->mutex);
-
-    size_t matched = 0;
-    for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count; ++i) {
-        const struct tt_Endpoint* endpoint = node_impl->tickle_node.endpoints[i];
-        if (endpoint->kind == kind && strcmp(endpoint->name, topic_name) == 0) {
-            matched++;
-        }
-    }
-    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
-        const struct tt_DiscoveredEntity* entity = &node_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID && entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
-            matched++;
-        }
-    }
-
+    size_t matched = count_matching_locked(node_impl, topic_name, kind);
     pthread_mutex_unlock(&node_impl->mutex);
     *count = matched;
     return RMW_RET_OK;

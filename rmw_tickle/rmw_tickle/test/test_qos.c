@@ -61,17 +61,35 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
+    // MANUAL_BY_TOPIC still rejected - no assertion-API model exists (QoS roadmap #3's own note).
     qos = valid_profile();
     qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
     assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
+    // QoS roadmap #3 (LIVELINESS) - done, AUTOMATIC only. A custom liveliness_lease_duration is
+    // accepted down to tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL (TickLE core's own
+    // fastest possible peer-death detection latency, config.h) - 1 second is below that floor
+    // (3 seconds by default) and stays rejected; 5 seconds clears it and is accepted, for every
+    // entity kind (validation only - the actual RMW_EVENT_LIVELINESS_CHANGED monitoring this backs
+    // is Publisher/Subscription-only, rmw_subscription.c).
     qos = valid_profile();
     qos.liveliness_lease_duration.sec = 1;
     assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     qos = valid_profile();
+    qos.liveliness_lease_duration.sec = 5;
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
+
+    // QoS roadmap #2 (DEADLINE) - done, any finite value accepted (a purely local rmw_tickle-side
+    // timer, no TickLE wire/network cadence to be bounded by) - see rmw_publisher.c/rmw_
+    // subscription.c's own RMW_EVENT_OFFERED_DEADLINE_MISSED/REQUESTED_DEADLINE_MISSED handling.
+    qos = valid_profile();
     qos.deadline.sec = 1;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     qos = valid_profile();
     qos.lifespan.sec = 1;

@@ -34,6 +34,7 @@ add_library(rmw_tickle
   src/rmw_wait_set.c
   src/rmw_graph.c
   src/rmw_qos.c
+  src/rmw_event.c
   # TickLE's own core (rmw_node.c's tt_Node_create()/_poll()/_interrupt()/_destroy() calls,
   # Milestone 2, are the first real use of it in this package - rmw_init.c only touched the
   # _tt_CONFIG global struct before this) - compiled straight in, same reason rosidl_typesupport_
@@ -106,7 +107,7 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_test REQUIRED)
 
-  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph)
+  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events)
     add_executable(${_test_name} test/${_test_name}.c)
     target_link_libraries(${_test_name} rmw_tickle Threads::Threads)
     # GENERATE_RESULT_FOR_RETURN_CODE_ZERO: these are plain C executables (an assert()-per-check,
