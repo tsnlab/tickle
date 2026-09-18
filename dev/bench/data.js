@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789738617385,
+  "lastUpdate": 1789738620705,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35499,6 +35499,60 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/9607e7a277a85afe48ee57f26bc68cb202fa4c70"
         },
         "date": 1789737824081,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7ef1efb41debc0fefa2c21581efa588e75c9c8f2",
+          "message": "Narrow LOSS_TEST_INTERVAL_SEC 280us -> 140us to increase visible loss at depth 8\n\nKeeps RELIABLE_CACHE_DEPTH at 8 (per the user's own explicit request) and\ninstead shrinks the depth*interval eviction window from the send-rate side:\nhalving the interval halves the real-time window depth=8 gives RELIABLE's\nown retransmission to complete a recovery round trip before the cache slot\nis overwritten, without changing depth itself. Also flags that this whole\nfile's own pre-existing interval-tuning comment (the search that originally\nlanded on 280us) was conducted against perf_server.c's own since-fixed\nfalse-positive counting bug (Milestone 25) and isn't trustworthy calibration\ndata anymore.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:34:11+09:00",
+          "tree_id": "eaf399a9e9f59c6f1ccfd7b4e4296e42800ba22b",
+          "url": "https://github.com/tsnlab/tickle/commit/7ef1efb41debc0fefa2c21581efa588e75c9c8f2"
+        },
+        "date": 1789738619577,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
