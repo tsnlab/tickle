@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789708526939,
+  "lastUpdate": 1789708529966,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -21793,6 +21793,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 824.624,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "65701d344083555afee3863a0733763b26f518b8",
+          "message": "Back off tt_MAX_RELIABLE_HISTORY 16 -> 10 - 16 overshot the loss cliff\n\nReal HIL run at depth=16 landed 1%/5%/10% all flat at 0.1% loss_pct -\n10%'s own differentiation from 1%/5% disappeared entirely rather than\njust stabilizing, the opposite of what was wanted. Trying a smaller step.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T14:12:51+09:00",
+          "tree_id": "84a9ce05e90efb0e65343a98e4ea5bd81ea23a38",
+          "url": "https://github.com/tsnlab/tickle/commit/65701d344083555afee3863a0733763b26f518b8"
+        },
+        "date": 1789708528889,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.563,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 823.051,
             "unit": "Mbps"
           }
         ]
