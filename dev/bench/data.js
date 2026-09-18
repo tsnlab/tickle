@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789690583319,
+  "lastUpdate": 1789690586707,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -22009,6 +22009,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 34.845,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "06423215d8d3510e6e2eaa2668aaf8a2b37163e3",
+          "message": "Nudge the loss-injection interval closer to clean, 280us -> 310us\n\n280us found a real partial point on the 10%-specific cliff (1%/5% still\n~0.1%, 10% at 5.2%) but that's roughly half of BEST_EFFORT's own rate at\nthat level - more than \"a little\" real loss. Nudging further toward the\nconfirmed-clean 350us side to land on a smaller but still genuinely nonzero\nloss at 10%, while 1%/5% should stay at their own already-settled ~0.1%.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T09:13:41+09:00",
+          "tree_id": "efed4898a707f72b9a1312c1ea983313f24609bc",
+          "url": "https://github.com/tsnlab/tickle/commit/06423215d8d3510e6e2eaa2668aaf8a2b37163e3"
+        },
+        "date": 1789690585330,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 35.33,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 31.505,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 34.046,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 32.862,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 32.212,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 33.112,
             "unit": "Mbps"
           }
         ]
