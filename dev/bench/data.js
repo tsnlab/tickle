@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789715205933,
+  "lastUpdate": 1789725362340,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -17941,6 +17941,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04733571428571428,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "42037c324cfe0dad66beba54a39615e145aa7fbe",
+          "message": "Add periodic Heartbeat to TickLE core's RELIABLE Publisher (Milestone 22)\n\nCloses the one structural piece RELIABLE/DURABILITY still lacked versus\nreal DDS/RTPS: a Publisher never announced what it currently retained, a\nSubscriber only ever inferred anything was missing reactively from\nwhatever DATA happened to arrive. Two concrete gaps this closes: a lost\nbacklog sample's own first arrival previously had to be guessed at\n(Milestone 20's own workaround); an idle stream (or every remaining\npacket also lost) meant a gap was silently never noticed at all.\n\n- New tt_SUBMESSAGE_TYPE_HEARTBEAT + struct tt_HeartbeatHeader\n  {endpoint_id, first_available_seq_no, last_seq_no} - RTPS's own\n  HEARTBEAT submessage, simplified.\n- Publisher: tt_Publisher.heartbeat_period_ns (0 = disabled) +\n  tt_Publisher_set_heartbeat_period() (an explicit arm/disarm call,\n  since a periodic tt_Node_schedule() entry has no reliable_cache/\n  durable_cache-style passive-pointer equivalent). send_heartbeat()\n  derives [first_available_seq_no, last_seq_no] straight from reliable_\n  cache's own current ring state, no new cache needed.\n- Subscriber: tt_Subscriber.reliable_heartbeat_last_seq_no +\n  process_heartbeat(). First-ever contact learns ack_seq_no directly\n  from first_available_seq_no - the actual DDS-parity fix, independent\n  of whether any specific backlog sample's own delivery succeeded,\n  replacing Milestone 20's guess-from-first-arrival workaround. An\n  oversized revealed gap reuses Milestone 20's own jump-ahead logic,\n  now factored into a shared jump_ack_baseline() instead of duplicated.\n  New shared highest_relevant_bit() widens send_acknack()'s request\n  range and maybe_arm_acknack_retry()'s own gate beyond received_\n  bitmap's highest confirmed bit alone, so a Heartbeat can trigger a\n  real ACKNACK cycle even with zero out-of-order DATA arrivals yet.\n\nNew tests/test_heartbeat.c (9 tests). make test/make sanitize (ASan+\nUBSan)/platform/freertos build/clang-format/clang-tidy all pass, no\nregressions.\n\nrmw_tickle/examples wiring deliberately out of scope for this pass,\nmatching this session's own established \"core first\" ordering.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T18:54:51+09:00",
+          "tree_id": "5be0e4764fb4ab77e5f79c1b8e57d7451e7810a4",
+          "url": "https://github.com/tsnlab/tickle/commit/42037c324cfe0dad66beba54a39615e145aa7fbe"
+        },
+        "date": 1789725359307,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.07859000000000001,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05346714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.060779999999999994,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04675571428571428,
             "unit": "ms"
           }
         ]
