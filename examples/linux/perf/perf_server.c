@@ -91,6 +91,16 @@ static uint32_t expected_seq = 0;
 // trivial `~received_bitmap` inversion to stay correct; this one is purely an in-process counter
 // with no wire encoding step, so it keeps its own original, simpler-to-derive convention instead.
 //
+// That offset difference had its own real, separate bug (PLAN.md's Milestone 18 residual
+// loss_pct floor investigation, resolved here): tt_Subscriber's own advance_ack_seq_no() shifts
+// its bitmap *before* checking bit0 for the next absorb, which is correct under its own "+j"
+// convention (bit0, pre-shift, means the position that just arrived - already handled by the
+// increment, safe to discard); copying that exact shift-then-check order here, under this file's
+// own "+1+j" convention, silently discarded bit0's *real* meaning (whether the position expected_
+// seq was just advanced *to* had already arrived) every single time - permanently under-crediting
+// one truly-delivered position per occurrence, later miscounted as a genuine drop. See track_
+// arrival()'s own comment on the actual fix (check-then-shift).
+//
 // 1024 bits (16 words), not tickle.c's own 64: a QoS roadmap #5 loss-injection investigation
 // found this file's own accounting was the dominant source of "loss" under real tc/netem 5-10%
 // loss - not tickle.c's RELIABLE mechanism, which a dedicated seen-seq bitset (temporary,
@@ -214,17 +224,25 @@ static uint32_t track_arrival(uint32_t seq) {
     int32_t delta = (int32_t)(seq - expected_seq);
     if (delta == 0) {
         expected_seq++;
-        // Realign: bit j must always mean "received(expected_seq + j)", including j=0 - so this
-        // needs its own unconditional shift right here, not only inside the while loop below.
-        // Missing this shift is exactly the bug tt_Subscriber's own update_reliable_ack()
-        // (tickle.c) had until this same run_perf.sh loss-injection scenario surfaced it: every
-        // bit still tracking a *different*, still-outstanding gap silently drifted by one
-        // position the moment any earlier gap got filled this way, without ever crashing or
-        // erroring - just quietly asking for (or reporting on) the wrong sequence number.
-        gap_shift_right_1();
-        while (gap_bit_get(0)) { // absorb whatever out-of-order run already follows it
-            gap_shift_right_1();
+        // Check bit0 *before* realigning - at this point it still means "received(expected_seq)"
+        // (the value expected_seq was just advanced to), the exact question this needs answered.
+        // A prior version shifted first and checked after, which discards that bit unread: bit0
+        // always falls off the bottom of the array on a shift, so if the position we just
+        // advanced *to* had already been confirmed via an earlier out-of-order arrival, that fact
+        // was silently thrown away instead of absorbed - expected_seq stayed permanently one
+        // position short of where it should have, a real position that stays forever unconfirmed
+        // even though it truly arrived. Found via PLAN.md's Milestone 18 residual loss_pct floor
+        // investigation: a ground-truth seen_seq[] cross-check (temporary, since removed) proved
+        // this file's own reported drops were mostly samples that really did arrive - this exact
+        // shift-before-check ordering, hit every time a recovered gap's own immediate successor
+        // had already arrived out of order (an unremarkable, frequent shape under real RELIABLE
+        // recovery), was the actual cause.
+        bool already_confirmed = gap_bit_get(0);
+        gap_shift_right_1();        // realign regardless - expected_seq advanced by 1 either way
+        while (already_confirmed) { // absorb whatever out-of-order run already follows it
             expected_seq++;
+            already_confirmed = gap_bit_get(0); // re-check before the *next* realign, same reasoning
+            gap_shift_right_1();
         }
         return 0;
     }
