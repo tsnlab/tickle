@@ -66,19 +66,19 @@ rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_condition
     }
 
     rcutils_allocator_t* allocator = &context->options.allocator;
-    rmw_tickle_wait_set_t* ws =
+    rmw_tickle_wait_set_t* wait_set_impl =
         (rmw_tickle_wait_set_t*)allocator->zero_allocate(1, sizeof(rmw_tickle_wait_set_t), allocator->state);
-    if (NULL == ws) {
+    if (NULL == wait_set_impl) {
         RMW_SET_ERROR_MSG("failed to allocate rmw_tickle_wait_set_t");
         return NULL;
     }
-    ws->context_impl = (rmw_tickle_context_impl_t*)context->impl;
-    ws->allocator = *allocator;
+    wait_set_impl->context_impl = (rmw_tickle_context_impl_t*)context->impl;
+    wait_set_impl->allocator = *allocator;
 
-    ws->rmw_wait_set.implementation_identifier = RMW_TICKLE_IDENTIFIER;
-    ws->rmw_wait_set.data = ws;
-    ws->rmw_wait_set.guard_conditions = NULL; // unused - rmw_wait() takes its own arrays as params
-    return &ws->rmw_wait_set;
+    wait_set_impl->rmw_wait_set.implementation_identifier = RMW_TICKLE_IDENTIFIER;
+    wait_set_impl->rmw_wait_set.data = wait_set_impl;
+    wait_set_impl->rmw_wait_set.guard_conditions = NULL; // unused - rmw_wait() takes its own arrays as params
+    return &wait_set_impl->rmw_wait_set;
 }
 
 rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
@@ -94,9 +94,9 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
-    rmw_tickle_wait_set_t* ws = (rmw_tickle_wait_set_t*)wait_set->data;
-    rcutils_allocator_t allocator = ws->allocator;
-    allocator.deallocate(ws, allocator.state);
+    rmw_tickle_wait_set_t* wait_set_impl = (rmw_tickle_wait_set_t*)wait_set->data;
+    rcutils_allocator_t allocator = wait_set_impl->allocator;
+    allocator.deallocate(wait_set_impl, allocator.state);
     return RMW_RET_OK;
 }
 
@@ -166,10 +166,11 @@ static bool check_guard_conditions(rmw_guard_conditions_t* guard_conditions, boo
     }
     bool any_ready = false;
     for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
-        rmw_tickle_guard_condition_t* gc = (rmw_tickle_guard_condition_t*)guard_conditions->guard_conditions[i];
+        rmw_tickle_guard_condition_t* guard_cond = (rmw_tickle_guard_condition_t*)guard_conditions->guard_conditions[i];
         // finalize consumes (atomic_exchange); a plain peek must not (atomic_load) - see module
         // doc comment.
-        bool ready = finalize ? atomic_exchange(&gc->has_triggered, false) : atomic_load(&gc->has_triggered);
+        bool ready =
+            finalize ? atomic_exchange(&guard_cond->has_triggered, false) : atomic_load(&guard_cond->has_triggered);
         if (ready) {
             any_ready = true;
         } else if (finalize) {
@@ -245,8 +246,8 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
-    rmw_tickle_wait_set_t* ws = (rmw_tickle_wait_set_t*)wait_set->data;
-    rmw_tickle_context_impl_t* context_impl = ws->context_impl;
+    rmw_tickle_wait_set_t* wait_set_impl = (rmw_tickle_wait_set_t*)wait_set->data;
+    rmw_tickle_context_impl_t* context_impl = wait_set_impl->context_impl;
 
     bool poll_only = NULL != wait_timeout && 0 == wait_timeout->sec && 0 == wait_timeout->nsec;
     struct timespec deadline;
