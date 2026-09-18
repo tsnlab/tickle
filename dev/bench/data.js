@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789691603046,
+  "lastUpdate": 1789694793995,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -16127,6 +16127,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.048628571428571424,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6789396f5274010ff39bc1cfcd76b93290bfdf3b",
+          "message": "Carry the BEST_EFFORT/RELIABLE loss_pct comparison onto the persistent dashboard\n\nThe job summary's own table (summarize(), a few commits back) already shows\nBEST_EFFORT and RELIABLE loss_pct side by side per push, but that's a\none-off per-run artifact - the persistent status grid at\nhttps://tsnlab.github.io/tickle/dev/bench/ (dashboard.py, fed by\nwrite_dashboard_fragment()) only ever carried RELIABLE's own throughput at\neach loss level, with no loss_pct at all and no BEST_EFFORT comparison.\n\nwrite_dashboard_fragment(): pulls besteffort_loss_{1,5,10}pct_pct and\nreliable_loss_{1,5,10}pct_pct out of the same server logs the throughput\nfields already read, same three fixed loss levels.\n\ndashboard.py: new loss_pair() helper renders each level's two numbers as one\n\"besteffort / reliable\" cell (e.g. \"9.8 / 5.2\"), three new columns\n(Loss@1%/5%/10%) after the existing Reliable Tput ones, colspan/placeholder\ncounts updated to match (8->11, 15->18). Verified end-to-end locally with a\nsynthetic fragment through merge + inject.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T10:25:25+09:00",
+          "tree_id": "f605aff8a4d8af6b6002f8e99cb228b425e3a17e",
+          "url": "https://github.com/tsnlab/tickle/commit/6789396f5274010ff39bc1cfcd76b93290bfdf3b"
+        },
+        "date": 1789694791543,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04002714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04965142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05338714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04498,
             "unit": "ms"
           }
         ]
