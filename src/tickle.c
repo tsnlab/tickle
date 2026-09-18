@@ -2010,13 +2010,6 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
 
     struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id);
     if (endpoint == NULL) {
-        // TEMPORARY diagnostic (PLAN.md's Milestone 18 residual loss_pct floor, re-tested here
-        // after Milestones 23/24 ruled out every retained-sample-side mechanism) - a completely
-        // silent drop otherwise: no callback, no update_reliable_ack(), no log at all. Checking
-        // whether this early-startup "no local Subscriber registered yet" race is what the
-        // still-unconfirmed floor actually is - remove once answered either way.
-        TT_LOG_WARNING("process_data: no matching subscriber endpoint for endpoint_id %08x, seq_no %u (dropped)",
-                       endpoint_id, seq_no);
         return true;
     }
 
