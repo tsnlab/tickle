@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789736145024,
+  "lastUpdate": 1789736148183,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -27343,6 +27343,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/090c79c86e3904b5d41d287835a33e8d84193da1"
         },
         "date": 1789735595743,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a5cc301b1fafd5ac457e51158a7e514e69689296",
+          "message": "Document Milestone 25: perf_server.c's track_arrival() false-positive bug, the real root cause\n\nCloses out the multi-milestone Milestone 18 residual loss_pct floor\ninvestigation - the floor was never a TickLE-core issue at all (every\nnegative result from Milestones 19/22/23/24 was correct: none of them could\nhave fixed a measurement bug in a completely different file). Real HIL:\nloss1/5/10_reliable's own loss_pct 0.1% -> 0.0%/0.0%/(residual, was 0.1%,\nnow sub-0.05%). loss10_reliable's own small remaining gap (17 reported vs 3\nground-truth) stays open with a concrete next step.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:53:06+09:00",
+          "tree_id": "460d5b8216e1edbe1f6701087aaf4e488022ee8f",
+          "url": "https://github.com/tsnlab/tickle/commit/a5cc301b1fafd5ac457e51158a7e514e69689296"
+        },
+        "date": 1789736147103,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
