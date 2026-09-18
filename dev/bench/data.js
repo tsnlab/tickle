@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789697105800,
+  "lastUpdate": 1789697181978,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5427,6 +5427,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.201,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "151190fc7c0b8ac5feaaf6508f2440ca7697b7f9",
+          "message": "Reflect QoS roadmap #4 DURABILITY (TRANSIENT_LOCAL) into rmw_tickle\n\nMirrors exactly how RELIABILITY (#5) was reflected, for the durable_cache\nside of the TickLE core work just landed:\n\n- rmw_qos.c: rmw_tickle_validate_qos_profile() now accepts\n  RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL for RMW_TICKLE_ENTITY_PUBLISHER/\n  _SUBSCRIPTION, same shape as the existing reliability_ok check - but still\n  rejects it for RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT, since tt_Client_call()\n  is request/response, not pub/sub, so there's no TickLE-core mechanism a\n  \"retained backlog for a late-joining client\" could mean (unlike\n  RELIABILITY, where the RPC layer's own existing retry already served as\n  the service-side implementation). rmw_qos_profile_check_compatible()'s own\n  durability RxO rule was already correct - untouched.\n- rmw_tickle.h: new struct tt_DurableCache* durable_cache field on\n  rmw_tickle_publisher_t, next to reliable_cache. No new field on\n  rmw_tickle_subscriber_t at all - durability delivery is purely a\n  Publisher-side decision in TickLE core's own design.\n- rmw_publisher.c: rmw_create_publisher() allocates durable_cache the same\n  way as reliable_cache (sized from qos_profile->depth, defaulting to and\n  capped at tt_MAX_DURABLE_HISTORY - an explicit depth past that cap is\n  rejected outright, not silently clamped) when TRANSIENT_LOCAL is\n  requested, wires it into tickle_publisher.durable_cache.\n  rmw_destroy_publisher() frees it symmetrically.\n- test_qos.c: TRANSIENT_LOCAL assertions flipped from RMW_RET_UNSUPPORTED\n  to RMW_RET_OK for publisher/subscription, RMW_RET_UNSUPPORTED kept for\n  service/client.\n\nVerified against a real ROS 2 (lyrical) install: colcon build --packages-\nselect rmw_tickle builds clean, colcon test --packages-select rmw_tickle\npasses (8 tests, 0 errors, 0 failures), clang-tidy against the real colcon-\ngenerated compile_commands.json clean on every changed file.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T11:03:53+09:00",
+          "tree_id": "59dd1ab8ca2cb82811f5e2f84fdfc612c0d50379",
+          "url": "https://github.com/tsnlab/tickle/commit/151190fc7c0b8ac5feaaf6508f2440ca7697b7f9"
+        },
+        "date": 1789697179515,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
             "unit": "ms"
           },
           {
