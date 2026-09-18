@@ -83,8 +83,6 @@ static enum tt_flag_match parse_conditional_flag(int argc, char** argv, int* i, 
         opts->batch = true;
     } else if ((flags & TT_EXAMPLE_OPT_RELIABLE) && strcmp(argv[*i], "-R") == 0) {
         opts->reliable = true;
-    } else if ((flags & TT_EXAMPLE_OPT_HEARTBEAT) && strcmp(argv[*i], "-H") == 0 && *i + 1 < argc) {
-        opts->heartbeat_period_s = strtod(argv[++*i], NULL);
     } else {
         return TT_FLAG_NOT_MATCHED;
     }

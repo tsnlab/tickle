@@ -32,7 +32,6 @@ enum tt_example_opt_flags {
     TT_EXAMPLE_OPT_WARMUP_COOLDOWN = 1U << 4, // -w/-W: ping.c, perf_server.c only
     TT_EXAMPLE_OPT_BATCH = 1U << 5,           // -B: perf_client only
     TT_EXAMPLE_OPT_RELIABLE = 1U << 6,        // -R: perf_client/perf_server only
-    TT_EXAMPLE_OPT_HEARTBEAT = 1U << 7,       // -H: perf_client only
 };
 
 struct tt_example_cli_options {
@@ -74,13 +73,6 @@ struct tt_example_cli_options {
     // and perf_server's Subscriber into tt_Subscriber.reliable, so the perf rig can measure
     // reliable-mode delivery (retransmit-on-loss) alongside best-effort.
     bool reliable;
-
-    // -H <seconds>: perf_client only. PLAN.md's Milestone 22 (periodic Heartbeat) - 0 (this
-    // struct's own zero-init default) leaves it disabled, matching tt_Publisher.heartbeat_
-    // period_ns's own default; pass -H to also call tt_Publisher_set_heartbeat_period() alongside
-    // -R, measuring periodic Heartbeat's own marginal effect on top of the discovery-triggered
-    // one-off Heartbeat (Milestone 23, always on for any -R Publisher, no flag needed).
-    double heartbeat_period_s;
 };
 
 bool tt_example_parse_log_level(const char* str, tt_LogLevel* level);
