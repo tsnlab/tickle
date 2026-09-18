@@ -342,11 +342,22 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
         }
     }
     if (slot == NULL) {
+        // Prefer a truly-empty slot; fall back to reclaiming the first tombstoned one (struct
+        // tt_DiscoveredEntity.alive's own doc comment, tickle.h) rather than dropping a genuinely
+        // new entity on the floor while the table still has room for it in spirit, just not in a
+        // never-used slot - tombstones are remembered on a best-effort basis, not guaranteed.
+        struct tt_DiscoveredEntity* tombstone_slot = NULL;
         for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
             if (entities[i].node_id == tt_NODE_ID_INVALID) {
                 slot = &entities[i];
                 break;
             }
+            if (tombstone_slot == NULL && !entities[i].alive) {
+                tombstone_slot = &entities[i];
+            }
+        }
+        if (slot == NULL) {
+            slot = tombstone_slot;
         }
     }
     if (slot == NULL) {
@@ -358,6 +369,7 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
     slot->node_id = node_id;
     slot->endpoint_id = endpoint_id;
     slot->kind = kind;
+    slot->alive = true;
     size_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH);
     _tt_memcpy(slot->type, type, type_len);
     slot->type[type_len] = '\0';
@@ -373,8 +385,12 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
 // The discovery-cache counterpart to forget_peers_from_source() - same "authoritative announce
 // supersedes old state" reasoning (a fresh UPDATE means decode_update_entities() is about to
 // re-add whatever `node_id` still actually hosts, so anything not re-added here first must have
-// been dropped), plus check_liveliness()'s own timeout case, where nothing gets re-added at all.
-// No-op if no discovery cache is attached.
+// been dropped). A real removal (the slot is freed, not tombstoned) - this is a normal,
+// intentional departure (an explicit farewell, or the node simply not listing this entity
+// anymore), not a liveliness failure, and struct tt_DiscoveredEntity.alive's own doc comment (QoS
+// roadmap #3, RMW_EVENT_LIVELINESS_CHANGED.not_alive_count) explicitly excludes normal deletion
+// from "not alive" - see tombstone_discovered_entities_from_source() below for the liveliness-
+// timeout counterpart that keeps the entity instead. No-op if no discovery cache is attached.
 static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t node_id) {
     if (node->discovery == NULL) {
         return;
@@ -390,6 +406,32 @@ static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t
         entities[i].node_id = tt_NODE_ID_INVALID;
         if (node->discovery_callback != NULL) {
             node->discovery_callback(node, node_id, endpoint_id, kind, /*departed=*/true,
+                                     node->discovery_callback_param);
+        }
+    }
+}
+
+// check_liveliness()'s own counterpart to forget_discovered_entities_from_source() just above -
+// same trigger (a source presumed dead) but tombstones instead of freeing the slot (alive =
+// false, entity otherwise left intact) so QoS roadmap #3's own RMW_EVENT_LIVELINESS_CHANGED.
+// not_alive_count (a live snapshot, rmw_tickle/PLAN.md) has a real "known but not currently alive"
+// set to count instead of always reporting 0. Still fires the discovery callback with
+// departed=true - an existing plain appear/depart consumer doesn't need to know about the
+// tombstone distinction, only rmw_tickle_c's own count_not_alive_matching_locked() (rmw_graph.c)
+// needs to see the .alive flag directly. No-op if no discovery cache is attached.
+static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint8_t node_id) {
+    if (node->discovery == NULL) {
+        return;
+    }
+
+    struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        if (entities[i].node_id != node_id || !entities[i].alive) {
+            continue; // not from this source, or already tombstoned - nothing new to report
+        }
+        entities[i].alive = false;
+        if (node->discovery_callback != NULL) {
+            node->discovery_callback(node, node_id, entities[i].endpoint_id, entities[i].kind, /*departed=*/true,
                                      node->discovery_callback_param);
         }
     }
@@ -1748,12 +1790,17 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 // Runs once per tt_NODE_UPDATE_INTERVAL (schedule_periodic_tasks()'s own first-run comment
 // applies here too) - the timeout-based counterpart to process_update()'s content-change
 // dedup: a remote node whose announce hasn't been *heard at all* (not just unchanged) for
-// tt_LIVELINESS_MISS_THRESHOLD consecutive intervals is presumed gone, exactly as if it had sent
-// tt_Node_destroy()'s own farewell UPDATE - same forget_peers_from_source() cleanup, same
-// update_seen[]/update_last_modified[] reset so a later announce from the same node id is
-// treated as first contact again (reply_with_own_announce() fires, matching a genuinely new
-// node). Doesn't distinguish "crashed" from "network partitioned" from "just slow" - none of
-// those are observable from here, and DDS-style liveliness has the same limitation.
+// tt_LIVELINESS_MISS_THRESHOLD consecutive intervals is presumed gone - same forget_peers_from_
+// source() peer-table cleanup a farewell UPDATE would also do, and the same update_seen[]/
+// update_last_modified[] reset so a later announce from the same node id is treated as first
+// contact again (reply_with_own_announce() fires, matching a genuinely new node). Its own
+// discovery-cache cleanup (tombstone_discovered_entities_from_source(), unlike forget_discovered_
+// entities_from_source() a farewell/dropped-from-announce uses) deliberately differs from a real
+// farewell though - a liveliness timeout is a *failure*, not the normal deletion QoS roadmap #3's
+// own RMW_EVENT_LIVELINESS_CHANGED.not_alive_count needs to exclude (struct tt_DiscoveredEntity.
+// alive's own doc comment). Doesn't distinguish "crashed" from "network partitioned" from "just
+// slow" - none of those are observable from here, and DDS-style liveliness has the same
+// limitation.
 static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
@@ -1765,7 +1812,7 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
             TT_LOG_WARNING("Node %d presumed dead (no UPDATE for %d consecutive intervals)", i,
                            tt_LIVELINESS_MISS_THRESHOLD);
             forget_peers_from_source(node, (uint8_t)i);
-            forget_discovered_entities_from_source(node, (uint8_t)i);
+            tombstone_discovered_entities_from_source(node, (uint8_t)i);
             node->update_seen[i] = false;
             node->update_last_modified[i] = 0;
             node->update_last_seen[i] = 0;
@@ -3027,7 +3074,7 @@ uint32_t tt_Discovery_count(const struct tt_Discovery* discovery) {
     }
     uint32_t count = 0;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
-        if (discovery->entities[i].node_id != tt_NODE_ID_INVALID) {
+        if (discovery->entities[i].node_id != tt_NODE_ID_INVALID && discovery->entities[i].alive) {
             count++;
         }
     }

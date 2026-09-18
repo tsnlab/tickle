@@ -225,7 +225,11 @@ int main(void) {
     // -- RMW_EVENT_LIVELINESS_CHANGED: smoke test only - see this file's own module doc comment
     // for why a real alive/not-alive transition needs a second node this process can't have.
     // event_init() itself lazily arms the periodic check (rmw_subscription.c); with no matching
-    // Publisher ever discovered, alive_count/not_alive_count and both *_change deltas stay 0.
+    // Publisher ever discovered, alive_count/not_alive_count and both *_change deltas stay 0 - a
+    // genuine 0 (nothing matched, nothing tombstoned either), not the documented "always 0, no
+    // data behind it" gap not_alive_count used to be before struct tt_DiscoveredEntity.alive
+    // (tickle.h) gave it real data to report; see tests/test_discovery.c (TickLE core) for the
+    // actual tombstone-tracking coverage this file's own one-node limit can't reach.
     rmw_event_t liveliness_changed_event = rmw_get_zero_initialized_event();
     assert(RMW_RET_OK == rmw_subscription_event_init(&liveliness_changed_event, sub, RMW_EVENT_LIVELINESS_CHANGED));
     rmw_liveliness_changed_status_t changed_status;

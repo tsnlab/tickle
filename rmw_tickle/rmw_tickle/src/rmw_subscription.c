@@ -129,6 +129,14 @@ static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, v
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
     size_t current = rmw_tickle_count_matching_locked(sub_impl->node, sub_impl->rmw_subscription.topic_name,
                                                       tt_KIND_TOPIC_PUBLISHER);
+    // QoS roadmap #3 follow-up - the live not_alive_count snapshot (tombstoned Publishers on this
+    // topic, struct tt_DiscoveredEntity.alive's own doc comment, tickle.h), independent of the
+    // alive_count-delta-based not_alive.total_count/unread_count tracking just below (which stays
+    // as-is - that's still the right way to derive "how many *went* not-alive", this is just the
+    // separate "how many are *currently* not-alive" question rmw_liveliness_changed_status_t's own
+    // not_alive_count field asks).
+    size_t current_not_alive = rmw_tickle_count_not_alive_matching_locked(
+        sub_impl->node, sub_impl->rmw_subscription.topic_name, tt_KIND_TOPIC_PUBLISHER);
     rmw_tickle_liveliness_changed_status_t* status = &sub_impl->liveliness_changed;
     if ((int)current > status->last_alive_count) {
         int delta = (int)current - status->last_alive_count;
@@ -142,6 +150,7 @@ static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, v
         wake_wait_cond(sub_impl->node);
     }
     atomic_store(&status->alive_count, (int)current);
+    atomic_store(&status->not_alive_count, (int)current_not_alive);
     status->last_alive_count = (int)current;
 
     // Liveliness monitoring simply stops here on a reschedule failure - same reasoning as check_

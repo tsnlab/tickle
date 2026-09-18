@@ -90,10 +90,7 @@ rmw_ret_t rmw_take_event(const rmw_event_t* event_handle, void* event_info, bool
         rmw_tickle_liveliness_changed_status_t* tickle_status = &sub_impl->liveliness_changed;
         rmw_liveliness_changed_status_t* status = (rmw_liveliness_changed_status_t*)event_info;
         status->alive_count = atomic_load(&tickle_status->alive_count);
-        // not_alive_count itself (a live snapshot, not a delta) is always 0 - see rmw_tickle_
-        // liveliness_changed_status_t's own doc comment (rmw_tickle.h) for why TickLE's own
-        // discovery model has no data to back a real one.
-        status->not_alive_count = 0;
+        status->not_alive_count = atomic_load(&tickle_status->not_alive_count);
         status->alive_count_change = atomic_exchange(&tickle_status->alive.unread_count, 0);
         status->not_alive_count_change = atomic_exchange(&tickle_status->not_alive.unread_count, 0);
         break;

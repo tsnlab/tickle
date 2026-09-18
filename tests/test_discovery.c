@@ -171,9 +171,14 @@ static void test_entity_dropped_from_new_announce_fires_departed(void) {
     EXPECT_TRUE(tt_Discovery_find(&discovery, REMOTE_NODE_ID, ENTITY_ID) == NULL);
 }
 
-// check_liveliness()'s timeout-based expiry must also fire departed=true and clear the entity -
-// the case a farewell UPDATE never arrives for at all (a crash, a network partition).
-static void test_liveliness_timeout_fires_departed(void) {
+// check_liveliness()'s timeout-based expiry must also fire departed=true and stop counting the
+// entity - the case a farewell UPDATE never arrives for at all (a crash, a network partition).
+// Unlike an explicit farewell (test_entity_dropped_from_new_announce_fires_departed() above), this
+// tombstones rather than frees the slot (struct tt_DiscoveredEntity.alive's own doc comment, QoS
+// roadmap #3's own RMW_EVENT_LIVELINESS_CHANGED.not_alive_count) - tt_Discovery_count() (an
+// alive-only count) still goes to 0, but tt_Discovery_find() still finds it, now with alive ==
+// false, not NULL.
+static void test_liveliness_timeout_tombstones_not_frees(void) {
     struct tt_Node node;
     init_node(&node);
     struct tt_Discovery discovery;
@@ -194,7 +199,75 @@ static void test_liveliness_timeout_fires_departed(void) {
 
     EXPECT_EQ_INT(1, callback_calls);
     EXPECT_TRUE(last_departed);
-    EXPECT_EQ_U32(0, tt_Discovery_count(&discovery));
+    EXPECT_EQ_U32(0, tt_Discovery_count(&discovery)); // no longer counted as alive...
+    const struct tt_DiscoveredEntity* tombstoned = tt_Discovery_find(&discovery, REMOTE_NODE_ID, ENTITY_ID);
+    EXPECT_TRUE(tombstoned != NULL); // ...but still remembered, not NULL like a real removal
+    EXPECT_TRUE(!tombstoned->alive);
+    EXPECT_EQ_U32(tt_KIND_TOPIC_PUBLISHER, (uint32_t)tombstoned->kind); // the rest is left intact
+    EXPECT_TRUE(strcmp(tombstoned->name, "my_topic") == 0);
+
+    // A later re-announce from the same node/entity (liveliness reasserted) must flip it back to
+    // alive - process_update()'s own existing forget_discovered_entities_from_source()-then-
+    // decode_update_entities() cycle (unaffected by this milestone) already does this: the
+    // tombstone gets wiped for real and a fresh upsert_discovered_entity() call sets alive = true
+    // again, indistinguishable here from a first-ever announce.
+    reset_callback_observations();
+    uint32_t reassert_tail = write_update_one_entity(node.rx_buffer, 300, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
+                                                     "std_msgs/msg/String", "my_topic");
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, reassert_tail, 0xc0a80a02, 8282));
+
+    EXPECT_TRUE(!last_departed);
+    EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
+    const struct tt_DiscoveredEntity* reasserted = tt_Discovery_find(&discovery, REMOTE_NODE_ID, ENTITY_ID);
+    EXPECT_TRUE(reasserted != NULL);
+    EXPECT_TRUE(reasserted->alive);
+}
+
+// upsert_discovered_entity()'s own slot-reuse fallback: once the table is completely full of
+// tombstones (no truly-empty slot left at all), a genuinely new entity must still be recorded by
+// reclaiming the first tombstoned slot, rather than silently being dropped the way a full table of
+// *alive* entries already logs a warning and drops (this file has no test for that pre-existing
+// case specifically, but the same "table full" log line covers both - this test's own point is
+// that a tombstone-only-full table is different: there's still real room for a new entity here).
+static void test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+
+    // Fill the whole table with one entity each from tt_MAX_DISCOVERED_ENTITIES distinct *source
+    // nodes* (not one source announcing many entities - process_update()'s own forget-then-readd
+    // cycle wipes everything else from the same source on every new announce, so a single source
+    // can only ever contribute one live entity per node_id here), then tombstone all of them via a
+    // liveliness timeout - table is now full, but entirely of tombstones, not truly-empty slots.
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        struct tt_Header source_header;
+        init_header(&source_header, (uint8_t)(REMOTE_NODE_ID + i));
+        uint32_t tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID + i, tt_KIND_TOPIC_PUBLISHER,
+                                                "std_msgs/msg/String", "my_topic");
+        EXPECT_TRUE(process_update(&node, &source_header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    }
+    EXPECT_EQ_U32(tt_MAX_DISCOVERED_ENTITIES, tt_Discovery_count(&discovery));
+
+    uint64_t past_threshold = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1;
+    check_liveliness(&node, past_threshold, NULL);
+    EXPECT_EQ_U32(0, tt_Discovery_count(&discovery)); // all tombstoned now, none alive
+
+    // A genuinely new entity, from yet another distinct source node (every earlier one was just
+    // presumed dead, its own update_seen[] reset - real new sources, not reasserts of themselves).
+    struct tt_Header other_header;
+    init_header(&other_header, (uint8_t)(REMOTE_NODE_ID + tt_MAX_DISCOVERED_ENTITIES));
+    uint32_t new_tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID + 999, tt_KIND_TOPIC_SUBSCRIBER,
+                                                "std_msgs/msg/String", "brand_new_topic");
+    EXPECT_TRUE(process_update(&node, &other_header, node.rx_buffer, 0, new_tail, 0xc0a80a03, 8283));
+
+    EXPECT_EQ_U32(1, tt_Discovery_count(&discovery)); // the new one reclaimed a tombstoned slot
+    const struct tt_DiscoveredEntity* found =
+        tt_Discovery_find(&discovery, (uint8_t)(REMOTE_NODE_ID + tt_MAX_DISCOVERED_ENTITIES), ENTITY_ID + 999);
+    EXPECT_TRUE(found != NULL);
+    EXPECT_TRUE(found->alive);
+    EXPECT_TRUE(strcmp(found->name, "brand_new_topic") == 0);
 }
 
 // tt_Node_set_discovery(node, NULL, ...) detaches - subsequent announces stop being recorded and
@@ -239,7 +312,9 @@ int main(void) {
     test_mock_reset();
     test_entity_dropped_from_new_announce_fires_departed();
     test_mock_reset();
-    test_liveliness_timeout_fires_departed();
+    test_liveliness_timeout_tombstones_not_frees();
+    test_mock_reset();
+    test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full();
     test_mock_reset();
     test_detaching_stops_recording();
     test_null_discovery_helpers_are_safe();

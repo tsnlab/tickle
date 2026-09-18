@@ -163,6 +163,26 @@ struct tt_DiscoveredEntity {
     uint8_t kind; // tt_KIND_TOPIC_PUBLISHER / _SUBSCRIBER / SERVICE_CLIENT / _SERVER
     char type[tt_MAX_NAME_LENGTH + 1];
     char name[tt_MAX_NAME_LENGTH + 1];
+
+    // true (set whenever this slot is written, tickle.c's own upsert_discovered_entity()): known
+    // and currently believed alive. false: a tombstone - this entity's own source node missed
+    // check_liveliness()'s own timeout (tickle.c) and is presumed dead, but is *remembered* here
+    // rather than the slot being freed outright, unlike an explicit farewell/dropped-from-a-fresh-
+    // announce departure (forget_discovered_entities_from_source(), tickle.c - a real removal, not
+    // a tombstone, since that's a normal, intentional departure, not a liveliness failure) - QoS
+    // roadmap #3 (LIVELINESS)'s own RMW_EVENT_LIVELINESS_CHANGED.not_alive_count (rmw_tickle/
+    // PLAN.md) needs exactly this distinction to report a real live snapshot instead of always 0.
+    // tt_Discovery_count() only counts alive entities (matching its own "topic list"-style
+    // introspection use); tt_Discovery_find() returns a tombstoned entity too, unlike NULL for one
+    // never seen at all - callers that care check .alive themselves. Reasserted (a later UPDATE
+    // from the same node_id/endpoint_id) flips this back to true, same slot, no separate "was a
+    // tombstone" signal - the discovery callback's own existing "appeared, refreshed, or departed"
+    // framing (tickle.h's own tt_DISCOVERY_CALLBACK doc comment) already covers a reassert as a
+    // refresh, nothing new for a caller to handle. A slot search that finds no truly-empty slot
+    // (node_id == tt_NODE_ID_INVALID) falls back to reclaiming the first tombstoned one rather than
+    // dropping a genuinely new entity on the floor - tombstones are remembered on a best-effort
+    // basis, not guaranteed to survive table pressure.
+    bool alive;
 };
 
 // Fixed-capacity graph cache a caller opts a struct tt_Node into via tt_Node_set_discovery() -
@@ -644,13 +664,19 @@ tt_ret_t tt_Node_interrupt(struct tt_Node* node);
 tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discovery, tt_DISCOVERY_CALLBACK callback,
                                void* param);
 
-// Number of occupied slots in `discovery` - for iterating/sizing a snapshot without walking the
-// full tt_MAX_DISCOVERED_ENTITIES capacity by hand.
+// Number of currently-alive occupied slots in `discovery` - for iterating/sizing a snapshot
+// without walking the full tt_MAX_DISCOVERED_ENTITIES capacity by hand. Excludes tombstoned
+// entries (struct tt_DiscoveredEntity.alive's own doc comment) - a presumed-dead entity is still
+// findable via tt_Discovery_find() below, just not counted here, matching this function's own
+// "topic list"-style use (you wouldn't want a dead node's own topic still listed).
 uint32_t tt_Discovery_count(const struct tt_Discovery* discovery);
 
 // Looks up one specific remote entity by (node_id, endpoint_id), or NULL if it's not currently
-// known (never announced, or already departed). The returned pointer is only valid until the
-// next UPDATE this node processes - copy out anything needed past that point.
+// known - never announced, or *normally* departed (an explicit farewell, or dropped from a fresh
+// announce). A presumed-dead entity (struct tt_DiscoveredEntity.alive's own doc comment) is still
+// returned, with .alive == false, not NULL - check that field to tell the two "not currently
+// alive" shapes apart. The returned pointer is only valid until the next UPDATE this node
+// processes - copy out anything needed past that point.
 const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t node_id,
                                                     uint32_t endpoint_id);
 

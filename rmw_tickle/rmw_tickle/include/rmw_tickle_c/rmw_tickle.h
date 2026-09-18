@@ -192,6 +192,13 @@ typedef struct rmw_tickle_node_t {
 // own rmw_create_node()). Never call this from anywhere except the poll thread itself.
 size_t rmw_tickle_count_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind);
 
+// count_matching_locked()'s own tombstone counterpart (rmw_graph.c) - how many Publishers/
+// Subscriptions on this topic are currently known but presumed dead (struct tt_DiscoveredEntity.
+// alive's own doc comment, tickle.h), not the "currently active" count rmw_tickle_count_matching_
+// locked() above answers. Same threading rule as that function - poll-thread-only, no locking of
+// its own.
+size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind);
+
 // QoS roadmap #2 (DEADLINE) + #3 (LIVELINESS) - shared by every status this rmw tracks below.
 // total_count: cumulative, atomic (rmw_take_event(), rmw_event.c, reads it; only ever incremented,
 // always from the poll thread's own scheduled check - see rmw_publisher.c/rmw_subscription.c).
@@ -206,19 +213,19 @@ typedef struct rmw_tickle_event_status_t {
     atomic_int unread_count;
 } rmw_tickle_event_status_t;
 
-// RMW_EVENT_LIVELINESS_CHANGED's own status (rmw_subscription.c) - one field wider than plain
-// rmw_tickle_event_status_t above: alive_count is a live snapshot, not a delta.
+// RMW_EVENT_LIVELINESS_CHANGED's own status (rmw_subscription.c) - two fields wider than plain
+// rmw_tickle_event_status_t above: alive_count/not_alive_count are live snapshots, not deltas.
 typedef struct rmw_tickle_liveliness_changed_status_t {
-    atomic_int alive_count;              // current count from rmw_tickle_count_matching_locked(),
-                                         // not cumulative - read directly by rmw_take_event()
+    atomic_int alive_count;              // current count from rmw_tickle_count_matching_locked(), not
+                                         // cumulative - read directly by rmw_take_event()
+    atomic_int not_alive_count;          // current count from rmw_tickle_count_not_alive_matching_locked()
+                                         // (tt_Discovery's own tombstones, tickle.h's struct tt_
+                                         // DiscoveredEntity.alive) - likewise a live snapshot, not
+                                         // cumulative; real data now, not always 0 (was, before that
+                                         // tombstone concept existed)
     rmw_tickle_event_status_t alive;     // .total_count/.unread_count track alive_count_change
     rmw_tickle_event_status_t not_alive; // .total_count/.unread_count track not_alive_count_change
-    // TickLE's own tt_Discovery never keeps a tombstone for a peer check_liveliness() (tickle.c)
-    // presumed dead - it's just removed, not recorded as "known but dead" - so not_alive_count
-    // itself (a live snapshot, not a delta) has no TickLE-core data behind it and is always
-    // reported as 0 by rmw_take_event(). Documented limitation, not a bug - not_alive.total_count/
-    // unread_count (the *change*, which this rmw can and does track) are still real.
-    int last_alive_count; // plain, poll-thread-only - the periodic check's own previous reading
+    int last_alive_count;                // plain, poll-thread-only - the periodic check's own previous reading
 } rmw_tickle_liveliness_changed_status_t;
 
 // TickLE specific publisher data

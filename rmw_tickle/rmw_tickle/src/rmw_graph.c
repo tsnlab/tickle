@@ -113,7 +113,13 @@ rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node, rcutils_strin
 // The actual scan, shared by count_matching() below and rmw_tickle_count_matching_locked()
 // (rmw_tickle.h - RMW_EVENT_LIVELINESS_CHANGED's own periodic check, rmw_subscription.c). Assumes
 // node_impl->mutex is already held by the caller - see rmw_tickle_count_matching_locked()'s own
-// doc comment for why that one can't take it itself.
+// doc comment for why that one can't take it itself. Only ever counts *alive* discovery entries
+// (struct tt_DiscoveredEntity.alive's own doc comment, tickle.h) - a tombstoned one (presumed
+// dead via a liveliness timeout, not a normal departure) shouldn't count as "currently offered/
+// requested" for rmw_count_publishers()/_subscribers() or RMW_EVENT_LIVELINESS_CHANGED's own
+// alive_count either; see count_not_alive_matching_locked() below for its own counterpart. Local
+// endpoints have no tombstone concept at all - they're either present in tickle_node.endpoints[]
+// or destroyed outright, so no matching check is needed for them.
 static size_t count_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind) {
     size_t matched = 0;
     for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count; ++i) {
@@ -124,7 +130,25 @@ static size_t count_matching_locked(rmw_tickle_node_t* node_impl, const char* to
     }
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &node_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID && entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
+        if (entity->node_id != tt_NODE_ID_INVALID && entity->alive && entity->kind == kind &&
+            strcmp(entity->name, topic_name) == 0) {
+            matched++;
+        }
+    }
+    return matched;
+}
+
+// count_matching_locked()'s own tombstone counterpart - QoS roadmap #3 (LIVELINESS)'s own
+// RMW_EVENT_LIVELINESS_CHANGED.not_alive_count (a live snapshot, rmw_subscription.c/rmw_event.c),
+// now backed by real data (struct tt_DiscoveredEntity.alive's own doc comment) instead of always
+// 0. Local endpoints are never counted here for the same reason count_matching_locked() never
+// checks them for aliveness - no tombstone concept applies to them.
+static size_t count_not_alive_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind) {
+    size_t matched = 0;
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        const struct tt_DiscoveredEntity* entity = &node_impl->discovery.entities[i];
+        if (entity->node_id != tt_NODE_ID_INVALID && !entity->alive && entity->kind == kind &&
+            strcmp(entity->name, topic_name) == 0) {
             matched++;
         }
     }
@@ -136,6 +160,11 @@ static size_t count_matching_locked(rmw_tickle_node_t* node_impl, const char* to
 // the poll thread itself mid-tt_Node_poll() (see count_matching_locked()'s own doc comment).
 size_t rmw_tickle_count_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind) {
     return count_matching_locked(node_impl, topic_name, kind);
+}
+
+// rmw_tickle.h's own declaration - see count_not_alive_matching_locked()'s own doc comment.
+size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind) {
+    return count_not_alive_matching_locked(node_impl, topic_name, kind);
 }
 
 // Shared by rmw_count_publishers()/rmw_count_subscribers() - see this file's own module doc
