@@ -42,9 +42,11 @@
 // outlast a real round trip before an unacked sample gets evicted, and 8 put that window's own
 // edge close enough to this rig's real RTT that RELIABLE's loss_pct under tc/netem loss became a
 // razor-thin, run-to-run-noisy cliff at 10% tc loss specifically (5.2%/9.6%/8.0% across identical
-// re-runs at the interval that was tuned to land on it). 16 widens that window without touching
-// the send interval - see LOSS_TEST_INTERVAL_SEC's own comment for what this actually bought.
-#define tt_MAX_RELIABLE_HISTORY 16
+// re-runs at the interval that was tuned to land on it). 16 (double) overshot that cliff outright
+// on real HIL - 1%/5%/10% all landed flat at 0.1%, losing 10%'s own differentiation entirely, not
+// just stabilizing it - see LOSS_TEST_INTERVAL_SEC's own comment for the real numbers and the
+// current, smaller value this settled on instead.
+#define tt_MAX_RELIABLE_HISTORY 10
 // Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
 // (tickle.c) don't compare against a bare 64.
