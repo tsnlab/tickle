@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789732561045,
+  "lastUpdate": 1789732798811,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -18865,6 +18865,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04920857142857143,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "72c123697935de685c9a0d49234ac914e2f8fc31",
+          "message": "Add TEMPORARY diagnostic for process_data()'s silent endpoint-lookup drop\n\nRe-tests PLAN.md's own still-unconfirmed Milestone 18 hypothesis for the\n~0.1% RELIABLE loss_pct floor - every retained-sample-side mechanism tried so\nfar (deeper cache, durability backlog push, either Heartbeat flavor,\nMilestones 23/24) failed to move it, pointing at something earlier: a sample\narriving before this node's own local Subscriber is registered yet hits\nprocess_data()'s find_endpoint() == NULL branch and is dropped completely\nsilently (no callback, no update_reliable_ack(), no log at all) - invisible\nto every reliable-delivery mechanism, but still a real gap in perf_server.c's\nown expected_seq counter. Logs it now; run_perf.sh surfaces the count per tc\nloss level in the job summary. Remove once answered either way.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T20:58:50+09:00",
+          "tree_id": "60375f2d75b2a65e841040b59ed3ba91a0e1fbb6",
+          "url": "https://github.com/tsnlab/tickle/commit/72c123697935de685c9a0d49234ac914e2f8fc31"
+        },
+        "date": 1789732795837,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04837714285714285,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05068,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.035277142857142854,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04679428571428572,
             "unit": "ms"
           }
         ]
