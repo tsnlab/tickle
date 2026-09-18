@@ -331,24 +331,6 @@ summarize() {
                 echo "| ${pct}% | ${be_lp:-N/A} | ${rel_lp:-N/A} | ${be_mbps:-N/A} | ${rel_mbps:-N/A} | ${be_lat:-N/A} | ${rel_lat:-N/A} |"
             done
             echo
-
-            # One-off experiment (see run_paired_test's own "reliable_durable" comment above): does
-            # -D's discovery-triggered backlog push (QoS roadmap #4) reduce "reliable"'s own flat
-            # ~0.1% loss_pct floor? Not yet folded into the table above or the dashboard - a plain
-            # extra block so it's easy to drop once answered either way.
-            echo "### One-off: does -D (DURABLE) reduce RELIABLE's own loss_pct floor?"
-            echo
-            echo "| tc loss | loss_pct (reliable) | loss_pct (reliable + durable) |"
-            echo "|---|---|---|"
-            for pct in $LOSS_LEVELS_PCT; do
-                local rel_log2="$LOG_DIR/loss${pct}_reliable_server.log"
-                local dur_log="$LOG_DIR/loss${pct}_reliable_durable_server.log"
-                local rel_lp2 dur_lp
-                rel_lp2=$(grep -oP 'loss_pct=\K[\d.]+' "$rel_log2" 2>/dev/null | tail -1 || true)
-                dur_lp=$(grep -oP 'loss_pct=\K[\d.]+' "$dur_log" 2>/dev/null | tail -1 || true)
-                echo "| ${pct}% | ${rel_lp2:-N/A} | ${dur_lp:-N/A} |"
-            done
-            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"
