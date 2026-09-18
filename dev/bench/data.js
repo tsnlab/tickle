@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789710823953,
+  "lastUpdate": 1789710827028,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -23433,6 +23433,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/65701d344083555afee3863a0733763b26f518b8"
         },
         "date": 1789708531901,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4a0f21eee09a4ae03cc64035d0bb29144e807d64",
+          "message": "Document the tt_MAX_RELIABLE_HISTORY 8->10 depth-tuning outcome\n\nRecords the real HIL data behind the final depth=10 choice (16 overshot\nand flattened 10%'s own differentiation entirely; 10 landed 1%/5% at 0.1%\nand 10% at 3.6%, calmer than depth 8's own noisy 5.2%/9.6%/8.0% swings) in\nboth run_perf.sh's own LOSS_TEST_INTERVAL_SEC comment and PLAN.md, so a\nfuture reader knows this was tried and tuned, not left at its original\ndefault by oversight - and knows not to expect 3.6% to reproduce exactly.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T14:51:04+09:00",
+          "tree_id": "0f4d5a13af8aa0055db4d1220f4c4649085b2d66",
+          "url": "https://github.com/tsnlab/tickle/commit/4a0f21eee09a4ae03cc64035d0bb29144e807d64"
+        },
+        "date": 1789710825952,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
