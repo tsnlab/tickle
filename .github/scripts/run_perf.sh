@@ -503,6 +503,20 @@ if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
             "$((PERF_DURATION_SEC + 30))" "-W $LOSS_TEST_COOLDOWN_SEC"
         run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R" \
             "$((PERF_DURATION_SEC + 30))" "-R -W $LOSS_TEST_COOLDOWN_SEC"
+        # One-off experiment (not yet reflected in summarize()/the dashboard): "reliable" above
+        # shows a ~0.1% loss_pct floor that stayed flat across every tc loss level and every send
+        # interval this rig was tuned at (LOSS_TEST_INTERVAL_SEC's own comment) - too flat to be
+        # real retransmit failures, more likely a fixed-time startup-window artifact (some very
+        # early samples published before discovery/peer-matching on this pair completes).
+        # PLAN.md's Milestone 23 already sends one discovery-triggered Heartbeat automatically for
+        # any -R Publisher (exercised by "reliable" above with no separate flag) - this scenario
+        # additionally tests Milestone 22's own *periodic* Heartbeat on top of that (0.05s, well
+        # inside a run's own duration), the same "does this actually catch it" experiment QoS
+        # roadmap #4's own -D run above already tried and found didn't help. server_args has no
+        # matching flag: process_heartbeat() is unconditional for any reliable Subscriber.
+        run_paired_test "loss${pct}_reliable_heartbeat" "perf_server" "perf_client" \
+            "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R -H 0.05" \
+            "$((PERF_DURATION_SEC + 30))" "-R -W $LOSS_TEST_COOLDOWN_SEC"
         set_loss 0
     done
 fi

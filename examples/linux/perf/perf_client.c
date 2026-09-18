@@ -152,7 +152,7 @@ static void print_summary(uint64_t start_time) {
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id]\n", prog);
     fprintf(stderr, "                [-s message_size_bytes] [-i interval_seconds] [-d duration_seconds]\n");
-    fprintf(stderr, "                [-n topic_name] [-l log_level] [-B] [-R]\n");
+    fprintf(stderr, "                [-n topic_name] [-l log_level] [-B] [-R] [-H heartbeat_period_seconds]\n");
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
@@ -169,6 +169,9 @@ static void print_usage(const char* prog) {
                     "      default; batching is opt-in\")\n");
     fprintf(stderr, "  -R  RELIABLE instead of BEST_EFFORT delivery (QoS roadmap #5, rmw_tickle/PLAN.md) -\n"
                     "      retains published samples for retransmission on a Subscriber's ACKNACK\n");
+    fprintf(stderr, "  -H  periodic Heartbeat interval in seconds, requires -R (default: disabled) -\n"
+                    "      announces [first_available_seq_no, last_seq_no] on this schedule, on top of the\n"
+                    "      discovery-triggered one-off Heartbeat -R always sends regardless of -H\n");
 }
 
 static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
@@ -184,10 +187,11 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->log_level_set = false;
     opts->batch = false;
     opts->reliable = false;
+    opts->heartbeat_period_s = 0.0;
 
     return tt_example_parse_args(argc, argv, opts,
                                  TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_MESSAGE_SIZE |
-                                     TT_EXAMPLE_OPT_BATCH | TT_EXAMPLE_OPT_RELIABLE);
+                                     TT_EXAMPLE_OPT_BATCH | TT_EXAMPLE_OPT_RELIABLE | TT_EXAMPLE_OPT_HEARTBEAT);
 }
 
 // Split out of main() purely to keep that function's own cognitive complexity under clang-tidy's
@@ -290,6 +294,16 @@ int main(int argc, char** argv) {
         pub.reliable_cache = &reliable_cache;           // -R - see tt_Publisher.reliable_cache's own doc comment
         shutdown_grace_s = RELIABLE_SHUTDOWN_GRACE_SEC; // see shutdown_grace_s's own doc comment
         printf("RELIABLE delivery (retained-sample cache depth %d)\n", tt_MAX_RELIABLE_HISTORY);
+
+        if (opts.heartbeat_period_s > 0.0) {
+            uint64_t heartbeat_period_ns = (uint64_t)(opts.heartbeat_period_s * (double)tt_SECOND);
+            ret = tt_Publisher_set_heartbeat_period(&pub, heartbeat_period_ns);
+            if (ret != tt_RET_OK) {
+                printf("Cannot set heartbeat period: %d\n", ret);
+                return ret;
+            }
+            printf("Periodic Heartbeat every %g sec\n", opts.heartbeat_period_s);
+        }
     }
 
     const double bytes_per_mb = 1e6;
