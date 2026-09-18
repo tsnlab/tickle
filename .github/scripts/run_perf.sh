@@ -67,6 +67,20 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # 1ms, and 0.5ms already (1%/5%/10% configured consistently comes back within ~0.5 points of the
 # actual target); firehose's own besteffort row (1.0/5.0/10.0) confirms the same holds even at the
 # extreme.
+#
+# Follow-up: this whole comment tuned interval at a *fixed* tt_MAX_RELIABLE_HISTORY of 8; the
+# window that actually matters for the cache-eviction-vs-RTT race above is depth * interval, so
+# depth is an equally valid knob. config.h's own tt_MAX_RELIABLE_HISTORY was widened 8 -> 10
+# instead of retuning this interval again, specifically to get 10% tc loss down from that noisy
+# 280us cliff to something smaller and still real, without touching BEST_EFFORT's own accuracy
+# above (which depends on interval, not depth). Real HIL data at this same 280us interval: depth
+# 16 (double) overshot outright - 1%/5%/10% all landed flat at 0.1%, losing 10%'s own
+# differentiation entirely; depth 10 landed 1%/5% at 0.1% (unchanged from depth 8) and 10% at
+# 3.6% (real, and well under BEST_EFFORT's own ~9.8% there, vs. depth 8's own 5.2%/9.6%/8.0%
+# noise across identical re-runs) - one run only, not re-run for reproducibility (see this
+# comment's own point about averaging several runs per level being the more principled fix this
+# script still doesn't do), so treat 3.6% as "a little, real loss," not a precise number that will
+# reproduce exactly next time.
 LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00028}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())

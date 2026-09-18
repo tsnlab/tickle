@@ -279,6 +279,27 @@ scenario were reverted rather than kept (no ongoing benefit, and it cost real CI
 `-D` itself (the underlying `tt_Publisher.durable_cache` opt-in) can trivially be re-added to
 `perf_client.c` later if a different hypothesis wants it.
 
+**Follow-up, `tt_MAX_RELIABLE_HISTORY` widened 8 -> 10 (kept, merged)**: separately from the
+DURABILITY experiment above, asked to make `loss1_reliable`/`loss5_reliable` land at (effectively)
+0 loss_pct while `loss10_reliable` still shows a little - `run_perf.sh`'s own `LOSS_TEST_INTERVAL_
+SEC` comment already established the retained window that matters for RELIABLE's own cache-
+eviction-vs-ACKNACK-round-trip race is `depth * send interval`, and that whole investigation only
+ever tuned the interval half of that product at a fixed depth of 8. Widened `config.h`'s own
+`tt_MAX_RELIABLE_HISTORY` instead, leaving `LOSS_TEST_INTERVAL_SEC` (280us) untouched so BEST_
+EFFORT's own already-tuned loss_pct accuracy (which depends on interval/sample count, not depth)
+stays as-is. Two real HIL data points at that same 280us interval: depth 16 (double) overshot -
+1%/5%/10% all landed flat at 0.1%, erasing 10%'s own differentiation entirely, the opposite of
+what was wanted; depth 10 landed 1%/5% at 0.1% (unchanged) and 10% at 3.6% (real, well under
+BEST_EFFORT's own ~9.8% there, and calmer than depth 8's own noisy 5.2%/9.6%/8.0% swings across
+identical re-runs) - kept at 10. `tests/test_reliable_pubsub.c`'s `test_acknack_retry_skips_
+unrecoverable_backlog_on_giveup` had a seq_no (14) hardcoded against the old depth of 8 to exercise
+the "gap wider than tt_MAX_RELIABLE_HISTORY" give-up path - parametrized to `tt_MAX_RELIABLE_
+HISTORY + 6` so it stays correct at any depth; `make test`/`make sanitize`/`platform/freertos`
+build/`clang-format`/`clang-tidy` all pass. Not re-run for reproducibility (this whole cliff has
+already shown real run-to-run jitter at the interval knob - see `LOSS_TEST_INTERVAL_SEC`'s own
+comment - so 3.6% specifically should be read as "confirmed small and real," not a number future
+runs will reproduce exactly) - stopped here at the user's own call, not chased further.
+
 ## Build order
 
 0 and 1 in parallel → 2 → 3 and 4 (parallel) and 5 (parallel, only needs 2) → 6 (only needs 0) →
