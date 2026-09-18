@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789734717946,
+  "lastUpdate": 1789734721451,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35940,6 +35940,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 5% loss",
             "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10.2,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.1,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "77704f5dbc172b46f1d187cea1401ab97777ce33",
+          "message": "Surface perf_server.c's own ground-truth DIAG lines for loss*_reliable in the job summary\n\nsummarize() only ever cats throughput/reliable/smallmsg's own server logs\nwholesale - the loss${pct}_reliable_server.log files the previous commit's\ndiagnostic actually needs to answer anything about (only 0.1% floor is ever\nmeasured there, not in the un-paced scenarios) were never surfaced at all.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:29:09+09:00",
+          "tree_id": "1c38dc1e890417591b3f61c86f1c71b7b92b7679",
+          "url": "https://github.com/tsnlab/tickle/commit/77704f5dbc172b46f1d187cea1401ab97777ce33"
+        },
+        "date": 1789734720342,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.8,
             "unit": "%"
           },
           {
