@@ -97,6 +97,13 @@ static struct BulkData bulk = {0}; // static: zero-initialized, reused for every
 // build supports, so -R measures the mechanism's worst-case (biggest) retransmit cache cost.
 static struct tt_ReliableCache reliable_cache = {0};
 
+// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL) - only actually used (pub.durable_cache pointed at
+// it) when -D is passed; otherwise inert, matching tt_Publisher.durable_cache's own "NULL costs
+// nothing" default. Independent of reliable_cache above - -R and -D may be combined or used
+// alone. depth == tt_MAX_DURABLE_HISTORY for the same reason reliable_cache's does: the largest
+// retained-sample window this build supports.
+static struct tt_DurableCache durable_cache = {0};
+
 static uint64_t total_sent_msgs = 0;
 static uint64_t total_sent_bytes = 0;
 static uint64_t total_buffer_full = 0;
@@ -152,7 +159,7 @@ static void print_summary(uint64_t start_time) {
 static void print_usage(const char* prog) {
     fprintf(stderr, "Usage: %s [-b broadcast] [-p port] [-a bind_addr] [-I node_id]\n", prog);
     fprintf(stderr, "                [-s message_size_bytes] [-i interval_seconds] [-d duration_seconds]\n");
-    fprintf(stderr, "                [-n topic_name] [-l log_level] [-B] [-R]\n");
+    fprintf(stderr, "                [-n topic_name] [-l log_level] [-B] [-R] [-D]\n");
     fprintf(stderr, "  -b  broadcast address (default 192.168.10.255)\n");
     fprintf(stderr, "  -p  UDP port (default: compiled-in tt_NODE_PORT)\n");
     fprintf(stderr, "  -a  bind address (default: compiled-in tt_NODE_ADDRESS)\n");
@@ -169,6 +176,8 @@ static void print_usage(const char* prog) {
                     "      default; batching is opt-in\")\n");
     fprintf(stderr, "  -R  RELIABLE instead of BEST_EFFORT delivery (QoS roadmap #5, rmw_tickle/PLAN.md) -\n"
                     "      retains published samples for retransmission on a Subscriber's ACKNACK\n");
+    fprintf(stderr, "  -D  DURABLE/TRANSIENT_LOCAL (QoS roadmap #4, rmw_tickle/PLAN.md) - retains published\n"
+                    "      samples and pushes them to a newly-discovered Subscriber; independent of -R\n");
 }
 
 static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
@@ -184,10 +193,11 @@ static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts
     opts->log_level_set = false;
     opts->batch = false;
     opts->reliable = false;
+    opts->durable = false;
 
     return tt_example_parse_args(argc, argv, opts,
                                  TT_EXAMPLE_OPT_INTERVAL | TT_EXAMPLE_OPT_DURATION | TT_EXAMPLE_OPT_MESSAGE_SIZE |
-                                     TT_EXAMPLE_OPT_BATCH | TT_EXAMPLE_OPT_RELIABLE);
+                                     TT_EXAMPLE_OPT_BATCH | TT_EXAMPLE_OPT_RELIABLE | TT_EXAMPLE_OPT_DURABLE);
 }
 
 // Split out of main() purely to keep that function's own cognitive complexity under clang-tidy's
@@ -290,6 +300,11 @@ int main(int argc, char** argv) {
         pub.reliable_cache = &reliable_cache;           // -R - see tt_Publisher.reliable_cache's own doc comment
         shutdown_grace_s = RELIABLE_SHUTDOWN_GRACE_SEC; // see shutdown_grace_s's own doc comment
         printf("RELIABLE delivery (retained-sample cache depth %d)\n", tt_MAX_RELIABLE_HISTORY);
+    }
+    if (opts.durable) {
+        durable_cache.depth = tt_MAX_DURABLE_HISTORY;
+        pub.durable_cache = &durable_cache; // -D - see tt_Publisher.durable_cache's own doc comment
+        printf("DURABLE delivery (retained-sample cache depth %d)\n", tt_MAX_DURABLE_HISTORY);
     }
 
     const double bytes_per_mb = 1e6;

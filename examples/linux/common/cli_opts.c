@@ -62,9 +62,9 @@ static enum tt_flag_match parse_general_flag(int argc, char** argv, int* i, stru
     return TT_FLAG_MATCHED_OK;
 }
 
-// The -c/-i/-d/-s/-w/-W/-B/-R flags, each only recognized if its TT_EXAMPLE_OPT_* bit is set in
-// `flags`. -B/-R are the boolean/no-value flags here - neither consumes a following argv slot
-// the way every other flag (general or conditional) does.
+// The -c/-i/-d/-s/-w/-W/-B/-R/-D flags, each only recognized if its TT_EXAMPLE_OPT_* bit is set
+// in `flags`. -B/-R/-D are the boolean/no-value flags here - none of them consumes a following
+// argv slot the way every other flag (general or conditional) does.
 static enum tt_flag_match parse_conditional_flag(int argc, char** argv, int* i, struct tt_example_cli_options* opts,
                                                  uint32_t flags) {
     if ((flags & TT_EXAMPLE_OPT_COUNT) && strcmp(argv[*i], "-c") == 0 && *i + 1 < argc) {
@@ -83,6 +83,8 @@ static enum tt_flag_match parse_conditional_flag(int argc, char** argv, int* i, 
         opts->batch = true;
     } else if ((flags & TT_EXAMPLE_OPT_RELIABLE) && strcmp(argv[*i], "-R") == 0) {
         opts->reliable = true;
+    } else if ((flags & TT_EXAMPLE_OPT_DURABLE) && strcmp(argv[*i], "-D") == 0) {
+        opts->durable = true;
     } else {
         return TT_FLAG_NOT_MATCHED;
     }
