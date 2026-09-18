@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789739880155,
+  "lastUpdate": 1789739883288,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -29289,6 +29289,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/4b8d2c559973c42d5c70f796de21e87f743eaf8d"
         },
         "date": 1789739018701,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5c6de7e7cd7dfc75177693f73093b97d142e42c7",
+          "message": "Document Milestone 28: RxO matching + LIVELINESS_LOST design passes\n\nPer TickLE Plan's own DDS-parity review, items 1-2 (RxO matching, a real\nwire-protocol + discovery-state-machine change, and LIVELINESS_LOST, which\nneeds a genuinely independent observer thread) - design sketches only, not\nimplemented, per the review's own suggestion to design-review before coding.\nItem 4 (MANUAL liveliness) already noted as an open roadmap row (Milestone\n27's own commit); item 5 (LIFESPAN) stays queued, lowest priority now.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:55:20+09:00",
+          "tree_id": "e36405a8b9fb7f833fe7faa16b2bef3d1537bac0",
+          "url": "https://github.com/tsnlab/tickle/commit/5c6de7e7cd7dfc75177693f73093b97d142e42c7"
+        },
+        "date": 1789739882172,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
