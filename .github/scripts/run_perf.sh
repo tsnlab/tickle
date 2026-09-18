@@ -45,13 +45,11 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # 0 (firehose) confirmed the other end: RELIABLE's own loss_pct jumped to ~10-14% at *every* tc
 # loss level, no longer differentiating by level at all, and ran *worse* than BEST_EFFORT's own -
 # pure ACKNACK/retransmit overhead on an already-saturated link, this comment's own original
-# warning. The transition turns out to be much sharper than a smooth log-scale search assumed:
-# 80us (this range's own geometric mean) already overshot badly - 0.9%/3.8%/8.8% at 1%/5%/10%,
-# meaning even the *lightest* tc loss level was already failing to recover almost anything, not
-# just "starting to struggle at the high end" the way a real eviction race differentiating cleanly
-# by level should look. The actual target (near-0 at 1%/5%, a little real loss only at 10%) sits
-# much closer to 0.5ms's own "still fully clean" end than to the geometric mean of the bounded
-# range - narrowing there next (350us) instead of continuing to bisect the wider range blindly.
+# warning. The transition is a sharp cliff, not a smooth log-scale slope: 80us already overshot
+# badly (0.9%/3.8%/8.8% at 1%/5%/10% - even the lightest level failing to recover almost anything),
+# while 350us landed right back on the same flat ~0.1% every slower interval gave. The cliff itself
+# sits somewhere in the narrow 80-350us gap between those two confirmed points - narrowing there
+# next (~170us, that gap's own geometric mean) to find it.
 #
 # Separately (and unaffected by any of this): a faster send interval also raises the sample count
 # for the same PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct
@@ -60,7 +58,7 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # 1ms, and 0.5ms already (1%/5%/10% configured consistently comes back within ~0.5 points of the
 # actual target); firehose's own besteffort row (1.0/5.0/10.0) confirms the same holds even at the
 # extreme.
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00035}"
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00017}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
