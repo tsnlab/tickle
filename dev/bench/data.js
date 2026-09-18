@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789730047970,
+  "lastUpdate": 1789730051060,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -25043,6 +25043,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/6786dbfdd3c5eb42c477f730f379302d09d773d7"
         },
         "date": 1789729736401,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8f69739cc55235c7d6ae33744c30701088407303",
+          "message": "Surface loss1/5/10_reliable_heartbeat's own loss_pct in the job summary\n\nThe previous commit's new loss_pct data only existed inside per-run log\nfiles on the self-hosted runner, invisible in the job summary/raw log (only\nextracted-and-echoed values, or explicitly cat'd files, actually reach\nGITHUB_STEP_SUMMARY). Add a small one-off table extracting it the same way\nthe reverted -D (DURABLE) experiment's own one-off table already did, so the\nperiodic-Heartbeat-vs-loss_pct-floor experiment is actually readable after a\nrun.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T20:10:43+09:00",
+          "tree_id": "f62f45fc4437a9a74216923cd1231cdd64d17658",
+          "url": "https://github.com/tsnlab/tickle/commit/8f69739cc55235c7d6ae33744c30701088407303"
+        },
+        "date": 1789730049936,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
