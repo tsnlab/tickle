@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789715196494,
+  "lastUpdate": 1789715199691,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26749,6 +26749,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 34.291,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9e7fe439d5a63e5ce5179c01b71745dfa84af2c1",
+          "message": "Fix DURABILITY backlog delivery's real ACKNACK-recoverability gap (Milestone 20)\n\nupdate_reliable_ack()'s \"gap too large to track\" branch (offset >=\ntt_RELIABLE_BITMAP_BITS) used to just warn and leave ack_seq_no frozen\nforever - every later arrival, however in-order, hit the same too-wide\noffset relative to the still-stuck baseline, so a healthy stream never\nrecovered once this fired once. A brand-new Subscriber's default\nack_seq_no (1) sitting far behind an already-running Publisher (exactly\nwhat a DURABILITY backlog looks like) reliably triggers this on first\ncontact, matching the reverted reliable+durable HIL experiment's own\nflat \"no improvement\" result. Fixed: jump ack_seq_no to the new arrival\ninstead of freezing - safe because an offset this wide could never be\nnamed in a 64-bit ACKNACK bitmap anyway, unlike the \"still inside the\ntracking window\" case this function's own adjacent comment already\nwarns against fast-forwarding on. Fixes both the DURABILITY-specific\nmanifestation and a more general, previously-latent RELIABLE-only bug\n(any single burst loss wider than 64, durability or not).\n\ndeliver_durability_backlog() itself needed no changes - its packets are\nbyte-for-byte ordinary DATA submessages, already running through\nupdate_reliable_ack() like any other arrival once that dead end above\nis fixed. What the fix depends on: every durable_cache-retained sample\nmust also still be in reliable_cache when a Publisher has both, so a\nlost backlog sample is actually retransmittable once ACKNACK-requested.\nTrue today because tt_MAX_DURABLE_HISTORY (8) <= tt_MAX_RELIABLE_HISTORY\n(10) and both caches are written together in lockstep - pinned down\nwith a new _Static_assert plus cross-referencing config.h comments so a\nfuture independent change to either can't silently break it.\n\nNew tests: test_reliable_pubsub.c's own oversized-first-gap regression\n(no durability involved), and test_durability_pubsub.c's own combined\nRELIABLE+DURABILITY end-to-end proof - a lost backlog sample correctly\ndetected, ACKNACK-requested, and found retransmittable.\n\nrmw_tickle/PLAN.md's Milestone 20 also corrects its own original\n\"proposed fix direction\" (re-route delivery through tt_Publisher_\npublish()) - unnecessary once the actual, narrower root cause above was\ntraced precisely.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T16:03:54+09:00",
+          "tree_id": "9208fff5f669216b356e6e8ff9d47f6942d924bb",
+          "url": "https://github.com/tsnlab/tickle/commit/9e7fe439d5a63e5ce5179c01b71745dfa84af2c1"
+        },
+        "date": 1789715198520,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 39.237,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 34.899,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 37.52,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 36.537,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 35.665,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 37.076,
             "unit": "Mbps"
           }
         ]
