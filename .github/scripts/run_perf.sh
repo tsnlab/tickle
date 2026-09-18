@@ -345,6 +345,21 @@ summarize() {
                 echo "| ${pct}% | ${be_lp:-N/A} | ${rel_lp:-N/A} | ${be_mbps:-N/A} | ${rel_mbps:-N/A} | ${be_lat:-N/A} | ${rel_lat:-N/A} |"
             done
             echo
+
+            # TEMPORARY (PLAN.md's Milestone 18 residual loss_pct floor) - perf_server.c's own
+            # ground-truth seen_seq[] cross-check (its own "DIAG:" lines) only ever reaches this
+            # job summary for scenarios summarize() cats wholesale (throughput/reliable/smallmsg) -
+            # the loss${pct}_reliable_server.log files it actually matters for are never cat'd, so
+            # surface their own DIAG lines explicitly here. Remove once answered.
+            echo "### One-off: perf_server.c's own ground-truth drop cross-check (reliable)"
+            echo
+            echo '```'
+            for pct in $LOSS_LEVELS_PCT; do
+                echo "${pct}% tc loss:"
+                grep 'DIAG:' "$LOG_DIR/loss${pct}_reliable_server.log" 2>/dev/null || echo "(no DIAG lines)"
+            done
+            echo '```'
+            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"
