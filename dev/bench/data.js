@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707392457,
+  "lastUpdate": 1789707536461,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -16973,6 +16973,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04725571428571428,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "0bf299b507a0be6cf52c21ba9a69191dc5d40171",
+          "message": "Revert \"Add -D (DURABLE) to perf_client and a reliable+durable loss-injection scenario\"\n\nThis reverts commit 9a96cf805298519dd56e9e9e598060977bcd0705.",
+          "timestamp": "2026-09-18T13:57:42+09:00",
+          "tree_id": "9fb8fbbfdb5a66aabe240d7f2154767bfbd37a36",
+          "url": "https://github.com/tsnlab/tickle/commit/0bf299b507a0be6cf52c21ba9a69191dc5d40171"
+        },
+        "date": 1789707534033,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04503714285714285,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.08797571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04557,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04511571428571428,
             "unit": "ms"
           }
         ]
