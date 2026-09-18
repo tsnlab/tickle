@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789694886764,
+  "lastUpdate": 1789694889927,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -23217,6 +23217,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 36.071,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6789396f5274010ff39bc1cfcd76b93290bfdf3b",
+          "message": "Carry the BEST_EFFORT/RELIABLE loss_pct comparison onto the persistent dashboard\n\nThe job summary's own table (summarize(), a few commits back) already shows\nBEST_EFFORT and RELIABLE loss_pct side by side per push, but that's a\none-off per-run artifact - the persistent status grid at\nhttps://tsnlab.github.io/tickle/dev/bench/ (dashboard.py, fed by\nwrite_dashboard_fragment()) only ever carried RELIABLE's own throughput at\neach loss level, with no loss_pct at all and no BEST_EFFORT comparison.\n\nwrite_dashboard_fragment(): pulls besteffort_loss_{1,5,10}pct_pct and\nreliable_loss_{1,5,10}pct_pct out of the same server logs the throughput\nfields already read, same three fixed loss levels.\n\ndashboard.py: new loss_pair() helper renders each level's two numbers as one\n\"besteffort / reliable\" cell (e.g. \"9.8 / 5.2\"), three new columns\n(Loss@1%/5%/10%) after the existing Reliable Tput ones, colspan/placeholder\ncounts updated to match (8->11, 15->18). Verified end-to-end locally with a\nsynthetic fragment through merge + inject.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T10:25:25+09:00",
+          "tree_id": "f605aff8a4d8af6b6002f8e99cb228b425e3a17e",
+          "url": "https://github.com/tsnlab/tickle/commit/6789396f5274010ff39bc1cfcd76b93290bfdf3b"
+        },
+        "date": 1789694888816,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 39.08,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 34.921,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 37.709,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 36.582,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 35.603,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 32.778,
             "unit": "Mbps"
           }
         ]
