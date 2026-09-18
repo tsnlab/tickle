@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789737545988,
+  "lastUpdate": 1789737723789,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -20168,6 +20168,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04746714285714286,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9607e7a277a85afe48ee57f26bc68cb202fa4c70",
+          "message": "Narrow run_perf.sh's own RELIABLE_CACHE_DEPTH 10 -> 8\n\nDepth 10's own real HIL result (ground truth: 0/0/5 genuinely-lost samples\nat 1%/5%/10%) still rounded away to the job summary's own displayed \"0.0\"\nloss_pct at one decimal place. Narrowing further to 8 (this constant's own\noriginal pre-Milestone-24 depth) to push past the ~18-sample threshold that\ndisplay needs to round up to a visible \"0.1\".\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:20:54+09:00",
+          "tree_id": "e536c66b23b4074970e57a3a1044cb0f8a2a04b4",
+          "url": "https://github.com/tsnlab/tickle/commit/9607e7a277a85afe48ee57f26bc68cb202fa4c70"
+        },
+        "date": 1789737720426,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05036285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05205714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.047084285714285724,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.057915714285714286,
             "unit": "ms"
           }
         ]
