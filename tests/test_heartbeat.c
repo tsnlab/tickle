@@ -91,6 +91,26 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node, struc
     pub->topic = topic;
 }
 
+// Also registers pub as node->endpoints[0] and zeroes its own peers[] to the empty-slot sentinel -
+// decode_update_entities()'s own find_endpoint()/upsert_peer() calls need both, unlike init_
+// publisher() above (whose own tests reach tt_Publisher_publish() directly, never through
+// incoming-packet dispatch) - same helper shape as test_durability_pubsub.c's own identically-
+// named one.
+static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct tt_Node* node, struct tt_Topic* topic) {
+    memset(pub, 0, sizeof(*pub));
+    pub->endpoint.kind = tt_KIND_TOPIC_PUBLISHER;
+    pub->endpoint.id = ENDPOINT_ID;
+    pub->endpoint.name = "test_publisher";
+    pub->node = node;
+    pub->topic = topic;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        pub->peers[i].node_id = tt_NODE_ID_INVALID;
+    }
+
+    node->endpoint_count = 1;
+    node->endpoints[0] = (struct tt_Endpoint*)pub;
+}
+
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Node* node,
                                                struct tt_Topic* topic) {
     memset(sub, 0, sizeof(*sub));
@@ -123,6 +143,27 @@ static uint32_t write_heartbeat(struct tt_Node* node, uint32_t endpoint_id, uint
     heartbeat_header->first_available_seq_no = first_available_seq_no;
     heartbeat_header->last_seq_no = last_seq_no;
     return sizeof(struct tt_HeartbeatHeader);
+}
+
+// Builds an UpdateHeader with a single following TOPIC_SUBSCRIBER UpdateEntity in node->rx_buffer,
+// returning the tail offset (matching what process_packet() would have handed process_update()) -
+// same helper as tests/test_durability_pubsub.c's own identically-named one, needed here too for
+// this file's own discovery-triggered-Heartbeat tests below.
+static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id) {
+    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)node->rx_buffer;
+    update_header->last_modified = last_modified;
+    update_header->entity_count = 1;
+    uint32_t tail = sizeof(struct tt_UpdateHeader);
+
+    struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
+    entity->endpoint_id = endpoint_id;
+    entity->kind = tt_KIND_TOPIC_SUBSCRIBER;
+    tail += sizeof(struct tt_UpdateEntity);
+
+    tt_encode_string(node->rx_buffer, &tail, tt_MAX_BUFFER_LENGTH * 2, "test_topic");
+    tt_encode_string(node->rx_buffer, &tail, tt_MAX_BUFFER_LENGTH * 2, "test_subscriber");
+
+    return tail;
 }
 
 // tt_Publisher_set_heartbeat_period() must refuse to arm a Heartbeat for a Publisher with no
@@ -350,6 +391,144 @@ static void test_publisher_destroy_cancels_armed_heartbeat(void) {
     EXPECT_EQ_INT(0, node.scheduler_tail);
 }
 
+// PLAN.md's Milestone 23: a brand-new Subscriber discovered via UPDATE for a RELIABLE Publisher
+// must receive an immediate, one-off unicast Heartbeat - not wait for the periodic schedule -
+// mirroring test_durability_pubsub.c's own test_durability_delivers_backlog_to_newly_discovered_
+// subscriber() structure exactly, just asserting on the Heartbeat submessage instead of DATA.
+static void test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i)); // seq_no 1..3
+    }
+
+    node.update_seen[REMOTE_NODE_ID] = true; // see test_durability_pubsub.c's own comment on why
+    test_mock_send_to_call_count = 0;        // only count the initial Heartbeat below
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
+    EXPECT_EQ_U32((uint32_t)TEST_SENDER_PORT, (uint32_t)test_mock_send_to_last_port);
+
+    struct tt_HeartbeatHeader* sent =
+        (struct tt_HeartbeatHeader*)(node.tx_buffer + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    EXPECT_EQ_U32(1, sent->first_available_seq_no);
+    EXPECT_EQ_U32(3, sent->last_seq_no);
+}
+
+// A best-effort Publisher (reliable_cache == NULL) discovering a new peer must not send a
+// Heartbeat at all - nothing for it to ever announce, same guard send_heartbeat()'s own periodic
+// path relies on.
+static void test_heartbeat_discovery_skipped_for_besteffort_publisher(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    node.update_seen[REMOTE_NODE_ID] = true;
+    test_mock_send_to_call_count = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// A already-known peer's periodic UPDATE refresh (same last_modified, deduped by process_update()
+// before decode_update_entities()/upsert_peer() ever run again) must not re-trigger a second
+// initial Heartbeat - mirrors test_durability_pubsub.c's own test_durability_no_redelivery_on_
+// unchanged_update().
+static void test_heartbeat_discovery_no_redelivery_on_unchanged_update(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+
+    node.update_seen[REMOTE_NODE_ID] = true;
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // the initial Heartbeat, first time
+
+    test_mock_send_to_call_count = 0; // only count the second (unchanged) UPDATE's own effect below
+
+    tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID); // same last_modified -> deduped
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// A Publisher with *both* reliable_cache and durable_cache set discovering a new peer must send
+// both the durability backlog *and* the initial Heartbeat - order doesn't matter, both must
+// happen, total send_to count is durable_cache_entry_count + 1.
+static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache reliable_cache;
+    memset(&reliable_cache, 0, sizeof(reliable_cache));
+    reliable_cache.depth = 4;
+    pub.reliable_cache = &reliable_cache;
+
+    struct tt_DurableCache durable_cache;
+    memset(&durable_cache, 0, sizeof(durable_cache));
+    durable_cache.depth = 4;
+    pub.durable_cache = &durable_cache;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i)); // seq_no 1..3
+    }
+
+    node.update_seen[REMOTE_NODE_ID] = true;
+    test_mock_send_to_call_count = 0; // only count this discovery's own effect below
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // 3 durability backlog samples + 1 initial Heartbeat.
+    EXPECT_EQ_U32(4, (uint32_t)test_mock_send_to_call_count);
+}
+
 int main(void) {
     test_heartbeat_set_period_requires_reliable_cache();
     test_heartbeat_set_period_arms_and_disarms();
@@ -360,6 +539,10 @@ int main(void) {
     test_heartbeat_gap_within_window_widens_request_without_jumping();
     test_heartbeat_ignored_for_besteffort_subscriber();
     test_publisher_destroy_cancels_armed_heartbeat();
+    test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer();
+    test_heartbeat_discovery_skipped_for_besteffort_publisher();
+    test_heartbeat_discovery_no_redelivery_on_unchanged_update();
+    test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat();
 
     printf("test_heartbeat: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

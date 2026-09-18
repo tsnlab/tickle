@@ -571,6 +571,7 @@ static int highest_relevant_bit(const struct tt_Subscriber* sub);
 // QoS roadmap #5 (RELIABILITY) follow-up - Heartbeat, see struct tt_HeartbeatHeader's own doc
 // comment (tickle.h).
 static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param);
+static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
 static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                               uint32_t tail, uint32_t sender_ip, uint16_t sender_port);
 // QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
@@ -1193,11 +1194,30 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     return tt_RET_OK;
 }
 
-// Encodes and sends one Heartbeat submessage announcing [first_seq_no, pub->seq_no] - split out
-// of send_heartbeat() purely to keep that function's own cognitive complexity under clang-tidy's
-// threshold, same reasoning cache_reliable_sample()/cache_durable_sample() were split out of
-// tt_Publisher_publish() for.
-static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, uint32_t first_seq_no) {
+// Oldest still-retained seq_no in cache, or 0 if nothing is retained yet (seq_no 0 never occurs on
+// the wire - tt_Publisher_publish()'s own data_header->seq_no = pub->seq_no + 1, starting from 1 -
+// so it doubles as "empty" here). Shared by send_heartbeat()'s own periodic announce and send_
+// initial_heartbeat()'s own discovery-triggered one-off, below.
+static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache) {
+    uint16_t depth =
+        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+    uint32_t first_seq_no = 0;
+    for (int i = 0; i < depth; i++) {
+        if (cache->entries[i].len != 0 && (first_seq_no == 0 || cache->entries[i].seq_no < first_seq_no)) {
+            first_seq_no = cache->entries[i].seq_no;
+        }
+    }
+    return first_seq_no;
+}
+
+// Encodes and sends one Heartbeat submessage announcing [first_seq_no, pub->seq_no] to the given
+// target(s) - split out of send_heartbeat()/send_initial_heartbeat() purely to keep cognitive
+// complexity down and share the actual wire encoding between the periodic and discovery-triggered
+// paths, same reasoning cache_reliable_sample()/cache_durable_sample() were split out of tt_
+// Publisher_publish() for. peers/peer_count follow end_encode()'s own convention directly (NULL/0
+// broadcasts).
+static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, uint32_t first_seq_no,
+                                      const struct tt_Peer* peers, uint8_t peer_count) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     uint32_t old_tx_tail = node->tx_tail;
 
@@ -1216,14 +1236,6 @@ static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher*
     heartbeat_header->first_available_seq_no = first_seq_no;
     heartbeat_header->last_seq_no = pub->seq_no;
 
-    // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA.
-    const struct tt_Peer* peers = NULL;
-    uint8_t peer_count = 0;
-    uint8_t count = count_peers(pub->peers);
-    if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header)) {
-        peers = pub->peers;
-        peer_count = count;
-    }
     if (!end_encode(node, submessage_header, true, peers, peer_count)) {
         rollback(node, old_tx_tail);
     }
@@ -1237,26 +1249,43 @@ static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher*
 // to announce, same "nothing retained yet" short-circuit deliver_durability_backlog() already has.
 static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
-    struct tt_ReliableCache* cache = pub->reliable_cache;
-    uint16_t depth =
-        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
-
-    // Oldest still-retained seq_no among entries[] (a KEEP_LAST ring, len == 0 marks an empty
-    // slot) - seq_no 0 never occurs on the wire (tt_Publisher_publish()'s own data_header->seq_no
-    // = pub->seq_no + 1, starting from 1), so it doubles as "nothing found yet" here.
-    uint32_t first_seq_no = 0;
-    for (int i = 0; i < depth; i++) {
-        if (cache->entries[i].len != 0 && (first_seq_no == 0 || cache->entries[i].seq_no < first_seq_no)) {
-            first_seq_no = cache->entries[i].seq_no;
-        }
-    }
+    uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
     if (first_seq_no != 0) {
-        encode_and_send_heartbeat(node, pub, first_seq_no);
+        // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA.
+        const struct tt_Peer* peers = NULL;
+        uint8_t peer_count = 0;
+        uint8_t count = count_peers(pub->peers);
+        if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && node->tx_tail == sizeof(struct tt_Header)) {
+            peers = pub->peers;
+            peer_count = count;
+        }
+        encode_and_send_heartbeat(node, pub, first_seq_no, peers, peer_count);
     }
 
     if (!tt_Node_schedule(node, time + pub->heartbeat_period_ns, send_heartbeat, pub)) {
         TT_LOG_ERROR("Cannot schedule send_heartbeat");
     }
+}
+
+// QoS roadmap #5 (RELIABILITY) follow-up - fires once, the instant decode_update_entities()'s own
+// upsert_peer() claims a previously-empty slot for this exact Publisher (a genuinely new - or
+// forgotten-then-rejoined - peer, not every periodic UPDATE refresh), mirroring deliver_
+// durability_backlog()'s own identical trigger exactly. Closes the race a purely periodic
+// Heartbeat can't: a newly-matched Subscriber's very first few samples are also the ones a slow
+// periodic period is most likely to arrive too late to save (by the time it fires, reliable_
+// cache's own tiny KEEP_LAST window has already evicted them) - an immediate, one-off greeting
+// reaches the new peer as soon as discovery itself completes instead. No-op when pub->reliable_
+// cache is NULL (best-effort) or still empty (nothing published yet) - fires regardless of
+// whether periodic Heartbeat (tt_Publisher_set_heartbeat_period()) was ever separately enabled.
+static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target) {
+    if (pub->reliable_cache == NULL) {
+        return;
+    }
+    uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    if (first_seq_no == 0) {
+        return;
+    }
+    encode_and_send_heartbeat(node, pub, first_seq_no, target, 1);
 }
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
@@ -1878,6 +1907,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
                 if (upsert_peer(pub->peers, header->source, sender_ip, sender_port)) {
                     struct tt_Peer target = {header->source, sender_ip, sender_port};
                     deliver_durability_backlog(node, pub, &target);
+                    send_initial_heartbeat(node, pub, &target);
                 }
             }
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
