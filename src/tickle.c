@@ -566,6 +566,13 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub);
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* sub);
 static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port);
+static void jump_ack_baseline(struct tt_Subscriber* sub, uint32_t seq_no);
+static int highest_relevant_bit(const struct tt_Subscriber* sub);
+// QoS roadmap #5 (RELIABILITY) follow-up - Heartbeat, see struct tt_HeartbeatHeader's own doc
+// comment (tickle.h).
+static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param);
+static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port);
 // QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
 static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
 
@@ -744,9 +751,10 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
-    pub->batch = false;         // see tickle.h's own doc comment on this field for why this is the default
-    pub->reliable_cache = NULL; // best-effort by default - see tt_ReliableCache's own doc comment
-    pub->durable_cache = NULL;  // volatile by default - see tt_DurableCache's own doc comment
+    pub->batch = false;           // see tickle.h's own doc comment on this field for why this is the default
+    pub->reliable_cache = NULL;   // best-effort by default - see tt_ReliableCache's own doc comment
+    pub->durable_cache = NULL;    // volatile by default - see tt_DurableCache's own doc comment
+    pub->heartbeat_period_ns = 0; // no periodic Heartbeat by default - see its own doc comment
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
     }
@@ -782,6 +790,7 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->reliable_sender_node_id = tt_NODE_ID_INVALID;
     sub->reliable_retry = 0;
     sub->reliable_acknack_scheduled = false;
+    sub->reliable_heartbeat_last_seq_no = 0; // no Heartbeat seen yet - see its own doc comment
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_RET_OK) {
@@ -1184,11 +1193,108 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     return tt_RET_OK;
 }
 
+// Encodes and sends one Heartbeat submessage announcing [first_seq_no, pub->seq_no] - split out
+// of send_heartbeat() purely to keep that function's own cognitive complexity under clang-tidy's
+// threshold, same reasoning cache_reliable_sample()/cache_durable_sample() were split out of
+// tt_Publisher_publish() for.
+static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, uint32_t first_seq_no) {
+    struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
+    uint32_t old_tx_tail = node->tx_tail;
+
+    struct tt_SubmessageHeader* submessage_header =
+        start_encode(node, tt_SUBMESSAGE_TYPE_HEARTBEAT, tt_SUBMESSAGE_ID_ALL);
+    if (submessage_header == NULL) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+    struct tt_HeartbeatHeader* heartbeat_header = encode(node, sizeof(struct tt_HeartbeatHeader));
+    if (heartbeat_header == NULL) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+    heartbeat_header->endpoint_id = endpoint->id;
+    heartbeat_header->first_available_seq_no = first_seq_no;
+    heartbeat_header->last_seq_no = pub->seq_no;
+
+    // Same peer/broadcast decision tt_Publisher_publish() already makes for DATA.
+    const struct tt_Peer* peers = NULL;
+    uint8_t peer_count = 0;
+    uint8_t count = count_peers(pub->peers);
+    if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD && old_tx_tail == sizeof(struct tt_Header)) {
+        peers = pub->peers;
+        peer_count = count;
+    }
+    if (!end_encode(node, submessage_header, true, peers, peer_count)) {
+        rollback(node, old_tx_tail);
+    }
+}
+
+// QoS roadmap #5 (RELIABILITY) follow-up - runs once per pub->heartbeat_period_ns (armed by tt_
+// Publisher_set_heartbeat_period()), announcing pub->reliable_cache's own currently-retained
+// range - see struct tt_HeartbeatHeader's own doc comment (tickle.h) for what this buys over the
+// purely-reactive gap detection RELIABILITY already had on its own. Skips sending (but still
+// reschedules) when nothing has been published yet - entries[] is still entirely empty, nothing
+// to announce, same "nothing retained yet" short-circuit deliver_durability_backlog() already has.
+static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
+    struct tt_Publisher* pub = param;
+    struct tt_ReliableCache* cache = pub->reliable_cache;
+    uint16_t depth =
+        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+
+    // Oldest still-retained seq_no among entries[] (a KEEP_LAST ring, len == 0 marks an empty
+    // slot) - seq_no 0 never occurs on the wire (tt_Publisher_publish()'s own data_header->seq_no
+    // = pub->seq_no + 1, starting from 1), so it doubles as "nothing found yet" here.
+    uint32_t first_seq_no = 0;
+    for (int i = 0; i < depth; i++) {
+        if (cache->entries[i].len != 0 && (first_seq_no == 0 || cache->entries[i].seq_no < first_seq_no)) {
+            first_seq_no = cache->entries[i].seq_no;
+        }
+    }
+    if (first_seq_no != 0) {
+        encode_and_send_heartbeat(node, pub, first_seq_no);
+    }
+
+    if (!tt_Node_schedule(node, time + pub->heartbeat_period_ns, send_heartbeat, pub)) {
+        TT_LOG_ERROR("Cannot schedule send_heartbeat");
+    }
+}
+
+// See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
+// explicit call rather than just setting that field directly.
+tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns) {
+    if (pub == NULL || pub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (period_ns != 0 && pub->reliable_cache == NULL) {
+        return tt_RET_INVALID_ARGUMENT; // nothing for a Heartbeat to announce without one
+    }
+
+    if (pub->heartbeat_period_ns != 0) {
+        tt_Node_unschedule(pub->node, send_heartbeat, pub); // re-arming or disabling either way
+    }
+    pub->heartbeat_period_ns = period_ns;
+    if (period_ns == 0) {
+        return tt_RET_OK; // disabled
+    }
+
+    if (!tt_Node_schedule(pub->node, tt_get_ns() + period_ns, send_heartbeat, pub)) {
+        pub->heartbeat_period_ns = 0;  // failed to arm - stay disabled rather than claim it's on
+        return tt_RET_OUT_OF_SCHEDULE; // tt_MAX_SCHEDULER_LENGTH exhausted
+    }
+    return tt_RET_OK;
+}
+
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
+
+    // Cancel a still-armed Heartbeat before this Publisher (its own schedule param) goes away -
+    // same reasoning as tt_Subscriber_destroy()'s own acknack_retry cancellation just below.
+    if (pub->heartbeat_period_ns != 0) {
+        tt_Node_unschedule(pub->node, send_heartbeat, pub);
+    }
 
     if (remove_endpoint_from_node(pub->node, endpoint)) {
         pub->node->last_modified = tt_get_ns();
@@ -1235,6 +1341,28 @@ static int highest_received_bit(uint64_t received_bitmap) {
     return highest;
 }
 
+// QoS roadmap #5 (RELIABILITY) follow-up - the highest bit position (bit j: seq_no ack_seq_no + j
+// needs attention, one way or another) this Subscriber currently has *any* reason to ask about -
+// received_bitmap's own highest confirmed-out-of-order bit (highest_received_bit() above, the
+// only signal before this follow-up existed), widened by the highest seq_no the most recent
+// struct tt_HeartbeatHeader claimed the Publisher has published, if that reaches further. A
+// Heartbeat can reveal the Subscriber is behind even with zero out-of-order DATA arrivals yet -
+// received_bitmap alone is blind to that case, since nothing has set any bit in it. Shared by
+// send_acknack() (what to actually request) and maybe_arm_acknack_retry() (whether there's
+// anything to do at all) - both need the same widened answer, not just received_bitmap's own.
+// -1 if neither signal has anything to report.
+static int highest_relevant_bit(const struct tt_Subscriber* sub) {
+    int highest = highest_received_bit(sub->received_bitmap);
+    if (sub->reliable_heartbeat_last_seq_no >= sub->ack_seq_no) {
+        uint64_t hb_offset = (uint64_t)sub->reliable_heartbeat_last_seq_no - sub->ack_seq_no;
+        int hb_highest = hb_offset < tt_RELIABLE_BITMAP_BITS ? (int)hb_offset : tt_RELIABLE_BITMAP_BITS - 1;
+        if (hb_highest > highest) {
+            highest = hb_highest;
+        }
+    }
+    return highest;
+}
+
 static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
     if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
         return; // no reliable DATA seen yet to ack
@@ -1267,7 +1395,13 @@ static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
     // run_perf.sh's real loss-injection scenarios: the Publisher's own diagnostic saw ~4,000
     // "not found" ACKNACKs against a run of only ~500 total messages - only possible if most
     // requests were for seq_nos that were never sent, not actually lost ones.
-    int highest = highest_received_bit(sub->received_bitmap);
+    //
+    // highest_relevant_bit() (not the plain received_bitmap-only highest_received_bit() this
+    // comment's own numbers were found against) also considers the most recent Heartbeat's own
+    // last_seq_no - QoS roadmap #5's own follow-up, struct tt_HeartbeatHeader's doc comment
+    // (tickle.h) - widening the request range to cover a gap a Heartbeat revealed even when
+    // nothing has arrived out of order yet to set any bit here at all.
+    int highest = highest_relevant_bit(sub);
     uint64_t request_mask = 0;
     if (highest >= tt_RELIABLE_BITMAP_BITS - 1) {
         request_mask = ~0ULL; // highest is the top bit - avoid a 64-bit shift's own UB below
@@ -1394,14 +1528,16 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
     }
 }
 
-// Shared by update_reliable_ack() (a new/changed gap) and acknack_retry()'s own give-up path (the
-// gap just written off might not have been the only one outstanding): unschedules cleanly once
-// nothing is left to ask for, or sends an ACKNACK for whatever's still missing and (re-)arms the
-// retry timer if one isn't already running. Splitting this out means a give-up no longer leaves a
-// remaining, different gap waiting on the next DATA arrival before anything asks for it again.
+// Shared by update_reliable_ack() (a new/changed gap), process_heartbeat() (a Heartbeat revealing
+// one even with received_bitmap still 0), and acknack_retry()'s own give-up path (the gap just
+// written off might not have been the only one outstanding): unschedules cleanly once nothing is
+// left to ask for, or sends an ACKNACK for whatever's still missing and (re-)arms the retry timer
+// if one isn't already running. Splitting this out means a give-up no longer leaves a remaining,
+// different gap waiting on the next DATA arrival before anything asks for it again.
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* sub) {
-    if (sub->received_bitmap == 0) {
-        // No outstanding gap - a healthy stream needs no ACKNACK at all.
+    if (highest_relevant_bit(sub) < 0) {
+        // No outstanding gap by either signal (received_bitmap or the last Heartbeat) - a healthy
+        // stream needs no ACKNACK at all.
         if (sub->reliable_acknack_scheduled) {
             tt_Node_unschedule(node, acknack_retry, sub);
             sub->reliable_acknack_scheduled = false;
@@ -1421,6 +1557,19 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* 
             TT_LOG_ERROR("Cannot schedule acknack_retry");
         }
     }
+}
+
+// Jumps sub's own baseline straight to seq_no instead of trying to track anything below it -
+// shared by update_reliable_ack()'s own oversized-DATA-gap branch and process_heartbeat()'s own
+// oversized-Heartbeat-gap case (PLAN.md's Milestone 20 and its own Heartbeat follow-up
+// respectively): an offset >= tt_RELIABLE_BITMAP_BITS can never be named in a tt_AckNackHeader.
+// bitmap at all (fixed 64 bits wide on the wire), so nothing genuinely recoverable is given up on
+// by not tracking it - see update_reliable_ack()'s own call site for the full "why" comment, not
+// repeated here.
+static void jump_ack_baseline(struct tt_Subscriber* sub, uint32_t seq_no) {
+    sub->ack_seq_no = seq_no;
+    sub->received_bitmap = 0;
+    advance_ack_seq_no(sub);
 }
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) - called from process_data() for every DATA a reliable
@@ -1476,9 +1625,7 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
             // a retry cycle chasing a position that could never have been named on the wire.
             TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u) - jumping ahead instead of getting stuck",
                            seq_no - sub->ack_seq_no, sub->ack_seq_no);
-            sub->ack_seq_no = seq_no;
-            sub->received_bitmap = 0;
-            advance_ack_seq_no(sub);
+            jump_ack_baseline(sub, seq_no);
         }
     }
 
@@ -2485,6 +2632,79 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     return true;
 }
 
+// QoS roadmap #5 (RELIABILITY) follow-up - process_submessage()'s own new HEARTBEAT case. See
+// struct tt_HeartbeatHeader's own doc comment (tickle.h) for what this is; matches process_data()/
+// process_acknack()'s own decode-then-dispatch shape and "silently no-op if nothing local
+// matches" convention. Returns false only on a genuine decode failure (illegal header) - a
+// Heartbeat with no local match, or for a non-reliable Subscriber, is a normal no-op, not an
+// error, same as those two functions' own equivalent cases.
+static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
+    struct tt_HeartbeatHeader* heartbeat_header = decode(node, buffer, &head, tail, sizeof(struct tt_HeartbeatHeader));
+    if (heartbeat_header == NULL) {
+        TT_LOG_ERROR("Illegal HeartbeatHeader");
+        return false;
+    }
+
+    uint32_t endpoint_id = rd32(header, heartbeat_header->endpoint_id);
+    uint32_t first_available_seq_no = rd32(header, heartbeat_header->first_available_seq_no);
+    uint32_t last_seq_no = rd32(header, heartbeat_header->last_seq_no);
+
+    TT_LOG_DEBUG("Heartbeat");
+    TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
+    TT_LOG_DEBUG("  first_available_seq_no: %u", first_available_seq_no);
+    TT_LOG_DEBUG("  last_seq_no: %u", last_seq_no);
+
+    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id);
+    if (endpoint == NULL) {
+        return true;
+    }
+
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if (!sub->reliable) {
+        return true; // a best-effort Subscriber has no ack state a Heartbeat could inform
+    }
+
+    if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
+        // First-ever reliable contact from this sender: learn the *real* starting baseline
+        // straight from the Heartbeat, rather than guessing it from whatever DATA happens to
+        // arrive first (PLAN.md's Milestone 20's own workaround for not having this signal at
+        // all) - the actual DDS-parity fix this whole follow-up is for. Matches send_acknack()'s
+        // own tt_NODE_ID_INVALID sentinel check for "no reliable contact yet".
+        sub->ack_seq_no = first_available_seq_no;
+        sub->received_bitmap = 0;
+    } else if (last_seq_no >= sub->ack_seq_no) {
+        uint64_t offset = (uint64_t)last_seq_no - sub->ack_seq_no;
+        if (offset >= tt_RELIABLE_BITMAP_BITS) {
+            // Already-tracking Subscriber, but this Heartbeat reveals a gap too wide to ever
+            // track - the same "provably unrecoverable, don't get stuck" case update_reliable_
+            // ack()'s own oversized-DATA-gap branch handles (see jump_ack_baseline()'s own doc
+            // comment) - jump ahead here too, rather than only ever being able to discover this
+            // reactively once *some* DATA sample eventually arrives to trigger update_reliable_
+            // ack() instead.
+            jump_ack_baseline(sub, last_seq_no);
+        }
+        // else: within the trackable window - nothing to do here directly. highest_relevant_bit()
+        // already picks this up from reliable_heartbeat_last_seq_no (set unconditionally below),
+        // and maybe_arm_acknack_retry()/send_acknack() below act on it.
+    }
+    // last_seq_no < sub->ack_seq_no: a stale/reordered Heartbeat (e.g. arrived after DATA already
+    // caught this Subscriber up further) - nothing to do, same "duplicate/old" no-op update_
+    // reliable_ack()'s own seq_no < ack_seq_no branch already has.
+
+    sub->reliable_sender_node_id = header->source;
+    sub->reliable_sender_ip = sender_ip;
+    sub->reliable_sender_port = sender_port;
+    // Monotonic guard: a Heartbeat can arrive out of order over UDP the same as any other
+    // submessage - never let a late, older one regress what highest_relevant_bit() already knows.
+    if (last_seq_no > sub->reliable_heartbeat_last_seq_no) {
+        sub->reliable_heartbeat_last_seq_no = last_seq_no;
+    }
+
+    maybe_arm_acknack_retry(node, sub);
+    return true;
+}
+
 static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
                                uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
@@ -2521,6 +2741,13 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         // the first place (self_sent-suppressed), so it never has anything to ack locally either.
         if (!self_sent) {
             process_acknack(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_HEARTBEAT:
+        // QoS roadmap #5 (RELIABILITY) follow-up - self_sent-guarded for the identical reason
+        // ACKNACK's own case just above is.
+        if (!self_sent) {
+            process_heartbeat(node, header, buffer, head, body_tail, sender_ip, sender_port);
         }
         return true;
     case tt_SUBMESSAGE_TYPE_CALLREQUEST:

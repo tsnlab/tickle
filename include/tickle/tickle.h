@@ -442,7 +442,24 @@ struct tt_Publisher { // extends endpoint
     // DURABLE/TRANSIENT_LOCAL - see struct tt_DurableCache's own doc comment above. Independent of
     // reliable_cache above - a Publisher may set either, both, or neither.
     struct tt_DurableCache* durable_cache;
+
+    // 0 (tt_Node_create_publisher()'s own default): no periodic Heartbeat, today's only behavior.
+    // Non-zero: a struct tt_HeartbeatHeader announce goes out every this-many nanoseconds - see
+    // its own doc comment (tickle.h) and tt_Publisher_set_heartbeat_period()'s own doc comment
+    // (below) for why this needs that explicit call, not just setting this field directly the way
+    // reliable_cache/durable_cache above are. Requires reliable_cache to already be set (nothing
+    // to announce for a best-effort Publisher).
+    uint64_t heartbeat_period_ns;
 };
+
+// Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
+// struct tt_HeartbeatHeader's own doc comment (tickle.h) for what it's for. Unlike reliable_cache/
+// durable_cache (plain caller-owned pointer fields, no function call needed to "activate" them),
+// arming a periodic tt_Node_schedule() entry is an active operation with no passive-field
+// equivalent - call this any time after tt_Node_create_publisher() returns, once pub->
+// reliable_cache is already set. Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still
+// NULL (period_ns == 0 is always accepted regardless, since disabling never needs a cache).
+tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns);
 
 struct tt_Subscriber;
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
@@ -494,6 +511,16 @@ struct tt_Subscriber { // extends endpoint
     // role, needed so a burst of DATA packets while a gap is open doesn't schedule a new timer
     // per packet.
     bool reliable_acknack_scheduled;
+    // 0 (tt_Node_create_subscriber()'s own default): no Heartbeat seen yet from this sender - the
+    // Subscriber falls back to inferring gaps purely from received_bitmap, today's only behavior
+    // (a Publisher that never calls tt_Publisher_set_heartbeat_period() never sends one, so this
+    // stays 0 forever and nothing here changes for it). Non-zero: the highest seq_no the most
+    // recent struct tt_HeartbeatHeader claimed the Publisher has published - used by tickle.c's
+    // own highest_relevant_bit() to widen send_acknack()'s/maybe_arm_acknack_retry()'s own "how
+    // far ahead does anything need attention" reach beyond received_bitmap's own highest
+    // *confirmed* bit alone, since a Heartbeat can reveal the Subscriber is behind even with zero
+    // out-of-order DATA arrivals yet (received_bitmap is blind to that case on its own).
+    uint32_t reliable_heartbeat_last_seq_no;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -638,6 +665,7 @@ struct tt_Header {
 #define tt_SUBMESSAGE_TYPE_ACKNACK 3
 #define tt_SUBMESSAGE_TYPE_CALLREQUEST 4
 #define tt_SUBMESSAGE_TYPE_CALLRESPONSE 5
+#define tt_SUBMESSAGE_TYPE_HEARTBEAT 6
 
 struct tt_SubmessageHeader {
     uint8_t type;     // 0 for Node update, 2 for Data, 3 for AckNack
@@ -679,6 +707,19 @@ struct tt_AckNackHeader {
     uint32_t seq_no;      // cumulative ack: every seq_no below this was received
     uint64_t bitmap;      // bit j set: (seq_no + j) is still missing, please resend - same
                           // direction as RTPS's own AckNack SequenceNumberSet
+} __attribute__((packed));
+
+// QoS roadmap #5 (RELIABILITY) follow-up - a RELIABLE Publisher's own periodic self-announce of
+// what it currently has retained, same role as RTPS's own HEARTBEAT submessage (firstSN/lastSN).
+// Lets a Subscriber learn the real, currently-retained range directly - independent of whether
+// any specific DATA sample's own delivery attempt happened to succeed - rather than only ever
+// inferring "something might be missing" reactively from whatever DATA does arrive (this file's
+// own struct tt_Subscriber.reliable_heartbeat_last_seq_no doc comment explains the gap this
+// closes; opt-in via tt_Publisher_set_heartbeat_period(), tickle.c).
+struct tt_HeartbeatHeader {
+    uint32_t endpoint_id;            // source Publisher - same leading-field convention as above
+    uint32_t first_available_seq_no; // oldest sample still retained in reliable_cache right now
+    uint32_t last_seq_no;            // newest published (== pub->seq_no at send time)
 } __attribute__((packed));
 
 struct tt_CallRequestHeader {
