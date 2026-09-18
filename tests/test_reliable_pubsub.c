@@ -416,6 +416,51 @@ static void test_acknack_retry_budget_resets_for_next_gap(void) {
     EXPECT_TRUE(!sub.reliable_acknack_scheduled);
 }
 
+// Regression test for PLAN.md's Milestone 20: a gap so wide it can't even be represented in
+// received_bitmap (>= tt_RELIABLE_BITMAP_BITS, the wire format's own fixed 64-bit ceiling) used
+// to just warn and leave ack_seq_no frozen forever - every later arrival, however perfectly
+// in-order from that point on, had the exact same too-wide offset relative to the still-stuck
+// ack_seq_no, so a healthy stream never recovered once this happened once. Most likely to bite a
+// brand-new Subscriber whose default ack_seq_no (1) starts arbitrarily far behind a Publisher
+// that's already been running a while (QoS roadmap #4 DURABILITY's own backlog delivery is
+// exactly this shape - see tests/test_durability_pubsub.c's own combined-QoS test), but this
+// reproduces the underlying bug at the plain RELIABLE level, no durability involved at all.
+static void test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_freezing(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // ack_seq_no starts at 1 (init_subscriber_registered_on_node()'s own default) - first-ever
+    // arrival is seq_no 1000, an offset (999) far past tt_RELIABLE_BITMAP_BITS (64).
+    uint32_t tail = write_data(&node, 1000, 100000, 1000);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // Fixed: baseline jumps to just past this arrival instead of staying stuck at 1.
+    EXPECT_EQ_U32(1001, sub.ack_seq_no);
+    EXPECT_TRUE(sub.received_bitmap == 0);
+    EXPECT_TRUE(!sub.reliable_acknack_scheduled); // no phantom gap left armed for 1..999
+
+    // The stream must now track normally from here - a small, genuinely resolvable gap right
+    // after the jump must still be detected and ACKNACKed, proving ack_seq_no didn't just move,
+    // it's actually live again (the exact failure mode being fixed: without it, *every* arrival,
+    // including this one, would have hit the same oversized-offset branch and done nothing).
+    test_mock_send_to_call_count = 0;
+    tail = write_data(&node, 1002, 100200, 1002); // 1001 skipped
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(1001, sub.ack_seq_no);      // still correctly waiting on 1001
+    EXPECT_TRUE(sub.received_bitmap == 2ULL); // bit 1 -> seq_no 1002 (1001 + 1) received early
+    EXPECT_TRUE(sub.reliable_acknack_scheduled);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK for 1001
+}
+
 // An incoming ACKNACK requesting a seq_no still in a reliable Publisher's cache must be
 // retransmitted, unicast straight back to whoever sent the ACKNACK.
 static void test_process_acknack_retransmits_cached_sample(void) {
@@ -479,6 +524,7 @@ int main(void) {
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
     test_acknack_retry_skips_unrecoverable_backlog_on_giveup();
+    test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_freezing();
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();
     test_process_acknack_ignored_for_besteffort_publisher();

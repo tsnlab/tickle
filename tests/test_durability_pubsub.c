@@ -58,6 +58,14 @@ static void stub_data_free(struct tt_Data* data) {
     (void)data;
 }
 
+static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
+                                     struct tt_Data* data) {
+    (void)subscriber;
+    (void)time;
+    (void)seq_no;
+    (void)data;
+}
+
 static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
     memset(node, 0, sizeof(*node));
     node->id = LOCAL_NODE_ID;
@@ -118,6 +126,31 @@ static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_
     tt_encode_string(node->rx_buffer, &tail, tt_MAX_BUFFER_LENGTH * 2, "test_subscriber");
 
     return tail;
+}
+
+// Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail
+// offset (matching what process_packet() would have handed process_data()) - same helper as
+// tests/test_reliable_pubsub.c's own write_data(), needed here too for this file's own combined
+// RELIABILITY+DURABILITY regression test (each tests/test_*.c is its own standalone binary, no
+// helpers shared across files).
+static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
+    struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
+    data_header->endpoint_id = ENDPOINT_ID;
+    data_header->seq_no = seq_no;
+    data_header->timestamp = timestamp;
+
+    uint32_t tail = sizeof(struct tt_DataHeader);
+    memcpy(node->rx_buffer + tail, &value, sizeof(value));
+    return tail + sizeof(value);
+}
+
+// See write_data()'s own comment - same helper as tests/test_reliable_pubsub.c's own write_acknack().
+static uint32_t write_acknack(struct tt_Node* node, uint32_t endpoint_id, uint32_t seq_no, uint64_t bitmap) {
+    struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
+    acknack_header->endpoint_id = endpoint_id;
+    acknack_header->seq_no = seq_no;
+    acknack_header->bitmap = bitmap;
+    return sizeof(struct tt_AckNackHeader);
 }
 
 // tt_Publisher_publish() on a Publisher with durable_cache set must snapshot every sample into the
@@ -292,12 +325,103 @@ static void test_durability_ignored_for_volatile_publisher(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
+// Regression test for PLAN.md's Milestone 20: a Publisher with *both* RELIABLE and TRANSIENT_
+// LOCAL enabled, already well into a long-running stream (simulated: 100 publishes) before this
+// test's own Subscriber ever shows up - only the last 4 samples (seq_no 97..100) remain in either
+// cache, tt_MAX_DURABLE_HISTORY's own depth. A brand-new Subscriber's default ack_seq_no (1) is
+// far more than tt_RELIABLE_BITMAP_BITS behind that, exactly the oversized-first-gap shape test_
+// reliable_pubsub.c's own test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_
+// freezing() proves the fix for - confirmed here end to end with durable_cache/reliable_cache
+// actually populated together: once the first real arrival establishes a live baseline, a
+// *subsequent* gap within that same backlog burst is tracked normally and, crucially, still
+// finds its sample sitting in reliable_cache for process_acknack() to retransmit - the actual
+// "durability backlog is ACKNACK-protected too" guarantee this milestone is about. Both sides
+// (Subscriber-side process_data()/update_reliable_ack(), Publisher-side process_acknack()) are
+// simulated directly on this one mock node, same convention test_reliable_pubsub.c's own
+// process_acknack()/process_data() tests already use - deliver_durability_backlog() itself is
+// covered separately by test_durability_delivers_backlog_to_newly_discovered_subscriber() above;
+// what's new here is proving a sample *it* would have unicast is independently recoverable.
+static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache reliable_cache;
+    memset(&reliable_cache, 0, sizeof(reliable_cache));
+    reliable_cache.depth = 4;
+    pub.reliable_cache = &reliable_cache;
+
+    struct tt_DurableCache durable_cache;
+    memset(&durable_cache, 0, sizeof(durable_cache));
+    durable_cache.depth = 4; // <= reliable_cache's own depth - see config.h's own tt_MAX_DURABLE_
+                             // HISTORY/tt_MAX_RELIABLE_HISTORY comments and tickle.c's own
+                             // _Static_assert enforcing this relationship at the real cap level
+    pub.durable_cache = &durable_cache;
+
+    for (uint32_t i = 0; i < 100; i++) { // simulates a long-running stream, seq_no 1..100
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+    }
+    EXPECT_EQ_U32(100, (uint32_t)pub.seq_no);
+
+    // The late-joining Subscriber, simulated directly (not through decode_update_entities()'s own
+    // unicast delivery - that part is already covered elsewhere, see this function's own doc
+    // comment) - registered on the same node so process_data() can find it via find_endpoint(),
+    // sharing ENDPOINT_ID with pub (find_endpoint() distinguishes by kind, not just id).
+    struct tt_Subscriber sub;
+    memset(&sub, 0, sizeof(sub));
+    sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub.endpoint.id = ENDPOINT_ID;
+    sub.node = &node;
+    sub.topic = &topic;
+    sub.callback = stub_subscriber_callback;
+    sub.reliable = true;
+    sub.ack_seq_no = 1; // tt_Node_create_subscriber()'s own default - never heard from this
+                        // Publisher before, exactly the "first contact" case this milestone's
+                        // own sequencing question was about.
+    node.endpoints[1] = (struct tt_Endpoint*)&sub;
+    node.endpoint_count = 2;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // Backlog sample seq_no 97 arrives first (as deliver_durability_backlog() would send it,
+    // oldest first).
+    uint32_t tail = write_data(&node, 97, 9700, 97);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(98, sub.ack_seq_no); // jumped to just past 97, not stuck at 1 - the Milestone 20 fix
+    EXPECT_TRUE(sub.received_bitmap == 0);
+
+    // seq_no 98 is "lost in flight" (deliver_durability_backlog()'s own unicast never arrives) -
+    // seq_no 100 (the newest retained sample) arrives instead.
+    test_mock_send_to_call_count = 0; // only count the ACKNACK below
+    tail = write_data(&node, 100, 10000, 100);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(98, sub.ack_seq_no);        // correctly still waiting on 98 (and 99)
+    EXPECT_TRUE(sub.received_bitmap == 4ULL); // bit 2 -> seq_no 100 (98 + 2) received early
+    EXPECT_TRUE(sub.reliable_acknack_scheduled);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK requesting 98 (and 99)
+
+    // Publisher side: seq_no 98 must still actually be sitting in reliable_cache (it is - only
+    // the last 4, 97..100, were ever evicted to, and 98 is one of them) for process_acknack() to
+    // find and retransmit - the guarantee the depth invariant above exists to provide.
+    test_mock_send_to_call_count = 0;                   // only count the retransmit below
+    tail = write_acknack(&node, ENDPOINT_ID, 98, 1ULL); // requesting seq_no 98 (bit 0)
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // found it, retransmitted - not silently dropped
+}
+
 int main(void) {
     test_durability_publish_caches_and_evicts();
     test_durability_delivers_backlog_to_newly_discovered_subscriber();
     test_upsert_peer_true_only_for_new_slot();
     test_durability_no_redelivery_on_unchanged_update();
     test_durability_ignored_for_volatile_publisher();
+    test_durability_backlog_recovered_via_acknack_when_reliable_too();
 
     printf("test_durability_pubsub: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

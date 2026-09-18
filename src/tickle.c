@@ -41,6 +41,16 @@ _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-al
 // tt_Subscriber.received_bitmap's own tt_RELIABLE_BITMAP_BITS-wide tracking window.
 _Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
                "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
+// PLAN.md Milestone 20 - deliver_durability_backlog() relies on every durable_cache-retained
+// sample also still being present in reliable_cache when a Publisher has both set (so a backlog
+// delivery lost in flight is ACKNACK-recoverable, not just a one-shot best-effort push): since
+// both caches are written together, in lockstep, on every tt_Publisher_publish() call
+// (cache_reliable_sample()/cache_durable_sample()), a durable depth no larger than the reliable
+// depth guarantees durable_cache's own retained set is always a trailing subset of reliable_
+// cache's own. config.h's own tt_MAX_DURABLE_HISTORY/tt_MAX_RELIABLE_HISTORY comments cross-
+// reference this - keep this assertion in sync with whichever of the two actually changes.
+_Static_assert(tt_MAX_DURABLE_HISTORY <= tt_MAX_RELIABLE_HISTORY,
+               "tt_MAX_DURABLE_HISTORY must not exceed tt_MAX_RELIABLE_HISTORY - see this assert's own comment");
 
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
@@ -1447,8 +1457,28 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         if (offset < tt_RELIABLE_BITMAP_BITS) {
             sub->received_bitmap |= (1ULL << offset);
         } else {
-            TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u), not requesting it",
+            // Unlike the "far ahead but still inside the tracking window" case this function's
+            // own comment above warns against fast-forwarding on, an offset this wide (>=
+            // tt_RELIABLE_BITMAP_BITS) can *never* be requested at all - tt_AckNackHeader.bitmap
+            // is a fixed 64 bits wide on the wire, so no ACKNACK this Subscriber could ever send
+            // has a way to name a position past bit 63 in the first place, regardless of what
+            // ack_seq_no does about it. Leaving ack_seq_no untouched here (this function's own
+            // behavior before PLAN.md's Milestone 20) permanently wedges it: every later arrival,
+            // however perfectly in-order from this point on, has the exact same too-wide offset
+            // relative to the still-stuck ack_seq_no, forever - a healthy stream never recovers.
+            // Most visible for a QoS roadmap #4 (DURABILITY) backlog delivered to a brand-new
+            // Subscriber whose default ack_seq_no (1) starts arbitrarily far behind a Publisher
+            // that's been running a while, but applies equally to a RELIABLE-only stream that
+            // takes one real burst loss wider than 64 - jump the baseline to this arrival instead,
+            // the same "give up on what's provably unrecoverable, keep the stream moving" logic
+            // skip_unrecoverable_backlog() already applies once retries are exhausted, just
+            // applied here the instant it's already known un-trackable rather than after wasting
+            // a retry cycle chasing a position that could never have been named on the wire.
+            TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u) - jumping ahead instead of getting stuck",
                            seq_no - sub->ack_seq_no, sub->ack_seq_no);
+            sub->ack_seq_no = seq_no;
+            sub->received_bitmap = 0;
+            advance_ack_seq_no(sub);
         }
     }
 

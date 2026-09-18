@@ -46,6 +46,9 @@
 // on real HIL - 1%/5%/10% all landed flat at 0.1%, losing 10%'s own differentiation entirely, not
 // just stabilizing it - see LOSS_TEST_INTERVAL_SEC's own comment for the real numbers and the
 // current, smaller value this settled on instead.
+//
+// Must stay >= tt_MAX_DURABLE_HISTORY below - see that constant's own comment (PLAN.md Milestone
+// 20) for why.
 #define tt_MAX_RELIABLE_HISTORY 10
 // Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
@@ -55,8 +58,11 @@
 // depth for a DURABLE Publisher's opt-in struct tt_DurableCache (tickle.h). Deliberately a
 // separate constant from tt_MAX_RELIABLE_HISTORY just above, not a reused one: RELIABILITY and
 // DURABILITY are independent QoS policies (either, both, or neither may be requested for the same
-// Publisher), so their own cache depths are independently tunable even though today's value
-// happens to match.
+// Publisher), so their own cache depths are independently tunable - *except* this one must never
+// exceed tt_MAX_RELIABLE_HISTORY (tickle.c's own _Static_assert enforces it): PLAN.md's Milestone
+// 20 relies on every durable_cache-retained sample also being present in reliable_cache when a
+// Publisher has both, so a durability backlog delivery lost in flight is still ACKNACK-
+// recoverable rather than a one-shot best-effort push with nothing to fall back on.
 #define tt_MAX_DURABLE_HISTORY 8
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
