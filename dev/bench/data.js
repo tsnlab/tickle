@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789689661069,
+  "lastUpdate": 1789689664019,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -9914,6 +9914,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 901.693,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b7befb497a19c5930eba0649a0616c47c3430944",
+          "message": "Pull the loss-injection send interval back toward the clean end, 80us -> 350us\n\n80us (the bounded range's own geometric mean) overshot badly: 0.9%/3.8%/8.8%\nat 1%/5%/10% tc loss - even the lightest level was already failing to\nrecover almost anything, not the clean differentiation-by-level a real\neviction race should show. The transition is sharper than a smooth log-scale\nsearch assumed. The actual target (near-0 at 1%/5%, a little real loss only\nat 10%) sits much closer to 0.5ms's own confirmed-clean end than to the\ngeometric mean - narrowing there next instead of continuing to bisect the\nwider range blindly.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T08:58:28+09:00",
+          "tree_id": "ce0c9d30cdc068fdd45b7b83572a348d8ec10b1a",
+          "url": "https://github.com/tsnlab/tickle/commit/b7befb497a19c5930eba0649a0616c47c3430944"
+        },
+        "date": 1789689662954,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.669,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 902.946,
             "unit": "Mbps"
           }
         ]
