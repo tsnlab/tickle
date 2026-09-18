@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789736673655,
+  "lastUpdate": 1789736676960,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -23574,6 +23574,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03044755118233817,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4f7a9c2f812964f8317ce8810299cfbaf1227cab",
+          "message": "Keep tt_MAX_RELIABLE_HISTORY at 64 (the bitmap-width ceiling); make depth a runtime knob instead\n\nReverts the previous commit's approach of lowering the compile-time ceiling\nitself to re-create a small loss_pct at 10% tc loss. The ceiling should stay\nat tt_RELIABLE_BITMAP_BITS - lowering it artificially caps every caller, not\njust this one HIL experiment, and a single ACKNACK can name a gap up to 64\nwide regardless of how deep any given cache actually is.\n\nInstead: struct tt_ReliableCache.depth was already a real, independently\nconfigurable field (clamped to the ceiling) - exactly DDS's own\nRESOURCE_LIMITS-vs-HISTORY.depth split. Exposes it properly via a new -K\n<depth> flag (perf_client.c, cli_opts.h/.c) and wires run_perf.sh's own\nloss-injection reliable scenario to request depth 16 (RELIABLE_CACHE_DEPTH,\nenv-overridable) - a real HIL experiment tuning the actual runtime knob\nDDS/RTPS users would tune, not a rebuild-only constant.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:03:25+09:00",
+          "tree_id": "3ec4d930109cd7e226d4209e4840e1eec36dae09",
+          "url": "https://github.com/tsnlab/tickle/commit/4f7a9c2f812964f8317ce8810299cfbaf1227cab"
+        },
+        "date": 1789736675754,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905418668474469,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9898341042654855,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03042139325823103,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030469213213239397,
             "unit": "Mbit/s"
           }
         ]
