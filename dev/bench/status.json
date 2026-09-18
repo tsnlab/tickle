@@ -1,8 +1,27 @@
 {
   "history": [
     {
+      "buildtest": {
+        "branch": "main",
+        "commit": "72c123697935de685c9a0d49234ac914e2f8fc31",
+        "commit_short": "72c1236",
+        "date": "2026-09-18T12:07Z",
+        "rows": {
+          "freertos": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "n/a"
+          },
+          "linux": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "pass"
+          }
+        },
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35342286962"
+      },
       "commit": "72c123697935de685c9a0d49234ac914e2f8fc31",
-      "commit_short": "72c1236979",
+      "commit_short": "72c1236",
       "date": "2026-09-18T12:01Z",
       "perf": {
         "besteffort_loss_10pct_pct": 10.1,
@@ -1321,5 +1340,5 @@
       }
     }
   ],
-  "updated": "2026-09-18 12:02 UTC"
+  "updated": "2026-09-18 12:07 UTC"
 }
