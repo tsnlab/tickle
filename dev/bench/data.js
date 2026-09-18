@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789708439755,
+  "lastUpdate": 1789708442743,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -20054,6 +20054,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03045163835797991,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "65701d344083555afee3863a0733763b26f518b8",
+          "message": "Back off tt_MAX_RELIABLE_HISTORY 16 -> 10 - 16 overshot the loss cliff\n\nReal HIL run at depth=16 landed 1%/5%/10% all flat at 0.1% loss_pct -\n10%'s own differentiation from 1%/5% disappeared entirely rather than\njust stabilizing, the opposite of what was wanted. Trying a smaller step.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T14:12:51+09:00",
+          "tree_id": "84a9ce05e90efb0e65343a98e4ea5bd81ea23a38",
+          "url": "https://github.com/tsnlab/tickle/commit/65701d344083555afee3863a0733763b26f518b8"
+        },
+        "date": 1789708441671,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.989267076764788,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9899812425885882,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473709106445312,
             "unit": "Mbit/s"
           }
         ]
