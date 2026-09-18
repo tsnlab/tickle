@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707066820,
+  "lastUpdate": 1789707247394,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -16832,6 +16832,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.05046857142857143,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ae616100d7ed743a4ebf7b1288bbf8e9374ec48a",
+          "message": "Surface loss1/5/10_reliable_durable's own loss_pct in the job summary\n\nThe previous commit's new loss_pct data only existed inside per-run log\nfiles on the self-hosted runner, invisible in the job summary/raw log (only\nextracted-and-echoed values, or explicitly cat'd files, actually reach\nGITHUB_STEP_SUMMARY). Add a small one-off table extracting it the same way\nthe besteffort/reliable table already does, so the DURABILITY-vs-loss_pct-\nfloor experiment is actually readable after a run.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:52:57+09:00",
+          "tree_id": "564fac1b5b5de9e5fe646863b2a7f63d2b81f589",
+          "url": "https://github.com/tsnlab/tickle/commit/ae616100d7ed743a4ebf7b1288bbf8e9374ec48a"
+        },
+        "date": 1789707244942,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05184857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.048229999999999995,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04682714285714285,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04725571428571428,
             "unit": "ms"
           }
         ]
