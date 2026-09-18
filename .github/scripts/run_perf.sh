@@ -81,7 +81,21 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # comment's own point about averaging several runs per level being the more principled fix this
 # script still doesn't do), so treat 3.6% as "a little, real loss," not a precise number that will
 # reproduce exactly next time.
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00028}"
+#
+# All of the above (this whole comment, start to finish) was tuned against a perf_server.c
+# counting bug PLAN.md's Milestone 25 later found and fixed - track_arrival() was reporting false
+# drops for samples that had genuinely arrived, at a rate independent of tc's own configured loss
+# level, which is exactly the "flat ~0.1% regardless of level" shape this search kept running into
+# and blamed on other things (discovery timing, etc.) instead. None of the specific numbers here
+# are trustworthy anymore, though the *qualitative* cliff-search methodology still is. Re-opened
+# post-fix (RELIABLE_CACHE_DEPTH's own comment above) to widen the window-eviction-vs-RTT race back
+# open at a fixed depth of 8: ground truth at 280us was only 0/2/5 genuinely-lost samples at
+# 1%/5%/10% - real, differentiated, but still below the ~18-sample threshold this script's own
+# %.1f loss_pct display needs to show anything but "0.0". Narrowed to 140us (half) specifically to
+# shrink the depth=8 eviction window further (depth * interval, same relationship as always) and
+# push a real, visible loss_pct out of 10% tc loss - re-verify against real HIL, this file's own
+# oldest and most consistent lesson.
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00014}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
