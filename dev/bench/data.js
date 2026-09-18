@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789736529130,
+  "lastUpdate": 1789736532236,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -37180,6 +37180,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "066ce0b1a06cb1630635b11e5bac8c5198b348f7",
+          "message": "Re-tune tt_MAX_RELIABLE_HISTORY 64 -> 16 now that track_arrival() is fixed\n\nEvery prior depth-tuning data point (the 8/10/16/64 history) was measured\nthrough perf_server.c's own now-fixed false-positive counting bug (Milestone\n25), so none of it is trustworthy calibration anymore. 64's own real,\nbug-fixed ground truth showed only ~3 genuinely-lost samples out of ~35,714\neven at 10% tc loss - too close to zero to tell RELIABLE's own real recovery\nbehavior apart from a clean run. Narrowed to 16 (~4.5ms retention window at\nthis harness's own tuned 280us interval, comfortably under one full\ntt_RELIABLE_RETRY budget) so 10% tc loss - real, bursty loss - starts to\nshow a small but real, non-zero loss_pct again, while 1%/5% should still\nrecover within the shorter window nearly every time. Re-verify against real\nHIL, as always.\n\ntests/test_reliable_pubsub.c's own depth-vs-bitmap-width regression test\n(Milestone 24's own rewrite, which only made sense while depth == bitmap\nwidth) parametrized to work correctly at any depth relative to\ntt_RELIABLE_BITMAP_BITS, so future re-tuning here doesn't need its own test\nrewrite again.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:59:18+09:00",
+          "tree_id": "a2bd75f80552f81a97979f5e4d0121419f603e76",
+          "url": "https://github.com/tsnlab/tickle/commit/066ce0b1a06cb1630635b11e5bac8c5198b348f7"
+        },
+        "date": 1789736531143,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10.1,
             "unit": "%"
           },
           {
