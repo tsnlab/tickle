@@ -32,7 +32,6 @@ enum tt_example_opt_flags {
     TT_EXAMPLE_OPT_WARMUP_COOLDOWN = 1U << 4, // -w/-W: ping.c, perf_server.c only
     TT_EXAMPLE_OPT_BATCH = 1U << 5,           // -B: perf_client only
     TT_EXAMPLE_OPT_RELIABLE = 1U << 6,        // -R: perf_client/perf_server only
-    TT_EXAMPLE_OPT_DURABLE = 1U << 7,         // -D: perf_client only
 };
 
 struct tt_example_cli_options {
@@ -74,15 +73,6 @@ struct tt_example_cli_options {
     // and perf_server's Subscriber into tt_Subscriber.reliable, so the perf rig can measure
     // reliable-mode delivery (retransmit-on-loss) alongside best-effort.
     bool reliable;
-
-    // -D: perf_client only. QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) -
-    // false (this struct's own zero-init default) is volatile, today's default; pass -D to opt
-    // perf_client's Publisher into a struct tt_DurableCache (main()'s own static instance), so a
-    // newly-discovered Subscriber gets pushed whatever's still in that retained-sample cache.
-    // Independent of -R/reliable above - either, both, or neither may be set. No matching field
-    // exists for perf_server: durability is purely a Publisher-side decision (struct
-    // tt_DurableCache's own doc comment, tickle.h) - the Subscriber needs nothing to receive it.
-    bool durable;
 };
 
 bool tt_example_parse_log_level(const char* str, tt_LogLevel* level);

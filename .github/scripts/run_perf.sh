@@ -489,18 +489,6 @@ if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
             "$((PERF_DURATION_SEC + 30))" "-W $LOSS_TEST_COOLDOWN_SEC"
         run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R" \
             "$((PERF_DURATION_SEC + 30))" "-R -W $LOSS_TEST_COOLDOWN_SEC"
-        # One-off experiment (not yet reflected in summarize()/the dashboard): "reliable" above
-        # shows a ~0.1% loss_pct floor that stayed flat across every tc loss level and every send
-        # interval this rig was tuned at (LOSS_TEST_INTERVAL_SEC's own comment) - too flat to be
-        # real retransmit failures, more likely a fixed-time startup-window artifact (some very
-        # early samples published before discovery/peer-matching on this pair completes). QoS
-        # roadmap #4 DURABILITY's own backlog push (struct tt_DurableCache, tickle.h) fires
-        # exactly once discovery confirms a new Subscriber peer, and would redeliver whatever's
-        # still in the Publisher's own cache at that point - -D here tests whether that catches
-        # the same early samples "reliable" above is missing. server_args has no -D: durability is
-        # purely a Publisher-side decision (perf_server needs no matching flag).
-        run_paired_test "loss${pct}_reliable_durable" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R -D" \
-            "$((PERF_DURATION_SEC + 30))" "-R -W $LOSS_TEST_COOLDOWN_SEC"
         set_loss 0
     done
 fi
