@@ -47,9 +47,14 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # pure ACKNACK/retransmit overhead on an already-saturated link, this comment's own original
 # warning. The transition is a sharp cliff, not a smooth log-scale slope: 80us already overshot
 # badly (0.9%/3.8%/8.8% at 1%/5%/10% - even the lightest level failing to recover almost anything),
-# while 350us landed right back on the same flat ~0.1% every slower interval gave. The cliff itself
-# sits somewhere in the narrow 80-350us gap between those two confirmed points - narrowing there
-# next (~170us, that gap's own geometric mean) to find it.
+# while 350us landed right back on the same flat ~0.1% every slower interval gave. 170us (that
+# 80-350us gap's own geometric mean) landed almost exactly on the target *shape* - 1%/5% stayed at
+# the same clean ~0.1%, but 10% jumped all the way to 9.8%, matching BEST_EFFORT's own ~10.1%
+# outright. That's the right level to differentiate at, but the jump itself is a full cliff, not
+# "a little" real loss - 10% alone crossed some threshold 1%/5% didn't, and once crossed it fails
+# almost completely rather than partially. Nudging toward the slower (350us) side of this last gap
+# next (280us) to land on the part of that same cliff, for 10% specifically, that's still a partial
+# fall instead of the bottom of it.
 #
 # Separately (and unaffected by any of this): a faster send interval also raises the sample count
 # for the same PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct
@@ -58,7 +63,7 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # 1ms, and 0.5ms already (1%/5%/10% configured consistently comes back within ~0.5 points of the
 # actual target); firehose's own besteffort row (1.0/5.0/10.0) confirms the same holds even at the
 # extreme.
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00017}"
+LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00028}"
 # perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
 # perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
 # zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
