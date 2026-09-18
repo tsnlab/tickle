@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789739542135,
+  "lastUpdate": 1789739545146,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24499,6 +24499,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030460357666015625,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f29257916355d205b03d3126e6f2ecf436a6294a",
+          "message": "Add discovery-table tombstones, giving RMW_EVENT_LIVELINESS_CHANGED.not_alive_count real data\n\nPer TickLE Plan's own QoS-gap review (item 3, \"smaller, more contained\nfix\"): tt_Discovery never remembered a peer check_liveliness() presumed\ndead - it was just removed, the same as a normal departure, so\nnot_alive_count (a live snapshot RMW asks for) had no data behind it and\nwas hardcoded to 0.\n\nstruct tt_DiscoveredEntity gains a bool alive field. A liveliness *timeout*\nnow tombstones (alive = false, entity kept) via a new\ntombstone_discovered_entities_from_source(), instead of freeing the slot the\nway an explicit farewell/dropped-from-announce departure still does\n(forget_discovered_entities_from_source(), unchanged) - matching the real\nRMW spec's own distinction between \"failed to assert liveliness\" and normal\ndeletion. tt_Discovery_count() only counts alive entries; tt_Discovery_find()\nstill returns a tombstoned one (alive == false) rather than NULL.\nupsert_discovered_entity() falls back to reclaiming the first tombstoned\nslot when the table has no truly-empty one left, so tombstones can't starve\ngenuinely new entities out of a full table.\n\nrmw_graph.c gains count_not_alive_matching_locked() alongside the existing\ncount_matching_locked() (which now excludes tombstones), exposed as\nrmw_tickle_count_not_alive_matching_locked(). check_subscription_liveliness()\ntracks the new live not_alive_count snapshot alongside the existing\nalive_count-delta-based not_alive.total_count/unread_count tracking (kept\nas-is, a different question). rmw_take_event() reads the real value instead\nof hardcoding 0.\n\nNew tests/test_discovery.c coverage: a liveliness timeout tombstones instead\nof freeing (still findable, alive == false); a later reassert flips it back;\na full table of tombstones still makes room for a genuinely new entity.\nmake test/sanitize/platform-freertos/clang-format/clang-tidy all pass;\ncolcon build/test against a real ROS 2 (lyrical) install - 10/10 green -\nplus clang-tidy against the real generated compile_commands.json, clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:51:06+09:00",
+          "tree_id": "f8149be349c94b5d6338cf7b67eb6689ac96d782",
+          "url": "https://github.com/tsnlab/tickle/commit/f29257916355d205b03d3126e6f2ecf436a6294a"
+        },
+        "date": 1789739544083,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.0005407333374023438,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.0003994532993861607,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.000016348702566964285,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03045163835797991,
             "unit": "Mbit/s"
           }
         ]
