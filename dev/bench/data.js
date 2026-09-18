@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789739625063,
+  "lastUpdate": 1789739702456,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6452,6 +6452,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "88a6b8891958dcc45b3713fe1321514f57585cf5",
+          "message": "Document Milestone 27: not_alive_count tombstone fix\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:52:08+09:00",
+          "tree_id": "99507e18148964f48cc9909dae5493c884ae4444",
+          "url": "https://github.com/tsnlab/tickle/commit/88a6b8891958dcc45b3713fe1321514f57585cf5"
+        },
+        "date": 1789739699684,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 6,
             "unit": "%"
           }
         ]
