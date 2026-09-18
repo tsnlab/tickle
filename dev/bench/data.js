@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789689962303,
+  "lastUpdate": 1789690189784,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -15422,6 +15422,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04733428571428571,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "12092509a76b45ff0dd0226acd09792972a524fa",
+          "message": "Nudge the loss-injection interval toward the clean side, 170us -> 280us\n\n170us landed on the right *shape* - 1%/5% stayed at the same clean ~0.1%,\nbut 10% jumped all the way to 9.8%, matching BEST_EFFORT's own ~10.1%\noutright (a full cliff, not \"a little\" real loss - once 10% crosses\nwhatever threshold 1%/5% don't, it fails almost completely rather than\npartially). Nudging toward the slower (350us, confirmed fully clean) side\nof the 170-350us gap to land on a partial fall for 10% instead of the\nbottom of the cliff.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T09:08:42+09:00",
+          "tree_id": "e9893f8ef778d2fda06556d51e6f238da1d3cfe9",
+          "url": "https://github.com/tsnlab/tickle/commit/12092509a76b45ff0dd0226acd09792972a524fa"
+        },
+        "date": 1789690187520,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04725571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04740571428571429,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04480285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.052890000000000006,
             "unit": "ms"
           }
         ]
