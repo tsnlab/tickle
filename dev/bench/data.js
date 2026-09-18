@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789696878833,
+  "lastUpdate": 1789696881857,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -20269,6 +20269,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 822.845,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cd918244d184050473c04db608b40ed5c5c1e349",
+          "message": "Implement QoS roadmap #4 DURABILITY (TRANSIENT_LOCAL) in TickLE core\n\nFills in the last pub/sub QoS gap on the roadmap: a retained-sample cache\nper Publisher, delivered to a Subscriber the moment discovery first learns\nabout it. Much simpler than RELIABILITY (#5, already done) - no new wire\nsubmessage type needed at all, since backlog delivery just unicasts the\nexisting DATA submessage format to a newly-discovered peer.\n\nDesign: struct tt_DurableCache/tt_DurableCacheEntry (tickle.h) - a KEEP_LAST\nring of raw encoded submessage bytes, structurally identical to struct\ntt_ReliableCache but deliberately a separate type: RELIABILITY and\nDURABILITY are independent QoS policies (either, both, or neither may be\nrequested), and reusing \"ReliableCache\" for a durability-only Publisher\nwould be misleading. tt_Publisher.durable_cache (NULL by default, opt-in\ncaller-owned pointer, same convention as reliable_cache) - tt_Publisher_\npublish() snapshots into it after every successful send via a new\ncache_durable_sample() helper (extracted alongside a matching\ncache_reliable_sample() purely to keep that function's own cognitive\ncomplexity under clang-tidy's threshold once both blocks were inlined).\n\nDelivery trigger: upsert_peer() now returns bool - true only when it claims\na previously-empty peer slot (a genuinely new-to-the-table node_id), false\non an address refresh. decode_update_entities()'s own TOPIC_SUBSCRIBER\nbranch checks that return value and calls the new deliver_durability_\nbacklog() (same encode()/_tt_memcpy()/end_encode() unicast pattern\nprocess_acknack()'s own retransmit loop already uses) for a genuinely new\npeer only - not on every periodic UPDATE refresh.\n\nDeliberately not extended to services/clients: tt_Client_call() is\nrequest/response, not pub/sub, so \"retained backlog for a late-joining\nclient\" has no conceptual analog there (unlike RELIABILITY, where the\nexisting RPC retry already served as the service-side implementation).\n\ntests/test_durability_pubsub.c (new): cache store/evict (KEEP_LAST),\nbacklog delivery to a newly-discovered subscriber (count, address, and the\nnewest sample's own seq_no), upsert_peer()'s own new-vs-refresh return\nvalue in isolation, no redelivery on a deduped (unchanged last_modified)\nUPDATE, and a VOLATILE Publisher (durable_cache == NULL) being a no-op.\n\nVerified locally: make test, make sanitize (ASan+UBSan), make -C\nplatform/freertos (RISC-V cross-compile), clang-format --dry-run --Werror,\nclang-tidy (bare invocation) - all clean, no regressions in the existing\nsuite.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T10:58:43+09:00",
+          "tree_id": "1f9d35713c13fcac1b5535d9c8c2e8289ea36cac",
+          "url": "https://github.com/tsnlab/tickle/commit/cd918244d184050473c04db608b40ed5c5c1e349"
+        },
+        "date": 1789696880739,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.669,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 823.573,
             "unit": "Mbps"
           }
         ]
