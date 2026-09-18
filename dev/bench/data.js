@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789731900350,
+  "lastUpdate": 1789731903523,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -25539,6 +25539,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/79fb8ee1d387fc47d716da68b76ae2f9d1b1930f"
         },
         "date": 1789731047134,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "364f29dd8d322d69303ec697bac0e9eec8b9f204",
+          "message": "Unify RELIABILITY/DURABILITY into one retained-sample cache, raise depth to 64 (Milestone 24)\n\nReal DDS/RTPS doesn't keep a separately-sized cache for DURABILITY\n(TRANSIENT_LOCAL) at all - a late-joining reader just gets whatever's\ncurrently in the Writer's own single History Cache, the same one\nHISTORY.depth/RESOURCE_LIMITS already size for RELIABILITY's own\nretransmission. TickLE used to keep two independent caches (struct\ntt_ReliableCache/struct tt_DurableCache, each with its own depth constant and\na _Static_assert to keep them in sync) - unified into one struct\ntt_ReliableCache instead, with independent tt_Publisher.reliable/.durable\nbools deciding which policies apply to it. Added an explicit `reliable` flag\n(not just cache-presence) specifically to keep the new discovery-triggered\nHeartbeat (Milestone 23) from firing for a durable-only Publisher that never\nasked for it.\n\nAlso raises tt_MAX_RELIABLE_HISTORY 10 -> 64 (tt_RELIABLE_BITMAP_BITS's own\nceiling), to test whether the real-time retention window (depth * send\ninterval) being shorter than HIL discovery-completion latency explains the\n~0.1% RELIABLE loss_pct floor Milestone 23's own HIL experiments couldn't\nclose. rmw_tickle's rmw_create_publisher() now allocates one cache instead of\ntwo (also fixing a real asymmetry: a depth between the old DURABILITY/\nRELIABILITY caps used to reject a combined RELIABLE+TRANSIENT_LOCAL publisher\noutright even though RELIABILITY alone would have accepted it).\n\nVerified: make test/make sanitize/platform/freertos build/clang-format/\nclang-tidy (TickLE core) and colcon build/colcon test/clang-tidy against the\nreal compile_commands.json (rmw_tickle, 10/10 tests green) - real HIL run\nstill pending.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T20:42:18+09:00",
+          "tree_id": "cf0542e266b19d620524dca74d93682b58f38ed9",
+          "url": "https://github.com/tsnlab/tickle/commit/364f29dd8d322d69303ec697bac0e9eec8b9f204"
+        },
+        "date": 1789731902444,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
