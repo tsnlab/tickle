@@ -257,12 +257,18 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
 // the table is already full: a full table already means more peers than tt_UNICAST_PEER_THRESHOLD
 // exist, i.e. the sender is already broadcasting instead of unicasting, so the dropped peer is
 // still reached that way.
-static void upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uint16_t port) {
+//
+// Returns whether this call claimed a previously-empty slot (a genuinely new-to-this-table
+// node_id), as opposed to refreshing one already there - QoS roadmap #4 (DURABILITY) needs this
+// from decode_update_entities()'s own call site, to trigger a one-time retained-sample backlog
+// delivery instead of on every periodic UPDATE refresh. Most callers (the Client/Server peer
+// direction) still just ignore the return value, which is fine in C.
+static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uint16_t port) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (peers[i].node_id == node_id) {
             peers[i].ip = ip;
             peers[i].port = port;
-            return;
+            return false;
         }
     }
 
@@ -271,11 +277,12 @@ static void upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uin
             peers[i].node_id = node_id;
             peers[i].ip = ip;
             peers[i].port = port;
-            return;
+            return true;
         }
     }
 
     TT_LOG_WARNING("Peer table full (%d), dropping newly seen peer node %u", tt_MAX_PEER_COUNT, node_id);
+    return false;
 }
 
 static uint8_t count_peers(const struct tt_Peer* peers) {
@@ -549,6 +556,8 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub);
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* sub);
 static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port);
+// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
+static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
 
 static void reset_node_state(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
@@ -727,6 +736,7 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->seq_no = 0;
     pub->batch = false;         // see tickle.h's own doc comment on this field for why this is the default
     pub->reliable_cache = NULL; // best-effort by default - see tt_ReliableCache's own doc comment
+    pub->durable_cache = NULL;  // volatile by default - see tt_DurableCache's own doc comment
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
     }
@@ -1022,6 +1032,41 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     return tt_RET_OK;
 }
 
+// QoS roadmap #5 (RELIABILITY/RELIABLE) - snapshot the just-encoded DATA submessage (header
+// through CDR) into the ring before end_encode() below, same "cache first, then flush" order
+// tt_Client_call() already uses for its own single-slot cache. A later incoming ACKNACK
+// (process_acknack()) resends this exact copy verbatim; KEEP_LAST eviction once `depth` slots are
+// full (mirrors rmw_subscription.c's own queue eviction), not an error. Split out of
+// tt_Publisher_publish() below purely to keep that function's own cognitive complexity under
+// clang-tidy's threshold, alongside the identically-shaped cache_durable_sample() next to it.
+static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
+                                  struct tt_ReliableCache* cache, uint32_t seq_no) {
+    uint16_t depth =
+        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+    size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+    struct tt_ReliableCacheEntry* cache_entry = &cache->entries[cache->next % depth];
+    _tt_memcpy(cache_entry->buffer, submessage_header, length);
+    cache_entry->seq_no = seq_no;
+    cache_entry->len = (uint16_t)length;
+    cache_entry->retry = 0;
+    cache->next = (cache->next + 1) % depth;
+}
+
+// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL) - see cache_reliable_sample() just above; identical
+// shape, a separate cache/type (struct tt_DurableCache's own doc comment explains why) with no
+// retry counter, since this is a one-shot backlog push rather than a NACK-reactive resend.
+static void cache_durable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
+                                 struct tt_DurableCache* cache, uint32_t seq_no) {
+    uint16_t depth =
+        (cache->depth > 0 && cache->depth <= tt_MAX_DURABLE_HISTORY) ? cache->depth : tt_MAX_DURABLE_HISTORY;
+    size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+    struct tt_DurableCacheEntry* cache_entry = &cache->entries[cache->next % depth];
+    _tt_memcpy(cache_entry->buffer, submessage_header, length);
+    cache_entry->seq_no = seq_no;
+    cache_entry->len = (uint16_t)length;
+    cache->next = (cache->next + 1) % depth;
+}
+
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
@@ -1036,11 +1081,12 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     // with), and the message is big enough that a second one wouldn't fit in the same packet
     // anyway - i.e. batching has nothing to gain here. Small messages fall through to the staging
     // path so node_flush() can still pack several per packet.
-    // A reliable Publisher (below) always needs the staging copy path so it has encoded bytes at
-    // a known tx_buffer location to save into reliable_cache - zero-copy publishes straight from
-    // the caller's own tt_Data, nothing to retain for a later retransmit.
+    // A reliable or durable Publisher (below) always needs the staging copy path so it has encoded
+    // bytes at a known tx_buffer location to save into reliable_cache/durable_cache - zero-copy
+    // publishes straight from the caller's own tt_Data, nothing to retain for a later retransmit
+    // or backlog delivery.
     if (pub->topic->data_encode_inplace != NULL && old_tx_tail == sizeof(struct tt_Header) &&
-        pub->reliable_cache == NULL) {
+        pub->reliable_cache == NULL && pub->durable_cache == NULL) {
         const uint8_t* body = NULL;
         int32_t body_len = pub->topic->data_encode_inplace(data, &body);
         uint32_t standalone_len = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) +
@@ -1090,22 +1136,13 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
-    // QoS roadmap #5 (RELIABILITY/RELIABLE) - snapshot the just-encoded DATA submessage (header
-    // through CDR) into the ring before end_encode() below, same "cache first, then flush" order
-    // tt_Client_call() already uses for its own single-slot cache. A later incoming ACKNACK
-    // (process_acknack()) resends this exact copy verbatim; KEEP_LAST eviction once `depth`
-    // slots are full (mirrors rmw_subscription.c's own queue eviction), not an error.
+    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s/
+    // cache_durable_sample()'s own doc comments above; either, both, or neither may be set.
     if (pub->reliable_cache != NULL) {
-        struct tt_ReliableCache* cache = pub->reliable_cache;
-        uint16_t depth =
-            (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
-        size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
-        struct tt_ReliableCacheEntry* cache_entry = &cache->entries[cache->next % depth];
-        _tt_memcpy(cache_entry->buffer, submessage_header, length);
-        cache_entry->seq_no = pub->seq_no + 1; // matches data_header->seq_no above
-        cache_entry->len = (uint16_t)length;
-        cache_entry->retry = 0;
-        cache->next = (cache->next + 1) % depth;
+        cache_reliable_sample(node, submessage_header, pub->reliable_cache, pub->seq_no + 1);
+    }
+    if (pub->durable_cache != NULL) {
+        cache_durable_sample(node, submessage_header, pub->durable_cache, pub->seq_no + 1);
     }
 
     // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
@@ -1601,12 +1638,51 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
+// Sends every currently-retained sample (oldest first) straight to a Subscriber this Publisher's
+// topic just discovered - QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md). Called
+// only from decode_update_entities() below when upsert_peer() just claimed a previously-empty
+// peer slot for this exact Publisher - a genuinely new (or forgotten-then-rejoined) peer, not
+// every periodic UPDATE refresh. No-op when pub->durable_cache is NULL (VOLATILE, today's
+// default) - matches process_acknack()'s own retransmit loop exactly, just unicasting to a fixed
+// target instead of reacting to a NACK bitmap.
+static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target) {
+    struct tt_DurableCache* cache = pub->durable_cache;
+    if (cache == NULL) {
+        return;
+    }
+    uint16_t depth =
+        (cache->depth > 0 && cache->depth <= tt_MAX_DURABLE_HISTORY) ? cache->depth : tt_MAX_DURABLE_HISTORY;
+
+    // entries[] is a ring buffer tt_Publisher_publish() writes round-robin via cache->next -
+    // starting the scan there and wrapping around visits oldest-to-newest in both the
+    // not-yet-wrapped case (the slots from cache->next onward are still empty, len == 0, skipped
+    // below) and the already-wrapped case (cache->next is exactly the oldest still-retained entry).
+    for (int i = 0; i < depth; i++) {
+        struct tt_DurableCacheEntry* cache_entry = &cache->entries[(cache->next + i) % depth];
+        if (cache_entry->len == 0) {
+            continue;
+        }
+        uint32_t old_tx_tail = node->tx_tail;
+        void* buf = encode(node, cache_entry->len);
+        if (buf == NULL) {
+            TT_LOG_WARNING("Lack of tx buffer, cannot deliver durability backlog seq_no %u", cache_entry->seq_no);
+            rollback(node, old_tx_tail);
+            continue;
+        }
+        _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+        if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
+            rollback(node, old_tx_tail);
+        }
+    }
+}
+
 // Walks the entity_count UpdateEntity records following an UpdateHeader, advancing *head past
 // them. Along the way, matches each announced entity against this node's own endpoints: a
 // remote TOPIC_SUBSCRIBER (resp. SERVICE_SERVER) whose endpoint_id matches one of our own
 // Publishers (resp. Clients) means that Publisher/Client just learned a new (or refreshed) peer
-// it can unicast to - see upsert_peer(), tt_UNICAST_PEER_THRESHOLD. Returns false if a
-// type/name string fails to decode.
+// it can unicast to - see upsert_peer(), tt_UNICAST_PEER_THRESHOLD. A genuinely new peer for a
+// DURABLE Publisher also gets deliver_durability_backlog()'d, see its own comment. Returns false
+// if a type/name string fails to decode.
 static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
                                    uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port) {
     bool reverse = tt_is_reverse_endian(header);
@@ -1621,7 +1697,11 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
             struct tt_Endpoint* local = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id);
             if (local != NULL) {
-                upsert_peer(((struct tt_Publisher*)local)->peers, header->source, sender_ip, sender_port);
+                struct tt_Publisher* pub = (struct tt_Publisher*)local;
+                if (upsert_peer(pub->peers, header->source, sender_ip, sender_port)) {
+                    struct tt_Peer target = {header->source, sender_ip, sender_port};
+                    deliver_durability_backlog(node, pub, &target);
+                }
             }
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
             struct tt_Endpoint* local = find_endpoint(node, tt_KIND_SERVICE_CLIENT, entity_id);

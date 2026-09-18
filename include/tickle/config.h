@@ -41,6 +41,13 @@
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
 // (tickle.c) don't compare against a bare 64.
 #define tt_RELIABLE_BITMAP_BITS 64
+// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - max retained-sample cache
+// depth for a DURABLE Publisher's opt-in struct tt_DurableCache (tickle.h). Deliberately a
+// separate constant from tt_MAX_RELIABLE_HISTORY just above, not a reused one: RELIABILITY and
+// DURABILITY are independent QoS policies (either, both, or neither may be requested for the same
+// Publisher), so their own cache depths are independently tunable even though today's value
+// happens to match.
+#define tt_MAX_DURABLE_HISTORY 8
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)

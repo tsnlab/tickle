@@ -386,6 +386,30 @@ struct tt_ReliableCache {
     struct tt_ReliableCacheEntry entries[tt_MAX_RELIABLE_HISTORY];
 };
 
+// Opt-in per-Publisher retained-sample cache for QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL,
+// rmw_tickle/PLAN.md) - same "caller-owned, opt-in pointer" convention as struct tt_ReliableCache
+// just above (a VOLATILE Publisher, today's only mode, leaves tt_Publisher.durable_cache NULL and
+// pays nothing for this). Deliberately a separate type, not a reuse of struct tt_ReliableCache,
+// even though the shape is identical: RELIABILITY and DURABILITY are independent QoS policies (a
+// Publisher may want either, both, or neither), and naming this "ReliableCache" when only
+// durability was requested would be misleading. tt_Publisher_publish() appends the raw encoded
+// DATA submessage bytes here after every successful send (KEEP_LAST eviction once `depth` slots
+// are full, same ring shape); a newly-discovered Subscriber (decode_update_entities(), tickle.c)
+// gets every currently-retained sample unicast straight to it, oldest first, the moment its
+// UPDATE announce is first matched to this Publisher - no retry/ack concept at all, unlike
+// struct tt_ReliableCacheEntry's own `retry` field, since this is a one-shot backlog push, not a
+// NACK-reactive retransmit.
+struct tt_DurableCacheEntry {
+    uint32_t seq_no;
+    uint16_t len;                         // encoded submessage length in the matching buffer; 0 = empty slot
+    uint8_t buffer[tt_MAX_BUFFER_LENGTH]; // raw encoded submessage bytes, resent verbatim to a new Subscriber
+};
+struct tt_DurableCache {
+    uint16_t depth; // in-use ring capacity, 1..tt_MAX_DURABLE_HISTORY
+    uint16_t next;  // next entries[] slot tt_Publisher_publish() writes into (mod depth)
+    struct tt_DurableCacheEntry entries[tt_MAX_DURABLE_HISTORY];
+};
+
 struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
@@ -413,6 +437,11 @@ struct tt_Publisher { // extends endpoint
     // NULL (tt_Node_create_publisher()'s own default): best-effort, today's only behavior. Non-
     // NULL: RELIABLE - see struct tt_ReliableCache's own doc comment above.
     struct tt_ReliableCache* reliable_cache;
+
+    // NULL (tt_Node_create_publisher()'s own default): VOLATILE, today's only behavior. Non-NULL:
+    // DURABLE/TRANSIENT_LOCAL - see struct tt_DurableCache's own doc comment above. Independent of
+    // reliable_cache above - a Publisher may set either, both, or neither.
+    struct tt_DurableCache* durable_cache;
 };
 
 struct tt_Subscriber;
