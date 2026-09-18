@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707539493,
+  "lastUpdate": 1789707614031,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -17017,6 +17017,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04511571428571428,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d08b2212955b297a3091ccff050c27cfa285bd51",
+          "message": "Document the reverted DURABILITY-vs-0.1%-loss-floor HIL experiment\n\nRecords the negative result (commits 9a96cf8/ae61610, reverted in\n0bf299b/f358b9c) so this specific hypothesis - that DURABILITY's discovery-\ntriggered backlog push would plug RELIABLE's own flat ~0.1% loss_pct floor\n- isn't retried without knowing it was already tried and disproven.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:58:44+09:00",
+          "tree_id": "f6ee4c05070d57272432fa93ee9b7654d1a1512e",
+          "url": "https://github.com/tsnlab/tickle/commit/d08b2212955b297a3091ccff050c27cfa285bd51"
+        },
+        "date": 1789707612864,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04719285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.049185714285714284,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04430285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.045489999999999996,
             "unit": "ms"
           }
         ]
