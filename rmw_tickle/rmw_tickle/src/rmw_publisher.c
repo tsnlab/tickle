@@ -154,6 +154,43 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
     }
 
+    // QoS roadmap #4 (DURABILITY) - see rmw_tickle_publisher_t.durable_cache's own doc comment.
+    // Same shape as the RELIABLE block just above: depth defaults to tt_MAX_DURABLE_HISTORY when
+    // unset, an explicit depth past that cap is rejected outright rather than silently clamped.
+    if (RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability) {
+        size_t depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
+                                                                                 : (size_t)tt_MAX_DURABLE_HISTORY;
+        if (depth > (size_t)tt_MAX_DURABLE_HISTORY) {
+            RMW_SET_ERROR_MSG("rmw_tickle's TRANSIENT_LOCAL publisher can retain at most "
+                              "tt_MAX_DURABLE_HISTORY samples - see rmw_tickle/PLAN.md's QoS "
+                              "roadmap #4 (DURABILITY)");
+            tt_Node_interrupt(&node_impl->tickle_node);
+            pthread_mutex_lock(&node_impl->mutex);
+            tt_Publisher_destroy(&pub_impl->tickle_publisher);
+            pthread_mutex_unlock(&node_impl->mutex);
+            allocator->deallocate(pub_impl->reliable_cache, allocator->state); // NULL is a no-op
+            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+            allocator->deallocate(pub_impl, allocator->state);
+            return NULL;
+        }
+
+        pub_impl->durable_cache =
+            (struct tt_DurableCache*)allocator->zero_allocate(1, sizeof(struct tt_DurableCache), allocator->state);
+        if (NULL == pub_impl->durable_cache) {
+            RMW_SET_ERROR_MSG("failed to allocate durable_cache");
+            tt_Node_interrupt(&node_impl->tickle_node);
+            pthread_mutex_lock(&node_impl->mutex);
+            tt_Publisher_destroy(&pub_impl->tickle_publisher);
+            pthread_mutex_unlock(&node_impl->mutex);
+            allocator->deallocate(pub_impl->reliable_cache, allocator->state); // NULL is a no-op
+            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+            allocator->deallocate(pub_impl, allocator->state);
+            return NULL;
+        }
+        pub_impl->durable_cache->depth = (uint16_t)depth;
+        pub_impl->tickle_publisher.durable_cache = pub_impl->durable_cache;
+    }
+
     return &pub_impl->rmw_publisher;
 }
 
@@ -176,6 +213,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
     allocator.deallocate(pub_impl->reliable_cache, allocator.state); // NULL is a no-op, see its own doc comment
+    allocator.deallocate(pub_impl->durable_cache, allocator.state);  // NULL is a no-op, see its own doc comment
     allocator.deallocate(pub_impl, allocator.state);
     return RMW_RET_OK;
 }

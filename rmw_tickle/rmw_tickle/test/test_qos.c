@@ -50,9 +50,16 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
+    // TRANSIENT_LOCAL is accepted for publishers/subscriptions now (QoS roadmap #4, done): backed
+    // by TickLE core's own retained-sample cache + discovery-triggered backlog delivery (struct
+    // tt_DurableCache - tickle.h; see rmw_create_publisher() for how this gets wired up). Still
+    // rejected for services/clients - tt_Client_call() is request/response, not pub/sub, so
+    // there's no TickLE-core mechanism a "retained backlog for a late-joining client" could mean.
     qos = valid_profile();
     qos.durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     qos = valid_profile();
     qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;

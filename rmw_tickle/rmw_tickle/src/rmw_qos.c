@@ -45,10 +45,22 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
         return RMW_RET_UNSUPPORTED;
     }
 
-    // QoS roadmap #4 (DURABILITY) - no retained-sample cache/backlog delivery exists.
-    if (RMW_QOS_POLICY_DURABILITY_VOLATILE != qos_profile->durability &&
-        RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT != qos_profile->durability) {
-        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_DURABILITY_VOLATILE for now - "
+    // QoS roadmap #4 (DURABILITY) - done for topics. A Publisher's TRANSIENT_LOCAL is now backed
+    // by TickLE core's own retained-sample cache + discovery-triggered backlog delivery (struct
+    // tt_DurableCache - tickle.h) - see rmw_create_publisher() for how qos_profile->depth threads
+    // into it; a Subscription needs no field at all (tt_Subscriber.durable doesn't exist - backlog
+    // delivery is purely a Publisher-side decision, see struct tt_DurableCache's own doc comment).
+    // Still VOLATILE-only for services/clients: tt_Client_call() is request/response, not pub/sub,
+    // so "retained backlog for a late-joining client" has no TickLE-core mechanism behind it at
+    // all (unlike RELIABILITY just above, where the RPC layer's own existing retry already served
+    // as the service-side implementation).
+    bool durability_ok = RMW_QOS_POLICY_DURABILITY_VOLATILE == qos_profile->durability ||
+                         RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT == qos_profile->durability ||
+                         (RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability &&
+                          RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT != entity_kind);
+    if (!durability_ok) {
+        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_DURABILITY_VOLATILE and, for "
+                          "publishers/subscriptions, RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL - "
                           "see rmw_tickle/PLAN.md's QoS roadmap #4 (DURABILITY)");
         return RMW_RET_UNSUPPORTED;
     }
