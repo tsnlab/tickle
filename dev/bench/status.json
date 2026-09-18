@@ -1,6 +1,34 @@
 {
   "history": [
     {
+      "commit": "5c6de7e7cd7dfc75177693f73093b97d142e42c7",
+      "commit_short": "5c6de7e7cd",
+      "date": "2026-09-18T13:57Z",
+      "perf": {
+        "besteffort_loss_10pct_pct": 10.0,
+        "besteffort_loss_1pct_pct": 1.0,
+        "besteffort_loss_5pct_pct": 4.9,
+        "build": "pass",
+        "commit": "5c6de7e7cd7dfc75177693f73093b97d142e42c7",
+        "commit_short": "5c6de7e7cd",
+        "date": "2026-09-18T13:57Z",
+        "integration": "pass",
+        "loss_pct": 2,
+        "reliable_loss_10pct_pct": 0.3,
+        "reliable_loss_1pct_pct": 0.0,
+        "reliable_loss_5pct_pct": 0.0,
+        "reliable_throughput_10pct_mbps": 73.22,
+        "reliable_throughput_1pct_mbps": 63.702,
+        "reliable_throughput_5pct_mbps": 65.356,
+        "rtt_avg_ms": 0.2,
+        "rtt_mdev_ms": 0.011,
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35353072328",
+        "smallmsg_rate_msgs_s": 483644,
+        "throughput_recv_mbps": 867.339,
+        "throughput_send_mbps": 937.61
+      }
+    },
+    {
       "commit": "88a6b8891958dcc45b3713fe1321514f57585cf5",
       "commit_short": "88a6b88919",
       "date": "2026-09-18T13:54Z",
@@ -1297,54 +1325,7 @@
         "throughput_recv_mbps": 901.867,
         "throughput_send_mbps": 947.058
       }
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "ae616100d7ed743a4ebf7b1288bbf8e9374ec48a",
-        "commit_short": "ae61610",
-        "date": "2026-09-18T05:01Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35308659169"
-      },
-      "commit": "ae616100d7ed743a4ebf7b1288bbf8e9374ec48a",
-      "commit_short": "ae61610",
-      "date": "2026-09-18T04:56Z",
-      "perf": {
-        "besteffort_loss_10pct_pct": 9.8,
-        "besteffort_loss_1pct_pct": 1.0,
-        "besteffort_loss_5pct_pct": 4.8,
-        "build": "pass",
-        "commit": "ae616100d7ed743a4ebf7b1288bbf8e9374ec48a",
-        "commit_short": "ae616100d7",
-        "date": "2026-09-18T04:56Z",
-        "integration": "pass",
-        "loss_pct": 2,
-        "reliable_loss_10pct_pct": 7.9,
-        "reliable_loss_1pct_pct": 0.1,
-        "reliable_loss_5pct_pct": 0.1,
-        "reliable_throughput_10pct_mbps": 33.611,
-        "reliable_throughput_1pct_mbps": 34.909,
-        "reliable_throughput_5pct_mbps": 36.524,
-        "rtt_avg_ms": 0.199,
-        "rtt_mdev_ms": 0.01,
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35308659166",
-        "smallmsg_rate_msgs_s": 482266,
-        "throughput_recv_mbps": 901.332,
-        "throughput_send_mbps": 937.605
-      }
     }
   ],
-  "updated": "2026-09-18 13:55 UTC"
+  "updated": "2026-09-18 13:58 UTC"
 }
