@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789713027504,
+  "lastUpdate": 1789713031041,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26447,6 +26447,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 33.163,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fb28bda1f28bf83dc19c5ef8c6649bf64410770b",
+          "message": "Rename rmw_wait_set.c's ws/gc locals - CI's cpp-linter gate flagged them\n\nPre-existing readability-identifier-length findings, not introduced by\nthe DEADLINE/LIVELINESS commit - but CI's cpp-linter step re-lints a\ntouched file in full, not just the diff, so they became blocking once\nthis file was touched. ws -> wait_set_impl, gc -> guard_cond.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T15:27:45+09:00",
+          "tree_id": "3a2305f7fc43079cc7a53f1f320897e3b0fa83df",
+          "url": "https://github.com/tsnlab/tickle/commit/fb28bda1f28bf83dc19c5ef8c6649bf64410770b"
+        },
+        "date": 1789713029931,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 39.228,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 34.908,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 37.56,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 36.656,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 35.59,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 34.291,
             "unit": "Mbps"
           }
         ]
