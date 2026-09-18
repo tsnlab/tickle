@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789734350383,
+  "lastUpdate": 1789734353564,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -22649,6 +22649,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030473572867257253,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c5949f693e4ef2ed49845373a9ea832a1c42e903",
+          "message": "Add TEMPORARY ground-truth diagnostic for perf_server.c's own drop counting\n\nRe-tests the still-open question of whether track_arrival()'s own windowed\ngap-tracking heuristic (GAP_WINDOW_BITS=1024) is accurately reporting real,\npermanent loss for Milestone 18's own residual ~0.1% RELIABLE loss_pct floor,\nor over-counting something that actually arrived just outside its own\ndeferred-judgment window. Records every seq_no ever actually delivered\n(seen_seq[], unconditional, whole-run) independent of track_arrival()'s own\nbookkeeping; print_summary() cross-checks a direct full-run scan against the\nwindowed total_dropped count at the very end. A mismatch (direct scan finds\nfewer genuinely-missing seq_nos than total_dropped reports) would point at\nperf_server.c's own counting, not TickLE-core's RELIABLE mechanism, as at\nleast part of the floor. Remove once answered either way.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:24:41+09:00",
+          "tree_id": "0e54dadababe0b53a5dc76934300918c744ce0c0",
+          "url": "https://github.com/tsnlab/tickle/commit/c5949f693e4ef2ed49845373a9ea832a1c42e903"
+        },
+        "date": 1789734352443,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9899805613926479,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.989842414855957,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03045163835797991,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.00001975468226841518,
             "unit": "Mbit/s"
           }
         ]
