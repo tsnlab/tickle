@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789734453783,
+  "lastUpdate": 1789734457360,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35540,6 +35540,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 9.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.1,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c5949f693e4ef2ed49845373a9ea832a1c42e903",
+          "message": "Add TEMPORARY ground-truth diagnostic for perf_server.c's own drop counting\n\nRe-tests the still-open question of whether track_arrival()'s own windowed\ngap-tracking heuristic (GAP_WINDOW_BITS=1024) is accurately reporting real,\npermanent loss for Milestone 18's own residual ~0.1% RELIABLE loss_pct floor,\nor over-counting something that actually arrived just outside its own\ndeferred-judgment window. Records every seq_no ever actually delivered\n(seen_seq[], unconditional, whole-run) independent of track_arrival()'s own\nbookkeeping; print_summary() cross-checks a direct full-run scan against the\nwindowed total_dropped count at the very end. A mismatch (direct scan finds\nfewer genuinely-missing seq_nos than total_dropped reports) would point at\nperf_server.c's own counting, not TickLE-core's RELIABLE mechanism, as at\nleast part of the floor. Remove once answered either way.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:24:41+09:00",
+          "tree_id": "0e54dadababe0b53a5dc76934300918c744ce0c0",
+          "url": "https://github.com/tsnlab/tickle/commit/c5949f693e4ef2ed49845373a9ea832a1c42e903"
+        },
+        "date": 1789734456263,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10.2,
             "unit": "%"
           },
           {
