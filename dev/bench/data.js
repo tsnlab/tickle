@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789691202895,
+  "lastUpdate": 1789691205879,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -19612,6 +19612,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 822.492,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "03c2526a8098b448029c52e429da69603e128399",
+          "message": "Document 280us's own run-to-run variability honestly\n\nA repeatability check at the same 280us got 9.6% at 10% tc loss the second\ntime, not the first run's 5.2% - close to a full collapse, not a small\npartial one, while 310us landed flat clean twice in a row. This cliff's own\nreal position apparently drifts across runs by more than the 280-to-310us\ngap itself (real hardware timing jitter, not a bug in the test or in\ntickle.c), so no fixed interval in this narrow band gives a precisely-sized\n\"a little\" loss at 10% on every single run. What does hold up consistently:\n1%/5% land clean and 10% doesn't - real, if variably-sized, loss shows up\nspecifically at the highest tc loss level. Keeping 280us (it's within the\ndifferentiating band on both tries, unlike anything at 310us or above) and\ndocumenting the variance instead of chasing a number that may not be\nreproducible on this hardware at all.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T09:24:08+09:00",
+          "tree_id": "22194fba5a09c37d35e822ee16900558068b76bb",
+          "url": "https://github.com/tsnlab/tickle/commit/03c2526a8098b448029c52e429da69603e128399"
+        },
+        "date": 1789691204753,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.692,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 820.788,
             "unit": "Mbps"
           }
         ]
