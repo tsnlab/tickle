@@ -37,34 +37,29 @@
 // (clamped to this at setup time, e.g. rmw_tickle from qos_profile->depth). Same "small hard
 // cap, caller picks a real value within it" trade-off as tt_MAX_PEER_COUNT/tt_MAX_SERVER_CACHE_COUNT.
 //
-// History: 8 -> 10 -> 64 -> 16 (current), all chasing the same real cache-eviction-vs-ACKNACK-
-// round-trip-recovery race under run_perf.sh's own loss-injection scenarios (LOSS_TEST_INTERVAL_
-// SEC's own comment) - the retained window (depth * send interval) has to outlast a real
-// retransmit round trip before an unacked sample gets evicted, or genuine, otherwise-recoverable
-// loss gets written off too early. 8 put that window's own edge close enough to this rig's real
-// RTT that reported loss_pct under tc/netem loss became a razor-thin, run-to-run-noisy cliff at
-// 10% specifically; 10 calmed that noise a little; 16 and 64 were both tried while chasing PLAN.md's
-// Milestone 18 residual ~0.1% loss_pct floor (the working theory at the time being a too-shallow
-// retention window relative to something else entirely - HIL discovery-completion latency), 64
-// being this constant's own hard ceiling (see tt_RELIABLE_BITMAP_BITS below - a single ACKNACK can
-// never name a gap wider than that, so more slots couldn't be selectively recovered from anyway).
+// This is a *compile-time ceiling*, not the depth any given Publisher actually uses at runtime -
+// struct tt_ReliableCache.depth (tickle.h) is the real, freely-configurable knob (clamped to this
+// constant), exactly mirroring real DDS's own split between a resource-limit ceiling
+// (RESOURCE_LIMITS.max_samples_per_instance) and the actual requested value (HISTORY.depth) - a
+// caller picks whatever it wants at or below this cap without needing a rebuild. Fixed at 64,
+// tt_RELIABLE_BITMAP_BITS's own hard ceiling below - a single ACKNACK can never name a gap wider
+// than that, so raising this constant past it would only add slots update_reliable_ack() could
+// never selectively recover anyway, regardless of what any caller's own depth requests.
 //
-// That whole floor turned out to have nothing to do with this constant at all (PLAN.md's Milestone
-// 25): it was a measurement bug in examples/linux/perf/perf_server.c's own drop-counting, not real
-// TickLE-core loss - fixed there, and confirmed in isolation from this constant's own effect once
-// that bug no longer muddies every depth's own reported numbers. Every loss_pct figure any earlier
-// value of this constant was ever tuned against (the 5.2%/9.6%/8.0% cliff at 8, 64's own ~0%-at-
-// every-level result) was measured through that same buggy counter, so none of it can be trusted
-// as calibration data now - re-tuned from a clean slate instead: 64's own real (bug-fixed) ground
-// truth was only ~3 genuinely-lost samples out of ~35,714 even at 10% tc loss (comfortably inside
-// tt_RELIABLE_RETRY's own full retry budget, ~15-20ms - at this harness's own tuned 280us
-// interval, that's ~54-70 messages, close to what 64 itself provides), too small to tell RELIABLE's
-// own real recovery behavior apart from a clean run at a glance. Narrowed to 16 (~4.5ms retention
-// window at that same 280us interval, well under one full retry budget) specifically so 10% tc
-// loss - real, bursty loss capable of taking more than one retry round trip to fully drain - starts
-// to show a small but real, non-zero loss_pct again, while 1%/5% (far less bursty) still recover
-// within the shorter window essentially every time. Confirm/re-tune against real HIL after any
-// further change here - this has never once landed correctly on paper alone.
+// History: 8 -> 10 -> 64, chasing a real cache-eviction-vs-ACKNACK-round-trip-recovery race under
+// run_perf.sh's own loss-injection scenarios (LOSS_TEST_INTERVAL_SEC's own comment) - the retained
+// window (depth * send interval) has to outlast a real retransmit round trip before an unacked
+// sample gets evicted, or genuine, otherwise-recoverable loss gets written off too early. Settled
+// at 64 (this constant's own hard ceiling) once PLAN.md's Milestone 25 traced the residual ~0.1%
+// loss_pct floor this whole tuning history was chasing to an unrelated measurement bug in
+// examples/linux/perf/perf_server.c's own drop-counting, not real TickLE-core loss or this
+// constant's own value at all - every earlier loss_pct figure this constant was ever tuned against
+// (the 5.2%/9.6%/8.0% cliff at depth 8, etc.) was measured through that same buggy counter, so none
+// of it was trustworthy calibration data regardless. With the counter fixed, this constant no
+// longer needs to double as a *tuning* knob at all - run_perf.sh's own loss-injection client passes
+// an explicit -K <depth> (examples/linux/perf/perf_client.c, cli_opts.h/.c) to set struct tt_
+// ReliableCache.depth directly for that experiment, leaving this constant free to just be the
+// structural ceiling it always should have been.
 //
 // Also now the *only* retained-sample cache depth in this file - QoS roadmap #4 (DURABILITY)
 // used to have its own separate tt_MAX_DURABLE_HISTORY constant and struct tt_DurableCache
@@ -75,7 +70,7 @@
 // whatever's currently sitting in the Writer's own single History Cache, which HISTORY.depth (and
 // RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no independent
 // "durability depth" concept to keep in sync with anything, because there's only ever one cache.
-#define tt_MAX_RELIABLE_HISTORY 16
+#define tt_MAX_RELIABLE_HISTORY 64
 // Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
 // (tickle.c) don't compare against a bare 64. tt_MAX_RELIABLE_HISTORY above must never exceed

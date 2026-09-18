@@ -32,6 +32,7 @@ enum tt_example_opt_flags {
     TT_EXAMPLE_OPT_WARMUP_COOLDOWN = 1U << 4, // -w/-W: ping.c, perf_server.c only
     TT_EXAMPLE_OPT_BATCH = 1U << 5,           // -B: perf_client only
     TT_EXAMPLE_OPT_RELIABLE = 1U << 6,        // -R: perf_client/perf_server only
+    TT_EXAMPLE_OPT_RELIABLE_DEPTH = 1U << 7,  // -K: perf_client only
 };
 
 struct tt_example_cli_options {
@@ -73,6 +74,14 @@ struct tt_example_cli_options {
     // and perf_server's Subscriber into tt_Subscriber.reliable, so the perf rig can measure
     // reliable-mode delivery (retransmit-on-loss) alongside best-effort.
     bool reliable;
+
+    // -K <depth>: perf_client only. struct tt_ReliableCache.depth's own real, freely-configurable
+    // value (clamped to tt_MAX_RELIABLE_HISTORY, the build-time ceiling - tickle.h's own doc
+    // comment) - 0 (this struct's own zero-init default) means "unset, use tt_MAX_RELIABLE_HISTORY
+    // itself" (today's exact pre-existing behavior). Lets a HIL run (or any caller) tune the
+    // retention window independently of a rebuild, e.g. to study how RELIABLE's own recovery rate
+    // varies with it under real tc/netem loss (rmw_tickle/PLAN.md's Milestone 25).
+    uint32_t reliable_depth;
 };
 
 bool tt_example_parse_log_level(const char* str, tt_LogLevel* level);

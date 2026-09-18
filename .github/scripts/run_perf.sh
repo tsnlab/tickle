@@ -91,6 +91,20 @@ LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00028}"
 # at two different tc loss levels, which a shutdown race explains far better than anything
 # proportional to loss probability would.
 LOSS_TEST_COOLDOWN_SEC="${LOSS_TEST_COOLDOWN_SEC:-1.5}"
+# perf_client.c's own -K (struct tt_ReliableCache.depth, tickle.h) - PLAN.md's Milestone 25 traced
+# the loss-injection scenarios' own residual ~0.1% loss_pct floor to a perf_server.c measurement
+# bug (fixed), not this depth at all; every earlier depth-tuning data point in this script's own
+# git history was measured through that same buggy counter, so none of it is trustworthy
+# calibration now. Re-tuned from a clean slate with the counter fixed: tt_MAX_RELIABLE_HISTORY's
+# own full 64-deep ceiling (~17.9ms retention window at this file's own LOSS_TEST_INTERVAL_SEC)
+# recovers real tc/netem loss almost perfectly even at 10% (real ground truth: ~3 genuinely-lost
+# samples out of ~35,714) - too close to zero to see RELIABLE's own recovery behavior differ from a
+# clean run at a glance. 16 (~4.5ms retention window, comfortably under one full tt_RELIABLE_RETRY
+# budget) intentionally narrows that back down so 10% - real, bursty loss capable of outlasting a
+# single retry round trip - shows a small but real, non-zero loss_pct again, while 1%/5% (far less
+# bursty) should still mostly recover within the shorter window. Confirm/re-tune against real HIL
+# after any change here, same as every other constant in this file's own loss-injection tuning.
+RELIABLE_CACHE_DEPTH="${RELIABLE_CACHE_DEPTH:-16}"
 
 LOG_DIR="$(mktemp -d)"
 
@@ -516,7 +530,8 @@ if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
         fi
         run_paired_test "loss${pct}_besteffort" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC" \
             "$((PERF_DURATION_SEC + 30))" "-W $LOSS_TEST_COOLDOWN_SEC"
-        run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R" \
+        run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" \
+            "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R -K $RELIABLE_CACHE_DEPTH" \
             "$((PERF_DURATION_SEC + 30))" "-R -W $LOSS_TEST_COOLDOWN_SEC"
         set_loss 0
     done

@@ -62,7 +62,7 @@ static enum tt_flag_match parse_general_flag(int argc, char** argv, int* i, stru
     return TT_FLAG_MATCHED_OK;
 }
 
-// The -c/-i/-d/-s/-w/-W/-B/-R flags, each only recognized if its TT_EXAMPLE_OPT_* bit is set in
+// The -c/-i/-d/-s/-w/-W/-B/-R/-K flags, each only recognized if its TT_EXAMPLE_OPT_* bit is set in
 // `flags`. -B/-R are the boolean/no-value flags here - neither consumes a following argv slot
 // the way every other flag (general or conditional) does.
 static enum tt_flag_match parse_conditional_flag(int argc, char** argv, int* i, struct tt_example_cli_options* opts,
@@ -83,6 +83,8 @@ static enum tt_flag_match parse_conditional_flag(int argc, char** argv, int* i, 
         opts->batch = true;
     } else if ((flags & TT_EXAMPLE_OPT_RELIABLE) && strcmp(argv[*i], "-R") == 0) {
         opts->reliable = true;
+    } else if ((flags & TT_EXAMPLE_OPT_RELIABLE_DEPTH) && strcmp(argv[*i], "-K") == 0 && *i + 1 < argc) {
+        opts->reliable_depth = (uint32_t)strtoul(argv[++*i], NULL, 10);
     } else {
         return TT_FLAG_NOT_MATCHED;
     }
