@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707536461,
+  "lastUpdate": 1789707539493,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -19659,6 +19659,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030477115086146762,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "0bf299b507a0be6cf52c21ba9a69191dc5d40171",
+          "message": "Revert \"Add -D (DURABLE) to perf_client and a reliable+durable loss-injection scenario\"\n\nThis reverts commit 9a96cf805298519dd56e9e9e598060977bcd0705.",
+          "timestamp": "2026-09-18T13:57:42+09:00",
+          "tree_id": "9fb8fbbfdb5a66aabe240d7f2154767bfbd37a36",
+          "url": "https://github.com/tsnlab/tickle/commit/0bf299b507a0be6cf52c21ba9a69191dc5d40171"
+        },
+        "date": 1789707538406,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9890052250453404,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.0004246575491768973,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03047806876046317,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03046471732003348,
             "unit": "Mbit/s"
           }
         ]
