@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789690921401,
+  "lastUpdate": 1789690924525,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -20495,6 +20495,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/06423215d8d3510e6e2eaa2668aaf8a2b37163e3"
         },
         "date": 1789690582247,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "55bf862afe09344733c15fbafa864d74be5f8740",
+          "message": "Settle the loss-injection send interval at 280us\n\n310us flipped straight back to the flat ~0.1% every clean interval gives -\nthe 280-to-310us gap goes from a real partial 5.2% loss at 10% tc loss to\nfully clean in just 30us, confirming this cliff is close to a step function\nrather than a gradual ramp. Settling on 280us: 1%/5% land clean (~0.1%),\n10% shows real, meaningfully-partial (not catastrophic) loss - the\nqualitative shape asked for. Consolidated the search history in the comment\ndown to the real hardware results themselves rather than every intermediate\nreasoning step, and noted that some run-to-run jitter in 10%'s own exact\nloss_pct is expected given how sharp this cliff is, even though the shape\n(1%/5% clean, 10% not) should hold up.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T09:19:21+09:00",
+          "tree_id": "7a8172462764b52485b878100d1d2fd874783459",
+          "url": "https://github.com/tsnlab/tickle/commit/55bf862afe09344733c15fbafa864d74be5f8740"
+        },
+        "date": 1789690923459,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
