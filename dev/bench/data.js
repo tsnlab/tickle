@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789729073331,
+  "lastUpdate": 1789729152079,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5840,6 +5840,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3d7e84bdb78bd88f5511a343432f38b74e9a9810",
+          "message": "Send immediate Heartbeat to newly-discovered Subscriber peers (Milestone 23)\n\nPeriodic Heartbeat (Milestone 22) can't close the earliest-samples race: any\npractical period is far longer than reliable_cache's own tiny retention\nwindow, so it arrives after the affected early samples are already evicted.\nMirror deliver_durability_backlog()'s own trigger instead - the instant\ndecode_update_entities() discovers a genuinely new Subscriber peer, fire one\nunicast Heartbeat right away, closing the gap while discovery itself is still\ncompleting.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T19:56:37+09:00",
+          "tree_id": "1f4e3c968502f8162b2e755410d0253f8a1f34fe",
+          "url": "https://github.com/tsnlab/tickle/commit/3d7e84bdb78bd88f5511a343432f38b74e9a9810"
+        },
+        "date": 1789729149222,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.545,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 6,
             "unit": "%"
           }
         ]
