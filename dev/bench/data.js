@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707057295,
+  "lastUpdate": 1789707060249,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24425,6 +24425,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 34.894,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9a96cf805298519dd56e9e9e598060977bcd0705",
+          "message": "Add -D (DURABLE) to perf_client and a reliable+durable loss-injection scenario\n\nOpts perf_client's Publisher into struct tt_DurableCache (QoS roadmap #4),\nindependent of -R. run_perf.sh's loss-injection loop now also runs\nloss${pct}_reliable_durable (-R -D) alongside the existing besteffort/reliable\nruns, to test whether DURABILITY's discovery-triggered backlog push catches\nthe same early samples behind \"reliable\"'s own flat ~0.1% loss_pct floor.\nOne-off experiment - not yet reflected in summarize()/the dashboard.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:47:30+09:00",
+          "tree_id": "6a554d50b0ea85aa6686e4e39a922fb3baf46098",
+          "url": "https://github.com/tsnlab/tickle/commit/9a96cf805298519dd56e9e9e598060977bcd0705"
+        },
+        "date": 1789707059143,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 39.181,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 34.911,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 37.572,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 36.682,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 35.496,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 32.583,
             "unit": "Mbps"
           }
         ]
