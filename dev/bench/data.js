@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707617296,
+  "lastUpdate": 1789707710254,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5568,6 +5568,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d08b2212955b297a3091ccff050c27cfa285bd51",
+          "message": "Document the reverted DURABILITY-vs-0.1%-loss-floor HIL experiment\n\nRecords the negative result (commits 9a96cf8/ae61610, reverted in\n0bf299b/f358b9c) so this specific hypothesis - that DURABILITY's discovery-\ntriggered backlog push would plug RELIABLE's own flat ~0.1% loss_pct floor\n- isn't retried without knowing it was already tried and disproven.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:58:44+09:00",
+          "tree_id": "f6ee4c05070d57272432fa93ee9b7654d1a1512e",
+          "url": "https://github.com/tsnlab/tickle/commit/d08b2212955b297a3091ccff050c27cfa285bd51"
+        },
+        "date": 1789707707824,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.201,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 6,
             "unit": "%"
           }
         ]
