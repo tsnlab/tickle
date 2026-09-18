@@ -45,22 +45,20 @@ SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
 # 0 (firehose) confirmed the other end: RELIABLE's own loss_pct jumped to ~10-14% at *every* tc
 # loss level, no longer differentiating by level at all, and ran *worse* than BEST_EFFORT's own -
 # pure ACKNACK/retransmit overhead on an already-saturated link, this comment's own original
-# warning. Between the two ends sits a sharp cliff almost entirely inside the 10% tc loss row
-# specifically, not a smooth slope across all three - real hardware search results, narrowest gap
-# first: 310us and 350us both landed flat at RELIABLE's own clean ~0.1% for every level; 280us kept
-# 1%/5% at that same ~0.1% but put 10% at a real, partial 5.2% (BEST_EFFORT's own rate there is
-# ~10%); 170us pushed 10% all the way to 9.8%, matching BEST_EFFORT outright (a full cliff, not
-# partial); 80us and below overshoot badly enough that even 1% fails to recover much of anything.
-# 280us is the value here, but re-running it once to check repeatability got 9.6% at 10% the
-# second time, not the first run's 5.2% - close to a full collapse (BEST_EFFORT's own rate there is
-# ~10%), not a small partial one. Combined with 310us landing flat clean twice in a row, this
-# cliff's own real position apparently drifts across runs by more than the 280-to-310us gap itself
-# (real hardware timing jitter, not a bug), so no fixed interval in this narrow band gives a
-# precisely-sized "a little" loss at 10% on every run. What *does* hold up consistently across
-# every real hardware result at 280us and above: 1%/5% land clean (~0.1%) and 10% doesn't - some
-# real, nonzero (if variable in size) loss shows up specifically at the highest tc loss level,
-# which is the qualitative shape this whole search was after. Read 10%'s own reliable loss_pct
-# here as "measurably present, sometimes small and sometimes large" rather than a fixed number.
+# warning. Between the two ends sits a sharp, narrow-band cliff, not a smooth slope: 350us and
+# 310us landed flat at RELIABLE's own clean ~0.1% for every level, every time; 170us pushed 10% all
+# the way to 9.8% (matching BEST_EFFORT's own ~10% rate there outright); 80us and below overshoot
+# badly enough that even 1% fails to recover much of anything. 280us sits inside that cliff, and
+# three separate runs at the *same* value came back 5.2%/9.6%/8.0% at 10% tc loss (once even 5%
+# itself showed 1.7%, not its usual ~0.1%) - real hardware timing jitter moves this cliff's own
+# exact position by more than the gap between "280us" and "310us" themselves, so no single fixed
+# interval gives a precisely-sized "a little" loss at 10% on every run on this rig. What *does*
+# hold up across all three: 1% stays clean every time, and 10% never does - real, measurable (if
+# noisy in size) loss shows up specifically as tc's own configured loss gets worse, which is the
+# qualitative shape this search was after even though the exact numbers won't be identical run to
+# run. Keeping 280us; if a future run wants tighter reproducibility, averaging several runs per
+# loss level (this script currently does one) would be the more principled fix, not a "magic"
+# interval - no single fixed value made this cliff's own position stop drifting.
 #
 # Separately (and unaffected by any of this): a faster send interval also raises the sample count
 # for the same PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct
