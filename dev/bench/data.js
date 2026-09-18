@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789734705408,
+  "lastUpdate": 1789734708531,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -25049,6 +25049,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 821.058,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "77704f5dbc172b46f1d187cea1401ab97777ce33",
+          "message": "Surface perf_server.c's own ground-truth DIAG lines for loss*_reliable in the job summary\n\nsummarize() only ever cats throughput/reliable/smallmsg's own server logs\nwholesale - the loss${pct}_reliable_server.log files the previous commit's\ndiagnostic actually needs to answer anything about (only 0.1% floor is ever\nmeasured there, not in the un-paced scenarios) were never surfaced at all.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:29:09+09:00",
+          "tree_id": "1c38dc1e890417591b3f61c86f1c71b7b92b7679",
+          "url": "https://github.com/tsnlab/tickle/commit/77704f5dbc172b46f1d187cea1401ab97777ce33"
+        },
+        "date": 1789734707420,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.571,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 821.256,
             "unit": "Mbps"
           }
         ]
