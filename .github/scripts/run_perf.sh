@@ -345,6 +345,33 @@ summarize() {
                 echo "| ${pct}% | ${be_lp:-N/A} | ${rel_lp:-N/A} | ${be_mbps:-N/A} | ${rel_mbps:-N/A} | ${be_lat:-N/A} | ${rel_lat:-N/A} |"
             done
             echo
+
+            # TEMPORARY (PLAN.md's Milestone 18 residual loss_pct floor, re-tested here after
+            # Milestones 23/24 ruled out every retained-sample-side mechanism - deeper cache,
+            # durability backlog push, either Heartbeat flavor) - src/tickle.c's own process_data()
+            # now logs every completely-silent "no local Subscriber registered yet" early drop
+            # (no callback, invisible to update_reliable_ack() and every reliable-delivery
+            # mechanism, but still a real gap in perf_server.c's own expected_seq counter). If this
+            # fires and its count roughly tracks the ~0.1% floor, that confirms a startup race, not
+            # a TickLE-core reliable-delivery bug - remove this whole block once answered.
+            echo "### One-off: process_data()'s own silent no-Subscriber-yet drop count"
+            echo
+            echo "| tc loss | no-Subscriber-yet drops (reliable) |"
+            echo "|---|---|"
+            for pct in $LOSS_LEVELS_PCT; do
+                local rel_log3="$LOG_DIR/loss${pct}_reliable_server.log"
+                local drop_count
+                drop_count=$(grep -c 'no matching subscriber endpoint' "$rel_log3" 2>/dev/null || echo 0)
+                echo "| ${pct}% | ${drop_count} |"
+            done
+            echo
+            echo "First 5 occurrences (any loss level, oldest scenario first):"
+            echo '```'
+            for pct in $LOSS_LEVELS_PCT; do
+                grep 'no matching subscriber endpoint' "$LOG_DIR/loss${pct}_reliable_server.log" 2>/dev/null | head -5 || true
+            done
+            echo '```'
+            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"
