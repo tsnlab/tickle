@@ -345,6 +345,27 @@ summarize() {
                 echo "| ${pct}% | ${be_lp:-N/A} | ${rel_lp:-N/A} | ${be_mbps:-N/A} | ${rel_mbps:-N/A} | ${be_lat:-N/A} | ${rel_lat:-N/A} |"
             done
             echo
+
+            # One-off experiment (see run_paired_test's own "reliable_heartbeat" comment above):
+            # does periodic Heartbeat (-H, QoS roadmap #5 follow-up, Milestone 22) reduce
+            # "reliable"'s own flat ~0.1% loss_pct floor any further, on top of Milestone 23's
+            # always-on discovery-triggered one-off Heartbeat (already included in "reliable"
+            # above)? Not yet folded into the table above or the dashboard - a plain extra block so
+            # it's easy to drop once answered either way, same pattern as the reverted -D (DURABLE)
+            # experiment's own one-off block used.
+            echo "### One-off: does -H (periodic Heartbeat) reduce RELIABLE's own loss_pct floor further?"
+            echo
+            echo "| tc loss | loss_pct (reliable) | loss_pct (reliable + heartbeat) |"
+            echo "|---|---|---|"
+            for pct in $LOSS_LEVELS_PCT; do
+                local rel_log2="$LOG_DIR/loss${pct}_reliable_server.log"
+                local hb_log="$LOG_DIR/loss${pct}_reliable_heartbeat_server.log"
+                local rel_lp2 hb_lp
+                rel_lp2=$(grep -oP 'loss_pct=\K[\d.]+' "$rel_log2" 2>/dev/null | tail -1 || true)
+                hb_lp=$(grep -oP 'loss_pct=\K[\d.]+' "$hb_log" 2>/dev/null | tail -1 || true)
+                echo "| ${pct}% | ${rel_lp2:-N/A} | ${hb_lp:-N/A} |"
+            done
+            echo
         fi
         echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
         echo "### Sender (rpi#1)"
