@@ -37,26 +37,34 @@
 // (clamped to this at setup time, e.g. rmw_tickle from qos_profile->depth). Same "small hard
 // cap, caller picks a real value within it" trade-off as tt_MAX_PEER_COUNT/tt_MAX_SERVER_CACHE_COUNT.
 //
-// Was 10, before that 8 - run_perf.sh's own LOSS_TEST_INTERVAL_SEC comment documents a real
-// cache-eviction-vs-ACKNACK-round-trip race at low depth: the retained window (depth * send
-// interval) has to outlast a real round trip before an unacked sample gets evicted, and 8 put that
-// window's own edge close enough to this rig's real RTT that RELIABLE's loss_pct under tc/netem
-// loss became a razor-thin, run-to-run-noisy cliff at 10% tc loss specifically (5.2%/9.6%/8.0%
-// across identical re-runs at the interval that was tuned to land on it); 16 (double) overshot
-// that cliff outright on real HIL instead - 1%/5%/10% all landed flat at 0.1%, losing 10%'s own
-// differentiation entirely.
+// History: 8 -> 10 -> 64 -> 16 (current), all chasing the same real cache-eviction-vs-ACKNACK-
+// round-trip-recovery race under run_perf.sh's own loss-injection scenarios (LOSS_TEST_INTERVAL_
+// SEC's own comment) - the retained window (depth * send interval) has to outlast a real
+// retransmit round trip before an unacked sample gets evicted, or genuine, otherwise-recoverable
+// loss gets written off too early. 8 put that window's own edge close enough to this rig's real
+// RTT that reported loss_pct under tc/netem loss became a razor-thin, run-to-run-noisy cliff at
+// 10% specifically; 10 calmed that noise a little; 16 and 64 were both tried while chasing PLAN.md's
+// Milestone 18 residual ~0.1% loss_pct floor (the working theory at the time being a too-shallow
+// retention window relative to something else entirely - HIL discovery-completion latency), 64
+// being this constant's own hard ceiling (see tt_RELIABLE_BITMAP_BITS below - a single ACKNACK can
+// never name a gap wider than that, so more slots couldn't be selectively recovered from anyway).
 //
-// PLAN.md's Milestone 23 traced that same flat ~0.1% floor (present at 10 too, unmoved by either
-// discovery-triggered or periodic Heartbeat) to a *different*, likely-larger effect: reliable_
-// cache's own real-time retention window (depth * send interval) being shorter than how long
-// discovery itself actually takes to complete on a newly-started HIL run, so the very earliest
-// samples are evicted before any recovery mechanism - reactive ACKNACK, durability backlog push,
-// or either Heartbeat - can ever reach back for them. Raised to 64 (this constant's own hard
-// ceiling, see tt_RELIABLE_BITMAP_BITS below - a single ACKNACK can never name a gap wider than
-// that, so going past it would only add slots update_reliable_ack() could never selectively
-// recover anyway) specifically to test that hypothesis on real HIL: at the loss-injection harness's
-// own tuned 280us interval, 64 gives a ~17.9ms retention window, comfortably past a plausible
-// ~10ms discovery-completion estimate, vs. 10's own ~2.8ms which isn't.
+// That whole floor turned out to have nothing to do with this constant at all (PLAN.md's Milestone
+// 25): it was a measurement bug in examples/linux/perf/perf_server.c's own drop-counting, not real
+// TickLE-core loss - fixed there, and confirmed in isolation from this constant's own effect once
+// that bug no longer muddies every depth's own reported numbers. Every loss_pct figure any earlier
+// value of this constant was ever tuned against (the 5.2%/9.6%/8.0% cliff at 8, 64's own ~0%-at-
+// every-level result) was measured through that same buggy counter, so none of it can be trusted
+// as calibration data now - re-tuned from a clean slate instead: 64's own real (bug-fixed) ground
+// truth was only ~3 genuinely-lost samples out of ~35,714 even at 10% tc loss (comfortably inside
+// tt_RELIABLE_RETRY's own full retry budget, ~15-20ms - at this harness's own tuned 280us
+// interval, that's ~54-70 messages, close to what 64 itself provides), too small to tell RELIABLE's
+// own real recovery behavior apart from a clean run at a glance. Narrowed to 16 (~4.5ms retention
+// window at that same 280us interval, well under one full retry budget) specifically so 10% tc
+// loss - real, bursty loss capable of taking more than one retry round trip to fully drain - starts
+// to show a small but real, non-zero loss_pct again, while 1%/5% (far less bursty) still recover
+// within the shorter window essentially every time. Confirm/re-tune against real HIL after any
+// further change here - this has never once landed correctly on paper alone.
 //
 // Also now the *only* retained-sample cache depth in this file - QoS roadmap #4 (DURABILITY)
 // used to have its own separate tt_MAX_DURABLE_HISTORY constant and struct tt_DurableCache
@@ -67,7 +75,7 @@
 // whatever's currently sitting in the Writer's own single History Cache, which HISTORY.depth (and
 // RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no independent
 // "durability depth" concept to keep in sync with anything, because there's only ever one cache.
-#define tt_MAX_RELIABLE_HISTORY 64
+#define tt_MAX_RELIABLE_HISTORY 16
 // Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
 // (tickle.c) don't compare against a bare 64. tt_MAX_RELIABLE_HISTORY above must never exceed
