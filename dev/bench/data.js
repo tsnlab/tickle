@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707710254,
+  "lastUpdate": 1789708177621,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -17095,6 +17095,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.045489999999999996,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "47a9885b6fb0584f4a3e5c53b4bc1793a1d6ebc8",
+          "message": "Widen tt_MAX_RELIABLE_HISTORY 8 -> 16 to push the RELIABLE loss cliff\n\nWidens the retained-sample cache depth so the recovery window (depth *\nLOSS_TEST_INTERVAL_SEC) clears further past this rig's own real ACKNACK\nround-trip time, aiming to make loss1_reliable/loss5_reliable land solidly\nat 0 loss_pct while loss10_reliable still shows some (per run_perf.sh's\nown LOSS_TEST_INTERVAL_SEC comment on the cache-eviction-vs-RTT race\nbehind the previous ~0.1% floor and the noisy 10% cliff at depth 8).\n\ntest_reliable_pubsub.c's test_acknack_retry_skips_unrecoverable_backlog_on_giveup\nhardcoded a seq_no (14) tuned to the old depth=8 to exercise the\n\"gap wider than tt_MAX_RELIABLE_HISTORY\" give-up path - parametrized to\ntt_MAX_RELIABLE_HISTORY + 6 so it still exercises the same path at any depth.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T14:08:29+09:00",
+          "tree_id": "172f7a9df205e2690f055821d743c18fc53eb460",
+          "url": "https://github.com/tsnlab/tickle/commit/47a9885b6fb0584f4a3e5c53b4bc1793a1d6ebc8"
+        },
+        "date": 1789708175325,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04970000000000001,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.046725714285714294,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.050418571428571424,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.05100857142857144,
             "unit": "ms"
           }
         ]
