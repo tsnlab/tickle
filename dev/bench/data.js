@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789705499830,
+  "lastUpdate": 1789705502878,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26199,6 +26199,60 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/151190fc7c0b8ac5feaaf6508f2440ca7697b7f9"
         },
         "date": 1789697199020,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ca7b329679bf4eded1c171b37008473ea4ad1f05",
+          "message": "Document Milestone 19 (QoS roadmap #4 DURABILITY) in PLAN.md\n\nRecords the TickLE core design (struct tt_DurableCache, the upsert_peer()\nnew-vs-refresh return value, deliver_durability_backlog()'s discovery\ntrigger, the documented forget_peers_from_source() redelivery trade-off,\nand why services/clients stay out of scope) and the rmw_tickle reflection,\nfollowing the same documentation style as Milestone 18's own writeup.\nUpdates the QoS roadmap table's #4 row to done.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:22:15+09:00",
+          "tree_id": "9fb8fbbfdb5a66aabe240d7f2154767bfbd37a36",
+          "url": "https://github.com/tsnlab/tickle/commit/ca7b329679bf4eded1c171b37008473ea4ad1f05"
+        },
+        "date": 1789705501806,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
