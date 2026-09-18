@@ -99,12 +99,15 @@ LOSS_TEST_COOLDOWN_SEC="${LOSS_TEST_COOLDOWN_SEC:-1.5}"
 # own full 64-deep ceiling (~17.9ms retention window at this file's own LOSS_TEST_INTERVAL_SEC)
 # recovers real tc/netem loss almost perfectly even at 10% (real ground truth: ~3 genuinely-lost
 # samples out of ~35,714) - too close to zero to see RELIABLE's own recovery behavior differ from a
-# clean run at a glance. 16 (~4.5ms retention window, comfortably under one full tt_RELIABLE_RETRY
-# budget) intentionally narrows that back down so 10% - real, bursty loss capable of outlasting a
-# single retry round trip - shows a small but real, non-zero loss_pct again, while 1%/5% (far less
-# bursty) should still mostly recover within the shorter window. Confirm/re-tune against real HIL
-# after any change here, same as every other constant in this file's own loss-injection tuning.
-RELIABLE_CACHE_DEPTH="${RELIABLE_CACHE_DEPTH:-16}"
+# clean run at a glance. 16 (~4.5ms retention window) narrowed that back down and did produce real,
+# HIL-confirmed differentiation (ground truth 0/1/6 genuinely-lost samples at 1%/5%/10%) - but 6
+# out of ~35,714 (~0.017%) still rounds away to "0.0" in the job summary's own one-decimal loss_pct
+# display, real but not visibly so. Narrowed further to 10 (~2.8ms retention window, matching this
+# constant's own pre-Milestone-24 depth) specifically to make 10% tc loss's own small, real loss
+# show up as a nonzero number in that display too, while 1%/5% (far less bursty) should still
+# mostly recover within the shorter window. Confirm/re-tune against real HIL after any change here,
+# same as every other constant in this file's own loss-injection tuning.
+RELIABLE_CACHE_DEPTH="${RELIABLE_CACHE_DEPTH:-10}"
 
 LOG_DIR="$(mktemp -d)"
 
