@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707050642,
+  "lastUpdate": 1789707053485,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -20926,6 +20926,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 823.248,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9a96cf805298519dd56e9e9e598060977bcd0705",
+          "message": "Add -D (DURABLE) to perf_client and a reliable+durable loss-injection scenario\n\nOpts perf_client's Publisher into struct tt_DurableCache (QoS roadmap #4),\nindependent of -R. run_perf.sh's loss-injection loop now also runs\nloss${pct}_reliable_durable (-R -D) alongside the existing besteffort/reliable\nruns, to test whether DURABILITY's discovery-triggered backlog push catches\nthe same early samples behind \"reliable\"'s own flat ~0.1% loss_pct floor.\nOne-off experiment - not yet reflected in summarize()/the dashboard.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:47:30+09:00",
+          "tree_id": "6a554d50b0ea85aa6686e4e39a922fb3baf46098",
+          "url": "https://github.com/tsnlab/tickle/commit/9a96cf805298519dd56e9e9e598060977bcd0705"
+        },
+        "date": 1789707052416,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.649,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 822.199,
             "unit": "Mbps"
           }
         ]
