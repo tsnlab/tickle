@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789729725019,
+  "lastUpdate": 1789729728284,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -15112,6 +15112,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.013,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6786dbfdd3c5eb42c477f730f379302d09d773d7",
+          "message": "Add -H (periodic Heartbeat) to perf_client and a reliable+heartbeat loss-injection scenario\n\nOpts perf_client's Publisher into tt_Publisher_set_heartbeat_period()\n(Milestone 22), independent of Milestone 23's always-on discovery-triggered\none-off Heartbeat. run_perf.sh's loss-injection loop now also runs\nloss${pct}_reliable_heartbeat (-R -H 0.05) alongside the existing\nbesteffort/reliable runs, to test whether a periodic Heartbeat closes the\nsame ~0.1% loss_pct floor the discovery-triggered one-off (measured via the\nexisting loss${pct}_reliable scenario) was already confirmed not to move.\nOne-off experiment - not yet reflected in summarize()/the dashboard, same\nprecedent as the reverted -D (DURABLE) experiment.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T20:05:34+09:00",
+          "tree_id": "29f95b46e6694f19ae118ba78ce4712e36201cb1",
+          "url": "https://github.com/tsnlab/tickle/commit/6786dbfdd3c5eb42c477f730f379302d09d773d7"
+        },
+        "date": 1789729727156,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           }
         ]
