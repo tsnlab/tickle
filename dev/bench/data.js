@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789689860286,
+  "lastUpdate": 1789689863512,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -17439,6 +17439,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03043433598109654,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "bd6a09af01de846e005ffed7c88d245ef6e1a87d",
+          "message": "Narrow the loss-injection cliff search to 170us (80us-350us gap's geometric mean)\n\n80us overshot (0.9%/3.8%/8.8% at 1%/5%/10% - even the lightest tc loss level\nalready failing badly) while 350us landed back on the same flat ~0.1% every\nslower interval gave. The actual cliff sits somewhere in that 80-350us gap -\nnarrowing to its geometric mean next.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T09:03:12+09:00",
+          "tree_id": "792e755d047b69eb36ec4043c44adaf15ff022ee",
+          "url": "https://github.com/tsnlab/tickle/commit/bd6a09af01de846e005ffed7c88d245ef6e1a87d"
+        },
+        "date": 1789689862468,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.990551403590611,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9902928216116769,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030443191528320312,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030447414943150113,
             "unit": "Mbit/s"
           }
         ]
