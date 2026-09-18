@@ -99,15 +99,16 @@ LOSS_TEST_COOLDOWN_SEC="${LOSS_TEST_COOLDOWN_SEC:-1.5}"
 # own full 64-deep ceiling (~17.9ms retention window at this file's own LOSS_TEST_INTERVAL_SEC)
 # recovers real tc/netem loss almost perfectly even at 10% (real ground truth: ~3 genuinely-lost
 # samples out of ~35,714) - too close to zero to see RELIABLE's own recovery behavior differ from a
-# clean run at a glance. 16 (~4.5ms retention window) narrowed that back down and did produce real,
-# HIL-confirmed differentiation (ground truth 0/1/6 genuinely-lost samples at 1%/5%/10%) - but 6
-# out of ~35,714 (~0.017%) still rounds away to "0.0" in the job summary's own one-decimal loss_pct
-# display, real but not visibly so. Narrowed further to 10 (~2.8ms retention window, matching this
-# constant's own pre-Milestone-24 depth) specifically to make 10% tc loss's own small, real loss
-# show up as a nonzero number in that display too, while 1%/5% (far less bursty) should still
-# mostly recover within the shorter window. Confirm/re-tune against real HIL after any change here,
-# same as every other constant in this file's own loss-injection tuning.
-RELIABLE_CACHE_DEPTH="${RELIABLE_CACHE_DEPTH:-10}"
+# clean run at a glance. 16, then 10 (~4.5ms, then ~2.8ms retention window) both narrowed that back
+# down and did produce real, HIL-confirmed differentiation (ground truth 0/1/6 at depth 16, 0/0/5
+# at depth 10, genuinely-lost samples at 1%/5%/10% either time) - but even 5-6 out of ~35,714
+# (~0.014-0.017%) still rounds away to "0.0" in the job summary's own one-decimal loss_pct display,
+# real but not visibly so; the display needs roughly 18+ (~0.05%) to round up to "0.1" at all.
+# Narrowed further to 8 (~2.2ms retention window, this constant's own original pre-Milestone-24
+# depth) to push past that display threshold, while 1%/5% (far less bursty) should still mostly
+# recover within the shorter window. Confirm/re-tune against real HIL after any change here, same
+# as every other constant in this file's own loss-injection tuning.
+RELIABLE_CACHE_DEPTH="${RELIABLE_CACHE_DEPTH:-8}"
 
 LOG_DIR="$(mktemp -d)"
 
