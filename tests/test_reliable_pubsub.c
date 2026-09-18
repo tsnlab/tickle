@@ -305,10 +305,11 @@ static void test_acknack_retry_skips_unrecoverable_backlog_on_giveup(void) {
     init_subscriber_registered_on_node(&sub, &node, &topic);
     EXPECT_EQ_U32(1, sub.ack_seq_no);
 
-    // seq_no 1 (ack_seq_no itself) never arrives; seq_no 14 already did, out of order - a 14-wide
-    // span, well past tt_MAX_RELIABLE_HISTORY (8), so 1..6 are guaranteed already evicted from
-    // any Publisher's reliable_cache by the time seq_no 14 exists at all.
-    sub.received_bitmap = 1ULL << 13; // bit 13: ack_seq_no(1) + 13 = 14
+    // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order - a
+    // span 6 past tt_MAX_RELIABLE_HISTORY, so the earliest few of those in between are guaranteed
+    // already evicted from any Publisher's reliable_cache by the time far_seq exists at all.
+    const uint32_t far_seq = tt_MAX_RELIABLE_HISTORY + 6;
+    sub.received_bitmap = 1ULL << (far_seq - 1); // bit (far_seq-1): ack_seq_no(1) + (far_seq-1) = far_seq
     sub.reliable_sender_node_id = REMOTE_NODE_ID;
     sub.reliable_sender_ip = TEST_SENDER_IP;
     sub.reliable_sender_port = TEST_SENDER_PORT;
@@ -325,9 +326,9 @@ static void test_acknack_retry_skips_unrecoverable_backlog_on_giveup(void) {
 
     // advance_ack_seq_no() moves past seq_no 1 alone (bit 0 isn't set, nothing immediately
     // following to absorb), landing at 2; skip_unrecoverable_backlog() then jumps the rest of the
-    // way in one step, since 14 - 2 + 1 = 13 > tt_MAX_RELIABLE_HISTORY (8).
-    EXPECT_EQ_U32((uint32_t)(14 - tt_MAX_RELIABLE_HISTORY + 1), sub.ack_seq_no);
-    // bit (tt_MAX_RELIABLE_HISTORY - 1): ack_seq_no + (tt_MAX_RELIABLE_HISTORY - 1) = 14, the
+    // way in one step, since far_seq - 2 + 1 > tt_MAX_RELIABLE_HISTORY.
+    EXPECT_EQ_U32(far_seq - tt_MAX_RELIABLE_HISTORY + 1, sub.ack_seq_no);
+    // bit (tt_MAX_RELIABLE_HISTORY - 1): ack_seq_no + (tt_MAX_RELIABLE_HISTORY - 1) = far_seq, the
     // sample already known received - still correctly tracked, not lost in the jump.
     EXPECT_TRUE(sub.received_bitmap == (1ULL << (tt_MAX_RELIABLE_HISTORY - 1)));
 }

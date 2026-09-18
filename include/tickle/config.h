@@ -36,7 +36,15 @@
 // (tickle.h) - the fixed array dimension backing whatever depth a caller actually requests
 // (clamped to this at setup time, e.g. rmw_tickle from qos_profile->depth). Same "small hard
 // cap, caller picks a real value within it" trade-off as tt_MAX_PEER_COUNT/tt_MAX_SERVER_CACHE_COUNT.
-#define tt_MAX_RELIABLE_HISTORY 8
+//
+// Was 8 - run_perf.sh's own LOSS_TEST_INTERVAL_SEC comment documents a real cache-eviction-vs-
+// ACKNACK-round-trip race at that depth: the retained window (depth * send interval) has to
+// outlast a real round trip before an unacked sample gets evicted, and 8 put that window's own
+// edge close enough to this rig's real RTT that RELIABLE's loss_pct under tc/netem loss became a
+// razor-thin, run-to-run-noisy cliff at 10% tc loss specifically (5.2%/9.6%/8.0% across identical
+// re-runs at the interval that was tuned to land on it). 16 widens that window without touching
+// the send interval - see LOSS_TEST_INTERVAL_SEC's own comment for what this actually bought.
+#define tt_MAX_RELIABLE_HISTORY 16
 // Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
 // (tickle.c) don't compare against a bare 64.
