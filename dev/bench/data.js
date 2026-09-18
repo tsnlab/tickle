@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789731048283,
+  "lastUpdate": 1789731051530,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -28079,6 +28079,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 37.171,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "79fb8ee1d387fc47d716da68b76ae2f9d1b1930f",
+          "message": "Revert \"Add -H (periodic Heartbeat) to perf_client and a reliable+heartbeat loss-injection scenario\"\n\nThis reverts commit 6786dbfdd3c5eb42c477f730f379302d09d773d7.",
+          "timestamp": "2026-09-18T20:27:53+09:00",
+          "tree_id": "1f4e3c968502f8162b2e755410d0253f8a1f34fe",
+          "url": "https://github.com/tsnlab/tickle/commit/79fb8ee1d387fc47d716da68b76ae2f9d1b1930f"
+        },
+        "date": 1789731050370,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 39.257,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 34.942,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 37.661,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 36.642,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 35.699,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 37.244,
             "unit": "Mbps"
           }
         ]
