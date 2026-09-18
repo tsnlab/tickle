@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789732547805,
+  "lastUpdate": 1789732551420,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -25787,6 +25787,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/364f29dd8d322d69303ec697bac0e9eec8b9f204"
         },
         "date": 1789731902444,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9d3a61230e950aa6aaffd0d85e72b007547256d5",
+          "message": "Document Milestones 23 (discovery-triggered Heartbeat) and 24 (cache unification + depth 64) in PLAN.md\n\nBoth real HIL experiments came back negative on Milestone 18's own residual\n~0.1% RELIABLE loss_pct floor - discovery-triggered Heartbeat, periodic\nHeartbeat, and a 6x deeper reliable_cache all left it exactly unchanged.\nDocuments the designs, the real numbers, what got reverted (the temporary -H\nexperiment) vs kept (the discovery-triggered Heartbeat feature and the cache\nunification itself), and updates the still-open Milestone 18 floor note with\nwhat this rules out.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T20:53:04+09:00",
+          "tree_id": "ea5745f954cb4d40694acdb3c1cf78454484b8be",
+          "url": "https://github.com/tsnlab/tickle/commit/9d3a61230e950aa6aaffd0d85e72b007547256d5"
+        },
+        "date": 1789732550129,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
