@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789707382854,
+  "lastUpdate": 1789707386413,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24727,6 +24727,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 32.583,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ae616100d7ed743a4ebf7b1288bbf8e9374ec48a",
+          "message": "Surface loss1/5/10_reliable_durable's own loss_pct in the job summary\n\nThe previous commit's new loss_pct data only existed inside per-run log\nfiles on the self-hosted runner, invisible in the job summary/raw log (only\nextracted-and-echoed values, or explicitly cat'd files, actually reach\nGITHUB_STEP_SUMMARY). Add a small one-off table extracting it the same way\nthe besteffort/reliable table already does, so the DURABILITY-vs-loss_pct-\nfloor experiment is actually readable after a run.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:52:57+09:00",
+          "tree_id": "564fac1b5b5de9e5fe646863b2a7f63d2b81f589",
+          "url": "https://github.com/tsnlab/tickle/commit/ae616100d7ed743a4ebf7b1288bbf8e9374ec48a"
+        },
+        "date": 1789707384839,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 39.256,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 34.909,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 37.554,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 36.524,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 35.775,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 33.611,
             "unit": "Mbps"
           }
         ]
