@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789732903566,
+  "lastUpdate": 1789733379674,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -19006,6 +19006,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04679428571428572,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f0639defc8b092795ef874f55d58481bb947a68e",
+          "message": "Remove TEMPORARY diagnostic for process_data()'s silent endpoint-lookup drop\n\nReal HIL answer is in: the silent-startup-drop hypothesis for Milestone 18's\nown residual ~0.1% loss_pct floor is real as a phenomenon (firehose\nscenarios show dozens of sequential seq_no drops right at the very start of\na run, exactly the shape expected), but doesn't explain the floor - the\npaced loss1/5/10_reliable scenarios that actually produce the measured\n0.1% floor saw only 1/0/0 such drops respectively (need ~36 to explain\n0.1% of ~35,714 messages/run), and that one occurrence was at seq_no 9004 -\ndeep into the run, not the startup window at all, so not even the same\nphenomenon. Ruled out.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T21:08:48+09:00",
+          "tree_id": "ea5745f954cb4d40694acdb3c1cf78454484b8be",
+          "url": "https://github.com/tsnlab/tickle/commit/f0639defc8b092795ef874f55d58481bb947a68e"
+        },
+        "date": 1789733377043,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04738857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04644857142857143,
             "unit": "ms"
           }
         ]
