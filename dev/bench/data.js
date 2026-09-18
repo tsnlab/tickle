@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789737539169,
+  "lastUpdate": 1789737542466,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -34817,6 +34817,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 1.539,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "531699943ea283b410c5a048bd55632590bc158c",
+          "message": "Narrow run_perf.sh's own RELIABLE_CACHE_DEPTH 16 -> 10\n\nDepth 16 produced real, HIL-confirmed loss_pct differentiation across tc\nloss levels (ground truth: 0/1/6 genuinely-lost samples at 1%/5%/10%), but\n6 out of ~35,714 still rounds away to the job summary's own displayed\n\"0.0\" at one decimal place. 10 (~2.8ms retention window at this file's own\ntuned 280us send interval) narrows it further so 10% tc loss's own small,\nreal loss shows up as a visible nonzero number there too.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T22:16:11+09:00",
+          "tree_id": "8082ed9ddd99140ce5ba66c7a4b9a277b68a2948",
+          "url": "https://github.com/tsnlab/tickle/commit/531699943ea283b410c5a048bd55632590bc158c"
+        },
+        "date": 1789737541280,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
             "unit": "ms"
           }
         ]
