@@ -153,10 +153,11 @@ static uint32_t write_acknack(struct tt_Node* node, uint32_t endpoint_id, uint32
     return sizeof(struct tt_AckNackHeader);
 }
 
-// tt_Publisher_publish() on a Publisher with durable_cache set must snapshot every sample into the
-// ring, and once more than `depth` samples have gone out, only the most recent `depth` (KEEP_LAST)
-// must remain - same eviction shape as test_reliable_pubsub.c's own
-// test_reliable_publish_caches_and_evicts, mirrored here for the independent durable_cache.
+// tt_Publisher_publish() on a Publisher with durable set (and reliable_cache backing it - see
+// struct tt_ReliableCache's own doc comment on the two QoS policies now sharing one cache) must
+// snapshot every sample into the ring, and once more than `depth` samples have gone out, only the
+// most recent `depth` (KEEP_LAST) must remain - same eviction shape as test_reliable_pubsub.c's
+// own test_reliable_publish_caches_and_evicts, mirrored here with `durable` set too.
 static void test_durability_publish_caches_and_evicts(void) {
     test_mock_reset();
 
@@ -166,10 +167,11 @@ static void test_durability_publish_caches_and_evicts(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_DurableCache cache;
+    struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
     cache.depth = 4;
-    pub.durable_cache = &cache;
+    pub.reliable_cache = &cache;
+    pub.durable = true;
 
     for (uint32_t i = 0; i < 6; i++) {
         uint32_t value = i;
@@ -210,10 +212,11 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_DurableCache cache;
+    struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
     cache.depth = 4;
-    pub.durable_cache = &cache;
+    pub.reliable_cache = &cache;
+    pub.durable = true;
 
     for (uint32_t i = 0; i < 3; i++) {
         uint32_t value = i;
@@ -276,10 +279,11 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_DurableCache cache;
+    struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
     cache.depth = 4;
-    pub.durable_cache = &cache;
+    pub.reliable_cache = &cache;
+    pub.durable = true;
 
     uint32_t value = 7;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
@@ -300,8 +304,8 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
-// A VOLATILE Publisher (durable_cache == NULL, today's default) seeing a brand-new Subscriber
-// must be a harmless no-op - not a crash, not a delivery of anything.
+// A VOLATILE Publisher (durable == false, today's default) seeing a brand-new Subscriber must be
+// a harmless no-op - not a crash, not a delivery of anything.
 static void test_durability_ignored_for_volatile_publisher(void) {
     test_mock_reset();
 
@@ -325,22 +329,24 @@ static void test_durability_ignored_for_volatile_publisher(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
-// Regression test for PLAN.md's Milestone 20: a Publisher with *both* RELIABLE and TRANSIENT_
-// LOCAL enabled, already well into a long-running stream (simulated: 100 publishes) before this
-// test's own Subscriber ever shows up - only the last 4 samples (seq_no 97..100) remain in either
-// cache, tt_MAX_DURABLE_HISTORY's own depth. A brand-new Subscriber's default ack_seq_no (1) is
-// far more than tt_RELIABLE_BITMAP_BITS behind that, exactly the oversized-first-gap shape test_
-// reliable_pubsub.c's own test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_
-// freezing() proves the fix for - confirmed here end to end with durable_cache/reliable_cache
-// actually populated together: once the first real arrival establishes a live baseline, a
-// *subsequent* gap within that same backlog burst is tracked normally and, crucially, still
-// finds its sample sitting in reliable_cache for process_acknack() to retransmit - the actual
-// "durability backlog is ACKNACK-protected too" guarantee this milestone is about. Both sides
-// (Subscriber-side process_data()/update_reliable_ack(), Publisher-side process_acknack()) are
-// simulated directly on this one mock node, same convention test_reliable_pubsub.c's own
-// process_acknack()/process_data() tests already use - deliver_durability_backlog() itself is
-// covered separately by test_durability_delivers_backlog_to_newly_discovered_subscriber() above;
-// what's new here is proving a sample *it* would have unicast is independently recoverable.
+// Regression test for PLAN.md's Milestone 20 (originally written against two separate caches,
+// simplified when Milestone 24 unified them into one - see struct tt_ReliableCache's own doc
+// comment): a Publisher with *both* RELIABLE and TRANSIENT_LOCAL enabled, already well into a
+// long-running stream (simulated: 100 publishes) before this test's own Subscriber ever shows up -
+// only the last 4 samples (seq_no 97..100) remain in the cache. A brand-new Subscriber's default
+// ack_seq_no (1) is far more than tt_RELIABLE_BITMAP_BITS behind that, exactly the oversized-
+// first-gap shape test_reliable_pubsub.c's own test_reliable_subscribe_oversized_first_gap_jumps_
+// baseline_instead_of_freezing() proves the fix for - confirmed here end to end: once the first
+// real arrival establishes a live baseline, a *subsequent* gap within that same backlog burst is
+// tracked normally and, crucially, still finds its sample sitting in the same cache for process_
+// acknack() to retransmit - the actual "durability backlog is ACKNACK-protected too" guarantee
+// this milestone is about, now structurally guaranteed rather than depending on a depth invariant
+// between two caches (there's only one cache to find it in). Both sides (Subscriber-side process_
+// data()/update_reliable_ack(), Publisher-side process_acknack()) are simulated directly on this
+// one mock node, same convention test_reliable_pubsub.c's own process_acknack()/process_data()
+// tests already use - deliver_durability_backlog() itself is covered separately by test_
+// durability_delivers_backlog_to_newly_discovered_subscriber() above; what's new here is proving a
+// sample *it* would have unicast is independently recoverable.
 static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void) {
     test_mock_reset();
 
@@ -354,13 +360,7 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     memset(&reliable_cache, 0, sizeof(reliable_cache));
     reliable_cache.depth = 4;
     pub.reliable_cache = &reliable_cache;
-
-    struct tt_DurableCache durable_cache;
-    memset(&durable_cache, 0, sizeof(durable_cache));
-    durable_cache.depth = 4; // <= reliable_cache's own depth - see config.h's own tt_MAX_DURABLE_
-                             // HISTORY/tt_MAX_RELIABLE_HISTORY comments and tickle.c's own
-                             // _Static_assert enforcing this relationship at the real cap level
-    pub.durable_cache = &durable_cache;
+    pub.durable = true;
 
     for (uint32_t i = 0; i < 100; i++) { // simulates a long-running stream, seq_no 1..100
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));

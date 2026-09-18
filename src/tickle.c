@@ -41,16 +41,6 @@ _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-al
 // tt_Subscriber.received_bitmap's own tt_RELIABLE_BITMAP_BITS-wide tracking window.
 _Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
                "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
-// PLAN.md Milestone 20 - deliver_durability_backlog() relies on every durable_cache-retained
-// sample also still being present in reliable_cache when a Publisher has both set (so a backlog
-// delivery lost in flight is ACKNACK-recoverable, not just a one-shot best-effort push): since
-// both caches are written together, in lockstep, on every tt_Publisher_publish() call
-// (cache_reliable_sample()/cache_durable_sample()), a durable depth no larger than the reliable
-// depth guarantees durable_cache's own retained set is always a trailing subset of reliable_
-// cache's own. config.h's own tt_MAX_DURABLE_HISTORY/tt_MAX_RELIABLE_HISTORY comments cross-
-// reference this - keep this assertion in sync with whichever of the two actually changes.
-_Static_assert(tt_MAX_DURABLE_HISTORY <= tt_MAX_RELIABLE_HISTORY,
-               "tt_MAX_DURABLE_HISTORY must not exceed tt_MAX_RELIABLE_HISTORY - see this assert's own comment");
 
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
@@ -753,8 +743,9 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->topic = topic;
     pub->seq_no = 0;
     pub->batch = false;           // see tickle.h's own doc comment on this field for why this is the default
-    pub->reliable_cache = NULL;   // best-effort by default - see tt_ReliableCache's own doc comment
-    pub->durable_cache = NULL;    // volatile by default - see tt_DurableCache's own doc comment
+    pub->reliable_cache = NULL;   // no retained-sample storage by default - see its own doc comment
+    pub->reliable = false;        // best-effort by default - see tt_Publisher.reliable's own doc comment
+    pub->durable = false;         // volatile by default - see tt_Publisher.durable's own doc comment
     pub->heartbeat_period_ns = 0; // no periodic Heartbeat by default - see its own doc comment
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
@@ -1052,13 +1043,16 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     return tt_RET_OK;
 }
 
-// QoS roadmap #5 (RELIABILITY/RELIABLE) - snapshot the just-encoded DATA submessage (header
-// through CDR) into the ring before end_encode() below, same "cache first, then flush" order
-// tt_Client_call() already uses for its own single-slot cache. A later incoming ACKNACK
-// (process_acknack()) resends this exact copy verbatim; KEEP_LAST eviction once `depth` slots are
-// full (mirrors rmw_subscription.c's own queue eviction), not an error. Split out of
-// tt_Publisher_publish() below purely to keep that function's own cognitive complexity under
-// clang-tidy's threshold, alongside the identically-shaped cache_durable_sample() next to it.
+// QoS roadmap #5 (RELIABILITY/RELIABLE) / #4 (DURABILITY/TRANSIENT_LOCAL) - snapshot the
+// just-encoded DATA submessage (header through CDR) into the ring before end_encode() below, same
+// "cache first, then flush" order tt_Client_call() already uses for its own single-slot cache.
+// Both QoS policies share this one cache (struct tt_ReliableCache's own doc comment, tickle.h): a
+// later incoming ACKNACK (process_acknack()) resends this exact copy verbatim, and a newly-
+// discovered Subscriber (deliver_durability_backlog()) gets every currently-retained entry pushed
+// straight to it, whichever of the two (or both) this Publisher opted into. KEEP_LAST eviction
+// once `depth` slots are full (mirrors rmw_subscription.c's own queue eviction), not an error.
+// Split out of tt_Publisher_publish() below purely to keep that function's own cognitive
+// complexity under clang-tidy's threshold.
 static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
                                   struct tt_ReliableCache* cache, uint32_t seq_no) {
     uint16_t depth =
@@ -1069,21 +1063,6 @@ static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHead
     cache_entry->seq_no = seq_no;
     cache_entry->len = (uint16_t)length;
     cache_entry->retry = 0;
-    cache->next = (cache->next + 1) % depth;
-}
-
-// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL) - see cache_reliable_sample() just above; identical
-// shape, a separate cache/type (struct tt_DurableCache's own doc comment explains why) with no
-// retry counter, since this is a one-shot backlog push rather than a NACK-reactive resend.
-static void cache_durable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
-                                 struct tt_DurableCache* cache, uint32_t seq_no) {
-    uint16_t depth =
-        (cache->depth > 0 && cache->depth <= tt_MAX_DURABLE_HISTORY) ? cache->depth : tt_MAX_DURABLE_HISTORY;
-    size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
-    struct tt_DurableCacheEntry* cache_entry = &cache->entries[cache->next % depth];
-    _tt_memcpy(cache_entry->buffer, submessage_header, length);
-    cache_entry->seq_no = seq_no;
-    cache_entry->len = (uint16_t)length;
     cache->next = (cache->next + 1) % depth;
 }
 
@@ -1102,11 +1081,11 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     // anyway - i.e. batching has nothing to gain here. Small messages fall through to the staging
     // path so node_flush() can still pack several per packet.
     // A reliable or durable Publisher (below) always needs the staging copy path so it has encoded
-    // bytes at a known tx_buffer location to save into reliable_cache/durable_cache - zero-copy
-    // publishes straight from the caller's own tt_Data, nothing to retain for a later retransmit
-    // or backlog delivery.
+    // bytes at a known tx_buffer location to save into reliable_cache - zero-copy publishes
+    // straight from the caller's own tt_Data, nothing to retain for a later retransmit or backlog
+    // delivery.
     if (pub->topic->data_encode_inplace != NULL && old_tx_tail == sizeof(struct tt_Header) &&
-        pub->reliable_cache == NULL && pub->durable_cache == NULL) {
+        pub->reliable_cache == NULL) {
         const uint8_t* body = NULL;
         int32_t body_len = pub->topic->data_encode_inplace(data, &body);
         uint32_t standalone_len = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) +
@@ -1156,13 +1135,10 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
-    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s/
-    // cache_durable_sample()'s own doc comments above; either, both, or neither may be set.
+    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
+    // comment above; one shared write serves both, whichever (or both) this Publisher opted into.
     if (pub->reliable_cache != NULL) {
         cache_reliable_sample(node, submessage_header, pub->reliable_cache, pub->seq_no + 1);
-    }
-    if (pub->durable_cache != NULL) {
-        cache_durable_sample(node, submessage_header, pub->durable_cache, pub->seq_no + 1);
     }
 
     // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
@@ -1274,11 +1250,13 @@ static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
 // Heartbeat can't: a newly-matched Subscriber's very first few samples are also the ones a slow
 // periodic period is most likely to arrive too late to save (by the time it fires, reliable_
 // cache's own tiny KEEP_LAST window has already evicted them) - an immediate, one-off greeting
-// reaches the new peer as soon as discovery itself completes instead. No-op when pub->reliable_
-// cache is NULL (best-effort) or still empty (nothing published yet) - fires regardless of
+// reaches the new peer as soon as discovery itself completes instead. No-op unless pub->reliable
+// is set (see its own doc comment - this is exactly the unprompted-traffic case that flag exists
+// to gate, so a durable-only Publisher doesn't also start emitting Heartbeats nobody asked for)
+// and pub->reliable_cache is non-NULL and non-empty (nothing published yet) - fires regardless of
 // whether periodic Heartbeat (tt_Publisher_set_heartbeat_period()) was ever separately enabled.
 static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target) {
-    if (pub->reliable_cache == NULL) {
+    if (!pub->reliable || pub->reliable_cache == NULL) {
         return;
     }
     uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
@@ -1848,23 +1826,24 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
 // topic just discovered - QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md). Called
 // only from decode_update_entities() below when upsert_peer() just claimed a previously-empty
 // peer slot for this exact Publisher - a genuinely new (or forgotten-then-rejoined) peer, not
-// every periodic UPDATE refresh. No-op when pub->durable_cache is NULL (VOLATILE, today's
-// default) - matches process_acknack()'s own retransmit loop exactly, just unicasting to a fixed
-// target instead of reacting to a NACK bitmap.
+// every periodic UPDATE refresh. No-op unless pub->durable is set (VOLATILE, today's default) and
+// pub->reliable_cache is non-NULL (nothing to deliver from otherwise) - matches process_acknack()'s
+// own retransmit loop exactly, just unicasting to a fixed target instead of reacting to a NACK
+// bitmap, and reading from the same shared cache (struct tt_ReliableCache's own doc comment).
 static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target) {
-    struct tt_DurableCache* cache = pub->durable_cache;
-    if (cache == NULL) {
+    if (!pub->durable || pub->reliable_cache == NULL) {
         return;
     }
+    struct tt_ReliableCache* cache = pub->reliable_cache;
     uint16_t depth =
-        (cache->depth > 0 && cache->depth <= tt_MAX_DURABLE_HISTORY) ? cache->depth : tt_MAX_DURABLE_HISTORY;
+        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
 
     // entries[] is a ring buffer tt_Publisher_publish() writes round-robin via cache->next -
     // starting the scan there and wrapping around visits oldest-to-newest in both the
     // not-yet-wrapped case (the slots from cache->next onward are still empty, len == 0, skipped
     // below) and the already-wrapped case (cache->next is exactly the oldest still-retained entry).
     for (int i = 0; i < depth; i++) {
-        struct tt_DurableCacheEntry* cache_entry = &cache->entries[(cache->next + i) % depth];
+        struct tt_ReliableCacheEntry* cache_entry = &cache->entries[(cache->next + i) % depth];
         if (cache_entry->len == 0) {
             continue;
         }

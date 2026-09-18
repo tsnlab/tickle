@@ -10,8 +10,9 @@
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_create_publisher()/rmw_destroy_publisher()/rmw_publish().
 // rmw_tickle_validate_qos_profile() (rmw_qos.c, Milestone 7) is what rejects anything this rmw
-// doesn't support; rmw_create_publisher() below acts on the one policy that needs more than a
-// yes/no - RELIABILITY (QoS roadmap #5) - by wiring a struct tt_ReliableCache into the Publisher.
+// doesn't support; rmw_create_publisher() below acts on the two policies that need more than a
+// yes/no - RELIABILITY (QoS roadmap #5) and DURABILITY (QoS roadmap #4) - by wiring a shared
+// struct tt_ReliableCache into the Publisher (one cache backs both, Milestone 24).
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -147,18 +148,28 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
 
-    // QoS roadmap #5 (RELIABILITY) - see rmw_tickle_publisher_t.reliable_cache's own doc comment.
-    // depth defaults to tt_MAX_RELIABLE_HISTORY (the largest this build supports) when unset
-    // (RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT); an explicit depth past that cap is rejected outright
-    // rather than silently clamped, matching this package's own "Rejects anything outside the
-    // currently-supported set explicitly" design philosophy.
-    if (RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability) {
+    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see rmw_tickle_publisher_t.reliable_cache's
+    // own doc comment. One shared struct tt_ReliableCache backs both policies now (PLAN.md's
+    // Milestone 24 - matches real DDS/RTPS's own single Writer History Cache), allocated once if
+    // either is requested; depth defaults to tt_MAX_RELIABLE_HISTORY (the largest this build
+    // supports, the only cap now - RELIABILITY and DURABILITY used to have independently-tunable,
+    // independently-capped depths here) when unset (RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT); an
+    // explicit depth past that cap is rejected outright rather than silently clamped, matching this
+    // package's own "Rejects anything outside the currently-supported set explicitly" design
+    // philosophy. ROS 2's own rmw_qos_profile_t.depth is a single shared field regardless - both
+    // policies always read the exact same requested depth, so merging this into one allocation/one
+    // check changes no observable behavior for a Publisher requesting just one of the two, and
+    // fixes a real asymmetry for one requesting both: a depth between the old, smaller DURABILITY
+    // cap and the old, larger RELIABILITY cap used to reject the whole publisher outright even
+    // though RELIABILITY alone would have accepted it.
+    if (RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability ||
+        RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability) {
         size_t depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
                                                                                  : (size_t)tt_MAX_RELIABLE_HISTORY;
         if (depth > (size_t)tt_MAX_RELIABLE_HISTORY) {
-            RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE publisher can retain at most "
+            RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE/TRANSIENT_LOCAL publisher can retain at most "
                               "tt_MAX_RELIABLE_HISTORY samples - see rmw_tickle/PLAN.md's QoS "
-                              "roadmap #5 (RELIABILITY)");
+                              "roadmap #4/#5");
             tt_Node_interrupt(&node_impl->tickle_node);
             pthread_mutex_lock(&node_impl->mutex);
             tt_Publisher_destroy(&pub_impl->tickle_publisher);
@@ -182,43 +193,8 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         }
         pub_impl->reliable_cache->depth = (uint16_t)depth;
         pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
-    }
-
-    // QoS roadmap #4 (DURABILITY) - see rmw_tickle_publisher_t.durable_cache's own doc comment.
-    // Same shape as the RELIABLE block just above: depth defaults to tt_MAX_DURABLE_HISTORY when
-    // unset, an explicit depth past that cap is rejected outright rather than silently clamped.
-    if (RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability) {
-        size_t depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
-                                                                                 : (size_t)tt_MAX_DURABLE_HISTORY;
-        if (depth > (size_t)tt_MAX_DURABLE_HISTORY) {
-            RMW_SET_ERROR_MSG("rmw_tickle's TRANSIENT_LOCAL publisher can retain at most "
-                              "tt_MAX_DURABLE_HISTORY samples - see rmw_tickle/PLAN.md's QoS "
-                              "roadmap #4 (DURABILITY)");
-            tt_Node_interrupt(&node_impl->tickle_node);
-            pthread_mutex_lock(&node_impl->mutex);
-            tt_Publisher_destroy(&pub_impl->tickle_publisher);
-            pthread_mutex_unlock(&node_impl->mutex);
-            allocator->deallocate(pub_impl->reliable_cache, allocator->state); // NULL is a no-op
-            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
-            allocator->deallocate(pub_impl, allocator->state);
-            return NULL;
-        }
-
-        pub_impl->durable_cache =
-            (struct tt_DurableCache*)allocator->zero_allocate(1, sizeof(struct tt_DurableCache), allocator->state);
-        if (NULL == pub_impl->durable_cache) {
-            RMW_SET_ERROR_MSG("failed to allocate durable_cache");
-            tt_Node_interrupt(&node_impl->tickle_node);
-            pthread_mutex_lock(&node_impl->mutex);
-            tt_Publisher_destroy(&pub_impl->tickle_publisher);
-            pthread_mutex_unlock(&node_impl->mutex);
-            allocator->deallocate(pub_impl->reliable_cache, allocator->state); // NULL is a no-op
-            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
-            allocator->deallocate(pub_impl, allocator->state);
-            return NULL;
-        }
-        pub_impl->durable_cache->depth = (uint16_t)depth;
-        pub_impl->tickle_publisher.durable_cache = pub_impl->durable_cache;
+        pub_impl->tickle_publisher.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
+        pub_impl->tickle_publisher.durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
     }
 
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.deadline_period_ns's own doc comment.
@@ -265,7 +241,6 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
     allocator.deallocate(pub_impl->reliable_cache, allocator.state); // NULL is a no-op, see its own doc comment
-    allocator.deallocate(pub_impl->durable_cache, allocator.state);  // NULL is a no-op, see its own doc comment
     allocator.deallocate(pub_impl, allocator.state);
     return RMW_RET_OK;
 }

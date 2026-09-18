@@ -288,6 +288,7 @@ int main(int argc, char** argv) {
     if (opts.reliable) {
         reliable_cache.depth = tt_MAX_RELIABLE_HISTORY;
         pub.reliable_cache = &reliable_cache;           // -R - see tt_Publisher.reliable_cache's own doc comment
+        pub.reliable = true;                            // -R - see tt_Publisher.reliable's own doc comment
         shutdown_grace_s = RELIABLE_SHUTDOWN_GRACE_SEC; // see shutdown_grace_s's own doc comment
         printf("RELIABLE delivery (retained-sample cache depth %d)\n", tt_MAX_RELIABLE_HISTORY);
     }

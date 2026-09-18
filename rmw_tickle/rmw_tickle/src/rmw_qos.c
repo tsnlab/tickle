@@ -50,9 +50,10 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
 
     // QoS roadmap #4 (DURABILITY) - done for topics. A Publisher's TRANSIENT_LOCAL is now backed
     // by TickLE core's own retained-sample cache + discovery-triggered backlog delivery (struct
-    // tt_DurableCache - tickle.h) - see rmw_create_publisher() for how qos_profile->depth threads
-    // into it; a Subscription needs no field at all (tt_Subscriber.durable doesn't exist - backlog
-    // delivery is purely a Publisher-side decision, see struct tt_DurableCache's own doc comment).
+    // tt_ReliableCache, tt_Publisher.durable - tickle.h, shared with QoS roadmap #5's own
+    // RELIABILITY cache since PLAN.md's Milestone 24) - see rmw_create_publisher() for how
+    // qos_profile->depth threads into it; a Subscription needs no field at all
+    // (tt_Subscriber.durable doesn't exist - backlog delivery is purely a Publisher-side decision).
     // Still VOLATILE-only for services/clients: tt_Client_call() is request/response, not pub/sub,
     // so "retained backlog for a late-joining client" has no TickLE-core mechanism behind it at
     // all (unlike RELIABILITY just above, where the RPC layer's own existing retry already served

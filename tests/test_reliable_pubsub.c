@@ -295,7 +295,19 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
 // backfired by perpetually re-triggering itself and pre-empting ack_seq_no's own retry cycle
 // before it ever got a fair chance to resolve normally; skip_unrecoverable_backlog() only ever
 // runs from acknack_retry()'s own give-up path now, confirmed below.)
-static void test_acknack_retry_skips_unrecoverable_backlog_on_giveup(void) {
+//
+// PLAN.md's Milestone 24 raised tt_MAX_RELIABLE_HISTORY all the way to tt_RELIABLE_BITMAP_BITS
+// (64, its own hard ceiling) - closing the "recoverable per the bitmap but already evicted per the
+// cache depth" gap this function's own bulk-skip logic used to exist for: any position received_
+// bitmap can even represent (bit 0..63) is now, by construction, always within a plausibly-still-
+// cached window, since update_reliable_ack()'s own oversized-gap check (offset >=
+// tt_RELIABLE_BITMAP_BITS) already catches anything wider before it's ever recorded in the bitmap
+// at all - a gap "6 past depth" (this test's own original scenario at the old depth of 10) is no
+// longer representable in the bitmap in the first place at depth 64. Repurposed to confirm that
+// invariant directly instead: a bitmap bit set at the widest position it can ever legally reach
+// (63) still resolves through the normal per-position retry cycle, not a bulk skip - proving skip_
+// unrecoverable_backlog() is now correctly a no-op at this depth, not silently broken.
+static void test_acknack_retry_does_not_bulk_skip_when_depth_equals_bitmap_width(void) {
     test_mock_reset();
 
     struct tt_Node node;
@@ -305,11 +317,10 @@ static void test_acknack_retry_skips_unrecoverable_backlog_on_giveup(void) {
     init_subscriber_registered_on_node(&sub, &node, &topic);
     EXPECT_EQ_U32(1, sub.ack_seq_no);
 
-    // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order - a
-    // span 6 past tt_MAX_RELIABLE_HISTORY, so the earliest few of those in between are guaranteed
-    // already evicted from any Publisher's reliable_cache by the time far_seq exists at all.
-    const uint32_t far_seq = tt_MAX_RELIABLE_HISTORY + 6;
-    sub.received_bitmap = 1ULL << (far_seq - 1); // bit (far_seq-1): ack_seq_no(1) + (far_seq-1) = far_seq
+    // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order - the
+    // widest bit received_bitmap can ever represent relative to ack_seq_no.
+    const uint32_t far_seq = tt_RELIABLE_BITMAP_BITS; // ack_seq_no(1) + (tt_RELIABLE_BITMAP_BITS - 1)
+    sub.received_bitmap = 1ULL << (far_seq - 1);      // bit 63
     sub.reliable_sender_node_id = REMOTE_NODE_ID;
     sub.reliable_sender_ip = TEST_SENDER_IP;
     sub.reliable_sender_port = TEST_SENDER_PORT;
@@ -322,15 +333,15 @@ static void test_acknack_retry_skips_unrecoverable_backlog_on_giveup(void) {
         EXPECT_EQ_U32(1, sub.ack_seq_no);
     }
 
-    acknack_retry(&node, tt_get_ns(), &sub); // exceeds the cap -> give up, then bulk-skip
+    acknack_retry(&node, tt_get_ns(), &sub); // exceeds the cap -> gives up on seq_no 1 alone
 
     // advance_ack_seq_no() moves past seq_no 1 alone (bit 0 isn't set, nothing immediately
-    // following to absorb), landing at 2; skip_unrecoverable_backlog() then jumps the rest of the
-    // way in one step, since far_seq - 2 + 1 > tt_MAX_RELIABLE_HISTORY.
-    EXPECT_EQ_U32(far_seq - tt_MAX_RELIABLE_HISTORY + 1, sub.ack_seq_no);
-    // bit (tt_MAX_RELIABLE_HISTORY - 1): ack_seq_no + (tt_MAX_RELIABLE_HISTORY - 1) = far_seq, the
-    // sample already known received - still correctly tracked, not lost in the jump.
-    EXPECT_TRUE(sub.received_bitmap == (1ULL << (tt_MAX_RELIABLE_HISTORY - 1)));
+    // following to absorb), landing at 2, shifting bit 63 down to bit 62; skip_unrecoverable_
+    // backlog() then finds that bit's own absolute seq_no (64) still only 63 positions ahead of
+    // the new ack_seq_no (2) - inside the 64-wide window - so it correctly leaves it alone rather
+    // than bulk-skipping anything.
+    EXPECT_EQ_U32(2, sub.ack_seq_no);
+    EXPECT_TRUE(sub.received_bitmap == (1ULL << (far_seq - 2)));
 }
 
 // acknack_retry() must keep re-sending up to tt_RELIABLE_RETRY times, then give up: skip past
@@ -523,7 +534,7 @@ int main(void) {
     test_reliable_subscribe_gap_then_close();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
-    test_acknack_retry_skips_unrecoverable_backlog_on_giveup();
+    test_acknack_retry_does_not_bulk_skip_when_depth_equals_bitmap_width();
     test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_freezing();
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();

@@ -363,51 +363,40 @@ struct tt_Data {
     char reserved; // see tt_Request's own note - opaque base, one byte only to stay valid ISO C
 };
 
-// Opt-in per-Publisher retransmission cache for QoS roadmap #5 (RELIABILITY/RELIABLE,
-// rmw_tickle/PLAN.md) - caller-owned, the same convention as struct tt_Discovery
-// (tt_Node_set_discovery()): a best-effort Publisher (today's only mode) leaves
-// tt_Publisher.reliable_cache NULL and pays nothing for this; one that wants RELIABLE provides a
-// zeroed struct tt_ReliableCache of its own (stack/static/wherever, must stay valid and unmoved
-// until tt_Publisher_destroy() - same lifetime rule as every other tt_* struct) sized by `depth`
-// (1..tt_MAX_RELIABLE_HISTORY) and points reliable_cache at it - set directly any time after
-// tt_Node_create_publisher() returns, same "caller-owned, plain field access" convention as
-// pub->batch. tt_Publisher_publish() appends the raw encoded DATA submessage bytes here after
-// every successful send (KEEP_LAST eviction once `depth` slots are full); an incoming ACKNACK
-// (process_submessage()) looks samples up here by seq_no to retransmit.
+// Opt-in per-Publisher retained-sample cache, shared by two independent QoS policies - QoS
+// roadmap #5 (RELIABILITY/RELIABLE: retransmission on ACKNACK) and QoS roadmap #4 (DURABILITY/
+// TRANSIENT_LOCAL: backlog delivery to a newly-discovered Subscriber, tt_Publisher.durable below).
+// Caller-owned, the same convention as struct tt_Discovery (tt_Node_set_discovery()): a
+// best-effort Publisher (today's only default) leaves tt_Publisher.reliable_cache NULL and pays
+// nothing for this; one that wants either policy provides a zeroed struct tt_ReliableCache of its
+// own (stack/static/wherever, must stay valid and unmoved until tt_Publisher_destroy() - same
+// lifetime rule as every other tt_* struct) sized by `depth` (1..tt_MAX_RELIABLE_HISTORY) and
+// points reliable_cache at it - set directly any time after tt_Node_create_publisher() returns,
+// same "caller-owned, plain field access" convention as pub->batch. tt_Publisher_publish() appends
+// the raw encoded DATA submessage bytes here after every successful send (KEEP_LAST eviction once
+// `depth` slots are full); an incoming ACKNACK (process_submessage()) looks samples up here by
+// seq_no to retransmit, and a newly-discovered Subscriber (decode_update_entities()) gets every
+// currently-retained entry unicast straight to it, oldest first, when tt_Publisher.durable is set.
+//
+// One cache for both, not two (PLAN.md's Milestone 24) - matches real DDS/RTPS, where DURABILITY
+// at the TRANSIENT_LOCAL level this package implements isn't a separately-sized cache at all: a
+// late-joining reader just gets whatever's currently in the Writer's own single History Cache,
+// the same one HISTORY.depth/RESOURCE_LIMITS already size for RELIABILITY's own retransmission.
+// TickLE used to keep two independent caches here (struct tt_DurableCache, since removed) with
+// their own separately-tunable depths, requiring a _Static_assert (tickle.c) to keep the two in
+// sync whenever either changed - unified into this one struct/depth instead, since RELIABILITY and
+// DURABILITY may still independently be requested (either, both, or neither - tt_Publisher.durable
+// below), they just now read from the same underlying storage rather than duplicating it.
 struct tt_ReliableCacheEntry {
     uint32_t seq_no;
-    uint16_t len; // encoded submessage length in the matching buffers[] slot; 0 = empty slot
-    uint8_t retry;
+    uint16_t len;  // encoded submessage length in the matching buffers[] slot; 0 = empty slot
+    uint8_t retry; // ACKNACK retransmit count - not consulted by DURABILITY's own one-shot backlog push
     uint8_t buffer[tt_MAX_BUFFER_LENGTH]; // raw encoded submessage bytes, resent verbatim on NACK
 };
 struct tt_ReliableCache {
     uint16_t depth; // in-use ring capacity, 1..tt_MAX_RELIABLE_HISTORY
     uint16_t next;  // next entries[] slot tt_Publisher_publish() writes into (mod depth)
     struct tt_ReliableCacheEntry entries[tt_MAX_RELIABLE_HISTORY];
-};
-
-// Opt-in per-Publisher retained-sample cache for QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL,
-// rmw_tickle/PLAN.md) - same "caller-owned, opt-in pointer" convention as struct tt_ReliableCache
-// just above (a VOLATILE Publisher, today's only mode, leaves tt_Publisher.durable_cache NULL and
-// pays nothing for this). Deliberately a separate type, not a reuse of struct tt_ReliableCache,
-// even though the shape is identical: RELIABILITY and DURABILITY are independent QoS policies (a
-// Publisher may want either, both, or neither), and naming this "ReliableCache" when only
-// durability was requested would be misleading. tt_Publisher_publish() appends the raw encoded
-// DATA submessage bytes here after every successful send (KEEP_LAST eviction once `depth` slots
-// are full, same ring shape); a newly-discovered Subscriber (decode_update_entities(), tickle.c)
-// gets every currently-retained sample unicast straight to it, oldest first, the moment its
-// UPDATE announce is first matched to this Publisher - no retry/ack concept at all, unlike
-// struct tt_ReliableCacheEntry's own `retry` field, since this is a one-shot backlog push, not a
-// NACK-reactive retransmit.
-struct tt_DurableCacheEntry {
-    uint32_t seq_no;
-    uint16_t len;                         // encoded submessage length in the matching buffer; 0 = empty slot
-    uint8_t buffer[tt_MAX_BUFFER_LENGTH]; // raw encoded submessage bytes, resent verbatim to a new Subscriber
-};
-struct tt_DurableCache {
-    uint16_t depth; // in-use ring capacity, 1..tt_MAX_DURABLE_HISTORY
-    uint16_t next;  // next entries[] slot tt_Publisher_publish() writes into (mod depth)
-    struct tt_DurableCacheEntry entries[tt_MAX_DURABLE_HISTORY];
 };
 
 struct tt_Publisher { // extends endpoint
@@ -434,31 +423,51 @@ struct tt_Publisher { // extends endpoint
     // same "caller-owned, plain field access" convention as peers[]/seq_no above.
     bool batch;
 
-    // NULL (tt_Node_create_publisher()'s own default): best-effort, today's only behavior. Non-
-    // NULL: RELIABLE - see struct tt_ReliableCache's own doc comment above.
+    // NULL (tt_Node_create_publisher()'s own default): no retained-sample storage at all - both
+    // reliable/durable below must stay false, nothing for either policy to work from. Non-NULL:
+    // storage for whichever of the two policies below is set - see struct tt_ReliableCache's own
+    // doc comment above for why one cache backs both.
     struct tt_ReliableCache* reliable_cache;
 
-    // NULL (tt_Node_create_publisher()'s own default): VOLATILE, today's only behavior. Non-NULL:
-    // DURABLE/TRANSIENT_LOCAL - see struct tt_DurableCache's own doc comment above. Independent of
-    // reliable_cache above - a Publisher may set either, both, or neither.
-    struct tt_DurableCache* durable_cache;
+    // false (tt_Node_create_publisher()'s own default): BEST_EFFORT, today's only default. true:
+    // RELIABLE - requires reliable_cache to already be non-NULL too (nothing to retransmit from
+    // otherwise). process_acknack()'s own retransmit loop doesn't actually consult this flag (it
+    // answers any ACKNACK it can, straight off reliable_cache, regardless - matched Subscribers
+    // only ever send one if they themselves opted into sub->reliable, so this can't fire
+    // unprompted); what this flag *does* gate is Publisher-*initiated* RELIABLE traffic that has
+    // no per-message opt-in of its own to lean on - specifically send_initial_heartbeat()'s own
+    // automatic, unprompted announce on discovering a new peer (tickle.c) - without this flag, a
+    // durable-only Publisher (durable below, reliable_cache set purely for backlog storage) would
+    // also silently start emitting Heartbeats nobody asked for, the instant the shared cache
+    // exists. tt_Publisher_set_heartbeat_period() below needs no separate check against this flag
+    // - calling it at all is already the caller's own explicit opt-in for *that* Heartbeat.
+    bool reliable;
+
+    // false (tt_Node_create_publisher()'s own default): VOLATILE, today's only default. true:
+    // DURABLE/TRANSIENT_LOCAL - a newly-discovered Subscriber gets every currently-retained entry
+    // in reliable_cache above unicast to it (deliver_durability_backlog(), tickle.c); requires
+    // reliable_cache to already be non-NULL too (nothing to deliver from otherwise). Independent
+    // of reliable above - a Publisher may set either, both, or neither, the same VOLATILE/
+    // TRANSIENT_LOCAL-vs-BEST_EFFORT/RELIABLE independence real DDS QoS allows, just now sharing
+    // one cache underneath instead of two.
+    bool durable;
 
     // 0 (tt_Node_create_publisher()'s own default): no periodic Heartbeat, today's only behavior.
     // Non-zero: a struct tt_HeartbeatHeader announce goes out every this-many nanoseconds - see
     // its own doc comment (tickle.h) and tt_Publisher_set_heartbeat_period()'s own doc comment
     // (below) for why this needs that explicit call, not just setting this field directly the way
-    // reliable_cache/durable_cache above are. Requires reliable_cache to already be set (nothing
-    // to announce for a best-effort Publisher).
+    // reliable_cache/durable above are. Requires reliable_cache to already be set (nothing to
+    // announce for a best-effort Publisher).
     uint64_t heartbeat_period_ns;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
 // struct tt_HeartbeatHeader's own doc comment (tickle.h) for what it's for. Unlike reliable_cache/
-// durable_cache (plain caller-owned pointer fields, no function call needed to "activate" them),
-// arming a periodic tt_Node_schedule() entry is an active operation with no passive-field
-// equivalent - call this any time after tt_Node_create_publisher() returns, once pub->
-// reliable_cache is already set. Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still
-// NULL (period_ns == 0 is always accepted regardless, since disabling never needs a cache).
+// durable (plain caller-owned fields, no function call needed to "activate" them), arming a
+// periodic tt_Node_schedule() entry is an active operation with no passive-field equivalent - call
+// this any time after tt_Node_create_publisher() returns, once pub->reliable_cache is already set.
+// Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still NULL (period_ns == 0 is always
+// accepted regardless, since disabling never needs a cache).
 tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns);
 
 struct tt_Subscriber;

@@ -37,33 +37,44 @@
 // (clamped to this at setup time, e.g. rmw_tickle from qos_profile->depth). Same "small hard
 // cap, caller picks a real value within it" trade-off as tt_MAX_PEER_COUNT/tt_MAX_SERVER_CACHE_COUNT.
 //
-// Was 8 - run_perf.sh's own LOSS_TEST_INTERVAL_SEC comment documents a real cache-eviction-vs-
-// ACKNACK-round-trip race at that depth: the retained window (depth * send interval) has to
-// outlast a real round trip before an unacked sample gets evicted, and 8 put that window's own
-// edge close enough to this rig's real RTT that RELIABLE's loss_pct under tc/netem loss became a
-// razor-thin, run-to-run-noisy cliff at 10% tc loss specifically (5.2%/9.6%/8.0% across identical
-// re-runs at the interval that was tuned to land on it). 16 (double) overshot that cliff outright
-// on real HIL - 1%/5%/10% all landed flat at 0.1%, losing 10%'s own differentiation entirely, not
-// just stabilizing it - see LOSS_TEST_INTERVAL_SEC's own comment for the real numbers and the
-// current, smaller value this settled on instead.
+// Was 10, before that 8 - run_perf.sh's own LOSS_TEST_INTERVAL_SEC comment documents a real
+// cache-eviction-vs-ACKNACK-round-trip race at low depth: the retained window (depth * send
+// interval) has to outlast a real round trip before an unacked sample gets evicted, and 8 put that
+// window's own edge close enough to this rig's real RTT that RELIABLE's loss_pct under tc/netem
+// loss became a razor-thin, run-to-run-noisy cliff at 10% tc loss specifically (5.2%/9.6%/8.0%
+// across identical re-runs at the interval that was tuned to land on it); 16 (double) overshot
+// that cliff outright on real HIL instead - 1%/5%/10% all landed flat at 0.1%, losing 10%'s own
+// differentiation entirely.
 //
-// Must stay >= tt_MAX_DURABLE_HISTORY below - see that constant's own comment (PLAN.md Milestone
-// 20) for why.
-#define tt_MAX_RELIABLE_HISTORY 10
+// PLAN.md's Milestone 23 traced that same flat ~0.1% floor (present at 10 too, unmoved by either
+// discovery-triggered or periodic Heartbeat) to a *different*, likely-larger effect: reliable_
+// cache's own real-time retention window (depth * send interval) being shorter than how long
+// discovery itself actually takes to complete on a newly-started HIL run, so the very earliest
+// samples are evicted before any recovery mechanism - reactive ACKNACK, durability backlog push,
+// or either Heartbeat - can ever reach back for them. Raised to 64 (this constant's own hard
+// ceiling, see tt_RELIABLE_BITMAP_BITS below - a single ACKNACK can never name a gap wider than
+// that, so going past it would only add slots update_reliable_ack() could never selectively
+// recover anyway) specifically to test that hypothesis on real HIL: at the loss-injection harness's
+// own tuned 280us interval, 64 gives a ~17.9ms retention window, comfortably past a plausible
+// ~10ms discovery-completion estimate, vs. 10's own ~2.8ms which isn't.
+//
+// Also now the *only* retained-sample cache depth in this file - QoS roadmap #4 (DURABILITY)
+// used to have its own separate tt_MAX_DURABLE_HISTORY constant and struct tt_DurableCache
+// (tickle.h) sized independently of this one, requiring a _Static_assert (tickle.c) to keep the
+// two in sync whenever either changed. Unified into this one constant/cache instead (PLAN.md's
+// Milestone 24) - matching real DDS/RTPS, where DURABILITY (at the TRANSIENT_LOCAL level this
+// package implements) isn't a separately-sized cache at all: a late-joining reader just gets
+// whatever's currently sitting in the Writer's own single History Cache, which HISTORY.depth (and
+// RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no independent
+// "durability depth" concept to keep in sync with anything, because there's only ever one cache.
+#define tt_MAX_RELIABLE_HISTORY 64
 // Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
-// (tickle.c) don't compare against a bare 64.
+// (tickle.c) don't compare against a bare 64. tt_MAX_RELIABLE_HISTORY above must never exceed
+// this (tickle.c's own _Static_assert enforces it) - a gap this wide can never be named in a
+// single ACKNACK bitmap in the first place, so a deeper cache couldn't be selectively recovered
+// from anyway.
 #define tt_RELIABLE_BITMAP_BITS 64
-// QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - max retained-sample cache
-// depth for a DURABLE Publisher's opt-in struct tt_DurableCache (tickle.h). Deliberately a
-// separate constant from tt_MAX_RELIABLE_HISTORY just above, not a reused one: RELIABILITY and
-// DURABILITY are independent QoS policies (either, both, or neither may be requested for the same
-// Publisher), so their own cache depths are independently tunable - *except* this one must never
-// exceed tt_MAX_RELIABLE_HISTORY (tickle.c's own _Static_assert enforces it): PLAN.md's Milestone
-// 20 relies on every durable_cache-retained sample also being present in reliable_cache when a
-// Publisher has both, so a durability backlog delivery lost in flight is still ACKNACK-
-// recoverable rather than a one-shot best-effort push with nothing to fall back on.
-#define tt_MAX_DURABLE_HISTORY 8
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)

@@ -408,6 +408,7 @@ static void test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer(void)
     memset(&cache, 0, sizeof(cache));
     cache.depth = 4;
     pub.reliable_cache = &cache;
+    pub.reliable = true;
 
     for (uint32_t i = 0; i < 3; i++) {
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i)); // seq_no 1..3
@@ -471,6 +472,7 @@ static void test_heartbeat_discovery_no_redelivery_on_unchanged_update(void) {
     memset(&cache, 0, sizeof(cache));
     cache.depth = 4;
     pub.reliable_cache = &cache;
+    pub.reliable = true;
 
     uint32_t value = 7;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
@@ -491,9 +493,10 @@ static void test_heartbeat_discovery_no_redelivery_on_unchanged_update(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
-// A Publisher with *both* reliable_cache and durable_cache set discovering a new peer must send
-// both the durability backlog *and* the initial Heartbeat - order doesn't matter, both must
-// happen, total send_to count is durable_cache_entry_count + 1.
+// A Publisher with *both* reliable and durable set (the same shared cache now backs both - see
+// struct tt_ReliableCache's own doc comment) discovering a new peer must send both the durability
+// backlog *and* the initial Heartbeat - order doesn't matter, both must happen, total send_to
+// count is cache_entry_count + 1.
 static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat(void) {
     test_mock_reset();
 
@@ -507,11 +510,8 @@ static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat
     memset(&reliable_cache, 0, sizeof(reliable_cache));
     reliable_cache.depth = 4;
     pub.reliable_cache = &reliable_cache;
-
-    struct tt_DurableCache durable_cache;
-    memset(&durable_cache, 0, sizeof(durable_cache));
-    durable_cache.depth = 4;
-    pub.durable_cache = &durable_cache;
+    pub.reliable = true;
+    pub.durable = true;
 
     for (uint32_t i = 0; i < 3; i++) {
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i)); // seq_no 1..3
