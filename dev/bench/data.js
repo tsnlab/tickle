@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789712407954,
+  "lastUpdate": 1789712485901,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -5699,6 +5699,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a548fa3dd088bf1e65ba393b4cefeae89b28a870",
+          "message": "Implement QoS roadmap #2 DEADLINE + #3 LIVELINESS in rmw_tickle\n\nBoth were \"rmw_tickle only\" per the roadmap - no TickLE core changes\nneeded. rmw_publisher_event_init()/rmw_subscription_event_init() now\nreturn real, queryable rmw_event_t objects for OFFERED/REQUESTED_\nDEADLINE_MISSED and LIVELINESS_LOST/LIVELINESS_CHANGED (previously\nalways RMW_RET_UNSUPPORTED), with a new rmw_take_event()/rmw_event_fini()\n(rmw_event.c) and rmw_wait_set.c's own check_events() reporting readiness.\n\n- rmw_qos.c: any finite deadline accepted; liveliness_lease_duration\n  accepted down to tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL\n  (TickLE core's own fastest peer-death detection), rejected explicitly\n  below that floor rather than silently rounded up.\n- DEADLINE: tt_Node_schedule() periodic checks on both Publisher/\n  Subscription, comparing wall-clock time against last_activity_time\n  (set by rmw_publish()/subscriber_callback()); a miss broadcasts the\n  shared wait_cond so a blocked rmw_wait() doesn't wait out its own\n  unrelated timeout.\n- LIVELINESS: AUTOMATIC only. LIVELINESS_LOST is real but structurally\n  always {0, 0} - TickLE's own self-announce has no locally-observable\n  failure mode. LIVELINESS_CHANGED generalizes rmw_graph.c's own\n  count_matching() (backing rmw_count_publishers()) into a periodic\n  \"how many Publishers on my topic are alive\" check - required splitting\n  it into a lock-free rmw_tickle_count_matching_locked() core, since the\n  periodic check runs from inside tt_Node_poll() with node->mutex\n  already held (calling the locking wrapper would self-deadlock).\n- New test_events.c - the first rmw_tickle test exercising real\n  rmw_create_publisher()/_subscription()/rmw_publish() end to end, via a\n  hand-built fake rosidl_message_type_support_t (no generated interface\n  package dependency). LIVELINESS_CHANGED stays a smoke test - a real\n  alive/not-alive transition needs a second node, which Milestone 2's\n  one-node-per-process limit doesn't allow in this process.\n\nVerified against a real ROS 2 (lyrical) install: colcon build/test clean\n(5/5), test_events re-run 5x directly to confirm stable, non-flaky\ntiming; clang-tidy against the real compile_commands.json clean on every\nchanged file.\n\nPLAN.md also carries a concurrent Milestone 20 entry (DURABILITY+\nRELIABILITY interaction gap) from a parallel planning session, already\nin the working tree before this commit - included as-is, not authored\nhere.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T15:18:52+09:00",
+          "tree_id": "11e5ca7f6a56355ccd8d27c2b12150a2fad37150",
+          "url": "https://github.com/tsnlab/tickle/commit/a548fa3dd088bf1e65ba393b4cefeae89b28a870"
+        },
+        "date": 1789712483375,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.199,
             "unit": "ms"
           },
           {
