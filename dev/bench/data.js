@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789705484810,
+  "lastUpdate": 1789705487774,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14074,6 +14074,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.009,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ca7b329679bf4eded1c171b37008473ea4ad1f05",
+          "message": "Document Milestone 19 (QoS roadmap #4 DURABILITY) in PLAN.md\n\nRecords the TickLE core design (struct tt_DurableCache, the upsert_peer()\nnew-vs-refresh return value, deliver_durability_backlog()'s discovery\ntrigger, the documented forget_peers_from_source() redelivery trade-off,\nand why services/clients stay out of scope) and the rmw_tickle reflection,\nfollowing the same documentation style as Milestone 18's own writeup.\nUpdates the QoS roadmap table's #4 row to done.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T13:22:15+09:00",
+          "tree_id": "9fb8fbbfdb5a66aabe240d7f2154767bfbd37a36",
+          "url": "https://github.com/tsnlab/tickle/commit/ca7b329679bf4eded1c171b37008473ea4ad1f05"
+        },
+        "date": 1789705486711,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.008,
             "unit": "ms"
           }
         ]
