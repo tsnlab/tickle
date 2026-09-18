@@ -185,6 +185,20 @@ static uint64_t latency_count = 0;
 static uint64_t latency_min_ns = UINT64_MAX;
 static uint64_t latency_max_ns = 0;
 
+// TEMPORARY diagnostic (PLAN.md's Milestone 18 residual loss_pct floor - is track_arrival()'s own
+// windowed heuristic actually reporting real, permanent loss, or over-counting something that
+// truly did arrive eventually, just outside its own GAP_WINDOW_BITS-wide deferred-judgment
+// horizon?) - an unconditional, whole-run record of every seq_no ever actually delivered here,
+// independent of track_arrival()'s own bookkeeping. print_summary() cross-checks this against
+// total_dropped at the very end: a genuine loss must show up as a gap here too; a full-run gap
+// count that comes out *lower* than what track_arrival() reported would mean this file's own
+// counting - not TickLE-core's RELIABLE mechanism - is the real source of at least part of the
+// floor. Sized generously past this rig's own tuned loss-injection interval/duration product
+// (LOSS_TEST_INTERVAL_SEC/PERF_DURATION_SEC, run_perf.sh) - remove once answered either way.
+#define MAX_TRACKED_SEQ 200000
+static bool seen_seq[MAX_TRACKED_SEQ];
+static uint32_t max_seq_seen = 0;
+
 // Tracks one arrival's effect on expected_seq/pending_bitmap, deferring a forward gap's "is this
 // really lost" judgment for up to GAP_WINDOW_BITS more messages instead of counting it the instant
 // it's skipped over. Returns how many messages should now count as permanently, newly dropped - 0
@@ -290,6 +304,16 @@ static void bulk_callback(struct tt_Subscriber* sub, uint64_t time, uint16_t seq
     uint32_t gap_count = track_arrival(data->seq);
     have_first = true;
 
+    // TEMPORARY diagnostic - see seen_seq[]'s own doc comment above. Unconditional: every
+    // delivery counts, including warm-up/cool-down/duplicates, since this is ground truth for the
+    // cross-check below, not part of the counted-window statistics track_arrival() itself feeds.
+    if (data->seq > 0 && data->seq < MAX_TRACKED_SEQ) {
+        seen_seq[data->seq] = true;
+        if (data->seq > max_seq_seen) {
+            max_seq_seen = data->seq;
+        }
+    }
+
     interval_received_msgs++;
     interval_received_bytes += data->payload_count;
 
@@ -370,6 +394,24 @@ static void print_summary(uint64_t start_time) {
     // Nothing more is coming now - anything track_arrival() was still deferring judgment on (a
     // gap that might yet have been a RELIABLE retransmission still in flight) is given up on.
     total_dropped += finalize_gap_tracking();
+
+    // TEMPORARY diagnostic - see seen_seq[]'s own doc comment above. Ground-truth cross-check,
+    // done last (process is about to exit, nothing more will ever arrive): scans every seq_no
+    // from 1 through the highest one ever seen for gaps directly, independent of track_arrival()'s
+    // own windowed bookkeeping entirely.
+    const uint32_t max_logged_missing = 20;
+    uint32_t direct_missing = 0;
+    for (uint32_t seq = 1; seq <= max_seq_seen && seq < MAX_TRACKED_SEQ; seq++) {
+        if (!seen_seq[seq]) {
+            direct_missing++;
+            if (direct_missing <= max_logged_missing) {
+                printf("DIAG: seq_no %u genuinely never delivered (direct scan)\n", seq);
+            }
+        }
+    }
+    printf("DIAG: direct scan found %u genuinely missing vs track_arrival's own %llu reported dropped "
+           "(max_seq_seen=%u)\n",
+           direct_missing, (unsigned long long)total_dropped, max_seq_seen);
 
     double megabytes = (double)total_received_bytes / bytes_per_mb;
     double avg_mbps = elapsed_s > 0.0 ? ((double)total_received_bytes * 8) / bytes_per_mb / elapsed_s : 0.0;
