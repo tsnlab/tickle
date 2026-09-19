@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789853012838,
+  "lastUpdate": 1789853016080,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -33783,6 +33783,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.000016348702566964285,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3cc395e038df3ef6c0d4f8634fc5b82876b5a006",
+          "message": "Mark Milestone 47 complete: real CI confirmed green\n\nTest all, Check all, Performance Test, and rmw_tickle performance all\nconfirmed green on commit 3616f07 (the FRAMING_OVERHEAD fix). Documents\nthe real CI-caught bug (stale typesupport framing-overhead constant)\nand the local verification used to confirm it before pushing.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T06:22:23+09:00",
+          "tree_id": "d818dae58b248bdc2d0ae45d55172fdf688556ff",
+          "url": "https://github.com/tsnlab/tickle/commit/3cc395e038df3ef6c0d4f8634fc5b82876b5a006"
+        },
+        "date": 1789853015006,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905605316162109,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9903873716081891,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03045586177280971,
             "unit": "Mbit/s"
           }
         ]
