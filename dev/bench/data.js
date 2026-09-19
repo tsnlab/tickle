@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789801880805,
+  "lastUpdate": 1789801884060,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26929,6 +26929,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030465126037597656,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e7ef5db740bfc658d0cc6bc43374763f3d9d49b6",
+          "message": "Unskip test_graph_api.cpp's count_clients_and_services specifically\n\nMoves the rmw_tickle-specific skip from fixture-wide (TestGraphAPI::SetUp())\nto per-TEST_F(), now that Milestone 34 (multiple nodes per process) and\nMilestone 35 (multiple local endpoints may share a name) both landed.\nSetUp()/TearDown() are unconditional again, matching real upstream exactly.\nThe other 14 TEST_F()s each get their own GTEST_SKIP() with the specific,\nverified reason found in real CI logs: 2 need rmw_get_node_names()'s own\nstill-missing non-zero-array rejection, 4 need rmw_count_publishers() et al's\nown still-missing rmw_validate_full_topic_name() call, 8 need Milestone 33's\nown already-deferred \"names and types\" function family.\n\ncount_clients_and_services itself - the one case Milestone 35's fix actually\ntargeted - now runs unconditionally, no skip at all.\n\nRegenerated via git diff against a pristine upstream clone rather than\nhand-edited unified-diff text (Milestone 34's own patch edits earlier today\nintroduced corrupted blank-context-lines and a wrong hunk-header count from\ntyping diff syntax by hand) - confirmed git apply --check and a real apply\nclean on a fresh jazzy clone.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T16:10:10+09:00",
+          "tree_id": "9e9f8cfccf2b6153aa2731cd401a4418cc24ff3a",
+          "url": "https://github.com/tsnlab/tickle/commit/e7ef5db740bfc658d0cc6bc43374763f3d9d49b6"
+        },
+        "date": 1789801883011,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.0007855551583426339,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9904193878173828,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030469213213239397,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030477796282087053,
             "unit": "Mbit/s"
           }
         ]
