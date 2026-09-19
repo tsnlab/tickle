@@ -77,6 +77,11 @@ class Resolver:
             return self.resolved_structs[key]
         spec = self.resolve_spec(pkg_name, msg_name)
         struct = adapt_struct_fn(f"{pkg_name}__{msg_name}", spec, self)
+        # ros2_adapter.py's own nested-field conversion needs the *real* ROS 2 (pkg, type) this
+        # struct came from - independent of c_name's own "pkg__Name" convention here (see model.
+        # WireStruct.ros_pkg_name's own doc comment for why c_name alone isn't enough any more).
+        struct.ros_pkg_name = pkg_name
+        struct.ros_type_name = msg_name
         self.resolved_structs[key] = struct
         self._resolve_order.append(key)
         return struct
@@ -86,3 +91,71 @@ class Resolver:
         caller (cli.py) label each nested file's provenance banner with what it actually came
         from, rather than the top-level interface that happened to need it first."""
         return [(pkg_name, msg_name, self.resolved_structs[(pkg_name, msg_name)]) for pkg_name, msg_name in self._resolve_order]
+
+
+class Ros2Resolver:
+    """ros2_cli.py's own resolver - genuinely different from Resolver above, not just a thin
+    wrapper: every message a real ROS 2 package's own rosidl_typesupport_tickle_c CMake extension
+    might resolve as a nested field is *also* independently generated as its own top-level
+    interface, by that exact same extension's own per-.msg invocation - either a sibling .msg in
+    this same package (test_msgs/msg/Nested.msg's own `BasicTypes basic_types_value`, the common
+    case: ROS 2's own grammar resolves an unqualified nested type name to the *current* package,
+    tickle_typesupport._rosidl_parser's own Type.__init__ already handles this, nothing extra
+    needed here to detect it), or another package's, if that one too builds rosidl_typesupport_
+    tickle_c. That independent generation uses adapt_message()'s own "<Name>Data" c_name
+    convention (not this module's own Resolver.resolve_struct()'s "pkg__Name" one) - so reusing
+    it, rather than writing a second, differently-named, *incompatible* copy of an equivalent
+    struct via render_nested(), is the entire point of this class: resolve_struct() never writes
+    anything for what it resolves this way, it only returns a WireStruct shaped exactly like that
+    independent generation already produces (right down to c_name/header_name), for adapt.py's own
+    field-adapting and ros2_adapter.py's own converter-generation to reference as if it already
+    existed - because, by the time anything actually links, it will (a completely separate
+    add_custom_command() in the exact same CMakeLists.txt build, per rosidl_typesupport_tickle_c_
+    generate_interfaces.cmake's own foreach() over every .msg in the package).
+
+    TickLE's own two small bundled builtins (std_msgs/Header, builtin_interfaces/Time -
+    builtins.py) are the one exception: nothing else ever independently generates "HeaderData"/
+    "TimeData" anywhere, so those still need the *old* "pkg__Name" convention and a real
+    render_nested()-written file - delegated to a plain Resolver instance for exactly that reason,
+    the same and only thing this class's own in_discovery_order() ever reports.
+    """
+
+    def __init__(self, package_name, sibling_dir, include_dirs=()):
+        self.package_name = package_name
+        self.sibling_dir = sibling_dir
+        self.include_dirs = list(include_dirs)
+        self.resolved_structs = {}
+        self._builtin_fallback = Resolver(include_dirs)
+
+    def _find_independent_source(self, pkg_name, msg_name):
+        if pkg_name == self.package_name:
+            candidate = pathlib.Path(self.sibling_dir) / f"{msg_name}.msg"
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        return _find_on_search_path(pkg_name, msg_name, self.include_dirs)
+
+    def resolve_struct(self, pkg_name, msg_name, adapt_struct_fn):
+        key = (pkg_name, msg_name)
+        if key in self.resolved_structs:
+            return self.resolved_structs[key]
+        text = self._find_independent_source(pkg_name, msg_name)
+        if text is None:
+            # Not this package's own sibling, not on any -I search path either - fall back to
+            # TickLE's own small bundled builtins, same as Resolver's own resolve_spec() does.
+            # Unlike the case above, *this* does need a real file written via render_nested() -
+            # in_discovery_order() below reports it for exactly that reason.
+            struct = self._builtin_fallback.resolve_struct(pkg_name, msg_name, adapt_struct_fn)
+            self.resolved_structs[key] = struct
+            return struct
+        spec = rosidl.parse_message_string(pkg_name, msg_name, text)
+        struct = adapt_struct_fn(f"{msg_name}Data", spec, self)
+        struct.header_name = f"{msg_name}.h"
+        struct.ros_pkg_name = pkg_name
+        struct.ros_type_name = msg_name
+        self.resolved_structs[key] = struct
+        return struct
+
+    def in_discovery_order(self):
+        """Only ever the builtin_fallback's own resolutions - see this class's own doc comment
+        for why every other kind of resolution here needs no file of its own written at all."""
+        return self._builtin_fallback.in_discovery_order()

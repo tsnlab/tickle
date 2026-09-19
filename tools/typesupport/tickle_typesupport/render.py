@@ -12,6 +12,7 @@ topic/service template as a text block, rather than nesting empy interpreters - 
 keeps each struct's own render context (field names etc.) from leaking into its sibling's."""
 
 import pathlib
+import sys
 
 import em
 
@@ -22,14 +23,43 @@ _TEMPLATES = pathlib.Path(__file__).parent / "templates"
 
 def _expand(template_name, **context):
     text = (_TEMPLATES / template_name).read_text(encoding="utf-8")
+    # em.Interpreter.installProxy() records whether it installed a sys.stdout proxy in a *class*
+    # attribute (_wasProxyInstalled), not a per-call one, and never uninstalls that record (only
+    # the proxy object itself, via em.expand()'s own try/finally). Under plain script usage that's
+    # fine - sys.stdout is the same object for the process's whole lifetime. Under pytest, it
+    # isn't: capturing swaps sys.stdout for a new object between test items, so by the time a
+    # second, independent em.expand() call happens (e.g. this module's own render_topic() called
+    # both from conftest.py's shared codegen fixture *and*, independently, from ros2_cli.generate()
+    # - see test_ros2_nested.py's own docstring) the live sys.stdout is no longer the one the
+    # class-level flag was recorded against, and installProxy() raises a spurious "interpreter
+    # stdout proxy lost" even though nothing is actually wrong. None of these templates ever
+    # `print()` inside a @{...} code block (checked - they only use @(expr)/@[for/if] substitution,
+    # which always goes through empy's own output buffer regardless), so the proxy this guards
+    # is never actually exercised here - safe to drop the stale record whenever the current
+    # sys.stdout isn't already one of empy's own proxies.
+    if not hasattr(sys.stdout, "_testProxy"):
+        em.Interpreter._wasProxyInstalled = False
     return em.expand(text, **context)
 
 
 def _nested_includes(struct):
     """The generated header for each of this struct's *own* nested fields (not recursed further -
     each of those headers already #includes whatever *it* nests, so the chain resolves the same
-    way any C header dependency does)."""
-    return sorted({f.nested.c_name for f in struct.fields if f.kind == "nested"})
+    way any C header dependency does). Templates splice this straight into `#include "@(x).h"` -
+    normally the same as the nested struct's own c_name, but not always any more: resolve.
+    Ros2Resolver's own nested structs reuse an already-independently-generated file whose name
+    doesn't match its own "<Name>Data" c_name (see model.WireStruct.header_name's own doc
+    comment), so this strips the ".h" back off header_name when one's set, rather than assuming
+    c_name always doubles as the file name."""
+    names = set()
+    for f in struct.fields:
+        if f.kind != "nested":
+            continue
+        if f.nested.header_name is not None:
+            names.add(f.nested.header_name.removesuffix(".h"))
+        else:
+            names.add(f.nested.c_name)
+    return sorted(names)
 
 
 def _struct_context(struct):

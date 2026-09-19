@@ -54,16 +54,16 @@ point registration this depends on.
 
 import re
 
-# rosidl_generator_c's own struct-naming convention: package `foo_msgs`, message `Bar` (from
-# `msg/Bar.msg`) -> `struct foo_msgs__msg__Bar`. TickLE's *own* nested-type naming (PLAN.md:
-# "Nested pkg/Bar -> struct pkg__Bar") only keeps the package+type, not which subfolder ("msg" is
-# the only one that can appear nested - ROS 2 doesn't nest .srv types) - so a nested field's ROS 2
-# name is recovered by splitting TickLE's own c_name on its *first* "__" and reinserting "msg"
-# in between. Relies on a ROS 2 package name never itself containing "__", which the ROS 2 naming
-# guidelines already require (package names are a single lower_snake_case token).
-def ros2_nested_struct_name(tickle_nested_c_name):
-    pkg, _, type_name = tickle_nested_c_name.partition("__")
-    return f"{pkg}__msg__{type_name}"
+# A nested field's own ROS 2 struct name ("msg" is the only subfolder that can appear nested -
+# ROS 2 doesn't nest .srv types). Reads the nested WireStruct's own ros_pkg_name/ros_type_name
+# (resolve.py sets these on every struct it ever resolves as a nested field, regardless of which
+# resolver or c_name convention produced it) rather than deriving it from c_name itself - c_name
+# alone stopped being enough once resolve.Ros2Resolver's own "<Name>Data" convention (reusing an
+# already-independently-generated ROS 2 sibling message) started coexisting with resolve.
+# Resolver's original "pkg__Name" one (model.WireStruct.header_name's own doc comment has the
+# full story).
+def ros2_nested_struct_name(nested_struct):
+    return f"{nested_struct.ros_pkg_name}__msg__{nested_struct.ros_type_name}"
 
 
 def ros2_struct_name(ros_pkg, ros_subfolder, ros_type_name):
@@ -119,7 +119,7 @@ def _to_tickle_field_lines(f):
             f"tickle->{f.name}_count = (uint16_t)ros->{f.name}.size;",
         ]
     if f.kind == "nested":
-        nested_ros_name = ros2_nested_struct_name(f.nested.c_name)
+        nested_ros_name = ros2_nested_struct_name(f.nested)
         return [
             f"if (!{nested_ros_name}__to_tickle(&ros->{f.name}, &tickle->{f.name})) {{ return false; }}",
         ]
@@ -144,7 +144,7 @@ def _from_tickle_field_lines(f):
             f"memcpy(ros->{f.name}.data, tickle->{f.name}, (size_t){count_var} * sizeof(*tickle->{f.name}));",
         ]
     if f.kind == "nested":
-        nested_ros_name = ros2_nested_struct_name(f.nested.c_name)
+        nested_ros_name = ros2_nested_struct_name(f.nested)
         return [
             f"if (!{nested_ros_name}__from_tickle(&tickle->{f.name}, &ros->{f.name})) {{ return false; }}",
         ]
@@ -180,8 +180,20 @@ def nested_ros_includes(struct):
     """The ROS 2-generated header for each of this struct's own *directly* nested fields - same
     "only one level, each nested header pulls in what it itself needs" reasoning as render.py's
     own _nested_includes()."""
-    names = sorted({ros2_nested_struct_name(f.nested.c_name) for f in struct.fields if f.kind == "nested"})
+    names = sorted({ros2_nested_struct_name(f.nested) for f in struct.fields if f.kind == "nested"})
     return [ros2_header_path(name) for name in names]
+
+
+def nested_adapter_includes(struct):
+    """The *other* message's own already-generated `<name>__rosidl_typesupport_tickle_c.h` for
+    each of this struct's own directly nested fields - declares the `__to_tickle`/`__from_tickle`
+    functions emit_to_tickle()/emit_from_tickle() call for a `kind == "nested"` field. Unlike
+    nested_ros_includes() (whose struct-definition purpose the top-level ROS header this same file
+    already includes normally satisfies transitively, since a real ROS 2 message header always
+    #includes its own nested fields' headers), there is no other file that would otherwise pull
+    this one in - it must be included directly."""
+    names = sorted({ros2_nested_struct_name(f.nested) for f in struct.fields if f.kind == "nested"})
+    return [f"{name}__rosidl_typesupport_tickle_c.h" for name in names]
 
 
 def needs_rosidl_string(struct):
@@ -254,6 +266,8 @@ def render_adapter(struct, ros_name, tickle_header):
         # rosidl_runtime_c/primitives_sequence_functions.h declares all of them together, it
         # isn't split per element type.
         source_includes.append('#include "rosidl_runtime_c/primitives_sequence_functions.h"')
+    for adapter_header_name in nested_adapter_includes(struct):
+        source_includes.append(f'#include "{adapter_header_name}"')
 
     source_lines = source_includes + [""] + emit_to_tickle(struct, ros_name) + [""] + emit_from_tickle(
         struct, ros_name

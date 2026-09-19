@@ -42,19 +42,24 @@ render_service() instead of render.render_topic()) - plus one more:
                                                together into the one handle rmw_create_client()/
                                                rmw_create_service() actually receive
 
-Rejects (SystemExit) anything else (subfolders other than msg/srv, e.g. action). Nested message
-fields (std_msgs/Header et al.) are resolved the same way cli.py's own -I/tickle_typesupport.
-builtins path works for TickLE's own codec, but this CLI does not yet also emit a nested
-dependency's *own* converter/type-support-wrapper files - a real .msg/.srv using a nested type
-would fail to link (undoing that gap is follow-on work, not yet needed by any test this package's
-own CMakeLists.txt builds).
+Rejects (SystemExit) anything else (subfolders other than msg/srv, e.g. action). A nested message
+field is resolved via resolve.Ros2Resolver - see its own doc comment for why that's a genuinely
+different resolver than cli.py's own -I/tickle_typesupport.builtins-based one, not just a thin
+wrapper: every message a real ROS 2 package's own nested field could reference is *also*
+independently generated as its own top-level interface by this exact same extension (either a
+sibling .msg in this same package - the common case, and the only one this CLI can find without
+an explicit -I - or another package's, if it too builds rosidl_typesupport_tickle_c and is found
+on a caller-supplied -I path), so Ros2Resolver reuses that already-generated struct/codec instead
+of writing (and linking) a second, differently-named copy. Only TickLE's own two small bundled
+builtins (std_msgs/Header, builtin_interfaces/Time) still need - and get - their own freshly
+generated <pkg>__<Name>.h/.c pair, written out here the same way cli.py's own loop does it.
 """
 
 import argparse
 import os
 
 from . import _rosidl_parser as rosidl
-from . import adapt, cli, postprocess, render, ros2_adapter
+from . import adapt, cli, postprocess, render, resolve, ros2_adapter
 
 
 def _write_text(outdir, filename, text, source_label, fmt_dir):
@@ -83,7 +88,19 @@ def _generate_message_typesupport(struct, ros_name, tickle_header, source_label,
     return written
 
 
-def generate(package, subfolder, name, input_path, outdir, *, style_dir=None):
+def _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir):
+    """resolve.Ros2Resolver's own in_discovery_order() only ever reports TickLE's two small
+    bundled builtins (std_msgs/Header, builtin_interfaces/Time) - everything else it resolves
+    reuses an already-independently-generated sibling .msg's own file instead of writing a new
+    one (see its own doc comment). Same render_nested() call cli.py's own identical loop makes."""
+    written = []
+    for _pkg_name, _msg_name, nested_struct in resolver.in_discovery_order():
+        nested_header, nested_source = render.render_nested(nested_struct)
+        written += cli._write_generated(nested_struct.c_name, nested_header, nested_source, source_label, outdir, fmt_dir)
+    return written
+
+
+def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, include_dirs=()):
     """Returns the list of file paths written - same "top-level interface first" convention as
     cli.generate_interface()."""
     os.makedirs(outdir, exist_ok=True)
@@ -91,19 +108,25 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None):
     source_label = os.path.basename(input_path)
     text = open(input_path, encoding="utf-8").read()
     tickle_header = f"{name}.h"
+    # A nested field's own type is looked for alongside this exact .msg/.srv first (resolve.
+    # Ros2Resolver's own "same-package sibling" case - see its doc comment) - the directory
+    # holding --input is exactly where a sibling .msg would live too, ROS 2's own pkg/msg/*.msg
+    # layout.
+    resolver = resolve.Ros2Resolver(package, os.path.dirname(input_path), include_dirs)
 
     if subfolder == "msg":
         spec = rosidl.parse_message_string(package, name, text)
-        ir = adapt.adapt_message(name, spec, None)
+        ir = adapt.adapt_message(name, spec, resolver)
         header, source = render.render_topic(ir)
         written = list(cli._write_generated(name, header, source, source_label, outdir, fmt_dir))
         ros_name = f"{package}__msg__{name}"
         written += _generate_message_typesupport(ir.data, ros_name, tickle_header, source_label, outdir, fmt_dir)
+        written += _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir)
         return written
 
     if subfolder == "srv":
         spec = rosidl.parse_service_string(package, name, text)
-        ir = adapt.adapt_service(name, spec, None)
+        ir = adapt.adapt_service(name, spec, resolver)
         header, source = render.render_service(ir)
         written = list(cli._write_generated(name, header, source, source_label, outdir, fmt_dir))
         ros_service_name = f"{package}__srv__{name}"
@@ -117,6 +140,7 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None):
         written.append(
             _write_text(outdir, f"{ros_service_name}__type_support.c", service_type_support_source, source_label, fmt_dir)
         )
+        written += _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir)
         return written
 
     raise SystemExit(f"{input_path}: rosidl_typesupport_tickle_c only supports .msg/.srv, not .{subfolder}")
@@ -130,10 +154,29 @@ def main(argv=None):
     parser.add_argument("--input", required=True, metavar="FILE.msg|FILE.srv")
     parser.add_argument("--outdir", required=True)
     parser.add_argument("--style-dir")
+    parser.add_argument(
+        "-I",
+        "--include-dir",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="search DIR/<pkg>/msg/<Name>.msg to resolve a *cross-package* nested message field "
+        "(repeatable) - a same-package sibling is always found automatically, no -I needed; "
+        "builtin_interfaces/Time and std_msgs/Header are always available even without one - see "
+        "resolve.Ros2Resolver/tickle_typesupport.builtins. Not currently passed by the real CMake "
+        "extension (rosidl_typesupport_tickle_c_generate_interfaces.cmake) - cross-package "
+        "resolution beyond the two bundled builtins is still open follow-on work.",
+    )
     args = parser.parse_args(argv)
 
     written = generate(
-        args.package, args.subfolder, args.name, args.input, args.outdir, style_dir=args.style_dir
+        args.package,
+        args.subfolder,
+        args.name,
+        args.input,
+        args.outdir,
+        style_dir=args.style_dir,
+        include_dirs=args.include_dir,
     )
     print(f"{args.input} -> {', '.join(written)}")
     return 0
