@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Copyright (c) 2025-2026 TSN Lab, Inc.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This file is part of TickLE. TickLE is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License, version 3, as published by the Free
+# Software Foundation. A proprietary license is also available on request - see README.md.
+
+# One-off, run-by-hand comparison of rmw_tickle against rmw_fastrtps_cpp/rmw_cyclonedds_cpp via
+# ros2/buildfarm_perf_tests, each DDS vendor forced onto real UDPv4 (no shared-memory transport)
+# so the same-host comparison is fair - see rmw_tickle/PLAN.md's own Milestone 14 for why that
+# forcing is necessary in the first place (same-host shared-memory transport otherwise gives
+# FastDDS/CycloneDDS an unfair advantage rmw_tickle structurally can't have).
+#
+# Deliberately NOT wired into any GitHub Actions workflow (the user's own call, 2026-09-19,
+# after "TickLE Plan" had started integrating this into rmw-perf.yml - a standalone script run
+# by hand, with results copied into rmw_tickle/comparison.md afterward, is enough for something
+# this intermittent). Run this directly on a box with buildfarm_perf_tests already provisioned
+# per .github/scripts/README-rmw-perf.md (today, that's the tickle-perf self-hosted runner's own
+# ~/rmw_perf_ws - SSH there and run this script from a checkout of this repo).
+#
+# Usage: .github/scripts/compare_rmw_perf.sh [runtime_seconds]
+#   runtime_seconds: per topic/rmw/sync-mode benchmark duration (default 10, matching rmw-perf.
+#                    yml's own PERF_TEST_RUNTIME - see that workflow's own comment on why it's
+#                    short by buildfarm_perf_tests' own 30s default).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+RUNTIME="${1:-10}"
+
+: "${RMW_PERF_WS:="$HOME/rmw_perf_ws"}"
+: "${ROS_DISTRO_NAME:?Set ROS_DISTRO_NAME to this box's real installed ROS 2 distro (not necessarily jazzy - see rmw-perf.yml's own comment on why)}"
+
+PERF_TEST_TOPICS="Array1k;Struct16"
+PERF_TEST_RMW_IMPLEMENTATIONS="rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
+
+echo "=== Building rmw_tickle against the pre-provisioned ROS 2 + DDS-vendor underlay ==="
+source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
+source "$RMW_PERF_WS/install/setup.bash"
+(
+  cd "$REPO_ROOT"
+  colcon build \
+    --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp \
+    --cmake-args -DBUILD_SHARED_LIBS=ON
+)
+
+echo "=== Rebuilding buildfarm_perf_tests with all three rmws visible ==="
+source "$REPO_ROOT/install/setup.bash"
+colcon build \
+  --base-paths "$RMW_PERF_WS" \
+  --build-base "$RMW_PERF_WS/build" \
+  --install-base "$RMW_PERF_WS/install" \
+  --packages-select buildfarm_perf_tests \
+  --cmake-args \
+    -DPERF_TEST_TOPICS="$PERF_TEST_TOPICS" \
+    -DPERF_TEST_RMW_IMPLEMENTATIONS="$PERF_TEST_RMW_IMPLEMENTATIONS" \
+    -DPERF_TEST_RUNTIME="$RUNTIME" \
+  --cmake-force-configure
+
+echo "=== Forcing FastDDS/CycloneDDS onto real UDPv4 (no shared-memory transport) ==="
+export FASTRTPS_DEFAULT_PROFILES_FILE="$SCRIPT_DIR/fastdds_udp_only.xml"
+export CYCLONEDDS_URI="file://$SCRIPT_DIR/cyclonedds_no_shm.xml"
+echo "FASTRTPS_DEFAULT_PROFILES_FILE=$FASTRTPS_DEFAULT_PROFILES_FILE"
+echo "CYCLONEDDS_URI=$CYCLONEDDS_URI"
+
+echo "=== Sanity check before trusting any timing number below - read this by hand ==="
+echo "--- /dev/shm contents before the benchmark runs ---"
+ls -la /dev/shm/ || true
+echo "--- resolved transport config ---"
+cat "$FASTRTPS_DEFAULT_PROFILES_FILE"
+
+echo "=== Running the benchmark (two-process, real rclcpp/rmw boundary, all three rmws) ==="
+rm -rf "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results"
+colcon test \
+  --base-paths "$RMW_PERF_WS" \
+  --build-base "$RMW_PERF_WS/build" \
+  --install-base "$RMW_PERF_WS/install" \
+  --packages-select buildfarm_perf_tests \
+  --event-handlers console_direct+ \
+  --ctest-args -R two_process_rmw_
+colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
+
+echo "=== Summary (copy the table below into rmw_tickle/comparison.md by hand) ==="
+python3 "$SCRIPT_DIR/rmw_perf_summary.py" \
+  "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results/buildfarm_perf_tests"

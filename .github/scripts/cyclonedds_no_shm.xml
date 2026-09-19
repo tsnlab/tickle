@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Explicitly disables CycloneDDS's own optional shared-memory (Iceoryx-backed) transport, for the
+  same reason fastdds_udp_only.xml disables FastDDS's own default one - see that file's own
+  comment. CycloneDDS's SharedMemory support is opt-in (needs Iceoryx compiled in) so this install
+  may already have it off by default - included anyway so the comparison run's own config is
+  explicit and self-documenting rather than relying on an assumed default. Set via CYCLONEDDS_URI
+  (a file:// URI pointing here, or this content inlined directly into that env var).
+
+  NOTE: not yet verified against this rig's actual installed CycloneDDS version's own real XML
+  schema/defaults - check its own transport-selection logging once run for real before trusting
+  any benchmark numbers that depend on this actually taking effect.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <SharedMemory>
+      <Enable>false</Enable>
+    </SharedMemory>
+  </Domain>
+</CycloneDDS>

@@ -134,14 +134,37 @@ this pass already tells us what *kind* of gaps remain.
 
 ## Performance comparison
 
-Not yet started. See `rmw_tickle/PLAN.md`'s own Milestone 14 for the hard-won lesson this has to
+Not yet run. See `rmw_tickle/PLAN.md`'s own Milestone 14 for the hard-won lesson this has to
 respect: `buildfarm_perf_tests`' own same-host two-process topology gives FastDDS/CycloneDDS an
 unfair advantage via same-host shared-memory transport, invisible to `rmw_tickle` (no such
-transport exists for it). Plan: force each DDS implementation onto real UDP/IP (no shared-memory
-transport) via its own supported configuration - FastDDS via an XML profile
-(`FASTRTPS_DEFAULT_PROFILES_FILE`, `<use_builtin_transports>false</use_builtin_transports>` +
-explicit UDPv4-only `<transport_descriptors>`), CycloneDDS via `CYCLONEDDS_URI`
-(`//CycloneDDS/Domain/SharedMemory/Enable` = false, exact default TBD for this install) - then
-re-run `buildfarm_perf_tests` with all three `RMW_IMPLEMENTATION`s on equal terms. Verify the
-transport-forcing config actually took effect (each vendor's own transport-selection logging, or a
-quick check that the traffic really traverses the network stack) before trusting any numbers.
+transport exists for it).
+
+**Deliberately not a GitHub Actions workflow** - this comparison is intermittent enough that a
+standalone script, run by hand and copied into this file afterward, is a better fit than a
+standing CI job (the user's own call, 2026-09-19, after an initial `rmw-perf.yml` integration
+attempt was started and then backed out - see this file's own git history if the abandoned
+`workflow_dispatch`-based approach is ever worth reviving).
+
+**How to run it**: `.github/scripts/compare_rmw_perf.sh [runtime_seconds]`, executed directly on a
+box with `buildfarm_perf_tests` already provisioned per `.github/scripts/README-rmw-perf.md`
+(today, that's the `tickle-perf` self-hosted runner's own `~/rmw_perf_ws` - SSH there and run it
+from a checkout of this repo). It:
+
+1. Builds `rmw_tickle` fresh and rebuilds `buildfarm_perf_tests` with all three
+   `RMW_IMPLEMENTATION`s visible (`rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp`).
+2. Forces FastDDS and CycloneDDS onto real UDPv4 - no shared-memory transport - via their own
+   supported configuration: FastDDS through `FASTRTPS_DEFAULT_PROFILES_FILE` pointing at
+   `.github/scripts/fastdds_udp_only.xml` (`<use_builtin_transports>false</use_builtin_transports>`
+   + an explicit UDPv4-only `<transport_descriptors>`); CycloneDDS through `CYCLONEDDS_URI`
+   pointing at `.github/scripts/cyclonedds_no_shm.xml`
+   (`//CycloneDDS/Domain/SharedMemory/Enable` = `false` - this install's own real default is still
+   unconfirmed, so the file sets it explicitly either way).
+3. Prints `/dev/shm` contents and the resolved transport config as a sanity check - **read this by
+   hand before trusting any timing number**, it's a coarse proxy, not a hard guarantee that either
+   vendor actually dropped shared memory for this specific run.
+4. Runs `buildfarm_perf_tests`' own two-process/`rmw` benchmark (`-R two_process_rmw_`, the same
+   filter `rmw-perf.yml`'s own standing job uses) across all three implementations, then prints a
+   Markdown summary table (`rmw_perf_summary.py`) to copy into this section by hand.
+
+No results recorded here yet - update this section (replacing this paragraph) the next time the
+script actually runs.
