@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789784015985,
+  "lastUpdate": 1789784093375,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -6583,6 +6583,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.206,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e124d9dfb13a910ba8de56258ad3b718f1b6441a",
+          "message": "Implement Milestone 28(a): RxO QoS matching for RELIABILITY/DURABILITY\n\nBumps tt_VERSION 1 -> 2 (the first bump this constant has ever needed) to add\na qos byte to tt_UpdateEntity, carrying what a Publisher offers or a\nSubscriber requests (RELIABLE/DURABLE). Two independent gates enforce it:\ndecode_update_entities() withholds peer registration/backlog/heartbeat from\nan incompatible remote Subscriber (Publisher-side), and the more\nconsequential process_data() drops DATA outright from an incompatible remote\nPublisher (Subscriber-side, via a new subscriber_incompatible_with_publisher()\ncheck against the existing discovery table) - since TickLE's default\nbroadcast delivery means the Publisher-side gate alone can't stop an\nincompatible pair from exchanging data at all.\n\nrmw_subscription.c now also wires a real Subscription's requested\nDURABILITY into the new tt_Subscriber.durable field, so the gate actually\nactivates for rmw_tickle's own users, not just raw TickLE-core callers.\n\nRMW_EVENT_OFFERED/REQUESTED_INCOMPATIBLE_QOS surfacing and LIVELINESS/\nDEADLINE RxO (needs numeric durations on the wire, not just booleans) are\nexplicitly deferred, documented as open follow-ons in PLAN.md.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T11:12:15+09:00",
+          "tree_id": "2026f82cde580ff8c941d0aa731d4f2054a37278",
+          "url": "https://github.com/tsnlab/tickle/commit/e124d9dfb13a910ba8de56258ad3b718f1b6441a"
+        },
+        "date": 1789784090213,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.201,
             "unit": "ms"
           },
           {
