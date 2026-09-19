@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789822876382,
+  "lastUpdate": 1789822879715,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -51335,6 +51335,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "65b6ead3fc2dcec005da2d43f6d5bb0cbb9efcf9",
+          "message": "Implement Milestone 43: cross-package -I CMake wiring (unverified)\n\nWires ros2_cli.py's own -I/--include-dir flag (implemented since Milestone\n38, never actually invoked) into rosidl_typesupport_tickle_c_generate_interfaces.cmake.\n\nThree separate pieces, confirmed by reading ros2/rosidl and\nros2/rosidl_typesupport's own generator CMake directly:\n\n1. -I <share-root> per dependency package for ros2_cli.py's own text\n   parsing, computed as ${<pkg>_DIR}/../.. (the same ament_cmake layout\n   fact rosidl_find_package_idl.cmake itself relies on).\n2. A compile-time include path (target_include_directories with\n   BUILD_INTERFACE/INSTALL_INTERFACE) plus a new install(DIRECTORY ...)\n   for this package's own generated headers - never installed before,\n   harmless until now since nothing outside the package needed them.\n3. A real link dependency on a dependency's own rosidl_typesupport_tickle_c\n   library target (${<pkg>_TARGETS__rosidl_typesupport_tickle_c}), since\n   ros2_adapter.py calls a sibling's to_tickle/from_tickle functions\n   directly rather than through a dispatch table.\n\nAlso fixes two real, separate bugs found during this same research:\nrosidl_export_typesupport_targets() was already being called but the\nALIAS target its own generated extras file requires was never declared\n(cross-package linking could never have worked even before this - a\nsilent CMake WARNING, never surfaced); and a configure-time-vs-build-time\nordering bug in the new header-install step's own guard (fixed via real\ntracked booleans instead of an EXISTS check that would always be false\nat configure time).\n\nNot yet verified against anything real: no package in the conformance\nsuite has a genuinely cross-package nested reference to exercise this\nagainst. Checked what's checkable locally (the share-root math in\nisolation, the file's own gross syntax via cmake -P) - the rest needs a\nreal CI round trip, likely more than one.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T21:58:26+09:00",
+          "tree_id": "91e418030e3f7ef3479c437d919ec93c90411a8b",
+          "url": "https://github.com/tsnlab/tickle/commit/65b6ead3fc2dcec005da2d43f6d5bb0cbb9efcf9"
+        },
+        "date": 1789822878620,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
             "unit": "%"
           }
         ]
