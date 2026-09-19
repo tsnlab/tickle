@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789781503505,
+  "lastUpdate": 1789781506588,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -27449,6 +27449,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 824.504,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "962bbe5ca7427c23bfa6d9bfb484173a44d0bfbc",
+          "message": "Implement QoS roadmap #6 (LIFESPAN): expire stale samples in reliable_cache and the subscriber queue\n\nPublisher-side (TickLE core): tt_ReliableCacheEntry gains a timestamp, and\ntt_Publisher.lifespan_duration_ns (0 = disabled) makes deliver_durability_backlog()\nand process_acknack() skip entries past their age, \"as if never sent\", without any\nwire-protocol change (the sample's write-time was already on the wire).\nSubscription-side (rmw_tickle): rmw_tickle_subscriber_t.lifespan_ns makes\nrmw_take_with_info() drop stale queue entries before returning, independently, off\nthe same wire timestamp. rmw_tickle_validate_qos_profile() now accepts any finite\nlifespan, same as DEADLINE.\n\nCloses the last item on TickLE Plan's DDS-parity review list (items 1-4 already\nhandled in Milestones 24/27/28).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T10:29:00+09:00",
+          "tree_id": "a4e3810dcf672889eb851dd0f80749aa3dacc0cc",
+          "url": "https://github.com/tsnlab/tickle/commit/962bbe5ca7427c23bfa6d9bfb484173a44d0bfbc"
+        },
+        "date": 1789781505485,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.575,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 822.582,
             "unit": "Mbps"
           }
         ]
