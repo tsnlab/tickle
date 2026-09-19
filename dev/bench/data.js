@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789799835570,
+  "lastUpdate": 1789799839016,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -29639,6 +29639,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 822.23,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cb0f27a977de99361e08f1666ad015a68755f6ce",
+          "message": "Implement Milestone 35: multiple local endpoints of one kind may share a name\n\nMilestone 34's own count_clients_and_services investigation surfaced a real\nTickLE-core gap: add_endpoint_to_node() rejected a second local Publisher,\nSubscriber, Client, or Server sharing an already-registered (kind, id) as\n\"Duplicate endpoint\" - a purely local table-uniqueness assumption, never a\nwire-protocol requirement, that predates Milestone 34 entirely (even two\nSubscriptions to one topic in one rmw node already hit it). Real DDS lets\nmultiple independent entities share a topic/service name; TickLE's own\nendpoint_id = tt_hash_id(name) was never the problem, only the local table's\nassumption that this id had to be unique.\n\nRelaxes add_endpoint_to_node() to allow a (kind, id) collision (an exact\nduplicate pointer, a real double-create bug, is still rejected). find_endpoint()\nkeeps its existing single-match contract for callers routing a reply to one\nspecific instance (process_callrequest/callresponse/acknack) - the wire\nprotocol has no per-instance id beyond the name hash, so picking among\nseveral identically-named local endpoints is genuinely ambiguous there,\ndocumented rather than silently accepted as correct. A new for_each_endpoint()\nfans out to every match where that's the actual correctness requirement:\nprocess_data()'s Subscriber delivery, process_heartbeat()'s Subscriber\nreliable-baseline update, and decode_update_entities()'s two peer-registration\nbranches, so a second local Publisher/Client can actually acquire peers of\nits own instead of existing locally with nothing to talk to.\n\nNew tests/test_duplicate_endpoints.c exercises the real public\ntt_Node_create_*() entry points directly (no other test file does - they all\nconstruct structs by hand). tests/test_publish_subscribe.c gains a fan-out\ndelivery test. make test/sanitize/platform-freertos green; clang-format/\nclang-tidy clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T15:34:37+09:00",
+          "tree_id": "a71f75b86c2348041c2191d4b80cd13a9006ff5c",
+          "url": "https://github.com/tsnlab/tickle/commit/cb0f27a977de99361e08f1666ad015a68755f6ce"
+        },
+        "date": 1789799837963,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.697,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 822.132,
             "unit": "Mbps"
           }
         ]
