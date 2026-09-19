@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789851140538,
+  "lastUpdate": 1789851143811,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -21257,6 +21257,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.01,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "12f18c63493a0c33b37ec2d50cd616649dc3fb10",
+          "message": "Implement Milestone 47: (node_id, entity_id) writer identity + goodbye\n\nRoot cause: for_each_endpoint() matched incoming DATA/HEARTBEAT/ACKNACK\npurely by (kind, endpoint_id) - a pure name hash with no sender-identity\ncheck - so two independent Publisher instances sharing a topic+endpoint\nname had their reliable ack-tracking silently conflated, the confirmed\nmechanism behind a real rmw_tickle async-mode SIGABRT.\n\n- struct tt_Node gains entity_id_base/next_entity_id; struct tt_Endpoint\n  gains entity_id, assigned per-entity in add_endpoint_to_node().\n- tt_DataHeader/tt_HeartbeatHeader carry the sending Publisher's own\n  entity_id; tt_AckNackHeader carries the target Publisher's own entity_id\n  (mirrors its existing endpoint_id \"target\" convention). tt_VERSION 2->3.\n- struct tt_Subscriber's flat ack_seq_no/received_bitmap/reliable_sender_*\n  fields become a fixed writers[] table of struct tt_WriterProxy entries\n  keyed by (node_id, entity_id), closing the actual conflation bug.\n- \"Goodbye\": tt_Publisher_destroy()/tt_Subscriber_destroy()/\n  tt_Client_destroy()/tt_Server_destroy() now broadcast the reduced entity\n  list immediately (mirroring tt_Node_destroy()'s own existing behavior)\n  instead of waiting for the next periodic UPDATE tick.\n- Bonus: find_endpoint_by_entity() disambiguates multiple local Publishers\n  sharing endpoint_id for ACKNACK routing (Milestone 35's own gap); fixed\n  a matching latent GID-collision bug in rmw_get_gid_for_publisher().\n- New tests/test_writer_identity.c reproduces the original incident shape\n  directly; existing reliable/heartbeat/durability/RxO tests updated for\n  the WriterProxy table.\n\nExplicitly out of scope (per the finalized design): tt_Peer/upsert_peer()\nstay node_id-keyed (would need entity_id on the UPDATE wire format too);\nRPC's CallRequest/CallResponse headers untouched.\n\nVerified locally: make test/sanitize/platform-freertos/clang-format/\nclang-tidy (TickLE core), colcon build/test (10/10)/clang-tidy (rmw_tickle).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T05:50:01+09:00",
+          "tree_id": "5cf5fdc5ca84fac3b5e9b4dd34c1c156de23e75a",
+          "url": "https://github.com/tsnlab/tickle/commit/12f18c63493a0c33b37ec2d50cd616649dc3fb10"
+        },
+        "date": 1789851142719,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.04,
             "unit": "ms"
           }
         ]
