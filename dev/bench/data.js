@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789804276049,
+  "lastUpdate": 1789804279303,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -33009,6 +33009,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/5193c2106911e4854932414bb68e2d4cafbb0cd6"
         },
         "date": 1789803691992,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "593d7342a81c044d90866e4d689efbbb96fb03b9",
+          "message": "Confirm Milestone 36's real CI verification green\n\nCheck all and Test all both confirmed: 7 TestGraphAPI cases OK, 8 genuinely\nSKIPPED.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T16:48:35+09:00",
+          "tree_id": "ef0434109695f371392cbf9a55140464d3580050",
+          "url": "https://github.com/tsnlab/tickle/commit/593d7342a81c044d90866e4d689efbbb96fb03b9"
+        },
+        "date": 1789804278236,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
