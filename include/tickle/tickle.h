@@ -140,7 +140,13 @@ struct tt_Node {
 
 struct tt_Endpoint {
     uint8_t kind;
-    uint32_t id; // hash(topic/service name + endpoint name)
+    // hash(topic/service name + endpoint name) - a pure function of the name alone, deliberately:
+    // this is how a Publisher and Subscriber (or Client and Server) on two different, otherwise-
+    // unacquainted nodes agree on "the same" topic/service with zero negotiation, each computing
+    // this independently from the shared name. NOT necessarily unique within one tt_Node any more
+    // (Milestone 35, rmw_tickle/PLAN.md) - two local endpoints of the same kind can legitimately
+    // share an id if they share a name, see add_endpoint_to_node()'s own doc comment (tickle.c).
+    uint32_t id;
     const char* name;
 };
 

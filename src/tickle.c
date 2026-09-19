@@ -229,14 +229,29 @@ static void rebuild_endpoint_index(struct tt_Node* node) {
     node->endpoint_index_valid = true;
 }
 
+// Milestone 35 (rmw_tickle/PLAN.md) - more than one local endpoint may now share a (kind, id)
+// pair (add_endpoint_to_node() no longer rejects it, see its own doc comment), so this returns
+// only the FIRST one found by probe order, not necessarily "the" one a caller might have meant.
+// Probe order is deterministic (rebuild_endpoint_index() always walks endpoints[] in registration
+// order, oldest first, since removal compacts rather than leaving tombstones) - so "first found"
+// concretely means "the oldest still-registered match" every time, not an arbitrary pick that
+// could vary run to run. Callers that route a reply/retransmission to one specific instance
+// (process_callrequest(), process_callresponse(), process_acknack()) deliberately keep this
+// single-match behavior - the wire protocol has no per-instance id beyond the name hash, so
+// picking a specific one of several identically-named local endpoints is inherently ambiguous at
+// the wire level regardless of which local data structure look it up (matches real DDS's own
+// undefined-which-one semantics for redundant same-name entities). Callers whose own correctness
+// depends on reaching *every* local match instead - most importantly process_data()'s own
+// Subscriber delivery, so N local Subscriptions on one topic each get every sample - use
+// for_each_endpoint() below instead.
 static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id) {
     if (!node->endpoint_index_valid) {
         rebuild_endpoint_index(node);
     }
 
     // Linear probe from the id's home slot; a NULL slot means "not present" (load is kept <= 0.5,
-    // so the probe is short). Distinct endpoints sharing an id (different kind) just land in
-    // adjacent slots and the kind check below picks the right one.
+    // so the probe is short). Distinct endpoints sharing an id (different kind, or now the same
+    // kind too) just land in adjacent slots and the kind check below picks the right one(s).
     uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
     for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
         struct tt_Endpoint* endpoint = node->endpoint_index[slot];
@@ -250,6 +265,32 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     }
 
     return NULL;
+}
+
+// Milestone 35 - calls visit(node, endpoint, ctx) once for every local endpoint matching (kind,
+// endpoint_id), not just the first like find_endpoint() above. The same linear-probe walk,
+// continued past a match instead of returning immediately: correct because rebuild_endpoint_
+// index() always rebuilds from scratch (no tombstones from removal), so a probe chain never has
+// a gap that could hide a later match sharing the same home slot. Used by callers where reaching
+// every local instance is the actual correctness requirement, not an implementation convenience -
+// see find_endpoint()'s own doc comment for which callers use which, and why.
+static void for_each_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id,
+                              void (*visit)(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx), void* ctx) {
+    if (!node->endpoint_index_valid) {
+        rebuild_endpoint_index(node);
+    }
+
+    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
+    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        if (endpoint == NULL) {
+            return;
+        }
+        if (endpoint->kind == kind && endpoint->id == endpoint_id) {
+            visit(node, endpoint, ctx);
+        }
+        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+    }
 }
 
 // Refreshes node_id's existing slot in peers[] (its address may have changed), or claims the
@@ -438,6 +479,17 @@ static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint
     }
 }
 
+// Milestone 35 (rmw_tickle/PLAN.md) - deliberately does NOT reject a second endpoint sharing an
+// already-registered (kind, id): real DDS lets multiple independent entities (Publishers,
+// Subscribers, Clients, or Servers) share one topic/service name, and rmw_tickle/PLAN.md's own
+// Milestone 34 (multiple ROS 2 nodes per process, sharing one tt_Node) made this reachable within
+// a single process for the first time - two rmw nodes in one process each creating a Publisher
+// for the same topic, or a Server for the same service, is a normal pattern this used to reject
+// outright as "Duplicate endpoint", which was never really a wire-protocol requirement, only a
+// side effect of this table's own single-entry-per-id assumption (see find_endpoint()'s and
+// for_each_endpoint()'s own doc comments for how lookups now handle more than one match). Still
+// guards against the one thing that IS always a real bug: registering the exact same struct
+// pointer twice (a double-create without an intervening destroy).
 static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
@@ -446,9 +498,8 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
     }
 
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
-        struct tt_Endpoint* current = node->endpoints[i];
-        if ((current != NULL) && (current->kind == endpoint->kind) && (current->id == endpoint->id)) {
-            TT_LOG_ERROR("Duplicate endpoint kind=%u id=%u", endpoint->kind, endpoint->id);
+        if (node->endpoints[i] == endpoint) {
+            TT_LOG_ERROR("Endpoint already registered: kind=%u id=%u", endpoint->kind, endpoint->id);
             return tt_RET_IILEGAL_ENDPOINT_ID;
         }
     }
@@ -1951,6 +2002,55 @@ static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher
 // it can unicast to - see upsert_peer(), tt_UNICAST_PEER_THRESHOLD. A genuinely new peer for a
 // DURABLE Publisher also gets deliver_durability_backlog()'d, see its own comment. Returns false
 // if a type/name string fails to decode.
+
+// Milestone 35 - for_each_endpoint()'s own visitor context for registering one remote peer
+// (learned from an UPDATE announce) against every local Publisher sharing the announced topic
+// name - not just the first, now that more than one may exist (add_endpoint_to_node()'s own doc
+// comment). qos is update_entity->qos verbatim (already native-endian - a single byte-ish
+// bitfield, no rd*() needed, matching the original inline code this was lifted from).
+struct update_peer_ctx {
+    struct tt_Header* header;
+    uint32_t sender_ip;
+    uint16_t sender_port;
+    uint16_t qos;
+};
+
+static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    struct update_peer_ctx* ctx = (struct update_peer_ctx*)ctx_ptr;
+    struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+
+    // QoS roadmap #1 (RxO matching, Milestone 31) - a remote Subscriber requesting a policy this
+    // local Publisher doesn't offer never becomes a peer at all: no unicast optimization, no
+    // durability backlog, no discovery-triggered Heartbeat - matching real DDS's own "an
+    // incompatible pair simply never connects" semantics. See process_data()'s own subscriber_
+    // incompatible_with_publisher() for this check's own mirror image on the Subscriber side (the
+    // more consequential half, since it's what actually stops broadcast DATA delivery too - this
+    // Publisher-side half alone only gates the unicast-only enhancements, tickle.c's own doc
+    // comment on tt_UPDATE_QOS_RELIABLE/_DURABLE explains why both halves are needed).
+    bool requested_reliable = (ctx->qos & tt_UPDATE_QOS_RELIABLE) != 0;
+    bool requested_durable = (ctx->qos & tt_UPDATE_QOS_DURABLE) != 0;
+    bool incompatible = (requested_reliable && !pub->reliable) || (requested_durable && !pub->durable);
+    if (incompatible) {
+        return;
+    }
+    if (upsert_peer(pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {
+        struct tt_Peer target = {ctx->header->source, ctx->sender_ip, ctx->sender_port};
+        deliver_durability_backlog(node, pub, &target);
+        send_initial_heartbeat(node, pub, &target);
+    }
+}
+
+// Milestone 35 - the SERVICE_SERVER-side mirror of register_subscriber_peer_on_publisher() above:
+// every local Client sharing the announced service name learns this remote Server as a peer, not
+// just the first. No QoS compatibility gate here (Clients/Servers have no RELIABLE/DURABLE
+// policy to negotiate the way topics do), matching the original inline code this was lifted from.
+static void register_server_peer_on_client(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    UNUSED(node);
+    struct update_peer_ctx* ctx = (struct update_peer_ctx*)ctx_ptr;
+    struct tt_Client* client = (struct tt_Client*)endpoint;
+    upsert_peer(client->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port);
+}
+
 static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
                                    uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port) {
     bool reverse = tt_is_reverse_endian(header);
@@ -1963,32 +2063,11 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         TT_LOG_DEBUG("  kind: %d", update_entity->kind);
 
         if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id);
-            if (local != NULL) {
-                struct tt_Publisher* pub = (struct tt_Publisher*)local;
-                // QoS roadmap #1 (RxO matching, Milestone 31) - a remote Subscriber requesting a
-                // policy this local Publisher doesn't offer never becomes a peer at all: no
-                // unicast optimization, no durability backlog, no discovery-triggered Heartbeat -
-                // matching real DDS's own "an incompatible pair simply never connects" semantics.
-                // See process_data()'s own subscriber_incompatible_with_publisher() for this
-                // check's own mirror image on the Subscriber side (the more consequential half,
-                // since it's what actually stops broadcast DATA delivery too - this Publisher-side
-                // half alone only gates the unicast-only enhancements, tickle.c's own doc comment
-                // on tt_UPDATE_QOS_RELIABLE/_DURABLE explains why both halves are needed).
-                bool requested_reliable = (update_entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
-                bool requested_durable = (update_entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
-                bool incompatible = (requested_reliable && !pub->reliable) || (requested_durable && !pub->durable);
-                if (!incompatible && upsert_peer(pub->peers, header->source, sender_ip, sender_port)) {
-                    struct tt_Peer target = {header->source, sender_ip, sender_port};
-                    deliver_durability_backlog(node, pub, &target);
-                    send_initial_heartbeat(node, pub, &target);
-                }
-            }
+            struct update_peer_ctx ctx = {header, sender_ip, sender_port, update_entity->qos};
+            for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id, register_subscriber_peer_on_publisher, &ctx);
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
-            struct tt_Endpoint* local = find_endpoint(node, tt_KIND_SERVICE_CLIENT, entity_id);
-            if (local != NULL) {
-                upsert_peer(((struct tt_Client*)local)->peers, header->source, sender_ip, sender_port);
-            }
+            struct update_peer_ctx ctx = {header, sender_ip, sender_port, 0};
+            for_each_endpoint(node, tt_KIND_SERVICE_CLIENT, entity_id, register_server_peer_on_client, &ctx);
         }
 
         uint16_t type_len = 0;
@@ -2119,6 +2198,79 @@ static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct 
     return (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable);
 }
 
+// Milestone 35 - for_each_endpoint()'s own visitor context for delivering one arriving DATA
+// submessage to every local Subscriber matching its endpoint_id. Fields are read-only snapshots
+// taken once in process_data() below - buffer/head/tail point at the still-encoded payload, safe
+// to decode independently once per matching Subscriber (each gets its own stack-local decode).
+struct data_delivery_ctx {
+    struct tt_Header* header;
+    uint32_t endpoint_id;
+    uint32_t seq_no;
+    uint64_t timestamp;
+    uint8_t* buffer;
+    uint32_t head;
+    uint32_t tail;
+    uint32_t sender_ip;
+    uint16_t sender_port;
+    // Out-param: set true by deliver_data_to_subscriber() if any matching Subscriber's own
+    // topic->data_decode() fails, so process_data() can still report the decode failure to ITS
+    // OWN caller (test_publish_subscribe.c's own test_process_data_decode_failure_is_reported())
+    // the same way it always has, even though delivery itself now fans out to more than one match.
+    bool decode_failed;
+};
+
+// Milestone 35 - the actual per-Subscriber body process_data() used to run once (against find_
+// endpoint()'s single match) before more than one local Subscription on the same topic became
+// legal; now for_each_endpoint()'s own visitor, so it runs once per match - each with its own
+// independent RxO compatibility check, reliable-ack state, and callback delivery, exactly as if
+// each Subscriber had received its own private copy of the packet (which, semantically, it has:
+// this is the same fan-out real DDS pub/sub gives every matched Subscriber for one Publisher).
+static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    struct data_delivery_ctx* ctx = (struct data_delivery_ctx*)ctx_ptr;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+
+    // QoS roadmap #1 (RxO matching, Milestone 31) - an incompatible Publisher's DATA is dropped
+    // before any reliable-tracking side effects too (update_reliable_ack() below), not just before
+    // delivery - no point generating ACKNACKs a Publisher that could never honor them will never
+    // answer (see this file's own pre-Milestone-31 history of exactly that silent-degradation bug).
+    if (subscriber_incompatible_with_publisher(node, sub, ctx->header->source, ctx->endpoint_id)) {
+        return;
+    }
+
+    struct tt_Topic* topic = sub->topic;
+    bool is_native = tt_is_native_endian(ctx->header);
+
+    // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op unless sub->reliable. Delivery to `callback`
+    // below is unconditional either way (reliable only adds a delivery *guarantee* via
+    // retransmission, not ordering - a late, retransmitted sample is still delivered whenever it
+    // arrives, out of its original order).
+    update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->sender_ip, ctx->sender_port);
+
+    // Zero-copy path: hand the callback a tt_Data* aliasing rx_buffer directly, skipping the
+    // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
+    // the topic doesn't offer it or it declines (e.g. byte-swapped wire).
+    if (topic->data_decode_inplace != NULL) {
+        struct tt_Data* inplace = topic->data_decode_inplace(ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native);
+        if (inplace != NULL) {
+            sub->callback(sub, ctx->timestamp, (uint16_t)ctx->seq_no, inplace);
+            return;
+        }
+    }
+
+    uint8_t data[topic->data_size];
+    int32_t decoded =
+        topic->data_decode((struct tt_Data*)data, ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native);
+
+    if (decoded < 0) {
+        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %d", ctx->endpoint_id, ctx->seq_no);
+        ctx->decode_failed = true;
+        return;
+    }
+
+    sub->callback(sub, ctx->timestamp, (uint16_t)ctx->seq_no, (struct tt_Data*)data);
+    topic->data_free((struct tt_Data*)data);
+}
+
 static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
                          uint32_t sender_ip, uint16_t sender_port) {
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
@@ -2136,52 +2288,19 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     TT_LOG_DEBUG("  timestamp: %ld", timestamp);
     TT_LOG_DEBUG("  seq_no: %d", seq_no);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id);
-    if (endpoint == NULL) {
-        return true;
-    }
-
-    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-
-    // QoS roadmap #1 (RxO matching, Milestone 31) - an incompatible Publisher's DATA is dropped
-    // before any reliable-tracking side effects too (update_reliable_ack() below), not just before
-    // delivery - no point generating ACKNACKs a Publisher that could never honor them will never
-    // answer (see this file's own pre-Milestone-31 history of exactly that silent-degradation bug).
-    if (subscriber_incompatible_with_publisher(node, sub, header->source, endpoint_id)) {
-        return true;
-    }
-
-    struct tt_Topic* topic = sub->topic;
-    bool is_native = tt_is_native_endian(header);
-
-    // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op unless sub->reliable. Delivery to `callback`
-    // below is unconditional either way (reliable only adds a delivery *guarantee* via
-    // retransmission, not ordering - a late, retransmitted sample is still delivered whenever it
-    // arrives, out of its original order).
-    update_reliable_ack(node, sub, seq_no, header->source, sender_ip, sender_port);
-
-    // Zero-copy path: hand the callback a tt_Data* aliasing rx_buffer directly, skipping the
-    // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
-    // the topic doesn't offer it or it declines (e.g. byte-swapped wire).
-    if (topic->data_decode_inplace != NULL) {
-        struct tt_Data* inplace = topic->data_decode_inplace(buffer + head, tail - head, is_native);
-        if (inplace != NULL) {
-            sub->callback(sub, timestamp, (uint16_t)seq_no, inplace);
-            return true;
-        }
-    }
-
-    uint8_t data[topic->data_size];
-    int32_t decoded = topic->data_decode((struct tt_Data*)data, buffer + head, tail - head, is_native);
-
-    if (decoded < 0) {
-        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %d", endpoint_id, seq_no);
-        return false;
-    }
-
-    sub->callback(sub, timestamp, (uint16_t)seq_no, (struct tt_Data*)data);
-    topic->data_free((struct tt_Data*)data);
-    return true;
+    struct data_delivery_ctx ctx = {
+        .header = header,
+        .endpoint_id = endpoint_id,
+        .seq_no = seq_no,
+        .timestamp = timestamp,
+        .buffer = buffer,
+        .head = head,
+        .tail = tail,
+        .sender_ip = sender_ip,
+        .sender_port = sender_port,
+    };
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, deliver_data_to_subscriber, &ctx);
+    return !ctx.decode_failed;
 }
 
 static struct tt_SubmessageHeader* get_server_cache(struct tt_Server* server, uint8_t receiver, uint16_t seq_no) {
@@ -2522,6 +2641,14 @@ static void flush_pending_responses(struct tt_Node* node) {
     }
 }
 
+// Milestone 35 - deliberately still uses find_endpoint()'s single-match lookup, not for_each_
+// endpoint(), even though more than one local Server may now share this service name: a
+// CallRequest must be answered by exactly one Server, and the wire protocol has no per-instance
+// id beyond the service-name hash to say which of several identically-named ones a Client meant
+// to reach - genuinely ambiguous at the wire level, not a gap this function's own logic could
+// close. Picking find_endpoint()'s own deterministic "oldest still-registered match" (its own doc
+// comment) is a reasonable, documented choice, matching real DDS's own undefined-which-one
+// semantics for redundant same-name Servers - not attempted to be made "correct" beyond that here.
 static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                 uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_CallRequestHeader* callrequest_header =
@@ -2625,6 +2752,13 @@ static bool process_callrequest(struct tt_Node* node, struct tt_Header* header, 
     return true;
 }
 
+// Milestone 35 - deliberately still uses find_endpoint()'s single-match lookup, same reasoning as
+// process_callrequest()'s own doc comment: a CallResponse names its target Client only via the
+// service-name hash, so if more than one local Client now shares that name, which one actually
+// gets it is genuinely ambiguous at the wire level, not something to fix here. The client->cache
+// == NULL check just below already guards against corrupting an unrelated Client's own state if
+// this ever does pick the "wrong" one of several - the response is simply dropped as unexpected,
+// not misapplied.
 static bool process_callresponse(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                  uint32_t tail) {
     struct tt_CallResponseHeader* callresponse_header =
@@ -2740,6 +2874,13 @@ static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_Relia
     return NULL;
 }
 
+// Milestone 35 - deliberately still uses find_endpoint()'s single-match lookup: retransmission
+// must come from exactly one Publisher's own reliable_cache, and if more than one local Publisher
+// now shares this topic name, RELIABLE QoS between them is already an accepted, documented gap
+// (see add_endpoint_to_node()'s own doc comment) - two independent Publishers interleaving DATA
+// under one wire id corrupts a remote reliable Subscriber's own seq_no tracking regardless of
+// which one answers a given ACKNACK, so picking a specific one here doesn't make that any better
+// or worse. Not attempted to be made "correct" beyond find_endpoint()'s own deterministic pick.
 static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_AckNackHeader* acknack_header = decode(node, buffer, &head, tail, sizeof(struct tt_AckNackHeader));
@@ -2801,6 +2942,70 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     return true;
 }
 
+// Milestone 35 - for_each_endpoint()'s own visitor context for informing every local Subscriber
+// sharing the announced topic name about one arriving Heartbeat - not just the first, now that
+// more than one may exist. header/sender_ip/sender_port identify the Heartbeat's own sender (the
+// Publisher becoming/staying this Subscriber's reliable_sender_*); first_available_seq_no/
+// last_seq_no are already rd32()'d in process_heartbeat() below.
+struct heartbeat_ctx {
+    struct tt_Header* header;
+    uint32_t sender_ip;
+    uint16_t sender_port;
+    uint32_t first_available_seq_no;
+    uint32_t last_seq_no;
+};
+
+// Milestone 35 - the actual per-Subscriber body process_heartbeat() used to run once (against
+// find_endpoint()'s single match) before more than one local Subscription on the same topic
+// became legal; now for_each_endpoint()'s own visitor, so every matching Subscriber - each with
+// its own independent reliable ack state - learns this Heartbeat's baseline/range, symmetric with
+// deliver_data_to_subscriber()'s own fan-out for DATA.
+static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
+    struct heartbeat_ctx* ctx = (struct heartbeat_ctx*)ctx_ptr;
+    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+    if (!sub->reliable) {
+        return; // a best-effort Subscriber has no ack state a Heartbeat could inform
+    }
+
+    if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
+        // First-ever reliable contact from this sender: learn the *real* starting baseline
+        // straight from the Heartbeat, rather than guessing it from whatever DATA happens to
+        // arrive first (PLAN.md's Milestone 20's own workaround for not having this signal at
+        // all) - the actual DDS-parity fix this whole follow-up is for. Matches send_acknack()'s
+        // own tt_NODE_ID_INVALID sentinel check for "no reliable contact yet".
+        sub->ack_seq_no = ctx->first_available_seq_no;
+        sub->received_bitmap = 0;
+    } else if (ctx->last_seq_no >= sub->ack_seq_no) {
+        uint64_t offset = (uint64_t)ctx->last_seq_no - sub->ack_seq_no;
+        if (offset >= tt_RELIABLE_BITMAP_BITS) {
+            // Already-tracking Subscriber, but this Heartbeat reveals a gap too wide to ever
+            // track - the same "provably unrecoverable, don't get stuck" case update_reliable_
+            // ack()'s own oversized-DATA-gap branch handles (see jump_ack_baseline()'s own doc
+            // comment) - jump ahead here too, rather than only ever being able to discover this
+            // reactively once *some* DATA sample eventually arrives to trigger update_reliable_
+            // ack() instead.
+            jump_ack_baseline(sub, ctx->last_seq_no);
+        }
+        // else: within the trackable window - nothing to do here directly. highest_relevant_bit()
+        // already picks this up from reliable_heartbeat_last_seq_no (set unconditionally below),
+        // and maybe_arm_acknack_retry()/send_acknack() below act on it.
+    }
+    // last_seq_no < sub->ack_seq_no: a stale/reordered Heartbeat (e.g. arrived after DATA already
+    // caught this Subscriber up further) - nothing to do, same "duplicate/old" no-op update_
+    // reliable_ack()'s own seq_no < ack_seq_no branch already has.
+
+    sub->reliable_sender_node_id = ctx->header->source;
+    sub->reliable_sender_ip = ctx->sender_ip;
+    sub->reliable_sender_port = ctx->sender_port;
+    // Monotonic guard: a Heartbeat can arrive out of order over UDP the same as any other
+    // submessage - never let a late, older one regress what highest_relevant_bit() already knows.
+    if (ctx->last_seq_no > sub->reliable_heartbeat_last_seq_no) {
+        sub->reliable_heartbeat_last_seq_no = ctx->last_seq_no;
+    }
+
+    maybe_arm_acknack_retry(node, sub);
+}
+
 // QoS roadmap #5 (RELIABILITY) follow-up - process_submessage()'s own new HEARTBEAT case. See
 // struct tt_HeartbeatHeader's own doc comment (tickle.h) for what this is; matches process_data()/
 // process_acknack()'s own decode-then-dispatch shape and "silently no-op if nothing local
@@ -2824,53 +3029,8 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
     TT_LOG_DEBUG("  first_available_seq_no: %u", first_available_seq_no);
     TT_LOG_DEBUG("  last_seq_no: %u", last_seq_no);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id);
-    if (endpoint == NULL) {
-        return true;
-    }
-
-    struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-    if (!sub->reliable) {
-        return true; // a best-effort Subscriber has no ack state a Heartbeat could inform
-    }
-
-    if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
-        // First-ever reliable contact from this sender: learn the *real* starting baseline
-        // straight from the Heartbeat, rather than guessing it from whatever DATA happens to
-        // arrive first (PLAN.md's Milestone 20's own workaround for not having this signal at
-        // all) - the actual DDS-parity fix this whole follow-up is for. Matches send_acknack()'s
-        // own tt_NODE_ID_INVALID sentinel check for "no reliable contact yet".
-        sub->ack_seq_no = first_available_seq_no;
-        sub->received_bitmap = 0;
-    } else if (last_seq_no >= sub->ack_seq_no) {
-        uint64_t offset = (uint64_t)last_seq_no - sub->ack_seq_no;
-        if (offset >= tt_RELIABLE_BITMAP_BITS) {
-            // Already-tracking Subscriber, but this Heartbeat reveals a gap too wide to ever
-            // track - the same "provably unrecoverable, don't get stuck" case update_reliable_
-            // ack()'s own oversized-DATA-gap branch handles (see jump_ack_baseline()'s own doc
-            // comment) - jump ahead here too, rather than only ever being able to discover this
-            // reactively once *some* DATA sample eventually arrives to trigger update_reliable_
-            // ack() instead.
-            jump_ack_baseline(sub, last_seq_no);
-        }
-        // else: within the trackable window - nothing to do here directly. highest_relevant_bit()
-        // already picks this up from reliable_heartbeat_last_seq_no (set unconditionally below),
-        // and maybe_arm_acknack_retry()/send_acknack() below act on it.
-    }
-    // last_seq_no < sub->ack_seq_no: a stale/reordered Heartbeat (e.g. arrived after DATA already
-    // caught this Subscriber up further) - nothing to do, same "duplicate/old" no-op update_
-    // reliable_ack()'s own seq_no < ack_seq_no branch already has.
-
-    sub->reliable_sender_node_id = header->source;
-    sub->reliable_sender_ip = sender_ip;
-    sub->reliable_sender_port = sender_port;
-    // Monotonic guard: a Heartbeat can arrive out of order over UDP the same as any other
-    // submessage - never let a late, older one regress what highest_relevant_bit() already knows.
-    if (last_seq_no > sub->reliable_heartbeat_last_seq_no) {
-        sub->reliable_heartbeat_last_seq_no = last_seq_no;
-    }
-
-    maybe_arm_acknack_retry(node, sub);
+    struct heartbeat_ctx ctx = {header, sender_ip, sender_port, first_available_seq_no, last_seq_no};
+    for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, inform_subscriber_of_heartbeat, &ctx);
     return true;
 }
 

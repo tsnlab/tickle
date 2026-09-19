@@ -557,6 +557,58 @@ static void test_process_data_decode_failure_is_reported(void) {
     EXPECT_EQ_U32(0, (uint32_t)data_free_call_count);
 }
 
+// Milestone 35 (rmw_tickle/PLAN.md) - add_endpoint_to_node() no longer rejects a second local
+// Subscriber sharing an already-registered (kind, id): two independent Subscriptions to the same
+// topic, in the same process, is now legal (previously this whole scenario could never even be
+// set up - the second tt_Node_create_subscriber() call would have failed outright). process_data()
+// must deliver the arriving sample to *both*, each with its own independent decode/callback/free,
+// not just whichever one find_endpoint()'s own single-match lookup would have picked.
+static void test_process_data_fans_out_to_every_matching_subscriber(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+    data_free_call_count = 0;
+    decode_should_fail = false;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub_a;
+    struct tt_Subscriber sub_b;
+    init_node_and_topic(&node, &topic);
+
+    memset(&sub_a, 0, sizeof(sub_a));
+    sub_a.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub_a.endpoint.id = ENDPOINT_ID;
+    sub_a.node = &node;
+    sub_a.topic = &topic;
+    sub_a.callback = stub_subscriber_callback;
+
+    memset(&sub_b, 0, sizeof(sub_b));
+    sub_b.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub_b.endpoint.id = ENDPOINT_ID; // same topic name as sub_a - the case this milestone unblocks
+    sub_b.node = &node;
+    sub_b.topic = &topic;
+    sub_b.callback = stub_subscriber_callback;
+
+    node.endpoint_count = 2;
+    node.endpoints[0] = (struct tt_Endpoint*)&sub_a;
+    node.endpoints[1] = (struct tt_Endpoint*)&sub_b;
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+
+    uint32_t tail = write_data(&node, 42, 12345, 0xdeadbeef);
+
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // both subscribers got their own delivery
+    EXPECT_EQ_U32(2, (uint32_t)data_free_call_count);      // each with its own independent decode+free
+    EXPECT_EQ_U32(12345, (uint32_t)last_time);
+    EXPECT_EQ_U32(42, (uint32_t)last_seq_no);
+    EXPECT_EQ_U32(0xdeadbeef, last_value);
+}
+
 int main(void) {
     test_publish_flushes_immediately_by_default();
     test_publish_batches_when_opted_in();
@@ -574,6 +626,7 @@ int main(void) {
     test_process_data_dispatches_to_subscriber();
     test_process_data_unknown_endpoint_is_ignored();
     test_process_data_decode_failure_is_reported();
+    test_process_data_fans_out_to_every_matching_subscriber();
 
     if (test_result() != 0) {
         return 1;
