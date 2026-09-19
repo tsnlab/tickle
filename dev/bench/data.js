@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789823267436,
+  "lastUpdate": 1789823271537,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -41645,6 +41645,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.828,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "595e2c817adffbb9a3e83a2a2b93b4c4bcabbe57",
+          "message": "Confirm Milestone 43's real CI green (no regressions)\n\nCheck all passed, including the standard-dispatch-chain check that\ndirectly exercises the new ALIAS target and PUBLIC include-dir changes -\nconfirms no regression to the existing single-package case, though the\ncross-package mechanism itself still has nothing exercising it for real.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:05:03+09:00",
+          "tree_id": "338a604c56786b09c1430bfe081949745e35a0b6",
+          "url": "https://github.com/tsnlab/tickle/commit/595e2c817adffbb9a3e83a2a2b93b4c4bcabbe57"
+        },
+        "date": 1789823270154,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.767,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.114,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.953,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 68.908,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.735,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.655,
             "unit": "Mbps"
           }
         ]
