@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789826334578,
+  "lastUpdate": 1789826337898,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -31607,6 +31607,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03045640672956194,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "12795480ee5a56ce4078d5c93a2d04bdb3b4e534",
+          "message": "Implement real RELIABLE rmw_publisher_wait_for_all_acked()\n\nMilestone 33 deferred this pending Publisher-side ack aggregation, which\nTickLE core had no concept of - each Subscriber tracked its own ack_seq_no,\nbut a Publisher only ever reacted to ACKNACK, never aggregating \"which\ncurrently-matched peers have caught up.\" Adds pub->peer_ack_seq_no[]\n(index-aligned with peers[]), updated monotonically from process_acknack(),\nand forget_publisher_peer() to reset it when a peer departs.\n\nA healthy, gap-free Subscriber never sends an ACKNACK at all (a deliberate\nbandwidth optimization), so aggregating only reactive ACKNACKs can never\ndetect \"fully caught up.\" Real RTPS solves this with HEARTBEAT's finalFlag,\nrequiring a reply regardless of gap state - added the same mechanism here:\ntt_HeartbeatHeader gains a `flags` field (tt_HEARTBEAT_FLAG_FINAL), and\ntt_Publisher_request_ack() sends a solicited, response-required Heartbeat to\nevery currently-matched peer. rmw_publisher_wait_for_all_acked() polls\npeer_ack_seq_no[] against the target seq_no, re-soliciting each interval\n(bounded polling rather than the shared wait_cond, to avoid inverting the\nnode_mutex/wait_mutex lock order poll_thread's own callbacks depend on).\n\nNew tests in tests/test_heartbeat.c and tests/test_reliable_pubsub.c cover\nthe aggregation, the FINAL-flag forced/suppressed response, and\ntt_Publisher_request_ack() itself; test_rmw_api_surface.c's own stale\nRMW_RET_UNSUPPORTED expectation is replaced with the two cases this\nsingle-process suite can actually exercise (same-node pairs never become a\nwire-level peer at all - see the new code's own comments).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:57:38+09:00",
+          "tree_id": "7b190e11d7cc4d88de911df13d2b385e62978b9c",
+          "url": "https://github.com/tsnlab/tickle/commit/12795480ee5a56ce4078d5c93a2d04bdb3b4e534"
+        },
+        "date": 1789826336800,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9902593067714146,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.990396363394601,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03046894073486328,
             "unit": "Mbit/s"
           }
         ]
