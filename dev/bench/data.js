@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789824826449,
+  "lastUpdate": 1789824903016,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -7671,6 +7671,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.199,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "409fbcce099c14d17a2b8b7421b43764a8692188",
+          "message": "Record the first real rmw_tickle vs FastDDS/CycloneDDS latency comparison\n\nRan .github/scripts/compare_rmw_perf.sh for real (this dev box happens to\nalready have the same lyrical-distro ~/rmw_perf_ws provisioning the\ntickle-perf runner does). Two real bugs found and fixed along the way, not\nassumed away:\n\n- The script itself: no `|| true` on the colcon test/test-result calls\n  (unlike rmw-perf.yml's own established pattern) meant a real per-combo\n  failure aborted the script before ever printing the summary table -\n  fixed to match.\n- fastdds_udp_only.xml: useBuiltinTransports=false alone left FastDDS's own\n  separate \"Data Sharing\" feature still creating live /dev/shm segments\n  during a real run - a QoS-level same-host shortcut independent of\n  transport selection, not disabled by the transport config alone. Fixed\n  by adding data_sharing kind=OFF to the default writer/reader QoS\n  profiles; confirmed on a second run that no new /dev/shm segments\n  appeared at all this time.\n\nrmw_tickle/comparison.md's own Performance comparison section now has the\nfirst real, verified-clean numbers: rmw_tickle consistently ~1.3-1.6x\nhigher latency than both DDS vendors across every topic/sync-mode\ncombination measured, throughput essentially identical across all three.\nAlso recorded: an intermittent rmw_tickle async-mode crash (real data-\nconsistency assertion) seen on the first run, not reproduced on the\nsecond - flagged as a loose end, not chased down here.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:32:32+09:00",
+          "tree_id": "76b70df3fb82cfc5521722adb2fc53420b46dc42",
+          "url": "https://github.com/tsnlab/tickle/commit/409fbcce099c14d17a2b8b7421b43764a8692188"
+        },
+        "date": 1789824899091,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.198,
             "unit": "ms"
           },
           {
