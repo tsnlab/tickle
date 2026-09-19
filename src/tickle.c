@@ -328,7 +328,7 @@ static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id) {
 // every caller below calls this unconditionally rather than checking node->discovery first, the
 // same way logging macros check their own level instead of every call site checking it.
 static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
-                                     const char* type, const char* name) {
+                                     uint8_t qos, const char* type, const char* name) {
     if (node->discovery == NULL) {
         return;
     }
@@ -369,6 +369,7 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
     slot->node_id = node_id;
     slot->endpoint_id = endpoint_id;
     slot->kind = kind;
+    slot->qos = qos;
     slot->alive = true;
     size_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH);
     _tt_memcpy(slot->type, type, type_len);
@@ -487,6 +488,26 @@ static const char* endpoint_type_name(struct tt_Endpoint* endpoint) {
         return ((struct tt_Server*)endpoint)->service->name;
     default:
         return NULL;
+    }
+}
+
+// QoS roadmap #1 (RxO matching, Milestone 31) - the tt_UPDATE_QOS_* bits this endpoint's own
+// UpdateEntity announces, offered (a Publisher) or requested (a Subscriber) depending on kind -
+// see their own doc comment (tickle.h). Always 0 for a service/client: RELIABILITY there is
+// already unconditional via tt_Client_call()'s own retry (no negotiation needed), and DURABILITY
+// has no service/client analog at all - matches endpoint_type_name()'s own kind-dispatch shape.
+static uint8_t endpoint_qos_bits(struct tt_Endpoint* endpoint) {
+    switch (endpoint->kind) {
+    case tt_KIND_TOPIC_PUBLISHER: {
+        struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+        return (uint8_t)((pub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (pub->durable ? tt_UPDATE_QOS_DURABLE : 0));
+    }
+    case tt_KIND_TOPIC_SUBSCRIBER: {
+        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+        return (uint8_t)((sub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (sub->durable ? tt_UPDATE_QOS_DURABLE : 0));
+    }
+    default:
+        return 0;
     }
 }
 
@@ -1714,6 +1735,7 @@ static int encode_update_entities(struct tt_Node* node, struct tt_Endpoint* cons
 
         update_entity->endpoint_id = endpoint->id;
         update_entity->kind = endpoint->kind;
+        update_entity->qos = endpoint_qos_bits(endpoint);
 
         if (!encode_string(node, type) || !encode_string(node, endpoint->name)) {
             return -1;
@@ -1944,7 +1966,19 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
             struct tt_Endpoint* local = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id);
             if (local != NULL) {
                 struct tt_Publisher* pub = (struct tt_Publisher*)local;
-                if (upsert_peer(pub->peers, header->source, sender_ip, sender_port)) {
+                // QoS roadmap #1 (RxO matching, Milestone 31) - a remote Subscriber requesting a
+                // policy this local Publisher doesn't offer never becomes a peer at all: no
+                // unicast optimization, no durability backlog, no discovery-triggered Heartbeat -
+                // matching real DDS's own "an incompatible pair simply never connects" semantics.
+                // See process_data()'s own subscriber_incompatible_with_publisher() for this
+                // check's own mirror image on the Subscriber side (the more consequential half,
+                // since it's what actually stops broadcast DATA delivery too - this Publisher-side
+                // half alone only gates the unicast-only enhancements, tickle.c's own doc comment
+                // on tt_UPDATE_QOS_RELIABLE/_DURABLE explains why both halves are needed).
+                bool requested_reliable = (update_entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
+                bool requested_durable = (update_entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
+                bool incompatible = (requested_reliable && !pub->reliable) || (requested_durable && !pub->durable);
+                if (!incompatible && upsert_peer(pub->peers, header->source, sender_ip, sender_port)) {
                     struct tt_Peer target = {header->source, sender_ip, sender_port};
                     deliver_durability_backlog(node, pub, &target);
                     send_initial_heartbeat(node, pub, &target);
@@ -1976,7 +2010,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         // Recorded regardless of kind or whether a local endpoint matched above - discovery
         // (tt_Node_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
-        upsert_discovered_entity(node, header->source, entity_id, update_entity->kind, type, name);
+        upsert_discovered_entity(node, header->source, entity_id, update_entity->kind, update_entity->qos, type, name);
     }
 
     return true;
@@ -2052,6 +2086,39 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     return true;
 }
 
+// QoS roadmap #1 (RxO matching, Milestone 31) - true iff sub's own requested RELIABILITY/
+// DURABILITY cannot be honored by the remote Publisher (publisher_node_id, publisher_endpoint_id)
+// that just sent it DATA, per that Publisher's own last-announced tt_UpdateEntity.qos (mirrored
+// into the discovery table by upsert_discovered_entity() - see struct tt_DiscoveredEntity.qos's
+// own doc comment for why this reuses that table rather than a second cache). This is the
+// consequential half of RxO matching: unlike decode_update_entities()'s own Publisher-side gate
+// (which only withholds peer-list/backlog/Heartbeat, enhancements a broadcast-by-default Publisher
+// doesn't need to reach anyone), this is what actually stops an incompatible Publisher's plain
+// broadcast DATA from being delivered at all, matching real DDS's "an incompatible pair simply
+// never connects" semantics instead of TickLE's previous "everything matches, degraded QoS is
+// silently accepted" behavior.
+//
+// Fails OPEN (returns false, "compatible enough to deliver") whenever there's nothing to check
+// against yet: no discovery cache attached at all (a raw TickLE-core caller that never called
+// tt_Node_set_discovery() sees no behavior change from this milestone), or this Publisher hasn't
+// been discovered yet (DATA arriving before its own first UPDATE announce - a narrow startup
+// race, not a genuine incompatibility; giving the benefit of the doubt here is strictly better
+// than dropping a legitimately compatible pair's very first samples).
+static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct tt_Subscriber* sub,
+                                                   uint8_t publisher_node_id, uint32_t publisher_endpoint_id) {
+    if (node->discovery == NULL) {
+        return false;
+    }
+    const struct tt_DiscoveredEntity* publisher =
+        tt_Discovery_find(node->discovery, publisher_node_id, publisher_endpoint_id);
+    if (publisher == NULL) {
+        return false;
+    }
+    bool offered_reliable = (publisher->qos & tt_UPDATE_QOS_RELIABLE) != 0;
+    bool offered_durable = (publisher->qos & tt_UPDATE_QOS_DURABLE) != 0;
+    return (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable);
+}
+
 static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
                          uint32_t sender_ip, uint16_t sender_port) {
     struct tt_DataHeader* data_header = decode(node, buffer, &head, tail, sizeof(struct tt_DataHeader));
@@ -2075,6 +2142,15 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     }
 
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+
+    // QoS roadmap #1 (RxO matching, Milestone 31) - an incompatible Publisher's DATA is dropped
+    // before any reliable-tracking side effects too (update_reliable_ack() below), not just before
+    // delivery - no point generating ACKNACKs a Publisher that could never honor them will never
+    // answer (see this file's own pre-Milestone-31 history of exactly that silent-degradation bug).
+    if (subscriber_incompatible_with_publisher(node, sub, header->source, endpoint_id)) {
+        return true;
+    }
+
     struct tt_Topic* topic = sub->topic;
     bool is_native = tt_is_native_endian(header);
 

@@ -154,6 +154,7 @@ classDiagram
     class tt_UpdateEntity {
         +uint32_t endpoint_id
         +uint8_t kind
+        +uint8_t qos
         +string type
         +string name
     }

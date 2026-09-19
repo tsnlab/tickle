@@ -270,6 +270,14 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // subscriber itself.
     sub_impl->tickle_subscriber.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
 
+    // QoS roadmap #1 (RxO matching, Milestone 31) - see tt_Subscriber.durable's own doc comment
+    // (tickle.h). Requesting TRANSIENT_LOCAL here is what actually activates process_data()'s own
+    // subscriber_incompatible_with_publisher() gate against a VOLATILE Publisher for a real ROS 2
+    // Subscription - without this, every rmw_tickle Subscription would keep tickle_subscriber.
+    // durable at its zero_allocate() default (false) regardless of its own requested QoS, and the
+    // new gate could never fire for rmw_tickle's own actual users.
+    sub_impl->tickle_subscriber.durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
+
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_subscriber_t.deadline_period_ns's own doc
     // comment. rmw_qos.c already accepted any finite qos.deadline; RMW_QOS_DEADLINE_DEFAULT
     // ({0,0}) leaves deadline_period_ns at its zero_allocate() default (0 = not requested).

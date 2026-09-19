@@ -183,6 +183,14 @@ struct tt_DiscoveredEntity {
     // dropping a genuinely new entity on the floor - tombstones are remembered on a best-effort
     // basis, not guaranteed to survive table pressure.
     bool alive;
+
+    // QoS roadmap #1 (RxO matching, Milestone 31) - a copy of this entity's own announced
+    // struct tt_UpdateEntity.qos (tt_UPDATE_QOS_RELIABLE/_DURABLE), refreshed on every UPDATE
+    // (upsert_discovered_entity(), tickle.c) the same way type/name are. Lets process_data()'s own
+    // subscriber_incompatible_with_publisher() look up what a remote Publisher offers via this
+    // same discovery table, rather than a second, separate cache - real DDS's own equivalent
+    // ("Publications" built-in topic) is exactly this kind of discovery-table row too.
+    uint8_t qos;
 };
 
 // Fixed-capacity graph cache a caller opts a struct tt_Node into via tt_Node_set_discovery() -
@@ -573,6 +581,19 @@ struct tt_Subscriber { // extends endpoint
     // *confirmed* bit alone, since a Heartbeat can reveal the Subscriber is behind even with zero
     // out-of-order DATA arrivals yet (received_bitmap is blind to that case on its own).
     uint32_t reliable_heartbeat_last_seq_no;
+
+    // QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - false (tt_Node_create_
+    // subscriber()'s own default): this Subscriber accepts a VOLATILE Publisher, today's only
+    // behavior. true: requires TRANSIENT_LOCAL - a discovered remote Publisher on this topic whose
+    // own announced tt_UpdateEntity.qos doesn't offer tt_UPDATE_QOS_DURABLE is treated as
+    // incompatible (process_data()'s own subscriber_incompatible_with_publisher() check) and its
+    // DATA is silently never delivered to `callback`, matching real DDS's own "an incompatible
+    // pair simply never connects" semantics rather than TickLE's previous "everything matches,
+    // durability is just an extra a VOLATILE reader happens to also receive if offered" behavior.
+    // Mirrors tt_Publisher.durable's own "offered" half - this is the "requested" half, which
+    // (unlike reliable just above) didn't exist on this struct at all before this milestone, since
+    // backlog delivery itself was always purely a Publisher-side decision with no reader opt-out.
+    bool durable;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -705,7 +726,15 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node);
 
-#define tt_VERSION 1
+// Bumped 1 -> 2 for QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - struct tt_
+// UpdateEntity below grew a `qos` byte, a real on-the-wire layout change. Safe without any
+// version-straddling parsing logic: process_packet() already rejects any packet whose header-
+// >version is < this node's own tt_VERSION outright (tickle.c), so by the time decode_update_
+// entities() ever reads update_entity->qos, the sender is already guaranteed to be running this
+// same version or newer - there is no partial-compatibility case to handle. The first bump this
+// constant has ever needed (every prior QoS roadmap milestone stayed within the existing wire
+// layout).
+#define tt_VERSION 2
 
 struct tt_Header {
     union {
@@ -739,9 +768,22 @@ struct tt_UpdateHeader {
     */
 } __attribute__((packed));
 
+// QoS roadmap #1 (RxO matching, Milestone 31) - the two bits struct tt_UpdateEntity.qos below
+// carries, one per policy this package actually implements a wire-visible mechanism for (services/
+// clients always encode 0 here - RELIABILITY there is already unconditional via tt_Client_call()'s
+// own retry, no QoS negotiation needed, and DURABILITY has no service/client analog at all). Same
+// bit positions regardless of direction: on a TOPIC_PUBLISHER entity this is what that Publisher
+// *offers* (tt_Publisher.reliable/.durable); on a TOPIC_SUBSCRIBER entity it's what that
+// Subscriber *requests* (tt_Subscriber.reliable/.durable) - decode_update_entities()'s own
+// tt_KIND_TOPIC_SUBSCRIBER branch and process_data()'s own subscriber_incompatible_with_
+// publisher() (both tickle.c) are what actually compare the two sides.
+#define tt_UPDATE_QOS_RELIABLE (1U << 0)
+#define tt_UPDATE_QOS_DURABLE (1U << 1)
+
 struct tt_UpdateEntity {
     uint32_t endpoint_id; // hash(topic/service name + endpoint name)
     uint8_t kind;
+    uint8_t qos; // tt_UPDATE_QOS_RELIABLE / tt_UPDATE_QOS_DURABLE - see their own doc comment above
     /* Dynamically allocated
     uint16_t type_len;
     char type[];
