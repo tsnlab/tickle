@@ -323,3 +323,27 @@ def test_ros2_adapter_roundtrip(ros2_adapter_check_binary):
     assert "test_bounded_string_rejects_over_capacity: PASS" in result.stdout
     assert "test_string_arrays_roundtrip: PASS" in result.stdout
     assert "test_string_arrays_rejects_over_capacity: PASS" in result.stdout
+
+
+def test_render_adapter_rejects_array_of_nested_type():
+    # Milestone 41's own array-of-string conversion doesn't extend to array-of-nested-type -
+    # rosidl_runtime_c represents *that* differently again (a plain `struct <Type>[N]` fixed, or
+    # `rosidl_runtime_c__<pkg>__msg__<Type>__Sequence` variable - neither memcpy-able nor a
+    # primitive Sequence type) - confirms render_adapter() fails loudly with a clear message
+    # naming the field, rather than silently generating wrong C the way it would if
+    # _to_tickle_field_lines()'s existing primitive-array branch ran on a nested element instead
+    # (memcpy-ing raw struct bytes between two types with no reason to share a memory layout).
+    leaf_text = "int32 value\n"
+    leaf_spec = rosidl.parse_message_string("test_msgs", "Leaf", leaf_text)
+    leaf_struct = adapt.adapt_message("Leaf", leaf_spec, None).data
+    layout.compute(leaf_struct)
+
+    class _FakeResolver:
+        def resolve_struct(self, pkg_name, msg_name, adapt_struct_fn):
+            return leaf_struct
+
+    spec = rosidl.parse_message_string("test_msgs", "NestedArrayField", "Leaf[<=3] leaves\n")
+    ir = adapt.adapt_message("NestedArrayField", spec, _FakeResolver())
+    layout.compute(ir.data)
+    with pytest.raises(NotImplementedError, match="leaves"):
+        ros2_adapter.render_adapter(ir.data, "test_msgs__msg__NestedArrayField", "NestedArrayField.h")

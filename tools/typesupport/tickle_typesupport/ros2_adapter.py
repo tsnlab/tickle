@@ -263,6 +263,29 @@ def sequence_element_types(struct):
     )
 
 
+def _reject_unsupported_array_elements(struct):
+    """rosidl_runtime_c represents an array of nested messages completely differently from a
+    primitive one too - a fixed array is a plain `struct <Type>[N]` (each element itself
+    recursively convertible via that message's own already-generated `__to_tickle`/`__from_tickle`
+    - not memcpy-able, the two sides' own memory layouts have no reason to coincide), a variable
+    one is `rosidl_runtime_c__<pkg>__msg__<Type>__Sequence` (a distinct type generated *per
+    message*, unlike the shared primitive Sequence types) - `_to_tickle_field_lines()`/
+    `_from_tickle_field_lines()`'s existing "array" branches (written for a memcpy-able primitive
+    element) would silently generate wrong C for either. tools/typesupport's own core codegen
+    (adapt.py/emit.py/model.py) now accepts an array-of-nested-type field (rmw_tickle/PLAN.md's
+    own Milestone for the design), but this ROS 2 converter doesn't convert one yet - raised here,
+    once, up front, matching the exact precedent array-of-string went through first (Milestone 39
+    accepted it in the core generator; Milestone 41 converted it here, only once the shape's own
+    ROS 2 representation was worked out and tested)."""
+    for f in struct.fields:
+        if f.kind == "array" and f.array_element_kind == "nested":
+            raise NotImplementedError(
+                f"field '{f.name}': rosidl_typesupport_tickle_c can't convert an array-of-nested-"
+                "message field yet (rosidl_runtime_c represents it differently from a primitive "
+                "array) - not supported by ros2_adapter.render_adapter()"
+            )
+
+
 def render_adapter(struct, ros_name, tickle_header):
     """Returns (header_text, source_text) for <ros_name>__rosidl_typesupport_tickle_c.{h,c} -
     plain string assembly (not empy) since this is a fixed two-function shape, not a per-kind
@@ -271,6 +294,7 @@ def render_adapter(struct, ros_name, tickle_header):
     keyed off the .msg/.srv's interface name) - NOT `f"{struct.c_name}.h"`: struct.c_name is
     "ArraysData", but that struct is declared *inside* Arrays.h, not its own same-named file (a
     .srv's request/response structs share one file the same way)."""
+    _reject_unsupported_array_elements(struct)
     header_lines = [
         "#pragma once",
         "",

@@ -74,6 +74,28 @@ TT_MAX_BUFFER_LENGTH = 1472
 FRAMING_OVERHEAD = 24
 
 
+def struct_self_align(struct):
+    """The alignment the C compiler actually places a `struct <struct.c_name>` MEMBER (or array
+    element) at inside another `#pragma pack(push, 4)` struct - the type's own overall/self
+    alignment under that same pragma: `max()` over its own fields' `wire_align` (each already
+    `min(natural, 4)`), matching how a struct's own alignment-as-a-type is itself capped at 4 the
+    same way each of its members already is. **Not** "the first field's own alignment" - that's
+    only what a *single* nested field's own internal layout needs, starting from wherever it
+    begins (DESIGN.md's own "Nested messages" rule), a strictly smaller requirement in general
+    that happens to coincide with self-alignment for every nested type this codebase has used so
+    far as a nested field (Time/Header/Vector3, each with its own largest-aligned field first) -
+    not true for test_msgs' own BasicTypes (starts with `bool`, alignment 1, but self-aligns to
+    4). Used for a single nested field's own `wire_align` (conservative, but keeps its C member
+    placement identical to where the compiler would put it either way - see DESIGN.md), a nested
+    array element's own `element_align` (not conservative there, load-bearing: a nested array's
+    own C memory layout genuinely does follow this stride, not the smaller one, so this file's
+    own `_Static_assert(sizeof/offsetof …)` safety net would simply fail to compile if it didn't),
+    and - for *any* fixed-size struct, nested or not - layout.padded_wire_size()'s own trailing-
+    padding computation (the C compiler always rounds a struct's own `sizeof()` up to a multiple
+    of this same self-alignment, exactly the way it rounds up array-of-it strides too)."""
+    return max((f.wire_align for f in struct.fields), default=1)
+
+
 @dataclass
 class WireField:
     name: str
@@ -86,35 +108,49 @@ class WireField:
     array_size: int | None = None  # element count, when array_mode == "fixed"
     capacity: int | None = None  # max element count, when array_mode == "variable"
     capacity_source: str | None = None  # "annotation" | "bounded" | "auto" - docs/errors only
-    # "scalar" (scalar_type names the element type, as always) or "string" (every element is a
+    # "scalar" (scalar_type names the element type, as always), "string" (every element is a
     # plain, unbounded string - `scalar_type` stays None; a *bounded* string element, e.g.
     # `string<=8[]`, isn't supported yet - adapt.py raises for it rather than silently truncating
-    # or over-allocating). DESIGN.md's "Variable/Fixed arrays" rule composes directly with its own
-    # "Strings" rule for this case - see emit.py's own dedicated `_emit_*_string_array_*`
-    # functions, kept separate from the scalar-element ones rather than unified, since a string
-    # element's size is only known at runtime while a scalar element's never is.
+    # or over-allocating), or "nested" (every element is the resolved struct `nested` below points
+    # at - `scalar_type` stays None). DESIGN.md's "Variable/Fixed arrays" rule composes directly
+    # with its own "Strings"/"Nested messages" rules for these two cases - see emit.py's own
+    # dedicated `_emit_*_string_array_*`/`_emit_*_nested_array_*` functions, kept separate from
+    # the scalar-element ones rather than unified, since neither a string nor a nested element has
+    # a fixed per-element wire size known at generate time the way a scalar element always does.
     array_element_kind: str = "scalar"
-    # Only set when kind == "nested":
-    nested: "WireStruct | None" = None  # the resolved nested type's own struct (resolve.py)
+    # The resolved nested type's own struct (resolve.py) - set whenever kind == "nested", OR
+    # kind == "array" and array_element_kind == "nested" (one field, two different uses of the
+    # same slot rather than a separate "element_nested" name, since a field is never both at once).
+    nested: "WireStruct | None" = None
 
     @property
     def element_ctype(self):
         """Only meaningful for kind == "array" - the C type of one element."""
         if self.array_element_kind == "string":
             return "char*"
+        if self.array_element_kind == "nested":
+            return f"struct {self.nested.c_name}"
         return SCALAR_CTYPE[self.scalar_type]
 
     @property
     def element_size(self):
-        """Only meaningful for kind == "array" and array_element_kind == "scalar" - a string
-        element has no fixed per-element wire size (see wire_size/wire_align below, and
-        layout.max_wire_size(), which all route around ever calling this for a string element)."""
+        """Only meaningful for kind == "array" and array_element_kind == "scalar" - a string or
+        nested element has no fixed per-element wire size known at generate time (see wire_size/
+        wire_align below, and layout.max_wire_size(), which all route around ever calling this for
+        either)."""
         return SCALAR_SIZE[self.scalar_type]
 
     @property
     def element_align(self):
         if self.array_element_kind == "string":
             return STRING_LEN_ALIGN
+        if self.array_element_kind == "nested":
+            # Same formula as a single top-level nested field's own wire_align, below - see
+            # struct_self_align()'s own doc comment for why this is the type's own overall
+            # self-alignment, not just its first field's, and why that's not necessarily a
+            # divisor of the type's own wire size (DESIGN.md's own note on why a nested array,
+            # unlike a scalar one, may need a gap *between* elements too).
+            return struct_self_align(self.nested)
         return SCALAR_ALIGN[self.scalar_type]
 
     @property
@@ -145,21 +181,31 @@ class WireField:
             # variable array's uint16 count prefix aligns to 2.
             return self.element_align if self.array_mode == "fixed" else ARRAY_COUNT_ALIGN
         if self.kind == "nested":
-            # "No extra alignment beyond what the first nested field needs" (DESIGN.md) - an
-            # empty nested struct (no TickLE interface actually has one) needs none of its own.
-            return self.nested.fields[0].wire_align if self.nested.fields else 1
+            return struct_self_align(self.nested)
         raise NotImplementedError(self.kind)
 
     @property
     def wire_size(self):
         """Exact wire size in bytes, or None if it depends on runtime data (strings, variable
         arrays, a string array of either mode - each element's own length varies at runtime even
-        when the array's own element *count* is fixed - or a nested message that itself contains
-        any of these)."""
+        when the array's own element *count* is fixed - a nested message that itself contains any
+        of these, or an array of a nested message that itself isn't fixed-size)."""
         if self.kind == "scalar":
             return SCALAR_SIZE[self.scalar_type]
         if self.kind == "array" and self.array_mode == "fixed" and self.array_element_kind == "scalar":
             return self.array_size * self.element_size
+        if self.kind == "array" and self.array_mode == "fixed" and self.array_element_kind == "nested":
+            # Unlike a self-aligned scalar element, a fixed-size nested element's own wire_size
+            # isn't necessarily a multiple of its own alignment - each element after the first may
+            # need a gap before it (DESIGN.md's own note), so N elements take (N-1) full strides
+            # (element rounded up to its own alignment) plus one final unpadded element.
+            if not self.nested.is_fixed_size:
+                return None
+            if self.array_size == 0:
+                return 0
+            align = self.element_align
+            stride = (self.nested.wire_size + align - 1) & ~(align - 1)
+            return (self.array_size - 1) * stride + self.nested.wire_size
         if self.kind == "nested":
             return self.nested.wire_size if self.nested.is_fixed_size else None
         return None

@@ -593,6 +593,174 @@ def _emit_nested_decode(field):
     ]
 
 
+def needs_nested_array_element_helpers(struct):
+    return any(f.kind == "array" and f.array_element_kind == "nested" for f in struct.fields)
+
+
+def emit_nested_array_element_helpers(struct):
+    """One small pair of `static` per-struct helper functions - <name>_encode_<NestedName>_element/
+    _decode_<NestedName>_element - per *distinct* nested type this struct's own array-of-nested-
+    type fields reference (two fields nesting the *same* type share one pair; the alignment gap a
+    type's own elements need is purely a function of that type - model.struct_self_align() - never
+    of which field references it). Extracting the shared per-element logic (the alignment-gap
+    check plus the delegating call to that type's own `_encode`/`_decode`) out of the encode/
+    decode loop bodies below is what keeps those functions' own cognitive complexity under clang-
+    tidy's threshold once a struct has more than one or two array-of-nested-type fields - the
+    exact same reasoning, and the exact same fix, as emit_string_element_helpers() above, just for
+    a different element kind (a real finding, not a stylistic preference - see PLAN.md's own
+    Milestone writeup)."""
+    if not needs_nested_array_element_helpers(struct):
+        return []
+    name = struct.c_name
+    lines = []
+    seen = set()
+    for f in struct.fields:
+        if not (f.kind == "array" and f.array_element_kind == "nested"):
+            continue
+        nested_name = f.nested.c_name
+        if nested_name in seen:
+            continue
+        seen.add(nested_name)
+        align = f.element_align
+        encode_body = []
+        decode_body = []
+        if align > 1:
+            encode_body += [
+                "    if (!is_first) {",
+                f"        uint32_t pad = {_runtime_align_expr('encoded', align)};",
+                "        if ((uint32_t)encoded + pad > len) { return -1; }",
+                "        memset(payload + encoded, 0, pad);",
+                "        encoded += (int32_t)pad;",
+                "    }",
+            ]
+            decode_body += [
+                "    if (!is_first) {",
+                f"        decoded += (int32_t){_runtime_align_expr('decoded', align)};",
+                "        if ((uint32_t)decoded > len) { return -1; }",
+                "    }",
+            ]
+        lines += (
+            [
+                # Not `const struct {nested_name}*`: the nested type's own generated _encode()
+                # itself takes a plain (non-const) pointer (struct.h.em's own declared signature,
+                # matching _encode_size()/_decode() for symmetry even though encode conceptually
+                # only reads) - declaring this parameter const would make passing `item` straight
+                # into that call a discarded-qualifiers warning under -Wall -Wextra.
+                f"static int32_t {name}_encode_{nested_name}_element(struct {nested_name}* item, "
+                "uint8_t* payload, uint32_t len, int32_t encoded, bool is_first) {",
+            ]
+            + encode_body
+            + [
+                f"    int32_t nested_size = {nested_name}_encode(item, payload + encoded, len - (uint32_t)encoded);",
+                "    if (nested_size < 0) { return nested_size; }",
+                "    return encoded + nested_size;",
+                "}",
+                "",
+                f"static int32_t {name}_decode_{nested_name}_element(struct {nested_name}* item, "
+                "const uint8_t* payload, uint32_t len, int32_t decoded, bool is_native_endian, bool is_first) {",
+            ]
+            + decode_body
+            + [
+                f"    int32_t nested_size = {nested_name}_decode(item, payload + decoded, len - (uint32_t)decoded, "
+                "is_native_endian);",
+                "    if (nested_size < 0) { return nested_size; }",
+                "    return decoded + nested_size;",
+                "}",
+                "",
+            ]
+        )
+    return lines
+
+
+def _emit_fixed_nested_array_encode(field, struct_c_name):
+    nested_name = field.nested.c_name
+    return [
+        f"for (uint32_t i = 0; i < {field.array_size}; i++) {{",
+        f"    int32_t next = {struct_c_name}_encode_{nested_name}_element(&data->{field.name}[i], payload, len, "
+        "encoded, i == 0);",
+        "    if (next < 0) { return next; }",
+        "    encoded = next;",
+        "}",
+    ]
+
+
+def _emit_fixed_nested_array_decode(field, struct_c_name):
+    nested_name = field.nested.c_name
+    return [
+        f"for (uint32_t i = 0; i < {field.array_size}; i++) {{",
+        f"    int32_t next = {struct_c_name}_decode_{nested_name}_element(&data->{field.name}[i], payload, len, "
+        "decoded, is_native_endian, i == 0);",
+        "    if (next < 0) { return next; }",
+        "    decoded = next;",
+        "}",
+    ]
+
+
+def _emit_variable_nested_array_encode(field, struct_c_name):
+    count_var = f"data->{field.name}_count"
+    nested_name = field.nested.c_name
+    lines = [
+        f"if ({count_var} > {field.capacity}) {{ return -2; }}",
+        "if ((uint32_t)encoded + 2 > len) { return -1; }",
+        f"*(uint16_t*)(payload + encoded) = {count_var};",
+        "encoded += 2;",
+    ]
+    if field.element_align > 1:
+        lines += _emit_pad("encoded", _runtime_align_expr("encoded", field.element_align), runtime=True)
+    lines += [
+        f"for (uint32_t i = 0; i < {count_var}; i++) {{",
+        f"    int32_t next = {struct_c_name}_encode_{nested_name}_element(&data->{field.name}[i], payload, len, "
+        "encoded, i == 0);",
+        "    if (next < 0) { return next; }",
+        "    encoded = next;",
+        "}",
+    ]
+    return lines
+
+
+def _emit_variable_nested_array_decode(field, struct_c_name):
+    nested_name = field.nested.c_name
+    lines = [
+        "if ((uint32_t)decoded + 2 > len) { return -1; }",
+        "{",
+        "    uint16_t count = *(const uint16_t*)(payload + decoded);",
+        "    if (!is_native_endian) { count = _tt_bswap_16(count); }",
+        f"    if (count > {field.capacity}) {{ return -2; }}",
+        "    decoded += 2;",
+    ]
+    if field.element_align > 1:
+        lines += [
+            "    {",
+            f"        decoded += (int32_t){_runtime_align_expr('decoded', field.element_align)};",
+            "        if ((uint32_t)decoded > len) { return -1; }",
+            "    }",
+        ]
+    lines += [
+        "    for (uint32_t i = 0; i < count; i++) {",
+        f"        int32_t next = {struct_c_name}_decode_{nested_name}_element(&data->{field.name}[i], payload, "
+        "len, decoded, is_native_endian, i == 0);",
+        "        if (next < 0) { return next; }",
+        "        decoded = next;",
+        "    }",
+        f"    data->{field.name}_count = count;",
+        "}",
+    ]
+    return lines
+
+
+def _emit_nested_array_element_align_size(field):
+    """The gap needed *before* one element of a nested array, for every element but the first
+    (DESIGN.md's own note: unlike a scalar element, a nested element's own wire size isn't
+    necessarily a multiple of its own alignment) - the encode_size-side accounting, just
+    accumulating into `size`. Not extracted into a per-struct helper the way the encode/decode
+    loop bodies above are (emit_nested_array_element_helpers): this alone never pushed *_encode_
+    size over clang-tidy's cognitive-complexity threshold in practice, so there was no finding to
+    fix here."""
+    if field.element_align <= 1:
+        return []
+    return ["if (i > 0) {", f"    size += (int32_t){_runtime_align_expr('size', field.element_align)};", "}"]
+
+
 def emit_encode(struct):
     # Defensive (void) casts, not conditional on whether each parameter ends up used below: a
     # message with zero fields (e.g. Trigger.srv's request) never touches data/payload/len at
@@ -606,10 +774,14 @@ def emit_encode(struct):
             lines += _emit_string_encode(plan.field)
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "string":
             lines += _emit_fixed_string_array_encode(plan.field, struct.c_name)
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "nested":
+            lines += _emit_fixed_nested_array_encode(plan.field, struct.c_name)
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
             lines += _emit_fixed_array_encode(plan.field)
         elif plan.field.kind == "array" and plan.field.array_element_kind == "string":
             lines += _emit_variable_string_array_encode(plan.field, struct.c_name)
+        elif plan.field.kind == "array" and plan.field.array_element_kind == "nested":
+            lines += _emit_variable_nested_array_encode(plan.field, struct.c_name)
         elif plan.field.kind == "array":
             lines += _emit_variable_array_encode(plan.field)
         elif plan.field.kind == "nested":
@@ -636,10 +808,14 @@ def emit_decode(struct):
             lines += _emit_string_decode(plan.field)
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "string":
             lines += _emit_fixed_string_array_decode(plan.field, struct.c_name)
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "nested":
+            lines += _emit_fixed_nested_array_decode(plan.field, struct.c_name)
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
             lines += _emit_fixed_array_decode(plan.field)
         elif plan.field.kind == "array" and plan.field.array_element_kind == "string":
             lines += _emit_variable_string_array_decode(plan.field, struct.c_name)
+        elif plan.field.kind == "array" and plan.field.array_element_kind == "nested":
+            lines += _emit_variable_nested_array_decode(plan.field, struct.c_name)
         elif plan.field.kind == "array":
             lines += _emit_variable_array_decode(plan.field)
         elif plan.field.kind == "nested":
@@ -681,6 +857,18 @@ def emit_encode_size(struct):
                 "    if (size < 0) { return size; }",
                 "}",
             ]
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "nested":
+            if plan.field.wire_size is not None:
+                lines.append(f"size += {plan.field.wire_size};")
+            else:
+                lines.append(f"for (uint32_t i = 0; i < {plan.field.array_size}; i++) {{")
+                lines += [f"    {ln}" for ln in _emit_nested_array_element_align_size(plan.field)]
+                lines += [
+                    f"    int32_t nested_size = {plan.field.nested.c_name}_encode_size(&data->{plan.field.name}[i]);",
+                    "    if (nested_size < 0) { return nested_size; }",
+                    "    size += nested_size;",
+                    "}",
+                ]
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
             lines.append(f"size += {plan.field.wire_size};")
         elif plan.field.kind == "array" and plan.field.array_element_kind == "string":
@@ -691,6 +879,22 @@ def emit_encode_size(struct):
                 f"for (uint32_t i = 0; i < {count_var}; i++) {{",
                 f"    size = {struct.c_name}_string_element_size(data->{plan.field.name}[i], size);",
                 "    if (size < 0) { return size; }",
+                "}",
+            ]
+        elif plan.field.kind == "array" and plan.field.array_element_kind == "nested":
+            count_var = f"data->{plan.field.name}_count"
+            lines += [
+                f"if ({count_var} > {plan.field.capacity}) {{ return -2; }}",
+                "size += 2;",
+            ]
+            if plan.field.element_align > 1:
+                lines.append(f"size += (int32_t){_runtime_align_expr('size', plan.field.element_align)};")
+            lines.append(f"for (uint32_t i = 0; i < {count_var}; i++) {{")
+            lines += [f"    {ln}" for ln in _emit_nested_array_element_align_size(plan.field)]
+            lines += [
+                f"    int32_t nested_size = {plan.field.nested.c_name}_encode_size(&data->{plan.field.name}[i]);",
+                "    if (nested_size < 0) { return nested_size; }",
+                "    size += nested_size;",
                 "}",
             ]
         elif plan.field.kind == "array":
@@ -834,6 +1038,17 @@ def needs_string_h(struct):
             # array_mode - checked first, before the scalar-only checks below ever touch
             # f.element_size (which doesn't exist for a string element).
             return True
+        if f.kind == "array" and f.array_element_kind == "nested":
+            # Unlike a string or scalar element, "is this array variable-mode" alone says nothing
+            # here: the count write (variable mode) is a raw pointer store, and each element
+            # itself always delegates to its own nested _encode()/_decode() (irrelevant to
+            # whether *this* array wrapping it needs string.h) - only the inter-element gap
+            # (element_align > 1, guarded by `is_first` inside the per-struct helper function
+            # emit_nested_array_element_helpers() generates) ever calls memset() anywhere in the
+            # file.
+            if f.element_align > 1:
+                return True
+            continue
         if f.kind == "array":
             # A fixed array of 1-byte elements always memcpy()s (see _emit_fixed_array_encode/
             # decode); a variable array always does too (element_size == 1) or memset()s its
@@ -867,6 +1082,14 @@ def needs_hal_h(struct):
             # element itself needs _tt_strnlen on encode - checked first, before the scalar-only
             # check below ever touches f.element_size (which doesn't exist for a string element).
             return True
+        if f.kind == "array" and f.array_element_kind == "nested":
+            # Each element itself delegates entirely to its own nested _encode()/_decode()
+            # (irrelevant to whether *this* array wrapping it needs hal.h) - only a variable
+            # array's own uint16 count prefix needs _tt_bswap_16 on decode; a fixed one has no
+            # count of its own at all.
+            if f.array_mode == "variable":
+                return True
+            continue
         if f.kind == "array" and (f.array_mode == "variable" or f.element_size > 1):
             return True
     return False

@@ -57,6 +57,14 @@ CFLAGS = ["-Wall", "-Wextra", "-fPIC", f"-I{REPO_ROOT / 'include'}", f"-I{REPO_R
 #     resolution path - an explicit `-I` search path (INCLUDE_DIRS, below) rather than a builtin -
 #     and the same nested type referenced twice (linear/angular, both Vector3), proving the
 #     resolver caches rather than re-adapting (and re-emitting) it twice.
+#   - NestedArrays (fixtures_own/nested_arrays_pkg/, M8): the array-of-nested-message-type wire
+#     shape - fixed/bounded/annotated-capacity arrays of OddAlign.msg, a nested type deliberately
+#     shaped (bool; int64; uint8) so its own wire size isn't a multiple of its own self-alignment,
+#     exercising the real inter-element padding gap DESIGN.md's own "Nested messages" rule now
+#     documents (a nested type's own self-alignment, not just its first field's - a divergence
+#     that also fixed a latent, more general bug: sizeof(struct) can exceed a fixed-size struct's
+#     own unpadded wire_size due to ordinary C trailing padding, which the generated
+#     _Static_assert now checks against correctly - see layout.padded_wire_size()).
 FIXTURES_ROS2 = pathlib.Path(__file__).parent / "fixtures_ros2"
 GENERATED_INTERFACES = {
     "UInt64.msg": EXAMPLES / "uint64",
@@ -72,12 +80,18 @@ GENERATED_INTERFACES = {
     "Stamped.msg": FIXTURES_OWN,
     "Image.msg": FIXTURES_OWN,
     "Twist.msg": FIXTURES_ROS2 / "geometry_msgs" / "msg",
+    "NestedArrays.msg": FIXTURES_OWN / "nested_arrays_pkg" / "msg",
 }
 # -I search paths generate_interface() needs for the interfaces above that nest a nonstandard
 # type not covered by tickle_typesupport.builtins - keyed the same way as GENERATED_INTERFACES.
 # Stamped.msg/Image.msg both only nest std_msgs/Header (a builtin), so neither needs one.
 INCLUDE_DIRS = {
     "Twist.msg": [FIXTURES_ROS2],  # nests geometry_msgs/Vector3, found under fixtures_ros2/
+    # NestedArrays.msg's own unqualified `OddAlign` reference resolves against its *own* package
+    # (nested_arrays_pkg, from its own pkg/msg/Name.msg path - _guess_package_and_name()) via
+    # resolve.Resolver's usual -I search, needing FIXTURES_OWN itself as the search root so
+    # "nested_arrays_pkg/msg/OddAlign.msg" resolves under it.
+    "NestedArrays.msg": [FIXTURES_OWN],
 }
 
 

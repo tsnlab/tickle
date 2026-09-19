@@ -53,7 +53,7 @@ def _nested_includes(struct):
     c_name always doubles as the file name."""
     names = set()
     for f in struct.fields:
-        if f.kind != "nested":
+        if f.kind != "nested" and not (f.kind == "array" and f.array_element_kind == "nested"):
             continue
         if f.nested.header_name is not None:
             names.add(f.nested.header_name.removesuffix(".h"))
@@ -83,7 +83,7 @@ def _struct_context(struct):
         decode_inplace_lines = []
     return {
         "name": struct.c_name,
-        "helper_lines": emit.emit_string_element_helpers(struct),
+        "helper_lines": emit.emit_string_element_helpers(struct) + emit.emit_nested_array_element_helpers(struct),
         "constant_lines": emit.emit_constants(struct),
         "capacity_lines": emit.emit_array_capacity_constants(struct),
         "field_lines": emit.emit_struct_fields(struct),
@@ -102,6 +102,7 @@ def _struct_context(struct):
         "nested_includes": _nested_includes(struct),
         "is_fixed_size": is_fixed_size,
         "wire_size": struct.wire_size,
+        "padded_wire_size": layout.padded_wire_size(struct),
         "max_wire_size": layout.max_wire_size(struct),
     }
 

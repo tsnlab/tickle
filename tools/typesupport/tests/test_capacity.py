@@ -24,6 +24,8 @@ from test_roundtrip import (
     ArraysData,
     BoundedStringData,
     BulkData,
+    NestedArraysData,
+    NestedArraysPkgOddAlign,
     StringArraysData,
     _bind,
 )
@@ -175,3 +177,35 @@ def test_string_array_element_rejects_null(generated_lib):
     assert encode_size(ctypes.byref(data)) == -3
     buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
     assert encode(ctypes.byref(data), buf, TT_MAX_BUFFER_LENGTH) == -3
+
+
+def test_nested_array_encode_rejects_over_capacity(generated_lib):
+    # `bounded_items` (OddAlign[<=3]) - the array-of-nested-type analog of
+    # test_bounded_array_encode_rejects_over_capacity.
+    encode_size, encode, _decode, _free = _bind(generated_lib, "NestedArraysData", NestedArraysData)
+    data = NestedArraysData()
+    data.bounded_items_count = 4  # one past the ROS 2 upper bound `OddAlign[<=3]`
+    assert encode_size(ctypes.byref(data)) == -2
+    buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
+    assert encode(ctypes.byref(data), buf, TT_MAX_BUFFER_LENGTH) == -2
+
+
+def test_nested_array_decode_rejects_over_capacity_count_on_wire(generated_lib):
+    # A malformed (or hostile) peer's wire count must be rejected on the way in too - the array-
+    # of-nested-type analog of test_bounded_array_decode_rejects_over_capacity_count_on_wire.
+    # fixed_items (OddAlign[2]) comes first: 2 elements (13 bytes + a 3-byte inter-element gap),
+    # then a 1-byte pad to align bounded_items_count to 2, then that count itself, set to 4 (one
+    # past its capacity of 3).
+    _encode_size, _encode, decode, _free = _bind(generated_lib, "NestedArraysData", NestedArraysData)
+    one_odd_align = bytes(13)  # flag=false, big=0, tail=0 - all-zero is a valid element
+    wire = one_odd_align + bytes(3) + one_odd_align + b"\x00" + (4).to_bytes(2, sys.byteorder)
+    buf = ctypes.create_string_buffer(wire, TT_MAX_BUFFER_LENGTH)
+    out = NestedArraysData()
+    assert decode(ctypes.byref(out), buf, len(wire), True) == -2
+
+
+def test_odd_align_ctypes_sizeof_matches_generated_padding():
+    # OddAlign's own wire size (13) genuinely isn't a multiple of its own self-alignment (4) -
+    # ctypes.sizeof() must independently agree with the generator's own computed sizeof (16, via
+    # layout.padded_wire_size()) or every offset in this whole test file would be silently wrong.
+    assert ctypes.sizeof(NestedArraysPkgOddAlign) == 16

@@ -30,6 +30,6 @@ struct @(name)* @(name)_decode_inplace(const uint8_t* payload, uint32_t len, boo
 void @(name)_free(struct @(name)* data);
 
 @[if is_fixed_size]@
-_Static_assert(sizeof(struct @(name)) == @(wire_size), "@(name) must match its CDR-4 wire size - ABI mismatch");
+_Static_assert(sizeof(struct @(name)) == @(padded_wire_size), "@(name) must match its CDR-4 wire size - ABI mismatch");
 @[end if]@
 _Static_assert(@(max_wire_size) <= tt_MAX_BUFFER_LENGTH, "@(name)'s worst-case wire size exceeds a single datagram");

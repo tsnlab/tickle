@@ -34,14 +34,15 @@ def _annotation_capacity(rosidl_field):
     return None
 
 
-def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_type):
+def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_type, nested=None):
     """The three array_mode/capacity shapes (fixed T[N], bounded-variable T[<=N], unbounded-
     variable T[] - see PLAN.md's capacity priority order) are identical whether an element is a
-    scalar or a plain string - only `scalar_type`/`array_element_kind` (and, for a trailing
-    unbounded one, whether auto-derivation is even possible - _resolve_auto_capacities rejects a
-    string-element one, since a string has no fixed per-element wire size to divide the remaining
-    budget by) differ. Shared here so adapt_field's own scalar/string branches don't repeat this
-    three-way shape twice."""
+    scalar, a plain string, or a nested message - only `scalar_type`/`array_element_kind`/`nested`
+    (and, for a trailing unbounded one, whether auto-derivation is even possible - _resolve_
+    auto_capacities rejects a string-element one, and a nested-element one whose own type isn't
+    fixed-size, since neither has a fixed per-element wire size to divide the remaining budget by)
+    differ. Shared here so adapt_field's own scalar/string/nested branches don't repeat this
+    three-way shape three times."""
     default = rosidl_field.default_value
     if field_type.array_size is not None and not field_type.is_upper_bound:
         # Fixed: T[N] - no length prefix, N is part of the wire format itself.
@@ -50,6 +51,7 @@ def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_t
             kind="array",
             array_element_kind=array_element_kind,
             scalar_type=scalar_type,
+            nested=nested,
             array_mode="fixed",
             array_size=field_type.array_size,
             default=default,
@@ -61,6 +63,7 @@ def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_t
             kind="array",
             array_element_kind=array_element_kind,
             scalar_type=scalar_type,
+            nested=nested,
             array_mode="variable",
             capacity=field_type.array_size,
             capacity_source="bounded",
@@ -75,6 +78,7 @@ def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_t
         kind="array",
         array_element_kind=array_element_kind,
         scalar_type=scalar_type,
+        nested=nested,
         array_mode="variable",
         capacity=capacity,
         capacity_source="annotation" if capacity is not None else None,
@@ -86,10 +90,6 @@ def adapt_field(rosidl_field, resolver=None):
     field_type = rosidl_field.type
 
     if field_type.pkg_name is not None:
-        if field_type.is_array:
-            raise UnsupportedFieldError(
-                f"field '{rosidl_field.name}': arrays of nested message types aren't supported"
-            )
         if resolver is None:
             raise UnsupportedFieldError(
                 f"field '{rosidl_field.name}': nested type '{field_type.pkg_name}/{field_type.type}'"
@@ -100,6 +100,8 @@ def adapt_field(rosidl_field, resolver=None):
                 f"field '{rosidl_field.name}': defaults on a nested message field aren't supported"
             )
         nested = resolver.resolve_struct(field_type.pkg_name, field_type.type, adapt_struct)
+        if field_type.is_array:
+            return _build_array_field(rosidl_field, field_type, array_element_kind="nested", scalar_type=None, nested=nested)
         return model.WireField(name=rosidl_field.name, kind="nested", nested=nested)
     if field_type.is_array:
         if field_type.type in STRING_TYPES:
@@ -187,6 +189,13 @@ def _resolve_auto_capacities(fields):
             "has no fixed per-element wire size to divide the remaining budget by - add an "
             "explicit '# @capacity <N>' annotation instead"
         )
+    if target.array_element_kind == "nested" and not target.nested.is_fixed_size:
+        raise UnsupportedFieldError(
+            f"field '{target.name}': its capacity can't be auto-derived - its own nested type "
+            f"('{target.nested.c_name}') isn't fixed-size, so there's no fixed per-element wire "
+            "size to divide the remaining budget by - add an explicit '# @capacity <N>' "
+            "annotation instead"
+        )
     offset = 0
     for f in fields[:-1]:
         if f.wire_size is None:
@@ -199,7 +208,15 @@ def _resolve_auto_capacities(fields):
     offset = layout.align_up(offset, model.ARRAY_COUNT_ALIGN) + model.ARRAY_COUNT_SIZE
     offset = layout.align_up(offset, target.element_align)
     remaining = (model.TT_MAX_BUFFER_LENGTH - model.FRAMING_OVERHEAD) - offset
-    capacity = remaining // target.element_size
+    if target.array_element_kind == "nested":
+        # Conservative: divide by the full per-element *stride* (the nested type's own wire size
+        # rounded up to its own self-alignment - see model._nested_self_align), even though the
+        # very last element in the array never actually needs its own trailing gap - possibly one
+        # element short of the true limit, never over it.
+        element_size = layout.align_up(target.nested.wire_size, target.element_align)
+    else:
+        element_size = target.element_size
+    capacity = remaining // element_size
     if capacity < 1:
         raise UnsupportedFieldError(
             f"field '{target.name}': no room left to auto-derive a capacity - "

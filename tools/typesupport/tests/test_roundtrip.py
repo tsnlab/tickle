@@ -153,6 +153,30 @@ class StringArrayDefaultsData(ctypes.Structure):
     ]
 
 
+# M8: array-of-nested-message-type. OddAlign.msg (bool; int64; uint8) is deliberately shaped so
+# its own wire size (13) isn't a multiple of its own self-alignment (4) - ctypes' own struct
+# layout naturally reproduces the same trailing pad the C compiler does (sizeof 16, matching the
+# generated _Static_assert - see layout.padded_wire_size()), which is exactly what proves the
+# real inter-element wire gap (DESIGN.md's own "Nested messages" rule) is being exercised here,
+# not just a same-size coincidence.
+class NestedArraysPkgOddAlign(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [("flag", ctypes.c_bool), ("big", ctypes.c_int64), ("tail", ctypes.c_uint8)]
+
+
+class NestedArraysData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("fixed_items", NestedArraysPkgOddAlign * 2),
+        ("bounded_items_count", ctypes.c_uint16),
+        ("bounded_items", NestedArraysPkgOddAlign * 3),
+        ("tagged_items_count", ctypes.c_uint16),
+        ("tagged_items", NestedArraysPkgOddAlign * 4),
+    ]
+
+
 class BoundedStringData(ctypes.Structure):
     _pack_ = 4
     _layout_ = "ms"
@@ -384,6 +408,31 @@ def test_string_arrays_roundtrip(generated_lib):
     assert list(result.bounded_names[:2]) == [b"one", b"two"]
     assert result.tagged_names_count == 3
     assert list(result.tagged_names[:3]) == [b"x", b"yy", b"zzz"]
+
+
+def test_nested_arrays_roundtrip(generated_lib):
+    # Independently confirms the same 109-byte encode_size a hand-built C harness already worked
+    # out by hand while designing this feature (2*OddAlign with one inter-element gap + 2*count-
+    # prefixed variable arrays, each also needing gaps between their own elements).
+    def populate(d):
+        d.fixed_items[0] = NestedArraysPkgOddAlign(flag=True, big=111, tail=1)
+        d.fixed_items[1] = NestedArraysPkgOddAlign(flag=False, big=-222, tail=2)
+        d.bounded_items_count = 2
+        d.bounded_items[0] = NestedArraysPkgOddAlign(flag=True, big=333, tail=3)
+        d.bounded_items[1] = NestedArraysPkgOddAlign(flag=False, big=-444, tail=4)
+        d.tagged_items_count = 3
+        d.tagged_items[0] = NestedArraysPkgOddAlign(flag=True, big=555, tail=5)
+        d.tagged_items[1] = NestedArraysPkgOddAlign(flag=False, big=-666, tail=6)
+        d.tagged_items[2] = NestedArraysPkgOddAlign(flag=True, big=777, tail=7)
+
+    result, _buf = _roundtrip(generated_lib, "NestedArraysData", NestedArraysData, populate)
+    assert (result.fixed_items[0].flag, result.fixed_items[0].big, result.fixed_items[0].tail) == (True, 111, 1)
+    assert (result.fixed_items[1].flag, result.fixed_items[1].big, result.fixed_items[1].tail) == (False, -222, 2)
+    assert result.bounded_items_count == 2
+    assert result.bounded_items[0].big == 333
+    assert result.bounded_items[1].big == -444
+    assert result.tagged_items_count == 3
+    assert [result.tagged_items[i].big for i in range(3)] == [555, -666, 777]
 
 
 def test_bounded_string_roundtrip(generated_lib):

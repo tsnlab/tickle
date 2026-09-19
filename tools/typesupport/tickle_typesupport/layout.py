@@ -76,6 +76,24 @@ def compute(struct):
     struct.wire_size = offset if plans else 0
 
 
+def padded_wire_size(struct):
+    """`struct.wire_size` rounded up to the struct's own self-alignment (model.
+    struct_self_align()) - what `sizeof(struct <c_name>)` actually is once the C compiler adds
+    its own trailing padding, which `wire_size` itself deliberately never includes (it's the true
+    minimal *wire* byte count - the value actually used for a top-level `_encode()`'s own return,
+    for `encode_inplace`'s returned length, and for a nested array's own per-element stride).
+    `None` when the struct isn't fixed-size (nothing to round). Exists purely to check `sizeof()`
+    correctly in the generated `_Static_assert` (struct.h.em) - checking it against the smaller,
+    unpadded `wire_size` instead would spuriously fail to compile for the (fully legitimate, not
+    a bug) case where the struct's own last field doesn't happen to end at a multiple of the
+    struct's own overall alignment (a `bool` then `int64` then `uint8` struct self-aligns to 4 but
+    ends at byte 13, not a multiple of 4 - tests/fixtures_own's own OddAlign.msg is exactly this
+    shape, found via the array-of-nested-type milestone that needed a fixture shaped like it)."""
+    if not struct.is_fixed_size:
+        return None
+    return align_up(struct.wire_size, model.struct_self_align(struct))
+
+
 def max_wire_size(struct):
     """Worst-case wire size in bytes, from what's actually knowable at generate time - backs the
     "message fits in one datagram" _Static_assert every generated struct.h.em carries (PLAN.md /
@@ -102,6 +120,16 @@ def max_wire_size(struct):
                 offset += wire_field.array_size * model.STRING_LEN_SIZE
             else:
                 offset += model.ARRAY_COUNT_SIZE + wire_field.capacity * model.STRING_LEN_SIZE
+        elif wire_field.kind == "array" and wire_field.array_element_kind == "nested":
+            # Recurse for one element's own worst case, then add the most padding a gap *before*
+            # it could ever need (element_align - 1) - conservative, not the exact stride math
+            # WireField.wire_size uses for the fixed-size case below, but this only backs a safety
+            # _Static_assert, where overestimating is fine and underestimating never is.
+            per_element = max_wire_size(wire_field.nested) + (wire_field.element_align - 1)
+            if wire_field.array_mode == "fixed":
+                offset += wire_field.array_size * per_element
+            else:
+                offset += model.ARRAY_COUNT_SIZE + wire_field.capacity * per_element
         elif wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
             offset += wire_field.wire_size
         elif wire_field.kind == "string" and wire_field.capacity is not None:
@@ -143,11 +171,14 @@ def prefix_array_field(struct):
     if not struct.fields:
         return None
     last = struct.fields[-1]
-    if last.kind == "array" and last.array_element_kind == "string":
+    if last.kind == "array" and last.array_element_kind in ("string", "nested"):
         # A string array's own C representation (an array of char* pointers) is never memory-
         # identical to its wire bytes (a length-prefixed byte run per element) regardless of
-        # position - not eligible for this optimization at all, and last.element_size doesn't
-        # even exist for a string element (see model.WireField.element_size's own doc comment).
+        # position - not eligible for this optimization at all. A nested array isn't either: even
+        # when the nested type is fixed-size, an inter-element wire gap may be needed that its own
+        # #pragma pack(4) C layout wouldn't reproduce (DESIGN.md's own note on this). Neither kind
+        # has a last.element_size to check below either (see model.WireField.element_size's own
+        # doc comment).
         return None
     if not (last.kind == "array" and last.array_mode == "variable" and last.element_size == 1):
         return None

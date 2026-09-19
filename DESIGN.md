@@ -499,14 +499,50 @@ otherwise), and never copies or frees it - so a decoded message is only valid fo
 of the subscriber / server callback. `uint16` is enough because nothing that fits in one
 datagram can be longer than `tt_MAX_BUFFER_LENGTH` (< 2^16).
 
-**Fixed arrays** `T[N]`: exactly N elements of T, each aligned per T. No length prefix.
+**Fixed arrays** `T[N]`: exactly N elements of T, each aligned per T. No length prefix. `T` a
+scalar is always self-aligned (its size is always a multiple of its own alignment), so no gap is
+ever needed *between* elements - a string or nested-message element (below) isn't guaranteed
+that, so an encoder/decoder must still align to T before each element after the first, not just
+before the array as a whole.
 
 **Variable arrays** `T[]` / `T[<=N]`: `align 2` → `uint16 count` → pad to T's alignment →
-`count` elements. On decode, `count` must be `<= capacity` (the fixed size of the C buffer,
-below) and the elements must fit the remaining `len`, else `-1`.
+`count` elements (each still aligned per T, same as a fixed array's own elements). On decode,
+`count` must be `<= capacity` (the fixed size of the C buffer, below) and the elements must fit
+the remaining `len`, else `-1`.
 
-**Nested messages**: the nested type's fields are inlined recursively at the current offset -
-no header, no extra alignment beyond what the first nested field needs.
+`T` above is a scalar, a string, or a nested message - composing directly with the rules below,
+never a new wire concept of its own:
+
+- **`T` a string** (`string[N]` / `string[]` / `string[<=N]`): each element is the Strings rule
+  itself, verbatim (`align 2` → `uint16 length` → data+`\0` → pad to 4) - so an element's own
+  alignment (`T`'s alignment, above) is 2. A *bounded* string element (`string<=N[]`) isn't
+  supported yet - every element is a plain, unbounded `char*` alias, same as an unbounded
+  top-level string field.
+- **`T` a nested message** (`Msg[N]` / `Msg[]` / `Msg[<=N]`): each element is the Nested messages
+  rule itself, verbatim - the nested type's own `_encode`/`_decode` already report how many bytes
+  they actually consumed (their own return value), so a loop calling them once per element needs
+  no element-size bookkeeping of its own, fixed-size nested type or not. An element's own
+  alignment is the nested type's own *self*-alignment (below) - **not necessarily a divisor of
+  the nested type's own wire size**, so (unlike a self-aligned scalar element) a gap may be
+  needed *between* consecutive elements too, not just before the first.
+
+**Nested messages**: the nested type's fields are inlined recursively at the current offset - no
+header. A single (non-array) nested *field*'s own position only needs to satisfy its first
+field's own alignment (nothing else about its internal layout depends on where it starts). An
+*array element* needs more: the nested type's own **self-alignment** - `max` over its own
+fields' `wire_align` (already each `min(natural, 4)`) - matching `#pragma pack(push, 4)`'s own
+struct-alignment rule (a struct's own alignment, as a *type*, is capped at 4 the same way each of
+its members already is - this is also what determines the tail padding C itself inserts so
+`sizeof()` a struct is always a multiple of its own alignment). Self-alignment is always `>=`
+first-field alignment, and the two coincide for every nested type this codebase has used so far
+as a single field (`Time`/`Header`/`Vector3`, each with its own largest-aligned field first) -
+not true in general (`test_msgs`' own `BasicTypes` starts with a `bool`, alignment 1, but has a
+self-alignment of 4) - so a nested *array*'s own element alignment uses self-alignment
+unconditionally, and a single nested *field*'s own starting alignment does too even though its
+own internal layout only strictly needs the smaller first-field figure: using the larger,
+conservative value there as well keeps every nested field's own C member placement identical to
+where the compiler would put a bare `struct <Type>` member either way, which is what the
+`_Static_assert(sizeof/offsetof …)` safety net (below) actually verifies against.
 
 **Capacity** of a variable array's (or bounded string's) C buffer, in priority order:
 
