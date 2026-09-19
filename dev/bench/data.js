@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789802340414,
+  "lastUpdate": 1789802343656,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -27114,6 +27114,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030477796282087053,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "694111b96f60e92f7491d81556c79f43936916e3",
+          "message": "Confirm count_clients_and_services passes for real in CI\n\nCheck all confirmed: the other 14 TestGraphAPI cases genuinely SKIPPED, and\ncount_clients_and_services itself OK.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T16:17:50+09:00",
+          "tree_id": "a32bd8fcd911ae0c1a784c3c3f4c803d7456be76",
+          "url": "https://github.com/tsnlab/tickle/commit/694111b96f60e92f7491d81556c79f43936916e3"
+        },
+        "date": 1789802342593,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9895718438284737,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9905459540230888,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030412537711007253,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03045640672956194,
             "unit": "Mbit/s"
           }
         ]
