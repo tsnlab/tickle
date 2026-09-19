@@ -110,8 +110,32 @@ def _to_tickle_field_lines(f):
             f"memcpy(tickle->{f.name}, ros->{f.name}.data, ros->{f.name}.size);",
             f"tickle->{f.name}[ros->{f.name}.size] = '\\0';",
         ]
+    if f.kind == "array" and f.array_mode == "fixed" and f.array_element_kind == "string":
+        # A fixed ROS 2 string array is a plain in-place `struct rosidl_runtime_c__String[N]`
+        # (no Sequence wrapper, matching TickLE's own no-count-prefix "Fixed arrays" wire rule) -
+        # each element aliases the same way a plain unbounded string field's own `.data` already
+        # does, just once per element. Not memcpy-able the way a scalar fixed array is: a
+        # rosidl_runtime_c__String owns its own allocation, copying the struct's raw bytes would
+        # alias it, not copy it.
+        return [
+            f"for (size_t i = 0; i < {f.array_size}; i++) {{",
+            f"    tickle->{f.name}[i] = ros->{f.name}[i].data;",
+            "}",
+        ]
     if f.kind == "array" and f.array_mode == "fixed":
         return [f"memcpy(tickle->{f.name}, ros->{f.name}, sizeof(tickle->{f.name}));"]
+    if f.kind == "array" and f.array_element_kind == "string":
+        # A variable/bounded ROS 2 string array is `struct rosidl_runtime_c__String__Sequence`
+        # (`.data`/`.size`/`.capacity`, rosidl_runtime_c/string_functions.h) - not one of the
+        # primitive `rosidl_runtime_c__<T>__Sequence` types (needs_rosidl_string() already covers
+        # the header this needs, same one a plain string field pulls in).
+        return [
+            f"if (ros->{f.name}.size > {f.capacity}) {{ return false; }}",
+            f"for (size_t i = 0; i < ros->{f.name}.size; i++) {{",
+            f"    tickle->{f.name}[i] = ros->{f.name}.data[i].data;",
+            "}",
+            f"tickle->{f.name}_count = (uint16_t)ros->{f.name}.size;",
+        ]
     if f.kind == "array":
         return [
             f"if (ros->{f.name}.size > {f.capacity}) {{ return false; }}",
@@ -135,8 +159,22 @@ def _from_tickle_field_lines(f):
         # message it hands to application code must own its own memory, unlike TickLE's own
         # decode(), which aliases the rx buffer - see DESIGN.md's "Strings" rule).
         return [f"if (!rosidl_runtime_c__String__assign(&ros->{f.name}, tickle->{f.name})) {{ return false; }}"]
+    if f.kind == "array" and f.array_mode == "fixed" and f.array_element_kind == "string":
+        return [
+            f"for (size_t i = 0; i < {f.array_size}; i++) {{",
+            f"    if (!rosidl_runtime_c__String__assign(&ros->{f.name}[i], tickle->{f.name}[i])) {{ return false; }}",
+            "}",
+        ]
     if f.kind == "array" and f.array_mode == "fixed":
         return [f"memcpy(ros->{f.name}, tickle->{f.name}, sizeof(ros->{f.name}));"]
+    if f.kind == "array" and f.array_element_kind == "string":
+        count_var = f"tickle->{f.name}_count"
+        return [
+            f"if (!rosidl_runtime_c__String__Sequence__init(&ros->{f.name}, {count_var})) {{ return false; }}",
+            f"for (size_t i = 0; i < {count_var}; i++) {{",
+            f"    if (!rosidl_runtime_c__String__assign(&ros->{f.name}.data[i], tickle->{f.name}[i])) {{ return false; }}",
+            "}",
+        ]
     if f.kind == "array":
         count_var = f"tickle->{f.name}_count"
         return [
@@ -197,7 +235,13 @@ def nested_adapter_includes(struct):
 
 
 def needs_rosidl_string(struct):
-    return any(f.kind == "string" for f in struct.fields)
+    # rosidl_runtime_c/string_functions.h declares both rosidl_runtime_c__String__* AND
+    # rosidl_runtime_c__String__Sequence__* (String, unlike a primitive scalar type, gets one
+    # self-contained header covering both shapes) - a string array field (either array_mode)
+    # needs the exact same header a plain string field does, no separate one.
+    return any(
+        f.kind == "string" or (f.kind == "array" and f.array_element_kind == "string") for f in struct.fields
+    )
 
 
 def needs_rosidl_sequence(struct):
@@ -205,30 +249,18 @@ def needs_rosidl_sequence(struct):
 
 
 def sequence_element_types(struct):
-    """Distinct rosidl_runtime_c primitive Sequence element types this struct's own (not nested
-    structs') variable arrays need - each is its own header,
-    rosidl_runtime_c/<type>__functions.h."""
-    return sorted({f.scalar_type for f in struct.fields if f.kind == "array" and f.array_mode == "variable"})
-
-
-def _reject_unsupported_array_elements(struct):
-    """rosidl_runtime_c represents a string array completely differently from a primitive one -
-    `struct rosidl_runtime_c__String__Sequence` (variable) or a plain `struct
-    rosidl_runtime_c__String name[N]` (fixed), neither a flat `T*` buffer nor a
-    `rosidl_runtime_c__<T>__Sequence` - so _to_tickle_field_lines()/_from_tickle_field_lines()'s
-    existing "array" branches (written for a primitive element) would silently generate wrong C
-    for one. tools/typesupport's own core codegen (adapt.py/emit.py) now accepts a string array
-    field for TickLE's own bundled examples (cli.py's pipeline never reaches this module at all),
-    but this ROS 2 converter doesn't convert one yet - raised here, once, up front, rather than
-    letting sequence_element_types() silently collect a bogus `None` scalar_type and fail
-    confusingly (or not at all) deeper in codegen."""
-    for f in struct.fields:
-        if f.kind == "array" and f.array_element_kind == "string":
-            raise NotImplementedError(
-                f"field '{f.name}': rosidl_typesupport_tickle_c can't convert an array-of-string "
-                "field yet (rosidl_runtime_c represents it differently from a primitive array) - "
-                "not supported by ros2_adapter.render_adapter()"
-            )
+    """Distinct rosidl_runtime_c *primitive* Sequence element types this struct's own (not nested
+    structs') variable arrays need - each is its own header, rosidl_runtime_c/<type>__functions.h.
+    Excludes a string array's own variable arrays: rosidl_runtime_c__String__Sequence isn't one of
+    the primitive Sequence types this covers - needs_rosidl_string() above already brings in the
+    one header (string_functions.h) it actually needs."""
+    return sorted(
+        {
+            f.scalar_type
+            for f in struct.fields
+            if f.kind == "array" and f.array_mode == "variable" and f.array_element_kind == "scalar"
+        }
+    )
 
 
 def render_adapter(struct, ros_name, tickle_header):
@@ -239,7 +271,6 @@ def render_adapter(struct, ros_name, tickle_header):
     keyed off the .msg/.srv's interface name) - NOT `f"{struct.c_name}.h"`: struct.c_name is
     "ArraysData", but that struct is declared *inside* Arrays.h, not its own same-named file (a
     .srv's request/response structs share one file the same way)."""
-    _reject_unsupported_array_elements(struct)
     header_lines = [
         "#pragma once",
         "",

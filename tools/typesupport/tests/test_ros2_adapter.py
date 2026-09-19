@@ -36,8 +36,10 @@ _MAIN_C = r"""
 
 #include "Arrays.h"
 #include "BoundedString.h"
+#include "StringArrays.h"
 #include "test_msgs__msg__Arrays__rosidl_typesupport_tickle_c.h"
 #include "test_msgs__msg__BoundedString__rosidl_typesupport_tickle_c.h"
+#include "test_msgs__msg__StringArrays__rosidl_typesupport_tickle_c.h"
 
 static void test_arrays_roundtrip(void) {
     struct test_msgs__msg__Arrays ros_in;
@@ -155,11 +157,80 @@ static void test_bounded_string_rejects_over_capacity(void) {
     printf("test_bounded_string_rejects_over_capacity: PASS\n");
 }
 
+static void test_string_arrays_roundtrip(void) {
+    struct test_msgs__msg__StringArrays ros_in;
+    memset(&ros_in, 0, sizeof(ros_in));
+    assert(rosidl_runtime_c__String__assign(&ros_in.fixed_names[0], "alpha"));
+    assert(rosidl_runtime_c__String__assign(&ros_in.fixed_names[1], ""));
+    assert(rosidl_runtime_c__String__assign(&ros_in.fixed_names[2], "gamma"));
+
+    assert(rosidl_runtime_c__String__Sequence__init(&ros_in.bounded_names, 2));
+    assert(rosidl_runtime_c__String__assign(&ros_in.bounded_names.data[0], "one"));
+    assert(rosidl_runtime_c__String__assign(&ros_in.bounded_names.data[1], "two"));
+
+    assert(rosidl_runtime_c__String__Sequence__init(&ros_in.tagged_names, 3));
+    assert(rosidl_runtime_c__String__assign(&ros_in.tagged_names.data[0], "x"));
+    assert(rosidl_runtime_c__String__assign(&ros_in.tagged_names.data[1], "yy"));
+    assert(rosidl_runtime_c__String__assign(&ros_in.tagged_names.data[2], "zzz"));
+
+    struct StringArraysData tickle;
+    memset(&tickle, 0, sizeof(tickle));
+    assert(test_msgs__msg__StringArrays__to_tickle(&ros_in, &tickle));
+
+    uint8_t buf[256];
+    int32_t size = StringArraysData_encode_size(&tickle);
+    assert(size > 0);
+    int32_t encoded = StringArraysData_encode(&tickle, buf, sizeof(buf));
+    assert(encoded == size);
+
+    struct StringArraysData decoded_tickle;
+    memset(&decoded_tickle, 0, sizeof(decoded_tickle));
+    int32_t decoded = StringArraysData_decode(&decoded_tickle, buf, encoded, true);
+    assert(decoded == encoded);
+
+    struct test_msgs__msg__StringArrays ros_out;
+    memset(&ros_out, 0, sizeof(ros_out));
+    assert(test_msgs__msg__StringArrays__from_tickle(&decoded_tickle, &ros_out));
+
+    assert(strcmp(ros_out.fixed_names[0].data, "alpha") == 0);
+    assert(strcmp(ros_out.fixed_names[1].data, "") == 0);
+    assert(strcmp(ros_out.fixed_names[2].data, "gamma") == 0);
+    assert(ros_out.bounded_names.size == 2);
+    assert(strcmp(ros_out.bounded_names.data[0].data, "one") == 0);
+    assert(strcmp(ros_out.bounded_names.data[1].data, "two") == 0);
+    assert(ros_out.tagged_names.size == 3);
+    assert(strcmp(ros_out.tagged_names.data[0].data, "x") == 0);
+    assert(strcmp(ros_out.tagged_names.data[1].data, "yy") == 0);
+    assert(strcmp(ros_out.tagged_names.data[2].data, "zzz") == 0);
+
+    StringArraysData_free(&decoded_tickle);
+    printf("test_string_arrays_roundtrip: PASS\n");
+}
+
+static void test_string_arrays_rejects_over_capacity(void) {
+    struct test_msgs__msg__StringArrays ros_in;
+    memset(&ros_in, 0, sizeof(ros_in));
+    assert(rosidl_runtime_c__String__assign(&ros_in.fixed_names[0], ""));
+    assert(rosidl_runtime_c__String__assign(&ros_in.fixed_names[1], ""));
+    assert(rosidl_runtime_c__String__assign(&ros_in.fixed_names[2], ""));
+    assert(rosidl_runtime_c__String__Sequence__init(&ros_in.bounded_names, 5)); /* one past <=4 */
+    for (size_t i = 0; i < 5; i++) {
+        assert(rosidl_runtime_c__String__assign(&ros_in.bounded_names.data[i], "x"));
+    }
+
+    struct StringArraysData tickle;
+    memset(&tickle, 0, sizeof(tickle));
+    assert(!test_msgs__msg__StringArrays__to_tickle(&ros_in, &tickle));
+    printf("test_string_arrays_rejects_over_capacity: PASS\n");
+}
+
 int main(void) {
     test_arrays_roundtrip();
     test_arrays_rejects_over_capacity();
     test_bounded_string_roundtrip();
     test_bounded_string_rejects_over_capacity();
+    test_string_arrays_roundtrip();
+    test_string_arrays_rejects_over_capacity();
     printf("ALL PASS\n");
     return 0;
 }
@@ -211,6 +282,7 @@ def ros2_adapter_check_binary(tmp_path_factory, generated_dir):
     outdir = tmp_path_factory.mktemp("ros2_adapter")
     _generate_adapter(outdir, "Arrays", "test_msgs__msg__Arrays")
     _generate_adapter(outdir, "BoundedString", "test_msgs__msg__BoundedString")
+    _generate_adapter(outdir, "StringArrays", "test_msgs__msg__StringArrays")
 
     main_c = outdir / "main.c"
     main_c.write_text(_MAIN_C, encoding="utf-8")
@@ -228,8 +300,10 @@ def ros2_adapter_check_binary(tmp_path_factory, generated_dir):
             str(main_c),
             str(generated_dir / "Arrays.c"),
             str(generated_dir / "BoundedString.c"),
+            str(generated_dir / "StringArrays.c"),
             str(outdir / "test_msgs__msg__Arrays__rosidl_typesupport_tickle_c.c"),
             str(outdir / "test_msgs__msg__BoundedString__rosidl_typesupport_tickle_c.c"),
+            str(outdir / "test_msgs__msg__StringArrays__rosidl_typesupport_tickle_c.c"),
             str(REPO_ROOT / "src" / "encoding.c"),
             str(REPO_ROOT / "src" / "log.c"),
             "-lm",
@@ -247,18 +321,5 @@ def test_ros2_adapter_roundtrip(ros2_adapter_check_binary):
     assert "test_arrays_rejects_over_capacity: PASS" in result.stdout
     assert "test_bounded_string_roundtrip: PASS" in result.stdout
     assert "test_bounded_string_rejects_over_capacity: PASS" in result.stdout
-
-
-def test_render_adapter_rejects_array_of_string():
-    # M7 (tools/typesupport's own core codegen) accepts an array-of-string field now, but
-    # ros2_adapter.render_adapter() doesn't know how to convert one yet - rosidl_runtime_c
-    # represents it completely differently from a primitive array (see ros2_adapter._reject_
-    # unsupported_array_elements's own doc comment). Confirms render_adapter() fails loudly with
-    # a clear message naming the field, rather than silently generating wrong C the way it would
-    # if _to_tickle_field_lines()'s existing primitive-array branch ran on a string element by
-    # accident (a `char*` element has no `sizeof(*tickle->name)`-shaped element size to memcpy).
-    spec = rosidl.parse_message_string("test_msgs", "StringArrayField", "string[<=3] names\n")
-    ir = adapt.adapt_message("StringArrayField", spec, None)
-    layout.compute(ir.data)
-    with pytest.raises(NotImplementedError, match="names"):
-        ros2_adapter.render_adapter(ir.data, "test_msgs__msg__StringArrayField", "StringArrayField.h")
+    assert "test_string_arrays_roundtrip: PASS" in result.stdout
+    assert "test_string_arrays_rejects_over_capacity: PASS" in result.stdout

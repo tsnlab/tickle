@@ -31,3 +31,26 @@ static inline bool rosidl_runtime_c__String__assign(rosidl_runtime_c__String* st
     str->capacity = len + 1;
     return true;
 }
+
+// M7's own array-of-string ros2_adapter conversion needs the Sequence shape too - unlike a
+// primitive Sequence (rosidl_runtime_c/primitives_sequence_functions.h), String gets this in its
+// own dedicated header rather than a generic per-type one (real rosidl_runtime_c convention).
+typedef struct rosidl_runtime_c__String__Sequence {
+    rosidl_runtime_c__String* data;
+    size_t size;
+    size_t capacity;
+} rosidl_runtime_c__String__Sequence;
+
+// Every element must start as a valid, empty rosidl_runtime_c__String (data=NULL, size=0,
+// capacity=0) - the same state String__assign() itself expects to find (it free()s whatever
+// .data already held before allocating), so calloc's own zero-fill is exactly right here, not
+// just a convenient shortcut.
+static inline bool rosidl_runtime_c__String__Sequence__init(rosidl_runtime_c__String__Sequence* seq, size_t size) {
+    seq->data = (rosidl_runtime_c__String*)calloc(size, sizeof(rosidl_runtime_c__String));
+    if (seq->data == NULL && size > 0) {
+        return false;
+    }
+    seq->size = size;
+    seq->capacity = size;
+    return true;
+}

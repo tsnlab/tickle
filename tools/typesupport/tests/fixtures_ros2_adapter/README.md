@@ -20,7 +20,9 @@ verifications, not to define the contract.
 | File | Stands in for |
 |---|---|
 | `rosidl_runtime_c/string.h` | `rosidl_runtime_c/string.h` |
-| `rosidl_runtime_c/string_functions.h` | `rosidl_runtime_c/string_functions.h` (just `__assign()`) |
+| `rosidl_runtime_c/string_functions.h` | `rosidl_runtime_c/string_functions.h` (`__assign()`, plus `String__Sequence`/`__init()` for rmw_tickle/PLAN.md's Milestone 41 array-of-string conversion) |
 | `rosidl_runtime_c/primitives_sequence_functions.h` | same header, just the two element types (`uint16`, `float32`) `Arrays.msg` needs |
 | `test_msgs/msg/arrays.h` | what `rosidl_generator_c` would generate for `Arrays.msg` |
 | `test_msgs/msg/bounded_string.h` | same, for `BoundedString.msg` |
+| `test_msgs/msg/string_arrays.h` | same, for `StringArrays.msg` (Milestone 41's own array-of-string conversion) |
+| `test_msgs/msg/leaf.h` / `test_msgs/msg/branch.h` | same, for `Leaf.msg`/`Branch.msg` (Milestone 38's own nested-message resolver test) |
