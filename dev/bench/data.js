@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789847268949,
+  "lastUpdate": 1789847489423,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -27029,6 +27029,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.045475714285714286,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2135a2fd59b430e533ec69cf592d8c51514258e7",
+          "message": "Remove rmw_tickle.h's own stale, already-unused rmw/init.h include\n\nA real, pre-existing clang-tidy finding (misc-include-cleaner) caught by\nCheck all on the previous push, unrelated to that commit's own change:\nrmw_context_t (the type the comment names) is not actually referenced\nanywhere in this header - every real usage already includes rmw/init.h\ndirectly itself.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T04:50:20+09:00",
+          "tree_id": "4886db312aa6cf49df5c087110a419436bcb9253",
+          "url": "https://github.com/tsnlab/tickle/commit/2135a2fd59b430e533ec69cf592d8c51514258e7"
+        },
+        "date": 1789847484805,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05834,
             "unit": "ms"
           }
         ]
