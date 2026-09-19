@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789818902081,
+  "lastUpdate": 1789818905230,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -39833,6 +39833,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.617,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e95f2d3c3459de9c081be28de031d516efacfa59",
+          "message": "Implement Milestone 40: un-exclude test_msgs/Nested.msg from conformance patch\n\nTickLE Plan's priority list, item 1: prove the real external target (a real\nROS 2 install's own unmodified test_msgs CMake extension) actually builds\nMilestone 38's nested-message support, before adding more capability on top\nof something only verified against hand-built local pytest fixtures.\n\nConfirmed Nested.msg is exactly the minimal shape Milestone 38 targets\n(BasicTypes basic_types_value - a single, same-package field, no array) by\nchecking a pristine ros2/test_interface_files clone. Neither\ntest_subscription.cpp nor test_serialize_deserialize.cpp (still excluded)\nactually reference Nested.msg - both need UnboundedSequences/\nBoundedPlainSequences instead (array-of-nested-type, still unsupported) -\nso this change's only observable effect is real CI actually generating and\nbuilding Nested.msg's own typesupport through the real CMake extension.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T20:52:17+09:00",
+          "tree_id": "f24900b9e9ae158acfe42d66476c37d56d77bbc6",
+          "url": "https://github.com/tsnlab/tickle/commit/e95f2d3c3459de9c081be28de031d516efacfa59"
+        },
+        "date": 1789818904121,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.528,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.319,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.194,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.756,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.653,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 73.122,
             "unit": "Mbps"
           }
         ]
