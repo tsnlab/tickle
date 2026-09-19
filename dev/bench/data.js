@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789847262592,
+  "lastUpdate": 1789847265781,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -51812,6 +51812,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.236,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "230e28b2c4ae53e7a1c14d9b00b2a44f50ee0b19",
+          "message": "Document the comparison-script process policy (user's own call, 2026-09-20)\n\ncompare_rmw_perf.sh stays run-by-hand only - not just \"never CI\" (already\nestablished), but also never triggered autonomously by \"TickLE Plan\" just\nbecause a performance-relevant change landed. The job is to notice and\npropose a re-run, then wait for explicit approval before touching\ncomparison.md's own numbers - not to decide independently that a\nre-measurement is warranted.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T04:44:36+09:00",
+          "tree_id": "862dac99273810e4279cf4c9f9d3a27f211b7c93",
+          "url": "https://github.com/tsnlab/tickle/commit/230e28b2c4ae53e7a1c14d9b00b2a44f50ee0b19"
+        },
+        "date": 1789847264676,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.04,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.076,
             "unit": "ms"
           }
         ]
