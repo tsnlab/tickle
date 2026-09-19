@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789816033267,
+  "lastUpdate": 1789816036792,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -14028,6 +14028,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.059,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "52417e7b32230d76f35adda68e9fc70ec5d4db3e",
+          "message": "Confirm Milestone 39's real CI verification green\n\nTest all and Check all both passed after fixing the tests/golden/\ncompile_flags.txt gap Check all's own repo-wide clang-tidy scan surfaced -\ndocumenting both in PLAN.md.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T20:04:39+09:00",
+          "tree_id": "7452db587ffa7d585e31c22045ecdb02dd8edb63",
+          "url": "https://github.com/tsnlab/tickle/commit/52417e7b32230d76f35adda68e9fc70ec5d4db3e"
+        },
+        "date": 1789816035717,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.613,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.523,
             "unit": "Mbps"
           }
         ]
