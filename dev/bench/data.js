@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789815466826,
+  "lastUpdate": 1789815470260,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -31829,6 +31829,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 824.513,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "931f33f93fbe349a3c2c28c708eeb75a06a122db",
+          "message": "Fix real CI: repo-wide clang-tidy can't resolve tickle/config.h in tests/golden/\n\nMilestone 39's push found this in real CI (Check all): tests/golden/*.h\nfiles have no compile_commands.json entry (never part of any real `make\nall` build - they're pure test_golden.py snapshots), so cpp-linter-action's\nrepo-wide clang-tidy scan fails outright ('tickle/config.h' file not found)\non any golden .h file it's asked to check, rather than just flag a style\nissue. Reproduced locally against a pre-existing golden header (Arrays.h)\nwith no compile database - this was already latent, just never hit before\nbecause no golden .h file had been added or modified since this exact CI\ncheck started catching it.\n\nAdds tests/golden/compile_flags.txt (-I to the repo's own include/, -xc) -\nclang-tidy auto-discovers this in a file's own directory before searching\na parent for compile_commands.json, so no change to the CI workflow itself\nis needed. Verified locally against every existing golden header plus the\ntwo new ones, all clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T19:55:10+09:00",
+          "tree_id": "b1973cef2df04c52d4f9234f8e7eb56b691c2ddf",
+          "url": "https://github.com/tsnlab/tickle/commit/931f33f93fbe349a3c2c28c708eeb75a06a122db"
+        },
+        "date": 1789815469201,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.676,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 823.289,
             "unit": "Mbps"
           }
         ]
