@@ -103,12 +103,11 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     // rmw_publisher.c/rmw_subscription.c's own RMW_EVENT_OFFERED_DEADLINE_MISSED/REQUESTED_
     // DEADLINE_MISSED handling.
 
-    // QoS roadmap #6 (LIFESPAN) - needs #1/#4's storage to already exist, neither does.
-    if (!rmw_time_equal(qos_profile->lifespan, (rmw_time_t)RMW_QOS_LIFESPAN_DEFAULT)) {
-        RMW_SET_ERROR_MSG("rmw_tickle doesn't support a finite LIFESPAN yet - see rmw_tickle/"
-                          "PLAN.md's QoS roadmap #6 (LIFESPAN)");
-        return RMW_RET_UNSUPPORTED;
-    }
+    // QoS roadmap #6 (LIFESPAN) - done. Any finite value is accepted, same "any finite value,
+    // purely local" reasoning as DEADLINE just above - see tt_Publisher.lifespan_duration_ns's own
+    // doc comment (tickle.h) and rmw_tickle_subscriber_t.lifespan_ns's own (below) for the actual
+    // Publisher-side (reliable_cache expiry) and Subscription-side (queue expiry) mechanisms this
+    // now backs.
 
     // QoS roadmap #1 (HISTORY/DEPTH) - depth is honored (see rmw_create_subscription()'s own
     // queue_capacity sizing), but KEEP_ALL asks for an *unbounded* queue, which a fixed-capacity

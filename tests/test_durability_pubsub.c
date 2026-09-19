@@ -247,6 +247,42 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
     EXPECT_EQ_U32(3, last_data_header->seq_no);
 }
 
+// QoS roadmap #6 (LIFESPAN) - a newly-discovered Subscriber must not receive backlog entries past
+// pub->lifespan_duration_ns, even though they're still physically retained in reliable_cache -
+// "as if it had never been sent" (tt_Publisher.lifespan_duration_ns's own doc comment, tickle.h).
+static void test_durability_skips_expired_backlog_entries(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.durable = true;
+    pub.lifespan_duration_ns = 1000;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        uint32_t value = i;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1..3, ts 0
+    }
+
+    test_mock_now = 1000; // exactly at the lifespan boundary - already expired (>=, not >)
+    node.update_seen[REMOTE_NODE_ID] = true;
+    test_mock_send_to_call_count = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // every retained sample already expired
+}
+
 // upsert_peer() itself must return true only the first time a given node_id claims a slot, not on
 // a later refresh of that same node_id's address - the exact distinction decode_update_entities()
 // relies on to fire deliver_durability_backlog() only for a genuinely new peer. Tested directly,
@@ -418,6 +454,7 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
 int main(void) {
     test_durability_publish_caches_and_evicts();
     test_durability_delivers_backlog_to_newly_discovered_subscriber();
+    test_durability_skips_expired_backlog_entries();
     test_upsert_peer_true_only_for_new_slot();
     test_durability_no_redelivery_on_unchanged_update();
     test_durability_ignored_for_volatile_publisher();

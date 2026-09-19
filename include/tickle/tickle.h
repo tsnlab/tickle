@@ -412,6 +412,13 @@ struct tt_ReliableCacheEntry {
     uint16_t len;  // encoded submessage length in the matching buffers[] slot; 0 = empty slot
     uint8_t retry; // ACKNACK retransmit count - not consulted by DURABILITY's own one-shot backlog push
     uint8_t buffer[tt_MAX_BUFFER_LENGTH]; // raw encoded submessage bytes, resent verbatim on NACK
+    // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md) - tt_get_ns() at cache_reliable_sample() time.
+    // reliable_cache_entry_expired() (tickle.c) compares this against tt_Publisher.lifespan_
+    // duration_ns to decide whether this entry may still be retransmitted (process_acknack()) or
+    // handed to a newly-discovered Subscriber (deliver_durability_backlog()) - past that age it's
+    // treated "as if it had never been sent" (real DDS's own LIFESPAN wording), same as an evicted
+    // or never-populated slot, even though the bytes are still physically sitting here.
+    uint64_t timestamp;
 };
 struct tt_ReliableCache {
     uint16_t depth; // in-use ring capacity, 1..tt_MAX_RELIABLE_HISTORY
@@ -479,6 +486,22 @@ struct tt_Publisher { // extends endpoint
     // reliable_cache/durable above are. Requires reliable_cache to already be set (nothing to
     // announce for a best-effort Publisher).
     uint64_t heartbeat_period_ns;
+
+    // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md). 0 (tt_Node_create_publisher()'s own default):
+    // disabled, today's only behavior - reliable_cache entries never expire on their own (only
+    // KEEP_LAST eviction removes them). Non-zero: the maximum age, in nanoseconds since tt_
+    // ReliableCacheEntry.timestamp, that a cached sample may still be retransmitted (process_
+    // acknack()) or handed to a newly-discovered Subscriber (deliver_durability_backlog()) - past
+    // that, reliable_cache_entry_expired() (tickle.c) treats it "as if it had never been sent",
+    // matching real DDS's own LIFESPAN semantics exactly (a Writer-side QoS - a plain caller-owned
+    // field, no function call needed, same convention as reliable/durable above; independent of
+    // both, may be combined with either, neither, or both). Plain age-based, no wire change: the
+    // entry's own timestamp already comes from data_header->timestamp (tt_Publisher_publish()),
+    // which every Subscriber already receives regardless of this field, so a Subscriber wanting
+    // its *own* reader-side expiry enforces it independently, straight off that same timestamp
+    // (see rmw_tickle_subscriber_t.lifespan_ns's own doc comment) - no coordination needed between
+    // the two.
+    uint64_t lifespan_duration_ns;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see

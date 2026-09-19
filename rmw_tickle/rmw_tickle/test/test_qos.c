@@ -91,9 +91,14 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
+    // QoS roadmap #6 (LIFESPAN) - done, any finite value accepted, same reasoning as DEADLINE just
+    // above - see tt_Publisher.lifespan_duration_ns's own doc comment (tickle.h) for the actual
+    // reliable_cache-expiry/rmw_tickle_subscriber_t.lifespan_ns's own (queue-expiry) mechanisms.
     qos = valid_profile();
     qos.lifespan.sec = 1;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     // KEEP_ALL is only rejected for a subscription (an unbounded reader queue) - a publisher/
     // client/service has no reader-side queue at all in this rmw's model, so it's harmless there.

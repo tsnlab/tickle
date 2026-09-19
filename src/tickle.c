@@ -1105,7 +1105,15 @@ static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHead
     cache_entry->seq_no = seq_no;
     cache_entry->len = (uint16_t)length;
     cache_entry->retry = 0;
+    cache_entry->timestamp = tt_get_ns();
     cache->next = (cache->next + 1) % depth;
+}
+
+// QoS roadmap #6 (LIFESPAN) - see tt_Publisher.lifespan_duration_ns's own doc comment (tickle.h).
+// lifespan_duration_ns == 0 means "no LIFESPAN requested" - never expired, matching every other
+// disabled-by-zero convention this struct already uses (heartbeat_period_ns, etc).
+static bool reliable_cache_entry_expired(const struct tt_ReliableCacheEntry* entry, uint64_t lifespan_duration_ns) {
+    return lifespan_duration_ns != 0 && (tt_get_ns() - entry->timestamp) >= lifespan_duration_ns;
 }
 
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
@@ -1894,6 +1902,12 @@ static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher
         if (cache_entry->len == 0) {
             continue;
         }
+        // QoS roadmap #6 (LIFESPAN) - a backlog entry past its lifespan is skipped, "as if it had
+        // never been sent" (tt_Publisher.lifespan_duration_ns's own doc comment) - a late-joining
+        // durable Subscriber must not receive stale data just because it's still physically cached.
+        if (reliable_cache_entry_expired(cache_entry, pub->lifespan_duration_ns)) {
+            continue;
+        }
         uint32_t old_tx_tail = node->tx_tail;
         void* buf = encode(node, cache_entry->len);
         if (buf == NULL) {
@@ -2622,6 +2636,34 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 // sender, whichever requested (bitmap bit set) samples are still in that Publisher's own
 // reliable_cache; a sample already evicted (KEEP_LAST) or already retried past tt_RELIABLE_RETRY
 // is silently skipped - the Subscriber's own acknack_retry() gives up on its side independently.
+// Finds the still-resendable cache entry for missing_seq_no, or NULL if there isn't one - either
+// nothing in cache matches it, the retry cap (tt_RELIABLE_RETRY) is already exhausted, or (QoS
+// roadmap #6, LIFESPAN) it's aged out of pub->lifespan_duration_ns. Split out of process_acknack()
+// below purely to keep that function's own cognitive complexity under clang-tidy's threshold, same
+// reasoning cache_reliable_sample()/reliable_cache_oldest_seq_no() were split out for.
+static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
+                                                                 uint32_t missing_seq_no,
+                                                                 uint64_t lifespan_duration_ns) {
+    for (int i = 0; i < depth; i++) {
+        struct tt_ReliableCacheEntry* cache_entry = &cache->entries[i];
+        if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
+            continue;
+        }
+        if (cache_entry->retry >= tt_RELIABLE_RETRY) {
+            return NULL; // give up on this one sample - the Subscriber's own retry cap will too
+        }
+        // Same "as if it had never been sent" rule deliver_durability_backlog() applies, here for
+        // a live NACK'd retransmit instead of a discovery-triggered backlog push. Matches real
+        // DDS: LIFESPAN removes data from the Writer's history outright, RELIABLE's own retry
+        // guarantee doesn't override it.
+        if (reliable_cache_entry_expired(cache_entry, lifespan_duration_ns)) {
+            return NULL;
+        }
+        return cache_entry;
+    }
+    return NULL;
+}
+
 static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_AckNackHeader* acknack_header = decode(node, buffer, &head, tail, sizeof(struct tt_AckNackHeader));
@@ -2659,29 +2701,24 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
         }
         uint32_t missing_seq_no = seq_no + (uint32_t)bit;
 
-        for (int i = 0; i < depth; i++) {
-            struct tt_ReliableCacheEntry* cache_entry = &cache->entries[i];
-            if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
-                continue;
-            }
-            if (cache_entry->retry >= tt_RELIABLE_RETRY) {
-                break; // give up on this one sample - the Subscriber's own retry cap will too
-            }
+        struct tt_ReliableCacheEntry* cache_entry =
+            find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns);
+        if (cache_entry == NULL) {
+            continue;
+        }
 
-            uint32_t old_tx_tail = node->tx_tail;
-            void* buf = encode(node, cache_entry->len);
-            if (buf == NULL) {
-                TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
-                rollback(node, old_tx_tail);
-                break;
-            }
-            _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
-            if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, &target, 1)) {
-                rollback(node, old_tx_tail);
-            } else {
-                cache_entry->retry++;
-            }
-            break;
+        uint32_t old_tx_tail = node->tx_tail;
+        void* buf = encode(node, cache_entry->len);
+        if (buf == NULL) {
+            TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
+            rollback(node, old_tx_tail);
+            continue;
+        }
+        _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+        if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, &target, 1)) {
+            rollback(node, old_tx_tail);
+        } else {
+            cache_entry->retry++;
         }
     }
 

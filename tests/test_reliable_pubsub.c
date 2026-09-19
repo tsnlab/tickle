@@ -517,6 +517,43 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     EXPECT_EQ_U32(1, (uint32_t)cache.entries[0].retry);
 }
 
+// QoS roadmap #6 (LIFESPAN) - a cached sample past pub->lifespan_duration_ns must not be
+// retransmitted even though it's still physically sitting in reliable_cache and the Subscriber's
+// ACKNACK is otherwise perfectly valid - "as if it had never been sent" (tt_Publisher.lifespan_
+// duration_ns's own doc comment, tickle.h).
+static void test_process_acknack_skips_expired_sample(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.lifespan_duration_ns = 1000;
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1, timestamp 0
+
+    test_mock_now = 1000; // exactly at the lifespan boundary - already expired (>=, not >)
+    test_mock_send_to_call_count = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL); // requesting seq_no 1 (bit 0)
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // expired - no retransmit
+    EXPECT_EQ_U32(0, (uint32_t)cache.entries[0].retry);
+}
+
 // An ACKNACK for a best-effort Publisher (reliable_cache == NULL, today's default) must be a
 // harmless no-op - not a crash, not a retransmit of anything.
 static void test_process_acknack_ignored_for_besteffort_publisher(void) {
@@ -549,6 +586,7 @@ int main(void) {
     test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_freezing();
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();
+    test_process_acknack_skips_expired_sample();
     test_process_acknack_ignored_for_besteffort_publisher();
 
     printf("test_reliable_pubsub: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");

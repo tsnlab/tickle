@@ -286,6 +286,16 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         pthread_mutex_unlock(&node_impl->mutex);
     }
 
+    // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment.
+    // rmw_qos.c already accepted any finite qos.lifespan; RMW_QOS_LIFESPAN_DEFAULT ({0,0}) leaves
+    // lifespan_ns at its zero_allocate() default (0 = not requested, no cost) - no scheduling
+    // needed, unlike DEADLINE just above, since this is a plain age check rmw_take_with_info()
+    // makes on demand rather than a periodic timer.
+    rmw_duration_t lifespan_ns = rmw_time_total_nsec(qos_profile->lifespan);
+    if (lifespan_ns > 0) {
+        sub_impl->lifespan_ns = (uint64_t)lifespan_ns;
+    }
+
     return &sub_impl->rmw_subscription;
 }
 
@@ -345,6 +355,16 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
 
     pthread_mutex_lock(&sub_impl->queue_mutex);
+    // QoS roadmap #6 (LIFESPAN) - see rmw_tickle_subscriber_t.lifespan_ns's own doc comment. Drops
+    // (not returns) any already-expired entries from the front before taking the real head - "as
+    // if it had never been sent", same wording tickle.c's own reliable_cache-side skip uses. A
+    // no-op loop when lifespan_ns == 0 (not requested).
+    while (sub_impl->queue_count > 0 && sub_impl->lifespan_ns != 0 &&
+           tt_get_ns() - sub_impl->queue[sub_impl->queue_head].source_timestamp >= sub_impl->lifespan_ns) {
+        sub_impl->allocator.deallocate(sub_impl->queue[sub_impl->queue_head].ros_message, sub_impl->allocator.state);
+        sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
+        sub_impl->queue_count--;
+    }
     if (sub_impl->queue_count == 0) {
         pthread_mutex_unlock(&sub_impl->queue_mutex);
         *taken = false;

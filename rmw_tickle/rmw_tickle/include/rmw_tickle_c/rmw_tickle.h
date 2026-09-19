@@ -339,6 +339,17 @@ typedef struct rmw_tickle_subscriber_t {
     // can't honestly report.
     uint64_t liveliness_lease_ns;
     rmw_tickle_liveliness_changed_status_t liveliness_changed;
+
+    // QoS roadmap #6 (LIFESPAN) - 0 (zero_allocate() default): disabled, today's only behavior for
+    // a Subscription that didn't request one. Non-zero: rmw_take_with_info() (rmw_subscription.c)
+    // discards any queue[] entry whose source_timestamp is already this old before returning it -
+    // "as if it had never been sent" (RMW_RET_OK, *taken = false, same as an empty queue), matching
+    // tt_Publisher.lifespan_duration_ns's own reliable_cache-side wording exactly. Deliberately
+    // independent of the Publisher's own lifespan_duration_ns (tickle.h) rather than negotiated
+    // with it - both read the same underlying data_header->timestamp (already on the wire
+    // regardless of either side's QoS, carried through to source_timestamp below), so a
+    // Subscription can enforce its own age floor with no coordination needed.
+    uint64_t lifespan_ns;
 } rmw_tickle_subscriber_t;
 
 // TickLE specific client data

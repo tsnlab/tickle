@@ -213,6 +213,16 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         pthread_mutex_unlock(&node_impl->mutex);
     }
 
+    // QoS roadmap #6 (LIFESPAN) - see tt_Publisher.lifespan_duration_ns's own doc comment
+    // (tickle.h). rmw_qos.c already accepted any finite qos.lifespan; RMW_QOS_LIFESPAN_DEFAULT
+    // ({0,0}) leaves lifespan_duration_ns at its zero_allocate() default (0 = not requested, no
+    // cost) - a plain field TickLE core itself reads on demand (deliver_durability_backlog()/
+    // process_acknack()), no rmw_tickle-side state or scheduling needed, unlike DEADLINE above.
+    rmw_duration_t lifespan_ns = rmw_time_total_nsec(qos_profile->lifespan);
+    if (lifespan_ns > 0) {
+        pub_impl->tickle_publisher.lifespan_duration_ns = (uint64_t)lifespan_ns;
+    }
+
     return &pub_impl->rmw_publisher;
 }
 
