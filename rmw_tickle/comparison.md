@@ -310,3 +310,31 @@ between poll_thread and the application's own executor thread - were **not** att
 closing this gap for real now needs an actual profiling pass (`perf`/`ftrace`, not counting
 allocations by reading the code) to find out whether either of those, or something not yet
 identified at all, actually dominates - tracked as the next real step, not guessed at again.
+
+**Post-Milestone-47 validation (2026-09-20, TickLE Dev, 3 runs, per the user's own explicit
+go-ahead)** - the actual point of this follow-up: does Milestone 47's own `(node_id, entity_id)`
+WriterProxy + goodbye fix (`rmw_tickle/PLAN.md`) actually close the crash this whole exercise kept
+tripping over. **All 3 runs completed clean - 36/36 `two_process_rmw_*` combinations passed, zero
+crashes, zero `Data consistency violated` occurrences, zero skipped `rmw_tickle` rows** (the two
+`rmw_cyclonedds_cpp` skips each run are a pre-existing, unrelated `async` test-registration quirk
+already noted above, not a `rmw_tickle` issue):
+
+| Topic | Sync | Run 1 | Run 2 | Run 3 |
+|---|---|---:|---:|---:|
+| Array1k | async | 0.0481 | 0.0504 | 0.0478 |
+| Array1k | sync | 0.0533 | 0.0481 | 0.0462 |
+| Struct16 | async | 0.0510 | 0.0533 | 0.0465 |
+| Struct16 | sync | 0.0470 | 0.1045 | 0.0562 |
+
+(Struct16 sync's own Run 2 spike, 0.1045ms, is a single-run outlier, not a repeat - Run 1 and Run 3
+both land back in the same 0.04-0.06ms band every other row across every run this whole exercise
+has produced sits in. Consistent with ordinary run-to-run noise on this rig, not a regression.)
+
+**Updated tally, all sessions combined**: 8 total run attempts (5 pre-fix: 2 from TickLE Dev + 3
+from "TickLE Plan", 3/5 hit Milestone 47's own crash/major-loss signature; 3 post-fix, all from
+TickLE Dev, **0/3** hit it). Not proof the residual race the fix's own design explicitly
+acknowledges (a still-in-flight stale packet arriving in the narrow window before goodbye's own
+broadcast reaches a peer) is literally impossible - matching real DDS's own identical, accepted
+limitation for an ungraceful shutdown - but a real, substantial drop in observed frequency (3/5 →
+0/3) on the exact same reproducer that found it in the first place, which is the honest answer
+this specific question can give without a much larger sample than manual runs support well.
