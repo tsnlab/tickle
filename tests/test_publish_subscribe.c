@@ -455,6 +455,36 @@ static void test_node_destroy_broadcasts_farewell(void) {
     EXPECT_TRUE(!node.tx_has_pending_update);                 // flush cleared it
 }
 
+// Milestone 47 "goodbye" - destroying one entity (while the node itself keeps running, unlike
+// tt_Node_destroy() above) must also broadcast the now-reduced entity list right away, not just
+// batch it for node_update()'s own next periodic tick (up to tt_NODE_UPDATE_INTERVAL later) -
+// this is what actually narrows the window a departed Publisher could still be confused with a
+// newly-arrived one under (rmw_tickle/PLAN.md's own Milestone 47 writeup). A second, surviving
+// Publisher on the same node must remain correctly registered afterwards.
+static void test_publisher_destroy_broadcasts_goodbye_immediately(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub1;
+    struct tt_Publisher pub2;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub1, &node, &topic);
+    init_publisher(&pub2, &node, &topic);
+    pub2.endpoint.name = "test_publisher_2";
+    node.endpoint_count = 2;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub1;
+    node.endpoints[1] = (struct tt_Endpoint*)&pub2;
+
+    EXPECT_EQ_INT(tt_RET_OK, (int)tt_Publisher_destroy(&pub1));
+
+    EXPECT_TRUE(test_mock_send_call_count >= 1);              // goodbye went out immediately
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // as a broadcast, not a unicast
+    EXPECT_TRUE(!node.tx_has_pending_update);                 // flush cleared it - not left batched
+    EXPECT_EQ_U32(1, node.endpoint_count);                    // pub1 gone, pub2 survives
+    EXPECT_TRUE(node.endpoints[0] == (struct tt_Endpoint*)&pub2);
+}
+
 // Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail
 // offset (matching what process_packet() would have handed process_data()).
 static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
@@ -623,6 +653,7 @@ int main(void) {
     test_node_flush_broadcasts_when_multiple_publishers_on_node();
     test_node_update_sets_pending_update_flag();
     test_node_destroy_broadcasts_farewell();
+    test_publisher_destroy_broadcasts_goodbye_immediately();
     test_process_data_dispatches_to_subscriber();
     test_process_data_unknown_endpoint_is_ignored();
     test_process_data_decode_failure_is_reported();

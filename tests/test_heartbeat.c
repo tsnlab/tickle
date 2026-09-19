@@ -120,11 +120,23 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     sub->topic = topic;
     sub->callback = stub_subscriber_callback;
     sub->reliable = true;
-    sub->ack_seq_no = 1; // matches tt_Node_create_subscriber()'s own init - see tickle.h
-    sub->reliable_sender_node_id = tt_NODE_ID_INVALID;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - matches tt_Node_create_
+                                                      // subscriber()'s own init (Milestone 47 -
+                                                      // each writer's own ack_seq_no starts at 1
+                                                      // lazily, on first contact)
+    }
 
     node->endpoint_count = 1;
     node->endpoints[0] = (struct tt_Endpoint*)sub;
+}
+
+// Milestone 47 - shorthand for the WriterProxy every test in this file cares about: this file's
+// own single simulated remote Publisher, REMOTE_NODE_ID with entity_id 0 (write_heartbeat()/write_
+// data() below never set entity_id, so it stays 0 - node->rx_buffer starts zeroed). Looks up the
+// entry process_heartbeat()/process_data() already created on first contact.
+static struct tt_WriterProxy* remote_writer_proxy(struct tt_Subscriber* sub) {
+    return find_writer_proxy(sub, REMOTE_NODE_ID, 0);
 }
 
 static void init_header(struct tt_Header* header) {
@@ -291,11 +303,13 @@ static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_receive
     uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 97, 100, tt_HEARTBEAT_FLAG_FINAL);
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(97, sub.ack_seq_no); // learned directly from the Heartbeat, no DATA involved
-    EXPECT_TRUE(sub.received_bitmap == 0);
-    EXPECT_EQ_U32(100, sub.reliable_heartbeat_last_seq_no);
-    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)sub.reliable_sender_node_id);
-    EXPECT_TRUE(sub.reliable_acknack_scheduled); // 97..100 gap revealed -> a real ACKNACK cycle
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);           // Milestone 47 - created lazily, first contact
+    EXPECT_EQ_U32(97, proxy->ack_seq_no); // learned directly from the Heartbeat, no DATA involved
+    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_EQ_U32(100, proxy->heartbeat_last_seq_no);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)proxy->node_id);
+    EXPECT_TRUE(proxy->acknack_scheduled); // 97..100 gap revealed -> a real ACKNACK cycle
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
 }
 
@@ -311,8 +325,11 @@ static void test_heartbeat_oversized_gap_jumps_baseline(void) {
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
-    sub.reliable_sender_node_id = REMOTE_NODE_ID; // simulate "already had reliable contact"
-    sub.ack_seq_no = 1;
+    // Milestone 47 - simulate "already had reliable contact" by pre-claiming this writer's own
+    // WriterProxy entry, rather than a flat sentinel field.
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->ack_seq_no = 1;
 
     struct tt_Header header;
     init_header(&header);
@@ -321,8 +338,8 @@ static void test_heartbeat_oversized_gap_jumps_baseline(void) {
         write_heartbeat(&node, ENDPOINT_ID, 1, 1000, tt_HEARTBEAT_FLAG_FINAL); // gap of 999 from ack_seq_no 1
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(1001, sub.ack_seq_no);
-    EXPECT_TRUE(sub.received_bitmap == 0);
+    EXPECT_EQ_U32(1001, proxy->ack_seq_no);
+    EXPECT_TRUE(proxy->received_bitmap == 0);
 }
 
 // A Heartbeat arriving at an already-tracking Subscriber, revealing a gap that still fits inside
@@ -336,10 +353,11 @@ static void test_heartbeat_gap_within_window_widens_request_without_jumping(void
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
-    sub.reliable_sender_node_id = REMOTE_NODE_ID;
-    sub.reliable_sender_ip = TEST_SENDER_IP;
-    sub.reliable_sender_port = TEST_SENDER_PORT;
-    sub.ack_seq_no = 1;
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->sender_ip = TEST_SENDER_IP;
+    proxy->sender_port = TEST_SENDER_PORT;
+    proxy->ack_seq_no = 1;
 
     struct tt_Header header;
     init_header(&header);
@@ -348,10 +366,10 @@ static void test_heartbeat_gap_within_window_widens_request_without_jumping(void
         write_heartbeat(&node, ENDPOINT_ID, 1, 5, tt_HEARTBEAT_FLAG_FINAL); // gap of 4 - well within the window
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(1, sub.ack_seq_no);      // untouched - this is not the oversized-gap case
-    EXPECT_TRUE(sub.received_bitmap == 0); // nothing *confirmed* received either
-    EXPECT_EQ_U32(5, sub.reliable_heartbeat_last_seq_no);
-    EXPECT_TRUE(sub.reliable_acknack_scheduled); // still triggers a real ACKNACK cycle
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);      // untouched - this is not the oversized-gap case
+    EXPECT_TRUE(proxy->received_bitmap == 0); // nothing *confirmed* received either
+    EXPECT_EQ_U32(5, proxy->heartbeat_last_seq_no);
+    EXPECT_TRUE(proxy->acknack_scheduled); // still triggers a real ACKNACK cycle
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
 }
 
@@ -373,7 +391,7 @@ static void test_heartbeat_ignored_for_besteffort_subscriber(void) {
     uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 100, tt_HEARTBEAT_FLAG_FINAL);
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(1, sub.ack_seq_no);
+    EXPECT_TRUE(remote_writer_proxy(&sub) == NULL); // best-effort - no WriterProxy ever created
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
@@ -390,8 +408,10 @@ static void test_heartbeat_final_flag_clear_forces_acknack_without_gap(void) {
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
-    sub.reliable_sender_node_id = REMOTE_NODE_ID; // already tracking, not first contact
-    sub.ack_seq_no = 5;                           // already received everything up through 4
+    // already tracking, not first contact
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->ack_seq_no = 5; // already received everything up through 4
 
     struct tt_Header header;
     init_header(&header);
@@ -399,8 +419,8 @@ static void test_heartbeat_final_flag_clear_forces_acknack_without_gap(void) {
     uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 4, 0); // fully caught up, flag clear
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(5, sub.ack_seq_no);                         // untouched - no real gap
-    EXPECT_TRUE(!sub.reliable_acknack_scheduled);             // no gap -> no retry cycle armed
+    EXPECT_EQ_U32(5, proxy->ack_seq_no);                      // untouched - no real gap
+    EXPECT_TRUE(!proxy->acknack_scheduled);                   // no gap -> no retry cycle armed
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // but still replied once, on request
 }
 
@@ -415,8 +435,9 @@ static void test_heartbeat_final_flag_set_stays_silent_without_gap(void) {
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
-    sub.reliable_sender_node_id = REMOTE_NODE_ID;
-    sub.ack_seq_no = 5;
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->ack_seq_no = 5;
 
     struct tt_Header header;
     init_header(&header);

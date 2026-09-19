@@ -38,7 +38,7 @@ _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-al
 #undef TT_FRAMING_HDR
 // skip_unrecoverable_backlog()'s own bulk-skip (QoS roadmap #5, acknack_retry()'s give-up path)
 // relies on a retained-sample window this narrow always fitting inside
-// tt_Subscriber.received_bitmap's own tt_RELIABLE_BITMAP_BITS-wide tracking window.
+// struct tt_WriterProxy.received_bitmap's own tt_RELIABLE_BITMAP_BITS-wide tracking window.
 _Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
                "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
 
@@ -265,6 +265,41 @@ static struct tt_Endpoint* find_endpoint(struct tt_Node* node, uint8_t kind, uin
     }
 
     return NULL;
+}
+
+// Milestone 47 - like find_endpoint() above, but among every local endpoint matching (kind,
+// endpoint_id), prefers the one whose own entity_id matches - falling back to the plain first
+// match find_endpoint() would have returned when entity_id is 0 (unknown - an older-style call
+// site, or a sender that hasn't learned the real target entity_id yet) or none of the matches
+// carry it. Closes Milestone 35's own previously-accepted "first match" ambiguity for whichever
+// submessage type actually carries a *target* entity_id (struct tt_AckNackHeader, process_
+// acknack()) - DATA/HEARTBEAT identify their own *sender* instead (struct tt_Endpoint.entity_id's
+// own doc comment) and fan out to every local match via for_each_endpoint(), so they don't need
+// this narrowing at all.
+static struct tt_Endpoint* find_endpoint_by_entity(struct tt_Node* node, uint8_t kind, uint32_t endpoint_id,
+                                                   uint32_t entity_id) {
+    if (!node->endpoint_index_valid) {
+        rebuild_endpoint_index(node);
+    }
+
+    struct tt_Endpoint* first_match = NULL;
+    uint32_t slot = endpoint_id & (tt_ENDPOINT_INDEX_SIZE - 1);
+    for (uint32_t probe = 0; probe < tt_ENDPOINT_INDEX_SIZE; probe++) {
+        struct tt_Endpoint* endpoint = node->endpoint_index[slot];
+        if (endpoint == NULL) {
+            break;
+        }
+        if (endpoint->kind == kind && endpoint->id == endpoint_id) {
+            if (entity_id != 0 && endpoint->entity_id == entity_id) {
+                return endpoint;
+            }
+            if (first_match == NULL) {
+                first_match = endpoint;
+            }
+        }
+        slot = (slot + 1) & (tt_ENDPOINT_INDEX_SIZE - 1);
+    }
+    return first_match;
 }
 
 // Milestone 35 - calls visit(node, endpoint, ctx) once for every local endpoint matching (kind,
@@ -520,6 +555,12 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
         }
     }
 
+    // Milestone 47 - every entity kind gets its own entity_id here, the single shared
+    // registration point for all four (Publisher/Subscriber/Client/Server) - see struct tt_
+    // Endpoint.entity_id's own doc comment (tickle.h) for what this is and struct tt_Node.
+    // entity_id_base/next_entity_id's own doc comment for the generation scheme.
+    endpoint->entity_id = node->entity_id_base + node->next_entity_id++;
+
     node->endpoints[node->endpoint_count++] = endpoint;
     node->endpoint_index_valid = false;
 
@@ -674,20 +715,31 @@ static void pop_scheduler(struct tt_Node* node) {
 }
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
+static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count);
+// Milestone 47 "goodbye" - see its own definition's doc comment.
+static void broadcast_goodbye(struct tt_Node* node);
 static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 static void check_liveliness(struct tt_Node* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param);
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
-static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub);
-static void advance_ack_seq_no(struct tt_Subscriber* sub);
-static void skip_unrecoverable_backlog(struct tt_Subscriber* sub);
-static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* sub);
+static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy);
+static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
+static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy);
+static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy);
 static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
-                                uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port);
-static void jump_ack_baseline(struct tt_Subscriber* sub, uint32_t seq_no);
-static int highest_relevant_bit(const struct tt_Subscriber* sub);
+                                uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
+                                uint16_t sender_port);
+static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no);
+static int highest_relevant_bit(const struct tt_WriterProxy* proxy);
+// Milestone 47 - WriterProxy table lookup/creation - see struct tt_WriterProxy's own doc comment
+// (tickle.h) and each definition. find_endpoint_by_entity() (the entity_id-aware ACKNACK routing
+// lookup) needs no forward declaration here - it's defined right next to find_endpoint() above,
+// before its own only call site (process_acknack(), further down this file).
+static struct tt_WriterProxy* find_writer_proxy(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id);
+static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* sub, uint8_t node_id,
+                                                          uint32_t entity_id, bool* out_created);
 // QoS roadmap #5 (RELIABILITY) follow-up - Heartbeat, see struct tt_HeartbeatHeader's own doc
 // comment (tickle.h).
 static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param);
@@ -707,6 +759,8 @@ static void reset_node_state(struct tt_Node* node) {
     }
 
     node->last_modified = 0;
+    node->entity_id_base = 0; // real value assigned by tt_Node_create() itself, after this call
+    node->next_entity_id = 0;
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
         node->update_last_modified[i] = 0;
@@ -763,6 +817,13 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
         return tt_RET_INVALID_ARGUMENT;
     }
     reset_node_state(node);
+
+    // Milestone 47 - this launch's own random entity_id base (struct tt_Node.entity_id_base's own
+    // doc comment, tickle.h): tt_get_ns()'s low 32 bits, no separate RNG primitive needed - this
+    // node's own launch instant already is one, and this is exactly the kind of "coarse, no
+    // cryptographic requirement" randomness every other sentinel/hash choice in this file already
+    // accepts (e.g. tt_hash_id() itself).
+    node->entity_id_base = (uint32_t)tt_get_ns();
 
     // _tt_CONFIG.node_id (see its own comment) skips auto-detection when set explicitly.
     node->id = (uint8_t)(_tt_CONFIG.node_id != tt_NODE_ID_INVALID ? _tt_CONFIG.node_id : tt_get_node_id());
@@ -907,12 +968,9 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->topic = topic;
     sub->callback = callback;
     sub->reliable = false; // best-effort by default - see tickle.h's own doc comment
-    sub->ack_seq_no = 1;   // a Publisher's first sample is always seq_no 1, never 0
-    sub->received_bitmap = 0;
-    sub->reliable_sender_node_id = tt_NODE_ID_INVALID;
-    sub->reliable_retry = 0;
-    sub->reliable_acknack_scheduled = false;
-    sub->reliable_heartbeat_last_seq_no = 0; // no Heartbeat seen yet - see its own doc comment
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - see struct tt_WriterProxy
+    }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_RET_OK) {
@@ -1104,6 +1162,7 @@ tt_ret_t tt_Client_destroy(struct tt_Client* client) {
     }
 
     client->node->last_modified = tt_get_ns();
+    broadcast_goodbye(client->node);
 
     return tt_RET_OK;
 }
@@ -1127,6 +1186,7 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     }
 
     server->node->last_modified = tt_get_ns();
+    broadcast_goodbye(server->node);
 
     return tt_RET_OK;
 }
@@ -1157,6 +1217,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
     data_header->timestamp = tt_get_ns();
+    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     uint8_t peer_count = count_peers(pub->peers);
     if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
@@ -1253,6 +1314,7 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
     data_header->timestamp = tt_get_ns();
+    data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     // DataBody
     int32_t cdr_len = pub->topic->data_encode_size(data);
@@ -1350,6 +1412,7 @@ static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher*
     heartbeat_header->endpoint_id = endpoint->id;
     heartbeat_header->first_available_seq_no = first_seq_no;
     heartbeat_header->last_seq_no = pub->seq_no;
+    heartbeat_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
     heartbeat_header->flags = flags;
     heartbeat_header->reserved[0] = 0;
     heartbeat_header->reserved[1] = 0;
@@ -1471,24 +1534,47 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
     return tt_RET_OK;
 }
 
+// Milestone 47 "goodbye" - broadcasts the node's own now-reduced entity list right away, instead
+// of waiting for node_update()'s own next periodic tick (up to tt_NODE_UPDATE_INTERVAL later).
+// Shared by every per-entity destroy function below (tt_Publisher_destroy()/tt_Subscriber_
+// destroy()/tt_Client_destroy()/tt_Server_destroy()) - call only *after* remove_endpoint_from_
+// node() has already removed the departing entity, so encode_update_entities() doesn't announce
+// it as still present. decode_update_entities()'s own "authoritative announce" reconciliation
+// (forget_peers_from_source(), tickle.c) is what actually makes a departed entity's own matched-
+// peer/WriterProxy state disappear promptly on the *receiving* side once this arrives - narrowing,
+// not eliminating, the overlap window a not-yet-departed writer could still be confused with a
+// newly-arrived one under (real DDS's own lease-expiry-based cleanup has the identical residual
+// gap for an ungraceful shutdown - see rmw_tickle/PLAN.md's own Milestone 47 for the full
+// writeup). Calls build_and_send_update() directly, not node_update() (which would also re-arm
+// its own periodic reschedule on top of the one already pending - safe inside tt_Node_destroy()
+// only because that function wipes the whole scheduler right after, not true for a per-entity
+// destroy that leaves the node running).
+static void broadcast_goodbye(struct tt_Node* node) {
+    build_and_send_update(node, NULL, 0);
+    if (!flush_tx(node, node->tx_tail, NULL, 0)) {
+        TT_LOG_WARNING("Could not send farewell announce on entity destroy");
+    }
+}
+
 tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
+    struct tt_Node* node = pub->node;
 
     // Cancel a still-armed Heartbeat before this Publisher (its own schedule param) goes away -
     // same reasoning as tt_Subscriber_destroy()'s own acknack_retry cancellation just below.
     if (pub->heartbeat_period_ns != 0) {
-        tt_Node_unschedule(pub->node, send_heartbeat, pub);
+        tt_Node_unschedule(node, send_heartbeat, pub);
     }
 
-    if (remove_endpoint_from_node(pub->node, endpoint)) {
-        pub->node->last_modified = tt_get_ns();
-        return tt_RET_OK;
+    if (!remove_endpoint_from_node(node, endpoint)) {
+        return tt_RET_IILEGAL_ENDPOINT_ID;
     }
-
-    return tt_RET_IILEGAL_ENDPOINT_ID;
+    node->last_modified = tt_get_ns();
+    broadcast_goodbye(node);
+    return tt_RET_OK;
 }
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
@@ -1496,16 +1582,23 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
         return tt_RET_INVALID_ARGUMENT;
     }
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
+    struct tt_Node* node = sub->node;
 
-    // Cancel any outstanding acknack_retry before this Subscriber (its own schedule param) goes
-    // away - same reasoning as tt_Client_destroy()'s own call_retry cancellation.
-    if (sub->reliable_acknack_scheduled) {
-        tt_Node_unschedule(sub->node, acknack_retry, sub);
-        sub->reliable_acknack_scheduled = false;
+    // Cancel every outstanding per-writer acknack_retry before this Subscriber's own writers[]
+    // table (each entry's own schedule param) goes away - same reasoning as tt_Client_destroy()'s
+    // own call_retry cancellation, just once per still-armed WriterProxy instead of once for the
+    // whole Subscriber (Milestone 47 - acknack_retry() is now scheduled per struct tt_WriterProxy,
+    // not per Subscriber, see its own doc comment).
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (sub->writers[i].acknack_scheduled) {
+            tt_Node_unschedule(node, acknack_retry, &sub->writers[i]);
+            sub->writers[i].acknack_scheduled = false;
+        }
     }
 
-    if (remove_endpoint_from_node(sub->node, endpoint)) {
-        sub->node->last_modified = tt_get_ns();
+    if (remove_endpoint_from_node(node, endpoint)) {
+        node->last_modified = tt_get_ns();
+        broadcast_goodbye(node);
         return tt_RET_OK;
     }
 
@@ -1513,7 +1606,7 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
 }
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - encodes and unicasts one ACKNACK
-// submessage back to sub->reliable_sender_*, reporting sub->ack_seq_no/received_bitmap. Not
+// submessage back to proxy->sender_*, reporting proxy->ack_seq_no/received_bitmap. Not
 // fatal on failure, same philosophy as resend_call_request()'s own comment: whichever caller
 // armed a retry (update_reliable_ack()/acknack_retry()) will just try again.
 // Highest bit index set in a tt_Subscriber's own received_bitmap (bit j: "received(ack_seq_no +
@@ -1528,20 +1621,81 @@ static int highest_received_bit(uint64_t received_bitmap) {
     return highest;
 }
 
-// QoS roadmap #5 (RELIABILITY) follow-up - the highest bit position (bit j: seq_no ack_seq_no + j
-// needs attention, one way or another) this Subscriber currently has *any* reason to ask about -
-// received_bitmap's own highest confirmed-out-of-order bit (highest_received_bit() above, the
-// only signal before this follow-up existed), widened by the highest seq_no the most recent
-// struct tt_HeartbeatHeader claimed the Publisher has published, if that reaches further. A
-// Heartbeat can reveal the Subscriber is behind even with zero out-of-order DATA arrivals yet -
-// received_bitmap alone is blind to that case, since nothing has set any bit in it. Shared by
-// send_acknack() (what to actually request) and maybe_arm_acknack_retry() (whether there's
-// anything to do at all) - both need the same widened answer, not just received_bitmap's own.
-// -1 if neither signal has anything to report.
-static int highest_relevant_bit(const struct tt_Subscriber* sub) {
-    int highest = highest_received_bit(sub->received_bitmap);
-    if (sub->reliable_heartbeat_last_seq_no >= sub->ack_seq_no) {
-        uint64_t hb_offset = (uint64_t)sub->reliable_heartbeat_last_seq_no - sub->ack_seq_no;
+// Milestone 47 - finds sub's existing WriterProxy for (node_id, entity_id), or NULL if this
+// specific writer isn't currently tracked (every slot empty, or all held by other writers). Never
+// claims a new slot - see find_or_create_writer_proxy() below for the create half most call sites
+// actually want; this bare find is only for a caller that must *not* create one on a miss
+// (inform_subscriber_of_heartbeat()'s own "is this really first contact" check).
+static struct tt_WriterProxy* find_writer_proxy(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (sub->writers[i].node_id == node_id && sub->writers[i].entity_id == entity_id) {
+            return &sub->writers[i];
+        }
+    }
+    return NULL;
+}
+
+// Milestone 47 - find_writer_proxy() above, but claims and initializes the first empty slot on a
+// miss instead of returning NULL (every DATA/HEARTBEAT-driven call site below wants this). A new
+// entry starts at ack_seq_no 1 (a Publisher's first sample is always seq_no 1, never 0), matching
+// tt_Node_create_subscriber()'s own former up-front default - now applied lazily, per writer, the
+// first time each one is actually heard from instead of once for the whole Subscriber. *out_
+// created (may be NULL) reports whether this call just claimed a fresh slot, for a caller that
+// needs to tell "already tracking this writer" apart from "first contact" (inform_subscriber_of_
+// heartbeat()'s own first-contact branch). Returns NULL only if the table is already full and no
+// matching entry exists - every call site handles that the same way a full pub->peers[]/client->
+// peers[] already silently drops a peer past tt_MAX_PEER_COUNT elsewhere in this file, not a new
+// failure mode.
+static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* sub, uint8_t node_id,
+                                                          uint32_t entity_id, bool* out_created) {
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, node_id, entity_id);
+    if (proxy != NULL) {
+        if (out_created != NULL) {
+            *out_created = false;
+        }
+        return proxy;
+    }
+
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (sub->writers[i].node_id == tt_NODE_ID_INVALID) {
+            proxy = &sub->writers[i];
+            proxy->node_id = node_id;
+            proxy->entity_id = entity_id;
+            proxy->sender_ip = 0;
+            proxy->sender_port = 0;
+            proxy->ack_seq_no = 1;
+            proxy->received_bitmap = 0;
+            proxy->retry = 0;
+            proxy->acknack_scheduled = false;
+            proxy->heartbeat_last_seq_no = 0;
+            proxy->sub = sub;
+            if (out_created != NULL) {
+                *out_created = true;
+            }
+            return proxy;
+        }
+    }
+
+    if (out_created != NULL) {
+        *out_created = false;
+    }
+    return NULL; // table full - see this function's own doc comment
+}
+
+// QoS roadmap #5 (RELIABILITY) follow-up - the highest bit position (bit j: seq_no proxy->
+// ack_seq_no + j needs attention, one way or another) this writer currently has *any* reason to
+// ask about - received_bitmap's own highest confirmed-out-of-order bit (highest_received_bit()
+// above, the only signal before this follow-up existed), widened by the highest seq_no the most
+// recent struct tt_HeartbeatHeader from this writer claimed the Publisher has published, if that
+// reaches further. A Heartbeat can reveal the Subscriber is behind even with zero out-of-order
+// DATA arrivals yet - received_bitmap alone is blind to that case, since nothing has set any bit
+// in it. Shared by send_acknack() (what to actually request) and maybe_arm_acknack_retry()
+// (whether there's anything to do at all) - both need the same widened answer, not just received_
+// bitmap's own. -1 if neither signal has anything to report.
+static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
+    int highest = highest_received_bit(proxy->received_bitmap);
+    if (proxy->heartbeat_last_seq_no >= proxy->ack_seq_no) {
+        uint64_t hb_offset = (uint64_t)proxy->heartbeat_last_seq_no - proxy->ack_seq_no;
         int hb_highest = hb_offset < tt_RELIABLE_BITMAP_BITS ? (int)hb_offset : tt_RELIABLE_BITMAP_BITS - 1;
         if (hb_highest > highest) {
             highest = hb_highest;
@@ -1550,13 +1704,10 @@ static int highest_relevant_bit(const struct tt_Subscriber* sub) {
     return highest;
 }
 
-static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
-    if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
-        return; // no reliable DATA seen yet to ack
-    }
-
+static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
+    struct tt_Subscriber* sub = proxy->sub;
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
-    struct tt_Peer target = {sub->reliable_sender_node_id, sub->reliable_sender_ip, sub->reliable_sender_port};
+    struct tt_Peer target = {proxy->node_id, proxy->sender_ip, proxy->sender_port};
     uint32_t old_tx_tail = node->tx_tail;
 
     struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_ACKNACK, target.node_id);
@@ -1572,7 +1723,7 @@ static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
     }
 
     acknack_header->endpoint_id = endpoint->id;
-    acknack_header->seq_no = sub->ack_seq_no;
+    acknack_header->seq_no = proxy->ack_seq_no;
     // wire direction is "please resend", opposite of received_bitmap - but masked to bits below
     // the highest *confirmed* arrival: a bare ~received_bitmap requested every one of all
     // tt_RELIABLE_BITMAP_BITS positions whenever received_bitmap had only a few bits set,
@@ -1588,14 +1739,17 @@ static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
     // last_seq_no - QoS roadmap #5's own follow-up, struct tt_HeartbeatHeader's doc comment
     // (tickle.h) - widening the request range to cover a gap a Heartbeat revealed even when
     // nothing has arrived out of order yet to set any bit here at all.
-    int highest = highest_relevant_bit(sub);
+    int highest = highest_relevant_bit(proxy);
     uint64_t request_mask = 0;
     if (highest >= tt_RELIABLE_BITMAP_BITS - 1) {
         request_mask = ~0ULL; // highest is the top bit - avoid a 64-bit shift's own UB below
     } else if (highest >= 0) {
         request_mask = (1ULL << (highest + 1)) - 1;
     }
-    acknack_header->bitmap = ~sub->received_bitmap & request_mask;
+    acknack_header->bitmap = ~proxy->received_bitmap & request_mask;
+    // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
+    // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
+    acknack_header->entity_id = proxy->entity_id;
 
     // Unicast straight back to whoever's DATA this acks - same "nothing else queued" guard as
     // process_callrequest()'s own CallResponse. Falling back to broadcast when something else is
@@ -1608,54 +1762,57 @@ static void send_acknack(struct tt_Node* node, struct tt_Subscriber* sub) {
     }
 }
 
-// Scheduled (tt_Node_schedule()) while sub has an outstanding gap (sub->received_bitmap != 0),
-// re-sending the ACKNACK on a timer for the case where no further DATA ever arrives to re-trigger
-// update_reliable_ack() itself. Mirrors call_retry()'s own schedule/reschedule/give-up shape.
+// Scheduled (tt_Node_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
+// 0), re-sending the ACKNACK on a timer for the case where no further DATA ever arrives to
+// re-trigger update_reliable_ack() itself. Mirrors call_retry()'s own schedule/reschedule/give-up
+// shape. Scheduled against proxy's own stable address (not the owning Subscriber) so several
+// writers' independent retry timers on the same Subscriber never collide - see struct tt_
+// WriterProxy.sub's own doc comment for why this can still reach node/endpoint from just `proxy`.
 static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(time);
 
-    struct tt_Subscriber* sub = param;
+    struct tt_WriterProxy* proxy = param;
 
-    if (sub->received_bitmap == 0) {
+    if (proxy->received_bitmap == 0) {
         // A DATA arrival already closed the gap since this timer was armed.
-        sub->reliable_acknack_scheduled = false;
+        proxy->acknack_scheduled = false;
         return;
     }
 
-    if (++sub->reliable_retry > tt_RELIABLE_RETRY) {
+    if (++proxy->retry > tt_RELIABLE_RETRY) {
         TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
-        sub->reliable_acknack_scheduled = false;
+        proxy->acknack_scheduled = false;
         // Give up on ack_seq_no itself - the same "advance past it" advance_ack_seq_no() already
         // does for a real receipt, since from here on it makes no difference *why* nothing more
         // is waiting on it. A different, still-outstanding gap further ahead in the window (if
         // any) is untouched - it gets its own full tt_RELIABLE_RETRY budget against whatever
-        // ack_seq_no ends up being next (advance_ack_seq_no()'s own reset of reliable_retry is
-        // what actually grants that fresh budget) - and, unlike leaving it to the next DATA
-        // arrival to notice, maybe_arm_acknack_retry() below starts requesting it immediately.
-        advance_ack_seq_no(sub);
+        // ack_seq_no ends up being next (advance_ack_seq_no()'s own reset of retry is what
+        // actually grants that fresh budget) - and, unlike leaving it to the next DATA arrival to
+        // notice, maybe_arm_acknack_retry() below starts requesting it immediately.
+        advance_ack_seq_no(proxy);
         // Now that ack_seq_no itself just had its own fair tt_RELIABLE_RETRY attempts and still
         // didn't resolve, also bulk-skip anything *else* already provably unrecoverable for the
         // identical reason (see skip_unrecoverable_backlog()'s own comment) - but only here, at
         // the natural give-up point, never pre-empting an still-in-progress retry cycle the way
         // doing this reactively on every new arrival did.
-        skip_unrecoverable_backlog(sub);
-        maybe_arm_acknack_retry(node, sub);
+        skip_unrecoverable_backlog(proxy);
+        maybe_arm_acknack_retry(node, proxy);
         return;
     }
 
-    send_acknack(node, sub);
+    send_acknack(node, proxy);
 
     uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
-    if (!tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, sub)) {
+    if (!tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, proxy)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
-        sub->reliable_acknack_scheduled = false;
+        proxy->acknack_scheduled = false;
     }
 }
 
-// Confirms sub->ack_seq_no itself (whether just received, or - acknack_retry()'s own call site -
-// given up on after too many retries) and advances past it, keeping received_bitmap correctly
+// Confirms proxy->ack_seq_no itself (whether just received, or - acknack_retry()'s own call site
+// - given up on after too many retries) and advances past it, keeping received_bitmap correctly
 // realigned: bit j always means "received(ack_seq_no + j)", matching tt_AckNackHeader's own wire
-// convention exactly (see struct tt_Subscriber's own doc comment, tickle.h) - which is why this
+// convention exactly (see struct tt_WriterProxy's own doc comment, tickle.h) - which is why this
 // shifts once *unconditionally* for this first step, not only inside the while loop below. A
 // previous version only shifted inside the while loop, silently misaligning every subsequent
 // bit's meaning by one position after any exact-match advance - found via run_perf.sh's real
@@ -1664,22 +1821,22 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 // silently asking for the wrong sequence numbers (already-received ones) while dropping the
 // genuinely still-missing one off the request entirely.
 //
-// Also resets reliable_retry to 0 unconditionally - whatever is now the oldest outstanding gap
-// (if any remain - received_bitmap may still be nonzero here) is a *different* sample than the
-// one reliable_retry was counting attempts against, and deserves its own full tt_RELIABLE_RETRY
-// budget, not whatever was left over. Before this reset lived here, two losses close enough
-// together that a second gap was still open when the first resolved would make the second one
-// inherit however many attempts the first had already used - found the same way as the bitmap
-// bug above: real tc/netem loss-injection runs recovering measurably worse than
-// p^(tt_RELIABLE_RETRY + 1) predicts for a single isolated loss.
-static void advance_ack_seq_no(struct tt_Subscriber* sub) {
-    sub->ack_seq_no++;
-    sub->received_bitmap >>= 1;
-    while (sub->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
-        sub->received_bitmap >>= 1;
-        sub->ack_seq_no++;
+// Also resets retry to 0 unconditionally - whatever is now the oldest outstanding gap (if any
+// remain - received_bitmap may still be nonzero here) is a *different* sample than the one retry
+// was counting attempts against, and deserves its own full tt_RELIABLE_RETRY budget, not whatever
+// was left over. Before this reset lived here, two losses close enough together that a second gap
+// was still open when the first resolved would make the second one inherit however many attempts
+// the first had already used - found the same way as the bitmap bug above: real tc/netem
+// loss-injection runs recovering measurably worse than p^(tt_RELIABLE_RETRY + 1) predicts for a
+// single isolated loss.
+static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
+    proxy->ack_seq_no++;
+    proxy->received_bitmap >>= 1;
+    while (proxy->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
+        proxy->received_bitmap >>= 1;
+        proxy->ack_seq_no++;
     }
-    sub->reliable_retry = 0;
+    proxy->retry = 0;
 }
 
 // Called only from acknack_retry()'s own give-up path, right after advance_ack_seq_no() - never
@@ -1692,26 +1849,26 @@ static void advance_ack_seq_no(struct tt_Subscriber* sub) {
 // reason ack_seq_no itself was just given up on. Without this, once one position needed a full
 // give-up cycle, everything behind it also needed its own full cycle serially, one at a time,
 // even though most of that range was just as hopeless from the moment it first appeared.
-static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
-    if (sub->received_bitmap == 0) {
+static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy) {
+    if (proxy->received_bitmap == 0) {
         return; // nothing else known to be ahead - nothing to skip
     }
 
-    int highest = highest_received_bit(sub->received_bitmap);
+    int highest = highest_received_bit(proxy->received_bitmap);
     // highest's own absolute sequence number is ack_seq_no + highest (received_bitmap's own bit
-    // j means "received(ack_seq_no + j)" - see struct tt_Subscriber's own doc comment, tickle.h).
-    uint32_t highest_seq_no = sub->ack_seq_no + (uint32_t)highest;
-    if (highest_seq_no - sub->ack_seq_no + 1 <= tt_MAX_RELIABLE_HISTORY) {
+    // j means "received(ack_seq_no + j)" - see struct tt_WriterProxy's own doc comment, tickle.h).
+    uint32_t highest_seq_no = proxy->ack_seq_no + (uint32_t)highest;
+    if (highest_seq_no - proxy->ack_seq_no + 1 <= tt_MAX_RELIABLE_HISTORY) {
         return; // still within a plausibly-recoverable window - let it resolve normally
     }
 
     uint32_t new_ack_seq_no = highest_seq_no - tt_MAX_RELIABLE_HISTORY + 1;
-    uint32_t skipped = new_ack_seq_no - sub->ack_seq_no;
-    sub->received_bitmap = skipped < tt_RELIABLE_BITMAP_BITS ? (sub->received_bitmap >> skipped) : 0;
-    sub->ack_seq_no = new_ack_seq_no;
-    while (sub->received_bitmap & 1) { // absorb whatever's already confirmed right after the jump
-        sub->received_bitmap >>= 1;
-        sub->ack_seq_no++;
+    uint32_t skipped = new_ack_seq_no - proxy->ack_seq_no;
+    proxy->received_bitmap = skipped < tt_RELIABLE_BITMAP_BITS ? (proxy->received_bitmap >> skipped) : 0;
+    proxy->ack_seq_no = new_ack_seq_no;
+    while (proxy->received_bitmap & 1) { // absorb whatever's already confirmed right after the jump
+        proxy->received_bitmap >>= 1;
+        proxy->ack_seq_no++;
     }
 }
 
@@ -1721,64 +1878,72 @@ static void skip_unrecoverable_backlog(struct tt_Subscriber* sub) {
 // left to ask for, or sends an ACKNACK for whatever's still missing and (re-)arms the retry timer
 // if one isn't already running. Splitting this out means a give-up no longer leaves a remaining,
 // different gap waiting on the next DATA arrival before anything asks for it again.
-static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_Subscriber* sub) {
-    if (highest_relevant_bit(sub) < 0) {
+static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy) {
+    if (highest_relevant_bit(proxy) < 0) {
         // No outstanding gap by either signal (received_bitmap or the last Heartbeat) - a healthy
         // stream needs no ACKNACK at all.
-        if (sub->reliable_acknack_scheduled) {
-            tt_Node_unschedule(node, acknack_retry, sub);
-            sub->reliable_acknack_scheduled = false;
+        if (proxy->acknack_scheduled) {
+            tt_Node_unschedule(node, acknack_retry, proxy);
+            proxy->acknack_scheduled = false;
         }
-        sub->reliable_retry = 0;
+        proxy->retry = 0;
         return;
     }
 
-    send_acknack(node, sub);
+    send_acknack(node, proxy);
 
-    if (!sub->reliable_acknack_scheduled) {
-        sub->reliable_retry = 0;
+    if (!proxy->acknack_scheduled) {
+        proxy->retry = 0;
         uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
-        if (tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, sub)) {
-            sub->reliable_acknack_scheduled = true;
+        if (tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, proxy)) {
+            proxy->acknack_scheduled = true;
         } else {
             TT_LOG_ERROR("Cannot schedule acknack_retry");
         }
     }
 }
 
-// Jumps sub's own baseline straight to seq_no instead of trying to track anything below it -
+// Jumps proxy's own baseline straight to seq_no instead of trying to track anything below it -
 // shared by update_reliable_ack()'s own oversized-DATA-gap branch and process_heartbeat()'s own
 // oversized-Heartbeat-gap case (PLAN.md's Milestone 20 and its own Heartbeat follow-up
 // respectively): an offset >= tt_RELIABLE_BITMAP_BITS can never be named in a tt_AckNackHeader.
 // bitmap at all (fixed 64 bits wide on the wire), so nothing genuinely recoverable is given up on
 // by not tracking it - see update_reliable_ack()'s own call site for the full "why" comment, not
 // repeated here.
-static void jump_ack_baseline(struct tt_Subscriber* sub, uint32_t seq_no) {
-    sub->ack_seq_no = seq_no;
-    sub->received_bitmap = 0;
-    advance_ack_seq_no(sub);
+static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    proxy->ack_seq_no = seq_no;
+    proxy->received_bitmap = 0;
+    advance_ack_seq_no(proxy);
 }
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) - called from process_data() for every DATA a reliable
-// Subscriber receives (no-op otherwise). Updates the cumulative-ack watermark/out-of-order
-// bitmap and, while a gap is open, keeps an ACKNACK flowing back to the sender.
+// Subscriber receives (no-op otherwise). Finds or claims sub's own WriterProxy for (sender_node_
+// id, sender_entity_id) - Milestone 47's own composite writer identity, see struct tt_
+// WriterProxy's own doc comment for why this is no longer a single flat watermark - and updates
+// its cumulative-ack watermark/out-of-order bitmap, keeping an ACKNACK flowing back to the sender
+// while a gap is open.
 static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
-                                uint8_t sender_node_id, uint32_t sender_ip, uint16_t sender_port) {
+                                uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
+                                uint16_t sender_port) {
     if (!sub->reliable) {
         return;
     }
 
-    sub->reliable_sender_node_id = sender_node_id;
-    sub->reliable_sender_ip = sender_ip;
-    sub->reliable_sender_port = sender_port;
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, sender_node_id, sender_entity_id, NULL);
+    if (proxy == NULL) {
+        return; // WriterProxy table full - see find_or_create_writer_proxy()'s own doc comment
+    }
 
-    if (seq_no < sub->ack_seq_no) {
+    proxy->sender_ip = sender_ip;
+    proxy->sender_port = sender_port;
+
+    if (seq_no < proxy->ack_seq_no) {
         return; // duplicate/old - already accounted for, e.g. a retransmit that arrived after we
                 // otherwise caught up on our own
     }
 
-    if (seq_no == sub->ack_seq_no) {
-        advance_ack_seq_no(sub);
+    if (seq_no == proxy->ack_seq_no) {
+        advance_ack_seq_no(proxy);
     } else {
         // NOTE: deliberately *not* fast-forwarding past a wide gap here, on every arrival that's
         // far ahead of ack_seq_no - an earlier version of this branch did, and it backfired: once
@@ -1789,9 +1954,9 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // over, instead of ever letting it actually resolve. Bulk-skipping only belongs at
         // acknack_retry()'s own give-up point (skip_unrecoverable_backlog()) - *after* ack_seq_no
         // has had its fair tt_RELIABLE_RETRY attempts, not preempting them.
-        uint64_t offset = (uint64_t)seq_no - sub->ack_seq_no;
+        uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
         if (offset < tt_RELIABLE_BITMAP_BITS) {
-            sub->received_bitmap |= (1ULL << offset);
+            proxy->received_bitmap |= (1ULL << offset);
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
             // own comment above warns against fast-forwarding on, an offset this wide (>=
@@ -1811,12 +1976,12 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
             // applied here the instant it's already known un-trackable rather than after wasting
             // a retry cycle chasing a position that could never have been named on the wire.
             TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u) - jumping ahead instead of getting stuck",
-                           seq_no - sub->ack_seq_no, sub->ack_seq_no);
-            jump_ack_baseline(sub, seq_no);
+                           seq_no - proxy->ack_seq_no, proxy->ack_seq_no);
+            jump_ack_baseline(proxy, seq_no);
         }
     }
 
-    maybe_arm_acknack_retry(node, sub);
+    maybe_arm_acknack_retry(node, proxy);
 }
 
 // Encodes one UpdateEntity per non-NULL endpoint, up to UINT8_MAX of them. Returns the number
@@ -2263,6 +2428,7 @@ static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct 
 struct data_delivery_ctx {
     struct tt_Header* header;
     uint32_t endpoint_id;
+    uint32_t entity_id; // Milestone 47 - the sending Publisher's own identity, tt_DataHeader.entity_id
     uint32_t seq_no;
     uint64_t timestamp;
     uint8_t* buffer;
@@ -2302,7 +2468,7 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // below is unconditional either way (reliable only adds a delivery *guarantee* via
     // retransmission, not ordering - a late, retransmitted sample is still delivered whenever it
     // arrives, out of its original order).
-    update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->sender_ip, ctx->sender_port);
+    update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip, ctx->sender_port);
 
     // Zero-copy path: hand the callback a tt_Data* aliasing rx_buffer directly, skipping the
     // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
@@ -2340,6 +2506,7 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     uint32_t endpoint_id = rd32(header, data_header->endpoint_id);
     uint32_t seq_no = rd32(header, data_header->seq_no);
     uint64_t timestamp = rd64(header, data_header->timestamp);
+    uint32_t entity_id = rd32(header, data_header->entity_id);
 
     TT_LOG_DEBUG("Data");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
@@ -2349,6 +2516,7 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     struct data_delivery_ctx ctx = {
         .header = header,
         .endpoint_id = endpoint_id,
+        .entity_id = entity_id,
         .seq_no = seq_no,
         .timestamp = timestamp,
         .buffer = buffer,
@@ -2950,12 +3118,17 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     uint32_t endpoint_id = rd32(header, acknack_header->endpoint_id);
     uint32_t seq_no = rd32(header, acknack_header->seq_no);
     uint64_t bitmap = rd64(header, acknack_header->bitmap);
+    uint32_t entity_id = rd32(header, acknack_header->entity_id);
 
     TT_LOG_DEBUG("AckNack");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
     TT_LOG_DEBUG("  seq_no: %u", seq_no);
 
-    struct tt_Endpoint* endpoint = find_endpoint(node, tt_KIND_TOPIC_PUBLISHER, endpoint_id);
+    // Milestone 47 - prefers the local Publisher this ACKNACK's own entity_id actually names when
+    // more than one shares endpoint_id (Milestone 35's own previously-accepted ambiguity), falling
+    // back to find_endpoint()'s own plain first match when entity_id is 0/unknown or unmatched -
+    // see find_endpoint_by_entity()'s own doc comment.
+    struct tt_Endpoint* endpoint = find_endpoint_by_entity(node, tt_KIND_TOPIC_PUBLISHER, endpoint_id, entity_id);
     if (endpoint == NULL) {
         return true;
     }
@@ -3015,13 +3188,15 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
 
 // Milestone 35 - for_each_endpoint()'s own visitor context for informing every local Subscriber
 // sharing the announced topic name about one arriving Heartbeat - not just the first, now that
-// more than one may exist. header/sender_ip/sender_port identify the Heartbeat's own sender (the
-// Publisher becoming/staying this Subscriber's reliable_sender_*); first_available_seq_no/
-// last_seq_no are already rd32()'d in process_heartbeat() below.
+// more than one may exist. header/sender_ip/sender_port/entity_id identify the Heartbeat's own
+// sending Publisher (Milestone 47 - which of this Subscriber's own struct tt_WriterProxy entries
+// this updates); first_available_seq_no/last_seq_no are already rd32()'d in process_heartbeat()
+// below.
 struct heartbeat_ctx {
     struct tt_Header* header;
     uint32_t sender_ip;
     uint16_t sender_port;
+    uint32_t entity_id; // Milestone 47 - the sending Publisher's own identity, tt_HeartbeatHeader.entity_id
     uint32_t first_available_seq_no;
     uint32_t last_seq_no;
     uint8_t flags; // tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment, tickle.h
@@ -3031,7 +3206,9 @@ struct heartbeat_ctx {
 // find_endpoint()'s single match) before more than one local Subscription on the same topic
 // became legal; now for_each_endpoint()'s own visitor, so every matching Subscriber - each with
 // its own independent reliable ack state - learns this Heartbeat's baseline/range, symmetric with
-// deliver_data_to_subscriber()'s own fan-out for DATA.
+// deliver_data_to_subscriber()'s own fan-out for DATA. Milestone 47 - operates on this specific
+// sender's own struct tt_WriterProxy (keyed by (header->source, entity_id)), not a single flat
+// watermark - see that struct's own doc comment.
 static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct heartbeat_ctx* ctx = (struct heartbeat_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
@@ -3039,16 +3216,22 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
         return; // a best-effort Subscriber has no ack state a Heartbeat could inform
     }
 
-    if (sub->reliable_sender_node_id == tt_NODE_ID_INVALID) {
-        // First-ever reliable contact from this sender: learn the *real* starting baseline
+    bool first_contact = false;
+    struct tt_WriterProxy* proxy =
+        find_or_create_writer_proxy(sub, ctx->header->source, ctx->entity_id, &first_contact);
+    if (proxy == NULL) {
+        return; // WriterProxy table full - see find_or_create_writer_proxy()'s own doc comment
+    }
+
+    if (first_contact) {
+        // First-ever reliable contact from this writer: learn the *real* starting baseline
         // straight from the Heartbeat, rather than guessing it from whatever DATA happens to
         // arrive first (PLAN.md's Milestone 20's own workaround for not having this signal at
-        // all) - the actual DDS-parity fix this whole follow-up is for. Matches send_acknack()'s
-        // own tt_NODE_ID_INVALID sentinel check for "no reliable contact yet".
-        sub->ack_seq_no = ctx->first_available_seq_no;
-        sub->received_bitmap = 0;
-    } else if (ctx->last_seq_no >= sub->ack_seq_no) {
-        uint64_t offset = (uint64_t)ctx->last_seq_no - sub->ack_seq_no;
+        // all) - the actual DDS-parity fix this whole follow-up is for.
+        proxy->ack_seq_no = ctx->first_available_seq_no;
+        proxy->received_bitmap = 0;
+    } else if (ctx->last_seq_no >= proxy->ack_seq_no) {
+        uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;
         if (offset >= tt_RELIABLE_BITMAP_BITS) {
             // Already-tracking Subscriber, but this Heartbeat reveals a gap too wide to ever
             // track - the same "provably unrecoverable, don't get stuck" case update_reliable_
@@ -3056,37 +3239,36 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
             // comment) - jump ahead here too, rather than only ever being able to discover this
             // reactively once *some* DATA sample eventually arrives to trigger update_reliable_
             // ack() instead.
-            jump_ack_baseline(sub, ctx->last_seq_no);
+            jump_ack_baseline(proxy, ctx->last_seq_no);
         }
         // else: within the trackable window - nothing to do here directly. highest_relevant_bit()
-        // already picks this up from reliable_heartbeat_last_seq_no (set unconditionally below),
-        // and maybe_arm_acknack_retry()/send_acknack() below act on it.
+        // already picks this up from heartbeat_last_seq_no (set unconditionally below), and
+        // maybe_arm_acknack_retry()/send_acknack() below act on it.
     }
-    // last_seq_no < sub->ack_seq_no: a stale/reordered Heartbeat (e.g. arrived after DATA already
-    // caught this Subscriber up further) - nothing to do, same "duplicate/old" no-op update_
-    // reliable_ack()'s own seq_no < ack_seq_no branch already has.
+    // last_seq_no < proxy->ack_seq_no: a stale/reordered Heartbeat (e.g. arrived after DATA
+    // already caught this Subscriber up further) - nothing to do, same "duplicate/old" no-op
+    // update_reliable_ack()'s own seq_no < ack_seq_no branch already has.
 
-    sub->reliable_sender_node_id = ctx->header->source;
-    sub->reliable_sender_ip = ctx->sender_ip;
-    sub->reliable_sender_port = ctx->sender_port;
+    proxy->sender_ip = ctx->sender_ip;
+    proxy->sender_port = ctx->sender_port;
     // Monotonic guard: a Heartbeat can arrive out of order over UDP the same as any other
     // submessage - never let a late, older one regress what highest_relevant_bit() already knows.
-    if (ctx->last_seq_no > sub->reliable_heartbeat_last_seq_no) {
-        sub->reliable_heartbeat_last_seq_no = ctx->last_seq_no;
+    if (ctx->last_seq_no > proxy->heartbeat_last_seq_no) {
+        proxy->heartbeat_last_seq_no = ctx->last_seq_no;
     }
 
     // tt_HEARTBEAT_FLAG_FINAL's own doc comment (tickle.h) - had_gap must be read before maybe_arm_
     // acknack_retry() below (it's the only thing that could otherwise change what highest_relevant_
     // bit() sees) so a Heartbeat that both reveals a real gap *and* explicitly requests a response
     // sends exactly one ACKNACK (maybe_arm_acknack_retry()'s own), not two.
-    bool had_gap = highest_relevant_bit(sub) >= 0;
-    maybe_arm_acknack_retry(node, sub);
+    bool had_gap = highest_relevant_bit(proxy) >= 0;
+    maybe_arm_acknack_retry(node, proxy);
     if (!had_gap && !(ctx->flags & tt_HEARTBEAT_FLAG_FINAL)) {
         // Healthy (no gap) but tt_Publisher_request_ack() explicitly asked anyway - the only way a
         // Publisher ever learns a healthy Subscriber has fully caught up (see maybe_arm_acknack_
         // retry()'s own "a healthy stream needs no ACKNACK at all" comment for why nothing above
         // already sent one).
-        send_acknack(node, sub);
+        send_acknack(node, proxy);
     }
 }
 
@@ -3107,6 +3289,7 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
     uint32_t endpoint_id = rd32(header, heartbeat_header->endpoint_id);
     uint32_t first_available_seq_no = rd32(header, heartbeat_header->first_available_seq_no);
     uint32_t last_seq_no = rd32(header, heartbeat_header->last_seq_no);
+    uint32_t entity_id = rd32(header, heartbeat_header->entity_id);
     uint8_t flags = heartbeat_header->flags; // single byte - already native-endian, same as
                                              // struct tt_UpdateEntity.kind/.qos's own convention
 
@@ -3115,7 +3298,7 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
     TT_LOG_DEBUG("  first_available_seq_no: %u", first_available_seq_no);
     TT_LOG_DEBUG("  last_seq_no: %u", last_seq_no);
 
-    struct heartbeat_ctx ctx = {header, sender_ip, sender_port, first_available_seq_no, last_seq_no, flags};
+    struct heartbeat_ctx ctx = {header, sender_ip, sender_port, entity_id, first_available_seq_no, last_seq_no, flags};
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, inform_subscriber_of_heartbeat, &ctx);
     return true;
 }

@@ -71,7 +71,7 @@
 // RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no independent
 // "durability depth" concept to keep in sync with anything, because there's only ever one cache.
 #define tt_MAX_RELIABLE_HISTORY 64
-// Width of tt_AckNackHeader.bitmap/tt_Subscriber.received_bitmap - inherent to their uint64_t
+// Width of tt_AckNackHeader.bitmap/tt_WriterProxy.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
 // (tickle.c) don't compare against a bare 64. tt_MAX_RELIABLE_HISTORY above must never exceed
 // this (tickle.c's own _Static_assert enforces it) - a gap this wide can never be named in a

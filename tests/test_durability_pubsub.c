@@ -415,9 +415,13 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     sub.topic = &topic;
     sub.callback = stub_subscriber_callback;
     sub.reliable = true;
-    sub.ack_seq_no = 1; // tt_Node_create_subscriber()'s own default - never heard from this
-                        // Publisher before, exactly the "first contact" case this milestone's
-                        // own sequencing question was about.
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub.writers[i].node_id = tt_NODE_ID_INVALID; // all empty - never heard from this Publisher
+                                                     // before, exactly the "first contact" case
+                                                     // this milestone's own sequencing question was
+                                                     // about (Milestone 47 - now a WriterProxy table
+                                                     // entry, created lazily on first contact).
+    }
     node.endpoints[1] = (struct tt_Endpoint*)&sub;
     node.endpoint_count = 2;
 
@@ -428,8 +432,10 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     // oldest first).
     uint32_t tail = write_data(&node, 97, 9700, 97);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(98, sub.ack_seq_no); // jumped to just past 97, not stuck at 1 - the Milestone 20 fix
-    EXPECT_TRUE(sub.received_bitmap == 0);
+    struct tt_WriterProxy* proxy = find_writer_proxy(&sub, REMOTE_NODE_ID, 0);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(98, proxy->ack_seq_no); // jumped to just past 97, not stuck at 1 - the Milestone 20 fix
+    EXPECT_TRUE(proxy->received_bitmap == 0);
 
     // seq_no 98 is "lost in flight" (deliver_durability_backlog()'s own unicast never arrives) -
     // seq_no 100 (the newest retained sample) arrives instead.
@@ -437,9 +443,9 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     tail = write_data(&node, 100, 10000, 100);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(98, sub.ack_seq_no);        // correctly still waiting on 98 (and 99)
-    EXPECT_TRUE(sub.received_bitmap == 4ULL); // bit 2 -> seq_no 100 (98 + 2) received early
-    EXPECT_TRUE(sub.reliable_acknack_scheduled);
+    EXPECT_EQ_U32(98, proxy->ack_seq_no);        // correctly still waiting on 98 (and 99)
+    EXPECT_TRUE(proxy->received_bitmap == 4ULL); // bit 2 -> seq_no 100 (98 + 2) received early
+    EXPECT_TRUE(proxy->acknack_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK requesting 98 (and 99)
 
     // Publisher side: seq_no 98 must still actually be sitting in reliable_cache (it is - only

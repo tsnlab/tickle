@@ -373,11 +373,17 @@ rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos
 
 // Another call rcl_publisher_init() makes unconditionally (via rclcpp::Publisher's own
 // constructor, to populate every future rmw_message_info_t.publisher_gid it hands out) - see
-// rmw_publisher_get_actual_qos()'s own doc comment for how this was found. tt_Publisher's own
-// (node id, endpoint id) pair is already a unique-within-this-TickLE-network identity for this
-// publisher (see tickle.h's own struct tt_Endpoint doc comment on .id) - zero-extended into
-// gid.data's remaining bytes, matching rmw_subscription.c's own zeroed rmw_message_info_t.
-// publisher_gid for a received message from the *sending* side's point of view instead.
+// rmw_publisher_get_actual_qos()'s own doc comment for how this was found. Milestone 47
+// (rmw_tickle/PLAN.md) - (node id, endpoint id) alone is *not* a unique identity for this
+// publisher: endpoint_id is a pure name hash, deliberately shared by any two Publishers with the
+// same topic+endpoint name (tickle.h's own struct tt_Endpoint doc comment on .id) - the exact
+// cross-instance identity gap that milestone root-caused and fixed at the wire level. entity_id
+// (also on struct tt_Endpoint, assigned per-instance by TickLE core) is the real per-instance
+// identity; using it here instead closes the identical latent gid-collision this rmw layer had -
+// two co-existing Publisher instances of the same topic would otherwise report the same gid to
+// rclcpp, which real DDS's own per-Writer GUID never does. Zero-extended into gid.data's remaining
+// bytes, matching rmw_subscription.c's own zeroed rmw_message_info_t.publisher_gid for a received
+// message from the *sending* side's point of view instead.
 rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t* gid) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(gid, RMW_RET_INVALID_ARGUMENT);
@@ -390,9 +396,9 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
     memset(gid, 0, sizeof(*gid));
     gid->implementation_identifier = RMW_TICKLE_IDENTIFIER;
     uint8_t node_id = pub_impl->node->context_impl->tickle_node.id;
-    uint32_t endpoint_id = pub_impl->tickle_publisher.endpoint.id;
+    uint32_t entity_id = pub_impl->tickle_publisher.endpoint.entity_id;
     gid->data[0] = node_id;
-    memcpy(&gid->data[1], &endpoint_id, sizeof(endpoint_id));
+    memcpy(&gid->data[1], &entity_id, sizeof(entity_id));
     return RMW_RET_OK;
 }
 

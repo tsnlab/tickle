@@ -110,7 +110,10 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     sub->node = node;
     sub->topic = topic;
     sub->callback = stub_subscriber_callback;
-    sub->ack_seq_no = 1; // matches tt_Node_create_subscriber()'s own init - see tickle.h
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - matches tt_Node_create_
+                                                      // subscriber()'s own init (Milestone 47)
+    }
 
     node->endpoint_count = 1;
     node->endpoints[0] = (struct tt_Endpoint*)sub;

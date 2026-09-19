@@ -87,6 +87,17 @@ struct tt_Node {
     bool endpoint_index_valid;
     uint64_t last_modified; // Last modified timestamp in ns to announce other nodes e.g. server, publisher
 
+    // Milestone 47 - together, this node's own launch-scoped identity source for every locally-
+    // created entity's own struct tt_Endpoint.entity_id (see its own doc comment for the full
+    // rationale): entity_id_base is drawn once, at tt_Node_create() time, from tt_get_ns()'s own
+    // low 32 bits (no separate RNG primitive needed - this node's own launch instant already is
+    // one); next_entity_id starts at 0 and increments once per add_endpoint_to_node() call, one
+    // shared counter across every entity kind (Publisher/Subscriber/Client/Server) on this node -
+    // functionally equivalent to a per-kind counter (kind is already a separate dispatch
+    // dimension elsewhere), just simpler to implement.
+    uint32_t entity_id_base;
+    uint32_t next_entity_id;
+
     // Per remote node (indexed by its node id), the last UPDATE announce we've acted on: its
     // last_modified, and whether we've seen it at all. Only these two facts are ever read back
     // (dedup + first-contact detection - see process_update()), so there's no need to keep a
@@ -148,6 +159,22 @@ struct tt_Endpoint {
     // share an id if they share a name, see add_endpoint_to_node()'s own doc comment (tickle.c).
     uint32_t id;
     const char* name;
+
+    // Milestone 47 - this specific entity *instance*'s own identity, distinct from id above (a
+    // pure name hash, shared by every entity - local or remote - with the same kind+topic/
+    // service+endpoint name, by design). Assigned once, in add_endpoint_to_node() (tickle.c), as
+    // node->entity_id_base + node->next_entity_id++ - see struct tt_Node's own entity_id_base/
+    // next_entity_id doc comment for why that specific combination (a per-launch random base plus
+    // a per-node counter, not pure-random or pure-linear alone). Carried on the wire as the
+    // *sender's* own identity in struct tt_DataHeader/tt_HeartbeatHeader (both always
+    // Publisher-emitted) and as the *target's* own identity in struct tt_AckNackHeader (mirroring
+    // that header's own existing endpoint_id "target Publisher" convention) - see each field's own
+    // doc comment. This is the real, root-caused fix for a confirmed cross-instance data-mixing
+    // gap: before this field existed, a Subscriber's only way to tell two Publishers apart was
+    // `id` above, which is identical for any two Publishers sharing a name - two different
+    // tt_Node launches, or even two local Publishers on one tt_Node sharing a name (Milestone 35) -
+    // see rmw_tickle/PLAN.md's own Milestone 47 for the full incident/design writeup.
+    uint32_t entity_id;
 };
 
 // A destination this node has learned it can reach directly (see decode_update_entities()'s
@@ -563,6 +590,73 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
 tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
 
 struct tt_Subscriber;
+
+// Milestone 47 - one remote Publisher's own reliable-ack tracking state, the real WriterProxy
+// equivalent this package was missing (real RTPS keeps exactly this, per matched Writer GUID).
+// Before this milestone, struct tt_Subscriber held these as single flat fields instead of a
+// table, an explicitly documented limitation ("one Publisher per reliable Subscriber") - two
+// Publishers on one topic (two different tt_Node launches, or even two local Publishers sharing a
+// name, Milestone 35) would silently interleave their independent seq_no streams through one
+// shared watermark. Keyed by (node_id, entity_id) - see struct tt_Endpoint.entity_id's own doc
+// comment - not just node_id, so two Publisher *instances* on the very same remote node are also
+// tracked independently. node_id doubles as the "slot occupied" flag, the same convention struct
+// tt_Peer already uses. Fixed capacity (tt_MAX_PEER_COUNT, embedded in struct tt_Subscriber below,
+// no malloc) - a table this full already means more matched reliable Publishers than this build
+// is sized for; find_or_create_writer_proxy() (tickle.c) silently drops a writer past that count,
+// the same "silently drop past a fixed table's capacity" convention forget_peer()/upsert_peer()
+// already use elsewhere in this file.
+struct tt_WriterProxy {
+    uint8_t node_id;
+    uint32_t entity_id;
+    // Address an outstanding-gap ACKNACK retry (acknack_retry(), tickle.c) resends to - the most
+    // recent reliable DATA/Heartbeat sender for this specific writer, since a scheduled retry
+    // fires outside process_packet()'s own call stack and so no longer has that packet's own
+    // sender_ip/sender_port at hand.
+    uint32_t sender_ip;
+    uint16_t sender_port;
+    // Cumulative-ack watermark: the next wire seq_no not yet confirmed delivered to this
+    // Subscriber's own `callback` for this specific Publisher - every seq_no < ack_seq_no has
+    // been. Set to 1 when this entry is first claimed (find_or_create_writer_proxy(), tickle.c)
+    // since a Publisher's own seq_no starts posting from 1, never 0 (tt_Publisher_publish()'s
+    // data_header->seq_no = pub->seq_no + 1).
+    uint32_t ack_seq_no;
+    // bit j set: sample (ack_seq_no + j) has already been received out of order, ahead of the
+    // cumulative watermark - matches tt_AckNackHeader's own "bit j: seq_no + j" wire convention
+    // exactly (bit 0 is ack_seq_no itself, always 0 here since ack_seq_no only ever advances once
+    // confirmed received - see update_reliable_ack()'s own comment on why that still needs its
+    // own explicit realigning shift, not just a plain compare), so building the wire "please
+    // resend" bitmap is a straight ~received_bitmap, no additional offset.
+    uint64_t received_bitmap;
+    // How many ACKNACK retries have been sent for the *current* outstanding gap against this
+    // writer - reset to 0 when a new gap first opens, capped at tt_RELIABLE_RETRY (mirrors
+    // call_retry()'s own client->service->call_retry_count check) before this Subscriber gives up
+    // on that sample.
+    uint8_t retry;
+    // Whether acknack_retry() (tickle.c) currently has a tt_Node_schedule() entry pending for
+    // this specific writer proxy (scheduled with `this` entry's own address as its param, so
+    // several writers' independent retry timers never collide - see acknack_retry()'s own doc
+    // comment) - mirrors struct tt_Client.cache's own "is a retry timer armed right now" role,
+    // needed so a burst of DATA packets while a gap is open doesn't schedule a new timer per
+    // packet.
+    bool acknack_scheduled;
+    // 0 (this entry's own creation default): no Heartbeat seen yet from this writer - the
+    // Subscriber falls back to inferring gaps purely from received_bitmap, today's only behavior
+    // (a Publisher that never calls tt_Publisher_set_heartbeat_period() never sends one, so this
+    // stays 0 forever and nothing here changes for it). Non-zero: the highest seq_no the most
+    // recent struct tt_HeartbeatHeader from this writer claimed the Publisher has published -
+    // used by tickle.c's own highest_relevant_bit() to widen send_acknack()'s/maybe_arm_acknack_
+    // retry()'s own "how far ahead does anything need attention" reach beyond received_bitmap's
+    // own highest *confirmed* bit alone, since a Heartbeat can reveal the Subscriber is behind
+    // even with zero out-of-order DATA arrivals yet (received_bitmap is blind to that on its own).
+    uint32_t heartbeat_last_seq_no;
+    // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
+    // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
+    // itself) is what acknack_retry() is scheduled against (tt_Node_schedule(..., acknack_retry,
+    // proxy)), so the callback needs a way back to sub->node/sub->endpoint - same {owner, self}
+    // pattern struct server_cache_clean_config already uses for an identical reason.
+    struct tt_Subscriber* sub;
+};
+
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                        struct tt_Data* data);
 
@@ -576,52 +670,21 @@ struct tt_Subscriber { // extends endpoint
     uint16_t seq_no;
 
     // QoS roadmap #5 (RELIABILITY/RELIABLE) - false (tt_Node_create_subscriber()'s own default):
-    // best-effort, today's only behavior, process_data() doesn't touch ack_seq_no/received_bitmap
-    // at all. true: process_data() tracks delivery and sends ACKNACK back to the sending
+    // best-effort, today's only behavior, process_data() doesn't touch writers[] at all. true:
+    // process_data() tracks delivery per matched Publisher and sends ACKNACK back to the sending
     // Publisher on a gap - set directly any time after tt_Node_create_subscriber() returns, same
     // convention as tt_Publisher.batch/.reliable_cache.
     bool reliable;
-    // Cumulative-ack watermark: the next wire seq_no not yet confirmed delivered to `callback` -
-    // every seq_no < ack_seq_no has been. Initialized to 1 by tt_Node_create_subscriber() since a
-    // Publisher's own seq_no starts posting from 1, never 0 (tt_Publisher_publish()'s
-    // data_header->seq_no = pub->seq_no + 1).
-    uint32_t ack_seq_no;
-    // bit j set: sample (ack_seq_no + j) has already been received out of order, ahead of the
-    // cumulative watermark - matches tt_AckNackHeader's own "bit j: seq_no + j" wire convention
-    // exactly (bit 0 is ack_seq_no itself, always 0 here since ack_seq_no only ever advances once
-    // confirmed received - see update_reliable_ack()'s own comment on why that still needs its
-    // own explicit realigning shift, not just a plain compare), so building the wire "please
-    // resend" bitmap is a straight ~received_bitmap, no additional offset.
-    uint64_t received_bitmap;
-    // Address an outstanding-gap ACKNACK retry (acknack_retry(), tickle.c) resends to - the most
-    // recent reliable DATA sender, since a scheduled retry fires outside process_packet()'s own
-    // call stack and so no longer has that packet's header/sender_ip/sender_port at hand. Scoped
-    // to one Publisher per reliable Subscriber (documented limitation, DESIGN.md/PLAN.md): with
-    // several Publishers on one topic, their independent seq_no streams would interleave and
-    // this single-watermark tracking would misjudge gaps - the common case rmw_tickle needs
-    // (one Publisher, one or more reliable Subscribers) is unaffected.
-    uint8_t reliable_sender_node_id;
-    uint32_t reliable_sender_ip;
-    uint16_t reliable_sender_port;
-    // How many ACKNACK retries have been sent for the *current* outstanding gap - reset to 0 when
-    // a new gap first opens, capped at tt_RELIABLE_RETRY (mirrors call_retry()'s own
-    // client->service->call_retry_count check) before this Subscriber gives up on that sample.
-    uint8_t reliable_retry;
-    // Whether acknack_retry() (tickle.c) currently has a tt_Node_schedule() entry pending for
-    // this Subscriber - mirrors struct tt_Client.cache's own "is a retry timer armed right now"
-    // role, needed so a burst of DATA packets while a gap is open doesn't schedule a new timer
-    // per packet.
-    bool reliable_acknack_scheduled;
-    // 0 (tt_Node_create_subscriber()'s own default): no Heartbeat seen yet from this sender - the
-    // Subscriber falls back to inferring gaps purely from received_bitmap, today's only behavior
-    // (a Publisher that never calls tt_Publisher_set_heartbeat_period() never sends one, so this
-    // stays 0 forever and nothing here changes for it). Non-zero: the highest seq_no the most
-    // recent struct tt_HeartbeatHeader claimed the Publisher has published - used by tickle.c's
-    // own highest_relevant_bit() to widen send_acknack()'s/maybe_arm_acknack_retry()'s own "how
-    // far ahead does anything need attention" reach beyond received_bitmap's own highest
-    // *confirmed* bit alone, since a Heartbeat can reveal the Subscriber is behind even with zero
-    // out-of-order DATA arrivals yet (received_bitmap is blind to that case on its own).
-    uint32_t reliable_heartbeat_last_seq_no;
+
+    // Milestone 47 - one entry per currently-tracked remote Publisher (see struct tt_WriterProxy's
+    // own doc comment for the full rationale/history) - replaces this struct's own single flat
+    // ack_seq_no/received_bitmap/reliable_sender_*/reliable_retry/reliable_acknack_scheduled/
+    // reliable_heartbeat_last_seq_no fields it used to carry directly. All-empty (every slot's
+    // node_id == tt_NODE_ID_INVALID) by default - tt_Node_create_subscriber() zeroes this the same
+    // way it zeroes/invalidates every other fixed table in this file - entries are claimed lazily,
+    // one per distinct (node_id, entity_id) actually heard from, via find_or_create_writer_proxy()
+    // (tickle.c).
+    struct tt_WriterProxy writers[tt_MAX_PEER_COUNT];
 
     // QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - false (tt_Node_create_
     // subscriber()'s own default): this Subscriber accepts a VOLATILE Publisher, today's only
@@ -772,10 +835,10 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // version-straddling parsing logic: process_packet() already rejects any packet whose header-
 // >version is < this node's own tt_VERSION outright (tickle.c), so by the time decode_update_
 // entities() ever reads update_entity->qos, the sender is already guaranteed to be running this
-// same version or newer - there is no partial-compatibility case to handle. The first bump this
-// constant has ever needed (every prior QoS roadmap milestone stayed within the existing wire
-// layout).
-#define tt_VERSION 2
+// same version or newer - there is no partial-compatibility case to handle.
+// Bumped 2 -> 3 for Milestone 47 - struct tt_DataHeader/tt_AckNackHeader/tt_HeartbeatHeader each
+// grew an entity_id field, the same "no partial-compatibility case to handle" reasoning applies.
+#define tt_VERSION 3
 
 struct tt_Header {
     union {
@@ -837,6 +900,12 @@ struct tt_DataHeader {
     uint32_t endpoint_id; // endpoint id for subscriber lookup
     uint32_t seq_no;
     uint64_t timestamp;
+    // Milestone 47 - the *sending* Publisher's own struct tt_Endpoint.entity_id (see its own doc
+    // comment), distinguishing this specific Publisher instance from any other one sharing
+    // endpoint_id above. header->source (struct tt_Header, message-level) already narrows this to
+    // one remote node; this narrows it further to one specific entity on that node, closing the
+    // real, confirmed cross-instance data-mixing gap this milestone exists for.
+    uint32_t entity_id;
     // type + name
     // CDR
 } __attribute__((packed));
@@ -848,6 +917,20 @@ struct tt_AckNackHeader {
     uint32_t seq_no;      // cumulative ack: every seq_no below this was received
     uint64_t bitmap;      // bit j set: (seq_no + j) is still missing, please resend - same
                           // direction as RTPS's own AckNack SequenceNumberSet
+    // Milestone 47 - the *target* Publisher's own struct tt_Endpoint.entity_id, mirroring
+    // endpoint_id's own "target Publisher" role above rather than identifying the sending
+    // Subscriber itself (an ACKNACK's sender never needs disambiguating the way a matched
+    // Publisher does - see struct tt_Publisher.peer_ack_seq_no's own doc comment, still keyed by
+    // node_id alone, unchanged by this milestone). Learned from whichever struct tt_WriterProxy
+    // this ACKNACK answers (send_acknack(), tickle.c) - lets a Publisher-side receiver pick the
+    // exact local Publisher instance among several sharing endpoint_id (find_endpoint_by_entity(),
+    // tickle.c), closing Milestone 35's own previously-accepted "first match" ambiguity for
+    // ACKNACK routing specifically, the same way entity_id already does for DATA/HEARTBEAT
+    // dispatch. 0 is a safe "unknown/not yet learned" sentinel here (falls back to plain
+    // first-match routing) - real entity_id collides with 0 only if a launch's random
+    // entity_id_base happens to land exactly on 0, the same negligible-odds caveat struct
+    // tt_Node.entity_id_base's own doc comment already accepts.
+    uint32_t entity_id;
 } __attribute__((packed));
 
 // tt_HeartbeatHeader.flags's own tt_HEARTBEAT_FLAG_FINAL - same name and meaning as RTPS's own
@@ -867,15 +950,19 @@ struct tt_AckNackHeader {
 // Lets a Subscriber learn the real, currently-retained range directly - independent of whether
 // any specific DATA sample's own delivery attempt happened to succeed - rather than only ever
 // inferring "something might be missing" reactively from whatever DATA does arrive (this file's
-// own struct tt_Subscriber.reliable_heartbeat_last_seq_no doc comment explains the gap this
+// own struct tt_WriterProxy.heartbeat_last_seq_no doc comment explains the gap this
 // closes; opt-in via tt_Publisher_set_heartbeat_period(), tickle.c).
 struct tt_HeartbeatHeader {
     uint32_t endpoint_id;            // source Publisher - same leading-field convention as above
     uint32_t first_available_seq_no; // oldest sample still retained in reliable_cache right now
     uint32_t last_seq_no;            // newest published (== pub->seq_no at send time)
-    uint8_t flags;                   // tt_HEARTBEAT_FLAG_FINAL - see its own doc comment above
-    uint8_t reserved[3];             // pad 13 -> 16 - same "pad the CDR payload to 4-byte alignment"
-                                     // convention as tt_CallRequestHeader's own reserved byte
+    // Milestone 47 - the *sending* Publisher's own struct tt_Endpoint.entity_id, same role/
+    // reasoning as struct tt_DataHeader.entity_id's own doc comment (this is the same Publisher,
+    // just announcing instead of publishing).
+    uint32_t entity_id;
+    uint8_t flags;       // tt_HEARTBEAT_FLAG_FINAL - see its own doc comment above
+    uint8_t reserved[3]; // pad 17 -> 20 - same "pad the CDR payload to 4-byte alignment"
+                         // convention as tt_CallRequestHeader's own reserved byte
 } __attribute__((packed));
 
 struct tt_CallRequestHeader {
