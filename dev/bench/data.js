@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789847081632,
+  "lastUpdate": 1789847159769,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26888,6 +26888,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.05188142857142858,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "230e28b2c4ae53e7a1c14d9b00b2a44f50ee0b19",
+          "message": "Document the comparison-script process policy (user's own call, 2026-09-20)\n\ncompare_rmw_perf.sh stays run-by-hand only - not just \"never CI\" (already\nestablished), but also never triggered autonomously by \"TickLE Plan\" just\nbecause a performance-relevant change landed. The job is to notice and\npropose a re-run, then wait for explicit approval before touching\ncomparison.md's own numbers - not to decide independently that a\nre-measurement is warranted.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T04:44:36+09:00",
+          "tree_id": "862dac99273810e4279cf4c9f9d3a27f211b7c93",
+          "url": "https://github.com/tsnlab/tickle/commit/230e28b2c4ae53e7a1c14d9b00b2a44f50ee0b19"
+        },
+        "date": 1789847158661,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04794428571428572,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.047612857142857144,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.046958571428571426,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.045475714285714286,
             "unit": "ms"
           }
         ]
