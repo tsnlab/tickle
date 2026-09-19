@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789811770818,
+  "lastUpdate": 1789811774090,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -33753,6 +33753,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ea5e9f1415c2379ea22acda2368064494ee06f6d"
         },
         "date": 1789806984408,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "29cf9ccab332ceb3d658ecaba8ff677d93a42064",
+          "message": "Implement Milestone 38: nested-message support in ros2_cli.py\n\nrosidl_typesupport_tickle_c's real ROS 2 pipeline (ros2_cli.py) hard-coded\nresolver=None, rejecting every nested field even though TickLE's own\ntt_DATA_ENCODE/_DECODE callback contract already supports nesting with zero\ncore changes (proven by the already-shipped Image.c). Adds resolve.Ros2Resolver,\nwhich resolves a nested field to an independently top-level-generated sibling's\nown struct instead of the old Resolver's incompatible \"pkg__Name\" convention,\nplus the header_name/ros_pkg_name/ros_type_name WireStruct fields needed to\nkeep render.py/ros2_adapter.py's file-name and ROS-name recovery correct once\ntwo different naming conventions coexist.\n\nAlso fixes a real missing #include in render_adapter()'s generated adapter\nsource (nested_adapter_includes(), never wired in before), and a latent\nempy/pytest interaction (render.py's _expand() resetting a stale\nInterpreter._wasProxyInstalled class flag) that only surfaces once a second,\nindependent test module calls the empy-based render path.\n\nArray-of-string and array-of-nested-type support, the CI conformance-patch\nun-exclusion of test_msgs/Nested.msg, and real CI confirmation remain open -\nsee rmw_tickle/PLAN.md's Milestone 38 for the full writeup.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T18:53:15+09:00",
+          "tree_id": "2c750928d264777b45ef4ec43bc52d5eb9f47847",
+          "url": "https://github.com/tsnlab/tickle/commit/29cf9ccab332ceb3d658ecaba8ff677d93a42064"
+        },
+        "date": 1789811773022,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
