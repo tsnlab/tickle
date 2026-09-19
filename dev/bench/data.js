@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789819239906,
+  "lastUpdate": 1789819332366,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24238,6 +24238,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.049221428571428576,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9141f228270fab66df27bc3e5d2836b4f2ab64ca",
+          "message": "Implement Milestone 41: ros2_adapter.py's own array-of-string conversion\n\nCloses the gap Milestone 39 (tools/typesupport's M7) deliberately left\nopen: the core generator accepted an array-of-string field, but the real\nROS 2 converter explicitly rejected one, since rosidl_runtime_c represents\na string array completely differently from a primitive one.\n\nA fixed ROS 2 string array (string[N]) is a plain in-place\nstruct rosidl_runtime_c__String[N]; a variable/bounded one is\nstruct rosidl_runtime_c__String__Sequence. _to_tickle_field_lines() aliases\neach element's own .data in a loop (never memcpy-able - a\nrosidl_runtime_c__String owns its own allocation); _from_tickle_field_lines()\ncalls rosidl_runtime_c__String__Sequence__init() (variable only) then\nrosidl_runtime_c__String__assign() per element, mirroring a plain string\nfield's own existing ownership-transfer contract. The old\n_reject_unsupported_array_elements() stopgap is removed.\n\nNew fixtures (rosidl_runtime_c__String__Sequence/__init(), a StringArrays\nROS-side stand-in) and a real compiled roundtrip + capacity-rejection test\nreplace the now-obsolete \"confirms it raises\" test. Full suite green\n(62/62), real clang-tidy clean on the freshly generated adapter output.\n\nEvery test_msgs message needing array-of-string also needs array-of-\nnested-type (still unsupported) - no conformance-suite exercise possible\nyet, but the array-of-string half of that future work is already done.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T21:01:02+09:00",
+          "tree_id": "8f6a69ee5486411e9dadf485699774beb8f11aab",
+          "url": "https://github.com/tsnlab/tickle/commit/9141f228270fab66df27bc3e5d2836b4f2ab64ca"
+        },
+        "date": 1789819328908,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04924571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04881857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04580142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04993000000000001,
             "unit": "ms"
           }
         ]
