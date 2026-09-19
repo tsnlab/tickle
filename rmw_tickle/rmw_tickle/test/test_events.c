@@ -182,11 +182,12 @@ int main(void) {
     assert(offered_status.total_count >= 1);
     assert(offered_status.total_count_change >= 1);
 
-    // -- RMW_EVENT_LIVELINESS_LOST: initializable, but this rmw's AUTOMATIC liveliness can never
-    // structurally observe its own loss - see rmw_tickle_publisher_t.liveliness_lost's own doc
-    // comment (rmw_tickle_c/rmw_tickle.h) for why. Always {0, 0}, checked here after real time has
-    // already passed above (the deadline wait), not immediately at creation - proves it stays
-    // permanently zero, not just zero-at-first-glance.
+    // -- RMW_EVENT_LIVELINESS_LOST: a watchdog thread now backs this for real (Milestone 30) - see
+    // rmw_tickle_node_t.poll_thread_last_return_ns's own doc comment (rmw_tickle_c/rmw_tickle.h)
+    // and test_liveliness_lost_watchdog.c for the actual hang-detection test. This healthy node
+    // never stalls its own poll_thread, so it stays {0, 0} here too - checked after real time has
+    // already passed above (the deadline wait), not immediately at creation, proving it stays zero
+    // through ordinary operation, not just zero-at-first-glance.
     rmw_event_t liveliness_lost_event = rmw_get_zero_initialized_event();
     assert(RMW_RET_OK == rmw_publisher_event_init(&liveliness_lost_event, pub, RMW_EVENT_LIVELINESS_LOST));
     rmw_liveliness_lost_status_t lost_status;

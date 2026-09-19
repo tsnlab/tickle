@@ -16,12 +16,13 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h> // offsetof - mark_liveliness_lost()'s own tt_Publisher -> rmw_tickle_publisher_t recovery
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
 
-#include <tickle/config.h> // tt_RECEIVE_TIMEOUT
-#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
+#include <tickle/config.h> // tt_RECEIVE_TIMEOUT, tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK, tt_get_ns()
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h" // rcutils_allocator_t
@@ -81,6 +82,99 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
 // delay receive/flush responsiveness either, but real (nanosleep, not sched_yield()) - see below.
 #define RMW_TICKLE_POLL_THREAD_YIELD_NS tt_MICROSECOND
 
+// QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 30, implementing
+// Milestone 28(b)'s own design sketch). How stale poll_thread_last_return_ns may get before
+// watchdog_thread_main() below calls it a hang - reuses the exact same floor rmw_qos.c's own
+// liveliness_lease_duration acceptance check already established as "TickLE core's own fastest
+// possible peer-death detection latency" (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL,
+// 3 seconds today) rather than inventing a second, arbitrary number - a real hang is a much
+// coarser, rarer event than a single missed discovery interval, so this floor is already loose
+// enough to never false-positive on ordinary scheduling jitter.
+#define RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL)
+// How often watchdog_thread_main() wakes up to check - well under the threshold above (so a hang
+// is still caught within roughly one threshold's worth of wall time, not several), but coarse
+// enough that this thread costs nothing noticeable running alongside poll_thread. Reuses tt_NODE_
+// UPDATE_INTERVAL itself - the same cadence this node's own self-announce already runs at - rather
+// than a third arbitrary number.
+#define RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS tt_NODE_UPDATE_INTERVAL
+// How finely watchdog_thread_main() slices its own sleep, purely so rmw_destroy_node() doesn't
+// have to wait out a full RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS for pthread_join() - re-checking
+// watchdog_thread_running this often keeps shutdown responsive without needing an interrupt
+// mechanism the way poll_thread's own tt_Node_interrupt() gives it.
+#define RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS (50 * tt_MILLISECOND)
+
+// Bumps liveliness_lost on every live Publisher this node owns - watchdog_thread_main()'s own
+// hang-detected action. Runs on the watchdog thread, never poll_thread, so (unlike rmw_graph.c's
+// own *_locked() variants, or check_publisher_deadline()'s own scheduled-from-inside-tt_Node_
+// poll() callback) it must take `mutex` itself before touching tickle_node - same rule any other
+// non-poll-thread access to it follows (rmw_tickle_node_t's own doc comment).
+static void mark_liveliness_lost(rmw_tickle_node_t* node_impl) {
+    pthread_mutex_lock(&node_impl->mutex);
+    bool marked_any = false;
+    for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node_impl->tickle_node.endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER) {
+            continue;
+        }
+        // endpoint aliases &((struct tt_Publisher*)endpoint)->endpoint (its first member), which
+        // is itself &((rmw_tickle_publisher_t*)...)->tickle_publisher's own first member -
+        // recovering the outer rmw_tickle_publisher_t this way matches subscriber_callback()'s
+        // own identical offsetof() recovery (rmw_subscription.c).
+        struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+        rmw_tickle_publisher_t* pub_impl =
+            (rmw_tickle_publisher_t*)((char*)pub - offsetof(rmw_tickle_publisher_t, tickle_publisher));
+        atomic_fetch_add(&pub_impl->liveliness_lost.total_count, 1);
+        atomic_fetch_add(&pub_impl->liveliness_lost.unread_count, 1);
+        marked_any = true;
+    }
+    pthread_mutex_unlock(&node_impl->mutex);
+
+    if (marked_any) {
+        // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/
+        // wait_cond check_publisher_deadline() (this file's own doc comment doesn't cover it,
+        // rmw_publisher.c does) already broadcasts on for RMW_EVENT_OFFERED_DEADLINE_MISSED, for
+        // the identical reason (rmw_tickle_context_impl_t's own doc comment, rmw_tickle.h).
+        rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)node_impl->context->impl;
+        pthread_mutex_lock(&context_impl->wait_mutex);
+        pthread_cond_broadcast(&context_impl->wait_cond);
+        pthread_mutex_unlock(&context_impl->wait_mutex);
+    }
+}
+
+// QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST, Milestone 28(b)'s own design
+// now implemented. Deliberately its own thread, never folded into poll_thread_main() above: the
+// whole point is an observer that keeps running even if poll_thread itself is wedged (a stalled
+// callback, or the whole tt_Node_poll() loop hung) - a check made *from* poll_thread could never
+// see poll_thread fail to make that same check. Edge-triggered (already_lost latch): a sustained
+// hang bumps liveliness_lost exactly once, matching real DDS's own "lease expired" semantics
+// (an event, not a continuously-repeating one) rather than once per RMW_TICKLE_WATCHDOG_CHECK_
+// INTERVAL_NS for as long as the hang lasts; recovering below the threshold re-arms it so a later,
+// separate hang fires again.
+static void* watchdog_thread_main(void* arg) {
+    rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)arg;
+    bool already_lost = false;
+    uint64_t next_check_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
+    while (node_impl->watchdog_thread_running) {
+        if (tt_get_ns() < next_check_ns) {
+            struct timespec shutdown_poll_duration = {
+                .tv_sec = 0,
+                .tv_nsec = RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS,
+            };
+            nanosleep(&shutdown_poll_duration, NULL);
+            continue;
+        }
+        next_check_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
+
+        uint64_t last_return_ns = atomic_load(&node_impl->poll_thread_last_return_ns);
+        bool stale = (tt_get_ns() - last_return_ns) >= RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS;
+        if (stale && !already_lost) {
+            mark_liveliness_lost(node_impl);
+        }
+        already_lost = stale;
+    }
+    return NULL;
+}
+
 static void* poll_thread_main(void* arg) {
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)arg;
     while (node_impl->poll_thread_running) {
@@ -92,6 +186,12 @@ static void* poll_thread_main(void* arg) {
         // failure either, so no per-code special-casing beyond the loop condition itself.
         tt_Node_poll(&node_impl->tickle_node, RMW_TICKLE_POLL_TIMEOUT_NS);
         pthread_mutex_unlock(&node_impl->mutex);
+
+        // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST. The one piece of
+        // information watchdog_thread_main() below needs and can't get any other way: proof this
+        // thread is still actually looping, not wedged inside tt_Node_poll() (or anywhere else in
+        // this loop) - see rmw_tickle_node_t.poll_thread_last_return_ns's own doc comment.
+        atomic_store(&node_impl->poll_thread_last_return_ns, tt_get_ns());
 
         // Found the hard way, benchmarking a real sustained publish rate (rmw_tickle/PLAN.md's
         // rmw-perf.yml): without a real gap here, this thread's own unlock()-then-immediately-
@@ -225,6 +325,11 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
         goto fail;
     }
 
+    // Set before either thread starts - watchdog_thread_main() must never see a stale zero-
+    // initialized value (zero_allocate() above) and immediately mistake node startup itself for a
+    // hang (tt_get_ns() - 0 is enormous).
+    atomic_store(&node_impl->poll_thread_last_return_ns, tt_get_ns());
+
     node_impl->poll_thread_running = true;
     if (pthread_create(&node_impl->poll_thread, NULL, poll_thread_main, node_impl) != 0) {
         RMW_SET_ERROR_MSG("failed to start poll thread");
@@ -232,6 +337,16 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
         tt_Node_destroy(&node_impl->tickle_node);
         pthread_mutex_destroy(&node_impl->mutex);
         goto fail;
+    }
+
+    // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST's own watchdog (Milestone
+    // 30). A failure here just leaves that one event permanently un-fireable for this node - not
+    // fatal to node creation itself (every other rmw_tickle feature still works without it), same
+    // "degrade, don't fail the whole node" reasoning DEADLINE's own tt_Node_schedule() failure
+    // path already uses elsewhere (rmw_publisher.c/rmw_subscription.c).
+    node_impl->watchdog_thread_running = true;
+    if (pthread_create(&node_impl->watchdog_thread, NULL, watchdog_thread_main, node_impl) != 0) {
+        node_impl->watchdog_thread_running = false;
     }
 
     return &node_impl->rmw_node;
@@ -265,6 +380,15 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
     node_impl->poll_thread_running = false;
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_join(node_impl->poll_thread, NULL);
+
+    // watchdog_thread_running is only ever true here if rmw_create_node() actually managed to
+    // start it (see its own doc comment there) - nothing to join otherwise. No tt_Node_interrupt()
+    // equivalent needed: watchdog_thread_main() never blocks in tt_Node_poll() or any other
+    // tickle_node call, it just re-checks this flag every RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS.
+    if (node_impl->watchdog_thread_running) {
+        node_impl->watchdog_thread_running = false;
+        pthread_join(node_impl->watchdog_thread, NULL);
+    }
 
     tt_Node_destroy(&node_impl->tickle_node);
     pthread_mutex_destroy(&node_impl->mutex);

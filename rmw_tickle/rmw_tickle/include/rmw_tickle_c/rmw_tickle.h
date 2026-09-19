@@ -170,6 +170,21 @@ typedef struct rmw_tickle_node_t {
     pthread_mutex_t mutex; // NOLINT(misc-include-cleaner)
     volatile bool poll_thread_running;
 
+    // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 28(b)'s own
+    // design, now implemented as Milestone 30). A same-thread self-check from inside poll_thread
+    // can never see poll_thread itself hang - the check only runs if poll_thread is still healthy
+    // enough to run it - so this needs a genuinely independent second thread instead: poll_thread_
+    // main() (rmw_node.c) stores tt_get_ns() here every time tt_Node_poll() actually returns;
+    // watchdog_thread_main() (rmw_node.c), running on its own schedule, compares this against
+    // RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS and marks every live Publisher on this node
+    // RMW_EVENT_LIVELINESS_LOST if it's gone stale. Atomic: the only field the two threads share
+    // directly (poll_thread writes, watchdog_thread reads) - everything else the watchdog needs
+    // (tickle_node.endpoints[] to find those Publishers) still goes through `mutex` like any other
+    // non-poll-thread access.
+    atomic_uint_least64_t poll_thread_last_return_ns;
+    pthread_t watchdog_thread; // NOLINT(misc-include-cleaner)
+    volatile bool watchdog_thread_running;
+
     // rmw_tickle/PLAN.md's Milestone 6: opts this node into TickLE's own opt-in graph
     // introspection (tt_Node_set_discovery(), Milestone 0(c)) - every remote Publisher/Subscriber/
     // Client/Server this node hears announced, for rmw_count_publishers()/_subscribers()/rmw_
@@ -271,9 +286,13 @@ typedef struct rmw_tickle_publisher_t {
     uint64_t last_activity_time;
     rmw_tickle_event_status_t deadline_missed;
 
-    // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_LOST. Always total_count == 0 - see
-    // rmw_publisher.c's own rmw_publisher_event_init() doc comment for why this is a structural,
-    // honest limitation (not a placeholder bug) rather than something a future pass would "finish".
+    // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_LOST (Milestone 30, implementing
+    // Milestone 28(b)'s own design). Bumped by mark_liveliness_lost() (rmw_node.c), called from
+    // watchdog_thread_main() when this Publisher's own node has gone stale - see rmw_tickle_node_t.
+    // poll_thread_last_return_ns's own doc comment for the actual detection mechanism (a same-
+    // thread self-check from inside poll_thread could never see poll_thread itself hang, so this
+    // needs a genuinely independent second thread instead). Stays {0, 0} for the lifetime of a
+    // node whose poll_thread never actually stalls - real, not a placeholder.
     rmw_tickle_event_status_t liveliness_lost;
 } rmw_tickle_publisher_t;
 
