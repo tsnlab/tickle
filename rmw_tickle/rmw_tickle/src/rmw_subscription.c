@@ -55,17 +55,52 @@ static void wake_wait_cond(rmw_tickle_context_impl_t* context_impl) {
     pthread_mutex_unlock(&context_impl->wait_mutex);
 }
 
+// Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Caller must already hold queue_mutex.
+// NULL (pool empty) is a normal, expected outcome the caller falls back to zero_allocate() for -
+// not an error.
+static void* shell_pool_pop(rmw_tickle_subscriber_t* sub_impl) {
+    if (sub_impl->shell_pool_count == 0) {
+        return NULL;
+    }
+    return sub_impl->shell_pool[--sub_impl->shell_pool_count];
+}
+
+// Returns `shell` to the pool, zeroing it first - shell_pool's own doc comment (rmw_tickle.h)
+// explains why that's load-bearing, not optional. Caller must already hold queue_mutex. Falls back
+// to a real deallocate() only if the pool is somehow already full - shouldn't happen (it's sized
+// queue_capacity, the most shells that can ever be genuinely in flight at once - see that field's
+// own doc comment), but a defensive bound costs nothing next to silently overflowing shell_pool[].
+static void shell_pool_push(rmw_tickle_subscriber_t* sub_impl, void* shell) {
+    memset(shell, 0, sub_impl->callbacks->ros_struct_size);
+    if (sub_impl->shell_pool_count < sub_impl->queue_capacity) {
+        sub_impl->shell_pool[sub_impl->shell_pool_count++] = shell;
+    } else {
+        sub_impl->allocator.deallocate(shell, sub_impl->allocator.state);
+    }
+}
+
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     rmw_tickle_subscriber_t* sub_impl =
         (rmw_tickle_subscriber_t*)((char*)tt_sub - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
 
-    void* ros_message = sub_impl->allocator.zero_allocate(1, callbacks->ros_struct_size, sub_impl->allocator.state);
+    // Milestone 45 - reuse an already-zeroed shell from the pool instead of a fresh zero_allocate()
+    // when one's available (see shell_pool's own doc comment, rmw_tickle.h) - falls back to a real
+    // allocation exactly as before whenever the pool's empty (e.g. before any rmw_take() has ever
+    // returned one, or a sustained burst deeper than queue_capacity).
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    void* ros_message = shell_pool_pop(sub_impl);
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
     if (NULL == ros_message) {
-        return; // Nothing more useful to do from inside a poll-thread callback - drop silently.
+        ros_message = sub_impl->allocator.zero_allocate(1, callbacks->ros_struct_size, sub_impl->allocator.state);
+        if (NULL == ros_message) {
+            return; // Nothing more useful to do from inside a poll-thread callback - drop silently.
+        }
     }
     if (!callbacks->from_tickle(data, ros_message)) {
-        sub_impl->allocator.deallocate(ros_message, sub_impl->allocator.state);
+        pthread_mutex_lock(&sub_impl->queue_mutex);
+        shell_pool_push(sub_impl, ros_message);
+        pthread_mutex_unlock(&sub_impl->queue_mutex);
         return;
     }
 
@@ -78,9 +113,10 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     pthread_mutex_lock(&sub_impl->queue_mutex);
     if (sub_impl->queue_count == sub_impl->queue_capacity) {
         // KEEP_LAST behavior (rmw_tickle_validate_qos_profile() rejects KEEP_ALL - see rmw_tickle.h's
-        // own queue doc comment) - drop the oldest queued message to make room for this one.
+        // own queue doc comment) - drop the oldest queued message to make room for this one, back
+        // into the pool rather than freeing it outright (Milestone 45).
         rmw_tickle_queued_message_t* oldest = &sub_impl->queue[sub_impl->queue_head];
-        sub_impl->allocator.deallocate(oldest->ros_message, sub_impl->allocator.state);
+        shell_pool_push(sub_impl, oldest->ros_message);
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
@@ -231,8 +267,19 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
+    // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Sized queue_capacity, same as
+    // queue[] itself - the most shells that can ever be genuinely in flight at once.
+    sub_impl->shell_pool = (void**)allocator->zero_allocate(sub_impl->queue_capacity, sizeof(void*), allocator->state);
+    if (NULL == sub_impl->shell_pool) {
+        RMW_SET_ERROR_MSG("failed to allocate subscriber shell_pool");
+        allocator->deallocate(sub_impl->queue, allocator->state);
+        allocator->deallocate(sub_impl, allocator->state);
+        return NULL;
+    }
+
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
+        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
@@ -247,6 +294,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     if (NULL == sub_impl->rmw_subscription.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
+        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
@@ -262,6 +310,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("tt_Node_create_subscriber() failed");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
+        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
@@ -335,12 +384,19 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     tt_Subscriber_destroy(&sub_impl->tickle_subscriber);
     pthread_mutex_unlock(&sub_impl->node->context_impl->node_mutex);
 
-    // Drain anything still queued - rmw_take() never got to these.
+    // Drain anything still queued - rmw_take() never got to these. Freed directly, not pushed
+    // through shell_pool_push() - the pool itself is about to be freed too, right below.
     pthread_mutex_lock(&sub_impl->queue_mutex);
     while (sub_impl->queue_count > 0) {
         sub_impl->allocator.deallocate(sub_impl->queue[sub_impl->queue_head].ros_message, sub_impl->allocator.state);
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
+    }
+    // Milestone 45 - every shell currently sitting in shell_pool (as opposed to still queued,
+    // drained just above, or out with an application that already called rmw_take()) also needs
+    // freeing here - nothing else ever will.
+    while (sub_impl->shell_pool_count > 0) {
+        sub_impl->allocator.deallocate(sub_impl->shell_pool[--sub_impl->shell_pool_count], sub_impl->allocator.state);
     }
     pthread_mutex_unlock(&sub_impl->queue_mutex);
     pthread_mutex_destroy(&sub_impl->queue_mutex);
@@ -348,6 +404,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     rcutils_allocator_t allocator = sub_impl->allocator;
     allocator.deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator.state);
     allocator.deallocate(sub_impl->queue, allocator.state);
+    allocator.deallocate((void*)sub_impl->shell_pool, allocator.state); // Milestone 45
     allocator.deallocate(sub_impl->owning_node_name, allocator.state);
     allocator.deallocate(sub_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(sub_impl, allocator.state);
@@ -374,7 +431,7 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     // no-op loop when lifespan_ns == 0 (not requested).
     while (sub_impl->queue_count > 0 && sub_impl->lifespan_ns != 0 &&
            tt_get_ns() - sub_impl->queue[sub_impl->queue_head].source_timestamp >= sub_impl->lifespan_ns) {
-        sub_impl->allocator.deallocate(sub_impl->queue[sub_impl->queue_head].ros_message, sub_impl->allocator.state);
+        shell_pool_push(sub_impl, sub_impl->queue[sub_impl->queue_head].ros_message); // Milestone 45
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
@@ -401,7 +458,12 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     // Fixing that generally needs a per-message __fini() function pointer rosidl_typesupport_
     // tickle_c doesn't generate yet - tracked as follow-on work, not solved here.
     memcpy(ros_message, entry.ros_message, sub_impl->callbacks->ros_struct_size);
-    sub_impl->allocator.deallocate(entry.ros_message, sub_impl->allocator.state);
+    // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h): the shallow copy above already
+    // transferred every owned pointer field out of entry.ros_message, so shell_pool_push()'s own
+    // memset() is exactly what makes reusing this same buffer safe, not just freeing it faster.
+    pthread_mutex_lock(&sub_impl->queue_mutex);
+    shell_pool_push(sub_impl, entry.ros_message);
+    pthread_mutex_unlock(&sub_impl->queue_mutex);
     *taken = true;
 
     if (NULL != message_info) {

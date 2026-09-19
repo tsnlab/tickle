@@ -218,3 +218,50 @@ prediction of real-deployment numbers.
 `rmw_tickle/PLAN.md`'s own Milestone 14 "left as explicit future work" note, still true); chasing
 the intermittent async crash; understanding why `rmw_cyclonedds_cpp`'s own async cases were
 skipped rather than run.
+
+### Follow-up (2026-09-20): Milestone 45's own allocation-pooling change - an honest negative result
+
+`rmw_tickle/PLAN.md`'s Milestone 45 implemented the highest-confidence fix this section's own
+profiling pointed at: `rmw_publish()`'s scratch `to_tickle()` conversion buffer and `rmw_
+subscription.c`'s own per-message "shell" buffer (`subscriber_callback()`/`rmw_take_with_info()`)
+both now reuse an allocator-owned buffer instead of a fresh `allocate()`/`deallocate()` pair every
+single call - a real, verified-correct change (a dedicated regression test, `test_publish_take_
+reuse.c`, passes clean under ASan+UBSan+leak detection, specifically targeting the one real
+correctness hazard reuse introduces: a reused buffer must be zeroed before its next use, or a
+`rosidl_runtime_c__String__assign()`-style call would free memory a caller still owns).
+
+**Re-running this exact script twice (this same methodology, same box) after that change shows no
+measurable, above-noise latency improvement** - if anything, one topic/sync-mode combination came
+in marginally *higher* than Milestone 44's own baseline, well within the same run-to-run noise
+band the DDS vendors' own numbers show here too (e.g. `rmw_fastrtps_cpp` sync Array1k: 0.0363ms
+baseline vs 0.0309/0.0365ms across these two follow-up runs - a wider swing than most of the
+`rmw_tickle` deltas below):
+
+| Topic | Sync | Milestone 44 baseline | Run 1 (this change) | Run 2 (this change) |
+|---|---|---:|---:|---:|
+| Array1k | async | 0.0487 | *(crashed - see below)* | 0.0505 |
+| Array1k | sync | 0.0467 | 0.0542 | 0.0473 |
+| Struct16 | async | 0.0543 | *(crashed - see below)* | 0.0529 |
+| Struct16 | sync | 0.0464 | 0.0496 | 0.0449 |
+
+(Run 1's own async rows crashed outright - all four `rmw_tickle` combinations that run hit
+`rmw_tickle/PLAN.md`'s own Milestone 47 finding, `Data consistency violated... id 1/2/5 Prev.
+sample id: ~6770-6820` - the already-root-caused, deliberately-deferred cross-instance identity
+gap, not anything Milestone 45 touched. Retrying the whole script - the same recovery Milestone 44
+itself needed on its own first run - produced Run 2's own clean, 0-failure numbers.)
+
+**Reading, honestly**: eliminating a real per-message heap allocation pair did not move the
+needle here. The most likely explanation, not yet confirmed by an actual profiler: at this
+message size and this box's own glibc, a same-size, high-frequency `malloc`/`free` pair is
+already served out of `tcache` on the order of tens of nanoseconds - genuinely below this
+measurement's own noise floor (run-to-run variation of several *micro*seconds, i.e. hundreds of
+times larger) at the ~0.03-0.05ms total latency scale being measured here. **This is a real,
+verified-correct change that stays in the codebase regardless** (fewer allocator calls is its own
+modest win, e.g. under `valgrind`/heap-profiling, and it's strictly simpler than what it replaced),
+but it does not close Milestone 45's own latency gap. The two remaining candidates that row's own
+original analysis named - (2) `rmw_publish()`'s unconditional `tt_Node_interrupt()`+lock pair
+regardless of whether the poll thread needed interrupting, and (3) the real cross-thread hand-off
+between poll_thread and the application's own executor thread - were **not** attempted this pass;
+closing this gap for real now needs an actual profiling pass (`perf`/`ftrace`, not counting
+allocations by reading the code) to find out whether either of those, or something not yet
+identified at all, actually dominates - tracked as the next real step, not guessed at again.

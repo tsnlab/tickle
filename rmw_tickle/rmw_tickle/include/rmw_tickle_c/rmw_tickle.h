@@ -387,6 +387,21 @@ typedef struct rmw_tickle_publisher_t {
     // watchdog_thread_main()'s own node-wide latch for the AUTOMATIC case, but per-Publisher, since
     // each manual Publisher's own lease lapses (and recovers) independently of every other one.
     bool liveliness_lost_latched;
+
+    // QoS roadmap follow-up (Milestone 45's own latency investigation, rmw_tickle/PLAN.md) - the
+    // scratch TickLE-struct buffer rmw_publish() converts into before tt_Publisher_publish(),
+    // allocated once here (callbacks->tickle_struct_size, fixed per Publisher) instead of a fresh
+    // allocate()/deallocate() pair on every single publish call - the highest-confidence hot-path
+    // allocation comparison.md's own profiling found. publish_mutex serializes concurrent rmw_
+    // publish() calls on this *same* Publisher around this shared buffer (rmw's own contract:
+    // "Publishers are thread-safe objects... safe to call this function using the same publisher
+    // concurrently", rmw/rmw.h's own rmw_publish() doc comment) - a separate, narrower lock than
+    // context_impl->node_mutex, acquired *before* it and released *after* it: rmw_publish() still
+    // only holds node_mutex around the actual tt_Publisher_publish() call itself, unchanged: this
+    // lock's own job is purely to stop two threads racing on the shared scratch buffer during the
+    // to_tickle() conversion that happens before node_mutex is ever taken.
+    void* publish_scratch_buf;
+    pthread_mutex_t publish_mutex;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-
@@ -432,6 +447,25 @@ typedef struct rmw_tickle_subscriber_t {
     size_t queue_head;
     size_t queue_count;
     uint64_t reception_sequence_number;
+
+    // QoS roadmap follow-up (Milestone 45) - a small free-list of already-allocated, currently-
+    // unused "shell" buffers (each callbacks->ros_struct_size bytes - the same buffer rmw_tickle_
+    // queued_message_t.ros_message's own doc comment describes) that subscriber_callback()/rmw_
+    // take_with_info() pop/push instead of a fresh zero_allocate()/deallocate() pair per message -
+    // the other half of Milestone 45's own hot-path allocation finding. Sized queue_capacity (the
+    // most shells that can ever be genuinely in flight between subscriber_callback() writing one
+    // and rmw_take() draining it - KEEP_LAST eviction bounds it at exactly that), allocator-owned,
+    // guarded by this same queue_mutex above (both functions already hold it around the exact span
+    // this touches, no separate lock needed). Every shell actually sitting *in* the pool is always
+    // already zeroed (rmw_subscription.c's own shell_pool_push() memsets it right before pushing) -
+    // load-bearing, not just tidy: a reused shell's own string/array pointer *fields* would
+    // otherwise still hold the exact same values just shallow-copied out to a caller's ros_message
+    // in rmw_take_with_info() (memcpy doesn't clear the source) - from_tickle()'s own rosidl_
+    // runtime_c__*__assign()/__Sequence__init() calls free/reallocate a destination's existing
+    // pointer before writing a new one, so reusing an unzeroed shell would free memory a caller
+    // still owns (a real use-after-free/double-free, not a hypothetical one).
+    void** shell_pool;
+    size_t shell_pool_count;
     // See rmw_tickle_publisher_t.qos's own doc comment - same reasoning, for rmw_subscription_
     // get_actual_qos().
     rmw_qos_profile_t qos;

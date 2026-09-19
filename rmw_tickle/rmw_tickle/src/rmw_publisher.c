@@ -142,6 +142,24 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
 
+    // Milestone 45 - see rmw_tickle_publisher_t.publish_scratch_buf's own doc comment. Allocated
+    // once here (callbacks->tickle_struct_size is fixed for this Publisher's whole lifetime),
+    // reused by every rmw_publish() call from here on instead of a fresh allocate() each time.
+    pub_impl->publish_scratch_buf = allocator->allocate(callbacks->tickle_struct_size, allocator->state);
+    if (NULL == pub_impl->publish_scratch_buf) {
+        RMW_SET_ERROR_MSG("failed to allocate publish scratch buffer");
+        allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+        allocator->deallocate(pub_impl, allocator->state);
+        return NULL;
+    }
+    if (pthread_mutex_init(&pub_impl->publish_mutex, NULL) != 0) {
+        RMW_SET_ERROR_MSG("failed to initialize publisher publish_mutex");
+        allocator->deallocate(pub_impl->publish_scratch_buf, allocator->state);
+        allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+        allocator->deallocate(pub_impl, allocator->state);
+        return NULL;
+    }
+
     // Same tt_Node_interrupt()-then-lock pattern rmw_destroy_node() already established - see
     // rmw_tickle.h's own rmw_tickle_context_impl_t doc comment for the full contract.
     tt_Node_interrupt(&node_impl->context_impl->tickle_node);
@@ -271,11 +289,14 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     tt_Publisher_destroy(&pub_impl->tickle_publisher);
     pthread_mutex_unlock(&pub_impl->node->context_impl->node_mutex);
 
+    pthread_mutex_destroy(&pub_impl->publish_mutex); // Milestone 45 - see its own doc comment
+
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
     allocator.deallocate(pub_impl->reliable_cache, allocator.state);   // NULL is a no-op, see its own doc comment
     allocator.deallocate(pub_impl->owning_node_name, allocator.state); // NULL is a no-op too (a failed strdup)
     allocator.deallocate(pub_impl->owning_node_namespace, allocator.state);
+    allocator.deallocate(pub_impl->publish_scratch_buf, allocator.state); // Milestone 45
     allocator.deallocate(pub_impl, allocator.state);
     return RMW_RET_OK;
 }
@@ -293,17 +314,22 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = pub_impl->callbacks;
 
-    void* tickle_buf = pub_impl->allocator.allocate(callbacks->tickle_struct_size, pub_impl->allocator.state);
-    if (NULL == tickle_buf) {
-        RMW_SET_ERROR_MSG("failed to allocate scratch TickLE struct");
-        return RMW_RET_BAD_ALLOC;
-    }
+    // Milestone 45 - publish_scratch_buf's own doc comment (rmw_tickle.h): reused every call
+    // instead of a fresh allocate()/deallocate() pair. Safe to reuse the instant tt_Publisher_
+    // publish() below returns - it never retains a pointer to `data` past its own call (either
+    // encodes straight from it inline, or memcpy()s the *encoded wire bytes* into reliable_cache,
+    // tickle.c's own cache_reliable_sample() - never `data` itself), and every field to_tickle()
+    // writes here either aliases the caller's own ros_message (a plain unbounded string, DESIGN.md's
+    // "Strings" rule) or copies into a fixed in-place buffer - nothing this struct itself owns that
+    // a second call's own to_tickle() would need to free first.
+    pthread_mutex_lock(&pub_impl->publish_mutex);
+    void* tickle_buf = pub_impl->publish_scratch_buf;
 
     if (!callbacks->to_tickle(ros_message, tickle_buf)) {
         // A bounds-check failure (a variable array/bounded string longer than TickLE's resolved
         // capacity) - see ros2_adapter.py's own emit_to_tickle() doc comment.
         RMW_SET_ERROR_MSG("failed to convert ROS message to TickLE wire struct (capacity exceeded?)");
-        pub_impl->allocator.deallocate(tickle_buf, pub_impl->allocator.state);
+        pthread_mutex_unlock(&pub_impl->publish_mutex);
         return RMW_RET_ERROR;
     }
 
@@ -317,8 +343,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         pub_impl->last_activity_time = tt_get_ns();
     }
     pthread_mutex_unlock(&pub_impl->node->context_impl->node_mutex);
-
-    pub_impl->allocator.deallocate(tickle_buf, pub_impl->allocator.state);
+    pthread_mutex_unlock(&pub_impl->publish_mutex);
 
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Publisher_publish() failed");
