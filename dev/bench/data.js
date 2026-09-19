@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789806409430,
+  "lastUpdate": 1789806412684,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -30734,6 +30734,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 823.291,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2f679010fe91aa55ac903f2c5e42d2641e8d2a95",
+          "message": "Implement Milestone 37: the \"names and types\" function family\n\nMilestone 33's own explicitly-deferred larger follow-on, TickLE Plan's\npriority item 2: rmw_get_topic_names_and_types()/_service_names_and_types(),\nthe four *_by_node() variants, and rmw_get_publishers_info_by_topic()/\n_subscriptions_info_by_topic() - the last 8 TestGraphAPI cases this whole\nmulti-node effort was working toward.\n\nReuses Milestone 6's own dual local-endpoint/remote-discovery scan pattern\nthroughout - no new TickLE-core mechanism needed. A local tt_Endpoint has no\ntype-name or owning-node field of its own, so both are recovered via the same\noffsetof() reverse-cast idiom every discovery/data callback in this package\nalready uses, reaching the concrete rmw_tickle_publisher_t/_subscriber_t/\n_client_t/_service_t wrapper. The four *_by_node() queries can only ever\ntruthfully answer for a node in this process (checked against Milestone 34's\nown node registry) - TickLE's wire protocol has no remote node-name concept\nat all, so anything else is an honest RMW_RET_NODE_NAME_NON_EXISTENT, not a\nguess. rmw_get_publishers_info_by_topic()/_subscriptions_info_by_topic() gid-\nencode the same (node_id, endpoint_id) scheme rmw_get_gid_for_publisher()\nalready established; a remote entity's own qos_profile starts from\nrmw_qos_profile_unknown with only reliability/durability overridden from the\ntwo bits TickLE's wire protocol actually carries.\n\nNew tests/test_names_and_types.c exercises all 8 functions against a real\ntopic and service. The conformance patch's own test_graph_api.cpp section is\nremoved entirely - the file is now byte-identical to pristine upstream,\nconfirmed via git diff against a fresh clone.\n\ncolcon build/test green, clang-tidy/clang-format clean (one real finding\nfixed: build_names_and_types()'s own cognitive complexity, resolved by\nextracting three small helpers). Patch regenerated via the pristine-clone-\ndiff method, confirmed git apply --check clean on a fresh clone.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T17:24:11+09:00",
+          "tree_id": "fca163cc69c766ff690793adde1b039bb15de9ae",
+          "url": "https://github.com/tsnlab/tickle/commit/2f679010fe91aa55ac903f2c5e42d2641e8d2a95"
+        },
+        "date": 1789806411619,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.62,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 824.284,
             "unit": "Mbps"
           }
         ]
