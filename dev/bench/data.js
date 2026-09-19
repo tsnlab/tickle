@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789783042647,
+  "lastUpdate": 1789783045678,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -25079,6 +25079,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030469349452427456,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "eeb166280934f54d055c0c1806dc77e565f8289a",
+          "message": "Implement Milestone 28(b): RMW_EVENT_LIVELINESS_LOST watchdog thread\n\nA same-thread self-check from inside poll_thread can never see poll_thread\nitself hang, so this needed a genuinely independent observer. A new watchdog\nthread per node (rmw_node.c) checks a shared, atomically-updated \"last time\ntt_Node_poll() actually returned\" timestamp against a stale threshold\n(reusing the existing LIVELINESS floor, tt_LIVELINESS_MISS_THRESHOLD *\ntt_NODE_UPDATE_INTERVAL) and marks every live Publisher on that node\nLIVELINESS_LOST, edge-triggered, if it's gone stale.\n\nNew test_liveliness_lost_watchdog.c genuinely stalls poll_thread (holding\nnode_impl->mutex from the test thread) to prove this fires for real, not\njust that the event plumbing exists.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T10:56:06+09:00",
+          "tree_id": "1fff981e1853d21dc7730dbd0dbf7750a6c56c86",
+          "url": "https://github.com/tsnlab/tickle/commit/eeb166280934f54d055c0c1806dc77e565f8289a"
+        },
+        "date": 1789783044632,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.00039958953857421875,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9899768829345703,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030456134251185825,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03046894073486328,
             "unit": "Mbit/s"
           }
         ]
