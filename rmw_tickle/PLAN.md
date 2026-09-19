@@ -7,6 +7,34 @@ TickLE's own CDR-4 wire format instead of DDS. Lives at `rmw_tickle/rmw_tickle/`
 **Status**: scaffold only (`rmw_init`/`rmw_shutdown`/`rmw_context_fini` + `rmw_init_options_*`,
 merged via #20). Everything below is planned, not yet built.
 
+## Project goals
+
+The reason this project exists at all, stated explicitly (the user's own words, 2026-09-19) so
+every later design decision in this document can be checked against it rather than re-derived
+from scratch each time:
+
+1. **TickLE core** targets embedded systems - small, lightweight, resource-conscious - while still
+   supporting all six of `rmw`'s QoS policies (the "QoS roadmap" table below), not a reduced
+   subset traded away for footprint.
+2. **TickLE core's own performance** (both latency *and* throughput, not just one) must be very
+   good relative to `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp` - see `rmw_tickle/comparison.md` for
+   where that comparison currently stands and Milestone 45 for the current gap's own root-cause
+   analysis.
+3. **`rmw_tickle`** is TickLE core wrapped behind the `rmw` interface - a genuinely different
+   thing from TickLE core itself, not just a thin passthrough (see point 5).
+4. **`rmw_tickle`'s own performance** must *also* be very good, both latency and throughput,
+   relative to `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp` at the `rmw` layer specifically - not
+   assumed to follow automatically from point 2 just because `rmw_tickle` wraps TickLE core.
+5. **The key difference between the two layers**: TickLE core stays embedded-conscious (small
+   footprint, deliberately minimal threading - DESIGN.md's own "Concurrency: single-threaded per
+   node, by design" section). `rmw_tickle` is not under that same constraint - its own target is
+   `rmw`/ROS 2 environment optimization, a Linux/desktop-class deployment, not a microcontroller -
+   so `rmw_tickle` should use threads aggressively where doing so improves performance, rather
+   than inheriting TickLE core's own embedded-motivated thread-minimalism by default. Read every
+   past and future design note in this document that reasoned "fewer threads is better" *for
+   `rmw_tickle` specifically* (not TickLE core) against this - that reasoning was evaluating the
+   wrong constraint if it treated `rmw_tickle` as needing to stay embedded-light too.
+
 ## Design philosophy
 
 TickLE itself stays as unmodified as possible; only the handful of places where its own design
