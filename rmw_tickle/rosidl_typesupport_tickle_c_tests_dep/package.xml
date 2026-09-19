@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>rosidl_typesupport_tickle_c_tests_dep</name>
+  <version>0.0.1</version>
+  <description>
+    A second minimal real ROS 2 interface package, separate from rosidl_typesupport_tickle_c_tests
+    itself, existing purely so that package can nest one of *this* package's own messages -
+    proving, in real CI, that rosidl_typesupport_tickle_c_generate_interfaces.cmake's own cross-
+    package -I wiring (rmw_tickle/PLAN.md's own Milestone for it) actually resolves, compiles, and
+    links a genuinely cross-package nested message field, not just a same-package sibling
+    (Milestone 40's own test_msgs/Nested.msg already covers that case, but a same-package
+    reference never exercises this cross-package machinery at all). Not meant to ship or be
+    depended on by anything else beyond that one purpose.
+  </description>
+  <maintainer email="halim9512@gmail.com">Harim Seong</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_cmake</buildtool_depend>
+
+  <depend>rosidl_generator_c</depend>
+  <depend>rosidl_typesupport_c</depend>
+  <depend>rosidl_typesupport_tickle_c</depend>
+
+  <exec_depend>rosidl_runtime_c</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

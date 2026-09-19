@@ -29,6 +29,10 @@
   <depend>rosidl_generator_c</depend>
   <depend>rosidl_typesupport_c</depend>
   <depend>rosidl_typesupport_tickle_c</depend>
+  <!-- msg/Branch.msg's own cross-package nested field (rosidl_typesupport_tickle_c_tests_dep/
+       Leaf) - see that message's own doc comment for why this is a separate package rather than
+       a same-package sibling like Simple.msg's own field. -->
+  <depend>rosidl_typesupport_tickle_c_tests_dep</depend>
   <!-- rosidl_generator_cpp/rosidl_typesupport_cpp: needed for test_dispatch_cpp.cpp, which
        exercises the *actual* entry point a real rclcpp::Node uses (rosidl_typesupport_cpp::
        get_message_type_support_handle<T>()) rather than the C-only ROSIDL_GET_MSG_TYPE_SUPPORT()

@@ -36,10 +36,17 @@ find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_generator_cpp REQUIRED)
 find_package(rosidl_typesupport_cpp REQUIRED)
 find_package(rosidl_typesupport_tickle_cpp REQUIRED)
+# msg/Branch.msg's own cross-package nested field - find_package()-ing the dependency before
+# rosidl_generate_interfaces() (and naming it in DEPENDENCIES below) is what makes rosidl_
+# typesupport_tickle_c_generate_interfaces.cmake's own DEPENDENCY_PACKAGE_NAMES loop (the -I/
+# include-dir/link-library wiring this whole package exists to exercise) see it at all.
+find_package(rosidl_typesupport_tickle_c_tests_dep REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Simple.msg"
+  "msg/Branch.msg"
   "srv/SimpleService.srv"
+  DEPENDENCIES rosidl_typesupport_tickle_c_tests_dep
 )
 
 if(BUILD_TESTING)
@@ -49,7 +56,8 @@ if(BUILD_TESTING)
   # machinery.
   add_executable(test_dispatch test/test_dispatch.c)
   add_executable(test_dispatch_srv test/test_dispatch_srv.c)
-  foreach(_test_target test_dispatch test_dispatch_srv)
+  add_executable(test_dispatch_nested test/test_dispatch_nested.c)
+  foreach(_test_target test_dispatch test_dispatch_srv test_dispatch_nested)
     target_link_libraries(${_test_target}
       "${PROJECT_NAME}__rosidl_generator_c"
       "${PROJECT_NAME}__rosidl_typesupport_c"
@@ -57,6 +65,13 @@ if(BUILD_TESTING)
       rosidl_runtime_c::rosidl_runtime_c
     )
   endforeach()
+  # No extra target_link_libraries() for test_dispatch_nested's own cross-package Leaf struct:
+  # "${PROJECT_NAME}__rosidl_generator_c" above already PUBLIC-links
+  # rosidl_typesupport_tickle_c_tests_dep's own __rosidl_generator_c target (rosidl_generator_c_
+  # generate_interfaces.cmake's own DEPENDENCY_PACKAGE_NAMES loop, confirmed by reading it
+  # directly), and "${PROJECT_NAME}__rosidl_typesupport_c" likewise PUBLIC-links its own
+  # __rosidl_typesupport_tickle_c dependency (this same milestone's own new wiring) - both
+  # propagate transitively to every executable linking this package's own targets already.
 
   # See test/test_dispatch_cpp.cpp's own doc comment for why this is a separate executable from
   # test_dispatch above, not just an addition to it.
