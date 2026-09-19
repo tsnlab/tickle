@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789819139579,
+  "lastUpdate": 1789819217337,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -7297,6 +7297,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e165368557f890dc306d36785f88aeeef0b98eef",
+          "message": "Confirm Milestone 40's real CI verification green\n\nCheck all passed with test_msgs/Nested.msg now included in generation -\nrosidl_typesupport_tickle_c genuinely builds a working Nested.msg\ntypesupport through the real, unmodified CMake extension, no regressions.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T20:57:47+09:00",
+          "tree_id": "b83c27904c232419abe50b04dcf422016f3048c2",
+          "url": "https://github.com/tsnlab/tickle/commit/e165368557f890dc306d36785f88aeeef0b98eef"
+        },
+        "date": 1789819213927,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.206,
             "unit": "ms"
           },
           {
