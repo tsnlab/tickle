@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789825474679,
+  "lastUpdate": 1789825477936,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -54443,6 +54443,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 10.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "73de972abbfc41eec67c3a8a044a05468d8dcfd7",
+          "message": "Document Milestone 45: root-cause the ~1.3-1.6x latency gap, next milestone\n\nMilestone 44's own row updated to reflect the performance half is now done\ntoo (comparison.md has real, verified-clean numbers).\n\nMilestone 45 is \"TickLE Plan\"'s own root-cause analysis of that gap, ranked\nby confidence and grounded directly in the current code: per-publish/per-\nreceive heap allocation churn (rmw_publish()'s scratch to_tickle() buffer,\nsubscriber_callback()'s per-message allocation, rmw_take_with_info()'s own\nmemcpy+deallocate on top of that) is the highest-confidence, most directly\nfixable cause; the unconditional tt_Node_interrupt()/lock/clock_gettime\ncost on every publish and the cross-thread hand-off for delivery are lower-\nconfidence structural candidates; some of the gap is just FastDDS/\nCycloneDDS's own multi-year optimization head start, not a bug to fix.\nProposes starting with the allocation churn (most contained, least\narchitecturally risky, directly supported by the profiling done so far) and\nexplicitly leaves whether the other two are worth pursuing to whoever picks\nthis up, informed by a real profiling pass once the first fix lands.\n\nAlso separately notes the intermittent rmw_tickle async-mode crash\nMilestone 44 surfaced - a correctness bug, deliberately not folded into\nthis performance milestone's own scope (already flagged to TickLE Dev\ndirectly).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:41:42+09:00",
+          "tree_id": "4a95a69343241288127567b56b3ec69d8807ce25",
+          "url": "https://github.com/tsnlab/tickle/commit/73de972abbfc41eec67c3a8a044a05468d8dcfd7"
+        },
+        "date": 1789825476829,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
             "unit": "%"
           },
           {
