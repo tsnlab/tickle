@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789814706088,
+  "lastUpdate": 1789814709572,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -43571,6 +43571,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 8.035,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "75e7873aa237015d26af9ef6486a2bb11b0697a4",
+          "message": "Implement Milestone 39: array-of-string support in tools/typesupport\n\nAdds WireField.array_element_kind (\"scalar\" | \"string\") so a variable/fixed\narray field can hold plain, unbounded string elements - DESIGN.md's existing\n\"Variable/Fixed arrays\" rule composed directly with its existing \"Strings\"\nrule, per TickLE Plan's own design (relayed to and approved by the user\nbefore implementation): no new wire format, no widened count/length fields,\nno offset table.\n\nmodel.py/layout.py/adapt.py/emit.py each gained the small number of string-\narray-only branches this needs, guarded so an existing scalar array's own\ngenerated output stays byte-for-byte unchanged (confirmed via test_golden.py).\nA real clang-tidy cognitive-complexity finding on *_encode/*_decode/\n*_encode_size (once a struct has more than one or two string-array fields)\nis fixed by emit.emit_string_element_helpers(): three small `static`\nper-struct helper functions generated directly into that struct's own .c\nfile, never a new shared runtime dependency.\n\nA bounded string element (string<=N[]) stays out of scope - not needed by\nany real target file. ros2_adapter.py's own ROS 2 converter explicitly\nrejects an array-of-string field (NotImplementedError, tested) rather than\nsilently generating wrong C, since rosidl_runtime_c represents a string\narray completely differently from a primitive one - that conversion is a\nseparate, still-open follow-on.\n\nNew fixtures tests/fixtures_own/StringArrays.msg / StringArrayDefaults.msg\n(mirroring Arrays.msg/ArrayDefaults.msg) with golden, roundtrip, capacity-\nrejection, and default-value coverage. Full suite: 63/63 passing.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T19:42:10+09:00",
+          "tree_id": "93e573801b5dee2f16c5d7d90838af9b9cedb659",
+          "url": "https://github.com/tsnlab/tickle/commit/75e7873aa237015d26af9ef6486a2bb11b0697a4"
+        },
+        "date": 1789814708491,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
             "unit": "ms"
           }
         ]
