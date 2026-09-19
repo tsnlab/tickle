@@ -250,6 +250,51 @@ sample id: ~6770-6820` - the already-root-caused, deliberately-deferred cross-in
 gap, not anything Milestone 45 touched. Retrying the whole script - the same recovery Milestone 44
 itself needed on its own first run - produced Run 2's own clean, 0-failure numbers.)
 
+**Independent corroboration (2026-09-20, "TickLE Plan," 3 more runs on this same box, per the
+user's own explicit go-ahead)** - same conclusion, plus a genuinely new finding about how often
+Milestone 47's own crash actually shows up:
+
+| Topic | Sync | Milestone 44 baseline | Run 3 (this change) |
+|---|---|---:|---:|
+| Array1k | async | 0.0487 | 0.0506 |
+| Array1k | sync | 0.0467 | 0.0463 |
+| Struct16 | async | 0.0543 | 0.0440 |
+| Struct16 | sync | 0.0464 | 0.0462 |
+
+Run 3 (the one clean, complete run of the three) lands in the same place as TickLE Dev's own two
+runs above - some deltas up, some down, none clearly outside this rig's own established noise band
+(FastDDS/CycloneDDS's own numbers, untouched by this change, moved by similarly-sized amounts run
+to run throughout this whole exercise). **Runs 4 and 5 did not produce usable `rmw_tickle`
+numbers at all**: Run 4 had most combinations skipped by `ctest` outright (the same test-
+registration flakiness already noted above, worse this time - only one row printed); Run 5 hit
+Milestone 47's own crash again, independently - `Data consistency violated. Received sample with
+not strictly higher id. Received sample id 1 Prev. sample id: 4392` and `...id: 4393`, on *two*
+separate combinations in one run (`Array1k async` produced no result row at all; `Struct16 async`
+technically finished but reported `Lost: 976` of what should have been complete delivery - numbers
+too degraded to treat as a real latency measurement, not included above).
+
+**Tally across every attempt so far, both sessions combined**: 5 total run attempts (TickLE Dev's
+2 + these 3), Milestone 47's own crash/major-loss signature hit in **3 of them** - notably more
+often than the 0-reproductions-in-25-iterations TickLE Dev's own narrower, `rmw_tickle`-only
+natural-repro test found (`rmw_tickle/PLAN.md`'s own Milestone 47 row). Plausible reason, not yet
+confirmed: this script builds and starts all *three* `RMW_IMPLEMENTATION`s' own two-process pairs
+in sequence on one box, extending the total window (and process-churn) an old, slow-to-fully-exit
+`rmw_tickle` process from an earlier combination has to overlap with a new one - exactly the
+trigger condition Milestone 47's own root-cause analysis already named as most likely. **Worth
+relaying to whoever picks up Milestone 47's implementation**: this script is turning out to be a
+meaningfully better reproducer for that bug than the isolated test was.
+
+**Overall verdict on Milestone 45 item 1's own latency effect, both sessions' data combined**: no
+measurable, above-noise improvement across every clean run so far (1 from TickLE Dev, 1 from this
+session) - a real, if unglamorous, negative result. Not necessarily "the fix did nothing" - malloc/
+free churn removal is still a legitimate, verified-correct efficiency win on its own terms, and a
+same-host `lo`-adjacent rig with ~30-50us absolute latencies is a genuinely hard place to see a
+few-`malloc`-calls-worth of savings above this much ambient noise. A confident answer either way
+would need many more repeated trials with real statistical treatment (median/IQR across, say, 10+
+clean runs) - not attempted here, a bigger undertaking than manual runs support well. Given how
+often Milestone 47's own crash is corrupting attempts, **fixing Milestone 47 first is probably a
+prerequisite for that kind of larger, trustworthy run anyway**, not just a nice-to-have.
+
 **Reading, honestly**: eliminating a real per-message heap allocation pair did not move the
 needle here. The most likely explanation, not yet confirmed by an actual profiler: at this
 message size and this box's own glibc, a same-size, high-frequency `malloc`/`free` pair is
