@@ -458,3 +458,31 @@ rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros
     RMW_SET_ERROR_MSG("rmw_tickle does not support loaned messages");
     return RMW_RET_UNSUPPORTED;
 }
+
+// rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog - previously missing as a symbol
+// entirely (Milestone 15's own note). BEST_EFFORT has nothing to guarantee (matches the real
+// spec: no delivery acknowledgment exists for BEST_EFFORT at all, so there is nothing to wait
+// for) - returns immediately. RELIABLE would need this Publisher to track, per currently-matched
+// Subscription, whether every sample already published has been acked - TickLE core's own ack
+// bookkeeping runs the other way around (each reliable_sender-tracking Subscriber owns its own
+// ack_seq_no/received_bitmap, tickle.h; a Publisher only sees ACKNACKs reactively, via process_
+// acknack(), tickle.c, with no aggregated "which peers have fully caught up" view of its own) -
+// a real implementation needs that Publisher-side aggregation built first, tracked as an open
+// follow-on rather than approximated here with a proxy (e.g. "every cache entry's own retry
+// count is currently 0") that wouldn't actually mean what this function promises.
+rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw_time_t wait_timeout) {
+    (void)wait_timeout;
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
+    if (!pub_impl->tickle_publisher.reliable) {
+        return RMW_RET_OK;
+    }
+    RMW_SET_ERROR_MSG("rmw_tickle does not yet track per-Subscription ack completion for a "
+                      "RELIABLE Publisher - see rmw_tickle/PLAN.md's own note on this gap");
+    return RMW_RET_UNSUPPORTED;
+}

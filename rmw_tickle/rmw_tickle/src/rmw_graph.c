@@ -167,8 +167,22 @@ size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_node_t* node_impl, 
     return count_not_alive_matching_locked(node_impl, topic_name, kind);
 }
 
-// Shared by rmw_count_publishers()/rmw_count_subscribers() - see this file's own module doc
-// comment for why both the local endpoint table and the remote discovery table need scanning.
+// The tt_Node_interrupt()-then-lock-then-scan-then-unlock sequence every count_matching_locked()
+// caller in this file needs - split out once both rmw_count_publishers()/_subscribers() (below)
+// and rmw_publisher_count_matched_subscriptions()/rmw_subscription_count_matched_publishers()
+// (rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog) needed the identical sequence, just
+// against a different rmw_tickle_node_t/topic_name pair each time.
+static size_t count_matching_via_node_impl(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind) {
+    tt_Node_interrupt(&node_impl->tickle_node);
+    pthread_mutex_lock(&node_impl->mutex);
+    size_t matched = count_matching_locked(node_impl, topic_name, kind);
+    pthread_mutex_unlock(&node_impl->mutex);
+    return matched;
+}
+
+// Shared by rmw_count_publishers()/_subscribers()/_clients()/_services() - see this file's own
+// module doc comment for why both the local endpoint table and the remote discovery table need
+// scanning.
 static rmw_ret_t count_matching(const rmw_node_t* node, const char* topic_name, uint8_t kind, size_t* count) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(node, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(topic_name, RMW_RET_INVALID_ARGUMENT);
@@ -178,17 +192,7 @@ static rmw_ret_t count_matching(const rmw_node_t* node, const char* topic_name, 
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
-    rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
-
-    // discovery.entities[]/tickle_node.endpoints[] are both written from the poll thread (UPDATE
-    // processing / endpoint creation) - same tt_Node_interrupt()-then-lock contract every other
-    // rmw_tickle_c entry point touching tickle_node follows (rmw_tickle.h's own rmw_tickle_node_t
-    // doc comment).
-    tt_Node_interrupt(&node_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->mutex);
-    size_t matched = count_matching_locked(node_impl, topic_name, kind);
-    pthread_mutex_unlock(&node_impl->mutex);
-    *count = matched;
+    *count = count_matching_via_node_impl((rmw_tickle_node_t*)node->data, topic_name, kind);
     return RMW_RET_OK;
 }
 
@@ -198,6 +202,53 @@ rmw_ret_t rmw_count_publishers(const rmw_node_t* node, const char* topic_name, s
 
 rmw_ret_t rmw_count_subscribers(const rmw_node_t* node, const char* topic_name, size_t* count) {
     return count_matching(node, topic_name, tt_KIND_TOPIC_SUBSCRIBER, count);
+}
+
+// rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog - previously missing symbols entirely
+// (Milestone 15's own note). Same shape as rmw_count_publishers()/_subscribers() above, just
+// scanning for the two service-side kinds instead of the two topic-side ones - no new mechanism
+// needed, count_matching()/count_matching_locked() already scan both local endpoints and remote
+// discovery regardless of kind.
+rmw_ret_t rmw_count_clients(const rmw_node_t* node, const char* service_name, size_t* count) {
+    return count_matching(node, service_name, tt_KIND_SERVICE_CLIENT, count);
+}
+
+rmw_ret_t rmw_count_services(const rmw_node_t* node, const char* service_name, size_t* count) {
+    return count_matching(node, service_name, tt_KIND_SERVICE_SERVER, count);
+}
+
+// rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog - previously missing symbols entirely.
+// Deliberately the *same* same-topic-name-and-kind computation rmw_count_publishers()/
+// _subscribers() above already use, just scoped to "the topic this one Publisher/Subscription
+// itself is on" instead of an arbitrary caller-given topic_name - not QoS-compatibility-filtered
+// (would need re-deriving each remote match's own offered/requested bits from struct tt_
+// DiscoveredEntity.qos and comparing, QoS roadmap #1's own RxO matching machinery, Milestone 31),
+// matching rmw_count_publishers()/_subscribers()'s own pre-existing, unfiltered scope exactly
+// rather than introducing an inconsistency between two otherwise-identical counting functions.
+rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publisher, size_t* subscription_count) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription_count, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
+    *subscription_count = count_matching_via_node_impl(pub_impl->node, publisher->topic_name, tt_KIND_TOPIC_SUBSCRIBER);
+    return RMW_RET_OK;
+}
+
+rmw_ret_t rmw_subscription_count_matched_publishers(const rmw_subscription_t* subscription, size_t* publisher_count) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher_count, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(subscription->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)subscription->data;
+    *publisher_count = count_matching_via_node_impl(sub_impl->node, subscription->topic_name, tt_KIND_TOPIC_PUBLISHER);
+    return RMW_RET_OK;
 }
 
 rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_client_t* client, bool* is_available) {

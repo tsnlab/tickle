@@ -79,6 +79,67 @@ static void fake_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
     (void)data;
 }
 
+// Never actually invoked - rmw_count_clients()/rmw_count_services() only need the client/server
+// pair to exist in tickle_node.endpoints[], same "no real call happens" reasoning as the topic
+// stubs above.
+static int32_t fake_request_encode_size(struct tt_Request* request) {
+    (void)request;
+    return 0;
+}
+// NOLINTNEXTLINE(readability-non-const-parameter) - must match tt_REQUEST_ENCODE's own fixed signature
+static int32_t fake_request_encode(struct tt_Request* request, uint8_t* payload, const uint32_t len) {
+    (void)request;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+static int32_t fake_request_decode(struct tt_Request* request, const uint8_t* payload, const uint32_t len,
+                                   bool is_native_endian) {
+    (void)request;
+    (void)payload;
+    (void)len;
+    (void)is_native_endian;
+    return 0;
+}
+static void fake_request_free(struct tt_Request* request) {
+    (void)request;
+}
+static int32_t fake_response_encode_size(struct tt_Response* response) {
+    (void)response;
+    return 0;
+}
+// NOLINTNEXTLINE(readability-non-const-parameter) - must match tt_RESPONSE_ENCODE's own fixed signature
+static int32_t fake_response_encode(struct tt_Response* response, uint8_t* payload, const uint32_t len) {
+    (void)response;
+    (void)payload;
+    (void)len;
+    return 0;
+}
+static int32_t fake_response_decode(struct tt_Response* response, const uint8_t* payload, const uint32_t len,
+                                    bool is_native_endian) {
+    (void)response;
+    (void)payload;
+    (void)len;
+    (void)is_native_endian;
+    return 0;
+}
+static void fake_response_free(struct tt_Response* response) {
+    (void)response;
+}
+static void fake_client_callback(struct tt_Client* client, int8_t return_code, struct tt_Response* response) {
+    (void)client;
+    (void)return_code;
+    (void)response;
+}
+static int8_t fake_server_callback(struct tt_Server* server, struct tt_Request* request, struct tt_Response* response,
+                                   tt_RequestId request_id) {
+    (void)server;
+    (void)request;
+    (void)response;
+    (void)request_id;
+    return 0;
+}
+
 int main(void) {
     rcutils_allocator_t allocator = rcutils_get_default_allocator();
 
@@ -167,8 +228,56 @@ int main(void) {
     assert(RMW_RET_OK == rmw_count_publishers(node, "/unrelated_topic", &count));
     assert(0U == count);
 
+    // rmw_count_clients()/rmw_count_services() - rmw_tickle/PLAN.md's remaining-rmw-API-surface
+    // backlog. Same shape as the publisher/subscriber pair above, mirrored onto the service side.
+    const char* service_name = "/test_graph_service";
+    assert(RMW_RET_OK == rmw_count_clients(node, service_name, &count));
+    assert(0U == count);
+    assert(RMW_RET_OK == rmw_count_services(node, service_name, &count));
+    assert(0U == count);
+
+    struct tt_Service service = {
+        .name = "test_graph/Srv",
+        .request_size = sizeof(struct tt_Request),
+        .response_size = sizeof(struct tt_Response),
+        .request_encode_size = fake_request_encode_size,
+        .request_encode = fake_request_encode,
+        .request_decode = fake_request_decode,
+        .request_free = fake_request_free,
+        .response_encode_size = fake_response_encode_size,
+        .response_encode = fake_response_encode,
+        .response_decode = fake_response_decode,
+        .response_free = fake_response_free,
+    };
+
+    struct tt_Client client;
     tt_Node_interrupt(&node_impl->tickle_node);
     pthread_mutex_lock(&node_impl->mutex);
+    tt_ret = tt_Node_create_client(&node_impl->tickle_node, &client, &service, service_name, fake_client_callback);
+    pthread_mutex_unlock(&node_impl->mutex);
+    assert(tt_RET_OK == tt_ret);
+
+    assert(RMW_RET_OK == rmw_count_clients(node, service_name, &count));
+    assert(1U == count);
+    assert(RMW_RET_OK == rmw_count_services(node, service_name, &count));
+    assert(0U == count); // a client isn't a server
+
+    struct tt_Server server;
+    tt_Node_interrupt(&node_impl->tickle_node);
+    pthread_mutex_lock(&node_impl->mutex);
+    tt_ret = tt_Node_create_server(&node_impl->tickle_node, &server, &service, service_name, fake_server_callback);
+    pthread_mutex_unlock(&node_impl->mutex);
+    assert(tt_RET_OK == tt_ret);
+
+    assert(RMW_RET_OK == rmw_count_clients(node, service_name, &count));
+    assert(1U == count);
+    assert(RMW_RET_OK == rmw_count_services(node, service_name, &count));
+    assert(1U == count);
+
+    tt_Node_interrupt(&node_impl->tickle_node);
+    pthread_mutex_lock(&node_impl->mutex);
+    assert(tt_RET_OK == tt_Client_destroy(&client));
+    assert(tt_RET_OK == tt_Server_destroy(&server));
     assert(tt_RET_OK == tt_Subscriber_destroy(&sub));
     assert(tt_RET_OK == tt_Publisher_destroy(&pub));
     pthread_mutex_unlock(&node_impl->mutex);
