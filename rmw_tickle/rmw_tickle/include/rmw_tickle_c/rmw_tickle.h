@@ -23,7 +23,6 @@
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
-#include "rmw/init.h"      // rmw_context_t
 #include "rmw/ret_types.h" // rmw_ret_t
 #include "rmw/types.h"     // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t,
                            // rmw_service_t, rmw_guard_condition_t, rmw_wait_set_t, rmw_qos_profile_t
