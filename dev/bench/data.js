@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789819668560,
+  "lastUpdate": 1789819671625,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -29519,6 +29519,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046403612409319,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d579e425183bfdb6945715417b560c21b7d3dd45",
+          "message": "Confirm Milestone 41's real CI verification green\n\nCheck all passed with no regressions - expected, since nothing in the\nconformance suite exercises the new array-of-string ros2_adapter.py\nconversion yet (still blocked on array-of-nested-type support).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T21:06:38+09:00",
+          "tree_id": "af35e0e7a2a9be8b077744ad047233c5561bb393",
+          "url": "https://github.com/tsnlab/tickle/commit/d579e425183bfdb6945715417b560c21b7d3dd45"
+        },
+        "date": 1789819670581,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.0003990445818219866,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9899791990007673,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030477796282087053,
             "unit": "Mbit/s"
           }
         ]
