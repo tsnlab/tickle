@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789846658758,
+  "lastUpdate": 1789846661925,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -36530,6 +36530,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 819.582,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e73b5011166b0dc8ab90556832fdc19a43438612",
+          "message": "Finalize Milestone 47's own design: (node_id, entity_id) + goodbye\n\nThe full design worked out across several rounds with the user\n(2026-09-20), replacing the earlier \"real fix, not attempted here\" sketch:\n\n- Composite tracking key (node_id, entity_id), entity_id generalized\n  across every entity kind (pub/sub/server/client), node_id itself\n  unchanged (the original crash reproduced with two already-different\n  node_ids, so node_id's own weaknesses were never the actual trigger).\n- entity_id = a random base drawn once per tt_Node_create() call, plus a\n  simple per-node incrementing counter thereafter - a deliberate hybrid:\n  pure-linear alone would let a restarted process regenerate an earlier\n  run's own entity_id sequence (reproducing the same bug via restart\n  instead of two-process overlap); pure-random alone works but loses the\n  zero-collision-within-one-run property linear allocation gives for free.\n- entity_id rides on submessage-level headers (DataHeader/AckNackHeader/\n  HeartbeatHeader), not the shared message-level tt_Header - confirmed\n  against DESIGN.md's own batching section that one datagram can mix\n  submessages from different local entities sharing one node_id.\n- An explicit \"goodbye\" folded into the existing discovery UPDATE announce\n  (not a new submessage type) on clean shutdown - with the random-base\n  entity_id scheme, goodbye's role narrows to promptness and to the\n  residual crash-before-goodbye window, matching real DDS's own identical\n  accepted limitation rather than being the sole collision defense.\n- Subscriber-side: struct tt_Subscriber's own single flat ack_seq_no/\n  received_bitmap/reliable_sender_node_id fields become a small,\n  fixed-capacity per-(node_id, entity_id) table - a real WriterProxy\n  equivalent.\n- Bonus consequence: also closes Milestone 35's own separately-documented\n  \"ambiguous which of several identically-named local endpoints\" gap for\n  RPC, once every entity carries its own entity_id regardless of kind.\n\nStill explicitly open for whoever implements: entity_id width, and\nper-kind vs. shared counter (functionally equivalent either way).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T04:35:00+09:00",
+          "tree_id": "d59951393d05ac9b826b8ac99f1ba3c0e63a531d",
+          "url": "https://github.com/tsnlab/tickle/commit/e73b5011166b0dc8ab90556832fdc19a43438612"
+        },
+        "date": 1789846660838,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.639,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 822.674,
             "unit": "Mbps"
           }
         ]
