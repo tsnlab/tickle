@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789795719535,
+  "lastUpdate": 1789795722659,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -13008,6 +13008,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.26,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f43eb30bf2a79e0ca157968492bb473559d2c67c",
+          "message": "Implement Milestone 34: multiple ROS 2 nodes per process\n\nReal DDS has no \"Node\" concept at all - rclcpp::Node is a pure rcl/rmw-layer\nname/namespace grouping, tracked via rmw_dds_common's own metadata topic, not a\ncore DDS entity - so co-resident nodes never needed distinct transport\nidentities, only distinct name labels sharing one. This supersedes the earlier\n\"design pass only\" finding (SO_REUSEPORT unicast misrouting risk), which was\nsolving a problem this milestone turns out not to have.\n\nPromotes the shared tt_Node/poll_thread/watchdog_thread/discovery from\nrmw_tickle_node_t (one per logical node) up to rmw_tickle_context_impl_t (one\nper process/context), reference-counted via a new registry_mutex-guarded\nnode_count/nodes[]. rmw_create_node() starts the shared node only for the\nfirst logical node and rejects a duplicate (name, namespace); rmw_destroy_node()\ntears it down only once the last one goes. rmw_get_node_names() now enumerates\nevery logical node sharing a context, closing part of Milestone 6's own\n\"only ever the local node\" gap. Unskips test_graph_api.cpp's rmw_tickle-specific\nGTEST_SKIP() in the upstream conformance patch now that a second same-process\nnode is genuinely supported.\n\nNew test_multi_node.c verifies two nodes share one tt_Node, duplicate rejection,\nnode enumeration, and reference-counted teardown. 16/16 tests green, clang-tidy/\nclang-format clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T14:25:57+09:00",
+          "tree_id": "b5d2dcd3ba356deef1afd8dd11dc060b9c304e13",
+          "url": "https://github.com/tsnlab/tickle/commit/f43eb30bf2a79e0ca157968492bb473559d2c67c"
+        },
+        "date": 1789795721580,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.606,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 903.899,
             "unit": "Mbps"
           }
         ]
