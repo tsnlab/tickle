@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789818895918,
+  "lastUpdate": 1789818898905,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -32267,6 +32267,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 822.345,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e95f2d3c3459de9c081be28de031d516efacfa59",
+          "message": "Implement Milestone 40: un-exclude test_msgs/Nested.msg from conformance patch\n\nTickLE Plan's priority list, item 1: prove the real external target (a real\nROS 2 install's own unmodified test_msgs CMake extension) actually builds\nMilestone 38's nested-message support, before adding more capability on top\nof something only verified against hand-built local pytest fixtures.\n\nConfirmed Nested.msg is exactly the minimal shape Milestone 38 targets\n(BasicTypes basic_types_value - a single, same-package field, no array) by\nchecking a pristine ros2/test_interface_files clone. Neither\ntest_subscription.cpp nor test_serialize_deserialize.cpp (still excluded)\nactually reference Nested.msg - both need UnboundedSequences/\nBoundedPlainSequences instead (array-of-nested-type, still unsupported) -\nso this change's only observable effect is real CI actually generating and\nbuilding Nested.msg's own typesupport through the real CMake extension.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T20:52:17+09:00",
+          "tree_id": "f24900b9e9ae158acfe42d66476c37d56d77bbc6",
+          "url": "https://github.com/tsnlab/tickle/commit/e95f2d3c3459de9c081be28de031d516efacfa59"
+        },
+        "date": 1789818897850,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.667,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 823.527,
             "unit": "Mbps"
           }
         ]
