@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789826438075,
+  "lastUpdate": 1789826441224,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -31690,6 +31690,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 async throughput",
             "value": 0.03046894073486328,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9639a127c3d6db962b13bfa7e09cc30be4aa1a72",
+          "message": "Add Project goals: the explicit design purpose behind rmw_tickle/TickLE core\n\nStated directly by the user (2026-09-19) as the standing reference every\nlater design decision in this document should be checked against, rather\nthan re-derived each time:\n\n1. TickLE core targets embedded systems (small, lightweight) while still\n   supporting all six rmw QoS policies, not a reduced subset traded for\n   footprint.\n2. TickLE core's own latency and throughput must both be very good\n   relative to rmw_fastrtps_cpp/rmw_cyclonedds_cpp.\n3. rmw_tickle wraps TickLE core behind the rmw interface - not just a thin\n   passthrough.\n4. rmw_tickle's own latency and throughput must also both be very good\n   relative to rmw_fastrtps_cpp/rmw_cyclonedds_cpp at the rmw layer\n   specifically, not assumed to follow automatically from #2.\n5. The key distinction: TickLE core stays embedded-conscious and\n   thread-minimal; rmw_tickle's own target is rmw/ROS 2 environment\n   optimization on a Linux/desktop-class deployment, not a\n   microcontroller - so rmw_tickle should use threads aggressively for\n   performance rather than inheriting TickLE core's own embedded-motivated\n   thread-minimalism. Explicitly flags that any past or future \"fewer\n   threads is better\" reasoning for rmw_tickle specifically (not TickLE\n   core) was evaluating the wrong constraint.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:58:34+09:00",
+          "tree_id": "adff14229611af3b259fa06120a92515d57366a0",
+          "url": "https://github.com/tsnlab/tickle/commit/9639a127c3d6db962b13bfa7e09cc30be4aa1a72"
+        },
+        "date": 1789826440121,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905406406947544,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9901158469063895,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030451502118791853,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030456134251185825,
             "unit": "Mbit/s"
           }
         ]
