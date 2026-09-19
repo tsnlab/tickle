@@ -16,7 +16,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
-#include <stddef.h> // offsetof - mark_liveliness_lost()'s own tt_Publisher -> rmw_tickle_publisher_t recovery
+#include <stddef.h> // offsetof - mark_automatic_publishers_lost()'s own tt_Publisher -> rmw_tickle_publisher_t recovery
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -102,13 +102,41 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
 // watchdog_thread_running this often keeps shutdown responsive without needing an interrupt
 // mechanism the way poll_thread's own tt_Node_interrupt() gives it.
 #define RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS (50 * tt_MILLISECOND)
+// QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - how long check_manual_publishers_lost()
+// below waits for node->mutex before giving up for this cycle - see its own doc comment for why
+// this needs pthread_mutex_timedlock() specifically, neither a plain trylock() nor an untimed
+// lock(). Generous next to poll_thread's own microsecond-scale hold per tt_Node_poll() call, tiny
+// next to RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS itself.
+#define RMW_TICKLE_WATCHDOG_MANUAL_CHECK_TIMEOUT_NS (10 * tt_MILLISECOND)
 
-// Bumps liveliness_lost on every live Publisher this node owns - watchdog_thread_main()'s own
-// hang-detected action. Runs on the watchdog thread, never poll_thread, so (unlike rmw_graph.c's
-// own *_locked() variants, or check_publisher_deadline()'s own scheduled-from-inside-tt_Node_
-// poll() callback) it must take `mutex` itself before touching tickle_node - same rule any other
-// non-poll-thread access to it follows (rmw_tickle_node_t's own doc comment).
-static void mark_liveliness_lost(rmw_tickle_node_t* node_impl) {
+static void bump_liveliness_lost(rmw_tickle_publisher_t* pub_impl) {
+    atomic_fetch_add(&pub_impl->liveliness_lost.total_count, 1);
+    atomic_fetch_add(&pub_impl->liveliness_lost.unread_count, 1);
+}
+
+static void broadcast_wait_cond(rmw_tickle_node_t* node_impl) {
+    // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/wait_cond
+    // check_publisher_deadline() (this file's own doc comment doesn't cover it, rmw_publisher.c
+    // does) already broadcasts on for RMW_EVENT_OFFERED_DEADLINE_MISSED, for the identical reason
+    // (rmw_tickle_context_impl_t's own doc comment, rmw_tickle.h).
+    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)node_impl->context->impl;
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+}
+
+// Bumps liveliness_lost on every AUTOMATIC Publisher (liveliness_lease_ns == 0) this node owns -
+// watchdog_thread_main()'s own node-wide-hang action (Milestone 30). Called *only* once node_
+// stale has already been computed true by the caller, lock-free, before this - a deliberate
+// "decide first, act after" split: this function's own pthread_mutex_lock() below may have to
+// wait out however long node->mutex is actually held (a real hang could be seconds), and by the
+// time it returns, poll_thread may already have resumed and refreshed poll_thread_last_return_ns
+// back to a fresh value - but that no longer matters, since the "was it stale" decision was
+// already made and handed in, not re-derived here. (A version of this function that re-checked
+// staleness itself under the lock was tried and reverted - see PLAN.md's own note - it raced
+// exactly like that: poll_thread wins the reacquire race the instant the lock frees, erasing the
+// staleness signal before this function's own re-check could see it.)
+static void mark_automatic_publishers_lost(rmw_tickle_node_t* node_impl) {
     pthread_mutex_lock(&node_impl->mutex);
     bool marked_any = false;
     for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count; i++) {
@@ -123,36 +151,88 @@ static void mark_liveliness_lost(rmw_tickle_node_t* node_impl) {
         struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
         rmw_tickle_publisher_t* pub_impl =
             (rmw_tickle_publisher_t*)((char*)pub - offsetof(rmw_tickle_publisher_t, tickle_publisher));
-        atomic_fetch_add(&pub_impl->liveliness_lost.total_count, 1);
-        atomic_fetch_add(&pub_impl->liveliness_lost.unread_count, 1);
-        marked_any = true;
+        if (pub_impl->liveliness_lease_ns == 0) {
+            bump_liveliness_lost(pub_impl);
+            marked_any = true;
+        }
     }
     pthread_mutex_unlock(&node_impl->mutex);
-
     if (marked_any) {
-        // Wake anyone blocked in rmw_wait() on this event becoming ready - same wait_mutex/
-        // wait_cond check_publisher_deadline() (this file's own doc comment doesn't cover it,
-        // rmw_publisher.c does) already broadcasts on for RMW_EVENT_OFFERED_DEADLINE_MISSED, for
-        // the identical reason (rmw_tickle_context_impl_t's own doc comment, rmw_tickle.h).
-        rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)node_impl->context->impl;
-        pthread_mutex_lock(&context_impl->wait_mutex);
-        pthread_cond_broadcast(&context_impl->wait_cond);
-        pthread_mutex_unlock(&context_impl->wait_mutex);
+        broadcast_wait_cond(node_impl);
+    }
+}
+
+// QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - the MANUAL_BY_TOPIC counterpart to
+// mark_automatic_publishers_lost() above, checked every watchdog cycle rather than only on an
+// edge transition (each manual Publisher's own lease is independent, so there's no single node-
+// wide "already lost" gate to check before locking the way the automatic case has). Deliberately
+// pthread_mutex_trylock(), not a blocking lock: last_asserted_ns only ever changes via an explicit
+// rmw_publisher_assert_liveliness() call (a rare, deliberate application action, not something
+// racing to "heal" itself the instant this lock frees the way poll_thread_last_return_ns does for
+// the automatic case above) - so simply skipping this cycle when the lock is momentarily busy and
+// retrying next cycle is safe, and avoids this thread ever blocking here for an unbounded time
+// (e.g. a real hang holding node->mutex would otherwise starve *this* check from ever running at
+// all for as long as it lasts, even though it has nothing to do with what made the node hang).
+static void check_manual_publishers_lost(rmw_tickle_node_t* node_impl) {
+    // A plain pthread_mutex_trylock() here loses to poll_thread almost every single time: poll_
+    // thread_main() holds this exact mutex for the duration of every tt_Node_poll() call (up to
+    // RMW_TICKLE_POLL_TIMEOUT_NS) and releases it for only RMW_TICKLE_POLL_THREAD_YIELD_NS (1us)
+    // before relocking - trylock() isn't a queued waiter the way a blocking lock is, so it has no
+    // fair shot at that 1us gap the way rmw_publish() et al.'s own blocking pthread_mutex_lock()
+    // calls do (futex wake semantics give a real waiter a turn; a bare trylock() just samples the
+    // lock state once and gives up). pthread_mutex_timedlock() with a short, bounded timeout gets
+    // the best of both: it registers as a real waiter (reliably wins under this same ordinary
+    // poll_thread contention, unlike trylock()), but still can't block this thread indefinitely
+    // during a genuine long hang the way an untimed lock() would - RMW_TICKLE_WATCHDOG_MANUAL_
+    // CHECK_TIMEOUT_NS is generous next to poll_thread's own ~microsecond-scale hold, but tiny
+    // next to RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS, so a miss here just tries again next cycle.
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
+    deadline.tv_nsec += RMW_TICKLE_WATCHDOG_MANUAL_CHECK_TIMEOUT_NS;
+    deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;
+    deadline.tv_nsec %= (long)tt_SECOND;
+    if (pthread_mutex_timedlock(&node_impl->mutex, &deadline) != 0) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    bool marked_any = false;
+    for (uint32_t i = 0; i < node_impl->tickle_node.endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node_impl->tickle_node.endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER) {
+            continue;
+        }
+        struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+        rmw_tickle_publisher_t* pub_impl =
+            (rmw_tickle_publisher_t*)((char*)pub - offsetof(rmw_tickle_publisher_t, tickle_publisher));
+        if (pub_impl->liveliness_lease_ns == 0) {
+            continue; // AUTOMATIC - mark_automatic_publishers_lost()'s own concern, not this one
+        }
+        bool manual_stale = (now - atomic_load(&pub_impl->last_asserted_ns)) >= pub_impl->liveliness_lease_ns;
+        if (manual_stale && !pub_impl->liveliness_lost_latched) {
+            bump_liveliness_lost(pub_impl);
+            marked_any = true;
+        }
+        pub_impl->liveliness_lost_latched = manual_stale;
+    }
+    pthread_mutex_unlock(&node_impl->mutex);
+    if (marked_any) {
+        broadcast_wait_cond(node_impl);
     }
 }
 
 // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST, Milestone 28(b)'s own design
-// now implemented. Deliberately its own thread, never folded into poll_thread_main() above: the
-// whole point is an observer that keeps running even if poll_thread itself is wedged (a stalled
-// callback, or the whole tt_Node_poll() loop hung) - a check made *from* poll_thread could never
-// see poll_thread fail to make that same check. Edge-triggered (already_lost latch): a sustained
-// hang bumps liveliness_lost exactly once, matching real DDS's own "lease expired" semantics
-// (an event, not a continuously-repeating one) rather than once per RMW_TICKLE_WATCHDOG_CHECK_
-// INTERVAL_NS for as long as the hang lasts; recovering below the threshold re-arms it so a later,
-// separate hang fires again.
+// (AUTOMATIC, Milestone 30) plus MANUAL_BY_TOPIC (Milestone 32) both implemented. Deliberately its
+// own thread, never folded into poll_thread_main() above: the whole point is an observer that
+// keeps running even if poll_thread itself is wedged (a stalled callback, or the whole tt_Node_
+// poll() loop hung) - a check made *from* poll_thread could never see poll_thread fail to make
+// that same check, and a manual-liveliness lease needs checking on its own schedule regardless of
+// poll_thread's health anyway. node_wide_already_lost is computed fresh, lock-free, every cycle -
+// see mark_automatic_publishers_lost()'s own doc comment for why the actual lock/mark step only
+// ever runs on the exact cycle staleness first transitions true, never re-deriving it after
+// blocking on the lock.
 static void* watchdog_thread_main(void* arg) {
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)arg;
-    bool already_lost = false;
+    bool node_wide_already_lost = false;
     uint64_t next_check_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
     while (node_impl->watchdog_thread_running) {
         if (tt_get_ns() < next_check_ns) {
@@ -165,12 +245,14 @@ static void* watchdog_thread_main(void* arg) {
         }
         next_check_ns = tt_get_ns() + RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS;
 
-        uint64_t last_return_ns = atomic_load(&node_impl->poll_thread_last_return_ns);
-        bool stale = (tt_get_ns() - last_return_ns) >= RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS;
-        if (stale && !already_lost) {
-            mark_liveliness_lost(node_impl);
+        bool node_stale = (tt_get_ns() - atomic_load(&node_impl->poll_thread_last_return_ns)) >=
+                          RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS;
+        if (node_stale && !node_wide_already_lost) {
+            mark_automatic_publishers_lost(node_impl);
         }
-        already_lost = stale;
+        node_wide_already_lost = node_stale;
+
+        check_manual_publishers_lost(node_impl);
     }
     return NULL;
 }

@@ -287,13 +287,41 @@ typedef struct rmw_tickle_publisher_t {
     rmw_tickle_event_status_t deadline_missed;
 
     // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_LOST (Milestone 30, implementing
-    // Milestone 28(b)'s own design). Bumped by mark_liveliness_lost() (rmw_node.c), called from
-    // watchdog_thread_main() when this Publisher's own node has gone stale - see rmw_tickle_node_t.
-    // poll_thread_last_return_ns's own doc comment for the actual detection mechanism (a same-
-    // thread self-check from inside poll_thread could never see poll_thread itself hang, so this
-    // needs a genuinely independent second thread instead). Stays {0, 0} for the lifetime of a
-    // node whose poll_thread never actually stalls - real, not a placeholder.
+    // Milestone 28(b)'s own design; MANUAL_BY_TOPIC added in Milestone 32). Bumped by check_
+    // liveliness_lost() (rmw_node.c), called from watchdog_thread_main() when this Publisher's own
+    // liveliness obligation has gone unmet - see rmw_tickle_node_t.poll_thread_last_return_ns's
+    // own doc comment for the AUTOMATIC case (a same-thread self-check from inside poll_thread
+    // could never see poll_thread itself hang, so this needs a genuinely independent second thread
+    // instead) and liveliness_lease_ns's own doc comment below for the manual case. Stays {0, 0}
+    // for the lifetime of a Publisher that keeps meeting whichever obligation applies to it - real,
+    // not a placeholder.
     rmw_tickle_event_status_t liveliness_lost;
+
+    // QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - MANUAL_BY_TOPIC (the only manual kind
+    // this rmw's own rmw_qos_policy_liveliness_t still defines - MANUAL_BY_PARTICIPANT/_BY_NODE
+    // were removed from the real rmw spec some time ago). 0 (zero_allocate() default): AUTOMATIC,
+    // Milestone 30's own original behavior - liveliness_lost above is driven purely by this node's
+    // own poll_thread health (rmw_tickle_node_t.poll_thread_last_return_ns), the same for every
+    // AUTOMATIC Publisher on it. Non-zero: this Publisher's own qos.liveliness_lease_duration in
+    // nanoseconds - check_liveliness_lost() (rmw_node.c) instead compares tt_get_ns() against
+    // last_asserted_ns below, entirely independent of poll_thread's own health (a manual-
+    // liveliness Publisher can go LIVELINESS_LOST even while the rest of the node is perfectly
+    // healthy - matching real DDS: this obligation belongs to the *application*, which must call
+    // rmw_publisher_assert_liveliness() in time, not the middleware).
+    uint64_t liveliness_lease_ns;
+    // tt_get_ns() at the most recent rmw_publisher_assert_liveliness() call on this Publisher -
+    // initialized to this Publisher's own creation time (rmw_create_publisher()) so a manual-
+    // liveliness Publisher that's never explicitly asserted isn't instantly stale. Only meaningful
+    // when liveliness_lease_ns != 0 - MANUAL_BY_TOPIC's own defining trait is that this lease is
+    // refreshed only by this exact Publisher's own explicit assertion, independent of every other
+    // entity on the node. Atomic: written by whichever application thread calls rmw_publisher_
+    // assert_liveliness(), read by the watchdog thread - no node->mutex needed for this one field,
+    // matching poll_thread_last_return_ns's own same reasoning (Milestone 30).
+    atomic_uint_least64_t last_asserted_ns;
+    // check_liveliness_lost()'s own edge-triggered latch for the manual-lease check above - mirrors
+    // watchdog_thread_main()'s own node-wide latch for the AUTOMATIC case, but per-Publisher, since
+    // each manual Publisher's own lease lapses (and recovers) independently of every other one.
+    bool liveliness_lost_latched;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-

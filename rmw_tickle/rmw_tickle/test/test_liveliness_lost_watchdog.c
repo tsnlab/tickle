@@ -182,8 +182,8 @@ int main(void) {
     nanosleep(&hang_duration, NULL);
     pthread_mutex_unlock(&node_impl->mutex);
 
-    // The watchdog may have been blocked on this same mutex (inside mark_liveliness_lost(),
-    // rmw_node.c) waiting for the unlock() just above - rmw_wait() with a real timeout (rather
+    // The watchdog may have been blocked on this same mutex (inside mark_automatic_publishers_
+    // lost(), rmw_node.c) waiting for the unlock() just above - rmw_wait() with a real timeout (rather
     // than immediately calling rmw_take_event()) gives it room to finish that call and broadcast
     // its own wait_cond, without this test racing a fixed short sleep against it.
     rmw_time_t recovery_timeout = {2, 0}; // generous: only needs to cover scheduling latency
@@ -199,6 +199,69 @@ int main(void) {
     assert(lost_status.total_count_change >= 1);
 
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+
+    // QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - MANUAL_BY_TOPIC. Unlike the AUTOMATIC
+    // case above, this doesn't need any node_impl->mutex trickery at all: check_manual_publishers_
+    // lost() (rmw_node.c) checks each manual Publisher's own last_asserted_ns independently of
+    // poll_thread's health, so a plain wait (no assertion at all) past the lease is a real,
+    // unforced test of the actual obligation this QoS kind imposes.
+    rmw_qos_profile_t manual_qos = base_qos();
+    manual_qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
+    // rmw_qos.c's own floor - the shortest lease this rmw accepts, same reasoning as the AUTOMATIC
+    // threshold above (recomputed, not hardcoded, for the same "don't silently drift" reason).
+    uint64_t manual_lease_ns = (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
+    manual_qos.liveliness_lease_duration.sec = manual_lease_ns / tt_SECOND;
+    manual_qos.liveliness_lease_duration.nsec = manual_lease_ns % tt_SECOND;
+
+    rmw_publisher_t* neglected_pub =
+        rmw_create_publisher(node, fake_type_support(), "neglected_topic", &manual_qos, &pub_opts);
+    assert(NULL != neglected_pub);
+    rmw_event_t neglected_lost_event = rmw_get_zero_initialized_event();
+    assert(RMW_RET_OK == rmw_publisher_event_init(&neglected_lost_event, neglected_pub, RMW_EVENT_LIVELINESS_LOST));
+
+    // Never asserted at all - must go LIVELINESS_LOST once its own lease elapses, entirely on its
+    // own schedule (no external stall needed, unlike AUTOMATIC's own node-wide check above).
+    rmw_time_t neglected_timeout = {
+        .sec = (manual_lease_ns + tt_SECOND) / tt_SECOND, // +1s margin over the bare floor
+        .nsec = (manual_lease_ns + tt_SECOND) % tt_SECOND,
+    };
+    void* neglected_events_storage[1] = {&neglected_lost_event};
+    rmw_events_t neglected_events = {.event_count = 1, .events = neglected_events_storage};
+    assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &neglected_events, wait_set, &neglected_timeout));
+    assert(NULL != neglected_events.events[0]);
+
+    rmw_liveliness_lost_status_t neglected_status;
+    bool neglected_taken = false;
+    assert(RMW_RET_OK == rmw_take_event(&neglected_lost_event, &neglected_status, &neglected_taken));
+    assert(neglected_taken);
+    assert(neglected_status.total_count >= 1);
+
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, neglected_pub));
+
+    // The mirror image: a Publisher that keeps calling rmw_publisher_assert_liveliness() faster
+    // than its own lease must never go LIVELINESS_LOST, even well past when it would have without
+    // those calls - proves the assertion API actually keeps a manual Publisher alive, not just
+    // that a neglected one goes lost.
+    rmw_publisher_t* asserted_pub =
+        rmw_create_publisher(node, fake_type_support(), "asserted_topic", &manual_qos, &pub_opts);
+    assert(NULL != asserted_pub);
+    rmw_event_t asserted_lost_event = rmw_get_zero_initialized_event();
+    assert(RMW_RET_OK == rmw_publisher_event_init(&asserted_lost_event, asserted_pub, RMW_EVENT_LIVELINESS_LOST));
+
+    struct timespec assert_interval = {.tv_sec = 1, .tv_nsec = 0}; // well under manual_lease_ns (>= 3s)
+    for (int i = 0; i < (int)((manual_lease_ns + tt_SECOND) / tt_SECOND); i++) {
+        assert(RMW_RET_OK == rmw_publisher_assert_liveliness(asserted_pub));
+        nanosleep(&assert_interval, NULL);
+    }
+
+    void* asserted_events_storage[1] = {&asserted_lost_event};
+    rmw_events_t asserted_events = {.event_count = 1, .events = asserted_events_storage};
+    rmw_time_t asserted_check_timeout = {0, (uint64_t)SANITY_CHECK_TIMEOUT_MS * NS_PER_MS};
+    assert(RMW_RET_TIMEOUT == rmw_wait(NULL, NULL, NULL, NULL, &asserted_events, wait_set, &asserted_check_timeout));
+    assert(NULL == asserted_events.events[0]);
+
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, asserted_pub));
+
     assert(RMW_RET_OK == rmw_destroy_wait_set(wait_set));
     assert(RMW_RET_OK == rmw_destroy_node(node));
     assert(RMW_RET_OK == rmw_shutdown(&context));

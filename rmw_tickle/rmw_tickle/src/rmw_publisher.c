@@ -223,6 +223,21 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         pub_impl->tickle_publisher.lifespan_duration_ns = (uint64_t)lifespan_ns;
     }
 
+    // QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - MANUAL_BY_TOPIC. See rmw_tickle_
+    // publisher_t.liveliness_lease_ns's own doc comment. AUTOMATIC (or SYSTEM_DEFAULT) leaves
+    // liveliness_lease_ns at its zero_allocate() default (0), the disambiguating sentinel check_
+    // liveliness_lost() (rmw_node.c) uses to pick the AUTOMATIC (node-wide poll_thread health)
+    // path over the manual-lease one. Left at RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT ({0,0})
+    // falls back to the same floor rmw_qos.c's own acceptance check already established, rather
+    // than leaving liveliness_lease_ns at 0 too (which would be indistinguishable from AUTOMATIC
+    // here).
+    if (RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness) {
+        rmw_duration_t lease_ns = rmw_time_total_nsec(qos_profile->liveliness_lease_duration);
+        pub_impl->liveliness_lease_ns =
+            lease_ns > 0 ? (uint64_t)lease_ns : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
+        atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
+    }
+
     return &pub_impl->rmw_publisher;
 }
 
@@ -373,6 +388,28 @@ rmw_ret_t rmw_publisher_event_init(rmw_event_t* rmw_event, const rmw_publisher_t
         RMW_SET_ERROR_MSG("rmw_tickle does not support this publisher QoS event yet");
         return RMW_RET_UNSUPPORTED;
     }
+}
+
+// QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - MANUAL_BY_TOPIC (the only manual kind
+// this rmw's own rmw_qos_policy_liveliness_t still defines - see rmw_qos.c's own doc comment on
+// MANUAL_BY_PARTICIPANT/_BY_NODE having been removed from the real rmw spec). A no-op (RMW_RET_OK)
+// for an AUTOMATIC Publisher (liveliness_lease_ns == 0) - matches real DDS, where asserting on an
+// AUTOMATIC entity is harmless. For a manual one, a plain atomic store into last_asserted_ns (no
+// lock needed - see its own doc comment, rmw_tickle.h) is the entire mechanism: MANUAL_BY_TOPIC's
+// own defining trait is that this Publisher's lease is refreshed only by its own explicit
+// assertion, independent of every other entity on the node.
+rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
+    if (pub_impl->liveliness_lease_ns != 0) {
+        atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
+    }
+    return RMW_RET_OK;
 }
 
 // Loaned (zero-copy) messages: rmw_publisher_t.can_loan_messages is always false (tt_Node_create_

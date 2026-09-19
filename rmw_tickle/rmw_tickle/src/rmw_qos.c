@@ -69,15 +69,25 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
         return RMW_RET_UNSUPPORTED;
     }
 
-    // QoS roadmap #3 (LIVELINESS) - done, AUTOMATIC only. MANUAL_BY_TOPIC/_BY_NODE stay rejected -
-    // both need an explicit "I'm still alive" assertion API (rmw_publisher_assert_liveliness())
-    // with no TickLE-core mechanism behind it, unlike AUTOMATIC (backed by generalizing check_
-    // liveliness()'s own existing per-node peer-death detection - see rmw_subscription.c's own
-    // RMW_EVENT_LIVELINESS_CHANGED handling).
+    // QoS roadmap #3 (LIVELINESS) - done, both kinds this rmw's own rmw_qos_policy_liveliness_t
+    // still defines (MANUAL_BY_PARTICIPANT/_BY_NODE were removed from the real rmw spec some time
+    // ago - only AUTOMATIC and MANUAL_BY_TOPIC remain). AUTOMATIC is backed by generalizing check_
+    // liveliness()'s own existing per-node peer-death detection (see rmw_subscription.c's own
+    // RMW_EVENT_LIVELINESS_CHANGED handling). MANUAL_BY_TOPIC (Milestone 32) is backed by a real
+    // rmw_publisher_assert_liveliness() (rmw_publisher.c) plus the same watchdog thread
+    // AUTOMATIC's own RMW_EVENT_LIVELINESS_LOST uses (Milestone 30, check_liveliness_lost(),
+    // rmw_node.c) - checking this Publisher's own explicit-assertion lease instead of node-wide
+    // poll_thread health. Honest, documented limitation: this is entirely a *local* signal (this
+    // process's own knowledge of whether it met its own obligation) - TickLE's wire protocol has
+    // no per-endpoint liveliness signal at all, only node-wide presence, so a remote
+    // Subscription's own RMW_EVENT_LIVELINESS_CHANGED can't distinguish "this one manual-
+    // liveliness Publisher went not-alive" from "the whole node is still fine" the way real DDS's
+    // own per-writer liveliness protocol can.
     if (RMW_QOS_POLICY_LIVELINESS_AUTOMATIC != qos_profile->liveliness &&
+        RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC != qos_profile->liveliness &&
         RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT != qos_profile->liveliness) {
-        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_LIVELINESS_AUTOMATIC - see "
-                          "rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
+        RMW_SET_ERROR_MSG("rmw_tickle only supports RMW_QOS_POLICY_LIVELINESS_AUTOMATIC/"
+                          "MANUAL_BY_TOPIC - see rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
     // A custom lease_duration is accepted, but only down to tt_LIVELINESS_MISS_THRESHOLD *

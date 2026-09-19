@@ -61,14 +61,20 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
-    // MANUAL_BY_TOPIC still rejected - no assertion-API model exists (QoS roadmap #3's own note).
+    // MANUAL_BY_TOPIC - done (Milestone 32), backed by a real rmw_publisher_assert_liveliness().
+    // MANUAL_BY_PARTICIPANT/_BY_NODE aren't tested here since this rmw_qos_policy_liveliness_t no
+    // longer even defines them (removed from the real rmw spec) - nothing to construct a profile
+    // with.
     qos = valid_profile();
     qos.liveliness = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC;
-    assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
+    assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
-    // QoS roadmap #3 (LIVELINESS) - done, AUTOMATIC only. A custom liveliness_lease_duration is
-    // accepted down to tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL (TickLE core's own
-    // fastest possible peer-death detection latency, config.h) - 1 second is below that floor
+    // QoS roadmap #3 (LIVELINESS) - done, every kind this rmw_qos_policy_liveliness_t still
+    // defines. A custom liveliness_lease_duration is accepted down to tt_LIVELINESS_MISS_THRESHOLD
+    // * tt_NODE_UPDATE_INTERVAL (TickLE core's own fastest possible peer-death detection latency,
+    // config.h) - 1 second is below that floor
     // (3 seconds by default) and stays rejected; 5 seconds clears it and is accepted, for every
     // entity kind (validation only - the actual RMW_EVENT_LIVELINESS_CHANGED monitoring this backs
     // is Publisher/Subscription-only, rmw_subscription.c).
