@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789797413562,
+  "lastUpdate": 1789797859400,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -22123,6 +22123,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04662714285714286,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fc1b68e4c7a5f8a3fd27f046e3fc30f63452c96a",
+          "message": "Confirm Milestone 34's real CI verification green\n\nTest all and Check all both confirmed green after the conformance-patch\nrevert (2c9a727).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T15:03:10+09:00",
+          "tree_id": "05f77f2c9b0fd4cf1d9b2b8cb9e02191a77b7993",
+          "url": "https://github.com/tsnlab/tickle/commit/fc1b68e4c7a5f8a3fd27f046e3fc30f63452c96a"
+        },
+        "date": 1789797856472,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.048402857142857136,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04621285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.045372857142857145,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.05047999999999999,
             "unit": "ms"
           }
         ]
