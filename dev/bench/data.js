@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789823176202,
+  "lastUpdate": 1789823254325,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -7467,6 +7467,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "595e2c817adffbb9a3e83a2a2b93b4c4bcabbe57",
+          "message": "Confirm Milestone 43's real CI green (no regressions)\n\nCheck all passed, including the standard-dispatch-chain check that\ndirectly exercises the new ALIAS target and PUBLIC include-dir changes -\nconfirms no regression to the existing single-package case, though the\ncross-package mechanism itself still has nothing exercising it for real.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:05:03+09:00",
+          "tree_id": "338a604c56786b09c1430bfe081949745e35a0b6",
+          "url": "https://github.com/tsnlab/tickle/commit/595e2c817adffbb9a3e83a2a2b93b4c4bcabbe57"
+        },
+        "date": 1789823250840,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.206,
             "unit": "ms"
           },
           {
