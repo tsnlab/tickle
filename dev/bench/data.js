@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789826508099,
+  "lastUpdate": 1789826896556,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26139,6 +26139,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04522571428571429,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "32c0d0e9d42b452944c30a7e3364ce5f7674d01f",
+          "message": "Fix shellcheck failures in compare_rmw_perf.sh blocking Check all on main\n\nA real SC1011 parse error (an apostrophe inside a :? parameter-expansion\nmessage shellcheck misreads as a single-quote terminator, though bash\nitself runs it fine - verified locally) plus unsuppressed SC1090/SC1091\n\"can't follow non-constant source\" findings on its three `source` lines\nhave been failing Check all's shellcheck step on every push since this\nscript was added (af6ac3c), unnoticed since nothing was watching that\nspecific job on those pushes. Reworded the message to avoid the apostrophe\nand added `# shellcheck disable=` directives on the three source lines,\nmatching the same per-line suppression convention already used in\nrun_perf.sh/test.sh. Verified locally with the same shellcheck binary/\noptions Check all's own tsnlab/check action uses (exit 0, whole-repo scan).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T23:07:07+09:00",
+          "tree_id": "42bc343dc031b121be03d82ebd7f74ab5348e82a",
+          "url": "https://github.com/tsnlab/tickle/commit/32c0d0e9d42b452944c30a7e3364ce5f7674d01f"
+        },
+        "date": 1789826892927,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.030571428571428572,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04866142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.046828571428571435,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04655857142857143,
             "unit": "ms"
           }
         ]
