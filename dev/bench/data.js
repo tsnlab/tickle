@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789827574055,
+  "lastUpdate": 1789843906751,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26421,6 +26421,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04667,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a62025c616e93f488b1343294d33b4dfcf100f0c",
+          "message": "Document Milestone 47: no per-Writer identity in the wire protocol\n\nRoot-causes the intermittent async-mode \"Data consistency violated\" SIGABRT\nTickLE Plan reported. Confirmed via a deterministic whitebox reproduction\nthat for_each_endpoint() matches DATA purely by (kind, endpoint_id) with no\ncheck on the sending node's own identity, so two independent TickLE\nprocesses publishing under the same topic+endpoint name are indistinguishable\nto a Subscriber. Real DDS avoids this via per-Writer GUIDs; deliberately\ndeferred here per the user's own direction rather than implemented now.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T03:50:34+09:00",
+          "tree_id": "ade71251de4ebc762eb489cce8f325fa6722e67c",
+          "url": "https://github.com/tsnlab/tickle/commit/a62025c616e93f488b1343294d33b4dfcf100f0c"
+        },
+        "date": 1789843902998,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04652142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.046722857142857135,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.08418142857142856,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04564714285714285,
             "unit": "ms"
           }
         ]
