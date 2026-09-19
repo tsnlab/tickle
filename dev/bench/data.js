@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789819136113,
+  "lastUpdate": 1789819139579,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -29149,6 +29149,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03042139325823103,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e165368557f890dc306d36785f88aeeef0b98eef",
+          "message": "Confirm Milestone 40's real CI verification green\n\nCheck all passed with test_msgs/Nested.msg now included in generation -\nrosidl_typesupport_tickle_c genuinely builds a working Nested.msg\ntypesupport through the real, unmodified CMake extension, no regressions.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T20:57:47+09:00",
+          "tree_id": "b83c27904c232419abe50b04dcf422016f3048c2",
+          "url": "https://github.com/tsnlab/tickle/commit/e165368557f890dc306d36785f88aeeef0b98eef"
+        },
+        "date": 1789819138522,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9896894182477679,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9904020854404995,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03043365478515625,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030477796282087053,
             "unit": "Mbit/s"
           }
         ]
