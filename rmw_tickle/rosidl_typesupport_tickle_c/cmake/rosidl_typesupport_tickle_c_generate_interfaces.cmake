@@ -200,12 +200,30 @@ if(_generated_sources)
   # rosidl_generator_c output directory (it only calls that dependency's own already-compiled
   # to_tickle/from_tickle functions, declared in the headers installed below, not its raw
   # rosidl_generator_c struct definitions directly).
-  target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
-    "$<BUILD_INTERFACE:${_output_path}/msg>"
-    "$<BUILD_INTERFACE:${_output_path}/srv>"
-    "$<INSTALL_INTERFACE:include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/msg>"
-    "$<INSTALL_INTERFACE:include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv>"
-  )
+  # Listed only for whichever of msg/srv this package actually generated (_tickle_has_msg/_srv,
+  # the same flags install(DIRECTORY ...)/ament_export_include_directories() below use) - an
+  # $<INSTALL_INTERFACE:...> path that was never actually install()ed hits the exact same hard
+  # "Imported target ... includes non-existent path" CMake Generate-step error a downstream
+  # package's own find_package() would raise as ament_export_include_directories() itself
+  # (found in real CI by rosidl_typesupport_tickle_c_tests_dep, a real package with only .msg,
+  # no .srv, at all) - this is CMake's own modern target-based export mechanism, a *different*
+  # (stricter) code path from ament_export_include_directories()'s own legacy one, so both need
+  # the identical guard independently, not just one or the other.
+  set(_tickle_public_include_dirs "")
+  if(_tickle_has_msg)
+    list(APPEND _tickle_public_include_dirs
+      "$<BUILD_INTERFACE:${_output_path}/msg>"
+      "$<INSTALL_INTERFACE:include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/msg>")
+  endif()
+  if(_tickle_has_srv)
+    list(APPEND _tickle_public_include_dirs
+      "$<BUILD_INTERFACE:${_output_path}/srv>"
+      "$<INSTALL_INTERFACE:include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv>")
+  endif()
+  if(_tickle_public_include_dirs)
+    target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
+      ${_tickle_public_include_dirs})
+  endif()
   target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
     "${_generator_output_path}"
     "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/include"
@@ -266,9 +284,22 @@ if(_generated_sources)
         DESTINATION "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv"
         FILES_MATCHING PATTERN "*.h")
     endif()
-    ament_export_include_directories(
-      "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/msg"
-      "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv")
+    # Found the hard way, in real CI, by rosidl_typesupport_tickle_c_tests_dep (a real package
+    # with only .msg, no .srv, at all): exporting a path that was never actually install()ed above
+    # doesn't just print ament_cmake_export_include_directories-extras.cmake's own soft "doesn't
+    # exist" WARNING - a downstream package's own find_package() hits a hard CMake Generate-step
+    # ERROR the *imported target* mechanism itself raises ("includes non-existent path"), failing
+    # the whole configure. Each directory's own export must match its own install() above exactly.
+    set(_tickle_export_include_dirs "")
+    if(_tickle_has_msg)
+      list(APPEND _tickle_export_include_dirs "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/msg")
+    endif()
+    if(_tickle_has_srv)
+      list(APPEND _tickle_export_include_dirs "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv")
+    endif()
+    if(_tickle_export_include_dirs)
+      ament_export_include_directories(${_tickle_export_include_dirs})
+    endif()
 
     ament_export_targets(export_${rosidl_generate_interfaces_TARGET}${_target_suffix})
     rosidl_export_typesupport_targets(${_target_suffix}
