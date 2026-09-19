@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789812344634,
+  "lastUpdate": 1789812347718,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -34001,6 +34001,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/29cf9ccab332ceb3d658ecaba8ff677d93a42064"
         },
         "date": 1789811773022,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f93d79bac9251f2f9e9f223146b95d4660cb5e2f",
+          "message": "Confirm Milestone 38's real CI green (no regressions)\n\nTest all and Check all both passed on the push containing the ros2_cli.py\nnested-message fix - documenting that in PLAN.md, while being clear the\nconformance suite still doesn't exercise the new Ros2Resolver path itself\nuntil test_msgs/Nested.msg is un-excluded from the CI patch.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T19:03:03+09:00",
+          "tree_id": "44e188fd3682ee8d7022f9fab2f13574992bf6c2",
+          "url": "https://github.com/tsnlab/tickle/commit/f93d79bac9251f2f9e9f223146b95d4660cb5e2f"
+        },
+        "date": 1789812346640,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
