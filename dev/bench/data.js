@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789823928819,
+  "lastUpdate": 1789823931968,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -19802,6 +19802,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.01,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "aa00ff53fb2963c05dbc08d7e30e94e1e5ef8433",
+          "message": "Fix real CI: unconditional msg/srv export breaks a .msg-only package\n\nFirst real CI round trip for the cross-package test scenario found this:\nrosidl_typesupport_tickle_c_tests_dep has only Leaf.msg, no .srv, so its\nown srv/ output directory never gets install()ed - but\ntarget_include_directories() and ament_export_include_directories() both\nstill unconditionally listed it. A downstream find_package() then hit a\nhard CMake Generate-step error (\"Imported target ... includes non-existent\npath\"), not just the softer ament_cmake_export_include_directories-extras\nwarning.\n\nBoth PUBLIC target_include_directories() and ament_export_include_directories()\nnow gate each of msg/srv independently on the same _tickle_has_msg/\n_tickle_has_srv flags the install(DIRECTORY ...) calls already used -\nthese are two genuinely separate CMake export mechanisms (legacy\nament_cmake vs. modern target-based), so both needed the identical guard,\nnot just one.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:15:58+09:00",
+          "tree_id": "75d322399fced839a5c9b4a44cf1d12c2cafb779",
+          "url": "https://github.com/tsnlab/tickle/commit/aa00ff53fb2963c05dbc08d7e30e94e1e5ef8433"
+        },
+        "date": 1789823930891,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           }
         ]
