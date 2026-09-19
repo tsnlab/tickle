@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789852502716,
+  "lastUpdate": 1789852505820,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -21354,6 +21354,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.04,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3616f072ce2ce10cdc6b797440acb0694958b5f4",
+          "message": "Fix stale FRAMING_OVERHEAD after Milestone 47's tt_DataHeader growth\n\nReal CI failure (Test all, Integration - Linux HAL over netns):\n\"Illegal submessage length: 1472 < 4 || 1472 > 1468\" - an actual\noversized DATA packet, not a flaky timing issue.\n\ntools/typesupport's own Python-side mirror of the wire format\n(model.py's FRAMING_OVERHEAD, \"DATA's framing is 24 bytes\") was never\nupdated when tt_DataHeader grew 16 -> 20 bytes for Milestone 47's new\nentity_id field. examples/perf/Bulk.c's auto-derived payload capacity\n(1442, generated from that stale constant) was therefore 4 bytes too\nlarge for a single datagram - exactly the byte count tt_DataHeader\ngrew by. \"Check all\"'s own regen-and-diff step didn't catch this: it\nonly compares fresh generation against committed output, and both\nwere consistently stale in the same way.\n\n- model.py: FRAMING_OVERHEAD 24 -> 28, matching tt_DataHeader's real\n  new size (4 + 4 + 20).\n- DESIGN.md: corrected the same offset in \"Interface serialization\".\n- Regenerated examples/perf/Bulk.c/.h (payload capacity 1442 -> 1438)\n  and tools/typesupport/tests/golden/Bulk.c/.h to match.\n- tools/typesupport/tests/test_roundtrip.py: BULK_PAYLOAD_CAPACITY\n  updated to match; full local pytest suite back to 66/66 passing.\n\nVerified locally: a max-capacity Bulk publish now totals exactly 1472\nbytes (tt_MAX_BUFFER_LENGTH), and `make test-freertos`'s own perf pair\n(same Bulk.c, full-frame throughput) passes end-to-end under QEMU -\nthe Linux netns equivalent needs sudo, not available in this sandbox,\nbut exercises identical, HAL-independent encode/decode logic.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T06:12:24+09:00",
+          "tree_id": "7fa14b9b3e1fb3f80521cfb04deba883516cab80",
+          "url": "https://github.com/tsnlab/tickle/commit/3616f072ce2ce10cdc6b797440acb0694958b5f4"
+        },
+        "date": 1789852504710,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.008,
             "unit": "ms"
           }
         ]
