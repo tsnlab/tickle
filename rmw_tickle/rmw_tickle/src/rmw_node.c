@@ -382,22 +382,6 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     pthread_mutex_destroy(&context_impl->node_mutex);
 }
 
-// Milestone 34 - registry_mutex must already be held. Returns true iff some entry in nodes[]
-// already has this exact (name, namespace) pair - rmw_create_node()'s own duplicate-rejection
-// check, matching this whole package's established "reject explicitly, don't silently accept a
-// broken duplicate" philosophy rather than letting two logical nodes silently share one identity.
-static bool node_name_already_registered(rmw_tickle_context_impl_t* context_impl, const char* name,
-                                         const char* node_namespace) {
-    int count = atomic_load(&context_impl->node_count);
-    for (int i = 0; i < count; i++) {
-        rmw_tickle_node_t* existing = context_impl->nodes[i];
-        if (strcmp(existing->rmw_node.name, name) == 0 && strcmp(existing->rmw_node.namespace_, node_namespace) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
 // Milestone 34 - registry_mutex must already be held. Appends node_impl to context_impl->nodes[],
 // growing the allocator-owned array (doubling, starting from a small initial capacity) if needed.
 // Returns false (RMW_SET_ERROR_MSG already set) only on allocation failure.
@@ -421,10 +405,11 @@ static bool register_node(rmw_tickle_context_impl_t* context_impl, rmw_tickle_no
 
 // Milestone 34 - registry_mutex must already be held. Removes node_impl from context_impl->
 // nodes[] (found by pointer identity, not name/namespace - two distinct rmw_tickle_node_t
-// instances could in principle share a name if the duplicate-rejection check above were ever
-// bypassed, so identity is the only unambiguous key), compacting the array by shifting later
-// entries down one slot. A no-op (impossible in practice - every rmw_tickle_node_t this is ever
-// called with came from register_node() above) if node_impl isn't found.
+// instances are allowed to share a name/namespace by design, see rmw_create_node()'s own comment
+// on why no duplicate check exists, so identity is the only unambiguous key), compacting the
+// array by shifting later entries down one slot. A no-op (impossible in practice - every
+// rmw_tickle_node_t this is ever called with came from register_node() above) if node_impl isn't
+// found.
 static void unregister_node(rmw_tickle_context_impl_t* context_impl, rmw_tickle_node_t* node_impl) {
     int count = atomic_load(&context_impl->node_count);
     for (int i = 0; i < count; i++) {
@@ -508,12 +493,18 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name, const char
     // Milestone 34 - registry_mutex guards node_count/nodes[] (and gates the real tt_Node_create()
     // et al. below) for however many rmw_create_node() calls race against each other or against
     // rmw_destroy_node() on a sibling node.
+    //
+    // Deliberately no (name, namespace) duplicate check here, despite this package's own general
+    // "reject explicitly" philosophy elsewhere: real rmw/DDS has no node-name-uniqueness
+    // constraint at all - node names are an rcl/ROS-graph-layer convention, not something rmw
+    // itself enforces (two nodes with the same name in one process, or across processes, are
+    // perfectly legal at this layer) - confirmed the hard way, not assumed: an earlier version of
+    // this milestone rejected duplicates, which broke upstream's own test_rmw_implementation
+    // conformance suite outright (test_graph_api.cpp's TestGraphAPI::SetUp() deliberately creates
+    // its second node with the exact same name/namespace as the first, and every one of that
+    // fixture's 15 TEST_F()s failed once that got rejected, not just the one Milestone 34 set out
+    // to unblock).
     pthread_mutex_lock(&context_impl->registry_mutex);
-    if (node_name_already_registered(context_impl, name, node_namespace)) {
-        pthread_mutex_unlock(&context_impl->registry_mutex);
-        RMW_SET_ERROR_MSG("a node with this name and namespace already exists in this context");
-        goto fail;
-    }
     if (atomic_load(&context_impl->node_count) == 0) {
         rmw_ret_t ret = start_shared_tickle_node(context_impl);
         if (ret != RMW_RET_OK) {

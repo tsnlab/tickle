@@ -92,17 +92,23 @@ int main(void) {
     assert(RCUTILS_RET_OK == rcutils_string_array_fini(&node_names));
     assert(RCUTILS_RET_OK == rcutils_string_array_fini(&node_namespaces));
 
-    // A duplicate (name, namespace) pair is rejected outright, not silently accepted as a second
-    // identity for the same logical node - this package's own established "reject explicitly"
-    // philosophy (Milestone 34's own locked-in design decision).
+    // A second node with the exact same (name, namespace) is allowed, not rejected - real rmw/DDS
+    // has no node-name-uniqueness constraint at all (that's an rcl/ROS-graph-layer convention, not
+    // something rmw itself enforces). Confirmed the hard way, not assumed: an earlier version of
+    // this milestone rejected duplicates outright, which broke upstream's own test_rmw_
+    // implementation conformance suite - test_graph_api.cpp's TestGraphAPI::SetUp() deliberately
+    // creates its second node with the same name/namespace as the first.
     rmw_node_t* node_a_again = rmw_create_node(&context, "test_multi_node_a", "/");
-    assert(NULL == node_a_again);
-    assert(2 == atomic_load(&context_impl->node_count)); // the rejected attempt didn't leak a slot
+    assert(NULL != node_a_again);
+    assert(3 == atomic_load(&context_impl->node_count));
 
-    // Destroying one sibling must not tear down the shared tt_Node/poll_thread while the other is
+    // Destroying one sibling must not tear down the shared tt_Node/poll_thread while others are
     // still alive - the whole point of reference-counting instead of the old unconditional
     // teardown.
     assert(RMW_RET_OK == rmw_destroy_node(node_a));
+    assert(2 == atomic_load(&context_impl->node_count));
+    assert(context_impl->poll_thread_running);
+    assert(RMW_RET_OK == rmw_destroy_node(node_a_again));
     assert(1 == atomic_load(&context_impl->node_count));
     assert(context_impl->poll_thread_running);
 
