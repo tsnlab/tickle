@@ -35,8 +35,23 @@ ament_cmake *build-system* internals, which this module has nothing to do with):
     install (no ROS 2 available in this tool's own dev/test environment - see PLAN.md) - every
     other primitive type's mapping (bool and every fixed-width int/float type) is the stable,
     long-documented rosidl_runtime_c convention.
+  - array of string (either mode): a fixed one is a plain in-place `struct rosidl_runtime_c__
+    String[N]` (no Sequence wrapper); a variable/bounded one is `struct rosidl_runtime_c__
+    String__Sequence` (needs_rosidl_string() covers the one header both need). Not memcpy-able
+    either way (each element owns its own allocation) - element-by-element, same alias/__assign()
+    split a plain string field uses (Milestone 41).
   - nested message: recurses into that nested type's own <Ros2Name>__to_tickle/__from_tickle,
     named the same way (see ros2_nested_struct_name()).
+  - array of a nested message (either mode): a fixed one is a plain in-place `<Ros2Name>[N]`
+    (value elements, no Sequence wrapper); a variable/bounded one is `<Ros2Name>__Sequence` -
+    generated *per message* in that message's own `__functions.h` (not one of the shared
+    rosidl_runtime_c__<T>__Sequence primitive types, and not rosidl_runtime_c__String__Sequence
+    either) - reachable transitively through nested_adapter_includes()'s own TickLE-generated
+    adapter header for that nested type, which always #includes that type's own real ROS 2
+    umbrella header in turn (verified against a real installed ROS 2 package, action_msgs/msg/
+    goal_status.h - its own umbrella header is what actually declares `__Sequence__init()`, in
+    goal_status__functions.h, not goal_status__struct.h). Each element recurses the same way a
+    plain nested field does, just once per element (PLAN.md's own M9, M8's tracked follow-on).
 
 render_adapter() above produces the converter alone - fully offline-verifiable (tests/test_ros2_
 adapter.py), but on its own unreachable from a real `rmw_create_publisher()` call: the `rosidl_
@@ -122,6 +137,17 @@ def _to_tickle_field_lines(f):
             f"    tickle->{f.name}[i] = ros->{f.name}[i].data;",
             "}",
         ]
+    if f.kind == "array" and f.array_mode == "fixed" and f.array_element_kind == "nested":
+        # A fixed ROS 2 array of a nested message is a plain in-place `<NestedType>[N]` (value
+        # elements, no Sequence wrapper - same "no length prefix, plain C array" shape a fixed
+        # scalar array gets, just with each element recursively converted instead of memcpy()'d,
+        # same reasoning a single kind == "nested" field already needs below).
+        nested_ros_name = ros2_nested_struct_name(f.nested)
+        return [
+            f"for (size_t i = 0; i < {f.array_size}; i++) {{",
+            f"    if (!{nested_ros_name}__to_tickle(&ros->{f.name}[i], &tickle->{f.name}[i])) {{ return false; }}",
+            "}",
+        ]
     if f.kind == "array" and f.array_mode == "fixed":
         return [f"memcpy(tickle->{f.name}, ros->{f.name}, sizeof(tickle->{f.name}));"]
     if f.kind == "array" and f.array_element_kind == "string":
@@ -133,6 +159,21 @@ def _to_tickle_field_lines(f):
             f"if (ros->{f.name}.size > {f.capacity}) {{ return false; }}",
             f"for (size_t i = 0; i < ros->{f.name}.size; i++) {{",
             f"    tickle->{f.name}[i] = ros->{f.name}.data[i].data;",
+            "}",
+            f"tickle->{f.name}_count = (uint16_t)ros->{f.name}.size;",
+        ]
+    if f.kind == "array" and f.array_element_kind == "nested":
+        # A variable/bounded ROS 2 array of a nested message is `<NestedType>__Sequence` (`.data`/
+        # `.size`/`.capacity`, generated *per message* in that same message's own `__functions.h` -
+        # unlike a primitive element's shared rosidl_runtime_c__<T>__Sequence, no extra include
+        # needed here beyond the nested type's own adapter header nested_adapter_includes() already
+        # brings in for the recursive __to_tickle() call itself).
+        nested_ros_name = ros2_nested_struct_name(f.nested)
+        return [
+            f"if (ros->{f.name}.size > {f.capacity}) {{ return false; }}",
+            f"for (size_t i = 0; i < ros->{f.name}.size; i++) {{",
+            f"    if (!{nested_ros_name}__to_tickle(&ros->{f.name}.data[i], &tickle->{f.name}[i])) "
+            "{ return false; }",
             "}",
             f"tickle->{f.name}_count = (uint16_t)ros->{f.name}.size;",
         ]
@@ -165,6 +206,13 @@ def _from_tickle_field_lines(f):
             f"    if (!rosidl_runtime_c__String__assign(&ros->{f.name}[i], tickle->{f.name}[i])) {{ return false; }}",
             "}",
         ]
+    if f.kind == "array" and f.array_mode == "fixed" and f.array_element_kind == "nested":
+        nested_ros_name = ros2_nested_struct_name(f.nested)
+        return [
+            f"for (size_t i = 0; i < {f.array_size}; i++) {{",
+            f"    if (!{nested_ros_name}__from_tickle(&tickle->{f.name}[i], &ros->{f.name}[i])) {{ return false; }}",
+            "}",
+        ]
     if f.kind == "array" and f.array_mode == "fixed":
         return [f"memcpy(ros->{f.name}, tickle->{f.name}, sizeof(ros->{f.name}));"]
     if f.kind == "array" and f.array_element_kind == "string":
@@ -173,6 +221,16 @@ def _from_tickle_field_lines(f):
             f"if (!rosidl_runtime_c__String__Sequence__init(&ros->{f.name}, {count_var})) {{ return false; }}",
             f"for (size_t i = 0; i < {count_var}; i++) {{",
             f"    if (!rosidl_runtime_c__String__assign(&ros->{f.name}.data[i], tickle->{f.name}[i])) {{ return false; }}",
+            "}",
+        ]
+    if f.kind == "array" and f.array_element_kind == "nested":
+        nested_ros_name = ros2_nested_struct_name(f.nested)
+        count_var = f"tickle->{f.name}_count"
+        return [
+            f"if (!{nested_ros_name}__Sequence__init(&ros->{f.name}, {count_var})) {{ return false; }}",
+            f"for (size_t i = 0; i < {count_var}; i++) {{",
+            f"    if (!{nested_ros_name}__from_tickle(&tickle->{f.name}[i], &ros->{f.name}.data[i])) "
+            "{ return false; }",
             "}",
         ]
     if f.kind == "array":
@@ -214,12 +272,27 @@ def emit_from_tickle(struct, ros_name):
     return lines
 
 
+def _directly_nested_struct_names(struct):
+    """ros2_nested_struct_name() for every struct this one's own fields resolve to directly - a
+    plain `kind == "nested"` field, or a `kind == "array"` one with `array_element_kind ==
+    "nested"` (an array-of-nested-message field, emit_to_tickle()/emit_from_tickle()'s own
+    per-element `__to_tickle`/`__from_tickle` calls need the identical two includes a single
+    nested field does - see nested_ros_includes()/nested_adapter_includes() below). Shared so the
+    two stay in sync rather than each re-deriving the same field filter."""
+    return sorted(
+        {
+            ros2_nested_struct_name(f.nested)
+            for f in struct.fields
+            if f.kind == "nested" or (f.kind == "array" and f.array_element_kind == "nested")
+        }
+    )
+
+
 def nested_ros_includes(struct):
     """The ROS 2-generated header for each of this struct's own *directly* nested fields - same
     "only one level, each nested header pulls in what it itself needs" reasoning as render.py's
     own _nested_includes()."""
-    names = sorted({ros2_nested_struct_name(f.nested) for f in struct.fields if f.kind == "nested"})
-    return [ros2_header_path(name) for name in names]
+    return [ros2_header_path(name) for name in _directly_nested_struct_names(struct)]
 
 
 def nested_adapter_includes(struct):
@@ -230,8 +303,7 @@ def nested_adapter_includes(struct):
     already includes normally satisfies transitively, since a real ROS 2 message header always
     #includes its own nested fields' headers), there is no other file that would otherwise pull
     this one in - it must be included directly."""
-    names = sorted({ros2_nested_struct_name(f.nested) for f in struct.fields if f.kind == "nested"})
-    return [f"{name}__rosidl_typesupport_tickle_c.h" for name in names]
+    return [f"{name}__rosidl_typesupport_tickle_c.h" for name in _directly_nested_struct_names(struct)]
 
 
 def needs_rosidl_string(struct):
@@ -263,29 +335,6 @@ def sequence_element_types(struct):
     )
 
 
-def _reject_unsupported_array_elements(struct):
-    """rosidl_runtime_c represents an array of nested messages completely differently from a
-    primitive one too - a fixed array is a plain `struct <Type>[N]` (each element itself
-    recursively convertible via that message's own already-generated `__to_tickle`/`__from_tickle`
-    - not memcpy-able, the two sides' own memory layouts have no reason to coincide), a variable
-    one is `rosidl_runtime_c__<pkg>__msg__<Type>__Sequence` (a distinct type generated *per
-    message*, unlike the shared primitive Sequence types) - `_to_tickle_field_lines()`/
-    `_from_tickle_field_lines()`'s existing "array" branches (written for a memcpy-able primitive
-    element) would silently generate wrong C for either. tools/typesupport's own core codegen
-    (adapt.py/emit.py/model.py) now accepts an array-of-nested-type field (rmw_tickle/PLAN.md's
-    own Milestone for the design), but this ROS 2 converter doesn't convert one yet - raised here,
-    once, up front, matching the exact precedent array-of-string went through first (Milestone 39
-    accepted it in the core generator; Milestone 41 converted it here, only once the shape's own
-    ROS 2 representation was worked out and tested)."""
-    for f in struct.fields:
-        if f.kind == "array" and f.array_element_kind == "nested":
-            raise NotImplementedError(
-                f"field '{f.name}': rosidl_typesupport_tickle_c can't convert an array-of-nested-"
-                "message field yet (rosidl_runtime_c represents it differently from a primitive "
-                "array) - not supported by ros2_adapter.render_adapter()"
-            )
-
-
 def render_adapter(struct, ros_name, tickle_header):
     """Returns (header_text, source_text) for <ros_name>__rosidl_typesupport_tickle_c.{h,c} -
     plain string assembly (not empy) since this is a fixed two-function shape, not a per-kind
@@ -294,7 +343,6 @@ def render_adapter(struct, ros_name, tickle_header):
     keyed off the .msg/.srv's interface name) - NOT `f"{struct.c_name}.h"`: struct.c_name is
     "ArraysData", but that struct is declared *inside* Arrays.h, not its own same-named file (a
     .srv's request/response structs share one file the same way)."""
-    _reject_unsupported_array_elements(struct)
     header_lines = [
         "#pragma once",
         "",
