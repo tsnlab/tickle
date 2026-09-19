@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789824335051,
+  "lastUpdate": 1789824338432,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -19996,6 +19996,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.012,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "af6ac3c9c5247d8428c930cc9be888ed47d893d2",
+          "message": "Add a standalone script for the DDS-vendor performance comparison\n\nDeliberately not a GitHub Actions workflow - the user's own call: this\ncomparison is intermittent enough that a standalone script, run by hand and\ncopied into rmw_tickle/comparison.md afterward, is a better fit than a\nstanding CI job. Supersedes an initial rmw-perf.yml workflow_dispatch\nintegration attempt (started, then backed out per the same instruction -\nsee the tickle-plan/perf-compare branch, now abandoned, if that approach is\never worth revisiting).\n\n.github/scripts/compare_rmw_perf.sh mirrors rmw-perf.yml's own build/rebuild\nsteps but runs stand-alone (no GITHUB_ENV, no gh-pages publishing): builds\nrmw_tickle, rebuilds buildfarm_perf_tests with all three RMW_IMPLEMENTATIONs\nvisible, forces FastDDS/CycloneDDS onto real UDPv4 via their own supported\ntransport config (fastdds_udp_only.xml / cyclonedds_no_shm.xml - addressing\nMilestone 14's own same-host shared-memory-transport fairness finding),\nprints a sanity check (/dev/shm contents + resolved config) before the\nbenchmark runs, then runs it and prints a Markdown summary table.\n\nrmw_tickle/comparison.md's own Performance comparison section rewritten to\ndescribe this workflow instead of the abandoned CI-integration one - no\nresults recorded yet, to be filled in the next time the script actually\nruns on a provisioned box (today, that's the tickle-perf self-hosted\nrunner's own ~/rmw_perf_ws).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:22:57+09:00",
+          "tree_id": "124102aad50aa3170cf3c41fdee5e13eb20caa81",
+          "url": "https://github.com/tsnlab/tickle/commit/af6ac3c9c5247d8428c930cc9be888ed47d893d2"
+        },
+        "date": 1789824337335,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.008,
             "unit": "ms"
           }
         ]
