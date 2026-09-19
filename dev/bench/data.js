@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789853118083,
+  "lastUpdate": 1789862006169,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -27719,6 +27719,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.051924285714285714,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6f3295420c852169b7815d4b37304690c14ea076",
+          "message": "comparison.md: Milestone 47 post-fix validation, 0/3 crashes (was 3/5)\n\n3 more compare_rmw_perf.sh runs after Milestone 47's (node_id, entity_id)\nWriterProxy + goodbye fix landed, at the user's own explicit go-ahead.\nAll 3 completed clean - 36/36 combinations passed, zero \"Data\nconsistency violated\" occurrences. Updated tally across all sessions:\n8 total attempts, 3/5 pre-fix crashed, 0/3 post-fix crashed. Latency\nnumbers stay within this rig's own established noise band.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T08:52:13+09:00",
+          "tree_id": "c113f4f7fff01a109d623afdfde5e59c12325e82",
+          "url": "https://github.com/tsnlab/tickle/commit/6f3295420c852169b7815d4b37304690c14ea076"
+        },
+        "date": 1789861999574,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04833428571428572,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05309142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.046368571428571426,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.051964285714285706,
             "unit": "ms"
           }
         ]
