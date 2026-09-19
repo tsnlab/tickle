@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789823518135,
+  "lastUpdate": 1789823521294,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -30259,6 +30259,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030454635620117188,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f28f5336df9ac6f10a41f97bbee9538f711e340b",
+          "message": "Add a real cross-package nested-message test scenario (Milestone 43 verification)\n\nNew rosidl_typesupport_tickle_c_tests_dep package (a single Leaf.msg) and\nrosidl_typesupport_tickle_c_tests' own new Branch.msg (nesting\nrosidl_typesupport_tickle_c_tests_dep/Leaf) - a genuinely cross-package\nnested field, unlike test_msgs/Nested.msg's own same-package BasicTypes\nreference (Milestone 40), which never exercises Milestone 43's own\ncross-package -I/include-dir/link-library wiring at all.\n\nNew test_dispatch_nested.c round-trips a real value through both fields\nvia the standard get_message_typesupport_handle() dispatch chain, proving\nthe cross-package machinery actually compiles and links, not just parses.\n\ncheck-all.yml updated to build both packages together (--packages-select)\nand run the new test executable alongside the existing dispatch checks.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:10:48+09:00",
+          "tree_id": "8fa6fb7a8e57b92dc74d25fd1d044b1bb4f16921",
+          "url": "https://github.com/tsnlab/tickle/commit/f28f5336df9ac6f10a41f97bbee9538f711e340b"
+        },
+        "date": 1789823520195,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9902563095092773,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9904132570539202,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030429976327078685,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03045177459716797,
             "unit": "Mbit/s"
           }
         ]
