@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789846675045,
+  "lastUpdate": 1789847078431,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26844,6 +26844,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.049640000000000004,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "403840acfd91d35a05fbfadfdb33c62ac22c4ad9",
+          "message": "Pool rmw_publish()/rmw_take() scratch buffers (Milestone 45, item 1)\n\nReplaces a fresh allocate()/deallocate() pair per message on both the\npublish and receive hot paths with reused, allocator-owned buffers:\nrmw_tickle_publisher_t gains a publish_scratch_buf (sized once at\nrmw_create_publisher() time) guarded by a dedicated publish_mutex, safe to\nreuse immediately since tt_Publisher_publish() never retains a pointer to\nits own data argument past the call. rmw_tickle_subscriber_t gains a\nshell_pool (sized queue_capacity) that subscriber_callback()/\nrmw_take_with_info() pop/push instead of zero_allocate()/deallocate().\n\nThe one real correctness hazard reuse introduces - a drained shell's own\nheap-owned field pointers are still sitting there after rmw_take_with_info()\nshallow-copies them out, so reusing it unzeroed would free memory a caller\nstill owns - is addressed by zeroing on push, verified by a new dedicated\nregression test (test_publish_take_reuse.c) that passes clean under a full\nASan+UBSan+leak-detection rebuild of the whole test suite.\n\nRe-running compare_rmw_perf.sh twice afterward shows no measurable,\nabove-noise latency improvement over Milestone 44's baseline - an honest\nnegative result documented in comparison.md and PLAN.md rather than assumed\naway. The change stays (fewer allocator calls, verified correct) but does\nnot close the latency gap; a real profiling pass is the next step, not\nguessing at items 2/3 next.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T04:43:28+09:00",
+          "tree_id": "cf96516e7c54e1e800bd8aad661bc4dd353966c4",
+          "url": "https://github.com/tsnlab/tickle/commit/403840acfd91d35a05fbfadfdb33c62ac22c4ad9"
+        },
+        "date": 1789847074893,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04775285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04834714285714285,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04792571428571429,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.05188142857142858,
             "unit": "ms"
           }
         ]
