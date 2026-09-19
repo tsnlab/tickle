@@ -162,7 +162,7 @@ index 52bd6fc..1e5d889 100644
  
    void TearDown() override
 diff --git a/test_rmw_implementation/test/test_graph_api.cpp b/test_rmw_implementation/test/test_graph_api.cpp
-index 19354fe..fb9d848 100644
+index 19354fe..9f1f865 100644
 --- a/test_rmw_implementation/test/test_graph_api.cpp
 +++ b/test_rmw_implementation/test/test_graph_api.cpp
 @@ -14,6 +14,8 @@
@@ -174,43 +174,25 @@ index 19354fe..fb9d848 100644
  #include "osrf_testing_tools_cpp/scope_exit.hpp"
  
  #include "rcutils/allocator.h"
-@@ -76,7 +78,23 @@ protected:
+@@ -76,6 +78,17 @@ protected:
    const char * const other_node_namespace = "/my_other_test_ns";
  };
  
 +// Local, rmw_tickle-specific patches (not upstream) below: SetUp()/TearDown() above are
 +// unconditional again (rmw_tickle/PLAN.md's Milestone 34/35 both landed - a second same-process
-+// node, and two independent local endpoints sharing one name, are now genuinely supported), but
-+// most of this fixture's own individual TEST_F()s still can't pass for a separate, already-known
-+// reason - the "names and types"/"*_by_node"/"*_info_by_topic" function family Milestone 33
-+// explicitly deferred as its own larger follow-on (this rmw simply doesn't implement those
-+// entry points yet, not a rmw_tickle-specific SetUp() limitation any more). Rather than skip the
-+// whole fixture again (which would also hide count_clients_and_services - the one case Milestone
-+// 35's own fix actually targeted, and the only one of these 15 that's genuinely expected to pass),
-+// each still-blocked TEST_F() below gets its own GTEST_SKIP() instead.
++// node, and two independent local endpoints sharing one name, are now genuinely supported).
++// get_node_names_with_bad_arguments/_with_enclaves_with_bad_arguments and count_publishers/
++// subscribers/clients/services_with_bad_arguments also now run unconditionally - the missing
++// rmw_check_zero_rmw_string_array()/rmw_validate_full_topic_name() calls real CI found here were
++// fixed directly in rmw_graph.c, not skipped around. The remaining 8 TEST_F()s below still can't
++// pass for a separate, already-known reason - the "names and types"/"*_by_node"/"*_info_by_topic"
++// function family Milestone 33 explicitly deferred as its own larger follow-on (this rmw simply
++// doesn't implement those entry points yet) - each gets its own GTEST_SKIP() instead of skipping
++// the whole fixture again, which would also hide the 7 cases that now genuinely pass.
  TEST_F(TestGraphAPI, get_node_names_with_bad_arguments) {
-+  // rmw_get_node_names() doesn't yet reject a non-zero-initialized output array (RCUTILS_CHECK_
-+  // ARGUMENT_FOR_NULL alone isn't the same check rmw_check_zero_rmw_string_array() below expects) -
-+  // a real, separate rmw_tickle gap, not attempted here.
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
    rcutils_string_array_t node_names = rcutils_get_zero_initialized_string_array();
    rcutils_string_array_t node_namespaces = rcutils_get_zero_initialized_string_array();
- 
-@@ -134,6 +152,11 @@ TEST_F(TestGraphAPI, get_node_names_with_bad_arguments) {
- }
- 
- TEST_F(TestGraphAPI, get_node_names_with_enclaves_with_bad_arguments) {
-+  // Same rmw_get_node_names() gap as get_node_names_with_bad_arguments above (this test calls it
-+  // internally too), plus its own enclaves array needs the identical check.
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
-   rcutils_string_array_t node_names = rcutils_get_zero_initialized_string_array();
-   rcutils_string_array_t node_namespaces = rcutils_get_zero_initialized_string_array();
-   rcutils_string_array_t enclaves = rcutils_get_zero_initialized_string_array();
-@@ -215,6 +238,11 @@ TEST_F(TestGraphAPI, get_node_names_with_enclaves_with_bad_arguments) {
+@@ -215,6 +228,11 @@ TEST_F(TestGraphAPI, get_node_names_with_enclaves_with_bad_arguments) {
  }
  
  TEST_F(TestGraphAPI, get_topic_names_and_types_with_bad_arguments) {
@@ -222,7 +204,7 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    rmw_names_and_types_t topic_names_and_types = rmw_get_zero_initialized_names_and_types();
    bool no_demangle = false;
-@@ -259,6 +287,11 @@ TEST_F(TestGraphAPI, get_topic_names_and_types_with_bad_arguments) {
+@@ -259,6 +277,11 @@ TEST_F(TestGraphAPI, get_topic_names_and_types_with_bad_arguments) {
  }
  
  TEST_F(TestGraphAPI, get_service_names_and_types_with_bad_arguments) {
@@ -234,7 +216,7 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    rmw_names_and_types_t service_names_and_types = rmw_get_zero_initialized_names_and_types();
  
-@@ -301,6 +334,11 @@ TEST_F(TestGraphAPI, get_service_names_and_types_with_bad_arguments) {
+@@ -301,6 +324,11 @@ TEST_F(TestGraphAPI, get_service_names_and_types_with_bad_arguments) {
  }
  
  TEST_F(TestGraphAPI, get_subscriber_names_and_types_by_node_with_bad_arguments) {
@@ -246,7 +228,7 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    rmw_names_and_types_t topic_names_and_types = rmw_get_zero_initialized_names_and_types();
    bool no_demangle = false;
-@@ -404,6 +442,11 @@ TEST_F(TestGraphAPI, get_subscriber_names_and_types_by_node_with_bad_arguments)
+@@ -404,6 +432,11 @@ TEST_F(TestGraphAPI, get_subscriber_names_and_types_by_node_with_bad_arguments)
  }
  
  TEST_F(TestGraphAPI, get_publisher_names_and_types_by_node_with_bad_arguments) {
@@ -258,7 +240,7 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    rmw_names_and_types_t topic_names_and_types = rmw_get_zero_initialized_names_and_types();
    bool no_demangle = false;
-@@ -507,6 +550,11 @@ TEST_F(TestGraphAPI, get_publisher_names_and_types_by_node_with_bad_arguments) {
+@@ -507,6 +540,11 @@ TEST_F(TestGraphAPI, get_publisher_names_and_types_by_node_with_bad_arguments) {
  }
  
  TEST_F(TestGraphAPI, get_service_names_and_types_by_node_with_bad_arguments) {
@@ -270,7 +252,7 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    rmw_names_and_types_t service_names_and_types = rmw_get_zero_initialized_names_and_types();
  
-@@ -608,6 +656,11 @@ TEST_F(TestGraphAPI, get_service_names_and_types_by_node_with_bad_arguments) {
+@@ -608,6 +646,11 @@ TEST_F(TestGraphAPI, get_service_names_and_types_by_node_with_bad_arguments) {
  }
  
  TEST_F(TestGraphAPI, get_client_names_and_types_by_node_with_bad_arguments) {
@@ -282,7 +264,7 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    rmw_names_and_types_t service_names_and_types = rmw_get_zero_initialized_names_and_types();
  
-@@ -709,6 +762,11 @@ TEST_F(TestGraphAPI, get_client_names_and_types_by_node_with_bad_arguments) {
+@@ -709,6 +752,11 @@ TEST_F(TestGraphAPI, get_client_names_and_types_by_node_with_bad_arguments) {
  }
  
  TEST_F(TestGraphAPI, get_publishers_info_by_topic_with_bad_arguments) {
@@ -294,7 +276,7 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    constexpr char topic_name[] = "/test_topic";
    bool no_mangle = false;
-@@ -771,6 +829,11 @@ TEST_F(TestGraphAPI, get_publishers_info_by_topic_with_bad_arguments) {
+@@ -771,6 +819,11 @@ TEST_F(TestGraphAPI, get_publishers_info_by_topic_with_bad_arguments) {
  }
  
  TEST_F(TestGraphAPI, get_subscriptions_info_by_topic_with_bad_arguments) {
@@ -306,54 +288,6 @@ index 19354fe..fb9d848 100644
    rcutils_allocator_t allocator = rcutils_get_default_allocator();
    constexpr char topic_name[] = "/test_topic";
    bool no_mangle = false;
-@@ -834,6 +897,11 @@ TEST_F(TestGraphAPI, get_subscriptions_info_by_topic_with_bad_arguments) {
- }
- 
- TEST_F(TestGraphAPI, count_publishers_with_bad_arguments) {
-+  // rmw_count_publishers() doesn't yet reject an invalid topic_name argument (rmw_validate_
-+  // full_topic_name() is never called) - a real, separate rmw_tickle gap, not attempted here.
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
-   size_t count = 0u;
-   constexpr char topic_name[] = "/test_topic";
- 
-@@ -863,6 +931,11 @@ TEST_F(TestGraphAPI, count_publishers_with_bad_arguments) {
- }
- 
- TEST_F(TestGraphAPI, count_subscribers_with_bad_arguments) {
-+  // Same missing rmw_validate_full_topic_name() call as count_publishers_with_bad_arguments's own
-+  // comment above.
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
-   size_t count = 0u;
-   constexpr char topic_name[] = "/test_topic";
- 
-@@ -892,6 +965,11 @@ TEST_F(TestGraphAPI, count_subscribers_with_bad_arguments) {
- }
- 
- TEST_F(TestGraphAPI, count_clients_with_bad_arguments) {
-+  // Same missing rmw_validate_full_topic_name() call as count_publishers_with_bad_arguments's own
-+  // comment above (service names go through the same validation as topic names).
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
-   size_t count = 0u;
-   constexpr char service_name[] = "/test_service";
- 
-@@ -921,6 +999,11 @@ TEST_F(TestGraphAPI, count_clients_with_bad_arguments) {
- }
- 
- TEST_F(TestGraphAPI, count_services_with_bad_arguments) {
-+  // Same missing rmw_validate_full_topic_name() call as count_publishers_with_bad_arguments's own
-+  // comment above (service names go through the same validation as topic names).
-+  if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+    GTEST_SKIP();
-+  }
-   size_t count = 0u;
-   constexpr char service_name[] = "/test_service";
-   // A null node is an invalid argument.
 diff --git a/test_rmw_implementation/test/test_publisher.cpp b/test_rmw_implementation/test/test_publisher.cpp
 index c9d0341..2bd6b2c 100644
 --- a/test_rmw_implementation/test/test_publisher.cpp

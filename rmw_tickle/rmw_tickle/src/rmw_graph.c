@@ -48,7 +48,9 @@
 #include "rmw/init.h" // rmw_context_t
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
+#include "rmw/sanity_checks.h" // rmw_check_zero_rmw_string_array()
 #include "rmw/types.h"
+#include "rmw/validate_full_topic_name.h" // rmw_validate_full_topic_name()
 #include "rmw_tickle_c/rmw_tickle.h"
 
 // rcutils_string_array_fini() is declared warn_unused_result - these cleanup-on-error paths
@@ -72,6 +74,17 @@ rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* nod
     if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    // A caller-supplied array that already holds data (not freshly rcutils_get_zero_initialized_
+    // string_array()'d) is an invalid argument, not something to silently overwrite/leak -
+    // rmw_check_zero_rmw_string_array() already sets its own error message on failure. Checked
+    // before touching either array, so a rejected node_names leaves node_namespaces untouched too
+    // (test_rmw_implementation's own get_node_names_with_bad_arguments relies on exactly this).
+    if (RMW_RET_OK != rmw_check_zero_rmw_string_array(node_names)) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    if (RMW_RET_OK != rmw_check_zero_rmw_string_array(node_namespaces)) {
+        return RMW_RET_INVALID_ARGUMENT;
     }
 
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
@@ -109,6 +122,12 @@ rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* nod
 rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node, rcutils_string_array_t* node_names,
                                            rcutils_string_array_t* node_namespaces, rcutils_string_array_t* enclaves) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(enclaves, RMW_RET_INVALID_ARGUMENT);
+    // Checked before rmw_get_node_names() below touches node_names/node_namespaces at all, so a
+    // rejected enclaves leaves both of those untouched too - same reasoning as rmw_get_node_
+    // names()'s own node_names/node_namespaces ordering.
+    if (RMW_RET_OK != rmw_check_zero_rmw_string_array(enclaves)) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
 
     rmw_ret_t ret = rmw_get_node_names(node, node_names, node_namespaces);
     if (ret != RMW_RET_OK) {
@@ -228,6 +247,21 @@ static rmw_ret_t count_matching(const rmw_node_t* node, const char* topic_name, 
     if (!rmw_tickle_identifier_matches(node->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    // Never checked before (test_rmw_implementation's own count_publishers_with_bad_arguments et
+    // al. are what found this, same shape as rmw_create_node()'s own rmw_validate_node_name()/
+    // rmw_validate_namespace() precedent): a malformed topic/service name (spaces, reserved
+    // characters, ...) used to silently succeed instead of being rejected. Shared by all four
+    // rmw_count_*() callers below - service names are validated as topic names too (real rmw
+    // implementations treat a service as a topic pair under the hood, same naming rules apply).
+    int validation_result = RMW_TOPIC_VALID;
+    size_t invalid_index = 0;
+    if (RMW_RET_OK != rmw_validate_full_topic_name(topic_name, &validation_result, &invalid_index)) {
+        return RMW_RET_INVALID_ARGUMENT; // rmw_validate_full_topic_name() already set its own error message
+    }
+    if (RMW_TOPIC_VALID != validation_result) {
+        RMW_SET_ERROR_MSG(rmw_full_topic_name_validation_result_string(validation_result));
+        return RMW_RET_INVALID_ARGUMENT;
     }
 
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
