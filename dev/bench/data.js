@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789815484255,
+  "lastUpdate": 1789815948607,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -23815,6 +23815,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.08105428571428572,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "52417e7b32230d76f35adda68e9fc70ec5d4db3e",
+          "message": "Confirm Milestone 39's real CI verification green\n\nTest all and Check all both passed after fixing the tests/golden/\ncompile_flags.txt gap Check all's own repo-wide clang-tidy scan surfaced -\ndocumenting both in PLAN.md.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T20:04:39+09:00",
+          "tree_id": "7452db587ffa7d585e31c22045ecdb02dd8edb63",
+          "url": "https://github.com/tsnlab/tickle/commit/52417e7b32230d76f35adda68e9fc70ec5d4db3e"
+        },
+        "date": 1789815945506,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04663142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.048385714285714296,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.13080142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.046534285714285716,
             "unit": "ms"
           }
         ]
