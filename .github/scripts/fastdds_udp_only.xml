@@ -2,17 +2,25 @@
 <!--
   Forces FastDDS onto real UDPv4, disabling its default shared-memory transport.
 
-  Used only for the one-off rmw_tickle-vs-FastDDS-vs-CycloneDDS comparison (rmw-perf.yml's own
-  compare_dds_vendors workflow_dispatch input), not the standing rmw_tickle-only regression job.
-  Without this, FastDDS auto-negotiates a same-host shared-memory transport that bypasses the
-  kernel UDP/IP stack entirely - rmw_tickle has no such shortcut (hal_linux.c's own plain UDP
-  sockets), so a same-host benchmark would silently favor FastDDS for reasons that have nothing
-  to do with either implementation's own real efficiency (rmw_tickle/PLAN.md's Milestone 14 own
-  finding, the reason this rig dropped DDS vendors from its standing comparison in the first
-  place).
+  Used only for the one-off rmw_tickle-vs-FastDDS-vs-CycloneDDS comparison
+  (.github/scripts/compare_rmw_perf.sh), not the standing rmw_tickle-only regression job
+  (rmw-perf.yml). Without this, FastDDS auto-negotiates a same-host shared-memory transport that
+  bypasses the kernel UDP/IP stack entirely - rmw_tickle has no such shortcut (hal_linux.c's own
+  plain UDP sockets), so a same-host benchmark would silently favor FastDDS for reasons that have
+  nothing to do with either implementation's own real efficiency (rmw_tickle/PLAN.md's Milestone
+  14 own finding, the reason this rig dropped DDS vendors from its standing comparison in the
+  first place).
 
-  useBuiltinTransports=false + an explicit UDPv4-only userTransports list is FastDDS's own
-  documented mechanism for this. Set via the FASTRTPS_DEFAULT_PROFILES_FILE environment variable.
+  Two separate things had to be disabled, found the hard way (a first attempt with only the
+  transport-level change below still left `/dev/shm/fast_datasharing_*`/`fastdds_*` files being
+  created during a real run - not sufficient on its own, confirmed 2026-09-19):
+  (1) useBuiltinTransports=false + an explicit UDPv4-only userTransports list - FastDDS's own
+      documented mechanism to stop it auto-negotiating its own SHARED_MEMORY transport descriptor.
+  (2) data_sharing kind=OFF on the publisher/subscriber QoS profiles - FastDDS's own separate
+      "Data Sharing" feature (large-message zero-copy via shared memory, layered *on top of*
+      whichever transport is configured, not itself a transport) - (1) alone does nothing to it,
+      confirmed by (1)-only still producing live datasharing shm segments during a real run.
+  Set via the FASTRTPS_DEFAULT_PROFILES_FILE environment variable.
 -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
   <transport_descriptors>
@@ -29,4 +37,18 @@
       <useBuiltinTransports>false</useBuiltinTransports>
     </rtps>
   </participant>
+  <data_writer profile_name="udp_only_writer" is_default_profile="true">
+    <qos>
+      <data_sharing>
+        <kind>OFF</kind>
+      </data_sharing>
+    </qos>
+  </data_writer>
+  <data_reader profile_name="udp_only_reader" is_default_profile="true">
+    <qos>
+      <data_sharing>
+        <kind>OFF</kind>
+      </data_sharing>
+    </qos>
+  </data_reader>
 </profiles>

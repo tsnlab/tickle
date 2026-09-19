@@ -25,7 +25,9 @@
 #                    yml's own PERF_TEST_RUNTIME - see that workflow's own comment on why it's
 #                    short by buildfarm_perf_tests' own 30s default).
 
-set -euo pipefail
+# No -u: /opt/ros/*/setup.bash itself references AMENT_TRACE_SETUP_FILES without ever setting it
+# first - not nounset-safe, a real ROS 2/ament-wide quirk, not something to work around here.
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -74,14 +76,18 @@ cat "$FASTRTPS_DEFAULT_PROFILES_FILE"
 
 echo "=== Running the benchmark (two-process, real rclcpp/rmw boundary, all three rmws) ==="
 rm -rf "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results"
+# `|| true` on both, matching rmw-perf.yml's own established pattern: this benchmark's own
+# numbers are the actual point of running it, not a pass/fail gate - a real per-combo failure
+# (e.g. a crash) still needs the summary table below to run so it's visible, not abort the script
+# right here before ever printing it.
 colcon test \
   --base-paths "$RMW_PERF_WS" \
   --build-base "$RMW_PERF_WS/build" \
   --install-base "$RMW_PERF_WS/install" \
   --packages-select buildfarm_perf_tests \
   --event-handlers console_direct+ \
-  --ctest-args -R two_process_rmw_
-colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
+  --ctest-args -R two_process_rmw_ || true
+colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose || true
 
 echo "=== Summary (copy the table below into rmw_tickle/comparison.md by hand) ==="
 python3 "$SCRIPT_DIR/rmw_perf_summary.py" \

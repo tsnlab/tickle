@@ -166,5 +166,55 @@ from a checkout of this repo). It:
    filter `rmw-perf.yml`'s own standing job uses) across all three implementations, then prints a
    Markdown summary table (`rmw_perf_summary.py`) to copy into this section by hand.
 
-No results recorded here yet - update this section (replacing this paragraph) the next time the
-script actually runs.
+### Results (2026-09-19, local dev box - not the tickle-perf rig, but the same `lyrical` distro +
+pre-provisioned `~/rmw_perf_ws` this box happens to already have)
+
+**Real bug found on the first run, not yet reproduced on the second**: `rmw_tickle`'s own async
+mode crashed (`SIGABRT`) on both topics with `Data consistency violated. Received sample with not
+strictly higher id. Received sample id 5 Prev. sample id: 4788` - a real data-consistency
+assertion inside `performance_test`'s own receiver, not a script/harness failure. Did not
+reproduce on an immediate second run (0 errors, 0 failures) - intermittent, not yet root-caused.
+Worth its own investigation regardless of the comparison below (a race under sustained async
+publish load is a real, if rare, concern) - not blocking this report, tracked here as a loose end.
+
+**A real methodology bug found and fixed before trusting any number**: the first run's own
+`/dev/shm` sanity check (this script's own step) showed live `fast_datasharing_*`/`fastdds_*`
+segments being created *during* the run, despite `fastdds_udp_only.xml`'s `useBuiltinTransports=
+false` - FastDDS's "Data Sharing" feature is a **separate**, QoS-level same-host shortcut layered
+on top of whichever transport is configured, not itself a transport - disabling the transport
+alone does nothing to it. Fixed by adding `<data_sharing><kind>OFF</kind></data_sharing>` to both
+the default `data_writer`/`data_reader` QoS profiles in `fastdds_udp_only.xml` (see that file's
+own updated comment for the full story) - confirmed on a second run that no new `/dev/shm`
+segments appeared at all. **The results below are from that second, verified-clean run.**
+`rmw_cyclonedds_cpp`'s own async cases were skipped by `ctest` on this particular run (a test-
+registration flakiness on this rig - the total test count itself varied 16 -> 24 between the two
+runs - not something either DDS vendor's own async correctness has been confirmed on here yet).
+
+| Topic | Sync | rmw implementation | Latency (ms) | Throughput (Mbit/s) | Received (/ ~1000 sent) | Lost |
+|---|---|---|---:|---:|---:|---:|
+| Array1k | async | `rmw_fastrtps_cpp` | 0.0375 | 0.9901 | 998 | 0 |
+| Array1k | async | `rmw_tickle` | 0.0487 | 0.9905 | 998 | 0 |
+| Array1k | sync | `rmw_cyclonedds_cpp` | 0.0322 | 0.9878 | 996 | 0 |
+| Array1k | sync | `rmw_fastrtps_cpp` | 0.0363 | 0.9905 | 998 | 0 |
+| Array1k | sync | `rmw_tickle` | 0.0467 | 0.9904 | 998 | 0 |
+| Struct16 | async | `rmw_fastrtps_cpp` | 0.0369 | 0.0305 | 998 | 0 |
+| Struct16 | async | `rmw_tickle` | 0.0543 | 0.0304 | 997 | 0 |
+| Struct16 | sync | `rmw_cyclonedds_cpp` | 0.0357 | 0.0304 | 996 | 0 |
+| Struct16 | sync | `rmw_fastrtps_cpp` | 0.0310 | 0.0305 | 998 | 0 |
+| Struct16 | sync | `rmw_tickle` | 0.0464 | 0.0305 | 998 | 0 |
+
+**Reading**: throughput is essentially identical across all three (dominated by the test's own
+fixed send rate, not implementation efficiency - expected, not a finding). Latency is not: with
+both DDS vendors genuinely forced onto real UDP/IP (verified above, not assumed), `rmw_tickle`
+is consistently **~1.3-1.6x higher latency** than whichever DDS vendor is present in each row -
+0.0464-0.0543ms vs FastDDS's 0.0310-0.0375ms and CycloneDDS's 0.0322-0.0357ms. Small, but real and
+consistent across every topic/sync-mode combination measured - not noise. This is still a
+same-host, not-the-real-target-network-medium measurement (10Base-T1S is the actual target - see
+this workflow's own top comment) - read as "how much implementation-level overhead does
+`rmw_tickle` carry relative to two mature DDS stacks, network medium held equal," not as a
+prediction of real-deployment numbers.
+
+**Not yet done**: a real cross-host run (this is still same-host, `lo`-adjacent - see
+`rmw_tickle/PLAN.md`'s own Milestone 14 "left as explicit future work" note, still true); chasing
+the intermittent async crash; understanding why `rmw_cyclonedds_cpp`'s own async cases were
+skipped rather than run.
