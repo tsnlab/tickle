@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789845347481,
+  "lastUpdate": 1789845350611,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -36311,6 +36311,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 822.974,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "419e943ed2345a7c621e84a69bc64d63716ac9c1",
+          "message": "Implement ros2_adapter.py's array-of-nested-message-type conversion\n\nM8's own tracked follow-on (rmw_tickle/PLAN.md's Milestone 42) - the last\npiece needed to un-exclude test_msgs' Arrays.msg/MultiNested.msg/etc. from\nthe conformance patch, mirroring M7's own core-generator-then-adapter arc.\n\nA fixed array of a nested message is a plain in-place <Ros2Name>[N] (each\nelement converted individually, no Sequence wrapper); a variable/bounded one\nis <Ros2Name>__Sequence, generated per message in that message's own\n__functions.h - verified against a real installed ROS 2 package\n(action_msgs/msg/goal_status.h) rather than guessed, since this tool has no\nROS 2 install in its own dev/test environment. No new #include category\nneeded: nested_adapter_includes()/nested_ros_includes() (extended to also\ncover an array-of-nested field, not just a plain nested one) already bring\nin that type's own generated adapter header, which transitively reaches\n__Sequence__init through that type's own umbrella header.\n\nNew tests/fixtures_ros2_adapter/nested_arrays_pkg/msg/{odd_align,nested_\narrays}.h stand-ins exercise M8's own existing NestedArrays.msg fixture (a\nreal compiled+run roundtrip plus a capacity-rejection case), replacing the\nold test_render_adapter_rejects_array_of_nested_type(). Verified -Wall\n-Wextra and clang-tidy clean against the freshly generated adapter files\ndirectly, not just inferred from the test passing; full pytest suite (66/66)\nand `make regen` (no drift) both clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T04:13:03+09:00",
+          "tree_id": "df9b616849b61c75e4ecdacab462b85628f8b559",
+          "url": "https://github.com/tsnlab/tickle/commit/419e943ed2345a7c621e84a69bc64d63716ac9c1"
+        },
+        "date": 1789845349530,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.606,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 819.582,
             "unit": "Mbps"
           }
         ]
