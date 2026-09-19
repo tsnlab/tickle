@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789822879715,
+  "lastUpdate": 1789823172981,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24802,6 +24802,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04761285714285714,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "595e2c817adffbb9a3e83a2a2b93b4c4bcabbe57",
+          "message": "Confirm Milestone 43's real CI green (no regressions)\n\nCheck all passed, including the standard-dispatch-chain check that\ndirectly exercises the new ALIAS target and PUBLIC include-dir changes -\nconfirms no regression to the existing single-package case, though the\ncross-package mechanism itself still has nothing exercising it for real.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:05:03+09:00",
+          "tree_id": "338a604c56786b09c1430bfe081949745e35a0b6",
+          "url": "https://github.com/tsnlab/tickle/commit/595e2c817adffbb9a3e83a2a2b93b4c4bcabbe57"
+        },
+        "date": 1789823169613,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04746714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05417285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04488428571428572,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.06454857142857143,
             "unit": "ms"
           }
         ]
