@@ -163,9 +163,10 @@ def main(argv=None):
         help="search DIR/<pkg>/msg/<Name>.msg to resolve a *cross-package* nested message field "
         "(repeatable) - a same-package sibling is always found automatically, no -I needed; "
         "builtin_interfaces/Time and std_msgs/Header are always available even without one - see "
-        "resolve.Ros2Resolver/tickle_typesupport.builtins. Not currently passed by the real CMake "
-        "extension (rosidl_typesupport_tickle_c_generate_interfaces.cmake) - cross-package "
-        "resolution beyond the two bundled builtins is still open follow-on work.",
+        "resolve.Ros2Resolver/tickle_typesupport.builtins. The real CMake extension "
+        "(rosidl_typesupport_tickle_c_generate_interfaces.cmake) passes one of these per "
+        "dependency package (each one's own share root, computed from that package's own "
+        "find_package()-set _DIR variable) - see rmw_tickle/PLAN.md's own Milestone for this.",
     )
     args = parser.parse_args(argv)
 
