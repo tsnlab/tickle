@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789862094102,
+  "lastUpdate": 1789862097223,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -41509,6 +41509,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/3cc395e038df3ef6c0d4f8634fc5b82876b5a006"
         },
         "date": 1789853107127,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6f3295420c852169b7815d4b37304690c14ea076",
+          "message": "comparison.md: Milestone 47 post-fix validation, 0/3 crashes (was 3/5)\n\n3 more compare_rmw_perf.sh runs after Milestone 47's (node_id, entity_id)\nWriterProxy + goodbye fix landed, at the user's own explicit go-ahead.\nAll 3 completed clean - 36/36 combinations passed, zero \"Data\nconsistency violated\" occurrences. Updated tally across all sessions:\n8 total attempts, 3/5 pre-fix crashed, 0/3 post-fix crashed. Latency\nnumbers stay within this rig's own established noise band.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T08:52:13+09:00",
+          "tree_id": "c113f4f7fff01a109d623afdfde5e59c12325e82",
+          "url": "https://github.com/tsnlab/tickle/commit/6f3295420c852169b7815d4b37304690c14ea076"
+        },
+        "date": 1789862096122,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
