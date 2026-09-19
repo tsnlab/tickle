@@ -10,5 +10,16 @@
 # generated copies. All other checks (bugprone-*, the rest of readability-*/misc-*/performance-*)
 # stay enabled via InheritParentConfig, so a real generator regression still fails `make lint`
 # here.
+#
+# compile_flags.txt (this same directory) exists for a separate reason: these files are never
+# part of any real build (`make all`'s own compile_commands.json has no entry for them, same as
+# every other tools/typesupport/tests/ fixture - see check-all.yml's own synthesised entries for
+# fixtures_ros2_adapter/'s headers), so clang-tidy - run repo-wide in real CI (`Check all`,
+# cpp-linter-action) outside of tools/typesupport/tests/test_lint.py's own on-the-fly-generated-
+# copy mechanism above - has no `-I` to find <tickle/config.h>/<tickle/hal.h>/<tickle/tickle.h>
+# with and fails outright ('file not found') rather than just flagging a style issue. clang-tidy
+# auto-discovers compile_flags.txt in a file's own directory before ever searching a parent for
+# compile_commands.json, so this is enough on its own - found the hard way (M7's own StringArrays.
+# h/StringArrayDefaults.h, the first golden .h files added since this exact gap could be hit).
 InheritParentConfig: true
 Checks: '-readability-identifier-naming,-readability-magic-numbers,-readability-non-const-parameter'
