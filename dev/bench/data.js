@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789824438083,
+  "lastUpdate": 1789824516704,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -7632,6 +7632,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/af6ac3c9c5247d8428c930cc9be888ed47d893d2"
         },
         "date": 1789824331369,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.199,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2bc5808ea011af85cd0c88238d3fab12e9ad7e35",
+          "message": "Confirm Milestone 43 fully verified: real cross-package round-trip passes\n\nThird CI round trip confirmed green, including the actual test output\n(\"rosidl_typesupport_tickle_c cross-package nested dispatch: PASS\") - the\ncross-package -I/include-path/link-library machinery genuinely works end\nto end now, not just \"doesn't break the existing case.\" Documents the two\nreal bugs found and fixed getting there (both CMake export mechanisms\nneeding the same msg/srv guard independently; the dependency package\nneeding the same C++ generator set as its consumer).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:26:05+09:00",
+          "tree_id": "f6c2ecf2065196218f71a109a2ae36eb8be1c731",
+          "url": "https://github.com/tsnlab/tickle/commit/2bc5808ea011af85cd0c88238d3fab12e9ad7e35"
+        },
+        "date": 1789824512875,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
