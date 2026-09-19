@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789796423719,
+  "lastUpdate": 1789796426935,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -28982,6 +28982,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 824.458,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e0f03b968af2b0596e93877f5446dc03ef06f748",
+          "message": "Fix Milestone 34: real rmw has no node-name-uniqueness constraint\n\nReal CI (Check all) caught a regression the local test suite couldn't: the\nduplicate-(name, namespace) rejection added in the previous commit broke\nupstream's own test_rmw_implementation conformance suite outright - all 15\nTestGraphAPI cases failed, not just the one this milestone targeted, because\nTestGraphAPI::SetUp() deliberately creates its second node with the exact same\nname/namespace as the first. Real rmw/DDS has no node-name-uniqueness\nconstraint at all; node names are an rcl/ROS-graph-layer convention, never\nenforced at the rmw layer itself.\n\nRemoves the rejection and its now-unused node_name_already_registered()\nhelper; two (or more) logical nodes sharing one (name, namespace) are now\nfully legal, distinguished only by pointer identity. test_multi_node.c updated\nto assert the duplicate is accepted, not rejected.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T14:37:47+09:00",
+          "tree_id": "d87418ac446870d20f87accc937a31a0926d5913",
+          "url": "https://github.com/tsnlab/tickle/commit/e0f03b968af2b0596e93877f5446dc03ef06f748"
+        },
+        "date": 1789796425865,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.671,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 824.338,
             "unit": "Mbps"
           }
         ]
