@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789823623961,
+  "lastUpdate": 1789823779076,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -25084,6 +25084,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04668571428571429,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c9982d45d1b95bf9aab36f102f9c2c3b56031ec3",
+          "message": "Add rmw_tickle/comparison.md: functional comparison vs FastDDS/CycloneDDS\n\nReal test_rmw_implementation results for all three - FastDDS/CycloneDDS run\nlocally (pristine lyrical branch, 16/16 executables each); rmw_tickle's own\nnumber is its latest real-CI confirmed-green run (jazzy branch + this repo's\nown conformance patch, 14/14). Not perfectly apples-to-apples (different\nupstream branch - the jazzy-branch patch doesn't apply cleanly to lyrical,\nand this host has no jazzy install to test the DDS vendors against instead),\ndocumented as such in the file itself. Individual TEST_F() case tallies and\nfull itemized skip lists for all three included.\n\nMilestone 44's own PLAN.md row shortened to a pointer at this file, matching\nthe tools/typesupport/PLAN.md cross-reference convention.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:15:37+09:00",
+          "tree_id": "ad0025a4cf7c61997b091236cbf4d32ed844becf",
+          "url": "https://github.com/tsnlab/tickle/commit/c9982d45d1b95bf9aab36f102f9c2c3b56031ec3"
+        },
+        "date": 1789823775311,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04705571428571429,
             "unit": "ms"
           }
         ]
