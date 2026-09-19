@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789804184927,
+  "lastUpdate": 1789804188467,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -27484,6 +27484,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030460221426827565,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "593d7342a81c044d90866e4d689efbbb96fb03b9",
+          "message": "Confirm Milestone 36's real CI verification green\n\nCheck all and Test all both confirmed: 7 TestGraphAPI cases OK, 8 genuinely\nSKIPPED.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T16:48:35+09:00",
+          "tree_id": "ef0434109695f371392cbf9a55140464d3580050",
+          "url": "https://github.com/tsnlab/tickle/commit/593d7342a81c044d90866e4d689efbbb96fb03b9"
+        },
+        "date": 1789804187107,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.990544046674456,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9904121671404157,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473709106445312,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030477660042898997,
             "unit": "Mbit/s"
           }
         ]
