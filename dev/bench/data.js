@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789847747032,
+  "lastUpdate": 1789847823657,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8006,6 +8006,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/2135a2fd59b430e533ec69cf592d8c51514258e7"
         },
         "date": 1789847566945,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.199,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2bc467b036e7b52a0b230c4d5581ddfd8920d93e",
+          "message": "Add 3 more comparison runs: same \"no measurable improvement\" conclusion\n\nIndependent corroboration of TickLE Dev's own already-recorded finding\n(Milestone 45 item 1's allocation pooling): re-ran compare_rmw_perf.sh\nthree more times on this same box. One clean run lands in the same\nnoise band as TickLE Dev's own two runs - no measurable, above-noise\nlatency improvement. The other two runs didn't produce usable numbers at\nall - one hit ctest's own test-registration flakiness, the other hit\nMilestone 47's own crash independently (Data consistency violated,\nsample id 1 vs prev ~4392/4393), on two separate combinations in one run.\n\nTallied across both sessions: 5 total attempts, Milestone 47's crash/\nmajor-loss signature in 3 of them - notably more often than the\n0-in-25-iterations TickLE Dev's own narrower natural-repro test found.\nWorth relaying: this script is a better reproducer for that bug than the\nisolated test was, plausibly because it overlaps three RMW_IMPLEMENTATIONs'\nown process pairs in sequence rather than one.\n\nOverall verdict: no measurable latency improvement from Milestone 45 item 1\nacross every clean run so far - a real negative result, not necessarily\n\"the fix did nothing\" (malloc/free removal is still a legitimate win on\nits own terms; ~30-50us absolute latencies on this same-host rig may just\nbe too small a scale to see it above ambient noise). A confident answer\neither way needs many more repeated trials with real statistics - not\nattempted here. Given how often Milestone 47 is corrupting attempts,\nfixing it first looks like a prerequisite for that kind of run anyway.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T04:54:32+09:00",
+          "tree_id": "cc4957c848cf2a0d408aa88ea92ddb0f6c923e5c",
+          "url": "https://github.com/tsnlab/tickle/commit/2bc467b036e7b52a0b230c4d5581ddfd8920d93e"
+        },
+        "date": 1789847819013,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
