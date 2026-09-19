@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789812347718,
+  "lastUpdate": 1789812350970,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -38625,6 +38625,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.626,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f93d79bac9251f2f9e9f223146b95d4660cb5e2f",
+          "message": "Confirm Milestone 38's real CI green (no regressions)\n\nTest all and Check all both passed on the push containing the ros2_cli.py\nnested-message fix - documenting that in PLAN.md, while being clear the\nconformance suite still doesn't exercise the new Ros2Resolver path itself\nuntil test_msgs/Nested.msg is un-excluded from the CI patch.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T19:03:03+09:00",
+          "tree_id": "44e188fd3682ee8d7022f9fab2f13574992bf6c2",
+          "url": "https://github.com/tsnlab/tickle/commit/f93d79bac9251f2f9e9f223146b95d4660cb5e2f"
+        },
+        "date": 1789812349898,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.226,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.063,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.994,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.788,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.605,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 73.336,
             "unit": "Mbps"
           }
         ]
