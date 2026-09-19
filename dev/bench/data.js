@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789801984365,
+  "lastUpdate": 1789802340414,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -22546,6 +22546,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04619285714285714,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "694111b96f60e92f7491d81556c79f43936916e3",
+          "message": "Confirm count_clients_and_services passes for real in CI\n\nCheck all confirmed: the other 14 TestGraphAPI cases genuinely SKIPPED, and\ncount_clients_and_services itself OK.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T16:17:50+09:00",
+          "tree_id": "a32bd8fcd911ae0c1a784c3c3f4c803d7456be76",
+          "url": "https://github.com/tsnlab/tickle/commit/694111b96f60e92f7491d81556c79f43936916e3"
+        },
+        "date": 1789802336957,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.049602857142857136,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04824142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04653142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04750857142857142,
             "unit": "ms"
           }
         ]
