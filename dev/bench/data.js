@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789786090625,
+  "lastUpdate": 1789786093801,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -37875,6 +37875,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 1.134,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "dbcca0fefee8f41363c0dfaf1e62ae08d8b2bcb1",
+          "message": "Implement Milestone 32: LIVELINESS MANUAL_BY_TOPIC support\n\nAdds a real rmw_publisher_assert_liveliness() and accepts MANUAL_BY_TOPIC in\nrmw_qos.c (MANUAL_BY_PARTICIPANT/_BY_NODE were removed from the real rmw spec\nand no longer exist in this distro's own enum, so this is the one remaining\nmanual kind). A manual Publisher's own liveliness_lease_ns/last_asserted_ns\nare checked independently of poll_thread health, unlike the AUTOMATIC case.\n\nFixes a real regression found while building this: an earlier version\ncombined the AUTOMATIC and manual checks into one function called\nunconditionally every watchdog cycle, which broke Milestone 30's own\nalready-working AUTOMATIC watchdog by locking node->mutex before staleness\nwas confirmed, letting poll_thread heal the staleness signal while the\nwatchdog was blocked. Split back into mark_automatic_publishers_lost()\n(unchanged Milestone 30 behavior, only locks after node_stale is already\ntrue) and check_manual_publishers_lost() (checked every cycle via\npthread_mutex_timedlock(), not trylock() - trylock() lost to poll_thread's\nown rapid relocking almost every time, confirmed by instrumenting and\ninspecting actual timestamps before writing the fix).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T11:45:16+09:00",
+          "tree_id": "b5c983f9ad0502ba5a17d5ff6e15306fc8b45c7b",
+          "url": "https://github.com/tsnlab/tickle/commit/dbcca0fefee8f41363c0dfaf1e62ae08d8b2bcb1"
+        },
+        "date": 1789786092745,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
             "unit": "ms"
           }
         ]
