@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789788537790,
+  "lastUpdate": 1789788541510,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -12872,6 +12872,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 902.928,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d5bb4b8f92b8987d99192e27a7cf4a3302d8face",
+          "message": "Implement Milestone 33: first slice of the remaining rmw API surface\n\nAdds rmw_count_clients()/rmw_count_services() (identical shape to the\nexisting rmw_count_publishers()/_subscribers(), just scanning the service-\nside kinds), rmw_publisher_count_matched_subscriptions()/\nrmw_subscription_count_matched_publishers() (same underlying scan, scoped to\none entity's own topic), rmw_feature_supported() (a new small file - true\nfor the two message-info sequence-number features, both genuinely correct\ntoday; false for the two dynamic-typesupport ones, which don't exist here),\nand rmw_publisher_wait_for_all_acked() (OK immediately for BEST_EFFORT,\nhonest RMW_RET_UNSUPPORTED for RELIABLE rather than an approximate proxy).\n\nThe larger remaining pieces (names-and-types family, network flow\nendpoints, dynamic messages, new-data callbacks, content filters) are\nexplicitly deferred and documented in PLAN.md as open follow-ons.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T12:26:14+09:00",
+          "tree_id": "fd1466d67dc6c95ab3a0179cd7a554a4269ef597",
+          "url": "https://github.com/tsnlab/tickle/commit/d5bb4b8f92b8987d99192e27a7cf4a3302d8face"
+        },
+        "date": 1789788539781,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.596,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.968,
             "unit": "Mbps"
           }
         ]
