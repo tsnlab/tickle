@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789821782682,
+  "lastUpdate": 1789821785927,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -19414,6 +19414,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.011,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "01badd1a3d0b680b338e82fabcd4675d9d00f8c3",
+          "message": "Implement Milestone 42: array-of-nested-message-type support\n\nComposes the existing \"Variable/Fixed arrays\" rule with the existing\n\"Nested messages\" rule verbatim - each element delegates to that nested\ntype's own already-generated _encode/_decode, so no new per-element size\nbookkeeping was needed even for a variable-size nested element.\n\nFound and fixed two real bugs before/while implementing:\n\n1. A nested array element needs its type's own overall self-alignment\n   (model.struct_self_align(), renamed from the milestone's own first-cut\n   _nested_self_align()), not just its first field's - DESIGN.md's existing\n   \"Nested messages\" rule was only ever correct for a single occurrence.\n   Every nested type used so far happened to have its own largest-aligned\n   field first, so this divergence had never been exercised.\n\n2. A deliberately oddly-shaped test fixture (OddAlign.msg: bool; int64;\n   uint8) then exposed a second, more general, entirely pre-existing bug:\n   the generated _Static_assert(sizeof(struct X) == wire_size) is wrong\n   whenever a fixed-size struct's own last field doesn't end on a multiple\n   of the struct's own self-alignment (ordinary C trailing padding\n   wire_size itself correctly never counts). Fixed via a new\n   layout.padded_wire_size(), used only in that one assert - confirmed via\n   test_golden.py this perturbs no existing generated output.\n\nThe same clang-tidy cognitive-complexity fix Milestone 39 established\n(emit.emit_string_element_helpers()) is repeated here\n(emit.emit_nested_array_element_helpers()) for the identical reason.\n\nros2_adapter.py's own ROS 2 converter does not convert this shape yet -\nrosidl_runtime_c represents it differently again - render_adapter()\nexplicitly rejects it (NotImplementedError, tested), the same precedent\nset for array-of-string. Full suite green (67/67); a hand-derived expected\nencode_size (109 bytes) independently confirmed by both a standalone C\nharness and the committed pytest roundtrip test.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T21:40:31+09:00",
+          "tree_id": "813f1950ae103e65d35c70a1402ef3aeab567111",
+          "url": "https://github.com/tsnlab/tickle/commit/01badd1a3d0b680b338e82fabcd4675d9d00f8c3"
+        },
+        "date": 1789821784817,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
             "unit": "ms"
           }
         ]
