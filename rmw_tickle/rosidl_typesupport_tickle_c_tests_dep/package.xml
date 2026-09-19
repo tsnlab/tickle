@@ -24,6 +24,14 @@
   <depend>rosidl_generator_c</depend>
   <depend>rosidl_typesupport_c</depend>
   <depend>rosidl_typesupport_tickle_c</depend>
+  <!-- rosidl_typesupport_tickle_c_tests (the package that nests this one's own Leaf.msg) also
+       generates C++ typesupport for its own messages - found the hard way, in real CI: ROS 2's
+       own rosidl_generator_cpp emits a struct header for Branch that #includes Leaf's own C++
+       struct header directly, regardless of anything TickLE-specific, so *this* package needs
+       the identical C++ generator set too, or that #include simply doesn't exist yet. -->
+  <depend>rosidl_generator_cpp</depend>
+  <depend>rosidl_typesupport_cpp</depend>
+  <depend>rosidl_typesupport_tickle_cpp</depend>
 
   <exec_depend>rosidl_runtime_c</exec_depend>
 

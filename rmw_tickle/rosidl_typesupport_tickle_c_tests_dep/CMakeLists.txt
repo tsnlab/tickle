@@ -14,6 +14,14 @@ find_package(rosidl_generator_c REQUIRED)
 find_package(rosidl_typesupport_c REQUIRED)
 find_package(rosidl_typesupport_tickle_c REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
+# rosidl_typesupport_tickle_c_tests (the package that nests this one's own Leaf.msg) also
+# generates C++ typesupport for its own messages - its own generated Branch struct #includes
+# Leaf's own C++ struct header directly (ROS 2's own rosidl_generator_cpp convention, unrelated
+# to anything TickLE-specific), so this package needs the identical generator set too - found
+# the hard way, in real CI, when it didn't.
+find_package(rosidl_generator_cpp REQUIRED)
+find_package(rosidl_typesupport_cpp REQUIRED)
+find_package(rosidl_typesupport_tickle_cpp REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Leaf.msg"
