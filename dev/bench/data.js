@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789788787531,
+  "lastUpdate": 1789788790625,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -28544,6 +28544,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 823.38,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "30fb394f22b678f5d337c2a0cc84ef38b050b5f2",
+          "message": "Document Milestone 34: multiple ROS 2 nodes per process is a real architecture change, not a config tweak\n\nStarted as an implementation pass on TickLE Plan's own backlog item 3, stopped\nafter finding that making _tt_CONFIG per-node isn't sufficient: co-resident\nnodes need to share one UDP port to discover each other at all (distinct\nports break intra-process topic connectivity outright), but SO_REUSEPORT on\na shared port silently misroutes unicast traffic (ACKNACK/Heartbeat/RPC\nreplies) to whichever co-resident node's socket the kernel's hash happens to\npick, not necessarily the one it was meant for - a real, intermittent\ncorrectness bug a shallow fix would ship silently.\n\nA real fix needs restructuring from \"one socket per tt_Node, N independent\npoll loops\" to \"one shared socket per port, one receive+dispatch loop,\nN logical tt_Node targets\" - flagged as its own follow-on milestone rather\nthan committed to partway.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T12:30:23+09:00",
+          "tree_id": "d849a2e85723db2a9250c8bd6bdf3f96cc58ddf0",
+          "url": "https://github.com/tsnlab/tickle/commit/30fb394f22b678f5d337c2a0cc84ef38b050b5f2"
+        },
+        "date": 1789788789542,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 937.586,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 823.36,
             "unit": "Mbps"
           }
         ]
