@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789797403831,
+  "lastUpdate": 1789797407108,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35605,6 +35605,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 73.148,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2c9a7273ea09bc85c93605f363fa04362683e9f6",
+          "message": "Revert Milestone 34's conformance-suite unskip: real gap, not a quick win\n\nReal CI (Check all) showed unskipping test_graph_api.cpp's TestGraphAPI\nfixture doesn't actually work yet, for two reasons outside this milestone's\nscope. Most of its 15 TEST_F()s need the \"names and types\"/*_by_node/\n*_info_by_topic function family, which Milestone 33 already explicitly\ndeferred as its own larger follow-on. count_clients_and_services itself -\nthe one case this milestone's design specifically targeted - hits a deeper,\ngenuinely new problem: it creates two independent Server endpoints for the\nexact same service name from two different node handles, which TickLE's own\ntt_hash_id(service->name, endpoint_name) can't disambiguate - a single\ntt_Node can only ever host one local Server per service name, a pre-existing\nwire-level constraint that sharing one tt_Node across nodes first makes\nreachable within a single process. A real fix needs a TickLE-core\nwire-protocol change (some per-registration uniquifier beyond the name),\nout of scope here.\n\nRestores the fixture-wide GTEST_SKIP() with an updated comment explaining\nboth reasons. Multi-node-per-process itself (the actual milestone) is\nunaffected - it's verified independently by test_multi_node.c.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T14:54:00+09:00",
+          "tree_id": "4779772a41137a2e5826a5c0c4002f41f1ae4c09",
+          "url": "https://github.com/tsnlab/tickle/commit/2c9a7273ea09bc85c93605f363fa04362683e9f6"
+        },
+        "date": 1789797406035,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.522,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.196,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.433,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.46,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.81,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 73.202,
             "unit": "Mbps"
           }
         ]
