@@ -105,6 +105,13 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
 // declared in this order rather than the other way around.
 typedef struct rmw_tickle_context_impl_t rmw_tickle_context_impl_t;
 
+// Forward reference only (pointer field in rmw_tickle_context_impl_t's own nodes[] registry below,
+// and every rmw_tickle_publisher_t/_subscriber_t/_client_t/_service_t's own .node) - rmw_tickle_
+// node_t's full definition lives further down, after rmw_tickle_context_impl_t (which it now
+// points *into*, Milestone 34's own single-tt_Node-per-context refactor - see that struct's own
+// doc comment on why the direction of ownership flipped).
+typedef struct rmw_tickle_node_t rmw_tickle_node_t;
+
 // TickLE specific guard condition data. Shared by rmw_guard_condition.c's own rmw_create_guard_
 // condition() (heap-allocated, one per rmw_create_guard_condition() call) and rmw_init()'s
 // context_impl.graph_guard_condition (embedded, one per context) - rmw_wait_set.c's rmw_wait()
@@ -120,7 +127,16 @@ typedef struct rmw_tickle_guard_condition_t {
     rcutils_allocator_t allocator;
 } rmw_tickle_guard_condition_t;
 
-// TickLE context implementation
+// TickLE context implementation. Milestone 34 - promoted the single tt_Node (plus its poll_
+// thread/mutex/discovery, all formerly on rmw_tickle_node_t) up to here, so every rmw_create_
+// node() call against this same context shares it, instead of each getting (or, before this
+// milestone, being refused) its own. Root finding behind this: DDS itself has no "Node" concept
+// at all - rclcpp::Node is a pure rcl/rmw-layer name/namespace grouping with no independent DDS
+// entity (real ROS 2 tracks node-to-entity ownership via rmw_dds_common's own ParticipantEntities
+// Info, a metadata topic layered *on top* of DDS, not a core mechanism) - so "multiple nodes per
+// process" never actually needed multiple transport identities, sockets, or discovery instances;
+// it needed multiple *name labels* sharing one. See rmw_tickle_node_t's own doc comment below for
+// the thin wrapper this leaves it as.
 struct rmw_tickle_context_impl_t {
     // Wired up so a wait set can safely include it without crashing (Milestone 5) - actually
     // *triggered* on a real graph change only from Milestone 6 onward (0(c)'s discovery callback);
@@ -146,73 +162,114 @@ struct rmw_tickle_context_impl_t {
     // silently double-freeing - test_rmw_implementation's own test_init_shutdown.cpp exercises all
     // of this directly. false until rmw_shutdown() sets it.
     bool shutdown;
-};
 
-// TickLE specific node data
-typedef struct rmw_tickle_node_t {
-    rmw_node_t rmw_node; // RMW node structure (must be first)
-    struct tt_Node tickle_node;
+    // Copied from rmw_init()'s own options->allocator at context-creation time - needed here (not
+    // just per-entity, as every other rmw_tickle_c struct already keeps its own copy) because
+    // nodes[]'s own growth below is a context-level operation, not tied to any one entity.
     rcutils_allocator_t allocator;
-    const rmw_context_t* context; // Store context reference
 
+    // Milestone 34 - the process's one real tt_Node and everything that used to live on rmw_
+    // tickle_node_t alongside it, now shared by every entry in nodes[] below. See rmw_tickle_
+    // node_t's own doc comment for why a logical node no longer needs (or gets) its own.
+    //
     // rmw_tickle/PLAN.md's threading model ("TickLE" row: "Stays single-threaded per tt_Node...";
-    // "rmw_tickle" row: "Owns all lock/thread management. A background thread per node drives
-    // tt_Node_poll(); a per-node mutex serializes every other entry point (rmw_publish, ...)
-    // against it"). poll_thread loops tt_Node_poll(&tickle_node, tt_RECEIVE_TIMEOUT), holding
-    // `mutex` only around each individual call (not across iterations, and not while blocked in
-    // the syscall underneath it for longer than that short timeout - see rmw_node.c) - every
-    // other rmw_tickle_c entry point that touches tickle_node (rmw_publish() et al., Milestone
-    // 3+) must tt_Node_interrupt(&tickle_node) *then* lock `mutex` before doing so, the same
-    // pattern rmw_destroy_node() itself uses to stop poll_thread. tt_Node_interrupt() is the one
-    // tt_Node_* call explicitly safe to make without holding `mutex` first (see tickle.h's own
-    // doc comment on it).
-    pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
-    pthread_mutex_t mutex; // NOLINT(misc-include-cleaner)
+    // "rmw_tickle" row: "Owns all lock/thread management. A background thread drives tt_Node_
+    // poll(); a mutex serializes every other entry point (rmw_publish, ...) against it"). poll_
+    // thread loops tt_Node_poll(&tickle_node, tt_RECEIVE_TIMEOUT), holding node_mutex only around
+    // each individual call (not across iterations, and not while blocked in the syscall underneath
+    // it for longer than that short timeout - see rmw_node.c) - every other rmw_tickle_c entry
+    // point that touches tickle_node (rmw_publish() et al.) must tt_Node_interrupt(&tickle_node)
+    // *then* lock node_mutex before doing so, the same pattern rmw_destroy_node() itself uses to
+    // stop poll_thread (now gated on nodes[] actually emptying out, not unconditional - see rmw_
+    // node.c). tt_Node_interrupt() is the one tt_Node_* call explicitly safe to make without
+    // holding node_mutex first (see tickle.h's own doc comment on it).
+    struct tt_Node tickle_node;
+    pthread_t poll_thread;      // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
+    pthread_mutex_t node_mutex; // NOLINT(misc-include-cleaner)
     volatile bool poll_thread_running;
 
     // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 28(b)'s own
-    // design, now implemented as Milestone 30). A same-thread self-check from inside poll_thread
-    // can never see poll_thread itself hang - the check only runs if poll_thread is still healthy
+    // design, implemented in Milestone 30). A same-thread self-check from inside poll_thread can
+    // never see poll_thread itself hang - the check only runs if poll_thread is still healthy
     // enough to run it - so this needs a genuinely independent second thread instead: poll_thread_
     // main() (rmw_node.c) stores tt_get_ns() here every time tt_Node_poll() actually returns;
     // watchdog_thread_main() (rmw_node.c), running on its own schedule, compares this against
-    // RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS and marks every live Publisher on this node
-    // RMW_EVENT_LIVELINESS_LOST if it's gone stale. Atomic: the only field the two threads share
-    // directly (poll_thread writes, watchdog_thread reads) - everything else the watchdog needs
-    // (tickle_node.endpoints[] to find those Publishers) still goes through `mutex` like any other
-    // non-poll-thread access.
+    // RMW_TICKLE_WATCHDOG_STALE_THRESHOLD_NS and marks every live Publisher across every logical
+    // node sharing this context RMW_EVENT_LIVELINESS_LOST if it's gone stale (poll_thread health is
+    // a context-wide fact now, same as the tt_Node it's polling). Atomic: the only field the two
+    // threads share directly (poll_thread writes, watchdog_thread reads) - everything else the
+    // watchdog needs (tickle_node.endpoints[] to find those Publishers) still goes through node_
+    // mutex like any other non-poll-thread access.
     atomic_uint_least64_t poll_thread_last_return_ns;
     pthread_t watchdog_thread; // NOLINT(misc-include-cleaner)
     volatile bool watchdog_thread_running;
 
-    // rmw_tickle/PLAN.md's Milestone 6: opts this node into TickLE's own opt-in graph
+    // rmw_tickle/PLAN.md's Milestone 6: opts this context into TickLE's own opt-in graph
     // introspection (tt_Node_set_discovery(), Milestone 0(c)) - every remote Publisher/Subscriber/
-    // Client/Server this node hears announced, for rmw_count_publishers()/_subscribers()/rmw_
+    // Client/Server this process hears announced, for rmw_count_publishers()/_subscribers()/rmw_
     // service_server_is_available() (rmw_graph.c) to scan. Embedded rather than heap-allocated,
-    // matching struct tt_Discovery's own doc comment ("owned by the caller, e.g. embedded in an
-    // rmw wrapper's own node struct") - zero_allocate() above already satisfies tt_Node_set_
-    // discovery()'s own "must already be zeroed" precondition. Records only *remote* entities
-    // (other nodes' announces) - this node's own locally-created endpoints are counted separately,
-    // straight from tickle_node.endpoints[] (see rmw_graph.c's own count_matching()).
+    // matching struct tt_Discovery's own doc comment ("owned by the caller") - zero-init at
+    // allocation time already satisfies tt_Node_set_discovery()'s own "must already be zeroed"
+    // precondition. Records only *remote* entities (other nodes' announces, regardless of which
+    // *local* logical node they'd match against) - this process's own locally-created endpoints
+    // are counted separately, straight from tickle_node.endpoints[] (see rmw_graph.c's own count_
+    // matching()) - inherently process-scoped now, same as tickle_node itself, not per-logical-
+    // node the way it looked (misleadingly - discovery never actually distinguished logical nodes
+    // even before this milestone) when it lived on rmw_tickle_node_t.
     struct tt_Discovery discovery;
-} rmw_tickle_node_t;
+
+    // Milestone 34's own reference-counted node registry - separate, dedicated mutex (not wait_
+    // mutex above: a different lock-nesting contract, guarding a different concern, not worth
+    // conflating just because both happen to be context-level). Guards node_count and nodes/
+    // nodes_capacity below. rmw_create_node() appends, checking for an existing duplicate (name,
+    // namespace) pair first (rejected outright, not silently accepted - this package's own
+    // established "reject explicitly" philosophy); rmw_destroy_node() removes. The real tt_Node_
+    // create()/poll_thread/watchdog_thread start-up above only happens once, on the first rmw_
+    // create_node() call to bring node_count from 0 to 1; teardown only once node_count returns to
+    // 0 - every rmw_get_node_names() call (rmw_graph.c) also takes this to enumerate every
+    // currently-live logical node, closing that function's own long-documented "only ever reports
+    // the local node" gap as a side effect (still never a *remote* node - TickLE's wire protocol
+    // still has no node-name concept at all, only this process's own logical nodes are knowable).
+    pthread_mutex_t registry_mutex;
+    atomic_int node_count;
+    rmw_tickle_node_t** nodes; // allocator-owned array of nodes_capacity pointers, first node_count valid
+    size_t nodes_capacity;
+};
+
+// TickLE specific node data. Milestone 34 shrank this to a thin name/namespace wrapper - no
+// transport identity of its own (tickle_node/poll_thread/node_mutex/discovery all moved up to
+// rmw_tickle_context_impl_t, shared by every rmw_tickle_node_t under the same context) - see that
+// struct's own doc comment for why a logical "node" never needed one in the first place. Every
+// rmw_tickle_publisher_t/_subscriber_t/_client_t/_service_t still keeps its own `node` pointer
+// back to whichever one of these actually created it (for e.g. rmw_publisher_get_actual_qos()-
+// style per-entity bookkeeping, and now also owning_node_name/_namespace's own attribution), and
+// reaches the shared tt_Node/mutex via node->context_impl->tickle_node / ->node_mutex.
+struct rmw_tickle_node_t {
+    rmw_node_t rmw_node; // RMW node structure (must be first)
+    rmw_tickle_context_impl_t* context_impl;
+    rcutils_allocator_t allocator;
+};
 
 // rmw_graph.c's own count_matching()'s core scan, exposed lock-free for QoS roadmap #3
 // (LIVELINESS)'s own RMW_EVENT_LIVELINESS_CHANGED periodic check (rmw_subscription.c) to call
 // directly. That check runs from a tt_Node_schedule() callback, which fires from *inside*
-// tt_Node_poll() - already called with node_impl->mutex held by poll_thread (rmw_tickle_node_t's
-// own doc comment above) - so it must NOT take that mutex itself the way count_matching() (used
-// by rmw_count_publishers()/_subscribers(), called from an arbitrary application thread) does;
-// doing so would self-deadlock (mutex is a plain, non-recursive pthread_mutex_t - rmw_node.c's
-// own rmw_create_node()). Never call this from anywhere except the poll thread itself.
-size_t rmw_tickle_count_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind);
+// tt_Node_poll() - already called with context_impl->node_mutex held by poll_thread (rmw_tickle_
+// context_impl_t's own doc comment above) - so it must NOT take that mutex itself the way count_
+// matching() (used by rmw_count_publishers()/_subscribers(), called from an arbitrary application
+// thread) does; doing so would self-deadlock (node_mutex is a plain, non-recursive pthread_mutex_t
+// - rmw_node.c's own rmw_create_node()). Never call this from anywhere except the poll thread
+// itself. Takes context_impl directly, not a specific rmw_tickle_node_t (Milestone 34) - the scan
+// itself was always process-wide (tickle_node.endpoints[]/discovery, both now inherently context-
+// scoped), never actually filtered by which logical node a caller happened to reach it through.
+size_t rmw_tickle_count_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t kind);
 
 // count_matching_locked()'s own tombstone counterpart (rmw_graph.c) - how many Publishers/
 // Subscriptions on this topic are currently known but presumed dead (struct tt_DiscoveredEntity.
 // alive's own doc comment, tickle.h), not the "currently active" count rmw_tickle_count_matching_
 // locked() above answers. Same threading rule as that function - poll-thread-only, no locking of
 // its own.
-size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_node_t* node_impl, const char* topic_name, uint8_t kind);
+size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
+                                                  uint8_t kind);
 
 // QoS roadmap #2 (DEADLINE) + #3 (LIVELINESS) - shared by every status this rmw tracks below.
 // total_count: cumulative, atomic (rmw_take_event(), rmw_event.c, reads it; only ever incremented,
@@ -253,6 +310,14 @@ typedef struct rmw_tickle_publisher_t {
     // literal that outlives the whole process, so no separate storage/copy is needed for it.
     struct tt_Topic topic;
     rmw_tickle_node_t* node;
+    // Milestone 34 - an owned copy (rcutils_strdup(), not a pointer back into `node` - avoids any
+    // lifetime coupling if this outlives its own node in a misuse case) of whichever logical node
+    // created this Publisher, taken at rmw_create_publisher() time. Not consumed by anything yet
+    // (the graph-query-by-node family, PLAN.md's own "remaining rmw API surface" backlog, is still
+    // its own separate, not-yet-implemented follow-on) - laid down now so that work doesn't need to
+    // retrofit attribution later, now that multiple logical nodes can actually share one process.
+    char* owning_node_name;
+    char* owning_node_namespace;
     const rosidl_message_type_support_t* type_support;
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks;
     rcutils_allocator_t allocator;
@@ -347,6 +412,10 @@ typedef struct rmw_tickle_subscriber_t {
     struct tt_Subscriber tickle_subscriber;
     struct tt_Topic topic; // see rmw_tickle_publisher_t.topic's own comment
     rmw_tickle_node_t* node;
+    // See rmw_tickle_publisher_t.owning_node_name's own doc comment - same reasoning, taken at
+    // rmw_create_subscription() time instead.
+    char* owning_node_name;
+    char* owning_node_namespace;
     const rosidl_message_type_support_t* type_support;
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks;
     rcutils_allocator_t allocator;
@@ -407,6 +476,10 @@ typedef struct rmw_tickle_client_t {
     // rmw_tickle_publisher_t.topic's own doc comment for the identical reasoning applied there).
     struct tt_Service service;
     rmw_tickle_node_t* node;
+    // See rmw_tickle_publisher_t.owning_node_name's own doc comment - same reasoning, taken at
+    // rmw_create_client() time instead.
+    char* owning_node_name;
+    char* owning_node_namespace;
     const rosidl_service_type_support_t* type_support;
     const rosidl_typesupport_tickle_c_message_callbacks_t* request_callbacks;
     const rosidl_typesupport_tickle_c_message_callbacks_t* response_callbacks;
@@ -437,6 +510,10 @@ typedef struct rmw_tickle_service_t {
     struct tt_Server tickle_server;
     struct tt_Service service; // see rmw_tickle_client_t.service's own doc comment
     rmw_tickle_node_t* node;
+    // See rmw_tickle_publisher_t.owning_node_name's own doc comment - same reasoning, taken at
+    // rmw_create_service() time instead.
+    char* owning_node_name;
+    char* owning_node_namespace;
     const rosidl_service_type_support_t* type_support;
     const rosidl_typesupport_tickle_c_message_callbacks_t* request_callbacks;
     const rosidl_typesupport_tickle_c_message_callbacks_t* response_callbacks;

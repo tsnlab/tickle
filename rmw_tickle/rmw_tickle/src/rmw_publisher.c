@@ -39,9 +39,10 @@
 // QoS roadmap #2 (DEADLINE) - runs once per pub_impl->deadline_period_ns (rescheduled
 // unconditionally every time, a steady period, matching DDS's own "one miss per elapsed period
 // with no write" semantics), checking whether rmw_publish() updated last_activity_time since the
-// last check. Fires from inside tt_Node_poll() - poll_thread already holds node->mutex around
-// that whole call (rmw_tickle_node_t's own doc comment) - so last_activity_time is safe to read
-// here without a separate lock, same as rmw_publish() writing it under that same lock.
+// last check. Fires from inside tt_Node_poll() - poll_thread already holds context_impl->
+// node_mutex around that whole call (rmw_tickle_context_impl_t's own doc comment) - so last_
+// activity_time is safe to read here without a separate lock, same as rmw_publish() writing it
+// under that same lock.
 static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* param) {
     (void)node;
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)param;
@@ -52,7 +53,7 @@ static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* 
         // wait_cond subscriber_callback() (rmw_subscription.c) already broadcasts on for a newly
         // queued message, for the identical reason (rmw_tickle_context_impl_t's own doc comment,
         // rmw_tickle.h).
-        rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)pub_impl->node->context->impl;
+        rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
         pthread_mutex_lock(&context_impl->wait_mutex);
         pthread_cond_broadcast(&context_impl->wait_cond);
         pthread_mutex_unlock(&context_impl->wait_mutex);
@@ -60,8 +61,8 @@ static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* 
     // Deadline monitoring simply stops here on a reschedule failure (tt_MAX_SCHEDULER_LENGTH
     // exhausted) - no logging facility in this package to report it through, and no return path
     // out of a scheduled void callback anyway.
-    (void)tt_Node_schedule(&pub_impl->node->tickle_node, time + pub_impl->deadline_period_ns, check_publisher_deadline,
-                           pub_impl);
+    (void)tt_Node_schedule(&pub_impl->node->context_impl->tickle_node, time + pub_impl->deadline_period_ns,
+                           check_publisher_deadline, pub_impl);
 }
 
 rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
@@ -106,6 +107,12 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
         return NULL;
     }
     pub_impl->node = node_impl;
+    // Milestone 34 - see rmw_tickle_publisher_t.owning_node_name's own doc comment. Failure here
+    // isn't fatal to publisher creation - just leaves attribution unavailable for this publisher,
+    // matching the "not consumed by anything yet" scope that field's own doc comment describes;
+    // nothing downstream depends on these being non-NULL today.
+    pub_impl->owning_node_name = rcutils_strdup(node_impl->rmw_node.name, *allocator);
+    pub_impl->owning_node_namespace = rcutils_strdup(node_impl->rmw_node.namespace_, *allocator);
     pub_impl->type_support = type_support;
     pub_impl->callbacks = callbacks;
     pub_impl->allocator = *allocator;
@@ -135,12 +142,12 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     }
 
     // Same tt_Node_interrupt()-then-lock pattern rmw_destroy_node() already established - see
-    // rmw_tickle.h's own rmw_tickle_node_t doc comment for the full contract.
-    tt_Node_interrupt(&node_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->mutex);
-    tt_ret_t ret = tt_Node_create_publisher(&node_impl->tickle_node, &pub_impl->tickle_publisher, &pub_impl->topic,
-                                            pub_impl->rmw_publisher.topic_name);
-    pthread_mutex_unlock(&node_impl->mutex);
+    // rmw_tickle.h's own rmw_tickle_context_impl_t doc comment for the full contract.
+    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_ret_t ret = tt_Node_create_publisher(&node_impl->context_impl->tickle_node, &pub_impl->tickle_publisher,
+                                            &pub_impl->topic, pub_impl->rmw_publisher.topic_name);
+    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create_publisher() failed");
         allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
@@ -170,10 +177,10 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
             RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE/TRANSIENT_LOCAL publisher can retain at most "
                               "tt_MAX_RELIABLE_HISTORY samples - see rmw_tickle/PLAN.md's QoS "
                               "roadmap #4/#5");
-            tt_Node_interrupt(&node_impl->tickle_node);
-            pthread_mutex_lock(&node_impl->mutex);
+            tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+            pthread_mutex_lock(&node_impl->context_impl->node_mutex);
             tt_Publisher_destroy(&pub_impl->tickle_publisher);
-            pthread_mutex_unlock(&node_impl->mutex);
+            pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
             allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
             allocator->deallocate(pub_impl, allocator->state);
             return NULL;
@@ -183,10 +190,10 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
             (struct tt_ReliableCache*)allocator->zero_allocate(1, sizeof(struct tt_ReliableCache), allocator->state);
         if (NULL == pub_impl->reliable_cache) {
             RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
-            tt_Node_interrupt(&node_impl->tickle_node);
-            pthread_mutex_lock(&node_impl->mutex);
+            tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+            pthread_mutex_lock(&node_impl->context_impl->node_mutex);
             tt_Publisher_destroy(&pub_impl->tickle_publisher);
-            pthread_mutex_unlock(&node_impl->mutex);
+            pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
             allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
             allocator->deallocate(pub_impl, allocator->state);
             return NULL;
@@ -204,13 +211,13 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     if (deadline_ns > 0) {
         pub_impl->deadline_period_ns = (uint64_t)deadline_ns;
         pub_impl->last_activity_time = tt_get_ns();
-        tt_Node_interrupt(&node_impl->tickle_node);
-        pthread_mutex_lock(&node_impl->mutex);
+        tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+        pthread_mutex_lock(&node_impl->context_impl->node_mutex);
         // A failure here (tt_MAX_SCHEDULER_LENGTH exhausted) just leaves deadline monitoring
         // inactive for this Publisher - no logging facility in this package to report it through.
-        (void)tt_Node_schedule(&node_impl->tickle_node, tt_get_ns() + pub_impl->deadline_period_ns,
+        (void)tt_Node_schedule(&node_impl->context_impl->tickle_node, tt_get_ns() + pub_impl->deadline_period_ns,
                                check_publisher_deadline, pub_impl);
-        pthread_mutex_unlock(&node_impl->mutex);
+        pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
     }
 
     // QoS roadmap #6 (LIFESPAN) - see tt_Publisher.lifespan_duration_ns's own doc comment
@@ -252,20 +259,22 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
 
-    tt_Node_interrupt(&pub_impl->node->tickle_node);
-    pthread_mutex_lock(&pub_impl->node->mutex);
+    tt_Node_interrupt(&pub_impl->node->context_impl->tickle_node);
+    pthread_mutex_lock(&pub_impl->node->context_impl->node_mutex);
     // QoS roadmap #2 (DEADLINE) - cancel a still-armed check before the publisher it closes over
     // is freed below; a no-op if deadline_period_ns was never set (tt_Node_unschedule() just finds
     // nothing matching).
     if (pub_impl->deadline_period_ns != 0) {
-        tt_Node_unschedule(&pub_impl->node->tickle_node, check_publisher_deadline, pub_impl);
+        tt_Node_unschedule(&pub_impl->node->context_impl->tickle_node, check_publisher_deadline, pub_impl);
     }
     tt_Publisher_destroy(&pub_impl->tickle_publisher);
-    pthread_mutex_unlock(&pub_impl->node->mutex);
+    pthread_mutex_unlock(&pub_impl->node->context_impl->node_mutex);
 
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
-    allocator.deallocate(pub_impl->reliable_cache, allocator.state); // NULL is a no-op, see its own doc comment
+    allocator.deallocate(pub_impl->reliable_cache, allocator.state);   // NULL is a no-op, see its own doc comment
+    allocator.deallocate(pub_impl->owning_node_name, allocator.state); // NULL is a no-op too (a failed strdup)
+    allocator.deallocate(pub_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(pub_impl, allocator.state);
     return RMW_RET_OK;
 }
@@ -297,8 +306,8 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         return RMW_RET_ERROR;
     }
 
-    tt_Node_interrupt(&pub_impl->node->tickle_node);
-    pthread_mutex_lock(&pub_impl->node->mutex);
+    tt_Node_interrupt(&pub_impl->node->context_impl->tickle_node);
+    pthread_mutex_lock(&pub_impl->node->context_impl->node_mutex);
     tt_ret_t ret = tt_Publisher_publish(&pub_impl->tickle_publisher, (struct tt_Data*)tickle_buf);
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.last_activity_time's own doc comment.
     // Under the same lock check_publisher_deadline() reads it under, harmless to set even when
@@ -306,7 +315,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     if (ret == tt_RET_OK) {
         pub_impl->last_activity_time = tt_get_ns();
     }
-    pthread_mutex_unlock(&pub_impl->node->mutex);
+    pthread_mutex_unlock(&pub_impl->node->context_impl->node_mutex);
 
     pub_impl->allocator.deallocate(tickle_buf, pub_impl->allocator.state);
 
@@ -354,7 +363,7 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
     memset(gid, 0, sizeof(*gid));
     gid->implementation_identifier = RMW_TICKLE_IDENTIFIER;
-    uint8_t node_id = pub_impl->node->tickle_node.id;
+    uint8_t node_id = pub_impl->node->context_impl->tickle_node.id;
     uint32_t endpoint_id = pub_impl->tickle_publisher.endpoint.id;
     gid->data[0] = node_id;
     memcpy(&gid->data[1], &endpoint_id, sizeof(endpoint_id));

@@ -65,8 +65,8 @@
 // something went wrong server-side.
 #define RMW_TICKLE_SERVER_CALLBACK_ERROR ((int8_t)-1)
 
-// Runs on the node's poll thread, node->mutex already held (rmw_tickle.h's own threading model).
-// See this file's own module doc comment for the full deferred-response design.
+// Runs on the poll thread, context_impl->node_mutex already held (rmw_tickle.h's own threading
+// model). See this file's own module doc comment for the full deferred-response design.
 static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* request, struct tt_Response* response,
                               tt_RequestId request_id) {
     (void)response; // deferred - nothing to fill in synchronously here, see module doc comment
@@ -100,7 +100,7 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
     // >wait_mutex first and svc->request_mutex second (see rmw_tickle_context_impl_t's own doc
     // comment), so taking them in the opposite order here would risk an AB-BA deadlock against a
     // concurrently running rmw_wait().
-    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)svc->node->context->impl;
+    rmw_tickle_context_impl_t* context_impl = svc->node->context_impl;
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
@@ -159,6 +159,9 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         return NULL;
     }
     svc->node = node_impl;
+    // Milestone 34 - see rmw_tickle_publisher_t.owning_node_name's own doc comment.
+    svc->owning_node_name = rcutils_strdup(node_impl->rmw_node.name, *allocator);
+    svc->owning_node_namespace = rcutils_strdup(node_impl->rmw_node.namespace_, *allocator);
     svc->type_support = type_support;
     svc->request_callbacks = callbacks.request;
     svc->response_callbacks = callbacks.response;
@@ -206,11 +209,11 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         return NULL;
     }
 
-    tt_Node_interrupt(&node_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->mutex);
-    tt_ret_t ret = tt_Node_create_server(&node_impl->tickle_node, &svc->tickle_server, &svc->service,
+    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_ret_t ret = tt_Node_create_server(&node_impl->context_impl->tickle_node, &svc->tickle_server, &svc->service,
                                          svc->rmw_service.service_name, server_callback);
-    pthread_mutex_unlock(&node_impl->mutex);
+    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create_server() failed");
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
@@ -235,10 +238,10 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
 
     rmw_tickle_service_t* svc = (rmw_tickle_service_t*)service->data;
 
-    tt_Node_interrupt(&svc->node->tickle_node);
-    pthread_mutex_lock(&svc->node->mutex);
+    tt_Node_interrupt(&svc->node->context_impl->tickle_node);
+    pthread_mutex_lock(&svc->node->context_impl->node_mutex);
     tt_Server_destroy(&svc->tickle_server);
-    pthread_mutex_unlock(&svc->node->mutex);
+    pthread_mutex_unlock(&svc->node->context_impl->node_mutex);
 
     pthread_mutex_destroy(&svc->request_mutex);
 
@@ -246,6 +249,8 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
     allocator.deallocate((char*)svc->rmw_service.service_name, allocator.state);
     allocator.deallocate(svc->request_storage, allocator.state);
     allocator.deallocate(svc->response_storage, allocator.state);
+    allocator.deallocate(svc->owning_node_name, allocator.state);
+    allocator.deallocate(svc->owning_node_namespace, allocator.state);
     allocator.deallocate(svc, allocator.state);
     return RMW_RET_OK;
 }

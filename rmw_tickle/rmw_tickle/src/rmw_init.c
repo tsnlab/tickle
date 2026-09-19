@@ -187,6 +187,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
 
     // Initialize the context implementation
     memset(impl, 0, sizeof(rmw_tickle_context_impl_t));
+    impl->allocator = options->allocator;
 
     if (pthread_mutex_init(&impl->wait_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize context wait_mutex");
@@ -195,6 +196,17 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     }
     if (pthread_cond_init(&impl->wait_cond, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize context wait_cond");
+        pthread_mutex_destroy(&impl->wait_mutex);
+        options->allocator.deallocate(impl, options->allocator.state);
+        return RMW_RET_ERROR;
+    }
+    // Milestone 34 - guards node_count/nodes[] (rmw_tickle_context_impl_t's own doc comment,
+    // rmw_tickle.h) - a separate, dedicated mutex from wait_mutex above (a different lock-nesting
+    // contract, guarding a different concern, not worth conflating just because both happen to be
+    // context-level).
+    if (pthread_mutex_init(&impl->registry_mutex, NULL) != 0) {
+        RMW_SET_ERROR_MSG("failed to initialize context registry_mutex");
+        pthread_cond_destroy(&impl->wait_cond);
         pthread_mutex_destroy(&impl->wait_mutex);
         options->allocator.deallocate(impl, options->allocator.state);
         return RMW_RET_ERROR;
@@ -299,8 +311,17 @@ rmw_ret_t rmw_context_fini(rmw_context_t* const context) {
         return RMW_RET_INVALID_ARGUMENT;
     }
 
-    // Free the context implementation
+    // Free the context implementation. nodes[] itself (Milestone 34) is expected to already be
+    // empty/NULL here - the real rmw/rcl lifecycle contract requires every node (and every
+    // publisher/subscription/etc. on it) to be destroyed before its own context is finalized, the
+    // same pre-existing assumption every other per-entity teardown in this package already relies
+    // on - so this just frees whatever allocation nodes[] itself still holds (the array, not its
+    // now-empty contents), not a defensive walk-and-destroy of anything still registered.
     rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)context->impl;
+    if (impl->nodes != NULL) {
+        impl->allocator.deallocate((void*)impl->nodes, impl->allocator.state);
+    }
+    pthread_mutex_destroy(&impl->registry_mutex);
     pthread_cond_destroy(&impl->wait_cond);
     pthread_mutex_destroy(&impl->wait_mutex);
     context->options.allocator.deallocate(context->impl, context->options.allocator.state);

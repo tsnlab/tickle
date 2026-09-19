@@ -43,7 +43,7 @@
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 #include "rosidl_typesupport_tickle_c/service_type_support.h"
 
-// Runs on the node's poll thread, inside tt_Node_poll() (node->mutex already held) - see
+// Runs on the poll thread, inside tt_Node_poll() (context_impl->node_mutex already held) - see
 // rmw_subscription.c's own subscriber_callback() for the identical "convert now, not later"
 // reasoning (TickLE's response here aliases node->rx_buffer the same way a received topic message
 // does). No waiting/signaling needed here, unlike server_callback() (rmw_service.c) - a client
@@ -66,7 +66,7 @@ static void client_callback(struct tt_Client* tt_client, int8_t return_code, str
     // Wake anyone blocked in rmw_wait() on this client's response - see rmw_tickle_context_impl_t's
     // own doc comment (rmw_tickle.h) for why the broadcast must happen under wait_mutex even though
     // response_ready itself is guarded by the separate response_mutex above.
-    rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)client_impl->node->context->impl;
+    rmw_tickle_context_impl_t* context_impl = client_impl->node->context_impl;
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
@@ -120,6 +120,9 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         return NULL;
     }
     client_impl->node = node_impl;
+    // Milestone 34 - see rmw_tickle_publisher_t.owning_node_name's own doc comment.
+    client_impl->owning_node_name = rcutils_strdup(node_impl->rmw_node.name, *allocator);
+    client_impl->owning_node_namespace = rcutils_strdup(node_impl->rmw_node.namespace_, *allocator);
     client_impl->type_support = type_support;
     client_impl->request_callbacks = callbacks.request;
     client_impl->response_callbacks = callbacks.response;
@@ -165,12 +168,12 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     }
 
     // Same tt_Node_interrupt()-then-lock pattern rmw_create_publisher()/_subscription() already
-    // established - see rmw_tickle.h's own rmw_tickle_node_t doc comment.
-    tt_Node_interrupt(&node_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->mutex);
-    tt_ret_t ret = tt_Node_create_client(&node_impl->tickle_node, &client_impl->tickle_client, &client_impl->service,
-                                         client_impl->rmw_client.service_name, client_callback);
-    pthread_mutex_unlock(&node_impl->mutex);
+    // established - see rmw_tickle.h's own rmw_tickle_context_impl_t doc comment.
+    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_ret_t ret = tt_Node_create_client(&node_impl->context_impl->tickle_node, &client_impl->tickle_client,
+                                         &client_impl->service, client_impl->rmw_client.service_name, client_callback);
+    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create_client() failed");
         allocator->deallocate((char*)client_impl->rmw_client.service_name, allocator->state);
@@ -194,16 +197,18 @@ rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
 
     rmw_tickle_client_t* client_impl = (rmw_tickle_client_t*)client->data;
 
-    tt_Node_interrupt(&client_impl->node->tickle_node);
-    pthread_mutex_lock(&client_impl->node->mutex);
+    tt_Node_interrupt(&client_impl->node->context_impl->tickle_node);
+    pthread_mutex_lock(&client_impl->node->context_impl->node_mutex);
     tt_Client_destroy(&client_impl->tickle_client);
-    pthread_mutex_unlock(&client_impl->node->mutex);
+    pthread_mutex_unlock(&client_impl->node->context_impl->node_mutex);
 
     pthread_mutex_destroy(&client_impl->response_mutex);
 
     rcutils_allocator_t allocator = client_impl->allocator;
     allocator.deallocate((char*)client_impl->rmw_client.service_name, allocator.state);
     allocator.deallocate(client_impl->response_storage, allocator.state);
+    allocator.deallocate(client_impl->owning_node_name, allocator.state);
+    allocator.deallocate(client_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(client_impl, allocator.state);
     return RMW_RET_OK;
 }
@@ -238,10 +243,10 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request, 
     client_impl->response_sequence_id = seq;
     pthread_mutex_unlock(&client_impl->response_mutex);
 
-    tt_Node_interrupt(&client_impl->node->tickle_node);
-    pthread_mutex_lock(&client_impl->node->mutex);
+    tt_Node_interrupt(&client_impl->node->context_impl->tickle_node);
+    pthread_mutex_lock(&client_impl->node->context_impl->node_mutex);
     tt_ret_t ret = tt_Client_call(&client_impl->tickle_client, (struct tt_Request*)tickle_buf);
-    pthread_mutex_unlock(&client_impl->node->mutex);
+    pthread_mutex_unlock(&client_impl->node->context_impl->node_mutex);
     client_impl->allocator.deallocate(tickle_buf, client_impl->allocator.state);
 
     if (ret != tt_RET_OK) {

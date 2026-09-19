@@ -161,54 +161,6 @@ index 52bd6fc..1e5d889 100644
    }
  
    void TearDown() override
-diff --git a/test_rmw_implementation/test/test_graph_api.cpp b/test_rmw_implementation/test/test_graph_api.cpp
-index 19354fe..e7528b9 100644
---- a/test_rmw_implementation/test/test_graph_api.cpp
-+++ b/test_rmw_implementation/test/test_graph_api.cpp
-@@ -14,6 +14,8 @@
- 
- #include <gtest/gtest.h>
- 
-+#include <string>
-+
- #include "osrf_testing_tools_cpp/scope_exit.hpp"
- 
- #include "rcutils/allocator.h"
-@@ -51,15 +53,31 @@ protected:
-     ASSERT_EQ(RMW_RET_OK, ret) << rcutils_get_error_string().str;
-     node = rmw_create_node(&context, node_name, node_namespace);
-     ASSERT_NE(nullptr, node) << rcutils_get_error_string().str;
-+
-+    // Local, rmw_tickle-specific patch (not upstream): this whole fixture needs a *second* node
-+    // in the same process to test cross-node graph queries - rmw_tickle only supports one
-+    // (rmw_tickle/PLAN.md's own Milestone 2 "Deferred" note, still open). Skip fixture-wide here
-+    // (same pattern as test_event.cpp's own rmw_tickle skip) rather than letting other_node stay
-+    // null and every TEST_F() below fail from that one shared cause.
-+    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") == 0) {
-+      GTEST_SKIP();
-+    }
-+
-     other_node = rmw_create_node(&context, node_name, node_namespace);
-     ASSERT_NE(nullptr, other_node) << rcutils_get_error_string().str;
-   }
- 
-   void TearDown() override
-   {
--    rmw_ret_t ret = rmw_destroy_node(other_node);
--    EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
--    ret = rmw_destroy_node(node);
-+    // Local, rmw_tickle-specific patch (not upstream): other_node is never created when this
-+    // fixture's own SetUp() above skips for rmw_tickle - guard its teardown the same way, rather
-+    // than destroying a node that was never created (TearDown() itself always runs regardless of
-+    // whether SetUp() called GTEST_SKIP()).
-+    if (std::string(rmw_get_implementation_identifier()).find("rmw_tickle") != 0) {
-+      rmw_ret_t ret = rmw_destroy_node(other_node);
-+      EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
-+    }
-+    rmw_ret_t ret = rmw_destroy_node(node);
-     EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
-     ret = rmw_shutdown(&context);
-     EXPECT_EQ(RMW_RET_OK, ret) << rmw_get_error_string().str;
 diff --git a/test_rmw_implementation/test/test_publisher.cpp b/test_rmw_implementation/test/test_publisher.cpp
 index c9d0341..2bd6b2c 100644
 --- a/test_rmw_implementation/test/test_publisher.cpp
