@@ -344,6 +344,22 @@ static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
     }
 }
 
+// forget_peer()'s own Publisher-specific counterpart - a separate function rather than teaching
+// forget_peer() itself about peer_ack_seq_no[], since that array only exists on struct tt_
+// Publisher (tt_Client's own identically-shaped peers[] has no ack-aggregation concept to reset).
+// Clears the matching peer_ack_seq_no[] slot alongside the peer slot itself so a later, unrelated
+// node_id that happens to reclaim the same array index (upsert_peer()'s own first-empty-slot
+// reuse) never inherits a departed peer's stale ack state - see peer_ack_seq_no's own doc comment
+// (tickle.h) for why 0 is the correct "no ACKNACK seen yet" reset value, not just an arbitrary one.
+static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id == node_id) {
+            pub->peers[i].node_id = tt_NODE_ID_INVALID;
+            pub->peer_ack_seq_no[i] = 0;
+        }
+    }
+}
+
 // Drops every peer-table entry pointing at `node_id`, across every Publisher and Client on this
 // node. Called when a fresh UPDATE from that source arrives (process_update): its new announce is
 // authoritative for what it still hosts, and decode_update_entities() re-adds whatever's still
@@ -356,7 +372,7 @@ static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id) {
             continue;
         }
         if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
-            forget_peer(((struct tt_Publisher*)endpoint)->peers, node_id);
+            forget_publisher_peer((struct tt_Publisher*)endpoint, node_id);
         } else if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
             forget_peer(((struct tt_Client*)endpoint)->peers, node_id);
         }
@@ -1313,9 +1329,10 @@ static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache) {
 // complexity down and share the actual wire encoding between the periodic and discovery-triggered
 // paths, same reasoning cache_reliable_sample()/cache_durable_sample() were split out of tt_
 // Publisher_publish() for. peers/peer_count follow end_encode()'s own convention directly (NULL/0
-// broadcasts).
+// broadcasts). flags is tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment (tickle.h); every
+// caller before tt_Publisher_request_ack() existed always passed tt_HEARTBEAT_FLAG_FINAL.
 static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, uint32_t first_seq_no,
-                                      const struct tt_Peer* peers, uint8_t peer_count) {
+                                      const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags) {
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     uint32_t old_tx_tail = node->tx_tail;
 
@@ -1333,6 +1350,10 @@ static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher*
     heartbeat_header->endpoint_id = endpoint->id;
     heartbeat_header->first_available_seq_no = first_seq_no;
     heartbeat_header->last_seq_no = pub->seq_no;
+    heartbeat_header->flags = flags;
+    heartbeat_header->reserved[0] = 0;
+    heartbeat_header->reserved[1] = 0;
+    heartbeat_header->reserved[2] = 0;
 
     if (!end_encode(node, submessage_header, true, peers, peer_count)) {
         rollback(node, old_tx_tail);
@@ -1357,7 +1378,7 @@ static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
             peers = pub->peers;
             peer_count = count;
         }
-        encode_and_send_heartbeat(node, pub, first_seq_no, peers, peer_count);
+        encode_and_send_heartbeat(node, pub, first_seq_no, peers, peer_count, tt_HEARTBEAT_FLAG_FINAL);
     }
 
     if (!tt_Node_schedule(node, time + pub->heartbeat_period_ns, send_heartbeat, pub)) {
@@ -1385,7 +1406,7 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
     if (first_seq_no == 0) {
         return;
     }
-    encode_and_send_heartbeat(node, pub, first_seq_no, target, 1);
+    encode_and_send_heartbeat(node, pub, first_seq_no, target, 1, tt_HEARTBEAT_FLAG_FINAL);
 }
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
@@ -1410,6 +1431,43 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
         pub->heartbeat_period_ns = 0;  // failed to arm - stay disabled rather than claim it's on
         return tt_RET_OUT_OF_SCHEDULE; // tt_MAX_SCHEDULER_LENGTH exhausted
     }
+    return tt_RET_OK;
+}
+
+// See its own doc comment (tickle.h) for what this is for. Builds its own dense peer list from
+// pub->peers[] rather than passing pub->peers/count_peers(pub->peers) straight through the way
+// send_heartbeat()/tt_Publisher_publish() do - those two rely on peers[] having no gap before the
+// first count_peers() slots, which forget_publisher_peer() alone doesn't guarantee (it clears a
+// departed peer's node_id in place, not by compacting the array down) - a real, pre-existing gap
+// in that shared shortcut, unrelated to this function, flagged separately rather than fixed here.
+// Solicitation specifically must reach every *currently* matched peer correctly - unlike a
+// periodic announce, there's no "next period" for a missed one to be silently caught by - so this
+// one function is worth the extra O(tt_MAX_PEER_COUNT) filter to not depend on that assumption.
+tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
+    if (pub == NULL || pub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (pub->reliable_cache == NULL) {
+        return tt_RET_INVALID_ARGUMENT; // best-effort - no ack state to solicit
+    }
+
+    struct tt_Peer live_peers[tt_MAX_PEER_COUNT];
+    uint8_t live_count = 0;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id != tt_NODE_ID_INVALID) {
+            live_peers[live_count++] = pub->peers[i];
+        }
+    }
+    if (live_count == 0) {
+        return tt_RET_OK; // nothing currently matched to ask
+    }
+
+    uint32_t first_seq_no = reliable_cache_oldest_seq_no(pub->reliable_cache);
+    if (first_seq_no == 0) {
+        return tt_RET_INVALID_ARGUMENT; // nothing published yet - see this function's own doc comment
+    }
+
+    encode_and_send_heartbeat(pub->node, pub, first_seq_no, live_peers, live_count, 0);
     return tt_RET_OK;
 }
 
@@ -2912,6 +2970,19 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
         (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
     struct tt_Peer target = {header->source, sender_ip, sender_port};
 
+    // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). peer_ack_seq_no's
+    // own doc comment (tickle.h): index-aligned with peers[], only ever advanced (a stale/reordered
+    // ACKNACK carrying a smaller seq_no than what's already recorded must not regress it - UDP
+    // gives no ordering guarantee between two ACKNACKs from the same peer). A sender not currently
+    // in peers[] (already forgotten, e.g. via forget_publisher_peer(), or never matched in the
+    // first place) has nothing to record against - retransmission below still answers it
+    // regardless, same as today, since that's keyed off the wire seq_no directly, not peers[].
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id == header->source && seq_no > pub->peer_ack_seq_no[i]) {
+            pub->peer_ack_seq_no[i] = seq_no;
+        }
+    }
+
     for (int bit = 0; bit < tt_RELIABLE_BITMAP_BITS; bit++) {
         if (!(bitmap & (1ULL << bit))) {
             continue;
@@ -2953,6 +3024,7 @@ struct heartbeat_ctx {
     uint16_t sender_port;
     uint32_t first_available_seq_no;
     uint32_t last_seq_no;
+    uint8_t flags; // tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment, tickle.h
 };
 
 // Milestone 35 - the actual per-Subscriber body process_heartbeat() used to run once (against
@@ -3003,7 +3075,19 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
         sub->reliable_heartbeat_last_seq_no = ctx->last_seq_no;
     }
 
+    // tt_HEARTBEAT_FLAG_FINAL's own doc comment (tickle.h) - had_gap must be read before maybe_arm_
+    // acknack_retry() below (it's the only thing that could otherwise change what highest_relevant_
+    // bit() sees) so a Heartbeat that both reveals a real gap *and* explicitly requests a response
+    // sends exactly one ACKNACK (maybe_arm_acknack_retry()'s own), not two.
+    bool had_gap = highest_relevant_bit(sub) >= 0;
     maybe_arm_acknack_retry(node, sub);
+    if (!had_gap && !(ctx->flags & tt_HEARTBEAT_FLAG_FINAL)) {
+        // Healthy (no gap) but tt_Publisher_request_ack() explicitly asked anyway - the only way a
+        // Publisher ever learns a healthy Subscriber has fully caught up (see maybe_arm_acknack_
+        // retry()'s own "a healthy stream needs no ACKNACK at all" comment for why nothing above
+        // already sent one).
+        send_acknack(node, sub);
+    }
 }
 
 // QoS roadmap #5 (RELIABILITY) follow-up - process_submessage()'s own new HEARTBEAT case. See
@@ -3023,13 +3107,15 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
     uint32_t endpoint_id = rd32(header, heartbeat_header->endpoint_id);
     uint32_t first_available_seq_no = rd32(header, heartbeat_header->first_available_seq_no);
     uint32_t last_seq_no = rd32(header, heartbeat_header->last_seq_no);
+    uint8_t flags = heartbeat_header->flags; // single byte - already native-endian, same as
+                                             // struct tt_UpdateEntity.kind/.qos's own convention
 
     TT_LOG_DEBUG("Heartbeat");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
     TT_LOG_DEBUG("  first_available_seq_no: %u", first_available_seq_no);
     TT_LOG_DEBUG("  last_seq_no: %u", last_seq_no);
 
-    struct heartbeat_ctx ctx = {header, sender_ip, sender_port, first_available_seq_no, last_seq_no};
+    struct heartbeat_ctx ctx = {header, sender_ip, sender_port, first_available_seq_no, last_seq_no, flags};
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, inform_subscriber_of_heartbeat, &ctx);
     return true;
 }

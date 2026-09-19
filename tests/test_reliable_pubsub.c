@@ -576,6 +576,119 @@ static void test_process_acknack_ignored_for_besteffort_publisher(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
+// QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). An ACKNACK from a
+// peer already present in pub->peers[] must advance that peer's own peer_ack_seq_no[] slot to the
+// ACKNACK's own cumulative seq_no - the aggregation tt_Publisher_wait_for_all_acked() is built on.
+static void test_process_acknack_updates_peer_ack_seq_no(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL); // seq_no 5, no gap requested
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(5, pub.peer_ack_seq_no[0]);
+}
+
+// A stale/reordered ACKNACK (UDP gives no ordering guarantee) carrying a seq_no lower than what's
+// already recorded must never regress peer_ack_seq_no[] - only ever advance it.
+static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+    pub.peer_ack_seq_no[0] = 10;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL); // stale - already at 10
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(10, pub.peer_ack_seq_no[0]);
+}
+
+// An ACKNACK from a sender not currently in pub->peers[] at all (never matched, or already
+// forgotten) has no peer_ack_seq_no[] slot to update - must be a harmless no-op for that part,
+// not a crash - retransmission itself (keyed off the wire seq_no directly) is unaffected.
+static void test_process_acknack_from_unmatched_peer_updates_nothing(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache; // pub.peers[] left entirely empty
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        EXPECT_EQ_U32(0, pub.peer_ack_seq_no[i]);
+    }
+}
+
+// forget_publisher_peer() must reset the departed peer's own peer_ack_seq_no[] slot alongside its
+// peers[] slot - otherwise a later, unrelated node_id reclaiming that same array index (upsert_
+// peer()'s own first-empty-slot reuse) would inherit a stale ack value that was never actually
+// about it.
+static void test_forget_publisher_peer_resets_ack_seq_no(void) {
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+    pub.peer_ack_seq_no[0] = 42;
+
+    forget_publisher_peer(&pub, REMOTE_NODE_ID);
+
+    EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
+    EXPECT_EQ_U32(0, pub.peer_ack_seq_no[0]);
+}
+
 int main(void) {
     test_reliable_publish_caches_and_evicts();
     test_reliable_subscribe_in_order_no_acknack();
@@ -588,6 +701,10 @@ int main(void) {
     test_process_acknack_retransmits_cached_sample();
     test_process_acknack_skips_expired_sample();
     test_process_acknack_ignored_for_besteffort_publisher();
+    test_process_acknack_updates_peer_ack_seq_no();
+    test_process_acknack_does_not_regress_peer_ack_seq_no();
+    test_process_acknack_from_unmatched_peer_updates_nothing();
+    test_forget_publisher_peer_resets_ack_seq_no();
 
     printf("test_reliable_pubsub: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

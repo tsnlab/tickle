@@ -135,13 +135,20 @@ static void init_header(struct tt_Header* header) {
 }
 
 // Builds a HeartbeatHeader at the start of node->rx_buffer, returning the tail offset (matching
-// what process_packet() would have handed process_heartbeat()).
+// what process_packet() would have handed process_heartbeat()). flags is tt_HEARTBEAT_FLAG_FINAL
+// or 0 - every existing call site below passes tt_HEARTBEAT_FLAG_FINAL, matching what send_
+// heartbeat()/send_initial_heartbeat() actually send today; the new tt_HEARTBEAT_FLAG_FINAL-
+// specific tests below are the only ones that pass 0.
 static uint32_t write_heartbeat(struct tt_Node* node, uint32_t endpoint_id, uint32_t first_available_seq_no,
-                                uint32_t last_seq_no) {
+                                uint32_t last_seq_no, uint8_t flags) {
     struct tt_HeartbeatHeader* heartbeat_header = (struct tt_HeartbeatHeader*)node->rx_buffer;
     heartbeat_header->endpoint_id = endpoint_id;
     heartbeat_header->first_available_seq_no = first_available_seq_no;
     heartbeat_header->last_seq_no = last_seq_no;
+    heartbeat_header->flags = flags;
+    heartbeat_header->reserved[0] = 0;
+    heartbeat_header->reserved[1] = 0;
+    heartbeat_header->reserved[2] = 0;
     return sizeof(struct tt_HeartbeatHeader);
 }
 
@@ -281,7 +288,7 @@ static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_receive
     struct tt_Header header;
     init_header(&header);
 
-    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 97, 100);
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 97, 100, tt_HEARTBEAT_FLAG_FINAL);
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(97, sub.ack_seq_no); // learned directly from the Heartbeat, no DATA involved
@@ -310,7 +317,8 @@ static void test_heartbeat_oversized_gap_jumps_baseline(void) {
     struct tt_Header header;
     init_header(&header);
 
-    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 1000); // gap of 999 from ack_seq_no 1
+    uint32_t tail =
+        write_heartbeat(&node, ENDPOINT_ID, 1, 1000, tt_HEARTBEAT_FLAG_FINAL); // gap of 999 from ack_seq_no 1
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(1001, sub.ack_seq_no);
@@ -336,7 +344,8 @@ static void test_heartbeat_gap_within_window_widens_request_without_jumping(void
     struct tt_Header header;
     init_header(&header);
 
-    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 5); // gap of 4 - well within the window
+    uint32_t tail =
+        write_heartbeat(&node, ENDPOINT_ID, 1, 5, tt_HEARTBEAT_FLAG_FINAL); // gap of 4 - well within the window
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(1, sub.ack_seq_no);      // untouched - this is not the oversized-gap case
@@ -361,11 +370,129 @@ static void test_heartbeat_ignored_for_besteffort_subscriber(void) {
     struct tt_Header header;
     init_header(&header);
 
-    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 100);
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 100, tt_HEARTBEAT_FLAG_FINAL);
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(1, sub.ack_seq_no);
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// tt_HEARTBEAT_FLAG_FINAL's own doc comment (tickle.h) / real RTPS finalFlag semantics - a
+// Heartbeat that explicitly requests a response (flag clear) must elicit an ACKNACK even from an
+// already fully-caught-up Subscriber, which otherwise has no reason of its own to ever send one
+// (maybe_arm_acknack_retry()'s own "a healthy stream needs no ACKNACK at all"). This is the exact
+// mechanism tt_Publisher_request_ack()/tt_Publisher_wait_for_all_acked() rely on.
+static void test_heartbeat_final_flag_clear_forces_acknack_without_gap(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.reliable_sender_node_id = REMOTE_NODE_ID; // already tracking, not first contact
+    sub.ack_seq_no = 5;                           // already received everything up through 4
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 4, 0); // fully caught up, flag clear
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(5, sub.ack_seq_no);                         // untouched - no real gap
+    EXPECT_TRUE(!sub.reliable_acknack_scheduled);             // no gap -> no retry cycle armed
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // but still replied once, on request
+}
+
+// The default (flag set, today's only real-world Heartbeat) must keep the existing bandwidth-
+// saving behavior exactly - an already-caught-up Subscriber stays silent, same as before tt_
+// HEARTBEAT_FLAG_FINAL existed.
+static void test_heartbeat_final_flag_set_stays_silent_without_gap(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.reliable_sender_node_id = REMOTE_NODE_ID;
+    sub.ack_seq_no = 5;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 1, 4, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// tt_Publisher_request_ack() itself: unicasts a flag-clear Heartbeat straight to every currently-
+// matched peer (not broadcast) - one send_to per peer.
+static void test_publisher_request_ack_sends_to_matched_peers(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+    test_mock_send_to_call_count = 0;
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_request_ack(&pub));
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
+    struct tt_HeartbeatHeader* sent =
+        (struct tt_HeartbeatHeader*)(node.tx_buffer + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    EXPECT_EQ_U32(0, sent->flags & tt_HEARTBEAT_FLAG_FINAL); // response required, unlike a normal Heartbeat
+}
+
+// No currently-matched peers - nothing to solicit, a harmless no-op (tt_RET_OK, not an error - the
+// caller's own peer_ack_seq_no[] scan afterward would just trivially see nothing to wait on).
+static void test_publisher_request_ack_noop_with_no_peers(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    test_mock_send_to_call_count = 0;
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_request_ack(&pub));
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// A best-effort Publisher (reliable_cache == NULL) has no ack state to solicit in the first place.
+static void test_publisher_request_ack_requires_reliable_cache(void) {
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Publisher_request_ack(&pub));
 }
 
 // tt_Publisher_destroy() must cancel a still-armed Heartbeat schedule entry, not leave it
@@ -538,6 +665,11 @@ int main(void) {
     test_heartbeat_oversized_gap_jumps_baseline();
     test_heartbeat_gap_within_window_widens_request_without_jumping();
     test_heartbeat_ignored_for_besteffort_subscriber();
+    test_heartbeat_final_flag_clear_forces_acknack_without_gap();
+    test_heartbeat_final_flag_set_stays_silent_without_gap();
+    test_publisher_request_ack_sends_to_matched_peers();
+    test_publisher_request_ack_noop_with_no_peers();
+    test_publisher_request_ack_requires_reliable_cache();
     test_publisher_destroy_cancels_armed_heartbeat();
     test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer();
     test_heartbeat_discovery_skipped_for_besteffort_publisher();

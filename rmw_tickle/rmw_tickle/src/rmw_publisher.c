@@ -18,8 +18,9 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h> // clock_gettime()/struct timespec/nanosleep() - rmw_publisher_wait_for_all_acked()
 
-#include <tickle/config.h> // tt_MAX_RELIABLE_HISTORY
+#include <tickle/config.h> // tt_MAX_RELIABLE_HISTORY, tt_MAX_PEER_COUNT, tt_CALL_RETRY_INTERVAL, tt_SECOND
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK, tt_get_ns()
 #include <tickle/tickle.h>
 
@@ -468,19 +469,55 @@ rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros
     return RMW_RET_UNSUPPORTED;
 }
 
+// How often rmw_publisher_wait_for_all_acked() below re-solicits (tt_Publisher_request_ack(),
+// tickle.h) and re-checks peer_ack_seq_no[] while waiting - reuses acknack_retry()'s own fallback
+// cadence (tickle.c: `tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL`)
+// rather than inventing a new arbitrary number: both are "how long to wait before assuming a
+// RELIABLE round trip's own UDP datagram needs retrying," the exact same question.
+#define RMW_TICKLE_WAIT_FOR_ACKED_POLL_INTERVAL_NS tt_CALL_RETRY_INTERVAL
+
+// True once every currently-matched peer (pub->peers[]) has acked at least up through
+// target_seq_no - peer_ack_seq_no[i] is "every seq_no below this was received" (struct tt_
+// AckNackHeader's own doc comment, tickle.h), so target_seq_no itself counts as acked once that
+// value is strictly greater than it. No currently-matched peers at all is vacuously true - nothing
+// left to wait on, matching tt_Publisher_request_ack()'s own "nothing to solicit" no-op. Caller
+// must already hold context_impl->node_mutex - reads pub->peers[]/peer_ack_seq_no[] directly, the
+// same fields process_acknack() (tickle.c) updates from inside tt_Node_poll(), under that same lock.
+static bool all_peers_acked_locked(const struct tt_Publisher* pub, uint32_t target_seq_no) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id != tt_NODE_ID_INVALID && pub->peer_ack_seq_no[i] <= target_seq_no) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog - previously missing as a symbol
-// entirely (Milestone 15's own note). BEST_EFFORT has nothing to guarantee (matches the real
-// spec: no delivery acknowledgment exists for BEST_EFFORT at all, so there is nothing to wait
-// for) - returns immediately. RELIABLE would need this Publisher to track, per currently-matched
-// Subscription, whether every sample already published has been acked - TickLE core's own ack
-// bookkeeping runs the other way around (each reliable_sender-tracking Subscriber owns its own
-// ack_seq_no/received_bitmap, tickle.h; a Publisher only sees ACKNACKs reactively, via process_
-// acknack(), tickle.c, with no aggregated "which peers have fully caught up" view of its own) -
-// a real implementation needs that Publisher-side aggregation built first, tracked as an open
-// follow-on rather than approximated here with a proxy (e.g. "every cache entry's own retry
-// count is currently 0") that wouldn't actually mean what this function promises.
+// entirely (Milestone 15's own note), then an honest RMW_RET_UNSUPPORTED for RELIABLE (Milestone
+// 33 - TickLE core's own ack bookkeeping ran the other way around: each reliable_sender-tracking
+// Subscriber owned its own ack_seq_no/received_bitmap, tickle.h, but a Publisher only ever saw
+// ACKNACKs reactively via process_acknack(), with no aggregated "which peers have fully caught
+// up" view of its own). Now real: pub->peer_ack_seq_no[] (tickle.h) is that aggregation, and tt_
+// Publisher_request_ack() (tickle.h)'s own solicited, response-required Heartbeat (tt_HEARTBEAT_
+// FLAG_FINAL clear - real RTPS's own wait_for_acknowledgments() mechanism) is what elicits an
+// ACKNACK even from an already-healthy peer that would otherwise never send one at all (see that
+// function's own doc comment). BEST_EFFORT has nothing to guarantee (matches the real spec: no
+// delivery acknowledgment exists for BEST_EFFORT at all) - returns immediately, same as before.
+//
+// wait_timeout's own {0,0} means non-blocking poll-once (matches rcl_publisher_wait_for_all_
+// acked()'s own explicit "timeout is 0 -> non-blocking" doc comment, rcl/publisher.h - the rmw
+// layer's own rmw/rmw.h doesn't repeat that detail itself, but rmw_wait()'s own identical {0,0}
+// convention, rmw_wait_set.c, is the same idea one layer down); any other value waits up to that
+// duration, polling on RMW_TICKLE_WAIT_FOR_ACKED_POLL_INTERVAL_NS's own cadence rather than a
+// condition-variable wait - deliberately not context_impl->wait_cond/wait_mutex: nothing broadcasts
+// it on an ACKNACK arrival specifically (unlike a new subscriber-queue message or a triggered
+// guard condition), and holding wait_mutex across a nested context_impl->node_mutex acquisition
+// here would invert the lock order every other broadcast site depends on (poll_thread's own
+// callbacks, e.g. check_publisher_deadline() above, already lock node_mutex first, wait_mutex
+// second - see rmw_tickle_context_impl_t's own doc comment, rmw_tickle.h) - a bounded poll avoids
+// that risk entirely, at the cost of up to one poll interval of extra latency once truly acked,
+// same trade-off watchdog_thread_main() (rmw_node.c) already accepts for its own periodic checks.
 rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw_time_t wait_timeout) {
-    (void)wait_timeout;
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     if (!rmw_tickle_identifier_matches(publisher->implementation_identifier)) {
         RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
@@ -491,7 +528,47 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher, rmw
     if (!pub_impl->tickle_publisher.reliable) {
         return RMW_RET_OK;
     }
-    RMW_SET_ERROR_MSG("rmw_tickle does not yet track per-Subscription ack completion for a "
-                      "RELIABLE Publisher - see rmw_tickle/PLAN.md's own note on this gap");
-    return RMW_RET_UNSUPPORTED;
+
+    rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
+
+    bool poll_only = 0 == wait_timeout.sec && 0 == wait_timeout.nsec;
+    struct timespec deadline;
+    if (!poll_only) {
+        clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
+        deadline.tv_sec += (time_t)wait_timeout.sec;
+        deadline.tv_nsec += (long)wait_timeout.nsec;
+        deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;
+        deadline.tv_nsec %= (long)tt_SECOND;
+    }
+
+    while (true) {
+        tt_Node_interrupt(&context_impl->tickle_node);
+        pthread_mutex_lock(&context_impl->node_mutex);
+        // pub_impl->tickle_publisher.seq_no - the most recently published sample as of *this*
+        // check, not re-read on every loop iteration below: a concurrent rmw_publish() growing it
+        // mid-wait must not move this call's own target (matches real DDS - this only ever waits
+        // for what was already written when called).
+        uint32_t target_seq_no = pub_impl->tickle_publisher.seq_no;
+        bool acked = target_seq_no == 0 || all_peers_acked_locked(&pub_impl->tickle_publisher, target_seq_no);
+        if (!acked) {
+            tt_Publisher_request_ack(&pub_impl->tickle_publisher);
+        }
+        pthread_mutex_unlock(&context_impl->node_mutex);
+
+        if (acked) {
+            return RMW_RET_OK;
+        }
+        if (poll_only) {
+            return RMW_RET_TIMEOUT;
+        }
+
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now); // NOLINT(misc-include-cleaner)
+        if (now.tv_sec > deadline.tv_sec || (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+            return RMW_RET_TIMEOUT;
+        }
+
+        struct timespec sleep_duration = {.tv_sec = 0, .tv_nsec = (long)RMW_TICKLE_WAIT_FOR_ACKED_POLL_INTERVAL_NS};
+        nanosleep(&sleep_duration, NULL);
+    }
 }

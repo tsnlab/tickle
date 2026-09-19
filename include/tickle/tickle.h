@@ -452,6 +452,24 @@ struct tt_Publisher { // extends endpoint
     // tt_UNICAST_PEER_THRESHOLD.
     struct tt_Peer peers[tt_MAX_PEER_COUNT];
 
+    // QoS roadmap #5 (RELIABILITY) follow-up, tt_Publisher_wait_for_all_acked() - index-aligned
+    // with peers[] above (peer_ack_seq_no[i] is peers[i]'s own ack state; an empty peers[] slot's
+    // entry is meaningless and reset to 0 alongside it, forget_publisher_peer() in tickle.c). Each
+    // entry is that peer's own most recently seen struct tt_AckNackHeader.seq_no - "every seq_no
+    // below this has been received" (struct tt_AckNackHeader's own doc comment), the exact
+    // cumulative-ack value process_acknack() already decodes but, before this field existed, only
+    // ever used transiently to compute which single missing seq_no to retransmit, never retaining
+    // it anywhere. 0 (tt_Node_create_publisher()'s own default, matching upsert_peer()'s own zero-
+    // initialized peers[] slots) means "no ACKNACK seen yet from this peer" - seq_no 0 never occurs
+    // on the wire (tt_Publisher_publish()'s own data_header->seq_no = pub->seq_no + 1, starting
+    // from 1), so it doubles as "unknown" here the same way reliable_cache_oldest_seq_no() (tickle.
+    // c) already uses 0 for "nothing retained yet". process_acknack() only ever advances an entry
+    // (a stale/reordered ACKNACK carrying a smaller seq_no than what's already recorded must not
+    // regress it) - this is *not* the same value as pub->seq_no (the highest seq_no this Publisher
+    // has *sent*, batch/publish()-side); tt_Publisher_wait_for_all_acked() (rmw_tickle) compares
+    // this per-peer value against that target to decide whether a given peer has fully caught up.
+    uint32_t peer_ack_seq_no[tt_MAX_PEER_COUNT];
+
     // false (tt_Node_create_publisher()'s own default): tt_Publisher_publish() flushes every call
     // immediately, same as RPC already does (DESIGN.md's "RPC and Publish flush immediately by
     // default; batching is opt-in") - lowest latency, and the right default for the common case of
@@ -526,6 +544,23 @@ struct tt_Publisher { // extends endpoint
 // Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still NULL (period_ns == 0 is always
 // accepted regardless, since disabling never needs a cache).
 tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns);
+
+// QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked() (rmw_tickle's own
+// rmw_publisher_wait_for_all_acked() is built on this). Sends one Heartbeat, straight to every
+// currently-matched peer (pub->peers[]) - not broadcast, unlike send_heartbeat()'s own threshold-
+// based choice, since wait_for_all_acked() only ever cares about peers currently known to exist -
+// with tt_HEARTBEAT_FLAG_FINAL clear (see its own doc comment, tickle.h), forcing each one to
+// reply with an ACKNACK regardless of gap state. That reply is what actually advances this
+// Publisher's own peer_ack_seq_no[] (process_acknack(), tickle.c) - this function only solicits
+// it, asynchronously; the caller polls peer_ack_seq_no[] afterward to see the answer, same
+// "encode/send now, observe the effect later via already-existing state" split every other
+// RELIABLE mechanism in this file already uses. No-op (tt_RET_OK, nothing to solicit) if peers[]
+// is currently empty. Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still NULL (best-
+// effort has no ack state to solicit in the first place) or pub->reliable_cache is empty (nothing
+// published yet - same "nothing retained yet" case send_heartbeat()/send_initial_heartbeat()
+// already skip, but reported back here rather than silently doing nothing, since unlike those two
+// this isn't on a schedule that will just try again next period).
+tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
 
 struct tt_Subscriber;
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
@@ -815,6 +850,18 @@ struct tt_AckNackHeader {
                           // direction as RTPS's own AckNack SequenceNumberSet
 } __attribute__((packed));
 
+// tt_HeartbeatHeader.flags's own tt_HEARTBEAT_FLAG_FINAL - same name and meaning as RTPS's own
+// HEARTBEAT finalFlag. Set: a Subscriber only needs to reply with an ACKNACK if it actually has a
+// gap to report (today's only behavior before this bit existed - both send_heartbeat()'s periodic
+// announce and send_initial_heartbeat()'s discovery-triggered one-off always set it, so neither
+// changes behavior). Clear: the Subscriber must reply with an ACKNACK regardless of gap state -
+// tt_Publisher_wait_for_all_acked() (tickle.c)'s own solicited Heartbeat is the only thing that
+// ever clears it, to get a positive, provable "caught up" signal out of an already-healthy
+// Subscriber, which - unlike a genuine gap - otherwise has no reason of its own to ever send one
+// (see maybe_arm_acknack_retry()'s own "a healthy stream needs no ACKNACK at all" doc comment,
+// tickle.c). This is the exact mechanism real RTPS's own wait_for_acknowledgments() relies on.
+#define tt_HEARTBEAT_FLAG_FINAL (1U << 0)
+
 // QoS roadmap #5 (RELIABILITY) follow-up - a RELIABLE Publisher's own periodic self-announce of
 // what it currently has retained, same role as RTPS's own HEARTBEAT submessage (firstSN/lastSN).
 // Lets a Subscriber learn the real, currently-retained range directly - independent of whether
@@ -826,6 +873,9 @@ struct tt_HeartbeatHeader {
     uint32_t endpoint_id;            // source Publisher - same leading-field convention as above
     uint32_t first_available_seq_no; // oldest sample still retained in reliable_cache right now
     uint32_t last_seq_no;            // newest published (== pub->seq_no at send time)
+    uint8_t flags;                   // tt_HEARTBEAT_FLAG_FINAL - see its own doc comment above
+    uint8_t reserved[3];             // pad 13 -> 16 - same "pad the CDR payload to 4-byte alignment"
+                                     // convention as tt_CallRequestHeader's own reserved byte
 } __attribute__((packed));
 
 struct tt_CallRequestHeader {

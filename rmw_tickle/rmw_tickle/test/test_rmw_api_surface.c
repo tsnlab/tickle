@@ -13,9 +13,10 @@
 // real, matched rmw_publisher_t/rmw_subscription_t pair on the same topic, unlike test_graph.c's
 // own deliberately-raw tt_Publisher/tt_Subscriber approach - hence its own file rather than an
 // extension there), rmw_feature_supported() (takes no node/publisher at all), and
-// rmw_publisher_wait_for_all_acked() (BEST_EFFORT returns immediately; RELIABLE is a documented,
-// honest RMW_RET_UNSUPPORTED - see rmw_publisher.c's own doc comment on why). Same hand-built
-// fake type support shape as test_events.c's own fake_type_support() - see its doc comment there.
+// rmw_publisher_wait_for_all_acked() (BEST_EFFORT returns immediately; RELIABLE polls pub->peer_
+// ack_seq_no[] against tt_Publisher_request_ack()'s own solicited response - see rmw_publisher.c's
+// own doc comment on the mechanism). Same hand-built fake type support shape as test_events.c's
+// own fake_type_support() - see its doc comment there.
 
 #include <assert.h>
 #include <stdbool.h>
@@ -176,15 +177,30 @@ int main(void) {
     assert(RMW_RET_OK == rmw_subscription_count_matched_publishers(unrelated_sub, &publisher_count));
     assert(0U == publisher_count);
 
-    // RMW_QOS_POLICY_RELIABILITY_RELIABLE - rmw_publisher_wait_for_all_acked() is a documented,
-    // honest RMW_RET_UNSUPPORTED rather than a proxy that wouldn't actually mean "all acked" (see
-    // rmw_publisher.c's own doc comment on why).
+    // RMW_QOS_POLICY_RELIABILITY_RELIABLE - two cases this single process can actually exercise:
+    // nothing published yet (vacuously "all acked" - nothing to wait on), and something published
+    // but no wire-level peer to wait on either. A co-located Subscription on the same tt_Node
+    // deliberately never becomes a wire-level peer at all here - a reliable Subscriber never even
+    // sees its own co-located Publisher's DATA in the first place (self_sent-suppressed in process_
+    // submessage(), tickle.c: "a reliable Subscriber never sees its own co-located Publisher's DATA
+    // in the first place, so it never has anything to ack locally either"), so pub->peers[] stays
+    // empty regardless of how many Subscriptions rmw_publisher_count_matched_subscriptions() (a
+    // separate, discovery/local-endpoint-table-based count, rmw_graph.c - not pub->peers[] at all)
+    // reports matched. Exercising the real "a genuinely unresponsive *wire* peer times out" and "a
+    // peer that does ACKNACK succeeds" paths needs an actual second node_id/process - already
+    // covered at the mechanism's own level by TickLE core's tests/test_heartbeat.c (tt_Publisher_
+    // request_ack(), tt_HEARTBEAT_FLAG_FINAL) and tests/test_reliable_pubsub.c (peer_ack_seq_no[]
+    // aggregation), not re-derived here.
     rmw_qos_profile_t reliable_qos = base_qos();
     reliable_qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
     rmw_publisher_t* reliable_pub =
         rmw_create_publisher(node, type_support, "reliable_topic", &reliable_qos, &pub_opts);
     assert(NULL != reliable_pub);
-    assert(RMW_RET_UNSUPPORTED == rmw_publisher_wait_for_all_acked(reliable_pub, zero_wait));
+    assert(RMW_RET_OK == rmw_publisher_wait_for_all_acked(reliable_pub, zero_wait));
+
+    struct fake_ros_msg published_msg = {.value = 5}; // arbitrary - .clang-tidy's own ignored-magic-numbers list
+    assert(RMW_RET_OK == rmw_publish(reliable_pub, &published_msg, NULL));
+    assert(RMW_RET_OK == rmw_publisher_wait_for_all_acked(reliable_pub, zero_wait));
 
     assert(RMW_RET_OK == rmw_destroy_publisher(node, reliable_pub));
     assert(RMW_RET_OK == rmw_destroy_subscription(node, unrelated_sub));
