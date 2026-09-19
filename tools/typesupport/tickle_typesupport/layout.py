@@ -93,14 +93,23 @@ def max_wire_size(struct):
     offset = 0
     for wire_field in struct.fields:
         offset = align_up(offset, wire_field.wire_align)
-        if wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
+        if wire_field.kind == "array" and wire_field.array_element_kind == "string":
+            # A string array element has no fixed C buffer at all (same reasoning as a plain
+            # unbounded string field, below) - only its own 2-byte length prefix contributes a
+            # knowable worst case, whether the array's own element *count* is fixed (array_size)
+            # or variable (capacity, plus its own 2-byte count prefix).
+            if wire_field.array_mode == "fixed":
+                offset += wire_field.array_size * model.STRING_LEN_SIZE
+            else:
+                offset += model.ARRAY_COUNT_SIZE + wire_field.capacity * model.STRING_LEN_SIZE
+        elif wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
             offset += wire_field.wire_size
         elif wire_field.kind == "string" and wire_field.capacity is not None:
             offset += model.STRING_LEN_SIZE + wire_field.capacity + 1
             offset = align_up(offset, 4)
         elif wire_field.kind == "string":
             offset += model.STRING_LEN_SIZE
-        elif wire_field.kind == "array":  # variable
+        elif wire_field.kind == "array":  # variable, scalar elements
             offset += model.ARRAY_COUNT_SIZE
             offset = align_up(offset, wire_field.element_align)
             offset += wire_field.capacity * wire_field.element_size
@@ -134,6 +143,12 @@ def prefix_array_field(struct):
     if not struct.fields:
         return None
     last = struct.fields[-1]
+    if last.kind == "array" and last.array_element_kind == "string":
+        # A string array's own C representation (an array of char* pointers) is never memory-
+        # identical to its wire bytes (a length-prefixed byte run per element) regardless of
+        # position - not eligible for this optimization at all, and last.element_size doesn't
+        # even exist for a string element (see model.WireField.element_size's own doc comment).
+        return None
     if not (last.kind == "array" and last.array_mode == "variable" and last.element_size == 1):
         return None
     if plan_fields(struct.fields)[-1].static_offset is None:

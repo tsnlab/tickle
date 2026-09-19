@@ -34,6 +34,54 @@ def _annotation_capacity(rosidl_field):
     return None
 
 
+def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_type):
+    """The three array_mode/capacity shapes (fixed T[N], bounded-variable T[<=N], unbounded-
+    variable T[] - see PLAN.md's capacity priority order) are identical whether an element is a
+    scalar or a plain string - only `scalar_type`/`array_element_kind` (and, for a trailing
+    unbounded one, whether auto-derivation is even possible - _resolve_auto_capacities rejects a
+    string-element one, since a string has no fixed per-element wire size to divide the remaining
+    budget by) differ. Shared here so adapt_field's own scalar/string branches don't repeat this
+    three-way shape twice."""
+    default = rosidl_field.default_value
+    if field_type.array_size is not None and not field_type.is_upper_bound:
+        # Fixed: T[N] - no length prefix, N is part of the wire format itself.
+        return model.WireField(
+            name=rosidl_field.name,
+            kind="array",
+            array_element_kind=array_element_kind,
+            scalar_type=scalar_type,
+            array_mode="fixed",
+            array_size=field_type.array_size,
+            default=default,
+        )
+    if field_type.array_size is not None and field_type.is_upper_bound:
+        # Bounded: T[<=N] - variable, ROS 2's own upper bound becomes the wire capacity.
+        return model.WireField(
+            name=rosidl_field.name,
+            kind="array",
+            array_element_kind=array_element_kind,
+            scalar_type=scalar_type,
+            array_mode="variable",
+            capacity=field_type.array_size,
+            capacity_source="bounded",
+            default=default,
+        )
+    # Unbounded: T[] - variable, capacity comes from an explicit @capacity annotation if present,
+    # else gets auto-derived once every field's own size is known (_resolve_auto_capacities,
+    # below - needs the whole struct, not just this one field).
+    capacity = _annotation_capacity(rosidl_field)
+    return model.WireField(
+        name=rosidl_field.name,
+        kind="array",
+        array_element_kind=array_element_kind,
+        scalar_type=scalar_type,
+        array_mode="variable",
+        capacity=capacity,
+        capacity_source="annotation" if capacity is not None else None,
+        default=default,
+    )
+
+
 def adapt_field(rosidl_field, resolver=None):
     field_type = rosidl_field.type
 
@@ -55,53 +103,19 @@ def adapt_field(rosidl_field, resolver=None):
         return model.WireField(name=rosidl_field.name, kind="nested", nested=nested)
     if field_type.is_array:
         if field_type.type in STRING_TYPES:
-            raise UnsupportedFieldError(
-                f"field '{rosidl_field.name}': arrays of strings aren't supported"
-            )
+            if field_type.type == "wstring":
+                raise UnsupportedFieldError(f"field '{rosidl_field.name}': wstring is out of scope")
+            if field_type.string_upper_bound is not None:
+                raise UnsupportedFieldError(
+                    f"field '{rosidl_field.name}': a bounded string element (string<=N) inside an "
+                    "array isn't supported yet - only a plain, unbounded string element is"
+                )
+            return _build_array_field(rosidl_field, field_type, array_element_kind="string", scalar_type=None)
         if field_type.type not in model.SCALAR_SIZE:
             raise UnsupportedFieldError(
                 f"field '{rosidl_field.name}': unknown array element type '{field_type.type}'"
             )
-        # ROS 2 lets a .msg give an array field its own default (e.g. `uint8[4] x [1,2,3,4]`) -
-        # a plain Python list, already scalar-typed, straight from rosidl. Bounds-checked against
-        # array_size/capacity once every field's own capacity is fully known
-        # (_validate_array_defaults, below) - an unbounded field's capacity may still be pending
-        # auto-derivation at this point.
-        default = rosidl_field.default_value
-        if field_type.array_size is not None and not field_type.is_upper_bound:
-            # Fixed: T[N] - no length prefix, N is part of the wire format itself.
-            return model.WireField(
-                name=rosidl_field.name,
-                kind="array",
-                scalar_type=field_type.type,
-                array_mode="fixed",
-                array_size=field_type.array_size,
-                default=default,
-            )
-        if field_type.array_size is not None and field_type.is_upper_bound:
-            # Bounded: T[<=N] - variable, ROS 2's own upper bound becomes the wire capacity.
-            return model.WireField(
-                name=rosidl_field.name,
-                kind="array",
-                scalar_type=field_type.type,
-                array_mode="variable",
-                capacity=field_type.array_size,
-                capacity_source="bounded",
-                default=default,
-            )
-        # Unbounded: T[] - variable, capacity comes from an explicit @capacity annotation if
-        # present, else gets auto-derived once every field's own size is known (_resolve_
-        # auto_capacities, below - needs the whole struct, not just this one field).
-        capacity = _annotation_capacity(rosidl_field)
-        return model.WireField(
-            name=rosidl_field.name,
-            kind="array",
-            scalar_type=field_type.type,
-            array_mode="variable",
-            capacity=capacity,
-            capacity_source="annotation" if capacity is not None else None,
-            default=default,
-        )
+        return _build_array_field(rosidl_field, field_type, array_element_kind="scalar", scalar_type=field_type.type)
     if field_type.type in STRING_TYPES:
         if field_type.type == "wstring":
             raise UnsupportedFieldError(f"field '{rosidl_field.name}': wstring is out of scope")
@@ -167,6 +181,12 @@ def _resolve_auto_capacities(fields):
             "ROS 2 upper bound - add a '# @capacity <N>' annotation to the others"
         )
     target = fields[-1]
+    if target.array_element_kind == "string":
+        raise UnsupportedFieldError(
+            f"field '{target.name}': its capacity can't be auto-derived - a string array element "
+            "has no fixed per-element wire size to divide the remaining budget by - add an "
+            "explicit '# @capacity <N>' annotation instead"
+        )
     offset = 0
     for f in fields[:-1]:
         if f.wire_size is None:

@@ -7,6 +7,9 @@ void @(name)_init(struct @(name)* data) {
 }
 
 @[end if]@
+@[for line in helper_lines]@
+@(line)
+@[end for]@
 int32_t @(name)_encode_size(struct @(name)* data) {
 @[for line in encode_size_lines]@
     @(line)

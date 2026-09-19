@@ -86,20 +86,35 @@ class WireField:
     array_size: int | None = None  # element count, when array_mode == "fixed"
     capacity: int | None = None  # max element count, when array_mode == "variable"
     capacity_source: str | None = None  # "annotation" | "bounded" | "auto" - docs/errors only
+    # "scalar" (scalar_type names the element type, as always) or "string" (every element is a
+    # plain, unbounded string - `scalar_type` stays None; a *bounded* string element, e.g.
+    # `string<=8[]`, isn't supported yet - adapt.py raises for it rather than silently truncating
+    # or over-allocating). DESIGN.md's "Variable/Fixed arrays" rule composes directly with its own
+    # "Strings" rule for this case - see emit.py's own dedicated `_emit_*_string_array_*`
+    # functions, kept separate from the scalar-element ones rather than unified, since a string
+    # element's size is only known at runtime while a scalar element's never is.
+    array_element_kind: str = "scalar"
     # Only set when kind == "nested":
     nested: "WireStruct | None" = None  # the resolved nested type's own struct (resolve.py)
 
     @property
     def element_ctype(self):
         """Only meaningful for kind == "array" - the C type of one element."""
+        if self.array_element_kind == "string":
+            return "char*"
         return SCALAR_CTYPE[self.scalar_type]
 
     @property
     def element_size(self):
+        """Only meaningful for kind == "array" and array_element_kind == "scalar" - a string
+        element has no fixed per-element wire size (see wire_size/wire_align below, and
+        layout.max_wire_size(), which all route around ever calling this for a string element)."""
         return SCALAR_SIZE[self.scalar_type]
 
     @property
     def element_align(self):
+        if self.array_element_kind == "string":
+            return STRING_LEN_ALIGN
         return SCALAR_ALIGN[self.scalar_type]
 
     @property
@@ -125,7 +140,9 @@ class WireField:
             return STRING_LEN_ALIGN
         if self.kind == "array":
             # A fixed array has no length prefix - its own start aligns to its element type,
-            # same as a bare scalar would. A variable array's uint16 count prefix aligns to 2.
+            # same as a bare scalar would (a string element's own align is STRING_LEN_ALIGN, same
+            # value as ARRAY_COUNT_ALIGN, so this formula needs no extra branch for it). A
+            # variable array's uint16 count prefix aligns to 2.
             return self.element_align if self.array_mode == "fixed" else ARRAY_COUNT_ALIGN
         if self.kind == "nested":
             # "No extra alignment beyond what the first nested field needs" (DESIGN.md) - an
@@ -136,10 +153,12 @@ class WireField:
     @property
     def wire_size(self):
         """Exact wire size in bytes, or None if it depends on runtime data (strings, variable
-        arrays, or a nested message that itself contains either)."""
+        arrays, a string array of either mode - each element's own length varies at runtime even
+        when the array's own element *count* is fixed - or a nested message that itself contains
+        any of these)."""
         if self.kind == "scalar":
             return SCALAR_SIZE[self.scalar_type]
-        if self.kind == "array" and self.array_mode == "fixed":
+        if self.kind == "array" and self.array_mode == "fixed" and self.array_element_kind == "scalar":
             return self.array_size * self.element_size
         if self.kind == "nested":
             return self.nested.wire_size if self.nested.is_fixed_size else None

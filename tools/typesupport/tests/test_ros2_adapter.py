@@ -247,3 +247,18 @@ def test_ros2_adapter_roundtrip(ros2_adapter_check_binary):
     assert "test_arrays_rejects_over_capacity: PASS" in result.stdout
     assert "test_bounded_string_roundtrip: PASS" in result.stdout
     assert "test_bounded_string_rejects_over_capacity: PASS" in result.stdout
+
+
+def test_render_adapter_rejects_array_of_string():
+    # M7 (tools/typesupport's own core codegen) accepts an array-of-string field now, but
+    # ros2_adapter.render_adapter() doesn't know how to convert one yet - rosidl_runtime_c
+    # represents it completely differently from a primitive array (see ros2_adapter._reject_
+    # unsupported_array_elements's own doc comment). Confirms render_adapter() fails loudly with
+    # a clear message naming the field, rather than silently generating wrong C the way it would
+    # if _to_tickle_field_lines()'s existing primitive-array branch ran on a string element by
+    # accident (a `char*` element has no `sizeof(*tickle->name)`-shaped element size to memcpy).
+    spec = rosidl.parse_message_string("test_msgs", "StringArrayField", "string[<=3] names\n")
+    ir = adapt.adapt_message("StringArrayField", spec, None)
+    layout.compute(ir.data)
+    with pytest.raises(NotImplementedError, match="names"):
+        ros2_adapter.render_adapter(ir.data, "test_msgs__msg__StringArrayField", "StringArrayField.h")

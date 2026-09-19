@@ -83,6 +83,7 @@ def _struct_context(struct):
         decode_inplace_lines = []
     return {
         "name": struct.c_name,
+        "helper_lines": emit.emit_string_element_helpers(struct),
         "constant_lines": emit.emit_constants(struct),
         "capacity_lines": emit.emit_array_capacity_constants(struct),
         "field_lines": emit.emit_struct_fields(struct),

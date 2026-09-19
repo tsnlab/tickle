@@ -282,6 +282,144 @@ def _emit_string_decode(field):
     )
 
 
+def needs_string_element_helpers(struct):
+    return any(f.kind == "array" and f.array_element_kind == "string" for f in struct.fields)
+
+
+def emit_string_element_helpers(struct):
+    """Three small `static` per-struct helper functions - <name>_encode_string_element/
+    _decode_string_element/_string_element_size - emitted directly into the generated .c (never
+    shared across structs: every generated file stays fully self-contained, no new shared runtime
+    dependency beyond what tickle.h/hal.h already provide - DESIGN.md's "No dynamic allocation"
+    philosophy) whenever `struct` has at least one array-of-string field ([]).
+
+    Pulling the shared per-element wire logic (DESIGN.md's "Strings" rule, unchanged from a plain
+    top-level string field's own _emit_string_encode/_decode - just always the unbounded case, an
+    array element can't have its own bounded char[N+1] buffer) out into its own function, instead
+    of inlining it once per loop the way _emit_fixed_array_encode's scalar equivalent safely can,
+    is not a style preference: clang-tidy's readability-function-cognitive-complexity genuinely
+    flags *_encode/*_decode/*_encode_size once a struct has more than one or two string-array
+    fields (each inlined copy is ~15 lines of nested NULL/length/bounds checks) - a real finding
+    fixed here, not a hypothetical one (see PLAN.md's own Milestone writeup)."""
+    if not needs_string_element_helpers(struct):
+        return []
+    name = struct.c_name
+    return [
+        f"static int32_t {name}_encode_string_element(const char* str, uint8_t* payload, uint32_t len, int32_t encoded) {{",
+        "    if (str == NULL) { return -3; }",
+        "    {",
+        "        size_t str_len = _tt_strnlen(str, tt_MAX_STRING_LENGTH) + 1;",
+        "        if (str_len > tt_MAX_STRING_LENGTH) { return -2; }",
+        "        if ((uint32_t)encoded + 2 > len) { return -1; }",
+        "        *(uint16_t*)(payload + encoded) = (uint16_t)str_len;",
+        "        encoded += 2;",
+        "        if ((uint32_t)encoded + str_len > len) { return -1; }",
+        "        memcpy(payload + encoded, str, str_len);",
+        "        encoded += (int32_t)str_len;",
+        "        {",
+        f"            uint32_t pad4 = {_runtime_align_expr('encoded', 4)};",
+        "            if ((uint32_t)encoded + pad4 > len) { return -1; }",
+        "            memset(payload + encoded, 0, pad4);",
+        "            encoded += (int32_t)pad4;",
+        "        }",
+        "    }",
+        "    return encoded;",
+        "}",
+        "",
+        f"static int32_t {name}_decode_string_element(char** out, const uint8_t* payload, uint32_t len, "
+        "int32_t decoded, bool is_native_endian) {",
+        "    if ((uint32_t)decoded + 2 > len) { return -1; }",
+        "    {",
+        "        uint16_t str_len = *(const uint16_t*)(payload + decoded);",
+        "        if (!is_native_endian) { str_len = _tt_bswap_16(str_len); }",
+        "        if (str_len == 0) { return -2; }",
+        "        decoded += 2;",
+        "        if ((uint32_t)decoded + str_len > len) { return -1; }",
+        "        if (payload[decoded + str_len - 1] != '\\0') { return -2; }",
+        "        *out = (char*)(payload + decoded); // aliases the input buffer - see *_free()",
+        "        decoded += str_len;",
+        f"        decoded += (int32_t){_runtime_align_expr('decoded', 4)};",
+        "        if ((uint32_t)decoded > len) { return -1; }",
+        "    }",
+        "    return decoded;",
+        "}",
+        "",
+        f"static int32_t {name}_string_element_size(const char* str, int32_t size) {{",
+        "    if (str == NULL) { return -3; }",
+        "    {",
+        "        size_t str_len = _tt_strnlen(str, tt_MAX_STRING_LENGTH) + 1;",
+        "        if (str_len > tt_MAX_STRING_LENGTH) { return -2; }",
+        "        size += (int32_t)(2 + str_len);",
+        f"        size += (int32_t){_runtime_align_expr('size', 4)};",
+        "    }",
+        "    return size;",
+        "}",
+        "",
+    ]
+
+
+def _emit_fixed_string_array_encode(field, struct_c_name):
+    # No count prefix (DESIGN.md's "Fixed arrays" rule) - just N elements back to back, each
+    # ending 4-aligned (its own trailing pad, part of the String rule itself), which already
+    # satisfies the next element's align-2 requirement with no padding ever needed between them.
+    return [
+        f"for (uint32_t i = 0; i < {field.array_size}; i++) {{",
+        f"    int32_t next = {struct_c_name}_encode_string_element(data->{field.name}[i], payload, len, encoded);",
+        "    if (next < 0) { return next; }",
+        "    encoded = next;",
+        "}",
+    ]
+
+
+def _emit_fixed_string_array_decode(field, struct_c_name):
+    return [
+        f"for (uint32_t i = 0; i < {field.array_size}; i++) {{",
+        f"    int32_t next = {struct_c_name}_decode_string_element(&data->{field.name}[i], payload, len, decoded, "
+        "is_native_endian);",
+        "    if (next < 0) { return next; }",
+        "    decoded = next;",
+        "}",
+    ]
+
+
+def _emit_variable_string_array_encode(field, struct_c_name):
+    count_var = f"data->{field.name}_count"
+    return [
+        f"if ({count_var} > {field.capacity}) {{ return -2; }}",
+        "if ((uint32_t)encoded + 2 > len) { return -1; }",
+        f"*(uint16_t*)(payload + encoded) = {count_var};",
+        "encoded += 2;",
+        # No further alignment needed before the first element: element_align (STRING_LEN_ALIGN,
+        # 2) already divides the count prefix's own 2-byte size, so "pad to element align" is
+        # always a zero-byte no-op here - unlike a scalar variable array, which can need real
+        # padding when its own element_align is 4.
+        f"for (uint32_t i = 0; i < {count_var}; i++) {{",
+        f"    int32_t next = {struct_c_name}_encode_string_element(data->{field.name}[i], payload, len, encoded);",
+        "    if (next < 0) { return next; }",
+        "    encoded = next;",
+        "}",
+    ]
+
+
+def _emit_variable_string_array_decode(field, struct_c_name):
+    return [
+        "if ((uint32_t)decoded + 2 > len) { return -1; }",
+        "{",
+        "    uint16_t count = *(const uint16_t*)(payload + decoded);",
+        "    if (!is_native_endian) { count = _tt_bswap_16(count); }",
+        f"    if (count > {field.capacity}) {{ return -2; }}",
+        "    decoded += 2;",
+        "    for (uint32_t i = 0; i < count; i++) {",
+        f"        int32_t next = {struct_c_name}_decode_string_element(&data->{field.name}[i], payload, len, "
+        "decoded, is_native_endian);",
+        "        if (next < 0) { return next; }",
+        "        decoded = next;",
+        "    }",
+        f"    data->{field.name}_count = count;",
+        "}",
+    ]
+
+
 def _emit_fixed_array_encode(field):
     n, size = field.array_size, field.element_size
     total = n * size
@@ -466,8 +604,12 @@ def emit_encode(struct):
             lines += _emit_scalar_encode(plan.field)
         elif plan.field.kind == "string":
             lines += _emit_string_encode(plan.field)
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "string":
+            lines += _emit_fixed_string_array_encode(plan.field, struct.c_name)
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
             lines += _emit_fixed_array_encode(plan.field)
+        elif plan.field.kind == "array" and plan.field.array_element_kind == "string":
+            lines += _emit_variable_string_array_encode(plan.field, struct.c_name)
         elif plan.field.kind == "array":
             lines += _emit_variable_array_encode(plan.field)
         elif plan.field.kind == "nested":
@@ -492,8 +634,12 @@ def emit_decode(struct):
             lines += _emit_scalar_decode(plan.field)
         elif plan.field.kind == "string":
             lines += _emit_string_decode(plan.field)
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "string":
+            lines += _emit_fixed_string_array_decode(plan.field, struct.c_name)
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
             lines += _emit_fixed_array_decode(plan.field)
+        elif plan.field.kind == "array" and plan.field.array_element_kind == "string":
+            lines += _emit_variable_string_array_decode(plan.field, struct.c_name)
         elif plan.field.kind == "array":
             lines += _emit_variable_array_decode(plan.field)
         elif plan.field.kind == "nested":
@@ -528,8 +674,25 @@ def emit_encode_size(struct):
                 f"    size += (int32_t){_runtime_align_expr('size', 4)};",
                 "}",
             ]
+        elif plan.field.kind == "array" and plan.field.array_mode == "fixed" and plan.field.array_element_kind == "string":
+            lines += [
+                f"for (uint32_t i = 0; i < {plan.field.array_size}; i++) {{",
+                f"    size = {struct.c_name}_string_element_size(data->{plan.field.name}[i], size);",
+                "    if (size < 0) { return size; }",
+                "}",
+            ]
         elif plan.field.kind == "array" and plan.field.array_mode == "fixed":
             lines.append(f"size += {plan.field.wire_size};")
+        elif plan.field.kind == "array" and plan.field.array_element_kind == "string":
+            count_var = f"data->{plan.field.name}_count"
+            lines += [
+                f"if ({count_var} > {plan.field.capacity}) {{ return -2; }}",
+                "size += 2;",
+                f"for (uint32_t i = 0; i < {count_var}; i++) {{",
+                f"    size = {struct.c_name}_string_element_size(data->{plan.field.name}[i], size);",
+                "    if (size < 0) { return size; }",
+                "}",
+            ]
         elif plan.field.kind == "array":
             count_var = f"data->{plan.field.name}_count"
             lines.append(f"if ({count_var} > {plan.field.capacity}) {{ return -2; }}")
@@ -631,7 +794,15 @@ def emit_init(struct):
                 lines.append(f'data->{f.name} = "{_c_string_literal(f.default)}";')
         elif f.kind == "array":
             for i, element in enumerate(f.default):
-                value = ("true" if element else "false") if f.scalar_type == "bool" else repr(element)
+                if f.array_element_kind == "string":
+                    # A string array element is a char* (emit_struct_fields) - same "assign a
+                    # string literal directly" treatment as a plain unbounded string field's own
+                    # default, above, just per-element.
+                    value = f'"{_c_string_literal(element)}"'
+                elif f.scalar_type == "bool":
+                    value = "true" if element else "false"
+                else:
+                    value = repr(element)
                 lines.append(f"data->{f.name}[{i}] = {value};")
             if f.array_mode == "variable":
                 lines.append(f"data->{f.name}_count = {len(f.default)};")
@@ -657,6 +828,11 @@ def needs_string_h(struct):
         return True
     for f in struct.fields:
         if f.kind == "string":
+            return True
+        if f.kind == "array" and f.array_element_kind == "string":
+            # Every element memcpy()s its own bytes and memset()s its own pad-to-4, regardless of
+            # array_mode - checked first, before the scalar-only checks below ever touch
+            # f.element_size (which doesn't exist for a string element).
             return True
         if f.kind == "array":
             # A fixed array of 1-byte elements always memcpy()s (see _emit_fixed_array_encode/
@@ -686,15 +862,25 @@ def needs_hal_h(struct):
             return True
         if f.kind == "scalar" and model.SCALAR_SIZE[f.scalar_type] > 1:
             return True
+        if f.kind == "array" and f.array_element_kind == "string":
+            # Every element's own uint16 length prefix needs _tt_bswap_16 on decode, and every
+            # element itself needs _tt_strnlen on encode - checked first, before the scalar-only
+            # check below ever touches f.element_size (which doesn't exist for a string element).
+            return True
         if f.kind == "array" and (f.array_mode == "variable" or f.element_size > 1):
             return True
     return False
 
 
 def needs_config_h(struct):
-    """True if the generated .c references tt_MAX_STRING_LENGTH (from <tickle/config.h>) - only
-    an *unbounded* string field's *_encode/_encode_size/_decode do (see _emit_string_encode et
-    al.); a bounded one (field.capacity is not None) checks against its own resolved capacity
-    instead and never mentions tt_MAX_STRING_LENGTH. A struct with no unbounded string fields
-    (e.g. UInt64Data, or one with only bounded strings) doesn't need the include."""
-    return any(f.kind == "string" and f.capacity is None for f in struct.fields)
+    """True if the generated .c references tt_MAX_STRING_LENGTH (from <tickle/config.h>) - an
+    *unbounded* string field's *_encode/_encode_size/_decode do (see _emit_string_encode et al.),
+    and so does every string array element (always unbounded - see model.WireField's own
+    array_element_kind doc comment, a bounded element isn't supported yet); a bounded plain string
+    (field.capacity is not None) checks against its own resolved capacity instead and never
+    mentions tt_MAX_STRING_LENGTH. A struct with none of these (e.g. UInt64Data, or one with only
+    bounded strings) doesn't need the include."""
+    return any(
+        (f.kind == "string" and f.capacity is None) or (f.kind == "array" and f.array_element_kind == "string")
+        for f in struct.fields
+    )

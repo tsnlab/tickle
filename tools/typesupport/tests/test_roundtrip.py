@@ -129,6 +129,30 @@ class ArrayDefaultsData(ctypes.Structure):
     ]
 
 
+# M7: array-of-string. An element is a plain char* (emit.emit_struct_fields), same as a plain
+# top-level unbounded string field - c_char_p * N mirrors that exactly.
+class StringArraysData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("fixed_names", ctypes.c_char_p * 3),
+        ("bounded_names_count", ctypes.c_uint16),
+        ("bounded_names", ctypes.c_char_p * 4),
+        ("tagged_names_count", ctypes.c_uint16),
+        ("tagged_names", ctypes.c_char_p * 5),
+    ]
+
+
+class StringArrayDefaultsData(ctypes.Structure):
+    _pack_ = 4
+    _layout_ = "ms"
+    _fields_ = [
+        ("fixed_with_default", ctypes.c_char_p * 2),
+        ("bounded_with_default_count", ctypes.c_uint16),
+        ("bounded_with_default", ctypes.c_char_p * 4),
+    ]
+
+
 class BoundedStringData(ctypes.Structure):
     _pack_ = 4
     _layout_ = "ms"
@@ -346,6 +370,22 @@ def test_arrays_roundtrip(generated_lib):
     assert list(result.samples[:2]) == [1.5, -2.25]
 
 
+def test_string_arrays_roundtrip(generated_lib):
+    def populate(d):
+        d.fixed_names[:] = [b"alpha", b"", b"gamma"]  # the empty string is a real, valid element
+        d.bounded_names_count = 2
+        d.bounded_names[:2] = [b"one", b"two"]
+        d.tagged_names_count = 3
+        d.tagged_names[:3] = [b"x", b"yy", b"zzz"]
+
+    result, _buf = _roundtrip(generated_lib, "StringArraysData", StringArraysData, populate)
+    assert list(result.fixed_names) == [b"alpha", b"", b"gamma"]
+    assert result.bounded_names_count == 2
+    assert list(result.bounded_names[:2]) == [b"one", b"two"]
+    assert result.tagged_names_count == 3
+    assert list(result.tagged_names[:3]) == [b"x", b"yy", b"zzz"]
+
+
 def test_bounded_string_roundtrip(generated_lib):
     def populate(d):
         d.bounded_name = b"eight888"  # exactly capacity (8) - boundary value
@@ -554,6 +594,22 @@ def test_array_defaults_init_sets_fixed_and_variable_array_defaults(generated_li
     assert data.bounded_with_default_count == 2
     assert list(data.bounded_with_default[:2]) == [10, 20]
     assert list(data.bounded_with_default[2:]) == [0, 0]
+
+
+def test_string_array_defaults_init_sets_fixed_and_variable_array_defaults(generated_lib):
+    # M7: the string-element analog of the test above - a fixed array's default (including a
+    # real, deliberately empty-string element) fills every declared element, and a variable
+    # array's default also sets its own _count.
+    init_fn = generated_lib.StringArrayDefaultsData_init
+    init_fn.argtypes = [ctypes.POINTER(StringArrayDefaultsData)]
+    init_fn.restype = None
+
+    data = StringArrayDefaultsData(bounded_with_default_count=99)
+    init_fn(ctypes.byref(data))
+
+    assert list(data.fixed_with_default) == [b"", b"hello"]
+    assert data.bounded_with_default_count == 2
+    assert list(data.bounded_with_default[:2]) == [b"a", b"bb"]
 
 
 def test_pingpong_roundtrip(generated_lib):

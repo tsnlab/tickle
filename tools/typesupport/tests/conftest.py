@@ -41,6 +41,9 @@ CFLAGS = ["-Wall", "-Wextra", "-fPIC", f"-I{REPO_ROOT / 'include'}", f"-I{REPO_R
 #     exists purely for the empty-message edge case (Trigger.srv's request has zero fields).
 #   - Arrays/ArrayDefaults: tests/fixtures_own/ - every other array shape (fixed, bounded,
 #     annotated-capacity, float element) and, separately, M6's array default values.
+#   - StringArrays/StringArrayDefaults: tests/fixtures_own/ - the array-of-string wire shape (M7):
+#     fixed/bounded/annotated-capacity string arrays, and, separately, their own default values -
+#     mirrors Arrays/ArrayDefaults' own split exactly, just with string elements.
 #   - BoundedString: tests/fixtures_own/ - a bounded string's own capacity (ROS 2 upper bound,
 #     @capacity annotation, and a default value on one), plus a plain unbounded string alongside
 #     them to prove that path is untouched (DESIGN.md's "Capacity" rule).
@@ -63,6 +66,8 @@ GENERATED_INTERFACES = {
     "Trigger.srv": EXAMPLES,
     "Arrays.msg": FIXTURES_OWN,
     "ArrayDefaults.msg": FIXTURES_OWN,
+    "StringArrays.msg": FIXTURES_OWN,
+    "StringArrayDefaults.msg": FIXTURES_OWN,
     "BoundedString.msg": FIXTURES_OWN,
     "Stamped.msg": FIXTURES_OWN,
     "Image.msg": FIXTURES_OWN,

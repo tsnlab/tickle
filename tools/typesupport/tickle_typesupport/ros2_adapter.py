@@ -211,6 +211,26 @@ def sequence_element_types(struct):
     return sorted({f.scalar_type for f in struct.fields if f.kind == "array" and f.array_mode == "variable"})
 
 
+def _reject_unsupported_array_elements(struct):
+    """rosidl_runtime_c represents a string array completely differently from a primitive one -
+    `struct rosidl_runtime_c__String__Sequence` (variable) or a plain `struct
+    rosidl_runtime_c__String name[N]` (fixed), neither a flat `T*` buffer nor a
+    `rosidl_runtime_c__<T>__Sequence` - so _to_tickle_field_lines()/_from_tickle_field_lines()'s
+    existing "array" branches (written for a primitive element) would silently generate wrong C
+    for one. tools/typesupport's own core codegen (adapt.py/emit.py) now accepts a string array
+    field for TickLE's own bundled examples (cli.py's pipeline never reaches this module at all),
+    but this ROS 2 converter doesn't convert one yet - raised here, once, up front, rather than
+    letting sequence_element_types() silently collect a bogus `None` scalar_type and fail
+    confusingly (or not at all) deeper in codegen."""
+    for f in struct.fields:
+        if f.kind == "array" and f.array_element_kind == "string":
+            raise NotImplementedError(
+                f"field '{f.name}': rosidl_typesupport_tickle_c can't convert an array-of-string "
+                "field yet (rosidl_runtime_c represents it differently from a primitive array) - "
+                "not supported by ros2_adapter.render_adapter()"
+            )
+
+
 def render_adapter(struct, ros_name, tickle_header):
     """Returns (header_text, source_text) for <ros_name>__rosidl_typesupport_tickle_c.{h,c} -
     plain string assembly (not empy) since this is a fixed two-function shape, not a per-kind
@@ -219,6 +239,7 @@ def render_adapter(struct, ros_name, tickle_header):
     keyed off the .msg/.srv's interface name) - NOT `f"{struct.c_name}.h"`: struct.c_name is
     "ArraysData", but that struct is declared *inside* Arrays.h, not its own same-named file (a
     .srv's request/response structs share one file the same way)."""
+    _reject_unsupported_array_elements(struct)
     header_lines = [
         "#pragma once",
         "",

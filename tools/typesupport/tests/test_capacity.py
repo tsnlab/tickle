@@ -24,6 +24,7 @@ from test_roundtrip import (
     ArraysData,
     BoundedStringData,
     BulkData,
+    StringArraysData,
     _bind,
 )
 
@@ -134,3 +135,43 @@ def test_bulk_payload_over_auto_derived_capacity_rejected(generated_lib):
     assert encode_size(ctypes.byref(data)) == -2
     buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
     assert encode(ctypes.byref(data), buf, TT_MAX_BUFFER_LENGTH) == -2
+
+
+def test_string_array_encode_rejects_over_capacity(generated_lib):
+    # `bounded_names` (string[<=4]) - the array-of-string analog of
+    # test_bounded_array_encode_rejects_over_capacity, checked before ever looping over an
+    # element (none need to be set for this to be rejected).
+    encode_size, encode, _decode, _free = _bind(generated_lib, "StringArraysData", StringArraysData)
+    data = StringArraysData()
+    data.fixed_names[:] = [b"a", b"b", b"c"]
+    data.bounded_names_count = 5  # one past the ROS 2 upper bound `string[<=4]`
+    assert encode_size(ctypes.byref(data)) == -2
+    buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
+    assert encode(ctypes.byref(data), buf, TT_MAX_BUFFER_LENGTH) == -2
+
+
+def test_string_array_decode_rejects_over_capacity_count_on_wire(generated_lib):
+    # A malformed (or hostile) peer's wire count must be rejected on the way in too - the array-
+    # of-string analog of test_bounded_array_decode_rejects_over_capacity_count_on_wire.
+    # fixed_names (string[3]) comes first: 3 elements, each str_len=1 ("" + NUL, no padding
+    # needed since 2 + 1 + 1(pad) = 4), then bounded_names' own count prefix, set to 5 (one past
+    # its capacity of 4).
+    _encode_size, _encode, decode, _free = _bind(generated_lib, "StringArraysData", StringArraysData)
+    one_empty_string = (1).to_bytes(2, sys.byteorder) + b"\x00" + b"\x00"  # len=1, "\0", pad to 4
+    wire = one_empty_string * 3 + (5).to_bytes(2, sys.byteorder)
+    buf = ctypes.create_string_buffer(wire, TT_MAX_BUFFER_LENGTH)
+    out = StringArraysData()
+    assert decode(ctypes.byref(out), buf, len(wire), True) == -2
+
+
+def test_string_array_element_rejects_null(generated_lib):
+    # A NULL char* element (never assigned, or explicitly cleared) must be rejected the same way
+    # a NULL plain top-level string field already is (test_setbool_response_rejects_null_message)
+    # - checked by the shared <name>_encode_string_element() helper (emit.
+    # emit_string_element_helpers), not just the field-level _emit_string_encode path.
+    encode_size, encode, _decode, _free = _bind(generated_lib, "StringArraysData", StringArraysData)
+    data = StringArraysData()
+    data.fixed_names[:] = [b"a", None, b"c"]
+    assert encode_size(ctypes.byref(data)) == -3
+    buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
+    assert encode(ctypes.byref(data), buf, TT_MAX_BUFFER_LENGTH) == -3
