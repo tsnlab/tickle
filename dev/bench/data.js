@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789803697043,
+  "lastUpdate": 1789803700259,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -41435,6 +41435,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 8.447,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5193c2106911e4854932414bb68e2d4cafbb0cd6",
+          "message": "Implement Milestone 36: fix two rmw_graph.c argument-validation gaps\n\nTickLE Plan's priority-1 items from this session's own conformance-suite\naudit: rmw_get_node_names()/_with_enclaves() never rejected a caller-supplied\noutput array that already held data (missing rmw_check_zero_rmw_string_array()\ncalls), and rmw_count_publishers()/_subscribers()/_clients()/_services()\nnever validated their topic/service name argument at all (missing\nrmw_validate_full_topic_name(), the same pattern rmw_create_node() already\nestablished via rmw_validate_node_name()/rmw_validate_namespace()).\n\nRemoves the 6 per-TEST_F() skips these gaps were causing in the conformance\npatch (get_node_names_with_bad_arguments/_with_enclaves_with_bad_arguments,\ncount_publishers/subscribers/clients/services_with_bad_arguments) - only the\n8 genuinely-unimplemented \"names and types\" cases (Milestone 33's own\ndeferral) stay skipped now.\n\ncolcon build/test 16/16 green, clang-tidy/clang-format clean. Patch\nregenerated via git diff against a pristine upstream clone, confirmed\ngit apply --check clean on a fresh clone.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T16:38:48+09:00",
+          "tree_id": "2b3e825aee6c5d3c37202cafe7cccef93c27cf15",
+          "url": "https://github.com/tsnlab/tickle/commit/5193c2106911e4854932414bb68e2d4cafbb0cd6"
+        },
+        "date": 1789803699207,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
             "unit": "ms"
           }
         ]
