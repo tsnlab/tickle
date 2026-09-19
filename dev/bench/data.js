@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789823952125,
+  "lastUpdate": 1789824119014,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -25254,6 +25254,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.05047999999999999,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8bfb11ff4505b8167ff158bf10cefddaa6a25a8f",
+          "message": "Fix real CI round 2: dependency package also needs the C++ generators\n\nSecond real CI failure for the cross-package test scenario: unrelated to\nanything TickLE-specific - rosidl_generator_cpp's own generated Branch\nstruct header #includes Leaf's own C++ struct header directly (standard\nROS 2 cross-package nested-message convention), but\nrosidl_typesupport_tickle_c_tests_dep never generated one, since it only\ndeclared the C dependencies. Adding rosidl_generator_cpp/\nrosidl_typesupport_cpp/rosidl_typesupport_tickle_cpp there too, matching\nrosidl_typesupport_tickle_c_tests' own existing generator set.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T22:20:24+09:00",
+          "tree_id": "717a7e400f68b1d93c83df7bed0d4f990015979d",
+          "url": "https://github.com/tsnlab/tickle/commit/8bfb11ff4505b8167ff158bf10cefddaa6a25a8f"
+        },
+        "date": 1789824115466,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05537999999999999,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04714285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05204428571428571,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.047645714285714284,
             "unit": "ms"
           }
         ]
