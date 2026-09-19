@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789819436763,
+  "lastUpdate": 1789819668560,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24379,6 +24379,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04993000000000001,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d579e425183bfdb6945715417b560c21b7d3dd45",
+          "message": "Confirm Milestone 41's real CI verification green\n\nCheck all passed with no regressions - expected, since nothing in the\nconformance suite exercises the new array-of-string ros2_adapter.py\nconversion yet (still blocked on array-of-nested-type support).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T21:06:38+09:00",
+          "tree_id": "af35e0e7a2a9be8b077744ad047233c5561bb393",
+          "url": "https://github.com/tsnlab/tickle/commit/d579e425183bfdb6945715417b560c21b7d3dd45"
+        },
+        "date": 1789819664682,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.08748571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.049800000000000004,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05602,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04496571428571428,
             "unit": "ms"
           }
         ]
