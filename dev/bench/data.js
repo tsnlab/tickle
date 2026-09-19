@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789853111504,
+  "lastUpdate": 1789853114767,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -53391,6 +53391,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 5.504,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3cc395e038df3ef6c0d4f8634fc5b82876b5a006",
+          "message": "Mark Milestone 47 complete: real CI confirmed green\n\nTest all, Check all, Performance Test, and rmw_tickle performance all\nconfirmed green on commit 3616f07 (the FRAMING_OVERHEAD fix). Documents\nthe real CI-caught bug (stale typesupport framing-overhead constant)\nand the local verification used to confirm it before pushing.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T06:22:23+09:00",
+          "tree_id": "d818dae58b248bdc2d0ae45d55172fdf688556ff",
+          "url": "https://github.com/tsnlab/tickle/commit/3cc395e038df3ef6c0d4f8634fc5b82876b5a006"
+        },
+        "date": 1789853113685,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 4.367,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 4.368,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.352,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 4.384,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 4.337,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 4.407,
             "unit": "ms"
           }
         ]
