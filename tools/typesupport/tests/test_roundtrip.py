@@ -50,11 +50,13 @@ class TriggerResponse(ctypes.Structure):
 
 # examples/Bulk.msg's `payload` has no ROS 2 upper bound or @capacity annotation, so its capacity
 # is auto-derived (PLAN.md's lowest-priority rule) from TT_MAX_BUFFER_LENGTH (1472) minus
-# FRAMING_OVERHEAD (24) minus `seq` (4 bytes) minus the array's own uint16 count prefix (2 bytes,
-# already 1-aligned so no further padding) = 1442 - see model.py / adapt._resolve_auto_capacities.
-# A ctypes mirror has to hardcode this the same way a hand-written struct.h consumer would: it's
-# baked into the generated struct's own layout, not discoverable at the ABI level.
-BULK_PAYLOAD_CAPACITY = 1442
+# FRAMING_OVERHEAD (28 - TickLE core's own Milestone 47, rmw_tickle/PLAN.md, grew tt_DataHeader
+# 16 -> 20 bytes for its new entity_id field) minus `seq` (4 bytes) minus the array's own uint16
+# count prefix (2 bytes, already 1-aligned so no further padding) = 1438 - see model.py / adapt.
+# _resolve_auto_capacities. A ctypes mirror has to hardcode this the same way a hand-written
+# struct.h consumer would: it's baked into the generated struct's own layout, not discoverable at
+# the ABI level.
+BULK_PAYLOAD_CAPACITY = 1438
 
 
 class BulkData(ctypes.Structure):
@@ -360,7 +362,7 @@ def test_trigger_response_roundtrip(generated_lib):
 def test_bulk_roundtrip(generated_lib):
     def populate(d):
         d.seq = 42
-        payload = bytes(range(256)) * 4  # 1024 bytes, well under the 1442 capacity
+        payload = bytes(range(256)) * 4  # 1024 bytes, well under the 1438 capacity
         d.payload_count = len(payload)
         ctypes.memmove(d.payload, payload, len(payload))
 

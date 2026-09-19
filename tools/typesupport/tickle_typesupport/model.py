@@ -67,11 +67,19 @@ ARRAY_COUNT_ALIGN = 2
 TT_MAX_STRING_LENGTH = 65535
 TT_MAX_BUFFER_LENGTH = 1472
 # Smallest framing overhead any submessage carrying a payload has (a CALLREQUEST/CALLRESPONSE
-# payload starts at offset 16, DATA's at 24 - see DESIGN.md's "Interface serialization") - used
+# payload starts at offset 16, DATA's at 28 - see DESIGN.md's "Interface serialization") - used
 # only as auto-capacity's safety margin, so an auto-derived array still leaves room for framing
 # in the tightest (DATA) case. The _Static_assert itself checks the message alone against
-# TT_MAX_BUFFER_LENGTH, per PLAN.md - this margin is not part of that check.
-FRAMING_OVERHEAD = 24
+# TT_MAX_BUFFER_LENGTH, per PLAN.md - this margin is not part of that check. Bumped 24 -> 28 for
+# TickLE core's own Milestone 47 (rmw_tickle/PLAN.md): tt_DataHeader grew 16 -> 20 bytes for its
+# new entity_id field, a real wire-format change this Python-side mirror has to track by hand
+# (not read from the C headers - see this file's own module docstring / TT_MAX_BUFFER_LENGTH's
+# comment above for why). Missing this bump doesn't fail generation or its own drift-check (the
+# regenerated output stays internally consistent with itself either way) - it only surfaces as a
+# real, oversized DATA packet at runtime, caught by CI's own "Integration - Linux HAL over netns"
+# job (`Illegal submessage length: 1472 < 4 || 1472 > 1468`), not by the "Check all" typesupport
+# regen-and-diff step.
+FRAMING_OVERHEAD = 28
 
 
 def struct_self_align(struct):

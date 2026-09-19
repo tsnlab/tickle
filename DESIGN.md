@@ -481,7 +481,8 @@ encoder inserts zero padding to reach it.
 | `int64`, `uint64`, `float64` | 8 | a multiple of **4** |
 
 The payload itself begins at a 4-aligned offset in `tx_buffer` / `rx_buffer`: the framing that
-precedes it is 4 + 4 + 16 = 24 bytes for DATA, 4 + 4 + 8 = 16 for CALLREQUEST (`tt_CallRequestHeader`
+precedes it is 4 + 4 + 20 = 28 bytes for DATA (`tt_DataHeader` grew 16 → 20 bytes for Milestone
+47's own `entity_id` field, rmw_tickle/PLAN.md), 4 + 4 + 8 = 16 for CALLREQUEST (`tt_CallRequestHeader`
 carries a `reserved` pad byte precisely so this is 8, not 7) and 4 + 4 + 8 = 16 for CALLRESPONSE.
 The buffers are `_Alignas(4)` and `src/tickle.c` has `_Static_assert`s covering all of this.
 

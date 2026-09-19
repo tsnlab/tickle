@@ -33,7 +33,7 @@ struct tt_Topic BulkTopic = {
 int32_t BulkData_encode_size(struct BulkData* data) {
     int32_t size = 0;
     size += 4;
-    if (data->payload_count > 1442) {
+    if (data->payload_count > 1438) {
         return -2;
     }
     size += 2;
@@ -53,7 +53,7 @@ int32_t BulkData_encode(struct BulkData* data, uint8_t* payload, uint32_t len) {
         *(uint32_t*)(payload + encoded) = data->seq;
         encoded += 4;
     }
-    if (data->payload_count > 1442) {
+    if (data->payload_count > 1438) {
         return -2;
     }
     {
@@ -96,7 +96,7 @@ int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, uint32_t 
         if (!is_native_endian) {
             count = _tt_bswap_16(count);
         }
-        if (count > 1442) {
+        if (count > 1438) {
             return -2;
         }
         decoded += 2;
@@ -111,7 +111,7 @@ int32_t BulkData_decode(struct BulkData* data, const uint8_t* payload, uint32_t 
 }
 
 int32_t BulkData_encode_inplace(struct BulkData* data, const uint8_t** payload_out) {
-    if (data->payload_count > 1442) {
+    if (data->payload_count > 1438) {
         return -2;
     }
     *payload_out = (const uint8_t*)data;
@@ -124,7 +124,7 @@ struct BulkData* BulkData_decode_inplace(const uint8_t* payload, uint32_t len, b
     }
     {
         uint16_t count = *(const uint16_t*)(payload + 4);
-        if (count > 1442 || (uint32_t)4 + 2 + count > len) {
+        if (count > 1438 || (uint32_t)4 + 2 + count > len) {
             return NULL;
         }
     }
