@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789806975373,
+  "lastUpdate": 1789806978627,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -13688,6 +13688,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 903.844,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ea5e9f1415c2379ea22acda2368064494ee06f6d",
+          "message": "Confirm Milestone 37's real CI verification green\n\nTest all and Check all both confirmed: all 15 TestGraphAPI cases now OK,\nzero skipped.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-19T17:33:41+09:00",
+          "tree_id": "0ad8c5fe2860590ab6065c2e6338e73610d125e8",
+          "url": "https://github.com/tsnlab/tickle/commit/ea5e9f1415c2379ea22acda2368064494ee06f6d"
+        },
+        "date": 1789806977542,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 937.659,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 902.881,
             "unit": "Mbps"
           }
         ]
