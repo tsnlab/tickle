@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789893887217,
+  "lastUpdate": 1789893890308,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -45221,6 +45221,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/31255c81168131c26e6f69c62e6b37eded6c3b74"
         },
         "date": 1789892963661,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5dcbd363aa0246be8181c78f1e598a07264c513f",
+          "message": "Milestone 51: remove two stale conformance-patch skips\n\nTestUniqueIdentifierAPI's own fixture-wide skip (and its two derived\nfixtures) was written because rmw_tickle only accepted BEST_EFFORT for\ntopics - false since Milestone 31's RELIABLE RxO matching landed.\nTestClient/TestService.check_qos were skipped because rmw_tickle\nrejected DEADLINE/LIFESPAN/LIVELINESS_LEASE_DURATION outright - false\nsince Milestone 21/29 landed both. TickLE Plan's own conformance-patch\naudit found both reasons stale; this removes the now-unneeded skips.\n\ntest_client.cpp/test_service.cpp/test_unique_identifiers.cpp are all\nback to byte-identical pristine upstream (confirmed via git diff\nagainst a fresh ros2/rmw_implementation @ jazzy clone), same bar\nMilestone 37/40 already established for a fully-unwound file. Patch\nregenerated the same pristine-clone-diff way, git apply --check clean\non a fresh clone.\n\nNot touched this pass: test_publisher.cpp/test_duration_infinite.cpp\ncite the identical stale RELIABLE reasoning and are plausibly also\nstale, but TickLE Plan's own audit named only the two fixtures fixed\nhere - flagged for its own follow-up audit rather than assumed safe.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T17:41:39+09:00",
+          "tree_id": "9ffa7ea8861320acf85bf55a1fb1da07799f5d51",
+          "url": "https://github.com/tsnlab/tickle/commit/5dcbd363aa0246be8181c78f1e598a07264c513f"
+        },
+        "date": 1789893889222,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
