@@ -399,11 +399,16 @@ behavior, so it needs no special handling in this design at all.
 - **Naming**: `perf_client_<scenario>`/`perf_server_<scenario>`, three builds per scenario (one
   per framework), extending the existing `perf_client`/`perf_server` naming `run_perf.sh` already
   uses for TickLE's own HIL binaries.
-- **QoS value matrix**: one shared table of exact values (e.g. HISTORY depth = 8, DEADLINE =
-  50ms, LIFESPAN = 100ms, LIVELINESS lease = a value derived from TickLE's own
-  `tt_NODE_UPDATE_INTERVAL * tt_LIVELINESS_MISS_THRESHOLD`, then matched exactly in FastDDS's and
-  CycloneDDS's own QoS policy settings) - lives in this file so a future re-run can confirm every
-  side really used the same numbers, not just "roughly comparable" ones.
+- **QoS value matrix**: one shared table of exact values, matched exactly in FastDDS's and
+  CycloneDDS's own QoS policy settings (not just "roughly comparable" ones) - lives in this file
+  so a future re-run can confirm every side really used the same numbers:
+
+  | QoS | Value | Source |
+  |---|---|---|
+  | HISTORY depth | 8 | fixed choice, well within `tt_MAX_RELIABLE_HISTORY` (64) |
+  | DEADLINE duration | 50ms | fixed choice |
+  | LIFESPAN duration | 100ms | fixed choice |
+  | LIVELINESS lease | 3s | `tt_NODE_UPDATE_INTERVAL` (1s, `config.h`) × `tt_LIVELINESS_MISS_THRESHOLD` (3, `config.h`) - TickLE's own real peer-liveliness-loss detection latency, not an arbitrary number |
 
 ### Scenario list (9, each built for all three frameworks)
 
