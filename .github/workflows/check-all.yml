@@ -22,7 +22,10 @@ jobs:
       - name: Install build packages
         run: |
           sudo apt update
-          sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf
+          # fastddsgen: examples/perf_hil/fastdds/build.sh's own codegen dependency (below) - idlc,
+          # examples/perf_hil/cyclonedds/build.sh's own equivalent, ships inside ros-jazzy-cyclonedds
+          # instead (installed by "Set up ROS 2" below), nothing extra needed for it here.
+          sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf fastddsgen
 
       - name: Set up ROS 2 (for rmw_tickle)
         uses: ros-tooling/setup-ros@v0.7
@@ -33,6 +36,39 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Build examples/perf_hil (for clang-tidy's own compile_commands.json coverage)
+        # continue-on-error, not a hard gate (2026-09-20): examples/perf_hil's own build.sh scripts
+        # are written for/verified on the tickle-hil rpis (aarch64), not this job's own x86_64
+        # runner - real compilation here is a genuine best-effort extra, not something the rest of
+        # this job (colcon build, rmw_tickle's own tests, the conformance suite) should ever be
+        # blocked by if something about this specific environment doesn't quite match. Before this
+        # step existed, cpp-linter's own clang-tidy sub-check had no compile_commands.json entries
+        # at all for these files, so every push touching examples/perf_hil/{cyclonedds,fastdds}
+        # failed "Check all" on a plain "'dds/dds.h'/'fastdds/...' file not found" - a real,
+        # repeated regression (dcdaa30, fd9db40, e38be7e, b56b982 all hit it), not a hypothetical.
+        # Reusing each scenario's own real build.sh (already verified working end-to-end on real
+        # hardware) under `bear` rather than hand-rolling a second, parallel set of -I flags here -
+        # bear intercepts every gcc/g++ invocation build.sh's own loop below spawns and records it,
+        # so this only has to actually compile, not separately reverse-engineer its own include
+        # paths.
+        continue-on-error: true
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          (
+            cd examples/perf_hil/cyclonedds
+            bear --output compile_commands.json -- bash -c '
+              for s in best_effort_latency reliable_latency best_effort_throughput reliable_throughput durability_late_join; do
+                ./build.sh "$s"
+              done'
+          )
+          (
+            cd examples/perf_hil/fastdds
+            bear --output compile_commands.json -- bash -c '
+              for s in best_effort_latency reliable_latency best_effort_throughput reliable_throughput durability_late_join; do
+                ./build.sh "$s"
+              done'
+          )
 
       - name: Regenerate typesupport codecs and check for drift
         run: |
@@ -184,11 +220,20 @@ jobs:
           # tickle_typesupport.ros2_cli generates (rosidl_typesupport_tickle_c_generate_interfaces.
           # cmake's extension runs inside *that* package's own CMake scope, not rmw_tickle's or
           # rosidl_typesupport_tickle_c's) - see rmw_tickle/PLAN.md's Milestone 1(c).
+          #
+          # examples/perf_hil/{cyclonedds,fastdds}/compile_commands.json - from the earlier
+          # continue-on-error "Build examples/perf_hil" step above; may not exist at all if that
+          # step's own real hardware-verified-but-not-CI-verified build failed on this runner, so
+          # substitute an empty array rather than let a missing file break this merge too.
+          [ -f examples/perf_hil/cyclonedds/compile_commands.json ] || echo '[]' > examples/perf_hil/cyclonedds/compile_commands.json
+          [ -f examples/perf_hil/fastdds/compile_commands.json ] || echo '[]' > examples/perf_hil/fastdds/compile_commands.json
           jq -s 'add' compile_commands.json build/rmw_tickle/compile_commands.json \
             build/rosidl_typesupport_tickle_c/compile_commands.json \
             build/rosidl_typesupport_tickle_cpp/compile_commands.json \
             build/rosidl_typesupport_tickle_c_tests_dep/compile_commands.json \
-            build/rosidl_typesupport_tickle_c_tests/compile_commands.json > compile_commands.tmp
+            build/rosidl_typesupport_tickle_c_tests/compile_commands.json \
+            examples/perf_hil/cyclonedds/compile_commands.json \
+            examples/perf_hil/fastdds/compile_commands.json > compile_commands.tmp
           mv compile_commands.tmp compile_commands.json
 
       - name: Verify rosidl_typesupport_tickle_c/_cpp are reachable through the standard dispatch chain
