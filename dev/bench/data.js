@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789908503967,
+  "lastUpdate": 1789908507198,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -56949,6 +56949,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.647,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ac73b98f93ecfdbd9e385b1722c1cb7e1bf2bc2e",
+          "message": "perf_hil/cyclonedds: fix durability_late_join client batch-take gap - fully 20/20\n\nThe CycloneDDS twin's remaining \"8-11/20\" partial-delivery gap flagged in the\nprevious commit is fully closed - an eighth real bug, on the client side, not\nwriter-side ACKNACK pacing as guessed there.\n\nA live CYCLONEDDS_URI trace of the real upstream ddsi_writer_add_connection()\n(src/core/ddsi/src/ddsi_endpoint_match.c, read directly) confirmed the writer's own\nreliable-delivery bookkeeping is completely normal for a fresh reliable, non-PSMX\nreader - ruling out any \"writer treats the reader as already caught up\" shortcut.\n\nThe real cause: client.c's receive loop took exactly one sample per waitset wake -\nthe same class of bug as reliable_throughput/server.c's own earlier fix. A\ndurability backlog replay arrives as one fast burst, not one sample per round trip,\nand DDS_DATA_AVAILABLE_STATUS doesn't necessarily re-signal per individually\nbuffered sample - a single-sample take per wake silently undercounted already-\ndelivered data. Fixed by batch-draining (dds_take() in a loop until empty).\n\nVerified on the rig: received=20/20, reproduced 3/3 real runs - matches FastDDS's\nown clean result exactly (which already batch-drained from the start).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:45:38+09:00",
+          "tree_id": "6105ceda8cff58df8e83e9027928d33fd9511417",
+          "url": "https://github.com/tsnlab/tickle/commit/ac73b98f93ecfdbd9e385b1722c1cb7e1bf2bc2e"
+        },
+        "date": 1789908506079,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.778,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.109,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.158,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.513,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.628,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.81,
             "unit": "Mbps"
           }
         ]
