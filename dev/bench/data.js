@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789937292378,
+  "lastUpdate": 1789937295699,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -64889,6 +64889,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.913,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "746b0cf08ef71da8beb78c351de8c582b88b5f88",
+          "message": "examples/perf_hil/{cyclonedds,fastdds}/run_scenario.sh: actually print the server's RESULT line\n\nReal gap found while re-measuring scenario 3/4: these two scripts pkill the\nserver at the end but never read its log - only the client's own RESULT line\never reached stdout, silently losing every server-side recv/loss number for\nany scenario where the server is the authoritative side (best_effort_\nthroughput, reliable_throughput, ...), unless read by hand afterward.\nMatches examples/perf_hil/tickle/run_scenario.sh's own identical fix\n(pkill -INT, then cat the log, not just pkill).",
+          "timestamp": "2026-09-21T05:45:20+09:00",
+          "tree_id": "c22c7da61a28c6070a144544ee7507519e5edf5f",
+          "url": "https://github.com/tsnlab/tickle/commit/746b0cf08ef71da8beb78c351de8c582b88b5f88"
+        },
+        "date": 1789937294584,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 69.164,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 62.514,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 74.895,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 74.145,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 63.008,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 68.481,
             "unit": "Mbps"
           }
         ]
