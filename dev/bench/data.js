@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789903745610,
+  "lastUpdate": 1789903821533,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -30987,6 +30987,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Array1k async latency",
             "value": 0.13738428571428574,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c8565ac63bdf99b5809c6c7695470e0f924ecb32",
+          "message": "check-all.yml: wire tools/typesupport's 68-case pytest suite into real CI (Milestone 53)\n\nPreviously hand-run only (tools/typesupport/README.md's \"python3 -m pytest\ntests/\") - never gated by any CI workflow, so a real regression there (e.g.\nMilestone 52's own Ros2Resolver sibling-lookup bug) could land on main\nunnoticed until it surfaced downstream in a real ROS 2 package's own build.\n\nNew step right after the existing typesupport-codec-drift check: pip\ninstall pytest (not one of tickle-typesupport's own runtime dependencies),\nthen python3 -m pytest tools/typesupport/tests/.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T20:28:22+09:00",
+          "tree_id": "4f1abd7954adfcf4ff75388dab9a736475f5d43f",
+          "url": "https://github.com/tsnlab/tickle/commit/c8565ac63bdf99b5809c6c7695470e0f924ecb32"
+        },
+        "date": 1789903820393,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05243285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.048062857142857136,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04907285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.051728571428571436,
             "unit": "ms"
           }
         ]
