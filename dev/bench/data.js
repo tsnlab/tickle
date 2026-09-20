@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789920953014,
+  "lastUpdate": 1789921143592,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35358,6 +35358,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04837000000000001,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d39e6b403b3b83e5e981054a8ec7934f4353dc9c",
+          "message": "deadline_miss_detection/server.c: widen reader-miss tolerance to 1.5x deadline\n\nSame symptom class as client.c's own phase-offset fix, different cause:\nthis checker and the remote client's own send schedule run on two different\nmachines' independent clocks with no controlled phase relationship (unlike\nclient.c's own send_one/check_deadline, which share one process). A strict\n> deadline_s threshold tripped on essentially any unlucky relative timing -\nreader_misses=30 over a 10s run where recv=sent=198 (every sample actually\narrived on time). 1.5x absorbs that cross-machine jitter while still\ncatching a genuine multi-period gap.",
+          "timestamp": "2026-09-21T01:17:44+09:00",
+          "tree_id": "c710d45afc88c291e97013ba60eeee6f1ebad69a",
+          "url": "https://github.com/tsnlab/tickle/commit/d39e6b403b3b83e5e981054a8ec7934f4353dc9c"
+        },
+        "date": 1789921135116,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05161285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04744428571428571,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04854571428571429,
             "unit": "ms"
           }
         ]
