@@ -915,12 +915,29 @@ fresh process restarts, real rig numbers - `durability_late_join` remains open, 
 scenarios 1-2" section (no regression from any of the above), *and* the previously-"blocked"
 `stream`-topic throughput scenarios now work identically well on a topic name that never worked
 before this pass, on both frameworks - the original "new topic never matches" symptom is gone, not
-worked around. CycloneDDS's `reliable_throughput` number (47.8 Mbps) is dramatically higher than
-FastDDS's own (0.580 Mbps) *only* because the test used `-i 0.001` for CycloneDDS (its writer isn't
-paced, RELIABLE backpressure alone governs its real rate) vs. an accidental leftover pacing
-interval on the FastDDS run - not a real apples-to-apples throughput comparison yet; a follow-up
-run with matched, unpaced (`-i 0`) settings on both is needed before citing these two throughput
-numbers against each other.
+worked around.
+
+**`reliable_throughput` fair (unpaced) comparison (2026-09-20)**: the 47.8 Mbps CycloneDDS vs.
+0.580 Mbps FastDDS pair reported just above wasn't apples-to-apples - `-i 0.001` was passed to
+both, but only FastDDS's own `client.cpp` actually reads `-i` and paces on it (CycloneDDS's
+`reliable_throughput/client.c` never parses `-i` at all, always unpaced). Re-run with both
+genuinely unpaced (`-i 0`, `-d 10`, 2 repeats each, real rig):
+
+| framework | `sent` (writer-local, 10s) | `received` | real transfer elapsed | `recv_mbps` |
+|---|---:|---:|---:|---:|
+| CycloneDDS | 8.14-8.33M | 322k-429k | 4.59-4.64s | **44.5-59.8** |
+| FastDDS | 6.19-6.50M | 59k-73k | 2.18-2.63s | **17.3-17.9** |
+
+**Reading**: at a genuinely unbounded send rate, `sent` stops meaning much (it's just how many
+`dds_write()`/`write()` calls locally succeeded into an oversized `KEEP_ALL` writer queue before
+the 10s wall clock ran out, most of which never left the writer) - `received`'s own real transfer
+window (`elapsed_s`, computed from first to last sample the *server* actually got) is what's
+comparable: both frameworks' RELIABLE flow control converges to some real, finite sustained rate
+well under the raw send attempt rate, and then reception simply stops advancing once the writer's
+own resource limits/blocking dominate. **CycloneDDS sustains roughly 3x FastDDS's own real RELIABLE
+throughput ceiling on this link** (~50 Mbps vs. ~17.5 Mbps) - consistent across repeats, 0% loss in
+every run for both (RELIABLE's own guarantee held throughout, this is a rate difference, not a
+reliability one).
 
 **`durability_late_join` (CycloneDDS) - resolved separately, two more real bugs, not a rediscovery
 of any of the five above**:
