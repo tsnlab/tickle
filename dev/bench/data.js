@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789900946741,
+  "lastUpdate": 1789900950395,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -53569,6 +53569,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.953,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "593bcc6b57eacc562af61d0556713021dbd734b9",
+          "message": "perf_hil/cyclonedds: fix durability_late_join match + backlog-depth bugs\n\nTwo more real bugs, found while unblocking the \"still open\" durability_late_join\nscenario noted in the previous commit:\n\n- run_scenario.sh never forwarded -D to the server, only the client. Running\n  `run_scenario.sh durability_late_join -D` gave the client a durable (TRANSIENT_LOCAL)\n  reader QoS while the server's writer stayed VOLATILE - a genuine RxO incompatibility\n  that deterministically never matches. Looked exactly like a discovery bug from the\n  client's own \"timed out waiting for a match\", but was a test-harness bug. Fixed by\n  forwarding $CLIENT_ARGS to the server too and bumping the pre-client sleep 2s -> 5s.\n- DDS_HISTORY_KEEP_LAST(8) on both writer and reader capped what TRANSIENT_LOCAL could\n  ever replay to a late joiner, independent of durability_service's own depth=20 -\n  CycloneDDS serves TRANSIENT_LOCAL directly from the writer's own regular history cache\n  here. Fixed by matching both to backlog_count (20).\n\nAfter both fixes: match succeeds reliably (3/3, previously 0/3), the VOLATILE control\ncase still correctly shows received=0, and the TRANSIENT_LOCAL case now receives most of\nthe backlog (8-11/20) instead of none. Full 20/20 delivery remains open, tracked in\ncomparison.md as a separate follow-on (likely CycloneDDS's own ACKNACK-based durability\nredelivery pacing, not a resource-limits ceiling - dds_write() itself never fails).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T19:39:37+09:00",
+          "tree_id": "dd390b2f2b9f5bf8ace61d897a58ed3f5cda3708",
+          "url": "https://github.com/tsnlab/tickle/commit/593bcc6b57eacc562af61d0556713021dbd734b9"
+        },
+        "date": 1789900949283,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.398,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.157,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.18,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.517,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.426,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 73.165,
             "unit": "Mbps"
           }
         ]
