@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789865473686,
+  "lastUpdate": 1789865477055,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -38306,6 +38306,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 820.807,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9f307a919f5f29f26adc9f055d5f10fbaa9da21f",
+          "message": "Milestone 48: RMW_EVENT_OFFERED/REQUESTED_QOS_INCOMPATIBLE\n\nImplements Milestone 31/28(a)'s own explicitly-deferred item: an\nincompatible RxO pair (RELIABLE vs BEST_EFFORT, TRANSIENT_LOCAL vs\nVOLATILE) was already correctly never-connected, but rclcpp had no way\nto observe that it happened.\n\nNo wire-level trigger exists for this, so both new events are a\nperiodic re-scan of the existing discovery table (the same pattern\nRMW_EVENT_LIVELINESS_CHANGED's own check_subscription_liveliness()\nalready established) rather than something reactive:\n\n- rmw_graph.c: rmw_tickle_count_incompatible_subscribers_locked()/\n  _publishers_locked(), comparing struct tt_DiscoveredEntity.qos\n  against the local entity's own reliable/durable via a shared\n  qos_incompatible() helper mirroring tickle.c's own\n  subscriber_incompatible_with_publisher().\n- rmw_publisher.c/rmw_subscription.c: check_publisher_qos_incompatible()/\n  check_subscription_qos_incompatible(), delta-tracking the count\n  against a per-status last_incompatible_count the same way\n  liveliness_changed_status_t.last_alive_count already does, lazily\n  armed on first rmw_publisher_event_init()/rmw_subscription_event_init()\n  call for the event type.\n- rmw_event.c/rmw_wait_set.c: wired identically to every other\n  rmw_tickle_event_status_t-backed event.\n\ntest_events.c proves a real detected transition, not just wiring, by\ninjecting a synthetic struct tt_DiscoveredEntity directly into the\ndiscovery table under node_mutex - the same technique\ntest_liveliness_lost_watchdog.c already established for testing\nsomething no black-box rmw API call alone can induce (this rmw's\nreal one-node-per-process limit rules out a genuinely separate\ndiscovered node).\n\nVerified: colcon build/test (10/10), clang-tidy/clang-format clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T09:48:35+09:00",
+          "tree_id": "c648a53ee4a28b36a501d951222758e644580b3b",
+          "url": "https://github.com/tsnlab/tickle/commit/9f307a919f5f29f26adc9f055d5f10fbaa9da21f"
+        },
+        "date": 1789865475949,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 935.081,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 818.862,
             "unit": "Mbps"
           }
         ]
