@@ -471,10 +471,41 @@ struct tt_ReliableCacheEntry {
     // or never-populated slot, even though the bytes are still physically sitting here.
     uint64_t timestamp;
 };
+
+// Milestone 58 (rmw_tickle/PLAN.md) - remembers which remote node_ids have already received this
+// Publisher's own DURABLE backlog, keyed by node_id *and* the announcing node's own last_modified
+// value as of that delivery - not just by tt_Publisher.peers[]'s own array position, which check_
+// liveliness()'s own presumed-dead cleanup (a load-induced false positive, not necessarily a real
+// departure) wipes and lets a later upsert_peer() call reuse for an unrelated node_id. Without
+// this, the exact same still-alive peer's very next (entirely unchanged) announce looks like a
+// brand-new match to register_subscriber_peer_on_publisher() - re-triggering a full backlog
+// re-delivery of data that peer already has (observed for real: durability_late_join delivering a
+// 20-sample backlog 7 times over, 140 total, correlated with "presumed dead" warnings under load).
+// last_modified, not node_id alone, is what tells a genuinely-restarted instance of the same
+// node_id (a real new match - its own local subscription state was wiped too, it needs the
+// backlog again) apart from the same continuous instance recovering from a transient gap
+// (last_modified unchanged, since nothing about its own Publisher/Subscriber set actually
+// changed) - tt_Node.last_modified is a tt_get_ns() (monotonic-clock) reading, refreshed every
+// time a Publisher/Subscriber/Client/Server is created or destroyed on that node (tickle.c), so a
+// genuine process restart reliably lands on a different value than whatever this table last saw,
+// while an unchanged, still-running instance keeps announcing the exact same one.
+struct tt_DurableDeliveryRecord {
+    uint8_t node_id;        // tt_NODE_ID_INVALID (0, matching zero-init) = empty slot
+    uint64_t last_modified; // the announcing node's own last_modified as of the delivery below
+};
 struct tt_ReliableCache {
     uint16_t depth; // in-use ring capacity, 1..tt_MAX_RELIABLE_HISTORY
     uint16_t next;  // next entries[] slot tt_Publisher_publish() writes into (mod depth)
     struct tt_ReliableCacheEntry entries[tt_MAX_RELIABLE_HISTORY];
+    // Only ever consulted when tt_Publisher.durable is set (register_subscriber_peer_on_
+    // publisher(), tickle.c) - costs a best-effort or reliable-only Publisher nothing beyond the
+    // unused array slots themselves, no extra allocation or opt-in flag needed. Same capacity as
+    // peers[] (tt_MAX_PEER_COUNT) - this only ever needs to remember as many distinct node_ids as
+    // could plausibly be *currently* matched at once; a table overflow (durable_delivered_upsert()
+    // finding no empty slot and no existing match) falls back to "just re-deliver" - safe, only
+    // costs the one-time redundant delivery this milestone exists to avoid, never a correctness
+    // problem.
+    struct tt_DurableDeliveryRecord durable_delivered[tt_MAX_PEER_COUNT];
 };
 
 struct tt_Publisher { // extends endpoint

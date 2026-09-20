@@ -1327,6 +1327,40 @@ static bool reliable_cache_entry_expired(const struct tt_ReliableCacheEntry* ent
     return lifespan_duration_ns != 0 && (tt_get_ns() - entry->timestamp) >= lifespan_duration_ns;
 }
 
+// Milestone 58 (rmw_tickle/PLAN.md) - true if durable_delivered[] already records this exact
+// (node_id, last_modified) pair, i.e. this announce is a re-announce from a peer that already has
+// this Publisher's current backlog, not a genuinely new match. See struct tt_DurableDeliveryRecord's
+// own doc comment (tickle.h) for why last_modified, not node_id alone, is the right key.
+static bool durable_delivered_get(const struct tt_ReliableCache* cache, uint8_t node_id, uint64_t last_modified) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (cache->durable_delivered[i].node_id == node_id) {
+            return cache->durable_delivered[i].last_modified == last_modified;
+        }
+    }
+    return false;
+}
+
+// Records that node_id has now received the backlog as of last_modified - refreshes an existing
+// slot for that node_id, or claims the first empty one, mirroring upsert_peer()'s own style. A full
+// table (durable_delivered_upsert() finding neither) is a safe no-op: the worst case is one
+// redundant re-delivery next time, never a correctness problem (struct tt_DurableDeliveryRecord's
+// own doc comment).
+static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t node_id, uint64_t last_modified) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (cache->durable_delivered[i].node_id == node_id) {
+            cache->durable_delivered[i].last_modified = last_modified;
+            return;
+        }
+    }
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (cache->durable_delivered[i].node_id == tt_NODE_ID_INVALID) {
+            cache->durable_delivered[i].node_id = node_id;
+            cache->durable_delivered[i].last_modified = last_modified;
+            return;
+        }
+    }
+}
+
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
@@ -2307,6 +2341,11 @@ struct update_peer_ctx {
     // way qos above is already native-endian by the time it lands here.
     uint64_t deadline_duration_ns;
     uint64_t liveliness_lease_duration_ns;
+    // Milestone 58 - the announcing node's own tt_Node.last_modified as of this UPDATE (process_
+    // update()'s own already-decoded last_modified, threaded down through decode_update_entities()).
+    // Unused by register_server_peer_on_client() (Clients/Servers have no durability concept), only
+    // meaningful to register_subscriber_peer_on_publisher()'s own durable_delivered[] check below.
+    uint64_t announce_last_modified;
 };
 
 static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -2335,7 +2374,21 @@ static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct t
     }
     if (upsert_peer(pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {
         struct tt_Peer target = {ctx->header->source, ctx->sender_ip, ctx->sender_port};
-        deliver_durability_backlog(node, pub, &target);
+        // Milestone 58 - skip a redundant backlog re-delivery when this "genuinely new" peer slot
+        // (check_liveliness()'s own presumed-dead cleanup, not necessarily a real departure - see
+        // struct tt_DurableDeliveryRecord's own doc comment, tickle.h) already received this exact
+        // announce's backlog. A real process restart lands on a different announce_last_modified
+        // (durable_delivered_get() returns false), so it still gets delivered as usual.
+        bool tracks_durable_delivery = pub->durable && pub->reliable_cache != NULL;
+        bool already_delivered =
+            tracks_durable_delivery &&
+            durable_delivered_get(pub->reliable_cache, ctx->header->source, ctx->announce_last_modified);
+        if (!already_delivered) {
+            deliver_durability_backlog(node, pub, &target);
+            if (tracks_durable_delivery) {
+                durable_delivered_upsert(pub->reliable_cache, ctx->header->source, ctx->announce_last_modified);
+            }
+        }
         send_initial_heartbeat(node, pub, &target);
     }
 }
@@ -2352,7 +2405,8 @@ static void register_server_peer_on_client(struct tt_Node* node, struct tt_Endpo
 }
 
 static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
-                                   uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port) {
+                                   uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port,
+                                   uint64_t last_modified) {
     bool reverse = tt_is_reverse_endian(header);
     for (int i = 0; i < entity_count && *head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, head, tail, sizeof(struct tt_UpdateEntity));
@@ -2366,11 +2420,16 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         TT_LOG_DEBUG("  kind: %d", update_entity->kind);
 
         if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            struct update_peer_ctx ctx = {
-                header, sender_ip, sender_port, update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns};
+            struct update_peer_ctx ctx = {header,
+                                          sender_ip,
+                                          sender_port,
+                                          update_entity->qos,
+                                          deadline_duration_ns,
+                                          liveliness_lease_duration_ns,
+                                          last_modified};
             for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id, register_subscriber_peer_on_publisher, &ctx);
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
-            struct update_peer_ctx ctx = {header, sender_ip, sender_port, 0, 0, 0};
+            struct update_peer_ctx ctx = {header, sender_ip, sender_port, 0, 0, 0, 0};
             for_each_endpoint(node, tt_KIND_SERVICE_CLIENT, entity_id, register_server_peer_on_client, &ctx);
         }
 
@@ -2455,8 +2514,8 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     forget_peers_from_source(node, source);
     forget_discovered_entities_from_source(node, source);
 
-    if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip,
-                                sender_port)) {
+    if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip, sender_port,
+                                last_modified)) {
         return false;
     }
 

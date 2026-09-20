@@ -340,6 +340,113 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
+// Milestone 58 (rmw_tickle/PLAN.md) - a liveliness "presumed dead" false positive (a load-induced
+// gap in a still-alive peer's periodic UPDATE announces, not a real departure - check_liveliness()'s
+// own doc comment) must not cause DURABLE backlog re-delivery once that peer's very next (otherwise
+// unchanged) announce arrives. check_liveliness() wipes peers[]/update_seen[]/update_last_modified[]
+// for the presumed-dead source, which defeats process_update()'s own "nothing changed" dedup (it
+// only short-circuits when update_seen[source] is still true) and makes upsert_peer() see the
+// recovering peer as a genuinely new slot claim again - but its own last_modified is unchanged
+// (nothing about its Publisher/Subscriber set actually changed), so durable_delivered[] (tickle.h)
+// must still remember it already has this backlog.
+static void test_durability_no_redelivery_after_liveliness_false_positive(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.durable = true;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        uint32_t value = i;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1..3
+    }
+
+    node.update_seen[REMOTE_NODE_ID] = true; // see write_update_one_subscriber() callers' own comment on why
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count); // first contact, backlog delivered once
+
+    // Simulate check_liveliness()'s own presumed-dead cleanup directly - this test cares about its
+    // effect on the peer/update_seen tables, not the timeout arithmetic itself (already covered by
+    // tests/test_liveliness.c).
+    node.update_last_seen[REMOTE_NODE_ID] = 0;
+    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1, NULL);
+    EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]); // confirms the false-positive cleanup actually ran
+
+    // Same as above - re-set so the recovering peer's own reply_with_own_announce() (a real, but
+    // unrelated to durability, "first contact" reply - update_last_modified[] is still 0 from
+    // check_liveliness()'s own reset, so process_update()'s "nothing changed" dedup still doesn't
+    // short-circuit and decode_update_entities() still runs) doesn't confound this test's own
+    // send_to count, same reasoning as this file's other tests.
+    node.update_seen[REMOTE_NODE_ID] = true;
+    test_mock_send_to_call_count = 0; // only count the recovering peer's own re-announce below
+
+    // Same last_modified as before (the exact same continuous instance, nothing about its own
+    // Publisher/Subscriber set changed) - looks like first contact again to upsert_peer() (peers[]
+    // was just wiped), but durable_delivered[] must still remember it, so no redundant backlog
+    // re-delivery happens.
+    tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// The mirror image of the test above: a *genuine* restart of the same node_id (a fresh last_
+// modified, since its own Publisher/Subscriber set was actually rebuilt at startup) must still get
+// the backlog delivered even after an identical check_liveliness() cleanup - durable_delivered[]'s
+// own (node_id, last_modified) key is what tells the two cases apart, not node_id alone.
+static void test_durability_redelivers_after_genuine_restart(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.durable = true;
+
+    for (uint32_t i = 0; i < 3; i++) {
+        uint32_t value = i;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+
+    node.update_seen[REMOTE_NODE_ID] = true; // see write_update_one_subscriber() callers' own comment on why
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
+
+    node.update_last_seen[REMOTE_NODE_ID] = 0;
+    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1, NULL);
+    EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
+
+    node.update_seen[REMOTE_NODE_ID] = true; // suppress reply_with_own_announce()'s own unrelated send, see above
+    test_mock_send_to_call_count = 0;
+
+    // A different last_modified - a genuine restart, its own subscription state was wiped too, it
+    // needs the backlog again.
+    tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
+}
+
 // A VOLATILE Publisher (durable == false, today's default) seeing a brand-new Subscriber must be
 // a harmless no-op - not a crash, not a delivery of anything.
 static void test_durability_ignored_for_volatile_publisher(void) {
@@ -463,6 +570,8 @@ int main(void) {
     test_durability_skips_expired_backlog_entries();
     test_upsert_peer_true_only_for_new_slot();
     test_durability_no_redelivery_on_unchanged_update();
+    test_durability_no_redelivery_after_liveliness_false_positive();
+    test_durability_redelivers_after_genuine_restart();
     test_durability_ignored_for_volatile_publisher();
     test_durability_backlog_recovered_via_acknack_when_reliable_too();
 
