@@ -131,7 +131,15 @@ int main(int argc, char** argv) {
     uint64_t send_start = start + (uint64_t)(2.0 * (double)tt_SECOND); // discovery margin
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
     tt_Node_schedule(&node, send_start, send_one, NULL);
-    tt_Node_schedule(&node, send_start + (uint64_t)(deadline_s * (double)tt_SECOND), check_deadline, NULL);
+    // Half-period phase offset from send_one's own schedule (2026-09-21, real bug found the hard
+    // way): two independently-scheduled periodic timers on the exact same nominal period, with no
+    // offset, are vulnerable to ordinary scheduling jitter flipping their relative firing order
+    // cycle to cycle - if check_deadline happens to fire just before that cycle's own send_one,
+    // `time - last_publish_ns` measures closer to two full periods than one, spuriously tripping
+    // `> deadline_s` on nearly every healthy cycle (writer_misses=31 over a 10s run for what should
+    // have been one ~3-miss deliberate gap, the real symptom this fixes). A half-period offset
+    // gives a robust safety margin against that jitter either direction.
+    tt_Node_schedule(&node, send_start + (uint64_t)(1.5 * deadline_s * (double)tt_SECOND), check_deadline, NULL);
     tt_Node_schedule(&node, g_deadline_ns + (uint64_t)(1.0 * (double)tt_SECOND), stop, NULL);
 
     ret = tt_RET_OK;
