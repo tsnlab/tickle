@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789890634639,
+  "lastUpdate": 1789892208320,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -29611,6 +29611,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04733857142857143,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f775406abea016661baddd75321d6e7a7b72fa0",
+          "message": "Milestone 50: rcl_interfaces typesupport for /parameter_events\n\nEvery rclcpp::Node unconditionally creates a /parameter_events\nsubscription via its own internal NodeTimeSource (use_sim_time\nmonitoring, no NodeOptions flag disables it) - rmw_tickle never had\ntypesupport for rcl_interfaces/msg/ParameterEvent at all, so no real\nrclcpp::Node could be created over rmw_tickle on a distro with this\nTimeSource behavior. Found while building rmw_perf_pingpong on\ntickle-hil's own rpis (ROS 2 Jazzy).\n\nTwo real problems fixed, scoped to .msg files only:\n- rosidl_typesupport_tickle_c's own auto-derived capacity only supports\n  one trailing variable array per struct; ParameterValue/ParameterEvent/\n  ParameterEventDescriptors/ListParametersResult all have more than one.\n  Fixed with real '# @capacity <N>' annotations\n  (rcl_interfaces_rmw_tickle.patch, generated the same pristine-clone-\n  diff way every other conformance patch already is).\n- rcl_interfaces' own .srv files nest Parameter/ParameterValue too, but\n  hit a separate, real bug in tools/typesupport/tickle_typesupport/\n  resolve.py's own Ros2Resolver: its \"same-package sibling\" lookup looks\n  next to the *currently-generating* file's own directory, which is\n  srv/ for a .srv file, not msg/, so the annotated .msg never gets\n  found and a different, unpatched copy gets resolved instead. A real\n  bug affecting any package mixing .srv/.msg with a same-package cross-\n  reference, not rcl_interfaces-specific - not fixed here (tracked as\n  its own follow-on). Worked around with a narrow, explicitly-commented\n  skip in rosidl_typesupport_tickle_c_generate_interfaces.cmake: only\n  rcl_interfaces' own .srv files produce no tickle typesupport, every\n  .msg file (all 13) still generates normally, and rcl_interfaces' own\n  message/service declarations for every other rmw stay untouched -\n  deliberately not the test_msgs_rmw_tickle.patch-style \"exclude from\n  rosidl_generate_interfaces() entirely\" pattern, unsafe here since\n  rcl_interfaces is a real, widely-depended-on package, not a throwaway\n  test dependency.\n\nVerified end to end on tickle-hil's own two rpis: rcl_interfaces builds\nclean against rosidl_typesupport_tickle_c, and rmw_perf_pingpong's own\nping_node/pong_node run over rmw_tickle without crashing, cross-host,\nboth BEST_EFFORT/RELIABLE, 0% loss. colcon build/test (10/10, lyrical)\nunaffected on this dev box - the cmake change is inert unless\nPROJECT_NAME is literally rcl_interfaces.\n\nNot done this pass, tracked as follow-ons: the Ros2Resolver sibling-\nlookup bug itself, and wiring this patch into check-all.yml's own real\nCI (deliberately not attempted given the risk to an already-green,\nload-bearing conformance gate - would need --allow-overriding\nrcl_interfaces and a real check that test_rmw_implementation stays\nunaffected).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T17:15:04+09:00",
+          "tree_id": "bcab4b603beef8c8d216e18b6418274727c55082",
+          "url": "https://github.com/tsnlab/tickle/commit/7f775406abea016661baddd75321d6e7a7b72fa0"
+        },
+        "date": 1789892204231,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04679285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05256571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.053831428571428565,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.05822714285714286,
             "unit": "ms"
           }
         ]
