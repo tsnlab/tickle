@@ -470,6 +470,25 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
     return RMW_RET_OK;
 }
 
+// Milestone 51 (rmw_tickle/PLAN.md) - was previously entirely missing, same "unresolved dlsym"
+// discovery as rmw_get_gid_for_client() (rmw_client.c's own doc comment on this same milestone).
+// A plain identifier-checked memcmp() - rmw_get_gid_for_publisher()/rmw_get_gid_for_client() above
+// already guarantee every real gid->data byte beyond the two populated ones is zeroed, so this
+// needs no per-entity-kind knowledge of its own to compare correctly.
+rmw_ret_t rmw_compare_gids_equal(const rmw_gid_t* gid1, const rmw_gid_t* gid2, bool* result) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(gid1, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(gid2, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(result, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(gid1->implementation_identifier) ||
+        !rmw_tickle_identifier_matches(gid2->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    *result = memcmp(gid1->data, gid2->data, RMW_GID_STORAGE_SIZE) == 0;
+    return RMW_RET_OK;
+}
+
 // A real rclcpp::Publisher constructor calls this once per QoS event type NodeOptions/QoS asks
 // for (offered_deadline_missed, liveliness_lost, ...). QoS roadmap #2 (DEADLINE) and #3
 // (LIVELINESS) are done - RMW_EVENT_OFFERED_DEADLINE_MISSED/RMW_EVENT_LIVELINESS_LOST are real,

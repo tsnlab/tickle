@@ -303,3 +303,26 @@ rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* requ
     // tracking on this path yet (matches rmw_publisher.c's own message_info gap).
     return RMW_RET_OK;
 }
+
+// Milestone 51 (rmw_tickle/PLAN.md) - was previously entirely missing (an unresolved dlsym, fatal
+// to any real caller), found by real CI once TestUniqueIdentifierAPI's own stale RELIABLE-based
+// skip was removed and this fixture actually ran for the first time. Mirrors rmw_publisher.c's own
+// rmw_get_gid_for_publisher() exactly - see its doc comment for the full (node_id, entity_id)
+// reasoning (Milestone 47's own per-instance identity fix, not just a name hash).
+rmw_ret_t rmw_get_gid_for_client(const rmw_client_t* client, rmw_gid_t* gid) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(gid, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(client->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    rmw_tickle_client_t* client_impl = (rmw_tickle_client_t*)client->data;
+    memset(gid, 0, sizeof(*gid));
+    gid->implementation_identifier = RMW_TICKLE_IDENTIFIER;
+    uint8_t node_id = client_impl->node->context_impl->tickle_node.id;
+    uint32_t entity_id = client_impl->tickle_client.endpoint.entity_id;
+    gid->data[0] = node_id;
+    memcpy(&gid->data[1], &entity_id, sizeof(entity_id));
+    return RMW_RET_OK;
+}
