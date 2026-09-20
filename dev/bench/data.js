@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789917219749,
+  "lastUpdate": 1789917223523,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -77455,6 +77455,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a0ceeca64d70b1758c354e1f4fa09e01dcdba0af",
+          "message": "check-all.yml: install setuptools before the rmw_perf_pingpong colcon build\n\nrmw_perf_pingpong's own rosidl_generate_interfaces() call triggers an\nament_cmake_python egg-build step - the same \"No module named 'setuptools'\"\nfailure this file's own \"Run the upstream rmw conformance suite\" step\nalready documents for test_msgs (actions/setup-python's hosted CPython\ndoesn't ship setuptools the way jazzy's apt-packaged system Python does).\nrmw_perf_pingpong is simply the first package this earlier colcon build\ncall ever exercised that code path for.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T00:10:42+09:00",
+          "tree_id": "abf9055a409f49c2669df475600a7e790a4aabb4",
+          "url": "https://github.com/tsnlab/tickle/commit/a0ceeca64d70b1758c354e1f4fa09e01dcdba0af"
+        },
+        "date": 1789917222112,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
             "unit": "%"
           }
         ]
