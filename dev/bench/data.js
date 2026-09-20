@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789920377043,
+  "lastUpdate": 1789920380651,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -43764,6 +43764,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030465262276785716,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "632e140c054096b8de7fbffd98317f6c78d50df4",
+          "message": "deadline_miss_detection/client.c: fix spurious deadline-miss false positives\n\ncheck_deadline and send_one were two independently-scheduled periodic timers\non the exact same nominal period with no phase offset - ordinary scheduling\njitter could flip their relative firing order cycle to cycle, spuriously\ntripping the > deadline_s threshold on nearly every healthy cycle instead of\njust the one deliberate gap (writer_misses=31 over a 10s run, real symptom).\nHalf-period offset gives a robust safety margin either direction.",
+          "timestamp": "2026-09-21T01:05:00+09:00",
+          "tree_id": "163ca556528dc6b82d20b94f6c3fdd36475e9585",
+          "url": "https://github.com/tsnlab/tickle/commit/632e140c054096b8de7fbffd98317f6c78d50df4"
+        },
+        "date": 1789920379530,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9903960909162249,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9905447278703962,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473300388881137,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03046894073486328,
             "unit": "Mbit/s"
           }
         ]
