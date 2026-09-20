@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789947973426,
+  "lastUpdate": 1789947976952,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -76374,6 +76374,60 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ad6d48bfa0e408d89486f4b2603bdb08e3de65b8"
         },
         "date": 1789947066694,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f382a61232154511a17eb92a1c5246c1ba048f2",
+          "message": "comparison.md: verify Milestone 60 - scenario 9 fixed, scenarios 5/6 unchanged\n\nRe-ran scenarios 5/6/9 against the rebuilt core after TickLE Dev's own\nMilestone 60 (RELIABLE+VOLATILE DDS-parity fix + receive-side dedup).\n\nScenario 9 confirmed fixed: 2/2 clean, recv <= sent both runs, only genuine\nloss remains, no more duplicate-delivery signature.\n\nScenario 6 still reproduces recv > sent 3/3, unchanged from before the fix -\nnot yet root-caused why depth=8 still shows it while depth=64 (scenario 9)\ndoesn't. Scenario 5's own volatile control case still shows received=57,\nthe exact same value as before Milestone 60 - the RELIABLE+VOLATILE fix\ndoesn't appear to have changed this specific scenario's own result. Both\nrelayed back to TickLE Dev for further investigation.",
+          "timestamp": "2026-09-21T08:43:17+09:00",
+          "tree_id": "66f86d81ca76636f44fce0dab7ad3df537c1478c",
+          "url": "https://github.com/tsnlab/tickle/commit/7f382a61232154511a17eb92a1c5246c1ba048f2"
+        },
+        "date": 1789947975865,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
