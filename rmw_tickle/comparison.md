@@ -772,6 +772,25 @@ black-box-debugging this specific old version further - or, if the goal is speci
 testing *this* exact version (e.g. because it's what a real deployment target uses), a source-level
 debug build with symbols, not just black-box tracing, is probably the next real step.
 
+### Tried the above recommendation (2026-09-20): CycloneDDS 11.0.1 - same bug, ruling out the version
+
+**A real, negative result - the recommendation immediately above was tested and did not pan out.**
+Installed `ros-rolling-cyclonedds` (`11.0.1-1noble...`, real `libddsc.so.11.0.1`, matching the dev
+box's own line exactly) on both rpis alongside jazzy's own `0.10.5` - a clean, isolated install
+(`apt-get install ros-rolling-cyclonedds` pulls in only its own 3 dependencies, confirmed via
+`--dry-run` before installing; `/opt/ros/jazzy`'s own `libddsc.so.0.10.5` untouched, confirmed via
+`dpkg -l`/`find` after) - `examples/perf_hil/cyclonedds/build.sh` updated to prefer it when
+present. Rebuilt and reran `best_effort_throughput` (the exact same failing case from the section
+above) - `ldd` confirmed the rebuilt binaries genuinely link `libddsc.so.11` from
+`/opt/ros/rolling`, not the old one. **Still 0/timeout - the identical bug, on a completely
+different CycloneDDS major version line.** This rules out "an old-version-specific defect" as the
+explanation - whatever this actually is, it's either something in this specific rig's own
+environment that both CycloneDDS versions trip over identically, or something about how this
+exercise's own examples are built/used that both versions dislike equally (and `ping`/`pong` don't)
+- not a CycloneDDS release bug. Real root-causing now needs source-level debugging (`gdb`,
+`CYCLONEDDS_URI` fine tracing was already tried and didn't localize it further - see the section
+above) rather than another version swap - not attempted further this pass.
+
 **Net scope actually delivered this round**: scenarios 1-2 (`best_effort_latency`/
 `reliable_latency`), both frameworks, real HIL numbers, verified stable across repeats - see
 "Results: scenarios 1-2" above. Scenarios 3-9 remain open, now with a documented, real, non-trivial

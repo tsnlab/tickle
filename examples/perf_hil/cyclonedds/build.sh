@@ -13,7 +13,14 @@ GEN_DIR="$HERE/generated"
 
 mkdir -p "$GEN_DIR"
 if [ ! -f "$GEN_DIR/Bench.c" ]; then
-    idlc -o "$GEN_DIR" "$HERE/../idl/Bench.idl"
+    if [ -x /opt/ros/rolling/bin/idlc ]; then
+        IDLC=/opt/ros/rolling/bin/idlc
+        IDLC_LIB_DIR="$(find /opt/ros/rolling/lib/*/ -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
+    else
+        IDLC="$(command -v idlc)"
+        IDLC_LIB_DIR="$(find /opt/ros/*/lib/*/  -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
+    fi
+    LD_LIBRARY_PATH="$IDLC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$IDLC" -o "$GEN_DIR" "$HERE/../idl/Bench.idl"
 fi
 
 SCEN_DIR="$HERE/$SCENARIO"
@@ -24,8 +31,17 @@ fi
 
 # Located rather than hardcoded - the include/lib layout differs between hosts (ROS distro name,
 # arch-triplet lib dir), same "generate/build fresh per host" reasoning as Bench.c/.h above.
-CDDS_INCLUDE="$(find /opt/ros/*/include -maxdepth 1 -iname CycloneDDS 2>/dev/null | head -1)"
-CDDS_LIB="$(find /opt/ros/*/lib/*/  -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
+# Prefers /opt/ros/rolling if present - a real, confirmed CycloneDDS discovery bug on the rig's
+# own default (jazzy's 0.10.5) never matches on any topic name other than the two latency
+# scenarios' own "ping"/"pong" (comparison.md's own "Blocked" section) - rolling's own CycloneDDS
+# (11.0.1, matching this repo's dev box) installed alongside jazzy specifically to test whether a
+# newer release doesn't have the same defect, per that section's own recommendation.
+CDDS_INCLUDE="$(find /opt/ros/rolling/include -maxdepth 1 -iname CycloneDDS 2>/dev/null | head -1)"
+CDDS_LIB="$(find /opt/ros/rolling/lib/*/ -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
+if [ -z "$CDDS_INCLUDE" ] || [ -z "$CDDS_LIB" ]; then
+    CDDS_INCLUDE="$(find /opt/ros/*/include -maxdepth 1 -iname CycloneDDS 2>/dev/null | head -1)"
+    CDDS_LIB="$(find /opt/ros/*/lib/*/  -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
+fi
 if [ -z "$CDDS_INCLUDE" ] || [ -z "$CDDS_LIB" ]; then
     echo "Could not locate an installed CycloneDDS (include: '$CDDS_INCLUDE', lib: '$CDDS_LIB')" >&2
     exit 1
