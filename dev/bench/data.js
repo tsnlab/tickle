@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789908766025,
+  "lastUpdate": 1789908769321,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -72530,6 +72530,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 10.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2a6af2a62a197b64d8048d9730b6fc7a32b08861",
+          "message": "PLAN.md: fix stale Milestone 45 header (item 1 already implemented + measured)\n\nThe row's own leading status/summary hadn't been updated since 403840a\n(buffer pooling) and comparison.md's own follow-up measurement (both by\nTickLE Dev and independently by TickLE Plan) landed - it still read \"not\nyet handed to implementation\" despite the addendum paragraph immediately\nbelow it, and comparison.md itself, already documenting the real (negative)\nresult.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:47:02+09:00",
+          "tree_id": "b129e74d96f43cbe8268f2e6b783e8d7c216eb4a",
+          "url": "https://github.com/tsnlab/tickle/commit/2a6af2a62a197b64d8048d9730b6fc7a32b08861"
+        },
+        "date": 1789908768200,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
             "unit": "%"
           },
           {
