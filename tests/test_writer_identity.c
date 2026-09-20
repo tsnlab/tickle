@@ -238,11 +238,19 @@ static void test_gap_on_one_writer_does_not_affect_another(void) {
     EXPECT_TRUE(proxy_a != NULL);
     EXPECT_TRUE(!proxy_a->acknack_scheduled);
 
-    // Writer B: opens a real gap (seq_no 1 skipped).
-    tail = write_data(&node, /*entity_id=*/2, 2, 200, 2);
+    // Writer B: first contact via seq_no 1 (Milestone 60 - first contact always syncs the baseline
+    // straight to whatever arrives first, never inventing a phantom gap "before" it - the DDS-
+    // parity fix this file's own header comment doesn't yet mention, see update_reliable_ack()'s
+    // own first_contact branch), then a real gap opens once it's an established, tracked writer
+    // (seq_no 2 skipped, seq_no 3 arrives instead).
+    tail = write_data(&node, /*entity_id=*/2, 1, 100, 1);
     EXPECT_TRUE(process_data(&node, &header_b, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     struct tt_WriterProxy* proxy_b = find_writer_proxy(&sub, REMOTE_NODE_ID_B, 2);
     EXPECT_TRUE(proxy_b != NULL);
+    EXPECT_TRUE(!proxy_b->acknack_scheduled); // first contact alone, nothing missing yet
+
+    tail = write_data(&node, /*entity_id=*/2, 3, 300, 3);
+    EXPECT_TRUE(process_data(&node, &header_b, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_TRUE(proxy_b->acknack_scheduled);
 
     // Writer A must still be completely healthy - B's own gap never touched it.

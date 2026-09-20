@@ -257,6 +257,53 @@ static void test_reliable_subscribe_gap_then_close(void) {
     EXPECT_TRUE(!proxy->acknack_scheduled);
 }
 
+// Milestone 60 (rmw_tickle/PLAN.md) - receive-side de-duplication regression: TickLE Plan's own
+// real HIL finding (history_depth_burst_loss/lifespan_expiry scenarios, recv > sent) traced to
+// deliver_data_to_subscriber() invoking the application callback unconditionally, with no seq_no-
+// based gate at all - a legitimate ACKNACK-driven retransmit racing the original delivery (or any
+// other stray duplicate) used to double-deliver to the app. Real DDS readers de-duplicate by
+// (writer GUID, sequence number) before ever notifying the listener; this reproduces both duplicate
+// shapes update_reliable_ack() must now catch: an already-cumulatively-acked sample arriving again
+// (seq_no < ack_seq_no), and an out-of-order sample arriving twice before the watermark reaches it
+// (bit already set in received_bitmap).
+static void test_reliable_duplicate_delivery_is_not_re_delivered_to_callback(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1); // in order, first contact
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    tail = write_data(&node, 3, 300, 3); // out of order, genuinely new - ahead of the gap at 2
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count);
+
+    tail = write_data(&node, 3, 300, 3); // seq_no 3 again - e.g. a retransmit racing the original
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // not re-delivered
+
+    tail = write_data(&node, 2, 200, 2); // fills the gap - genuinely new, watermark advances past 3 too
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
+
+    tail = write_data(&node, 1, 100, 1); // seq_no 1 again - well below the watermark now (4)
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count); // not re-delivered
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+}
+
 // Regression test for a real bug found via run_perf.sh's own tc/netem loss-injection scenarios:
 // update_reliable_ack()'s exact-match branch used to advance ack_seq_no without also shifting
 // received_bitmap, silently misaligning every bit still tracking a *different*, still-outstanding
@@ -516,6 +563,50 @@ static void test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_o
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK for 1001
 }
 
+// Milestone 60 (rmw_tickle/PLAN.md) - RELIABLE+VOLATILE DDS-parity regression: first contact via
+// DATA whose own seq_no is a *small* offset (< tt_RELIABLE_BITMAP_BITS) ahead of the stale
+// ack_seq_no==1 default must NOT be misread as "everything before this is a recoverable in-flight
+// gap" - that offset range used to fall into the ordinary bitmap-tracking branch instead of the
+// oversized-gap jump above, ACKNACK-requesting a VOLATILE Publisher's own pre-match history it was
+// never obligated to keep (TickLE Plan's own real finding: 57 samples received where DDS RELIABLE+
+// VOLATILE would give 0). Real DDS readers have zero basis to assume anything existed before the
+// very first sample they ever see for a writer, absent an explicit Heartbeat saying otherwise
+// (inform_subscriber_of_heartbeat()'s own identical first-contact branch already got this right -
+// this is the DATA-arrival path's equivalent, for whichever one wins the race to arrive first).
+static void test_reliable_first_contact_via_data_does_not_request_pre_match_history(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // First-ever arrival from this writer is seq_no 50 - a VOLATILE Publisher already 49 samples
+    // into its own stream by the time this Subscriber matched it, well within tt_RELIABLE_BITMAP_
+    // BITS (64) of the stale ack_seq_no==1 default.
+    uint32_t tail = write_data(&node, 50, 5000, 50);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(51, proxy->ack_seq_no);                     // synced straight to just past this first sample
+    EXPECT_TRUE(proxy->received_bitmap == 0);                 // nothing "missing" before it - never tracked at all
+    EXPECT_TRUE(!proxy->acknack_scheduled);                   // no phantom gap for 1..49
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // no ACKNACK ever sent requesting them
+
+    // The stream must still track normally from here - a real, later gap must still be detected.
+    tail = write_data(&node, 52, 5200, 52); // 51 skipped
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(51, proxy->ack_seq_no); // correctly still waiting on 51
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK for 51
+}
+
 // An incoming ACKNACK requesting a seq_no still in a reliable Publisher's cache must be
 // retransmitted, unicast straight back to whoever sent the ACKNACK.
 static void test_process_acknack_retransmits_cached_sample(void) {
@@ -726,10 +817,12 @@ int main(void) {
     test_reliable_publish_caches_and_evicts();
     test_reliable_subscribe_in_order_no_acknack();
     test_reliable_subscribe_gap_then_close();
+    test_reliable_duplicate_delivery_is_not_re_delivered_to_callback();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
     test_acknack_retry_bulk_skip_matches_depth_vs_bitmap_width();
     test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_freezing();
+    test_reliable_first_contact_via_data_does_not_request_pre_match_history();
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();
     test_process_acknack_skips_expired_sample();

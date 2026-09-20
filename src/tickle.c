@@ -790,7 +790,7 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy);
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
 static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy);
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy);
-static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
+static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port);
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no);
@@ -2018,26 +2018,58 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
 // WriterProxy's own doc comment for why this is no longer a single flat watermark - and updates
 // its cumulative-ack watermark/out-of-order bitmap, keeping an ACKNACK flowing back to the sender
 // while a gap is open.
-static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
+//
+// Milestone 60 (rmw_tickle/PLAN.md) - returns whether seq_no was genuinely new to this Subscriber,
+// i.e. not already reflected in proxy->ack_seq_no/received_bitmap, so deliver_data_to_subscriber()
+// can skip re-invoking the application callback for a sample it already delivered (a legitimate
+// ACKNACK-driven retransmit racing the original, or a stale duplicate arriving again) - real DDS
+// readers de-duplicate by (writer GUID, sequence number) exactly this way; TickLE previously had no
+// equivalent gate at all, so any retransmission that overlapped with an already-received sample
+// double-delivered it to the application. A best-effort Subscriber (!sub->reliable, below) has no
+// per-writer tracking to de-duplicate against and no retransmission mechanism to ever legitimately
+// produce a duplicate in the first place - matches real DDS BEST_EFFORT's own identical non-
+// guarantee, always "new".
+static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port) {
     if (!sub->reliable) {
-        return;
+        return true;
     }
 
-    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, sender_node_id, sender_entity_id, NULL);
+    bool first_contact = false;
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, sender_node_id, sender_entity_id, &first_contact);
     if (proxy == NULL) {
-        return; // WriterProxy table full - see find_or_create_writer_proxy()'s own doc comment
+        return true; // WriterProxy table full - see find_or_create_writer_proxy()'s own doc comment,
+                     // nothing to track against, deliver as-is same as always
     }
 
     proxy->sender_ip = sender_ip;
     proxy->sender_port = sender_port;
 
-    if (seq_no < proxy->ack_seq_no) {
-        return; // duplicate/old - already accounted for, e.g. a retransmit that arrived after we
-                // otherwise caught up on our own
+    if (first_contact) {
+        // Milestone 60 - RELIABLE+VOLATILE DDS-parity fix, mirrors inform_subscriber_of_heartbeat()'s
+        // own identical first-contact branch (its own doc comment: "the actual DDS-parity fix this
+        // whole follow-up is for"). DATA can legally win the race against the discovery-triggered
+        // initial Heartbeat (send_initial_heartbeat(), unicast and never itself retried/acked)
+        // arriving first, especially under loss injection - without this, first contact via DATA
+        // fell through to the offset-based gap logic below starting from the stale ack_seq_no==1
+        // default, misreading "everything before this first sample" as a recoverable in-flight gap
+        // and ACKNACK-requesting a VOLATILE Publisher's own pre-match history it was never
+        // obligated to keep - re-deriving the exact bug the Heartbeat-first path already fixed, any
+        // time DATA happened to win that race instead. A reordering-at-first-contact edge case (an
+        // earlier backlog sample lost in flight while a later one wins the race here) is an
+        // accepted, narrow residual, same category as Milestone 47's own honest residuals - the
+        // Heartbeat-first path (when it wins the race instead) still catches it correctly via its
+        // own first_available_seq_no, unaffected by this branch.
+        proxy->ack_seq_no = seq_no;
     }
 
+    if (seq_no < proxy->ack_seq_no) {
+        return false; // duplicate/old - already accounted for, e.g. a retransmit that arrived after
+                      // we otherwise caught up on our own
+    }
+
+    bool is_new = true;
     if (seq_no == proxy->ack_seq_no) {
         advance_ack_seq_no(proxy);
     } else {
@@ -2052,7 +2084,12 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // has had its fair tt_RELIABLE_RETRY attempts, not preempting them.
         uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
         if (offset < tt_RELIABLE_BITMAP_BITS) {
-            proxy->received_bitmap |= (1ULL << offset);
+            uint64_t bit = 1ULL << offset;
+            if (proxy->received_bitmap & bit) {
+                is_new = false; // already received this one out of order before - a duplicate
+            } else {
+                proxy->received_bitmap |= bit;
+            }
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
             // own comment above warns against fast-forwarding on, an offset this wide (>=
@@ -2078,6 +2115,7 @@ static void update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     }
 
     maybe_arm_acknack_retry(node, proxy);
+    return is_new;
 }
 
 // Encodes one UpdateEntity per non-NULL endpoint, up to UINT8_MAX of them. Returns the number
@@ -2609,11 +2647,17 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     struct tt_Topic* topic = sub->topic;
     bool is_native = tt_is_native_endian(ctx->header);
 
-    // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op unless sub->reliable. Delivery to `callback`
-    // below is unconditional either way (reliable only adds a delivery *guarantee* via
-    // retransmission, not ordering - a late, retransmitted sample is still delivered whenever it
-    // arrives, out of its original order).
-    update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip, ctx->sender_port);
+    // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op (always "new") unless sub->reliable. Milestone
+    // 60 (rmw_tickle/PLAN.md) - delivery to `callback` below is still unconditional for ordering (a
+    // late, retransmitted sample is still delivered whenever it arrives, out of its original order)
+    // but no longer for *identity* - a sample update_reliable_ack() recognizes as already delivered
+    // (a legitimate ACKNACK-driven retransmit racing the original, or a stale duplicate) is skipped
+    // here instead of re-invoking the application callback a second time for it, matching real DDS
+    // readers' own per-writer sequence-number de-duplication.
+    if (!update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
+                             ctx->sender_port)) {
+        return;
+    }
 
     // Zero-copy path: hand the callback a tt_Data* aliasing rx_buffer directly, skipping the
     // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
