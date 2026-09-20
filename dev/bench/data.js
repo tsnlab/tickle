@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789902239611,
+  "lastUpdate": 1789902242871,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -68377,6 +68377,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b56b982b77a2a97e8f485fe6935d940c6fcb90d3",
+          "message": "examples/perf_hil/fastdds: add durability_late_join, fix run_scenario.sh -D forwarding\n\nNew scenario, mirroring cyclonedds/durability_late_join's own now-fixed design from the\nstart (both real bugs found there - run_scenario.sh never forwarding -D to the server, a\ntoo-shallow regular HISTORY depth capping what TRANSIENT_LOCAL can replay - baked in here\nrather than reproduced): publisher writes its full backlog before any subscriber exists,\na late-joining subscriber either gets it all (TRANSIENT_LOCAL, -D) or none of it\n(VOLATILE, default), confirmed via an explicit ack round-trip back to the publisher.\n\nVerified on the rpi rig, 3/3 real runs: durable case receives 20/20 every time; the\nVOLATILE control case correctly still shows received=0. Cleaner than CycloneDDS's own\ncurrent result (8-11/20, a separate open ACKNACK-pacing question tracked in\ncomparison.md) - FastDDS's own durability replay is faster or less round-trip-bound on\nthis link.\n\nfastdds/run_scenario.sh also gets the identical $CLIENT_ARGS-forwarding + 5s-sleep fix\nalready applied to the CycloneDDS twin.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T20:00:16+09:00",
+          "tree_id": "70d0d3b771b0d22879c1c3d8de4d3870dcb18e40",
+          "url": "https://github.com/tsnlab/tickle/commit/b56b982b77a2a97e8f485fe6935d940c6fcb90d3"
+        },
+        "date": 1789902241779,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
             "unit": "%"
           }
         ]
