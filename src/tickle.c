@@ -2020,15 +2020,38 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
 // while a gap is open.
 //
 // Milestone 60 (rmw_tickle/PLAN.md) - returns whether seq_no was genuinely new to this Subscriber,
-// i.e. not already reflected in proxy->ack_seq_no/received_bitmap, so deliver_data_to_subscriber()
-// can skip re-invoking the application callback for a sample it already delivered (a legitimate
-// ACKNACK-driven retransmit racing the original, or a stale duplicate arriving again) - real DDS
-// readers de-duplicate by (writer GUID, sequence number) exactly this way; TickLE previously had no
-// equivalent gate at all, so any retransmission that overlapped with an already-received sample
-// double-delivered it to the application. A best-effort Subscriber (!sub->reliable, below) has no
-// per-writer tracking to de-duplicate against and no retransmission mechanism to ever legitimately
-// produce a duplicate in the first place - matches real DDS BEST_EFFORT's own identical non-
-// guarantee, always "new".
+// so deliver_data_to_subscriber() can skip re-invoking the application callback for a sample it
+// already delivered (a legitimate ACKNACK-driven retransmit racing the original, or a stale
+// duplicate arriving again) - real DDS readers de-duplicate by (writer GUID, sequence number)
+// exactly this way; TickLE previously had no equivalent gate at all. A best-effort Subscriber
+// (!sub->reliable, below) has no per-writer tracking to de-duplicate against and no retransmission
+// mechanism to ever legitimately produce a duplicate in the first place - matches real DDS
+// BEST_EFFORT's own identical non-guarantee, always "new".
+//
+// Deliberately narrow: only a bit *already set* in received_bitmap (below) is trustworthy evidence
+// of "already delivered" - seq_no < ack_seq_no alone is NOT, once jump_ack_baseline() has ever
+// fired for this proxy. A first attempt also treated seq_no < ack_seq_no as an always-duplicate
+// case and reproduced a severe, real regression caught by real CI (Performance Test's own
+// "reliable recv throughput" benchmark: a consistent ~820 Mbps across the prior 7 pushes on this
+// exact rig collapsed to 66.276 Mbps, a 12.38x drop flagged by github-action-benchmark, with the
+// receiver's own total_received_msgs - one increment per bulk_callback() invocation, examples/
+// linux/perf/perf_server.c - capped at exactly 65,536 while the wire-level best-effort throughput
+// test in the very same run stayed a normal ~900 Mbps). Root cause: jump_ack_baseline() (called
+// when a gap exceeds tt_RELIABLE_BITMAP_BITS, plausible under real reordering at near-line-rate,
+// not just genuine loss) *abandons* tracking for everything below its own jump point rather than
+// confirming it was actually received - unlike the ordinary exact-match/bitmap-absorption path,
+// where advancing past a position always means it genuinely arrived. Once a jump happens, every
+// still-in-flight (merely reordered, never lost) sample from the abandoned range legitimately
+// still arrives with seq_no < ack_seq_no and deserves delivery - "reliable only adds a guarantee
+// via retransmission, not ordering" (deliver_data_to_subscriber()'s own older comment) - but the
+// first attempt here treated all of them as duplicates, silently dropping the vast majority of a
+// saturated stream's own genuinely-new samples. A bit in received_bitmap has no equivalent
+// ambiguity: jump_ack_baseline() itself zeroes received_bitmap on every jump, so a set bit is
+// always fresh, current-window evidence a sample was actually received - never contaminated by an
+// abandoned range. This narrower gate no longer catches an already-cumulatively-passed-watermark
+// duplicate (an accepted, narrow miss, same category as this file's other honest residuals) but
+// carries no risk of misclassifying a genuinely new sample - the trade-off deliberately made in
+// the safer direction after the wider version's own real-CI-confirmed failure.
 static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port) {
@@ -2065,8 +2088,11 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     }
 
     if (seq_no < proxy->ack_seq_no) {
-        return false; // duplicate/old - already accounted for, e.g. a retransmit that arrived after
-                      // we otherwise caught up on our own
+        return true; // old relative to the ack watermark, but NOT reliable evidence of "already
+                     // delivered" once jump_ack_baseline() has ever fired for this proxy - see this
+                     // function's own doc comment for the real regression this specific case caused
+                     // when it used to return false here. Ack-tracking has nothing further to do
+                     // for it either way (unchanged from before this milestone).
     }
 
     bool is_new = true;

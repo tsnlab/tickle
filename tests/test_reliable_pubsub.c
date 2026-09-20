@@ -262,10 +262,13 @@ static void test_reliable_subscribe_gap_then_close(void) {
 // deliver_data_to_subscriber() invoking the application callback unconditionally, with no seq_no-
 // based gate at all - a legitimate ACKNACK-driven retransmit racing the original delivery (or any
 // other stray duplicate) used to double-deliver to the app. Real DDS readers de-duplicate by
-// (writer GUID, sequence number) before ever notifying the listener; this reproduces both duplicate
-// shapes update_reliable_ack() must now catch: an already-cumulatively-acked sample arriving again
-// (seq_no < ack_seq_no), and an out-of-order sample arriving twice before the watermark reaches it
-// (bit already set in received_bitmap).
+// (writer GUID, sequence number) before ever notifying the listener. Deliberately narrow, only the
+// one duplicate shape update_reliable_ack() can catch *safely* (an out-of-order sample arriving
+// twice before the watermark reaches it, bit already set in received_bitmap) - a first version also
+// treated any seq_no < ack_seq_no as a duplicate and reproduced a severe real regression (a 12.38x
+// "reliable recv throughput" drop caught by real CI, see update_reliable_ack()'s own doc comment
+// for the full root cause); a below-watermark arrival is deliberately left undeduplicated here,
+// same accepted trade-off.
 static void test_reliable_duplicate_delivery_is_not_re_delivered_to_callback(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
@@ -289,19 +292,62 @@ static void test_reliable_duplicate_delivery_is_not_re_delivered_to_callback(voi
 
     tail = write_data(&node, 3, 300, 3); // seq_no 3 again - e.g. a retransmit racing the original
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // not re-delivered
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // not re-delivered - the bit was already set
 
     tail = write_data(&node, 2, 200, 2); // fills the gap - genuinely new, watermark advances past 3 too
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
 
-    tail = write_data(&node, 1, 100, 1); // seq_no 1 again - well below the watermark now (4)
+    // seq_no 1 again, well below the watermark (4) now - deliberately NOT deduplicated (accepted
+    // trade-off, see this test's own doc comment): still delivered, count advances.
+    tail = write_data(&node, 1, 100, 1);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count); // not re-delivered
+    EXPECT_EQ_U32(4, (uint32_t)subscriber_callback_count);
 
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(4, proxy->ack_seq_no);
+}
+
+// Milestone 60 - the exact real-CI regression this milestone's own first attempt caused, pinned as
+// its own permanent test: a gap wide enough to trigger jump_ack_baseline() must not cause every
+// subsequently-arriving, merely-reordered (never actually lost) sample from the abandoned range to
+// be silently dropped from delivery - each one is still genuinely new to this Subscriber.
+static void test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1); // in order, first contact
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    // A far-ahead arrival (offset >= tt_RELIABLE_BITMAP_BITS) triggers jump_ack_baseline() -
+    // abandons tracking for 2..(far_seq - 1), none of which have actually been delivered yet.
+    uint32_t far_seq = 2 + tt_RELIABLE_BITMAP_BITS;
+    tail = write_data(&node, far_seq, far_seq * 100ULL, far_seq);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // the jump-triggering sample itself delivered
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(far_seq + 1, proxy->ack_seq_no);
+
+    // Several samples from the abandoned range now arrive, merely reordered (never actually lost) -
+    // every one of them is genuinely new to this Subscriber and must still be delivered.
+    for (uint32_t seq = 2; seq < far_seq; seq += 7) {
+        tail = write_data(&node, seq, seq * 100ULL, seq);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    EXPECT_TRUE((uint32_t)subscriber_callback_count > 2); // not silently dropped
 }
 
 // Regression test for a real bug found via run_perf.sh's own tc/netem loss-injection scenarios:
@@ -818,6 +864,7 @@ int main(void) {
     test_reliable_subscribe_in_order_no_acknack();
     test_reliable_subscribe_gap_then_close();
     test_reliable_duplicate_delivery_is_not_re_delivered_to_callback();
+    test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
     test_acknack_retry_bulk_skip_matches_depth_vs_bitmap_width();
