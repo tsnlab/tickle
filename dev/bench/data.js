@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789935969064,
+  "lastUpdate": 1789935972495,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -64499,6 +64499,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.7,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8c97583f3aec3da79d3c4414121348976bf5030b",
+          "message": "comparison.md: restructure into a fixed six-section format (the user's own request)\n\nPurpose / raw-core (TickLE vs. FastDDS vs. CycloneDDS) experiment+results /\nrmw-layer (rmw_tickle vs. rmw_fastrtps_cpp/rmw_cyclonedds_cpp) experiment+\nresults / a standing to-do list from TickLE's own perspective. 1430+ lines\ndown to ~170 - the accumulated chronological bug-hunt narrative is dropped\nfrom the live document (still recoverable from this file's own git history),\nall real numbers carried over unchanged.\n\nPLAN.md gains Milestone 58 recording this as the user's own explicit request,\nper the established convention of tracking TickLE Plan's own documentation\nwork there too (same category as Milestone 44).",
+          "timestamp": "2026-09-21T05:23:14+09:00",
+          "tree_id": "2a2ba4cea976ba9aa138ade5475aa25dbf170ea2",
+          "url": "https://github.com/tsnlab/tickle/commit/8c97583f3aec3da79d3c4414121348976bf5030b"
+        },
+        "date": 1789935971376,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.928,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.009,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.17,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.689,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.557,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.913,
             "unit": "Mbps"
           }
         ]
