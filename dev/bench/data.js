@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789905479163,
+  "lastUpdate": 1789905483134,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -38954,6 +38954,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046907697405134,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d22f8524c493695c40a0f86f3a3b497bec158e39",
+          "message": "check-all.yml: fix colcon --allow-overriding argument order (Milestone 54 CI failure)\n\ncolcon's own --packages-select takes a variable-length list and, positioned first,\ngreedily swallows every following token up to the next flag it recognizes from its\ncurrent position - after it, --allow-overriding was parsed as one more package name\nfor --packages-select instead of its own flag (\"colcon build: error: argument\n--packages-select: unrecognized argument: --allow-overriding\"), failing the real CI\nrun on e30b0e9 (Milestone 54's own rcl_interfaces .srv CI wiring). Not the\ntest_rmw_implementation-coexistence risk that commit's own message flagged as\nunverified locally - a simpler CLI ordering bug. Fixed by moving --allow-overriding\nbefore --packages-select.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T20:56:47+09:00",
+          "tree_id": "0a29aa8654ad31de9c8efd198d339e3f675fe0fe",
+          "url": "https://github.com/tsnlab/tickle/commit/d22f8524c493695c40a0f86f3a3b497bec158e39"
+        },
+        "date": 1789905482021,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905421393258231,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9905403682163784,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03045599801199777,
             "unit": "Mbit/s"
           }
         ]
