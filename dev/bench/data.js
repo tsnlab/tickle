@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789906720448,
+  "lastUpdate": 1789906723680,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -70895,6 +70895,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fc681ee05a766d1e84ca8f39222bdece4540e95c",
+          "message": "check-all.yml: install colcon-override-check via apt, not pip (Milestone 54, take 3)\n\npip install colcon-override-check pulled in its own fresh colcon-core 0.21.3, which\npip installed alongside - and ahead of, on sys.path - the apt-installed one every\nother ros-jazzy-colcon-* extension package on this runner registers itself against\nvia Python entry points. The result wasn't a missing flag any more but a colcon that\nonly knew two verbs at all (build, test - down from the usual dozen+) and rejected\neven --base-paths, a completely unrelated, previously-working flag from a different\ncolcon extension - the pip install had silently shadowed the whole apt-installed\nextension ecosystem, not just added one flag to it.\n\nInstalling the same apt-packaged python3-colcon-override-check instead keeps\neverything on one consistent, already-integrated channel.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:15:45+09:00",
+          "tree_id": "eb9cb697be3cb85c7d817894b2b52f583de74711",
+          "url": "https://github.com/tsnlab/tickle/commit/fc681ee05a766d1e84ca8f39222bdece4540e95c"
+        },
+        "date": 1789906722583,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.2,
             "unit": "%"
           }
         ]
