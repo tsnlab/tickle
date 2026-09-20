@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789908746116,
+  "lastUpdate": 1789908749371,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24521,6 +24521,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ac73b98f93ecfdbd9e385b1722c1cb7e1bf2bc2e"
         },
         "date": 1789908492830,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.009,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2a6af2a62a197b64d8048d9730b6fc7a32b08861",
+          "message": "PLAN.md: fix stale Milestone 45 header (item 1 already implemented + measured)\n\nThe row's own leading status/summary hadn't been updated since 403840a\n(buffer pooling) and comparison.md's own follow-up measurement (both by\nTickLE Dev and independently by TickLE Plan) landed - it still read \"not\nyet handed to implementation\" despite the addendum paragraph immediately\nbelow it, and comparison.md itself, already documenting the real (negative)\nresult.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:47:02+09:00",
+          "tree_id": "b129e74d96f43cbe8268f2e6b783e8d7c216eb4a",
+          "url": "https://github.com/tsnlab/tickle/commit/2a6af2a62a197b64d8048d9730b6fc7a32b08861"
+        },
+        "date": 1789908748262,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
