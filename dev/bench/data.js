@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789917691762,
+  "lastUpdate": 1789917768395,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -9677,6 +9677,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.198,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e40bbde5125d27ea6e1d5f164d25d77cf0ba7e87",
+          "message": "PLAN.md: confirm Milestone 57 real CI green (a0ceeca)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T00:20:15+09:00",
+          "tree_id": "8aa0052f781877d1c34e6fcb8ff45d9237fc7e74",
+          "url": "https://github.com/tsnlab/tickle/commit/e40bbde5125d27ea6e1d5f164d25d77cf0ba7e87"
+        },
+        "date": 1789917763030,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
             "unit": "ms"
           },
           {
