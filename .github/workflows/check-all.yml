@@ -79,6 +79,22 @@ jobs:
           # here as an unexpected diff - fail the build rather than silently drifting.
           git diff --exit-code -- examples/uint64 examples/set_bool examples/ping_pong examples/perf
 
+      - name: Run tools/typesupport's own test suite
+        run: |
+          # tools/typesupport/tests/ (68 cases as of Milestone 52) was previously only ever run by
+          # hand (tools/typesupport/README.md's own "python3 -m pytest tests/") - never gated by
+          # any CI workflow, so a real regression there (e.g. Milestone 52's own resolve.
+          # Ros2Resolver sibling-lookup bug) could land on main unnoticed until it surfaced
+          # downstream, in a real ROS 2 package's own build, days or milestones later. `pytest`
+          # itself isn't one of tickle-typesupport's own runtime dependencies (pyproject.toml's
+          # `dependencies = ["empy==3.3.4"]` only) - it's a dev/test-only tool, installed here
+          # rather than added there. `cc` (build-essential, already on ubuntu-latest images) is
+          # what tests/conftest.py's own CC/CFLAGS compiles the generated codecs with - no extra
+          # package install needed for that part, unlike the RISC-V cross toolchain the *next*
+          # step below needs for FreeRTOS-only sources.
+          pip install pytest
+          python3 -m pytest tools/typesupport/tests/
+
       - name: Generate compile_commands.json
         run: |
           bear -- make all
