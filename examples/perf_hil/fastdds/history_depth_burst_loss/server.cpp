@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
     uint64_t start = now_ns();
     uint64_t deadline = start + (uint64_t)(safety_cap_s * 1e9);
     while (!g_interrupted && now_ns() < deadline) {
-        eprosima::fastrtps::Duration_t timeout{1, 0};
+        eprosima::fastrtps::Duration_t timeout {1, 0};
         if (!reader->wait_for_unread_message(timeout)) {
             continue;
         }

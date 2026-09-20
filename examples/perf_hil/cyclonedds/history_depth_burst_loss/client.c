@@ -10,15 +10,16 @@
  * mechanism this scenario is exercising (HISTORY depth is what bounds how much a RELIABLE writer
  * will hold for a slow reader before giving up, not an unlimited buffer).
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include "Bench.h"
+#include <dds/dds.h>
+
 #include "../common.h"
+#include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -87,7 +88,7 @@ int main(int argc, char** argv) {
             dropped++;
         }
         struct timespec pace = {.tv_sec = (time_t)(interval_ns / 1000000000ULL),
-                                 .tv_nsec = (long)(interval_ns % 1000000000ULL)};
+                                .tv_nsec = (long)(interval_ns % 1000000000ULL)};
         nanosleep(&pace, NULL);
     }
 

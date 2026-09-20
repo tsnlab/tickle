@@ -10,15 +10,16 @@
  * dropped once the writer's own bounded WHC/max_blocking_time is exceeded - see client.c's own doc
  * comment for that half of the mechanism).
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include "Bench.h"
+#include <dds/dds.h>
+
 #include "../common.h"
+#include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
