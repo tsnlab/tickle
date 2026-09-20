@@ -9,6 +9,20 @@ set -euo pipefail
 SCENARIO="${1:?usage: run_scenario.sh <scenario> [client_args...]}"
 shift
 CLIENT_ARGS="${*:--d 10}"
+# Overridable, not just for tuning (2026-09-21, real bug found the hard way): every other
+# scenario's own server.c is a passive matcher (client can't usefully start until it exists), so a
+# fixed pre-client sleep is a safe default everywhere - except history_depth_burst_loss, whose
+# server.c does its OWN internal `-p` stall *before ever creating its Subscriber at all*. With the
+# default 3s here, that scenario's subscriber was becoming discoverable (server's own internal
+# pause completing) *before* the client had even started publishing (client only starts after this
+# sleep, plus its own 2s discovery margin) - the eviction window under test never actually existed,
+# silently producing 0 loss regardless of `-p`. `PRE_CLIENT_SLEEP=0` restores the real race: both
+# sides launch together, and server.c's own `-p` is what creates the whole delay, same as the
+# CycloneDDS/FastDDS twins achieve structurally via their own writer's match-wait blocking on a
+# reader that doesn't yet exist - TickLE's own Publisher has no such match-wait to lean on (publish()
+# is unconditional broadcast, verified directly in tickle.c), so this has to be an explicit,
+# scenario-aware orchestration choice instead.
+PRE_CLIENT_SLEEP="${PRE_CLIENT_SLEEP:-3}"
 
 SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
 RPI_CLIENT="10.1.1.214"
@@ -23,7 +37,7 @@ ssh_run() {
 }
 
 ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/tickle_${SCENARIO}_server.log 2>&1 < /dev/null &"
-sleep 3
+sleep "$PRE_CLIENT_SLEEP"
 ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
 # SIGINT the server right after the client finishes, then read its log - not just a fixed sleep
 # (2026-09-21, real bug found the hard way): some scenarios' own server.c only prints its own
