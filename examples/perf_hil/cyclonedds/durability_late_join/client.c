@@ -47,7 +47,10 @@ int main(int argc, char** argv) {
 
     dds_qos_t* data_qos = dds_create_qos();
     dds_qset_reliability(data_qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
-    dds_qset_history(data_qos, DDS_HISTORY_KEEP_LAST, 8);
+    // Matches server.c's own backlog_count (20) - see its own doc comment for the real bug this
+    // avoids (a shallower depth here caps how many replayed backlog samples this reader can even
+    // hold, independent of the writer's own matching fix).
+    dds_qset_history(data_qos, DDS_HISTORY_KEEP_LAST, 20);
     if (durable) {
         dds_qset_durability(data_qos, DDS_DURABILITY_TRANSIENT_LOCAL);
         // Depth 20, matching backlog_count - without this, the durability service's own default
@@ -80,7 +83,12 @@ int main(int argc, char** argv) {
     dds_waitset_attach(waitset, reader, 0);
 
     uint32_t received = 0;
-    uint64_t deadline = now_ns() + 5ULL * 1000000000ULL; // 5s window to collect whatever arrives
+    // 15s, not 5s (2026-09-20, real finding): even with the KEEP_LAST(8) ceiling fixed above,
+    // repeated real runs still showed variable partial delivery (8/10/11 of 20) inside a 5s window
+    // - RELIABLE redelivery of a durability backlog goes through real ACKNACK round-trips per
+    // sample over the actual network, not an instant local replay, and 5s wasn't reliably enough
+    // for all 20 on this rig.
+    uint64_t deadline = now_ns() + 15ULL * 1000000000ULL;
     struct Bench sample;
     void* samples[1] = {&sample};
     dds_sample_info_t infos[1];

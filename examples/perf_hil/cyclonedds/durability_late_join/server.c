@@ -57,7 +57,13 @@ int main(int argc, char** argv) {
 
     dds_qos_t* data_qos = dds_create_qos();
     dds_qset_reliability(data_qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
-    dds_qset_history(data_qos, DDS_HISTORY_KEEP_LAST, 8);
+    // Matches backlog_count (2026-09-20, real bug - consistently, deterministically received=8/20
+    // on the rig across repeated runs, exactly this old depth): TRANSIENT_LOCAL durability in
+    // CycloneDDS (no separate persistence service running here) serves a late joiner directly from
+    // the writer's own regular HISTORY cache, not something durability_service tracks
+    // independently - a shallower regular depth here caps what's replayable regardless of
+    // durability_service's own depth=20 below.
+    dds_qset_history(data_qos, DDS_HISTORY_KEEP_LAST, backlog_count);
     if (durable) {
         dds_qset_durability(data_qos, DDS_DURABILITY_TRANSIENT_LOCAL);
         // Depth 20, matching backlog_count - without this, the durability service's own default
@@ -78,15 +84,20 @@ int main(int argc, char** argv) {
            backlog_count);
     for (uint32_t i = 1; i <= backlog_count; i++) {
         struct Bench msg = {.seq = i, .send_ns = now_ns()};
-        dds_write(writer, &msg);
+        dds_return_t wrc = dds_write(writer, &msg);
+        if (wrc != DDS_RETCODE_OK) {
+            fprintf(stderr, "dds_write(seq=%u) failed: %s\n", i, dds_strretcode(-wrc));
+        }
     }
 
     dds_entity_t waitset = dds_create_waitset(participant);
     dds_set_status_mask(ack_reader, DDS_DATA_AVAILABLE_STATUS);
     dds_waitset_attach(waitset, ack_reader, 0);
 
-    printf("Waiting up to 20s for the late subscriber's own ack...\n");
-    uint64_t deadline = now_ns() + 20ULL * 1000000000ULL;
+    // 40s, not 20s (2026-09-20): client.c's own worst case (up to two 15s match-waits sequentially
+    // + a 15s collection window) can run past 20s on its own before ever sending the ack.
+    printf("Waiting up to 40s for the late subscriber's own ack...\n");
+    uint64_t deadline = now_ns() + 40ULL * 1000000000ULL;
     bool acked = false;
     struct Bench ack_sample;
     void* samples[1] = {&ack_sample};

@@ -44,7 +44,20 @@ ssh_run() {
 # this ssh session's own stdin, so ssh never sees every fd close and never returns either. Skipping
 # either fix makes run_scenario.sh stall forever on this exact line (not a CycloneDDS bug at all, easy
 # to mistake for one mid-debugging since sleep 2/the client step below never even get reached).
-ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR; nohup ./server > /tmp/cdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
-sleep 2
+#
+# $CLIENT_ARGS forwarded to the server too (2026-09-20, real bug found the hard way): this used to
+# start every scenario's server with zero args, so `run_scenario.sh durability_late_join -D` gave the
+# CLIENT a durable (TRANSIENT_LOCAL) reader QoS while the SERVER's writer stayed VOLATILE - a genuine
+# RxO incompatibility (a reader can't require more durability than a writer offers), which correctly,
+# deterministically never matches - looked exactly like a discovery bug from the client's own "timed
+# out waiting for a match" but wasn't one. Every other scenario's server.c only recognizes -d (used as
+# its own safety-cap, a sensible value to share with the client's -d) and silently ignores anything
+# else, so forwarding the same args here is safe generally, not just for this one scenario.
+ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/cdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
+# 5s, not 2s (2026-09-20, real finding): a TRANSIENT_LOCAL reader's own match negotiation against a
+# writer carrying a non-trivial durability_service history took meaningfully longer on this rig than
+# a plain volatile match (~1.5-2s) - 2s left the client's own 15s match-wait budget too tight often
+# enough to matter; 5s was reliable across repeated real runs.
+sleep 5
 ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
 ssh_run "$RPI_SERVER" "pkill -INT -x server" || true

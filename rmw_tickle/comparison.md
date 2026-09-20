@@ -922,10 +922,35 @@ interval on the FastDDS run - not a real apples-to-apples throughput comparison 
 run with matched, unpaced (`-i 0`) settings on both is needed before citing these two throughput
 numbers against each other.
 
-**Still open**: `durability_late_join` (CycloneDDS) still returns `received=0` when actually tested
-with `-D` (TRANSIENT_LOCAL) - this is a *different*, not-yet-diagnosed issue in that scenario's own
-client/server timing handshake (the generic `run_scenario.sh` 2-second sleep between starting the
-server and the client may not suit this specific scenario's "publish a full backlog, then let a
-late joiner connect" shape), not a rediscovery of any of the five bugs above. FastDDS has no
-`durability_late_join` scenario built yet. Scenarios 7-9 (deadline, liveliness, lifespan) remain
-entirely unbuilt for both frameworks.
+**`durability_late_join` (CycloneDDS) - resolved separately, two more real bugs, not a rediscovery
+of any of the five above**:
+
+6. **`run_scenario.sh` never forwarded `-D` to the server, only the client.** Running
+   `run_scenario.sh durability_late_join -D` gave the *client* a durable (TRANSIENT_LOCAL) reader
+   QoS while the *server*'s writer stayed VOLATILE (`-D` never reached it) - a genuine RxO
+   incompatibility (a reader can't require more durability than a writer offers), which
+   deterministically, correctly never matches. Looked exactly like a discovery bug from the
+   client's own "timed out waiting for a match", but was a test-harness bug, not a CycloneDDS one.
+   Fixed by forwarding `$CLIENT_ARGS` to the server too (safe generally - every server.c only reads
+   `-d`/`-D` and ignores anything else) and bumping the pre-client sleep from 2s to 5s (a durable
+   match's own negotiation took measurably longer than a plain volatile one on this rig).
+
+7. **`DDS_HISTORY_KEEP_LAST(8)` on both writer and reader, again - the same class of bug as fix 5
+   above, different scenario.** Backlog is 20 samples; a depth-8 regular history cap on the writer
+   limits what TRANSIENT_LOCAL can ever replay to a late joiner (CycloneDDS serves TRANSIENT_LOCAL
+   directly from the writer's own regular history cache here, with no separate persistence service
+   running - `durability_service`'s own depth=20 setting doesn't help if the plain `history` depth
+   is shallower). Fixed by matching both to `backlog_count` (20).
+
+After both fixes: match succeeds reliably (3/3 real runs, previously 0/3), the VOLATILE control
+case correctly still shows `received=0` (proving the harness itself isn't just broken), and the
+TRANSIENT_LOCAL case now receives most of the backlog (8-11 of 20 across repeated runs) instead of
+none - the scenario is unblocked and the actual thing under test (TRANSIENT_LOCAL vs VOLATILE
+backlog delivery) is demonstrated for real. **Not fully closed**: delivery is still short of 20/20
+and varies run to run even with a generous 15s collection window and all `dds_write()` calls on the
+writer confirmed successful (no silent write-side rejection) - likely CycloneDDS's own real
+ACKNACK-based redelivery pacing for a durability backlog under RELIABLE, not a resource-limits
+ceiling; not root-caused further this pass, tracked as a real, separate follow-on.
+
+FastDDS has no `durability_late_join` scenario built yet. Scenarios 7-9 (deadline, liveliness,
+lifespan) remain entirely unbuilt for both frameworks.
