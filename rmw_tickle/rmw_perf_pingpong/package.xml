@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="http://download.ros.org/schema/package_format3.xsd"?>
+<package format="3">
+  <name>rmw_perf_pingpong</name>
+  <version>0.0.1</version>
+  <description>
+    RTT-based rmw-layer performance measurement tool (rmw_tickle/comparison.md's own "Design:
+    rmw_perf_pingpong" section) - replaces buildfarm_perf_tests for trustworthy latency numbers,
+    same-host or cross-host: a pinging side computes round-trip time entirely against its own
+    clock reading, never comparing a timestamp read on a different machine, so it needs no
+    cross-host clock agreement (NTP-synchronized or not) at all - unlike the retracted item 5
+    one-way-delay attempt this replaces. Portable across every RMW_IMPLEMENTATION (rmw_tickle,
+    rmw_fastrtps_cpp, rmw_cyclonedds_cpp), same binary, same message, same QoS.
+  </description>
+  <maintainer email="halim9512@gmail.com">Harim Seong</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>rclcpp</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
