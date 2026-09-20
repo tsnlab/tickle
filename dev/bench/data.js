@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789866851817,
+  "lastUpdate": 1789866855033,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -34786,6 +34786,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03042112077985491,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "dc2409d9ea267b220ceb84218bc7aceea7f55b86",
+          "message": "examples/perf_hil: add the shared IDL for the HIL QoS-matrix comparison\n\nOne canonical message (Bench: seq, send_ns, 64-byte payload) for all 9\nscenarios per comparison.md's design - both fastddsgen and CycloneDDS's own\nidlc compile this exact file, byte-identical across frameworks. @extensibility\n(FINAL) pinned explicitly (idlc warned the tool-default may change to\n\"appendable\" in a future release).\n\nGenerated bindings are not committed yet - found a real dev-box/HIL-rig\nversion mismatch while generating them (FastDDS 3.6.2 locally vs 2.14.6 on\nthe rpi HIL rig; fastddsgen 4.0.3 only targets the v3 API) - resolving with\nthe user now, tracked separately, not blocking this IDL source itself.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T10:13:13+09:00",
+          "tree_id": "f814453ed183d88d07f40b5a0e83569738fe2c79",
+          "url": "https://github.com/tsnlab/tickle/commit/dc2409d9ea267b220ceb84218bc7aceea7f55b86"
+        },
+        "date": 1789866853959,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9891371045793805,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030469213213239397,
             "unit": "Mbit/s"
           }
         ]
