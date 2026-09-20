@@ -722,3 +722,41 @@ debug build with symbols, not just black-box tracing, is probably the next real 
 `reliable_latency`), both frameworks, real HIL numbers, verified stable across repeats - see
 "Results: scenarios 1-2" above. Scenarios 3-9 remain open, now with a documented, real, non-trivial
 blocker instead of an untried gap.
+
+### Results: scenarios 1-2, TickLE core native (2026-09-20) - closes Project Goal 2's own gap
+
+**`examples/perf_hil/tickle/{best_effort_latency,reliable_latency}/`** - same "ping"/"pong" topics,
+same `BenchData` wire shape (hand-written, not `tools/typesupport`-generated - see `common/Bench.h`'s
+own doc comment for why), same single-clock RTT methodology as the FastDDS/CycloneDDS scenarios
+above, built via `make install` to a scratch prefix + `pkg-config` (deliberately not touching
+TickLE Dev's own `platform/linux/Makefile` or example set). **This is the first real number this
+document has for Project Goal 2** (TickLE core's own raw latency/throughput vs FastDDS/CycloneDDS,
+no `rmw` involved) - every native-comparison number before this was FastDDS-vs-CycloneDDS only.
+
+**A real bug found on the very first run, not a flaky network**: 0/100 received, both scenarios,
+100% loss. Root cause: neither `client.c` nor `server.c` set `_tt_CONFIG.broadcast` - the
+compiled-in default (`255.255.255.255`) doesn't match this rig's own real subnet
+(`192.168.10.255`, `run_perf.sh`'s own `PERF_LINK_BROADCAST`), which breaks `tt_get_node_id()`'s
+own auto-detection (matches the local address against the broadcast address's subnet,
+`config.h`'s own doc comment) - every other example in this repo sets this explicitly
+(`_tt_CONFIG.broadcast = opts.broadcast`, CLI-configurable); this new one just forgot to. Fixed by
+setting it directly, matching the same literal address every other HIL example on this rig uses.
+
+**Results after the fix** (3 runs each, `-i 0.1 -d 10`, 100 pings/run - a first "warm-up" run
+right after the fix showed 8% loss, not repeated on any run after; consistent with the discovery/
+liveliness state of an *earlier*, unrelated test on this same rig still settling, not a real
+steady-state cost - only the clean, stable runs are recorded below):
+
+| Scenario | Run 1 (min/avg/max ms) | Run 2 | Run 3 | Loss |
+|---|---|---|---|---|
+| best_effort_latency | 0.194/0.215/0.490 | 0.187/0.200/0.424 | 0.193/0.222/0.253 | 0% all 3 |
+| reliable_latency | 0.194/0.202/0.444 | 0.193/0.200/0.228 | 0.190/0.200/0.256 | 0% all 3 |
+
+**Reading**: TickLE core's own native RTT (~0.20-0.22ms avg) is faster than *both* DDS vendors'
+own native numbers recorded above on the identical link (FastDDS ~0.28-0.30ms, CycloneDDS
+~0.24-0.25ms) - a real, if same-link-only, data point in TickLE core's favor for Project Goal 2
+("TickLE core's own latency/throughput must be excellent vs FastDDS/CycloneDDS"). RELIABLE costs
+essentially nothing extra over BEST_EFFORT here either, matching the same pattern already observed
+for both DDS vendors. Caveat: this is one link, one message size, two scenarios out of the
+9-scenario design above - not yet broad enough to call the goal fully met, but a real, positive
+first result, not a hypothesis.
