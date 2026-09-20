@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789886174170,
+  "lastUpdate": 1789886177601,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -40424,6 +40424,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 821.373,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a8a76e7da2200a2c6ed4b7442283835a7fabc3cf",
+          "message": "rmw_tickle/comparison.md: design rmw_perf_pingpong, the RTT-based replacement for item 5\n\nSingle-clock RTT (pinger's own timestamp, both send and receipt), the same\nprinciple already proven working in this document's own native HIL ping-pong\nscenarios - never subtracts a timestamp read on a different machine, so NTP\nsync quality is irrelevant to correctness, unlike the retracted item 5 attempt\nabove.\n\nMessage shape deliberately mirrors examples/perf_hil/idl/Bench.idl exactly (a\nnew perf_pingpong_msgs/msg/Bench.msg) - not a coincidence: this makes a later\n\"how much does the rmw_tickle wrapper itself cost\" question directly\nanswerable by comparing this tool's own numbers against the native HIL\nscenarios' on literally the same message, without a second message design.\nTwo plain rclcpp topics (ping/pong), not rclcpp::Client/Service, to stay\ncomparable to the existing pub/sub-path numbers this replaces. Reuses the same\ntickle-hil rpi pair for both same-host and cross-host runs with the identical\nbinary/QoS, turning the long-standing \"how much of the gap is the same-host\nSHM shortcut\" question (Milestone 14) into a direct paired comparison.\n\nSupersedes buildfarm_perf_tests for trustworthy latency numbers going\nforward, per the user's own standing principle recorded above -\nbuildfarm_perf_tests stays in use for conformance/regression only.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T15:33:37+09:00",
+          "tree_id": "ca2682f7d101e6748610ff33a146e46d859cf179",
+          "url": "https://github.com/tsnlab/tickle/commit/a8a76e7da2200a2c6ed4b7442283835a7fabc3cf"
+        },
+        "date": 1789886176505,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 935.095,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 818.007,
             "unit": "Mbps"
           }
         ]
