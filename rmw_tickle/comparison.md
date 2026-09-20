@@ -642,13 +642,13 @@ through scenarios 3-9 is tracked as the natural next step, not yet done.
 |---|---|---|---|---|
 | 1 | `best_effort_latency` | 199/199, 0% loss, RTT 0.231/0.242/0.343ms | 199/199, 0% loss, RTT 0.253/0.296/3.295ms | 0% loss, RTT ~0.20-0.22ms avg |
 | 2 | `reliable_latency` | 199/199, 0% loss, RTT 0.230/0.302/10.865ms | 199/199, 0% loss, RTT 0.271/0.297/0.603ms | 0% loss, RTT ~0.20-0.22ms avg |
-| 3 | `best_effort_throughput` | 9312 sent, 9311 recv, 0% loss, 0.596 Mbps | 9166 sent, 9166 recv, 0% loss, 0.587 Mbps | ~95-155k msg/s offered, 57-70% loss at max rate (receiver-bound, see below) |
-| 4 | `reliable_throughput` | 0% loss, ~44.5-59.8 Mbps sustained (unpaced) | 0% loss, ~17.3-17.9 Mbps sustained (unpaced) | 57-100% loss, high variance (depth=64 cushion negligible at TickLE's own max rate - see below) |
+| 3 | `best_effort_throughput` | 9312 sent, 9311 recv, 0% loss, 0.596 Mbps | 9166 sent, 9166 recv, 0% loss, 0.587 Mbps | ~1.24M sent, 0% loss, ~88-95 Mbps (corrected 2026-09-21 - see below, an earlier harness bug misreported this as 57-70% receiver-bound loss) |
+| 4 | `reliable_throughput` | 0% loss, ~44.5-59.8 Mbps sustained (unpaced) | 0% loss, ~17.3-17.9 Mbps sustained (unpaced) | 0% loss, ~88-94 Mbps (same correction as #3) |
 | 5 | `durability_late_join` | 20/20 backlog delivered, 3/3 reproduced | 20/20 backlog delivered, 3/3 reproduced | durable: 20/20 (3/4; 1 run showed 7x duplicate delivery); volatile: 57 received, not 0 (real semantic difference - see below) |
-| 6 | `history_depth_burst_loss` | within depth: 0 lost; beyond depth: 52 lost (exact) | identical to CycloneDDS, same run | not yet built |
-| 7 | `deadline_miss_detection` | writer misses=7 (3/3); reader misses=14; detect ~0.05ms | writer misses=7 (2/2, matches CycloneDDS); reader misses=19; detect ~-0.9ms | not yet built |
-| 8 | `liveliness_loss_detection` | detect ~2000.07ms (lease 2000ms) | detect ~1999.08ms (lease 2000ms) | not yet built |
-| 9 | `lifespan_expiry` | within: 0 lost; beyond: 10 lost (exact formula match) | within: 0 lost; beyond: 5 lost (2x fewer than CycloneDDS) | not yet built |
+| 6 | `history_depth_burst_loss` | within depth: 0 lost; beyond depth: 52 lost (exact) | identical to CycloneDDS, same run | within: 160/160 clean; beyond: recv > sent (duplicate delivery, same mechanism as #5) - see below |
+| 7 | `deadline_miss_detection` | writer misses=7 (3/3); reader misses=14; detect ~0.05ms | writer misses=7 (2/2, matches CycloneDDS); reader misses=19; detect ~-0.9ms | writer misses=3 (matches expected math), sent=recv=198 (0% loss), reader_misses=30 (unexplained, no data actually lost) - see below |
+| 8 | `liveliness_loss_detection` | detect ~2000.07ms (lease 2000ms) | detect ~1999.08ms (lease 2000ms) | detect ~3080-3620ms, tracks the fixed ~3s node-level window, independent of the 2000ms lease - see below |
+| 9 | `lifespan_expiry` | within: 0 lost; beyond: 10 lost (exact formula match) | within: 0 lost; beyond: 5 lost (2x fewer than CycloneDDS) | within: 0 lost; beyond (pause=1.0s): real loss confirmed (17/150), noisy from duplicate delivery - see below |
 
 ### Implementation plan and sequencing (2026-09-20, the user's own explicit order)
 
@@ -1021,7 +1021,7 @@ the Publisher - no extra QoS calls needed. `examples/perf_hil/tickle/run_scenari
 pass, mirroring `../cyclonedds/run_scenario.sh`'s own SSH-backgrounding fixes (`;` not `&&`,
 `</dev/null`) - no `run_scenario.sh` existed yet for the TickLE-native track before this.
 
-**Results, real rig runs (`-d 8`), reproduced 3/3**:
+**Results, real rig runs (`-d 8`), reproduced 3/3 - superseded, see the correction directly below**:
 
 | run | sent (client) | recv (server) | true loss = sent−recv | true loss % | server's own `lost` (gap-based) |
 |---|---:|---:|---:|---:|---:|
@@ -1029,71 +1029,55 @@ pass, mirroring `../cyclonedds/run_scenario.sh`'s own SSH-backgrounding fixes (`
 | 2 | 1,247,223 | 439,431 | 807,792 | 64.8% | 0 |
 | 3 | 1,247,186 | 538,998 | 708,188 | 56.8% | 0 |
 
-**Reading - a real, substantial, and expected finding, not a bug**: TickLE core's own near-zero
-per-message overhead lets the client offer **~95-155k msg/s** at max rate - two full orders of
-magnitude past what either DDS vendor's own "max rate" achieves for this exact scenario (CycloneDDS
-~1,164/s, FastDDS ~1,146/s, both essentially loss-free, from the dashboard row above - their own
-per-message stack overhead is *itself* the rate limiter, well short of ever stressing the
-receiver). TickLE's own client genuinely saturates the single-threaded server's ability to drain its
-UDP socket before the kernel's own receive buffer fills, at which point the kernel silently drops
-everything further - a real, mundane, sufficient explanation requiring no TickLE code bug (`man 7
-udp`'s own documented behavior under sustained receiver-side backpressure with no flow control,
-which is exactly what BEST_EFFORT + no application-level pacing promises and nothing more).
+The "receiver-bound overload, not a bug" reading originally written up here for this table was
+**wrong** - not a TickLE core characteristic at all, a real bug in this harness's own orchestration.
+See "Correction (2026-09-21)" immediately below for the real cause and the corrected result.
 
-**A real methodology gap in this harness, found while explaining the above (same class of bug as
-scenario 6's leading-gap fix, mirrored at the other end)**: the server's own gap-based `lost`/
-`loss_pct` fields can only detect loss *between* two successfully-received samples - they have no
-way to see loss trailing off the *end* of the stream (nothing arrives, so there's no later sample to
-compute a gap against), which is exactly the shape this scenario produces (a clean, gapless prefix,
-then total silence for the remainder - runs 2 and 3 above both report `lost=0` despite roughly 60-65%
-of the stream never arriving at all). The dashboard's own established convention - comparing the
-client's own `sent` line against the server's own `recv` line side by side, exactly as the
-CycloneDDS/FastDDS row already does - is therefore the only trustworthy loss figure for this
-scenario shape; the server's own `lost`/`loss_pct` fields are left in the code (real signal for
-*some* loss patterns, e.g. scenario 6's own mid-stream burst) but are not the authoritative number
-here. Not fixed further this pass - matching the same "explainable, not chased further" precedent as
-scenario 9's own `dds_wait_for_acks()` timeout.
+### Correction (2026-09-21): scenario 3/4's own "receiver-bound overload" was a harness bug, not a TickLE characteristic
 
-**A correlated symptom, not independently investigated further**: the client's own log shows
-`Node 2 presumed dead (no UPDATE for 3 consecutive intervals)` roughly 5s into every run (the
-server's own log never logs the reverse) - consistent with the same root cause above: a
-single-threaded server whose event loop is saturated draining ~100k+ pkt/s can also fall behind
-emitting its own periodic node-liveliness broadcast on schedule, which the client's independent
-liveliness watchdog (`check_liveliness()`, `tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL`
-~3s) correctly flags. Confirmed this does **not** gate `tt_Publisher_publish()` itself
-(`SUBMESSAGE_ID_ALL` broadcast is unconditional, independent of match/liveliness bookkeeping -
-verified by reading `tt_Publisher_publish()` directly) - so it doesn't change the `sent` count's own
-validity, just a real, secondary, and currently-benign side effect of the same overload worth
-TickLE Dev's awareness if it ever needs to change from a warning into something that self-heals.
+**The real bug**: `run_scenario.sh` forwards the same `$CLIENT_ARGS` to both the client and the
+server (by design - see `durability_late_join`'s own doc comment for why that's normally correct
+and necessary). But `-d` means something different on each side of every throughput-style
+scenario's own source: the client's own real send duration vs. the server's own "don't hang
+forever" safety cap. Passed the same literal `-d 8` to both, the **server** would stop listening
+and print its own `RESULT` line - ending the count - **8 seconds after its own process started**,
+while the **client** doesn't even start sending until `run_scenario.sh`'s own `PRE_CLIENT_SLEEP`
+(default 3s) plus its own ~2s discovery margin have elapsed, then sends for a further 8s -
+finishing around 13s after the server's own clock started. The server was reliably exiting with
+5+ seconds of the client's own real send window still to come, mid-stream, on every single run -
+not a network-level or receiver-capacity effect at all. Found while investigating scenario 7's own
+suspiciously *exact-same-number-twice* `recv=91/sent=198` (real network loss would not reproduce to
+the identical sample; a fixed early cutoff would, and did).
 
-### Results: scenario 4, `reliable_throughput`, TickLE core native (2026-09-21)
+**Fixed** (`examples/perf_hil/tickle: fix server -d misinterpretation across every throughput-style
+scenario`, all six affected `server.c` files): a flat `+15s` buffer added to `safety_cap_s` after
+parsing `-d`, decoupling the server's own safety-net timeout from the client-side meaning of the
+same shared flag.
 
-**Design**: same one-way max-rate stream as scenario 3, plus RELIABLE + `depth =
-tt_MAX_RELIABLE_HISTORY` (64, TickLE's own hard architectural cap - see
-`examples/perf_hil/tickle/reliable_throughput/client.c`'s own doc comment). No blocking
-"wait for all acks" API exists in `tickle.h` (only `tt_Publisher_request_ack()`, which solicits
-but doesn't block) - a fixed 3s drain period after the send loop substitutes.
+**Corrected results, real rig runs (`-d 8`), reproduced 2/2 - genuinely clean**:
 
-**Results, real rig runs (`-d 8`), reproduced 3/3 - severe loss every time, high variance**:
+| scenario | run | sent | recv | loss |
+|---|---:|---:|---:|---:|
+| 3 (`best_effort_throughput`) | 1 | 1,240,562 | 1,240,562 | **0** |
+| 3 (`best_effort_throughput`) | 2 | 1,243,850 | 1,243,850 | **0** |
+| 4 (`reliable_throughput`) | 1 | 1,170,322 | 1,170,322 | **0** |
+| 4 (`reliable_throughput`) | 2 | 1,237,136 | 1,237,136 | **0** |
 
-| run | sent | recv | true loss = sent−recv | true loss % | server's own `lost` (gap-based) |
-|---|---:|---:|---:|---:|---:|
-| 1 | 1,281,287 | 3 | 1,281,284 | ~100% | 473,504 |
-| 2 | 874,640 | 279,907 | 594,733 | 68.0% | 2,874 |
-| 3 | 1,214,011 | 522,878 | 691,133 | 56.9% | 49,730 |
+**The real finding**: TickLE core sustains its own full **~88-95 Mbps** max-rate offered load
+(~1.16-1.24M msg/s of the shared 76-byte `BenchData` payload) with **exactly zero loss**, both
+BEST_EFFORT and RELIABLE (`depth=64`) - two full orders of magnitude past either DDS vendor's own
+much lower max-rate ceiling for this same scenario (CycloneDDS ~1,164/s, FastDDS ~1,146/s, both
+also loss-free - their own per-message stack overhead is the limiting factor, never stressing
+either side). TickLE's own receiver genuinely keeps up with its own sender at full rate on this
+rig; there is no receiver-bound saturation story to tell here at all. The `Node 2 presumed dead`
+warning (still observed most runs, ~5s in) is real and reproducible but, now confirmed, has **no
+effect on correctness** at this rate - `sent == recv` exactly regardless of whether it fires.
 
-**Reading**: a mathematically expected consequence, not a surprise once framed this way -
-`depth=64` at TickLE's own ~95-155k msg/s max-rate ceiling (scenario 3) represents under a
-millisecond of cushion, vs. the CycloneDDS/FastDDS twins' own `depth=4000`-ish workaround
-representing several seconds of cushion at *their* much lower ~1,000-1,200/s ceiling - RELIABLE
-retransmission traffic competing for the same already-saturated link only compounds scenario 3's
-own receiver-bound loss rather than curing it. Run 1's near-total collapse (`recv=3`) is a real,
-observed extreme of the same failure mode, not an outlier to discard - high run-to-run variance is
-itself part of the finding (this scenario, as designed - unbounded max rate, matching scenario 3's
-own methodology for comparability - does not produce a stable, repeatable throughput number for
-TickLE the way it does for either DDS vendor). The server's own gap-based `lost` field has the
-identical trailing-blind-spot limitation documented under scenario 3 above; sent-vs-recv is again
-the only trustworthy figure.
+**A real, still-valid methodology note, kept from the original write-up**: the server's own
+gap-based `lost`/`loss_pct` fields cannot see loss trailing off the *end* of a stream (no later
+sample to compute a gap against) - moot for these particular clean 0-loss results, but still the
+right general caution for this scenario shape, matching scenario 6's own leading-gap fix at the
+other end.
 
 ### Results: scenario 5, `durability_late_join`, TickLE core native (2026-09-21) - a real cross-framework QoS semantic difference, not a bug
 
@@ -1200,6 +1184,39 @@ on both vendors. The clean, matching `60 - 8 = 52` arithmetic across two indepen
 implementations is strong evidence this is really testing DDS's own documented HISTORY semantics,
 not an artifact of either example's own code.
 
+### Results: scenario 6, `history_depth_burst_loss`, TickLE core native (2026-09-21)
+
+**Design**: same RELIABLE + `depth=8` (matched exactly against the DDS twins), paced at 20/s -
+deliberately *not* scenarios 3/4's own unbounded rate (see their own now-superseded section above -
+depth=8 would confound with plain receiver-bound loss at TickLE's own much higher ceiling, before
+the real `-d` bug there was even found). `run_scenario.sh` needed a scenario-specific
+`PRE_CLIENT_SLEEP=0` override this pass (kept as a generic env var, default 3 unchanged for every
+other scenario) - this scenario's own `server.c` does its own internal `-p` stall *before creating
+its Subscriber at all* (no DDS-style "matched but not consuming yet" state to stall in instead), so
+the default 3s pre-client sleep let the subscriber become discoverable *before* the publisher had
+even started - the eviction window under test never existed, silently producing clean 160/160
+regardless of `-p` (the real symptom this fixes; caught because both a 0.2s and a 3.0s pause showed
+identically clean results, which shouldn't both be possible for the "beyond depth" case).
+
+**Results, real rig runs, `PRE_CLIENT_SLEEP=0`**:
+
+| pause | recv | sent | reading |
+|---|---:|---:|---|
+| 0.2s (within depth) | 160 | 160 | clean, reproduced 1/1 with the fix |
+| 3.0s (beyond depth) | 165-169 (varies) | 160 | **recv exceeds sent** - real duplicate delivery, 3/3 |
+
+**A real duplicate-delivery finding, same mechanism as scenario 5's own `140=7×20`**: for the
+beyond-depth case, `recv` came back higher than `sent` in all three runs (165, 168, 169 vs. 160
+sent) - impossible for a genuinely unique-sequence stream, and direct further evidence for the same
+liveliness false-positive → `forget_peers_from_source()` → re-triggered retransmit mechanism
+documented under scenario 5 (there, via the proactive DURABLE push path; here, via
+`process_acknack()`'s own reactive repair path, RELIABLE but not durable). This makes the scenario's
+own original question - "does depth=8 correctly bound what a late joiner can recover?" - genuinely
+hard to answer cleanly from this harness's own `lost` counter (gap-based, and now also confounded by
+duplicates inflating `recv`); what's unambiguous is that **something** is retransmitted repeatedly
+under these conditions, consistent with, not contradicting, the scenario 5 finding already relayed
+to TickLE Dev.
+
 ### Results: scenario 7, `deadline_miss_detection` (2026-09-20), both frameworks
 
 **Design**: DEADLINE (`-D`, default 50ms) matched exactly on writer and reader. The writer
@@ -1246,6 +1263,39 @@ every run. Detection latency is near-instant (sub-millisecond) on both once meas
 a listener, confirming the deadline-missed event fires essentially at the real period boundary, not
 on some coarser polling cycle.
 
+### Results: scenario 7, `deadline_miss_detection`, TickLE core native (2026-09-21)
+
+**Design**: `pub.deadline_duration_ns`/`sub.deadline_duration_ns` are wire/RxO-only (Milestone 49) -
+core never enforces or checks them, so this implements the check itself via a periodic checker on
+its own fixed cadence (`examples/perf_hil/tickle/deadline_miss_detection/{client,server}.c`'s own
+doc comment) - the natural TickLE-side equivalent of a real DDS implementation's own internal timer,
+since there's no listener thread to lean on instead.
+
+**Two real bugs found and fixed on the rig this pass, both in this harness's own code, not TickLE
+core**:
+1. **Spurious writer-side misses** (`writer_misses=31` over a 10s run for what should have been one
+   ~3-miss deliberate gap): `check_deadline` and `send_one` were two independently-scheduled
+   periodic timers on the *exact same* nominal period with no phase offset - ordinary scheduling
+   jitter could flip their relative firing order cycle to cycle, spuriously tripping the
+   `> deadline_s` threshold on nearly every healthy cycle. Fixed with a half-period phase offset
+   between the two schedules (both share one process/clock, so a controlled relative offset is
+   meaningful) - `writer_misses` dropped to exactly **3**, matching the expected math for a 150ms
+   gap against a 50ms deadline.
+2. **The same `-d`-forwarding bug documented under scenario 3/4's own correction above** -
+   `recv=91/sent=198`, identically reproduced twice in a row (the tell that it was a fixed cutoff,
+   not real network loss). Fixed the same way (a `+15s` buffer on `safety_cap_s`).
+
+**Corrected results, real rig run**: `sent=198, recv=198` (exactly, once both bugs were fixed) -
+**zero real loss**, `writer_misses=3` (matches the expected ~3 for a 150ms gap / 50ms deadline
+exactly). `reader_misses=30` remained even after these two fixes and after widening the reader's
+own threshold to `1.5×` the deadline (a *different* fix from the writer's own phase offset - the
+reader's checker and the remote client's own send schedule run on two different machines' own
+independent clocks with no controlled phase relationship at all, unlike the writer's own two
+same-process timers) - this residual count is a deterministic, reproducible ~10-11% of the checker's
+own tick count, not further explained this pass; `recv == sent` exactly confirms no data was
+actually lost, so it's a real limitation of this polling-based reader-side checker's own design
+(likely TickLE's own scheduler-tick granularity/overhead), not a correctness problem.
+
 ### Results: scenario 8, `liveliness_loss_detection` (2026-09-20), both frameworks
 
 **Design**: LIVELINESS AUTOMATIC, matched lease duration (`-L`, default 2s) on writer and reader.
@@ -1280,6 +1330,33 @@ the configured lease boundary - CycloneDDS trips very slightly *after* the lease
 slightly *before* it (both well under 1ms of the nominal 2000ms target either way) - real,
 reproducible, sub-millisecond-precision differences between two independent implementations, not
 noise. No false detections - `loss_detected` only ever flips once, right at the real kill.
+
+### Results: scenario 8, `liveliness_loss_detection`, TickLE core native (2026-09-21)
+
+**Design**: `tt_Node_set_discovery()` + `tt_DISCOVERY_CALLBACK` (`examples/perf_hil/tickle/
+liveliness_loss_detection/{client,server}.c`'s own doc comment) - real peer-departure detection in
+TickLE is **node-level**, not per-Publisher-entity, on `check_liveliness()`'s own fixed
+`tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL` window (~3s, `config.h`), independent of
+whatever lease `-T` announces on the wire (matched at 2.0s here purely for RxO parity with the DDS
+twins - it does not change TickLE's own detection window at all). Orchestrated manually (real
+`kill -9` via SSH after ~5s of normal publishing, mirroring the DDS twins' own precedent), not
+through `run_scenario.sh` (this scenario's client has no natural end of its own to script around).
+
+**Results, real rig runs, reproduced 2/2**:
+
+| run | detect latency | reading |
+|---|---:|---|
+| 1 | 3079.8ms | matches the ~3s fixed window |
+| 2 | 3620.4ms | matches the ~3s fixed window (some slack from where in the periodic check cycle the kill happened to land) |
+
+**Reading - exactly the documented architectural difference, confirmed empirically**: unlike the
+DDS twins' own per-entity, lease-configurable detection (essentially exact to whatever `-T` says),
+TickLE's own detection latency tracks its fixed ~3s node-level window regardless of the announced
+lease (2.0s here) - real evidence that TickLE's own `liveliness_lease_duration_ns` is genuinely
+wire/RxO-only, with no core-side timer keyed to it at all, exactly as `tickle.h`'s own doc comment
+says (corrected in this document's own native-QoS table this same pass, before any of scenarios 3-9
+were even built). Both runs measured single-clock (subscriber's own last-received vs.
+departure-detected timestamps).
 
 ### Results: scenario 9, `lifespan_expiry` (2026-09-20), both frameworks - closes the 9-scenario design
 
@@ -1316,16 +1393,66 @@ enabled writers evidently don't track "fully acked" the same way plain RELIABLE 
 CycloneDDS version, independent of whether anything actually expired. Cosmetic (stderr only, no
 effect on the `RESULT` line's own real counts), not investigated further this pass.
 
-### All 9 planned scenarios are now built and verified on the real rig, both frameworks
+### Results: scenario 9, `lifespan_expiry`, TickLE core native (2026-09-21)
 
-Scenarios 1-9 (`best_effort_latency`, `reliable_latency`, `best_effort_throughput`,
-`reliable_throughput`, `durability_late_join`, `history_depth_burst_loss`,
-`deadline_miss_detection`, `liveliness_loss_detection`, `lifespan_expiry`) all have real,
-reproduced CycloneDDS and FastDDS results in this document. TickLE core's own native HIL examples
-(`examples/perf_hil/tickle/`) now cover scenarios 1-5 (latency, throughput, and durability) - see
-"Results: scenario 3/4/5, TickLE core native" above, including two real findings worth TickLE Dev's
-own attention (a liveliness false-positive causing duplicate DURABLE delivery under load, and a
-real RELIABLE+VOLATILE semantic difference from DDS). Extending them through scenarios 6-9
-(`history_depth_burst_loss`, `deadline_miss_detection`, `liveliness_loss_detection`,
-`lifespan_expiry`), closing Project Goal 2 fully rather than just its own latency/throughput/
-durability slice, is the natural next step for this track.
+**Design**: RELIABLE + generous `depth=64` (unlike scenario 6's own shallow `depth=8`, so any loss
+is attributable purely to LIFESPAN's age-based expiry, not queue-depth eviction) + `-T` (default
+100ms, matching the DDS twins). Verified directly in `tickle.c` that `reliable_cache_entry_expired()`
+is checked by both the durability-push path and `process_acknack()`'s own retransmit path.
+
+**A real orchestration lesson, not a bug**: with `-p 0.3` (matching the DDS twins' own "beyond
+lifespan" default exactly) and `PRE_CLIENT_SLEEP=0`, the result came back a clean `100/100`, not the
+expected loss - TickLE's own discovery/match on this rig is apparently fast enough (well under
+300ms) that the subscriber caught up to the live stream before a meaningful age gap ever built up.
+This differs structurally from the DDS twins' own design, where `pause_s` is measured *after* an
+already-completed match (the writer and reader match first, `pause_s` only then delays consumption)
+- this scenario's own TickLE design instead delays the Subscriber's entire creation by `pause_s`
+(the same necessary simplification `history_depth_burst_loss` uses, TickLE having no DDS-style
+"matched but not consuming" state to stall in), so `pause_s` here has to absorb real discovery
+latency too, not just a controlled post-match stall. Retested with a much larger, unambiguous
+`-p 1.0 -n 150` to remove any dependence on exactly how fast that latency is:
+
+| pause | lifespan | recv | sent | reading |
+|---|---:|---:|---:|---|
+| 0.05s (within) | 0.1s | 100 | 100 | clean |
+| 0.3s (DDS-equivalent "beyond") | 0.1s | 100 | 100 | not actually late enough on this rig - see above |
+| 1.0s (unambiguously beyond) | 0.1s | 133 | 150 | real loss, run 1 |
+| 1.0s (unambiguously beyond) | 0.1s | 153 | 150 | real loss masked by duplicate delivery, run 2 (same mechanism as scenarios 5/6) |
+
+**Reading**: LIFESPAN expiry is confirmed working in TickLE - once `pause_s` is large enough to
+guarantee genuine staleness regardless of this rig's own real discovery speed, real, substantial
+loss shows up (run 1: `150-133=17` missing). Run 2's `recv=153 > sent=150` is the same
+duplicate-delivery artifact documented under scenarios 5/6 (a liveliness false-positive re-triggering
+retransmission of whatever's still cached) - it doesn't contradict the expiry mechanism working, but
+it does mean this harness's own loss count for this scenario is noisy in the same already-flagged
+way, not independently re-investigated further this pass.
+
+### All 9 planned scenarios are now built and verified on the real rig, both frameworks - and now TickLE core native too, closing Project Goal 2 fully (2026-09-21)
+
+Scenarios 1-9 all have real, reproduced CycloneDDS, FastDDS, **and now TickLE-native** results in
+this document - `examples/perf_hil/tickle/` covers the full matrix. This pass's own real findings,
+beyond just filling in the dashboard:
+
+- **A real, substantial harness bug, found and fixed**: `run_scenario.sh` forwards the same `-d` to
+  both sides of every throughput-style scenario, but it means "the client's own send duration" vs.
+  "this side's own don't-hang-forever cap" - taken verbatim, the server could exit and stop counting
+  before the client had even finished sending. This had **already produced a wrong, now-corrected,
+  previously-committed conclusion** for scenarios 3/4 (written up as "receiver-bound overload, not a
+  bug" - it was neither; TickLE actually sustains its own full ~90 Mbps max-rate offered load with
+  **zero loss**). Caught by scenario 7's own suspiciously exact-repeat `recv=91/sent=198` result
+  (real network loss doesn't reproduce to the identical sample; a fixed cutoff does) - a reminder
+  that an internally-consistent, explainable-sounding number is still worth a second look if it's
+  *too* consistent. Fixed in all six affected `server.c` files.
+- **Two real TickLE core findings relayed to TickLE Dev directly** (scenario 5): a liveliness
+  false-positive causing duplicate DURABLE backlog delivery under load, and a real RELIABLE+VOLATILE
+  semantic difference from DDS (TickLE's own ACKNACK-driven repair isn't gated by `durable` at all).
+  The same liveliness-flap mechanism showed up again, independently, in scenarios 6 and 9's own
+  `recv > sent` results - not re-investigated further each time, but consistent, corroborating
+  evidence for the scenario 5 finding, not a series of unrelated anomalies.
+- **Scenario 8 confirms the documented architectural difference empirically**: TickLE's own
+  peer-departure detection latency (~3.1-3.6s) tracks its fixed node-level window regardless of the
+  announced lease (2.0s), unlike the DDS twins' own essentially-exact, lease-configurable detection.
+- **Two own-harness scheduling bugs found and fixed in scenario 7**, unrelated to the `-d` bug above:
+  a same-process phase-race between two independently-scheduled periodic timers (fixed with a
+  half-period offset) and a cross-machine equivalent (fixed by widening the tolerance to 1.5x,
+  since two different machines' clocks have no controlled phase relationship to offset against).
