@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789904511809,
+  "lastUpdate": 1789904589628,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -8963,6 +8963,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.203,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cdc8a0ef0de3ee1e1e459d0341fe353f381cc725",
+          "message": "comparison.md: fair (unpaced) reliable_throughput comparison\n\nThe earlier 47.8 Mbps (CycloneDDS) vs 0.580 Mbps (FastDDS) pair wasn't apples-to-apples -\nonly FastDDS's client.cpp actually reads/paces on -i; CycloneDDS's reliable_throughput/\nclient.c never parses it, so it was always unpaced regardless of what was passed.\n\nRe-run with both genuinely unpaced (-i 0), 2 repeats each on the real rig: CycloneDDS\nsustains ~44.5-59.8 Mbps, FastDDS ~17.3-17.9 Mbps - roughly 3x, consistent across\nrepeats, 0% loss both ways throughout (RELIABLE's own guarantee held; this is a rate\ndifference, not a reliability one).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T20:40:34+09:00",
+          "tree_id": "7d0815bfff60f455a83862d7eca7e38c9b5729ce",
+          "url": "https://github.com/tsnlab/tickle/commit/cdc8a0ef0de3ee1e1e459d0341fe353f381cc725"
+        },
+        "date": 1789904585296,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
             "unit": "ms"
           },
           {
