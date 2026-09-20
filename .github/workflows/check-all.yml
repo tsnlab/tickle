@@ -443,9 +443,15 @@ jobs:
           # rosidl_typesupport_tickle_c build of builtin_interfaces to actually exist alongside it,
           # not just its plain .msg text; builtin_interfaces itself carries no rmw_tickle-specific
           # patch, Time.msg has no array fields to need one).
+          # --allow-overriding before --packages-select, not after (2026-09-20, real CI failure -
+          # not a style preference): colcon's own --packages-select takes a variable-length list of
+          # names and, positioned first, greedily swallows every following token up to the next
+          # flag it recognizes from *its current position* - after it, --allow-overriding was
+          # parsed as one more package name for --packages-select instead of its own flag
+          # ("unrecognized argument: --allow-overriding"), not silently ignored.
           colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
-            --packages-select test_interface_files test_msgs builtin_interfaces rcl_interfaces \
             --allow-overriding rcl_interfaces builtin_interfaces \
+            --packages-select test_interface_files test_msgs builtin_interfaces rcl_interfaces \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
           source test_ws/install/setup.bash
           colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
