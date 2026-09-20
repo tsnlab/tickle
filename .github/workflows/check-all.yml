@@ -389,6 +389,14 @@ jobs:
           git clone --branch rolling --depth 1 https://github.com/ros2/test_interface_files test_ws/src/test_interface_files
           git clone --branch jazzy --depth 1 https://github.com/ros2/rcl_interfaces test_ws/src/rcl_interfaces
           git -C test_ws/src/rmw_implementation apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/rmw_implementation_rmw_tickle.patch"
+          # test_interface_files_rmw_tickle.patch (Milestone 55): explicit `# @capacity 3`
+          # annotations on UnboundedSequences.msg's own 31 unbounded array fields - the one real
+          # gap left once Milestones 39/41/42/54 (array-of-string / array-of-nested-message-type
+          # support) landed. Arrays.msg/BoundedSequences.msg/BoundedPlainSequences.msg/Arrays.srv
+          # (fixed/bounded arrays only) already needed no patch of their own at all - see test_msgs_
+          # rmw_tickle.patch's own header comment below for the full picture, including why
+          # MultiNested.msg alone stays excluded (a real datagram-size limit, not a generator gap).
+          git -C test_ws/src/test_interface_files apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/test_interface_files_rmw_tickle.patch"
           git -C test_ws/src/rcl_interfaces apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/test_msgs_rmw_tickle.patch"
           git -C test_ws/src/rcl_interfaces apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/rcl_interfaces_rmw_tickle.patch"
           source /opt/ros/jazzy/setup.bash

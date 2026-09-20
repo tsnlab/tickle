@@ -1,27 +1,61 @@
 diff --git a/test_msgs/CMakeLists.txt b/test_msgs/CMakeLists.txt
-index 433833b..9657911 100644
+index 433833b..01cfccf 100644
 --- a/test_msgs/CMakeLists.txt
 +++ b/test_msgs/CMakeLists.txt
-@@ -22,13 +22,26 @@ find_package(rosidl_default_generators REQUIRED)
+@@ -22,13 +22,60 @@ find_package(rosidl_default_generators REQUIRED)
  find_package(test_interface_files REQUIRED)
  
  # TODO(sloretz) Change to test_msgs_interfaces when ros2/rosidl_typesupport#120 is fixed
 +# Local, rmw_tickle-specific patch (not upstream): rosidl_typesupport_tickle_c does not support
-+# arrays of nested message types, arrays of strings (its own ros2_adapter.py converter specifically
-+# - see rmw_tickle/PLAN.md's Milestone 39), or wstring yet - exclude the test_interface_files
-+# messages that use them, keeping only the subset rmw_tickle can actually generate typesupport for
-+# (mirrors README-rmw-perf.md's own Struct256.msg exclusion for the same reason). Nested.msg itself
-+# (a single, same-package `BasicTypes basic_types_value` field, no array involved) is NOT excluded
-+# any more - rmw_tickle/PLAN.md's Milestone 38 gave rosidl_typesupport_tickle_c exactly this shape
-+# (resolve.Ros2Resolver's own "same-package sibling" case). Also drops ACTION/IDL files and the two
-+# action-only entries below (msg/Builtins.msg, action/NestedMessage.action) - rmw_tickle has no
-+# action support at all (see rmw_client.c/rmw_service.c). SRV_FILES is kept (rosidl_typesupport_
-+# tickle_cpp now generates .srv typesupport too - rmw_tickle/PLAN.md's Milestone 11 row), filtered
-+# the same way: Arrays.srv uses arrays of nested message types (BasicTypes[3]/Constants[3]/
-+# Defaults[3]), the same unsupported grammar as the excluded .msg files above - BasicTypes.srv/
-+# Empty.srv are both flat/plain-type and kept.
++# wstring at all, or an unbounded array with no explicit `# @capacity <N>` annotation (see test_
++# interface_files_rmw_tickle.patch's own UnboundedSequences.msg header comment for the array half's
++# full 'why', and rcl_interfaces_rmw_tickle.patch's own SetParameters.srv header comment for the
++# original, more detailed version of the same explanation - rmw_tickle/PLAN.md's Milestones 39/41/
++# 42/54 track the history) - exclude the test_interface_files messages that still hit either. Fixed
++# (`[N]`) and bounded (`[<=N]`) arrays of *any* element kind (POD, string, or nested message type)
++# were already fully supported even before this comment was last updated - `Arrays.msg`/`Bounded
++# Sequences.msg`/`BoundedPlainSequences.msg` (all fixed/bounded only, no unbounded arrays at all)
++# generate and compile cleanly with zero patch of their own needed, confirmed directly (Milestone
++# 55) - keeping them excluded here was itself stale, not a real gap; `UnboundedSequences.msg`
++# needed (and, via test_interface_files_rmw_tickle.patch, now has) explicit `# @capacity 3`
++# annotations on all 31 of its own unbounded array fields, matching its sibling `[3]`/`[<=3]` test
++# files' own element count for consistency. Un-excluding these three/four `.msg` files also
++# surfaced (and fixed, `ros2_adapter.py`) a real, previously-latent bug of its own: an IDL `char`
++# array's real ROS 2 struct member is `rosidl_runtime_c__uint8__Sequence`, not `..__char__
++# Sequence` (this generator's own converter was calling the wrong one - a hard compile error, not
++# silently wrong data, since `char[<=3] char_values` is one of `BoundedPlainSequences.msg`'s own
++# real fields) - see `ros2_adapter._ros2_sequence_scalar_type()`'s own doc comment for the full
++# story. `MultiNested.msg` stays excluded for a **different, genuine, structural reason, not a
++# generator gap**: its own worst-case wire size (six `[3]`/`[<=3]` fields, each nesting a full
++# `Arrays`/`BoundedSequences`/`UnboundedSequences` struct - already substantial structs in their
++# own right) exceeds `tt_MAX_BUFFER_LENGTH` (1472 bytes, `config.h`) outright, confirmed via a real
++# local compile hitting the generated `_Static_assert` for exactly this - TickLE's own single-
++# datagram design (DESIGN.md) has no fragmentation story, so no annotation choice can make this
++# message fit; a real, permanent limitation, tracked as such. Nested.msg itself (a single, same-
++# package `BasicTypes basic_types_value` field, no array involved) is NOT excluded either - rmw_
++# tickle/PLAN.md's Milestone 38 gave rosidl_typesupport_tickle_c exactly this shape (resolve.
++# Ros2Resolver's own "same-package sibling" case). Also drops ACTION/IDL files and the two action-
++# only entries below (msg/Builtins.msg, action/NestedMessage.action) - rmw_tickle has no action
++# support at all (see rmw_client.c/rmw_service.c). SRV_FILES is kept (rosidl_typesupport_tickle_cpp
++# now generates .srv typesupport too - rmw_tickle/PLAN.md's Milestone 11 row); BasicTypes.srv/
++# Empty.srv are both flat/plain-type and kept. `Arrays.srv` stays excluded too, but for a **third,
++# genuinely new kind of bug found this same pass (Milestone 55), unrelated to arrays or capacity at
++# all**: `test_msgs` also has both `msg/BasicTypes.msg` and `srv/BasicTypes.srv` - two *different*
++# interfaces sharing one base name - and this generator writes each one's own TickLE-side header to
++# a bare `BasicTypes.h` (in its own `msg/`/`srv/` output subdirectory respectively). `Arrays.srv`'s
++# own request nests the real `BasicTypes` *message*, but a bare `#include "BasicTypes.h"` from a
++# file living in `srv/` resolves via the C preprocessor's own same-directory-first quoted-include
++# search to `srv/BasicTypes.h` (`BasicTypesRequest`/`_Response`, from the unrelated *service*) -
++# not `msg/BasicTypes.h` (`BasicTypesData`, the one actually needed) - even though both directories
++# are on the real compile command's own `-I` list, confirmed via a real "incomplete element type
++# 'struct BasicTypesData'" compile error. A real same-package `.msg`/`.srv` base-name collision in
++# this generator's own header-naming convention, not anything Milestone 55 introduced - tracked as
++# a real follow-up (directory-qualified or ROS-name-qualified generated header names), not fixed in
++# this narrower pass; `Arrays.srv` itself doesn't need array-of-nested-type support at all (it's
++# fixed-`[3]`-only, same as `Arrays.msg`) - the collision is the entire and only reason it stays
++# excluded.
 +list(FILTER test_interface_files_MSG_FILES EXCLUDE REGEX
-+  ".*/(MultiNested|Arrays|WStrings|BoundedPlainSequences|BoundedSequences|UnboundedSequences)\\.msg$")
++  ".*/(MultiNested|WStrings)\\.msg$")
 +list(FILTER test_interface_files_SRV_FILES EXCLUDE REGEX ".*/Arrays\\.srv$")
  rosidl_generate_interfaces(test_msgs
    ${test_interface_files_MSG_FILES}
@@ -33,7 +67,7 @@ index 433833b..9657911 100644
    DEPENDENCIES builtin_interfaces
    ADD_LINTER_TESTS
  )
-@@ -41,26 +54,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
+@@ -41,26 +88,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
  
  ament_export_targets(export_${PROJECT_NAME})
  

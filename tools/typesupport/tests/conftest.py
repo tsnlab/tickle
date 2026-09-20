@@ -26,7 +26,20 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 EXAMPLES = REPO_ROOT / "examples"
 FIXTURES_OWN = pathlib.Path(__file__).parent / "fixtures_own"
 CC = "cc"
-CFLAGS = ["-Wall", "-Wextra", "-fPIC", f"-I{REPO_ROOT / 'include'}", f"-I{REPO_ROOT / 'src'}"]
+CFLAGS = [
+    "-Wall",
+    "-Wextra",
+    "-fPIC",
+    # Milestone 55: real ROS 2 builds treat this as an error, not a warning (confirmed via a real
+    # colcon build's own actual compiler invocation - the char/uint8 Sequence-type-name bug this
+    # session found) - narrowly matching that here (not a blanket -Werror, which could turn some
+    # other, unrelated pre-existing warning into a new test failure) is what makes test_ros2_
+    # adapter.py's own char-array fixture actually able to catch a regression of this exact class,
+    # instead of silently accepting it as this flag's own default (warning-only) behavior would.
+    "-Werror=incompatible-pointer-types",
+    f"-I{REPO_ROOT / 'include'}",
+    f"-I{REPO_ROOT / 'src'}",
+]
 
 # The interfaces every codegen test exercises, and where each one's .msg/.srv source lives:
 #   - UInt64/SetBool/PingPong/Bulk: TickLE's own real example interfaces - flattened into

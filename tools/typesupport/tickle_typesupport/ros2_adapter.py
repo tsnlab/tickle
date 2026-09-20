@@ -77,6 +77,28 @@ import re
 # already-independently-generated ROS 2 sibling message) started coexisting with resolve.
 # Resolver's original "pkg__Name" one (model.WireStruct.header_name's own doc comment has the
 # full story).
+def _ros2_sequence_scalar_type(scalar_type):
+    """Maps a WireField's own `scalar_type` to the name `rosidl_runtime_c`'s primitive Sequence
+    types actually use on the ROS 2 side - not always identical, found the hard way (Milestone 55,
+    a real local colcon build, not the untested guess this module's own docstring had flagged
+    since Milestone 1: '`byte`/`char` ... hasn't been verified against a real ROS 2 install').
+    `byte` stays `"byte"` through this whole generator (this tool's own parser never aliases it to
+    `"uint8"`, confirmed by grep - no such normalization exists anywhere in the codebase) and, real
+    ROS 2 headers confirm, that is genuinely correct on the ROS 2 side too: `rosidl_generator_c`
+    gives a `byte[]`/`byte[<=N]` field its own real, distinct `rosidl_runtime_c__byte__Sequence`
+    struct member, so `f.scalar_type` needed no remapping there - this local build's own real
+    compile errors were 100% `char`, zero `byte` (confirmed directly, not assumed). `char` is
+    different: `rosidl_generator_c` represents an IDL `char` field's underlying storage as
+    `uint8_t`, so the ROS 2 side's own generated struct field is `rosidl_runtime_c__uint8__
+    Sequence`, not a `rosidl_runtime_c__char__Sequence` (a real, distinct type `rosidl_runtime_c`
+    also happens to separately declare, just never the one an actual `char[]`/`char[<=N]` field's
+    own struct member is typed as) - calling the wrong one compiled as a hard pointer-type-mismatch
+    error, not a silent wrong-data bug, which is why this had gone this long without being caught:
+    nothing in this tool's own offline test fixtures independently declares both Sequence types the
+    way a real ROS 2 install's headers do."""
+    return "uint8" if scalar_type == "char" else scalar_type
+
+
 def ros2_nested_struct_name(nested_struct):
     return f"{nested_struct.ros_pkg_name}__msg__{nested_struct.ros_type_name}"
 
@@ -236,7 +258,7 @@ def _from_tickle_field_lines(f):
     if f.kind == "array":
         count_var = f"tickle->{f.name}_count"
         return [
-            f"if (!rosidl_runtime_c__{f.scalar_type}__Sequence__init(&ros->{f.name}, {count_var})) {{ return false; }}",
+            f"if (!rosidl_runtime_c__{_ros2_sequence_scalar_type(f.scalar_type)}__Sequence__init(&ros->{f.name}, {count_var})) {{ return false; }}",
             f"memcpy(ros->{f.name}.data, tickle->{f.name}, (size_t){count_var} * sizeof(*tickle->{f.name}));",
         ]
     if f.kind == "nested":
@@ -328,7 +350,7 @@ def sequence_element_types(struct):
     one header (string_functions.h) it actually needs."""
     return sorted(
         {
-            f.scalar_type
+            _ros2_sequence_scalar_type(f.scalar_type)
             for f in struct.fields
             if f.kind == "array" and f.array_mode == "variable" and f.array_element_kind == "scalar"
         }
