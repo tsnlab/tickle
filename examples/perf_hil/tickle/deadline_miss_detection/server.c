@@ -53,7 +53,17 @@ static void check_deadline(struct tt_Node* node, uint64_t time, void* param) {
     if (g_interrupted) {
         return;
     }
-    if (last_received_ns != 0 && time - last_received_ns > (uint64_t)(deadline_s * (double)tt_SECOND)) {
+    // 1.5x tolerance, not a phase offset (2026-09-21, real bug found the hard way, same symptom
+    // class as client.c's own fix but a different cause): client.c's own send_one and
+    // check_deadline share one process/clock, so a controlled relative offset between them is
+    // meaningful there. This checker and the remote client's own send schedule run on two
+    // different machines' own independent clocks, with no controlled phase relationship at all
+    // (run_scenario.sh's own `sleep 3` between launching each side is only approximate, subject to
+    // real SSH/process-launch jitter) - a strict `> deadline_s` threshold trips on essentially any
+    // unlucky relative timing (reader_misses=30 over a 10s run with recv=sent=198, i.e. every
+    // sample actually arrived on time - the real symptom this fixes). 1.5x absorbs that jitter
+    // while still catching a genuine, multi-period gap.
+    if (last_received_ns != 0 && time - last_received_ns > (uint64_t)(1.5 * deadline_s * (double)tt_SECOND)) {
         misses++;
     }
     tt_Node_schedule(node, time + (uint64_t)(deadline_s * (double)tt_SECOND), check_deadline, NULL);
