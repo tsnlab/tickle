@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789918849956,
+  "lastUpdate": 1789918853234,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -26078,6 +26078,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.01,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "42f04939a0594aa925b390688a739f08b8f9e39c",
+          "message": "examples/perf_hil/tickle: add durability_late_join scenario (TickLE core native)\n\nSame role split as the CycloneDDS/FastDDS twins (server.c publishes 20 backlog\nsamples on \"ping\" before any subscriber exists, waits for client.c's own late\nack on \"pong\"). TickLE's DURABLE is simpler than TRANSIENT_LOCAL: one\nreliable_cache backs both RELIABILITY and DURABILITY (no separate durability-\nservice depth to under-configure), and there's no RxO durability-incompatibility\nconcept for a mismatched -D to trip on the client side.",
+          "timestamp": "2026-09-21T00:38:11+09:00",
+          "tree_id": "0e905564f99a1c70516bb6da6e785470d1ad9b6b",
+          "url": "https://github.com/tsnlab/tickle/commit/42f04939a0594aa925b390688a739f08b8f9e39c"
+        },
+        "date": 1789918852138,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.084,
             "unit": "ms"
           }
         ]
