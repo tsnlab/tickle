@@ -512,3 +512,63 @@ not solved.
 
 **Not yet done**: scenarios 3-9 (throughput, durability, history, deadline, liveliness, lifespan)
 for both frameworks; TickLE's own numbers for scenarios 1-2 (deferred per the sequencing above).
+
+### Blocked (2026-09-20): a real, unresolved CycloneDDS discovery bug on this specific rig
+
+**Status: scenarios 3-9 stopped here, at the user's own explicit call, after extensive real
+debugging - not abandoned lightly.** `examples/perf_hil/cyclonedds/best_effort_throughput/`,
+`reliable_throughput/`, and `durability_late_join/` exist and compile, but do not reliably work -
+kept in the repo as real, partially-verified progress and a documented dead end, not deleted.
+
+**The bug, as observed**: a CycloneDDS reader/writer pair on the `ping`/`pong` topic names (the
+two latency scenarios' own topics) matches instantly and 100% reliably, every single time this
+whole session, including retests run minutes apart. A pair on *any other* topic name
+(`stream`, `durable_topic`/`durable_ack`, ad-hoc test topics) essentially never matches, confirmed
+waiting up to 35 real seconds with an active poll loop (not a blind sleep) - `dds_get_publication_
+matched_status()`'s own `current_count` just never goes non-zero. Reusing the literal `ping`/`pong`
+names for a *new* scenario (`durability_late_join`) worked once, then broke again the moment a
+third QoS policy (`dds_qset_durability_service()`) was added to that same pair - so "just reuse
+ping/pong" is not a reliable workaround either, only a partial, inconsistent one.
+
+**Real findings along the way, not wasted effort - two genuine bugs fixed**: (1) `-fno-strict-
+aliasing` needed at `-O2` - CycloneDDS's C API's own `void*`-based `dds_take()`/`samples[]` pattern
+hit a real, bisected strict-aliasing UB (confirmed: `-O0` worked, plain `-O2` silently received
+nothing, `-O2 -fno-strict-aliasing` worked) - now in `cyclonedds/build.sh`'s own `CFLAGS`. (2)
+`dds_get_publication_matched_status()`/`dds_get_subscription_matched_status()` do not reliably
+return `DDS_RETCODE_OK` on this install even once `current_count` has genuinely gone non-zero -
+gating a match-wait loop on that return code (as a first draft of `common.h` did) silently
+discarded a real, timely match. Both fixes are real, kept, and documented in `common.h`'s own doc
+comments for whoever picks this up next.
+
+**What was ruled out, not just assumed** (real tests, not guesses): FastDDS's own `-fno-strict-
+aliasing`-equivalent issue never reproduced there at all - this is CycloneDDS-specific. Not a
+general network/link problem - `tcpdump` (real packet capture, both directions, after the user
+added a one-line sudoers entry) showed genuine SPDP multicast *and* follow-on unicast RTPS traffic
+flowing normally between the two rpis for the exact "stream" topic case that was reported as never
+matching at the application level - the packets are there, CycloneDDS's own application-facing
+status API just never reflects a completed match for them. Not a pure discovery-timing issue - a
+35-second active wait (far past the SPDP interval either way) still timed out. Not resolvable via
+config alone: forcing unicast `Peers` discovery (bypassing multicast/SPDP multicast entirely) still
+failed to match; CycloneDDS also flatly rejects a non-multicast `SPDPMulticastAddress` outright
+(the user's own suggestion to force IP broadcast the way TickLE's own protocol already does on this
+same rig - a reasonable, well-informed hypothesis given TickLE's own broadcast-based discovery is
+rock-solid on this exact link - could not be tested as configured, since CycloneDDS's own
+`SPDPMulticastAddress` validates its argument must be a real multicast address).
+
+**Most likely explanation, not confirmed**: a real defect or edge case specific to this install's
+CycloneDDS version (`libddsc.so.0`, release `0.10.5` - confirmed genuinely old/pre-rename via the
+idlc-generated header's own version banner), in whatever internal state tracks "has this specific
+topic/writer/reader combination completed matching" - not something further black-box testing from
+this session was able to pin down further without source-level debugging or upstream issue
+research, neither attempted here.
+
+**Recommendation for whoever picks this up**: try a newer CycloneDDS release on the rpis (the dev
+box's own `ros-lyrical-cyclonedds` is `11.0.1`, a very different line) before spending more time
+black-box-debugging this specific old version further - or, if the goal is specifically to keep
+testing *this* exact version (e.g. because it's what a real deployment target uses), a source-level
+debug build with symbols, not just black-box tracing, is probably the next real step.
+
+**Net scope actually delivered this round**: scenarios 1-2 (`best_effort_latency`/
+`reliable_latency`), both frameworks, real HIL numbers, verified stable across repeats - see
+"Results: scenarios 1-2" above. Scenarios 3-9 remain open, now with a documented, real, non-trivial
+blocker instead of an untried gap.

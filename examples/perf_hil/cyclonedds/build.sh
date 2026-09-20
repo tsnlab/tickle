@@ -32,7 +32,13 @@ if [ -z "$CDDS_INCLUDE" ] || [ -z "$CDDS_LIB" ]; then
 fi
 
 CC="${CC:-gcc}"
-CFLAGS="-O2 -I$GEN_DIR -I$CDDS_INCLUDE"
+# -fno-strict-aliasing: a real, bisected bug (not assumed) - the best_effort_throughput scenario's
+# server silently received nothing at plain -O2 (reader/writer matched fine, dds_take() just never
+# saw the incoming samples), root-caused by rebuilding at -O0 (worked), then -O2 -fno-strict-
+# aliasing (also worked) - the DDS C API's own void*-based dds_take()/samples[] pattern is a known
+# class of strict-aliasing hazard for a C caller, and this benchmark gains nothing from the
+# type-based aliasing optimizations it disables.
+CFLAGS="-O2 -fno-strict-aliasing -I$GEN_DIR -I$CDDS_INCLUDE"
 # --disable-new-dtags: DT_RPATH (old-style, transitively searched by every library this binary
 # loads, including libddsc.so's own dependency on libiceoryx_binding_c.so) instead of the
 # linker's modern default DT_RUNPATH, which only covers this executable's own *direct*

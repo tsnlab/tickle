@@ -13,6 +13,7 @@
 #include <time.h>
 
 #include "Bench.h"
+#include "../common.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -67,8 +68,10 @@ int main(int argc, char** argv) {
 
     // Give discovery a moment - a send before the writer/reader pair on both ends has matched
     // would just be lost, undercounting "sent" for no real reason.
-    struct timespec discovery_wait = {.tv_sec = 2, .tv_nsec = 0};
-    nanosleep(&discovery_wait, NULL);
+    if (!wait_for_writer_match(writer, 10.0) || !wait_for_reader_match(reader, 10.0)) {
+        fprintf(stderr, "timed out waiting for a match\n");
+        return 1;
+    }
 
     uint64_t transmitted = 0, received = 0;
     double rtt_min_ms = -1.0, rtt_max_ms = 0.0, rtt_sum_ms = 0.0, rtt_sum_sq_ms = 0.0;
