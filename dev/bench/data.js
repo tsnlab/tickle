@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789946154488,
+  "lastUpdate": 1789946158024,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -45790,6 +45790,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046894073486328,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "dab6f4944cd0162fb1633fc73e7ad68913e3c18c",
+          "message": "tickle.c: fix RELIABLE+VOLATILE historical-backlog leak and receive-side duplicate delivery\n\nTwo DDS-parity bugs found via real HIL testing, both rooted in\nupdate_reliable_ack():\n\n1. RELIABLE+VOLATILE leak: find_or_create_writer_proxy() hardcodes a\nfresh WriterProxy's ack_seq_no to 1. inform_subscriber_of_heartbeat()\nalready special-cased first contact correctly (syncing to the Heartbeat's\nown first_available_seq_no), but update_reliable_ack()'s DATA-arrival\npath discarded the first_contact signal entirely. Since the discovery-\ntriggered initial Heartbeat is a single unicast never itself retried,\nDATA can legally win the race and arrive first - when it does, a small\noffset from the stale ack_seq_no==1 default was misread as a recoverable\nin-flight gap, ACKNACK-requesting a VOLATILE Publisher's own pre-match\nhistory it was never obligated to keep. Fixed by syncing ack_seq_no to\nthe first-observed seq_no on first contact, mirroring the Heartbeat path.\nprocess_acknack() itself is untouched - gating it by durable would also\nbreak legitimate in-flight-loss recovery for an already-matched RELIABLE\nSubscriber.\n\n2. Receive-side duplicate delivery: deliver_data_to_subscriber() invoked\nthe application callback unconditionally, with no seq_no-based dedup at\nall - any retransmission overlapping an already-received sample\ndouble-delivered it. update_reliable_ack() now returns whether seq_no\nwas genuinely new (not already covered by ack_seq_no/received_bitmap),\nand the callback is skipped when it isn't.\n\ntests/test_writer_identity.c's test_gap_on_one_writer_does_not_affect_another()\nupdated to open its gap on an already-established writer instead of at\nliteral first contact, since it was implicitly relying on the exact leak\nfix #1 closes.\n\nMilestone 60 (rmw_tickle/PLAN.md).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T08:14:36+09:00",
+          "tree_id": "a4c0a49591d0a9376b0413bb7e6f7b3b8ab17274",
+          "url": "https://github.com/tsnlab/tickle/commit/dab6f4944cd0162fb1633fc73e7ad68913e3c18c"
+        },
+        "date": 1789946156888,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905225208827427,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9902700696672712,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03043855939592634,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03041703360421317,
             "unit": "Mbit/s"
           }
         ]
