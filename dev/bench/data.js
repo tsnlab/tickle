@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789866855033,
+  "lastUpdate": 1789866931681,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -28361,6 +28361,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 async latency",
             "value": 0.04691,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5af9be5d9d4a496c68d30478a8249a30ef54c9ac",
+          "message": "Milestone 49: LIVELINESS/DEADLINE RxO matching (wire expansion)\n\nImplements Milestone 31/28(a)'s own second explicitly-deferred item -\nthe real wire-format expansion TickLE Plan's own relay flagged as\nbigger scope than Milestone 48's pure-observability addition.\n\nReal wire change (tt_VERSION 3 -> 4): struct tt_UpdateEntity gains a\nnew tt_UPDATE_QOS_LIVELINESS_MANUAL bit plus two real uint64_t fields,\ndeadline_duration_ns/liveliness_lease_duration_ns - a bit can say\n\"which policy\", not \"how long\", and real DDS's own LIVELINESS policy\nis (kind, lease_duration) as one combined unit regardless.\n\n- tickle.h/tickle.c: struct tt_Publisher/tt_Subscriber gain the\n  matching offered/requested fields (pure wire-announcement, TickLE\n  core never enforces them); struct tt_DiscoveredEntity mirrors them\n  on receipt. New deadline_liveliness_incompatible() re-expresses\n  rmw_tickle's own already-correct static rmw_qos_profile_check_\n  compatible() logic against TickLE's own plain primitives (TickLE\n  core has no rmw_qos_profile_t concept to share it with). Wired into\n  both of Milestone 31's own existing gates alongside the pre-existing\n  RELIABILITY/DURABILITY checks.\n- rmw_publisher.c/rmw_subscription.c: populate the three new fields at\n  creation time - for a Subscription, computed fresh from qos_profile\n  directly rather than reusing sub_impl->liveliness_lease_ns (which\n  stays lazily 0 until LIVELINESS_CHANGED is actually requested; RxO\n  compatibility must reflect what QoS asked for regardless).\n- rmw_graph.c: Milestone 48's own qos_incompatible() counting extended\n  to match, so RMW_EVENT_OFFERED/REQUESTED_QOS_INCOMPATIBLE's own\n  last_policy_kind can now report DEADLINE/LIVELINESS too.\n\nNew tests: 7 whitebox cases in test_rxo_matching.c, one new test_events.c\ncase proving a real detected LIVELINESS mismatch end to end.\n\nVerified: make test/sanitize/platform-freertos/clang-format/clang-tidy\n(TickLE core); colcon build/test (10/10)/clang-tidy (rmw_tickle).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T10:13:50+09:00",
+          "tree_id": "b2077aed4f4764bd49025ba3a87a7e18765c8e81",
+          "url": "https://github.com/tsnlab/tickle/commit/5af9be5d9d4a496c68d30478a8249a30ef54c9ac"
+        },
+        "date": 1789866930533,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04863,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05077285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04833,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.046817142857142856,
             "unit": "ms"
           }
         ]
