@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789918633362,
+  "lastUpdate": 1789918636871,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -53215,6 +53215,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/583d723f1c62dd37e2cbe0a2aaf2fa6f024f235d"
         },
         "date": 1789918220781,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a2ce190856d91b11138d3a0f45a2fb0903f6257d",
+          "message": "comparison.md: scenario 3 TickLE-native results, real rig runs (3/3)\n\nAdds examples/perf_hil/tickle/run_scenario.sh (mirrors cyclonedds/run_scenario.sh's\nown SSH-backgrounding fixes; no such script existed yet for the TickLE-native track).\n\nReal finding, not a bug: TickLE's near-zero per-message overhead lets the client\noffer 95-155k msg/s at max rate, two orders of magnitude past either DDS vendor's\nown max-rate ceiling for this scenario - genuinely saturating the single-threaded\nserver's UDP drain rate, causing real kernel-level receive-buffer loss (57-70%,\nsent vs recv). Also documents a real harness methodology gap: the server's own\ngap-based loss counter can't see loss trailing off the end of the stream (no later\nsample to diff against) - same class of blind spot as scenario 6's leading-gap fix,\nmirrored at the other end. sent-vs-recv across the two RESULT lines is the only\ntrustworthy loss figure for this scenario shape.",
+          "timestamp": "2026-09-21T00:34:24+09:00",
+          "tree_id": "6c22094b59f1eb4fde6dddf272ea39419f1e3e24",
+          "url": "https://github.com/tsnlab/tickle/commit/a2ce190856d91b11138d3a0f45a2fb0903f6257d"
+        },
+        "date": 1789918635689,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
