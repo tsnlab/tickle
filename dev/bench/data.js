@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789894755426,
+  "lastUpdate": 1789894758848,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -65902,6 +65902,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 5% loss",
             "value": 5.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "39ad1c44dac9aa94e306ba4d5dbd0b2a98eca4dd",
+          "message": "Fix Check all regression: implement rmw_get_gid_for_client/rmw_compare_gids_equal\n\nMilestone 51's own skip removal exposed a real, previously-hidden gap\nreal CI caught immediately: rmw_tickle never implemented\nrmw_get_gid_for_client() or rmw_compare_gids_equal() at all - an\nunresolved dlsym, not a QoS rejection - so TestUniqueIdentifierAPI's\nown tests failed on a completely different symbol once the stale\nRELIABLE-based skip stopped masking it.\n\nBoth now implemented for real, not re-skipped:\n- rmw_get_gid_for_client() (rmw_client.c) mirrors rmw_get_gid_for_\n  publisher()'s own (node_id, entity_id) identity exactly.\n- rmw_compare_gids_equal() (rmw_publisher.c) is a plain identifier-\n  checked memcmp() over RMW_GID_STORAGE_SIZE bytes.\n\nVerified locally: colcon build/test (10/10, lyrical) clean;\nclang-tidy/clang-format clean on both touched files. Real CI\n(Check all) verification next - this is what actually caught the gap\nin the first place.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T17:56:06+09:00",
+          "tree_id": "eebbfa6c472dc36d527f1b4b1d1fe06b04005df2",
+          "url": "https://github.com/tsnlab/tickle/commit/39ad1c44dac9aa94e306ba4d5dbd0b2a98eca4dd"
+        },
+        "date": 1789894757753,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
             "unit": "%"
           },
           {
