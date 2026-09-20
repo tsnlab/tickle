@@ -63,10 +63,10 @@ pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-mea
 |---|---|---|---|---|---|
 | 1 | `best_effort_latency` | - | 0% loss, RTT ~0.20-0.22ms avg | 199/199, 0% loss, RTT 0.253/0.296/3.295ms | 199/199, 0% loss, RTT 0.231/0.242/0.343ms |
 | 2 | `reliable_latency` | - | 0% loss, RTT ~0.20-0.22ms avg | 199/199, 0% loss, RTT 0.271/0.297/0.603ms | 199/199, 0% loss, RTT 0.230/0.302/10.865ms |
-| 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent ~1.24M, **0% loss** (2/2), ~94.5 Mbps | sent ~245K, **4.6-47.2% loss** (noisy, 2/2), ~19.6 Mbps offered | sent ~850-900K, **7.2-17.2% loss** (noisy, 2/2), ~68-72 Mbps offered |
-| 4 | `reliable_throughput` | `tc` loss=0% | 0% loss (2/2), ~94.2-94.3 Mbps | 0% loss (2/2), ~17.8 Mbps | 0% loss (2/2), ~44.5-84.0 Mbps (itself noisy) |
-| 4 | `reliable_throughput` | `tc` loss=1% | **1.1-3.1% loss** (not reliably recovered) | **1.0% loss** (not recovered) | **0% loss** (fully recovered, 2/2) |
-| 4 | `reliable_throughput` | `tc` loss=5% | **5.2-5.3% loss** (not recovered) | **5.0-5.1% loss** (not recovered) | **0% loss** (fully recovered, 2/2) |
+| 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent 1.244-1.245M, recv 1.244-1.245M, **0% loss** (2/2), send 94.5→recv 94.5 Mbps | sent 245.4-245.5K, recv 129.6-234.3K, **4.6-47.2% loss** (noisy, 2/2), send 19.6→recv 10.4-18.7 Mbps | sent 849-899K, recv 745-788K, **7.2-17.2% loss** (noisy, 2/2), send 68-72→recv 59.6-63.0 Mbps |
+| 4 | `reliable_throughput` | `tc` loss=0% | sent 1.239-1.241M, recv 1.239-1.241M, **0% loss** (2/2), 94.2-94.3 Mbps (send=recv) | sent 222.3-223.3K, recv 222.3-223.3K, **0% loss** (2/2), 16.9-17.0 Mbps (send=recv) | sent 567K-1.051M (itself noisy run to run), recv = sent, **0% loss** (2/2), 43.1-79.8 Mbps (send=recv) |
+| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | sent 1.069-1.218M, recv 1.058-1.179M, **1.1-3.1% loss** (not reliably recovered, 2/2), send 81.2-92.5→recv 80.4-89.6 Mbps | sent 222.2-222.9K, recv 219.9-220.8K, **1.0% loss** (not recovered, 2/2), send 16.9→recv 16.7-16.8 Mbps | sent 145.5-159.4K, recv = sent, **0% loss** (fully recovered, 2/2), 11.1-12.1 Mbps (send=recv) |
+| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | sent 1.2408-1.2410M, recv 1.175-1.176M, **5.2-5.3% loss** (not recovered, 2/2), send 94.3→recv 89.3-89.4 Mbps | sent 222.3-222.9K, recv 211.2-211.5K, **5.0-5.1% loss** (not recovered, 2/2), send 16.9→recv 16.0-16.1 Mbps | sent 34.4-36.4K, recv = sent, **0% loss** (fully recovered, 2/2), 2.6-2.8 Mbps (send=recv) |
 | 5 | `durability_late_join` | - | durable: 20/20 (see §6); volatile: 57 received, not 0 (see §6) | 20/20 backlog delivered | 20/20 backlog delivered |
 | 6 | `history_depth_burst_loss` | within depth | 160/160 clean | identical to CycloneDDS | 0 lost |
 | 6 | `history_depth_burst_loss` | beyond depth | `recv > sent` (see §6) | identical to CycloneDDS | 52 lost (exact) |
@@ -74,6 +74,8 @@ pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-mea
 | 8 | `liveliness_loss_detection` | - | detect ~3080-3620ms (fixed node-level window, independent of lease - see §6) | detect ~1999.08ms (lease 2000ms) | detect ~2000.07ms (lease 2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
 | 9 | `lifespan_expiry` | beyond lifespan | 17/150 lost (**pause=1.0s** - see §6, item 6, for why this isn't the same condition as the other two) | 5 lost (pause=0.3s) | 10 lost (exact, pause=0.3s) |
+
+Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "send Mbps" is each framework's own printed client-side rate. Both runs (reproduced 2/2 for every condition) are given as ranges, not averaged, since the run-to-run variance itself is part of the finding for several rows (CycloneDDS's own scenario 4 send rate, FastDDS/CycloneDDS's own scenario 3 loss %).
 
 **Reading**:
 
