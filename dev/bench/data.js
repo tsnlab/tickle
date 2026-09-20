@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789938479663,
+  "lastUpdate": 1789938869245,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -36248,6 +36248,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.049808571428571424,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c506860705d5bc06c35eea6a63528330545a1eaa",
+          "message": "comparison.md: verify Milestone 59 - scenario 5 fixed, scenarios 6/9 still reproduce\n\nRe-ran scenarios 5/6/9 against the rebuilt core after TickLE Dev's own\nMilestone 59 (liveliness false-positive -> duplicate DURABLE delivery fix).\nScenario 5 (the DURABLE push path, deliver_durability_backlog()) is\nconfirmed fixed: 3/3 clean, received=20/20 exactly every time.\n\nScenarios 6/9 (the RELIABLE ACKNACK-repair path, process_acknack(),\ndurable=false publishers) still reproduce the recv > sent signature - a\ndifferent code path than what Milestone 59 fixed. Relayed back to TickLE\nDev to judge whether this belongs in item 2's own RELIABLE+VOLATILE scope\nor needs separate attention.",
+          "timestamp": "2026-09-21T06:13:08+09:00",
+          "tree_id": "aa4e278716b245b900516e7ab0eb992c5e037eed",
+          "url": "https://github.com/tsnlab/tickle/commit/c506860705d5bc06c35eea6a63528330545a1eaa"
+        },
+        "date": 1789938861903,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.049788571428571425,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.05370428571428571,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04654571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04733285714285714,
             "unit": "ms"
           }
         ]
