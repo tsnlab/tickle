@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789912641178,
+  "lastUpdate": 1789912644896,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -40804,6 +40804,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046471732003348,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "577c8859e808fc3c7e38e2754213fd2d3ad57ff8",
+          "message": "examples/perf_hil: add scenario 7, deadline_miss_detection (CycloneDDS + FastDDS)\n\nDEADLINE matched exactly on writer and reader. The writer publishes normally for\nwell under the deadline period for most of a fixed-count run, except for exactly\none deliberately-skipped interval - both the writer's own OFFERED_DEADLINE_MISSED\nand the reader's own REQUESTED_DEADLINE_MISSED should detect it independently.\n\nOne real methodology bug found on the rig: an earlier version polled its own\nmatch-wait-style status right after each nanosleep() call, but that same\nnanosleep() is what produces the deliberate gap - the poll can only ever run once\nthe whole gap has already elapsed, never while the deadline is actually expiring.\nA real run showed detect_latency_ms=100 for a 150ms gap against a 50ms deadline,\na pure polling artifact, not a real detection delay. Fixed on both frameworks with\na real listener callback (dds_lset_offered_deadline_missed() /\nDataWriterListener::on_offered_deadline_missed()), which runs on the middleware's\nown internal thread, genuinely async to the publish loop's own blocking sleep.\n\nA corrected assumption, not a bug: this document's own first draft expected\ntotal_count to land at exactly 1. Real, reproduced listener-based measurements\ninstead show a consistent, deterministic 7 on both frameworks independently for\nthe writer side - a writer silent across multiple deadline periods genuinely\nmisses the deadline once per period boundary crossed, real DDS behavior, just not\nthe naive ceil(gap/period)=3 first assumed. Reader-side counts differ between\nvendors (14 CycloneDDS vs 19 FastDDS) but are each internally reproducible.\n\nNo false positives on either framework - total_count stayed at 0 for the entire\nnormal-cadence portion of every run. Detection latency is near-instant\n(sub-millisecond) on both once measured via a listener instead of a poll.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T22:48:34+09:00",
+          "tree_id": "3350491c3f1788ec537b71a0ec88f4ccc5ede344",
+          "url": "https://github.com/tsnlab/tickle/commit/577c8859e808fc3c7e38e2754213fd2d3ad57ff8"
+        },
+        "date": 1789912643815,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9902642113821847,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9907037190028599,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030442919049944197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030477932521275113,
             "unit": "Mbit/s"
           }
         ]
