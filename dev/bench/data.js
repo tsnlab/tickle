@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789892954890,
+  "lastUpdate": 1789892958172,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -16748,6 +16748,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 897.729,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "31255c81168131c26e6f69c62e6b37eded6c3b74",
+          "message": "comparison.md/cyclonedds/build.sh: try CycloneDDS 11.0.1 - rules out the version theory\n\nInstalled ros-rolling-cyclonedds (11.0.1, matching the dev box's own line)\nalongside jazzy's own 0.10.5 on both rpis - a clean, isolated install\n(confirmed via --dry-run before, dpkg -l/find after: jazzy's own install\nuntouched). build.sh now prefers it when present.\n\nReal, negative result: the exact same best_effort_throughput failure this\ndocument's own \"Blocked\" section describes reproduces identically on 11.0.1\n(ldd-confirmed the rebuilt binaries genuinely link the new library) - rules\nout \"an old CycloneDDS version defect\" as the explanation. Root cause remains\nunknown; source-level debugging is the honest next step, not another version\nswap.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T17:26:40+09:00",
+          "tree_id": "b6e9ed9a883a7e317f1b181b84929ea58cddc48f",
+          "url": "https://github.com/tsnlab/tickle/commit/31255c81168131c26e6f69c62e6b37eded6c3b74"
+        },
+        "date": 1789892956986,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 935.09,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 899.246,
             "unit": "Mbps"
           }
         ]
