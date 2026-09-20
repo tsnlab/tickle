@@ -33,4 +33,12 @@ ssh_run() {
 ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/fdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
 sleep 5
 ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
+# pkill first, then read the log - not just pkill (2026-09-21, real gap found the hard way): this
+# script never actually printed the server's own RESULT line at all before this fix - only the
+# client's own line ever reached stdout, silently losing every server-side recv/loss number for
+# every scenario whose server is the authoritative side (best_effort_throughput,
+# reliable_throughput, ...) unless someone happened to read the remote log file by hand
+# afterward. Matches examples/perf_hil/tickle/run_scenario.sh's own identical fix.
 ssh_run "$RPI_SERVER" "pkill -INT -x server" || true
+sleep 1
+ssh_run "$RPI_SERVER" "cat /tmp/fdds_${SCENARIO}_server.log" | grep '^RESULT:'
