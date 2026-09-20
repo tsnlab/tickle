@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789936798579,
+  "lastUpdate": 1789937192746,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35825,6 +35825,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04755714285714285,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "746b0cf08ef71da8beb78c351de8c582b88b5f88",
+          "message": "examples/perf_hil/{cyclonedds,fastdds}/run_scenario.sh: actually print the server's RESULT line\n\nReal gap found while re-measuring scenario 3/4: these two scripts pkill the\nserver at the end but never read its log - only the client's own RESULT line\never reached stdout, silently losing every server-side recv/loss number for\nany scenario where the server is the authoritative side (best_effort_\nthroughput, reliable_throughput, ...), unless read by hand afterward.\nMatches examples/perf_hil/tickle/run_scenario.sh's own identical fix\n(pkill -INT, then cat the log, not just pkill).",
+          "timestamp": "2026-09-21T05:45:20+09:00",
+          "tree_id": "c22c7da61a28c6070a144544ee7507519e5edf5f",
+          "url": "https://github.com/tsnlab/tickle/commit/746b0cf08ef71da8beb78c351de8c582b88b5f88"
+        },
+        "date": 1789937191583,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05004571428571429,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04983857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05142999999999999,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04742999999999999,
             "unit": "ms"
           }
         ]
