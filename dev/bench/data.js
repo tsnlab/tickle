@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789915100809,
+  "lastUpdate": 1789915104475,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -41544,6 +41544,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030377932957240512,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4cbb08c2649dc43052fb5d3bbb12c4c5ba6006ec",
+          "message": "comparison.md: populate the 9-scenario dashboard matrix with real results\n\nThe \"Dashboard tracking\" section's own original plan - replace free-form prose\nwith a scenario x framework summary table once real runs exist - now done, with\nall 9 scenarios' real, reproduced numbers pulled together in one place. Each\ncell links conceptually to its own full narrative section further down (root\ncauses, real bugs found, repeat counts) - this table is a summary/index, not a\nreplacement for that detail.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T23:33:06+09:00",
+          "tree_id": "47660282690d8852c2d7f7c48ed284ca13df40c0",
+          "url": "https://github.com/tsnlab/tickle/commit/4cbb08c2649dc43052fb5d3bbb12c4c5ba6006ec"
+        },
+        "date": 1789915103361,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.990398815699986,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9892733437674386,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03045163835797991,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03048637935093471,
             "unit": "Mbit/s"
           }
         ]
