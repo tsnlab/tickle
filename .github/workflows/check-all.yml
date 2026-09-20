@@ -432,6 +432,14 @@ jobs:
           # (a stale-shell-ordering bug, not this specific line, but the identical underlying
           # "which typesupports were visible when this package configured" trap).
           source install/setup.bash
+          # colcon-override-check: the extension that actually provides --allow-overriding below -
+          # not part of colcon's own core parser (2026-09-20, real CI failure, a second one after
+          # the argument-order fix above: "colcon: error: unrecognized arguments: --allow-overriding
+          # rcl_interfaces builtin_interfaces" - this time from colcon's own top-level parser, not
+          # build's --packages-select, confirming the flag itself was never recognized on this
+          # runner at all, not a positioning issue) - ros-tooling/setup-ros's own baseline install
+          # doesn't include it.
+          pip install colcon-override-check
           # --allow-overriding rcl_interfaces builtin_interfaces: both are already present via
           # ros-jazzy-ros-base (apt), and colcon warns (not errors) without this when a locally-
           # built package shadows an already-installed one in the same workspace - deliberate here,
