@@ -339,6 +339,110 @@ limitation for an ungraceful shutdown - but a real, substantial drop in observed
 0/3) on the exact same reproducer that found it in the first place, which is the honest answer
 this specific question can give without a much larger sample than manual runs support well.
 
+## Item 5: cross-host rmw-layer latency measurement (2026-09-20) - methodology retracted, not a trustworthy result
+
+**What was attempted**: every `rmw_tickle`/FastDDS/CycloneDDS comparison above (Milestone 44, the
+Post-Milestone-47 validation) ran on a single host - `buildfarm_perf_tests`' own "two-process" test
+shape structurally always launches both sides as local child processes on one machine (see
+"Planned: HIL 3-way..." below, and `.github/scripts/README-rmw-perf.md`), which favors any rmw with
+a same-host shared-memory transport (FastDDS/CycloneDDS both have one; `rmw_tickle` only ever has
+real UDP sockets) for reasons that have nothing to do with either implementation's own real
+efficiency. This pass tried to get a genuine two-*host* number instead, using `tickle-hil`'s own
+rpi#1(publisher)/rpi#2(subscriber) pair, by hand-launching `perf_test` via SSH on each side (`-s 0`/
+`-p 0`, matching this same CLI shape) rather than through `buildfarm_perf_tests`' own same-host
+launcher.
+
+**Real, substantial infrastructure work needed first, all applied locally only (never committed,
+never touching the real `~/tickle` checkout's git history)**: neither rpi had `rmw_tickle`'s own
+`~/rmw_perf_ws` provisioned at all. Getting a real `rclcpp` + `rmw_tickle` process to even start on
+this rig's actual ROS 2 distro (Jazzy) surfaced several genuine, previously-unknown compatibility
+gaps, not just measurement-script bugs: `performance_test`'s own message list includes several
+messages larger than `tt_MAX_BUFFER_LENGTH` or holding nested types `rosidl_typesupport_tickle_c`
+doesn't support, which crashed the *build*, not just the run (worked around by restricting
+`rmw_tickle`'s own typesupport-generation loop, for this package specifically, to the two topics
+actually measured); and, more significantly, **every single `rclcpp::Node` on Jazzy unconditionally
+creates a `/parameter_events` (`rcl_interfaces/msg/ParameterEvent`) subscription via its own
+internal `NodeTimeSource`/`TimeSource` component** (for `use_sim_time` change monitoring) - with no
+`NodeOptions` flag able to disable it - which `rmw_tickle` has never had typesupport for at all,
+crashing subscription creation for *any* real `rclcpp` node on this distro, unrelated to
+`performance_test` specifically. Worked around (not upstreamed) by building `rcl_interfaces` as a
+local overlay with `rosidl_typesupport_tickle_c` visible, adding `# @capacity 1` annotations to
+`ParameterValue`'s/`ParameterEvent`'s several variable-length array fields (the generator's own
+"auto-derived capacity only supports one trailing variable array" limit) small enough to fit under
+`tt_MAX_BUFFER_LENGTH`. **This Jazzy-specific `/parameter_events` gap is real and worth its own
+follow-up independent of this measurement task** - as things stand, `rmw_tickle` cannot host a real
+`rclcpp::Node` at all on a ROS 2 distro with this `TimeSource` behavior, which is a functional gap,
+not a performance one.
+
+**The numbers actually measured** (Array1k/Struct16, 3 runs each, `perf_test`'s own `latency_mean`
+column, real cross-host traffic, zero loss on all 36/36 runs):
+
+| rmw | topic | mode | run 1 | run 2 | run 3 | avg (ms) |
+|---|---|---|---:|---:|---:|---:|
+| `rmw_tickle` | Array1k | async | 21.27 | 20.94 | 20.63 | 20.95 |
+| `rmw_tickle` | Array1k | sync | 14.87 | 14.79 | 14.71 | 14.79 |
+| `rmw_tickle` | Struct16 | async | 19.96 | 19.70 | 19.43 | 19.70 |
+| `rmw_tickle` | Struct16 | sync | 14.63 | 14.56 | 14.28 | 14.49 |
+| `rmw_fastrtps_cpp` | Array1k | async | 18.88 | 18.64 | 18.41 | 18.64 |
+| `rmw_fastrtps_cpp` | Array1k | sync | 14.02 | 13.72 | 13.44 | 13.73 |
+| `rmw_fastrtps_cpp` | Struct16 | async | 17.89 | 17.69 | 17.49 | 17.69 |
+| `rmw_fastrtps_cpp` | Struct16 | sync | 13.16 | 12.89 | 12.62 | 12.89 |
+| `rmw_cyclonedds_cpp` | Array1k | async | 17.06 | 16.88 | 16.72 | 16.89 |
+| `rmw_cyclonedds_cpp` | Array1k | sync | 12.37 | 12.12 | 11.90 | 12.13 |
+| `rmw_cyclonedds_cpp` | Struct16 | async | 16.34 | 16.19 | 16.06 | 16.20 |
+| `rmw_cyclonedds_cpp` | Struct16 | sync | 11.65 | 11.44 | 11.23 | 11.44 |
+
+("sync"/"async" here are the *same* CLI invocation for `-c ROS2` - `buildfarm_perf_tests`' own
+`test_performance.py.in` only adds `--disable-async` when `COMM != ROS2`; `perf_test` itself refuses
+`--disable_async` outright for `-c ROS2` ("ROS 2 does not support disabling async. publishing").
+This almost certainly means the *existing* same-host "sync"/"async" rows above, e.g. Milestone 44's
+own table, are two independent runs of the identical configuration too, not a real mode difference -
+not re-litigated here, just noted as the same caveat applying retroactively.)
+
+At face value this narrows Milestone 44's own same-host ~1.3-1.6x gap to roughly ~1.08-1.12x vs
+FastDDS and ~1.22-1.27x vs CycloneDDS cross-host - consistent with the same-host numbers being
+inflated by DDS vendors' own shared-memory shortcut, exactly as `comparison.md`'s own earlier
+`buildfarm_perf_tests` sections already say. **But this reading is retracted below, at the user's
+own explicit, methodologically correct objection - the numbers stay recorded here as data, not as
+a trustworthy latency comparison.**
+
+### Why this measurement is not trustworthy (the user's own call, 2026-09-20)
+
+Two independent machines run on two independent oscillators. Even with both `rpi#1`/`rpi#2`'s
+clocks NTP-synchronized (confirmed: `System clock synchronized: yes` on both, sub-second agreement
+between them), NTP correction does not make two independent clocks agree closely enough for a
+*one-way* delay measurement (`perf_test`'s own `communicator.cpp`, patched this pass from
+`steady_clock` - meaningless across two hosts with different boot references - to `system_clock`,
+wall time) to be trustworthy at the millisecond scale being measured here. **The only way to measure
+a real point-to-point delay between two independently-clocked machines is round-trip time (RTT) -
+send and receive the elapsed-time measurement on the *same* clock/oscillator** - a one-way delay
+inherently can't separate "real network/processing latency" from "the two clocks' own current
+offset," and NTP's own correction error is not small next to the ~11-21ms values measured here. A
+real, concrete symptom of exactly this problem was observed directly in the data above without yet
+being understood at the time: latency_mean drifted *consistently downward* run-over-run within every
+single one of the 12 (rmw, topic, mode) groups above (e.g. `rmw_tickle` Array1k async: 21.27 → 20.94
+→ 20.63ms) - the same direction and a similar magnitude regardless of rmw/topic/mode, which is far
+more consistent with the two rpis' clocks slowly drifting relative to each other over the ~10+
+minute span of the full run than with any real, rmw-dependent performance change. **The absolute
+numbers and the gap-narrowing conclusion drawn from them above should not be trusted** - kept in
+this document as a record of what was measured and why the method itself was inadequate, not as a
+real performance finding.
+
+### Standing principles going forward (the user's own, 2026-09-20)
+
+1. **`buildfarm_perf_tests` is for measuring rmw *completeness*, not real performance.** Its actual
+   value (already demonstrated: Milestone 12's two real wire-level bugs it caught, the Functional
+   comparison section above, this pass's own real `/parameter_events`/oversized-message gaps found
+   while provisioning) is as a conformance/regression signal - whether `rmw_tickle` can stand up a
+   real `rclcpp` application at all against real message types - not as a source of trustworthy
+   absolute or comparative latency numbers, same-host or cross-host.
+2. **A real performance measurement needs its own, purpose-built test case** - designed for an
+   actually valid methodology (RTT on one shared clock, or another approach that doesn't need two
+   independent oscillators to agree at the microsecond/millisecond scale) - not reused from
+   `buildfarm_perf_tests`. "TickLE Plan" is defining this test case; not yet designed as of this
+   entry - tracked as the next real step for actual cross-host performance measurement, replacing
+   this section's own retracted attempt.
+
 ## Planned: HIL 3-way QoS-matrix comparison (raw TickLE/FastDDS/CycloneDDS, no rmw)
 
 **Status (2026-09-20): design only, not scheduled yet.** Everything below is "TickLE Plan"'s own
