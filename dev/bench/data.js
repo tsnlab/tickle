@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789915194893,
+  "lastUpdate": 1789915198473,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -59667,6 +59667,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 70.11,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4cbb08c2649dc43052fb5d3bbb12c4c5ba6006ec",
+          "message": "comparison.md: populate the 9-scenario dashboard matrix with real results\n\nThe \"Dashboard tracking\" section's own original plan - replace free-form prose\nwith a scenario x framework summary table once real runs exist - now done, with\nall 9 scenarios' real, reproduced numbers pulled together in one place. Each\ncell links conceptually to its own full narrative section further down (root\ncauses, real bugs found, repeat counts) - this table is a summary/index, not a\nreplacement for that detail.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T23:33:06+09:00",
+          "tree_id": "47660282690d8852c2d7f7c48ed284ca13df40c0",
+          "url": "https://github.com/tsnlab/tickle/commit/4cbb08c2649dc43052fb5d3bbb12c4c5ba6006ec"
+        },
+        "date": 1789915197372,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 69.166,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 62.166,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.979,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 68.551,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.461,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.478,
             "unit": "Mbps"
           }
         ]
