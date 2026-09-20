@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789867406812,
+  "lastUpdate": 1789867410097,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -39426,6 +39426,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 819.191,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cde98e52c57a0bf389faa397d1fdb5dd6f3e4b15",
+          "message": "examples/perf_hil/cyclonedds/build.sh: fix libiceoryx_binding_c.so not found at runtime\n\nDT_RUNPATH (the linker's modern -rpath default) only covers a binary's own\ndirect dependencies - libddsc.so's own transitive dependency on\nlibiceoryx_binding_c.so wasn't covered, so the built client/server only ran\nwhen /opt/ros/*/setup.bash happened to already be sourced in that exact shell\n(easy to forget, confirmed by a real failed repeat run). --disable-new-dtags\nswitches to the older, transitively-searched DT_RPATH instead - the binary is\nnow self-contained regardless of the invoking shell's own environment.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T10:20:48+09:00",
+          "tree_id": "9f4a37b1b318a4e23fd05ca2a0e309edc7a5ff20",
+          "url": "https://github.com/tsnlab/tickle/commit/cde98e52c57a0bf389faa397d1fdb5dd6f3e4b15"
+        },
+        "date": 1789867408998,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 934.978,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 785.604,
             "unit": "Mbps"
           }
         ]
