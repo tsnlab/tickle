@@ -952,5 +952,16 @@ writer confirmed successful (no silent write-side rejection) - likely CycloneDDS
 ACKNACK-based redelivery pacing for a durability backlog under RELIABLE, not a resource-limits
 ceiling; not root-caused further this pass, tracked as a real, separate follow-on.
 
-FastDDS has no `durability_late_join` scenario built yet. Scenarios 7-9 (deadline, liveliness,
-lifespan) remain entirely unbuilt for both frameworks.
+**FastDDS `durability_late_join` - built fresh this pass, same design, clean result** (not a port
+of CycloneDDS's own buggy first draft - the `-D`-forwarding and `backlog_count`-depth fixes above
+were baked in from the start, per the two real bugs they were found to be): `run_scenario.sh`
+(FastDDS's own twin) got the identical `$CLIENT_ARGS`-forwarding + 5s-sleep fix. Match-wait uses
+FastDDS's own `get_subscription_matched_status()`/`get_publication_matched_status()` polling (this
+exercise's own established FastDDS idiom, `best_effort_throughput/client.cpp`'s own precedent), QoS
+mirrors the CycloneDDS design (`RELIABLE`, `KEEP_LAST(20)`, `TRANSIENT_LOCAL` + matching
+`durability_service` depth when `-D`). **Result: `received=20/20`, reproduced 3/3 real runs** - the
+VOLATILE control case correctly shows `received=0`. FastDDS's own durability replay is either
+faster or less ACKNACK-round-trip-bound than CycloneDDS's on this same rig/link - genuinely full,
+not just "unblocked."
+
+Scenarios 7-9 (deadline, liveliness, lifespan) remain entirely unbuilt for both frameworks.

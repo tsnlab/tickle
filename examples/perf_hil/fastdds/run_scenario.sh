@@ -23,7 +23,14 @@ ssh_run() {
 # the hard way on the CycloneDDS twin of this script - see its own doc comment for the full
 # repro): `cd dir && nohup cmd &` never returns control to a non-interactive ssh client at all,
 # reproduced with a plain `nohup sleep 30 &`, nothing framework-specific about it.
-ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; cd ~/$REMOTE_DIR; nohup ./server > /tmp/fdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
-sleep 2
+#
+# $CLIENT_ARGS forwarded to the server too, and a 5s (not 2s) pre-client sleep (2026-09-20, same
+# real bug found and fixed on the CycloneDDS twin - see its own doc comment): durability_late_join
+# needs -D on *both* sides (a durable client against a volatile server is a real RxO
+# incompatibility, not a discovery bug) and a durable match negotiation takes measurably longer
+# than a plain volatile one. Every other scenario's server.cpp only reads -d/-D and ignores
+# anything else, so this is safe to do unconditionally, not just for that one scenario.
+ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/fdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
+sleep 5
 ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
 ssh_run "$RPI_SERVER" "pkill -INT -x server" || true
