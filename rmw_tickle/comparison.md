@@ -489,6 +489,60 @@ per standing principle 1 above - `buildfarm_perf_tests` stays in use for conform
 oversized-message gaps), this new tool replaces it wherever a trustworthy latency *number* is the
 actual goal, same-host or cross-host.
 
+### Results (2026-09-20), cross-host, tickle-hil rpi#1 (ping)/rpi#2 (pong)
+
+Implemented per the design above (`rmw_tickle/rmw_perf_pingpong`), verified same-host on this dev
+box with `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp` first, then run for real cross-host on
+`tickle-hil`'s own two rpis for all three `RMW_IMPLEMENTATION`s. 50 samples/run (`-i 0.1 -d 5`), 3
+runs per (rmw, QoS) combination, 18/18 clean - **zero loss on every single run**:
+
+| rmw | QoS | run 1 | run 2 | run 3 | avg (ms) |
+|---|---|---:|---:|---:|---:|
+| `rmw_tickle` | best_effort | 0.524 | 0.524 | 0.525 | 0.524 |
+| `rmw_tickle` | reliable | 0.519 | 0.523 | 0.527 | 0.523 |
+| `rmw_fastrtps_cpp` | best_effort | 0.524 | 0.491 | 0.533 | 0.516 |
+| `rmw_fastrtps_cpp` | reliable | 0.505 | 0.528 | 0.535 | 0.523 |
+| `rmw_cyclonedds_cpp` | best_effort | 0.441 | 0.436 | 0.443 | 0.440 |
+| `rmw_cyclonedds_cpp` | reliable | 0.448 | 0.445 | 0.454 | 0.449 |
+
+**Reading**: `rmw_tickle` and `rmw_fastrtps_cpp` land within noise of each other (~0.52ms);
+`rmw_cyclonedds_cpp` is genuinely faster (~0.44ms) across the board. RELIABLE and BEST_EFFORT are
+statistically indistinguishable for every rmw here - no measurable "reliability tax" at this
+message size/rate, consistent with `rmw_tickle`'s own ACKNACK design (`update_reliable_ack()`/
+`maybe_arm_acknack_retry()`, `src/tickle.c`) never sending anything extra for a gap-free stream
+("a healthy stream needs no ACKNACK at all" - that function's own comment, confirmed true by this
+result, not just asserted).
+
+**Two real, reproducible false alarms along the way, worth recording so they aren't rediscovered
+the hard way again** - both were bugs in this new measurement tool/harness, not in `rmw_tickle` or
+TickLE core, but the *symptoms* looked exactly like a serious `rmw_tickle` RELIABLE bug at first,
+and the user's own explicit push to "analyze the bug properly instead of shrugging it off" is what
+actually surfaced the real cause each time rather than settling for a wrong conclusion:
+
+1. **72-95% loss, `rmw_tickle` RELIABLE only, at first.** Root cause: this harness's own SSH-based
+   cleanup between runs kept failing silently, leaving **up to 6 duplicate `pong_node` processes**
+   simultaneously bound to the same fixed TickLE port (8282, `SO_REUSEADDR` in `hal_linux.c`'s own
+   `tt_bind()`) on rpi#2 - unicast delivery to that port became a coin flip between them. The
+   cleanup command's own `pkill -f 'pong_node'` was the reason it kept failing: `-f` matches a
+   process's *entire* command line, and the running `pkill -f 'pong_node'` invocation's own command
+   line contains the literal text "pong_node" - it was killing *itself* (SSH reported this as
+   `Exit status -1`/an `exit-signal` channel event, not a normal exit) before it ever reached the
+   actual target process. Fixed with the standard `pkill -f '[p]ong_node'` bracket trick (a regex
+   character class that matches a real process's plain "pong_node" but not the pattern's own
+   literal `[p]ong_node` text) - and, separately, keeping the kill and any later `grep pong_node`
+   verification in *separate* SSH invocations, since combining them back into one command
+   reintroduced the exact same self-match through the unescaped `grep` pattern.
+2. **A consistent, suspiciously exact ~4.17ms RTT for every sample, RELIABLE only, still after
+   fixing (1).** Investigated by reading `update_reliable_ack()`/`maybe_arm_acknack_retry()`
+   directly (confirmed a gap-free stream sends no ACKNACK, ruling out per-message retransmission
+   as the cause) and packet-capturing both sides - real root cause turned out to be even simpler:
+   an earlier, unrelated fix attempt (widening `ping_node`'s own busy-poll interval from 100us to
+   2ms, to chase down a since-abandoned "peer presumed dead" liveliness warning caused by this
+   same tool's own overly tight polling starving `rmw_tickle`'s background poll thread) was never
+   reverted before the RELIABLE runs that showed 4.17ms. Reverting to 100us alone dropped RELIABLE
+   back to 0.52ms, matching BEST_EFFORT - the "reliability tax" was never real, just this tool's
+   own leftover instrumentation change from a different, already-resolved investigation.
+
 ## Planned: HIL 3-way QoS-matrix comparison (raw TickLE/FastDDS/CycloneDDS, no rmw)
 
 **Status (2026-09-20): design only, not scheduled yet.** Everything below is "TickLE Plan"'s own
