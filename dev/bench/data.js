@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789938248968,
+  "lastUpdate": 1789938252407,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -65191,6 +65191,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 68.481,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e7eee0bc92337bba74b2545fcbc24faa527918db",
+          "message": "tickle.c: fix liveliness false-positive causing duplicate DURABLE backlog delivery\n\ncheck_liveliness()'s presumed-dead cleanup wipes peers[]/update_seen[]/\nupdate_last_modified[] for a source, which defeats process_update()'s own\n\"nothing changed\" dedup on that source's very next (otherwise unchanged)\nannounce - upsert_peer() then sees a genuinely-new slot claim again and\nre-triggers deliver_durability_backlog() for a peer that never actually left.\n\nAdd a durable_delivered[] table to struct tt_ReliableCache keyed by\n(node_id, last_modified), since last_modified is what actually\ndistinguishes a genuine restart (needs the backlog again) from a\ntransient liveliness gap in an otherwise still-running peer (already has\nit). check_liveliness() never touches this table, so the record survives\nits own presumed-dead wipe.\n\nMilestone 59 (rmw_tickle/PLAN.md).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T06:01:15+09:00",
+          "tree_id": "35c3043c5c4e21d70aaee1f28cbb35b937574694",
+          "url": "https://github.com/tsnlab/tickle/commit/e7eee0bc92337bba74b2545fcbc24faa527918db"
+        },
+        "date": 1789938251303,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.926,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.036,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 66.201,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.851,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.729,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.895,
             "unit": "Mbps"
           }
         ]
