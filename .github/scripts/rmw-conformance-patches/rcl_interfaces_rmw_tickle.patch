@@ -1,0 +1,103 @@
+diff --git a/rcl_interfaces/msg/ListParametersResult.msg b/rcl_interfaces/msg/ListParametersResult.msg
+index 85334f5..fa8fc18 100644
+--- a/rcl_interfaces/msg/ListParametersResult.msg
++++ b/rcl_interfaces/msg/ListParametersResult.msg
+@@ -1,6 +1,10 @@
++# Local, rmw_tickle-specific patch (not upstream) - see ParameterValue.msg's own header
++# comment. Not itself needed for /parameter_events, but shares the same 'more than one
++# variable array in one struct' shape - annotated the same way so rcl_interfaces' own full
++# message set builds cleanly, not just the one message actually needed.
+ # The resulting parameters under the given prefixes.
+-string[] names
++string[] names  # @capacity 8
+ 
+ # The resulting prefixes under the given prefixes.
+ # TODO(wjwwood): link to prefix definition and rules.
+-string[] prefixes
++string[] prefixes  # @capacity 8
+diff --git a/rcl_interfaces/msg/ParameterEvent.msg b/rcl_interfaces/msg/ParameterEvent.msg
+index ace2544..261a9e3 100644
+--- a/rcl_interfaces/msg/ParameterEvent.msg
++++ b/rcl_interfaces/msg/ParameterEvent.msg
+@@ -1,3 +1,6 @@
++# Local, rmw_tickle-specific patch (not upstream) - see ParameterValue.msg's own header
++# comment for the full 'why' (this message is the actual /parameter_events payload every
++# real rclcpp::Node subscribes to). Three variable arrays, same capacity-annotation need.
+ # This message contains a parameter event.
+ # Because the parameter event was an atomic update, a specific parameter name
+ # can only be in one of the three sets.
+@@ -9,10 +12,10 @@ builtin_interfaces/Time stamp
+ string node
+ 
+ # New parameters that have been set for this node.
+-Parameter[] new_parameters
++Parameter[] new_parameters  # @capacity 1
+ 
+ # Parameters that have been changed during this event.
+-Parameter[] changed_parameters
++Parameter[] changed_parameters  # @capacity 1
+ 
+ # Parameters that have been deleted during this event.
+-Parameter[] deleted_parameters
++Parameter[] deleted_parameters  # @capacity 1
+diff --git a/rcl_interfaces/msg/ParameterEventDescriptors.msg b/rcl_interfaces/msg/ParameterEventDescriptors.msg
+index 28bbeb9..941becd 100644
+--- a/rcl_interfaces/msg/ParameterEventDescriptors.msg
++++ b/rcl_interfaces/msg/ParameterEventDescriptors.msg
+@@ -1,7 +1,12 @@
++# Local, rmw_tickle-specific patch (not upstream) - see ParameterValue.msg's own header
++# comment. Not itself needed for /parameter_events, but shares ParameterEvent.msg's exact
++# three-variable-array shape (nesting ParameterDescriptor instead of Parameter) - annotated
++# the same way so rcl_interfaces' own full message set builds cleanly, not just the one
++# message actually needed.
+ # This message contains descriptors of a parameter event.
+ # It was an atomic update.
+ # A specific parameter name can only be in one of the three sets.
+ 
+-ParameterDescriptor[] new_parameters
+-ParameterDescriptor[] changed_parameters
+-ParameterDescriptor[] deleted_parameters
++ParameterDescriptor[] new_parameters  # @capacity 4
++ParameterDescriptor[] changed_parameters  # @capacity 4
++ParameterDescriptor[] deleted_parameters  # @capacity 4
+diff --git a/rcl_interfaces/msg/ParameterValue.msg b/rcl_interfaces/msg/ParameterValue.msg
+index 4fba1bd..3429a5c 100644
+--- a/rcl_interfaces/msg/ParameterValue.msg
++++ b/rcl_interfaces/msg/ParameterValue.msg
+@@ -1,3 +1,14 @@
++# Local, rmw_tickle-specific patch (not upstream) - see rmw_tickle/PLAN.md's own Milestone for
++# this: every real rclcpp::Node unconditionally subscribes to /parameter_events
++# (rcl_interfaces/msg/ParameterEvent, via its own internal NodeTimeSource - no NodeOptions flag
++# disables it), so rmw_tickle needs real typesupport for this message (and its own dependents:
++# Parameter, this file) to host *any* real rclcpp application, not just plain topic pub/sub.
++# rosidl_typesupport_tickle_c's own auto-derived capacity only supports a single trailing variable
++# array per struct (rmw_tickle/PLAN.md's capacity rule) - this message has five, so each one below
++# needs an explicit '# @capacity <N>' annotation. 1 is a deliberately small, arbitrary value -
++# ParameterValue is a variant type where only one of these ever holds real data at a time
++# (, above, selects which), so an actual multi-element array value here is rare in practice;
++# widen if a real workload needs more.
+ # Used to determine which of the next *_value fields are set.
+ # ParameterType.PARAMETER_NOT_SET indicates that the parameter was not set
+ # (if gotten) or is uninitialized.
+@@ -23,16 +34,16 @@ float64 double_value
+ string string_value
+ 
+ # An array of bytes, used for non-textual information.
+-byte[] byte_array_value
++byte[] byte_array_value  # @capacity 1
+ 
+ # An array of boolean values.
+-bool[] bool_array_value
++bool[] bool_array_value  # @capacity 1
+ 
+ # An array of 64-bit integer values.
+-int64[] integer_array_value
++int64[] integer_array_value  # @capacity 1
+ 
+ # An array of 64-bit floating point values.
+-float64[] double_array_value
++float64[] double_array_value  # @capacity 1
+ 
+ # An array of string values.
+-string[] string_array_value
++string[] string_array_value  # @capacity 1

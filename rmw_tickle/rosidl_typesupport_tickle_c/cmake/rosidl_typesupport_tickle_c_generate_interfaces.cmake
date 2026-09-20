@@ -67,6 +67,27 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   get_filename_component(_parent_folder "${_parent_folder}" NAME)
   get_filename_component(_idl_name "${_abs_idl_file}" NAME_WE)
 
+  # rcl_interfaces' own .srv files (SetParameters etc.) all nest Parameter/ParameterValue, which
+  # tickle_typesupport.resolve.Ros2Resolver's own "sibling .msg in the same package" lookup
+  # (_find_independent_source()) cannot actually find from a .srv file's own call site: it looks
+  # relative to os.path.dirname(input_path) - this .srv's own srv/ directory - not msg/, so the
+  # sibling lookup misses and falls through to a different (unpatched, apt-installed) copy of the
+  # same message, one that doesn't carry rcl_interfaces_rmw_tickle.patch's own `# @capacity`
+  # annotations rcl_interfaces/msg/ParameterValue.msg needs (see that patch's own comment) -
+  # surfacing as "auto-derived capacity only supports a single trailing variable array" instead of
+  # generating correctly. A real bug in tickle_typesupport's own cross-.srv/.msg sibling
+  # resolution, not specific to rcl_interfaces - affects any package mixing .srv and .msg with a
+  # same-package nested reference between them - tracked as a real follow-up (rmw_tickle/PLAN.md),
+  # not fixed here. Scoped narrowly to rcl_interfaces' own .srv files in the meantime: rmw_tickle
+  # has no RPC/service typesupport story for rcl_interfaces either way yet (parameter get/set
+  # services stay unavailable over rmw_tickle, same as the already-documented TestClient/
+  # TestService.check_qos conformance gaps), so skipping just these costs nothing not already
+  # missing - the actual goal (every real rclcpp::Node's own unconditional /parameter_events
+  # subscription, NodeTimeSource, working over rmw_tickle) only ever needed the *messages*.
+  if("${PROJECT_NAME}" STREQUAL "rcl_interfaces" AND "${_parent_folder}" STREQUAL "srv")
+    continue()
+  endif()
+
   # Found the hard way via a real CI failure: the original source is NOT reliably at
   # CMAKE_CURRENT_SOURCE_DIR/<subfolder>/<name>.<ext> - that only holds for a package's *own*
   # local message files. A package can (and test_msgs really does, for every message except its
