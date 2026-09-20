@@ -154,14 +154,19 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
 
 ## 6. To-do, from TickLE's own perspective
 
-1. **[TickLE core, real correctness bug]** A liveliness false-positive causes real duplicate
-   DURABLE-backlog delivery under load: `check_liveliness()`'s own `forget_peers_from_source()`
+1. **[TickLE core, real correctness bug - partially fixed]** A liveliness false-positive causes
+   real duplicate delivery under load: `check_liveliness()`'s own `forget_peers_from_source()`
    wipes a still-alive peer's bookkeeping on a false "presumed dead" timeout, so the next UPDATE
-   from that same peer looks like a fresh discovery and re-triggers a full backlog re-push
-   (scenario 5: 20-sample backlog delivered as 140 in one run; scenario 6/9 show the same
-   `recv > sent` signature via the ACKNACK-repair path instead). Assigned to TickLE Dev
-   (2026-09-21) - **fixed**, TickLE Dev's own PLAN.md Milestone 59; verification (re-running
-   scenarios 5/6/9) still pending.
+   from that same peer looks like a fresh discovery and re-triggers redelivery. Two separate code
+   paths, two separate outcomes: TickLE Dev's PLAN.md Milestone 59 (2026-09-21) fixed the
+   **DURABLE push path** (`deliver_durability_backlog()`) - scenario 5 re-verified 3/3 clean,
+   `received=20/20` exactly every time (was 140=7×20 in one run before the fix). The **RELIABLE
+   ACKNACK-repair path** (`process_acknack()`, `durable=false` publishers) is a **different code
+   path, still not fixed** - scenario 6 still reproduces `recv > sent` 3/3 (168/165/169 vs.
+   `sent=160`), scenario 9 reproduces it 1/2 (154 vs. `sent=150`). Relayed back to TickLE Dev
+   (2026-09-21); may or may not be in scope for item 2's own RELIABLE+VOLATILE fix below, since
+   that's about whether `process_acknack()` should serve cache to a late joiner at all, not about
+   the "presumed dead" false-positive re-triggering it - TickLE Dev's own call.
 2. **[TickLE core, design decision made]** TickLE's own `RELIABLE + VOLATILE` doesn't isolate a
    late joiner from history the way DDS's own RELIABLE+VOLATILE does: `process_acknack()`'s
    retransmit loop isn't gated by `pub->durable` at all, so a newly-matched RELIABLE subscriber's
