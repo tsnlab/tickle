@@ -2,13 +2,18 @@
 // publisher on "pong" - republishes each received sample unmodified (mirrors examples/perf_hil's
 // own native server.c: an echo, not a transform, so ping_node's own RTT calculation is measuring
 // this round trip and nothing else).
+//
+// -m <bench|array1k|struct16> (payload-size expansion, see ping_node.cpp's own header comment for
+// the full 'why') - a pure echo needs no type-specific field access at all, so this stays a plain
+// function template instantiated per message type rather than needing ping_node.cpp's own
+// BenchTraits<T>.
 #include <cstring>
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "rmw_perf_pingpong/msg/array1k.hpp"
 #include "rmw_perf_pingpong/msg/bench.hpp"
-
-using rmw_perf_pingpong::msg::Bench;
+#include "rmw_perf_pingpong/msg/struct16.hpp"
 
 namespace {
 
@@ -24,32 +29,50 @@ namespace {
             .parameter_overrides({rclcpp::Parameter("start_type_description_service", false)});
     }
 
+    template <typename T> void run_pong(rclcpp::Node::SharedPtr node, bool reliable) {
+        rclcpp::QoS qos(8);
+        if (reliable) {
+            qos.reliable().keep_last(8);
+        } else {
+            qos.best_effort();
+        }
+
+        auto pub = node->create_publisher<T>("pong", qos);
+        auto sub = node->create_subscription<T>("ping", qos, [pub](const typename T::SharedPtr msg) {
+            pub->publish(*msg);
+        });
+
+        rclcpp::spin(node);
+    }
+
 } // namespace
 
 int main(int argc, char** argv) {
     bool reliable = false;
+    const char* message = "bench";
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--reliable") == 0) {
             reliable = true;
+        } else if (std::strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
+            message = argv[++i];
         }
     }
 
     rclcpp::init(argc, argv);
     auto node = std::make_shared<rclcpp::Node>("pong_node", default_node_options());
 
-    rclcpp::QoS qos(8);
-    if (reliable) {
-        qos.reliable().keep_last(8);
+    if (std::strcmp(message, "bench") == 0) {
+        run_pong<rmw_perf_pingpong::msg::Bench>(node, reliable);
+    } else if (std::strcmp(message, "array1k") == 0) {
+        run_pong<rmw_perf_pingpong::msg::Array1k>(node, reliable);
+    } else if (std::strcmp(message, "struct16") == 0) {
+        run_pong<rmw_perf_pingpong::msg::Struct16>(node, reliable);
     } else {
-        qos.best_effort();
+        std::fprintf(stderr, "unknown -m '%s' (expected bench|array1k|struct16)\n", message);
+        rclcpp::shutdown();
+        return 1;
     }
 
-    auto pub = node->create_publisher<Bench>("pong", qos);
-    auto sub = node->create_subscription<Bench>("ping", qos, [pub](const Bench::SharedPtr msg) {
-        pub->publish(*msg);
-    });
-
-    rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }

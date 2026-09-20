@@ -12,6 +12,8 @@ find_package(rclcpp REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Bench.msg"
+  "msg/Array1k.msg"
+  "msg/Struct16.msg"
 )
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
