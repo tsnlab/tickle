@@ -184,7 +184,7 @@ static bool check_guard_conditions(rmw_guard_conditions_t* guard_conditions, boo
 // governs this rmw_event_t's own readiness, or NULL for an event type this rmw doesn't implement
 // (degrades to "never ready" rather than crashing - rmw_publisher_event_init()/rmw_subscription_
 // event_init() already refuse to hand out an rmw_event_t for anything not covered here, so this
-// should only ever see the four cases below, but a defensive default costs nothing).
+// should only ever see the cases below, but a defensive default costs nothing).
 static rmw_tickle_event_status_t* event_status_for(const rmw_event_t* event) {
     switch (event->event_type) {
     case RMW_EVENT_OFFERED_DEADLINE_MISSED:
@@ -200,6 +200,10 @@ static rmw_tickle_event_status_t* event_status_for(const rmw_event_t* event) {
         // anything at all to report," not which side.
         return atomic_load(&status->alive.unread_count) > 0 ? &status->alive : &status->not_alive;
     }
+    case RMW_EVENT_OFFERED_QOS_INCOMPATIBLE:
+        return &((rmw_tickle_publisher_t*)event->data)->offered_qos_incompatible.base;
+    case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
+        return &((rmw_tickle_subscriber_t*)event->data)->requested_qos_incompatible.base;
     default:
         return NULL;
     }

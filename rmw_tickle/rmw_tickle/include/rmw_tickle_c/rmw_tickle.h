@@ -23,9 +23,10 @@
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
-#include "rmw/ret_types.h" // rmw_ret_t
-#include "rmw/types.h"     // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t,
-                           // rmw_service_t, rmw_guard_condition_t, rmw_wait_set_t, rmw_qos_profile_t
+#include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - rmw_tickle_qos_incompatible_status_t.last_policy_kind
+#include "rmw/ret_types.h"       // rmw_ret_t
+#include "rmw/types.h"           // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t,
+                                 // rmw_service_t, rmw_guard_condition_t, rmw_wait_set_t, rmw_qos_profile_t
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_runtime_c/service_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h" // rosidl_typesupport_tickle_c_message_callbacks_t
@@ -270,6 +271,23 @@ size_t rmw_tickle_count_matching_locked(rmw_tickle_context_impl_t* context_impl,
 size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                   uint8_t kind);
 
+// RMW_EVENT_OFFERED_QOS_INCOMPATIBLE's own live count (rmw_graph.c) - how many currently-alive
+// discovered remote Subscribers on `topic_name` request something (RELIABLE/TRANSIENT_LOCAL,
+// tt_UPDATE_QOS_RELIABLE/_DURABLE) this Publisher doesn't offer (`offered_reliable`/`offered_
+// durable`). Same "poll-thread-only, no locking of its own" rule as rmw_tickle_count_matching_
+// locked() above - called only from check_publisher_qos_incompatible() (rmw_publisher.c).
+size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
+                                                        bool offered_reliable, bool offered_durable,
+                                                        rmw_qos_policy_kind_t* out_last_policy_kind);
+
+// RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own counterpart (rmw_graph.c) - how many currently-alive
+// discovered remote Publishers on `topic_name` offer less than what this Subscription requests
+// (`requested_reliable`/`requested_durable`). Called only from check_subscription_qos_
+// incompatible() (rmw_subscription.c).
+size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
+                                                       bool requested_reliable, bool requested_durable,
+                                                       rmw_qos_policy_kind_t* out_last_policy_kind);
+
 // QoS roadmap #2 (DEADLINE) + #3 (LIVELINESS) - shared by every status this rmw tracks below.
 // total_count: cumulative, atomic (rmw_take_event(), rmw_event.c, reads it; only ever incremented,
 // always from the poll thread's own scheduled check - see rmw_publisher.c/rmw_subscription.c).
@@ -298,6 +316,31 @@ typedef struct rmw_tickle_liveliness_changed_status_t {
     rmw_tickle_event_status_t not_alive; // .total_count/.unread_count track not_alive_count_change
     int last_alive_count;                // plain, poll-thread-only - the periodic check's own previous reading
 } rmw_tickle_liveliness_changed_status_t;
+
+// RMW_EVENT_OFFERED_QOS_INCOMPATIBLE (rmw_tickle_publisher_t.offered_qos_incompatible below) /
+// RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE (rmw_tickle_subscriber_t.requested_qos_incompatible) -
+// Milestone 31/28(a)'s own explicitly-deferred observability follow-on: RxO matching itself
+// (tickle.c's own subscriber_incompatible_with_publisher()/decode_update_entities() gates) was
+// already real - a mismatched pair simply, correctly never connects - but rclcpp had no way to
+// *observe* that it happened. `base`'s own total_count/unread_count are cumulative, the same
+// shape/threading as deadline_missed/liveliness_lost above; last_policy_kind is real rmw_qos_
+// incompatible_event_status_t's own field, "the QoS Policy Kind of one of the policies that was
+// found to be incompatible the last time" - TickLE's own wire format only ever carries two
+// bits (tt_UPDATE_QOS_RELIABLE/_DURABLE, struct tt_UpdateEntity.qos, tickle.h), so this is only
+// ever RMW_QOS_POLICY_RELIABILITY or RMW_QOS_POLICY_DURABILITY (never LIVELINESS/DEADLINE - a
+// real, separately-scoped follow-on needing an actual wire-carried duration, not just a bit).
+typedef struct rmw_tickle_qos_incompatible_status_t {
+    rmw_tickle_event_status_t base;
+    rmw_qos_policy_kind_t last_policy_kind;
+    // plain, poll-thread-only - the periodic check's own previous reading (check_publisher_qos_
+    // incompatible()/check_subscription_qos_incompatible(), rmw_publisher.c/rmw_subscription.c),
+    // mirrors rmw_tickle_liveliness_changed_status_t.last_alive_count's own identical role: this
+    // event has no wire-level trigger of its own to react to, only a periodic re-scan of the
+    // existing discovery table (tt_Discovery, already populated by Milestone 0(c)/31), so
+    // "did the incompatible-match count change since last time" is derived the same way "did
+    // alive_count change" already is.
+    int last_incompatible_count;
+} rmw_tickle_qos_incompatible_status_t;
 
 // TickLE specific publisher data
 typedef struct rmw_tickle_publisher_t {
@@ -386,6 +429,15 @@ typedef struct rmw_tickle_publisher_t {
     // watchdog_thread_main()'s own node-wide latch for the AUTOMATIC case, but per-Publisher, since
     // each manual Publisher's own lease lapses (and recovers) independently of every other one.
     bool liveliness_lost_latched;
+
+    // Milestone 31/28(a) observability follow-on - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE. false
+    // (zero_allocate() default): rmw_publisher_event_init() hasn't been asked for this event type
+    // yet - same lazy, idempotent start as rmw_tickle_subscriber_t.liveliness_lease_ns's own
+    // pattern (rmw_subscription_event_init()), just gated by a plain bool here since there's no
+    // real duration for a 0 sentinel to double as (this check runs on a fixed period, RMW_TICKLE_
+    // QOS_INCOMPATIBLE_CHECK_PERIOD_NS, rmw_publisher.c - nothing for the application to tune).
+    bool offered_qos_incompatible_monitoring_started;
+    rmw_tickle_qos_incompatible_status_t offered_qos_incompatible;
 
     // QoS roadmap follow-up (Milestone 45's own latency investigation, rmw_tickle/PLAN.md) - the
     // scratch TickLE-struct buffer rmw_publish() converts into before tt_Publisher_publish(),
@@ -488,6 +540,12 @@ typedef struct rmw_tickle_subscriber_t {
     // can't honestly report.
     uint64_t liveliness_lease_ns;
     rmw_tickle_liveliness_changed_status_t liveliness_changed;
+
+    // Milestone 31/28(a) observability follow-on - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE. See
+    // rmw_tickle_publisher_t.offered_qos_incompatible_monitoring_started's own doc comment - same
+    // lazy-start pattern, subscriber side.
+    bool requested_qos_incompatible_monitoring_started;
+    rmw_tickle_qos_incompatible_status_t requested_qos_incompatible;
 
     // QoS roadmap #6 (LIFESPAN) - 0 (zero_allocate() default): disabled, today's only behavior for
     // a Subscription that didn't request one. Non-zero: rmw_take_with_info() (rmw_subscription.c)

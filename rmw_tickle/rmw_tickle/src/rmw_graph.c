@@ -52,7 +52,8 @@
 #include "rmw/get_topic_names_and_types.h"
 #include "rmw/init.h" // rmw_context_t
 #include "rmw/names_and_types.h"
-#include "rmw/qos_profiles.h" // rmw_qos_profile_unknown
+#include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - qos_incompatible()'s own out-param
+#include "rmw/qos_profiles.h"    // rmw_qos_profile_unknown
 #include "rmw/ret_types.h"
 #include "rmw/rmw.h"
 #include "rmw/sanity_checks.h" // rmw_check_zero_rmw_string_array()
@@ -244,6 +245,82 @@ size_t rmw_tickle_count_matching_locked(rmw_tickle_context_impl_t* context_impl,
 size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                   uint8_t kind) {
     return count_not_alive_matching_locked(context_impl, topic_name, kind);
+}
+
+// Milestone 31/28(a) observability follow-on - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE/RMW_EVENT_
+// REQUESTED_QOS_INCOMPATIBLE's own real DDS RxO comparison, generalized to whichever side is
+// "requesting" vs "offering" - true if a pairing requesting `requested_reliable`/`requested_
+// durable` can never be satisfied by one offering `offered_reliable`/`offered_durable`. Mirrors
+// tickle.c's own subscriber_incompatible_with_publisher() exactly (same two bits, same "requested
+// but not offered" direction), just evaluated here against struct tt_DiscoveredEntity.qos
+// (already populated by Milestone 31) instead of a live DATA packet's own sender - see this
+// function's own two callers below for which side's own local qos.reliable/.durable plays which
+// role. Reports which policy was found incompatible via *out_kind (RELIABILITY takes priority
+// over DURABILITY when both mismatch - an arbitrary but stable choice, real DDS's own wording
+// only ever promises "one of the policies", not a specific one when several apply).
+static bool qos_incompatible(bool requested_reliable, bool requested_durable, bool offered_reliable,
+                             bool offered_durable, rmw_qos_policy_kind_t* out_kind) {
+    if (requested_reliable && !offered_reliable) {
+        *out_kind = RMW_QOS_POLICY_RELIABILITY;
+        return true;
+    }
+    if (requested_durable && !offered_durable) {
+        *out_kind = RMW_QOS_POLICY_DURABILITY;
+        return true;
+    }
+    return false;
+}
+
+// rmw_tickle.h's own declaration - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE's own live count: how many
+// currently-alive discovered remote Subscribers on `topic_name` request something this Publisher
+// (offering `offered_reliable`/`offered_durable`) doesn't. Same "poll-thread-only, no locking of
+// its own" rule as count_matching_locked() - called only from check_publisher_qos_incompatible()
+// (rmw_publisher.c), which already holds context_impl->node_mutex via the same tt_Node_schedule()-
+// callback contract that function's own doc comment explains.
+size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
+                                                        bool offered_reliable, bool offered_durable,
+                                                        rmw_qos_policy_kind_t* out_last_policy_kind) {
+    size_t matched = 0;
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
+            strcmp(entity->name, topic_name) != 0) {
+            continue;
+        }
+        bool requested_reliable = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
+        bool requested_durable = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
+        rmw_qos_policy_kind_t kind;
+        if (qos_incompatible(requested_reliable, requested_durable, offered_reliable, offered_durable, &kind)) {
+            matched++;
+            *out_last_policy_kind = kind;
+        }
+    }
+    return matched;
+}
+
+// rmw_tickle.h's own declaration - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own counterpart: how
+// many currently-alive discovered remote Publishers on `topic_name` offer less than this
+// Subscription (requesting `requested_reliable`/`requested_durable`) needs. Called only from
+// check_subscription_qos_incompatible() (rmw_subscription.c) - same threading rule.
+size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
+                                                       bool requested_reliable, bool requested_durable,
+                                                       rmw_qos_policy_kind_t* out_last_policy_kind) {
+    size_t matched = 0;
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->kind != tt_KIND_TOPIC_PUBLISHER ||
+            strcmp(entity->name, topic_name) != 0) {
+            continue;
+        }
+        bool offered_reliable = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
+        bool offered_durable = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
+        rmw_qos_policy_kind_t kind;
+        if (qos_incompatible(requested_reliable, requested_durable, offered_reliable, offered_durable, &kind)) {
+            matched++;
+            *out_last_policy_kind = kind;
+        }
+    }
+    return matched;
 }
 
 // The tt_Node_interrupt()-then-lock-then-scan-then-unlock sequence every count_matching_locked()

@@ -22,6 +22,7 @@
 #include "rcutils/error_handling.h"
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
+#include "rmw/events_statuses/incompatible_qos.h"
 #include "rmw/events_statuses/liveliness_changed.h"
 #include "rmw/events_statuses/liveliness_lost.h"
 #include "rmw/events_statuses/offered_deadline_missed.h"
@@ -41,6 +42,8 @@ bool rmw_event_type_is_supported(rmw_event_type_t event_type) {
     case RMW_EVENT_REQUESTED_DEADLINE_MISSED:
     case RMW_EVENT_LIVELINESS_LOST:
     case RMW_EVENT_LIVELINESS_CHANGED:
+    case RMW_EVENT_OFFERED_QOS_INCOMPATIBLE:
+    case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE:
         return true;
     default:
         return false;
@@ -93,6 +96,23 @@ rmw_ret_t rmw_take_event(const rmw_event_t* event_handle, void* event_info, bool
         status->not_alive_count = atomic_load(&tickle_status->not_alive_count);
         status->alive_count_change = atomic_exchange(&tickle_status->alive.unread_count, 0);
         status->not_alive_count_change = atomic_exchange(&tickle_status->not_alive.unread_count, 0);
+        break;
+    }
+    case RMW_EVENT_OFFERED_QOS_INCOMPATIBLE: {
+        rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)event_handle->data;
+        rmw_tickle_qos_incompatible_status_t* tickle_status = &pub_impl->offered_qos_incompatible;
+        rmw_offered_qos_incompatible_event_status_t* status = (rmw_offered_qos_incompatible_event_status_t*)event_info;
+        take_simple_status(&tickle_status->base, &status->total_count, &status->total_count_change);
+        status->last_policy_kind = tickle_status->last_policy_kind;
+        break;
+    }
+    case RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE: {
+        rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)event_handle->data;
+        rmw_tickle_qos_incompatible_status_t* tickle_status = &sub_impl->requested_qos_incompatible;
+        rmw_requested_qos_incompatible_event_status_t* status =
+            (rmw_requested_qos_incompatible_event_status_t*)event_info;
+        take_simple_status(&tickle_status->base, &status->total_count, &status->total_count_change);
+        status->last_policy_kind = tickle_status->last_policy_kind;
         break;
     }
     default:
