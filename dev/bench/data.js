@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789947877508,
+  "lastUpdate": 1789947880818,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -46160,6 +46160,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.00002029963902064732,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f382a61232154511a17eb92a1c5246c1ba048f2",
+          "message": "comparison.md: verify Milestone 60 - scenario 9 fixed, scenarios 5/6 unchanged\n\nRe-ran scenarios 5/6/9 against the rebuilt core after TickLE Dev's own\nMilestone 60 (RELIABLE+VOLATILE DDS-parity fix + receive-side dedup).\n\nScenario 9 confirmed fixed: 2/2 clean, recv <= sent both runs, only genuine\nloss remains, no more duplicate-delivery signature.\n\nScenario 6 still reproduces recv > sent 3/3, unchanged from before the fix -\nnot yet root-caused why depth=8 still shows it while depth=64 (scenario 9)\ndoesn't. Scenario 5's own volatile control case still shows received=57,\nthe exact same value as before Milestone 60 - the RELIABLE+VOLATILE fix\ndoesn't appear to have changed this specific scenario's own result. Both\nrelayed back to TickLE Dev for further investigation.",
+          "timestamp": "2026-09-21T08:43:17+09:00",
+          "tree_id": "66f86d81ca76636f44fce0dab7ad3df537c1478c",
+          "url": "https://github.com/tsnlab/tickle/commit/7f382a61232154511a17eb92a1c5246c1ba048f2"
+        },
+        "date": 1789947879708,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905612128121513,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9899768829345703,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03045640672956194,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030477796282087053,
             "unit": "Mbit/s"
           }
         ]
