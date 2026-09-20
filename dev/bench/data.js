@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789919778508,
+  "lastUpdate": 1789919906366,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -34935,6 +34935,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.05259285714285714,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ae615997390cc08b8e25a3d3e0acede8769247e0",
+          "message": "examples/perf_hil/tickle: add lifespan_expiry scenario; fix run_scenario.sh pre-client race\n\nScenario 9: RELIABLE + generous depth=64 (unlike history_depth_burst_loss's\nown shallow depth=8) so loss is attributable purely to LIFESPAN's age-based\nexpiry, not queue-depth eviction. Verified reliable_cache_entry_expired() is\nchecked by both the durability-push and process_acknack() retransmit paths.\n\nrun_scenario.sh: PRE_CLIENT_SLEEP (default 3, unchanged for every other\nscenario) is now overridable - history_depth_burst_loss/lifespan_expiry's own\nserver.c does its own internal `-p` stall *before creating its Subscriber at\nall*, so the default 3s pre-client sleep let the subscriber become\ndiscoverable before the publisher had even started, silently producing 0 loss\nregardless of `-p` (the real bug this fixes - found while scenario 6 showed\n160/160 for both a 0.2s and a 3.0s pause).",
+          "timestamp": "2026-09-21T00:56:05+09:00",
+          "tree_id": "cd80e43cd2697e7006c4f8b61084a8c037e18068",
+          "url": "https://github.com/tsnlab/tickle/commit/ae615997390cc08b8e25a3d3e0acede8769247e0"
+        },
+        "date": 1789919901209,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.050121428571428574,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.14875714285714287,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.047894285714285716,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.049728571428571434,
             "unit": "ms"
           }
         ]
