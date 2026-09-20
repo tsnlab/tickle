@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789907314981,
+  "lastUpdate": 1789907318285,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -48751,6 +48751,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/fc681ee05a766d1e84ca8f39222bdece4540e95c"
         },
         "date": 1789906712774,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "eb856985a50af8b5c48a447540536df31fbf88f8",
+          "message": "check-all.yml: add -DBUILD_SHARED_LIBS=ON to the rcl_interfaces build (Milestone 54, take 4)\n\nMissing here, unlike the earlier rmw_tickle colcon build calls (see their own doc\ncomment for the full reasoning): rosidl_typesupport_tickle_c builds as a plain .a\nstatic archive absent this flag, and rosidl_typesupport_tickle_cpp's own shared\nlibrary target then failed to link against it (\"relocation R_X86_64_PC32 against\nsymbol 'rosidl_typesupport_tickle_c__identifier' can not be used when making a\nshared object; recompile with -fPIC\") - the exact same underlying requirement the\nearlier calls' own comment already documents (rosidl_typesupport_c's runtime\ndlopen() dispatch needs a real .so, not a static archive), just not carried over\nto this newer call.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:25:53+09:00",
+          "tree_id": "158381cbf7b2f71960317aa38456f2601a31eab5",
+          "url": "https://github.com/tsnlab/tickle/commit/eb856985a50af8b5c48a447540536df31fbf88f8"
+        },
+        "date": 1789907317166,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
