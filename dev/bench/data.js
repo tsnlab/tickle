@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789865867286,
+  "lastUpdate": 1789866007288,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -28045,6 +28045,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.08194285714285714,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "77a2b69fb0c7ca2cf56174d6ec657ca77a0ab575",
+          "message": "comparison.md: fill in concrete QoS values for the HIL matrix design\n\nLIVELINESS lease was left as \"a value derived from TickLE's own constants\" -\ncomputed it for real: tt_NODE_UPDATE_INTERVAL (1s) * tt_LIVELINESS_MISS_THRESHOLD\n(3) = 3s, TickLE's own actual peer-liveliness-loss detection latency, not an\narbitrary pick. Reformatted the QoS value matrix as a table alongside the other\nthree fixed values (HISTORY depth, DEADLINE, LIFESPAN) for the same \"confirm\nevery side used the same numbers\" reason the surrounding design already states.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T09:58:59+09:00",
+          "tree_id": "5c0aaa7f7448fc6e7357f815614aa5066df6b15a",
+          "url": "https://github.com/tsnlab/tickle/commit/77a2b69fb0c7ca2cf56174d6ec657ca77a0ab575"
+        },
+        "date": 1789866006133,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.08081428571428571,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04787142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.05785285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04812142857142857,
             "unit": "ms"
           }
         ]
