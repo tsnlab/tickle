@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789866325948,
+  "lastUpdate": 1789866329291,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -54903,6 +54903,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 23.262,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "847c279fa3d70fea2e0a28473d0d5630ec9def1a",
+          "message": "comparison.md: add implementation plan/sequencing for the HIL QoS-matrix comparison\n\nPer the user's own explicit order (2026-09-20): FastDDS/CycloneDDS example\nprograms first (built/run on tickle-hil in parallel with TickLE Dev's current\nwork - they touch nothing in this repo's core/rmw_tickle tree), TickLE's own\nexamples last, deferred until TickLE Dev's current queue is far enough along\nnot to collide with its active tickle.c/tickle.h edits.\n\nStrengthened design principle 1 (identical data) while planning this out: both\nfastddsgen and CycloneDDS's idlc compile literal standard OMG IDL, so one\nshared, framework-neutral .idl file per message shape makes \"identical\" a\nbyte-identical source guarantee instead of a hand-verified one. Added a\nproposed directory layout and an explicit note that writing the actual example\nprograms is real development work for TickLE Dev's own queue, not this\nsession's - the scenario list itself needs the user's own confirmation first.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T10:02:35+09:00",
+          "tree_id": "b61e52cdb35b3e4d3cb85149ec18a257a9a83c3d",
+          "url": "https://github.com/tsnlab/tickle/commit/847c279fa3d70fea2e0a28473d0d5630ec9def1a"
+        },
+        "date": 1789866328222,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 23.598,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 23.648,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 23.692,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 23.774,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 23.783,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 23.904,
             "unit": "ms"
           }
         ]
