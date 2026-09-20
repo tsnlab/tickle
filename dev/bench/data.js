@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789904612635,
+  "lastUpdate": 1789904899000,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -31269,6 +31269,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04548428571428572,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e30b0e94ca3075f349021708a69808f30a42f6cf",
+          "message": "Wire rcl_interfaces_rmw_tickle.patch into check-all.yml's real build (Milestone 54)\n\nrcl_interfaces itself is now actually compiled with rosidl_typesupport_tickle_c\nin CI, not just cloned for its bundled test_msgs - closes the same class of\n\"a real regression could land unnoticed\" gap Milestone 53 just closed for\ntools/typesupport's own test suite.\n\nTwo real, previously-unknown generator bugs found getting rcl_interfaces to\nactually build (neither caught by Milestone 50's own narrower local\nverification): (1) an unbounded array of a nested, non-fixed-size message\ntype (Parameter[] in SetParameters.srv/SetParametersAtomically.srv) can't\nauto-derive a capacity at all; (2) a bare string[] field never auto-derives\neither, even alone in a struct. Fixed via explicit `# @capacity 8`\nannotations on the eight affected fields across six .srv files, same\npristine-clone-diff patch method as before, verified to apply clean on a\nseparate fresh clone.\n\nA third bug surfaced once compilation actually started: Log.msg/\nParameterEvent.msg's own builtin_interfaces/Time field failed with\n\"Time.h: No such file or directory\" - Ros2Resolver's own -I-search-path\ncontract assumes a type found there is also independently generated\nelsewhere in the same build, which check-all.yml's narrow --packages-select\ndidn't satisfy. Fixed by building builtin_interfaces itself alongside\nrcl_interfaces (--allow-overriding both, since both already exist via\nros-jazzy-ros-base apt packages).\n\nVerified locally as far as this dev box's lyrical ROS 2 install allows:\nrcl_interfaces+builtin_interfaces build clean (4/4 packages). Whether the\noverride coexists with test_rmw_implementation's own conformance suite\nneeds real CI (jazzy) to confirm - not reachable locally due to a known\nlyrical/jazzy API drift unrelated to this change.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T20:46:47+09:00",
+          "tree_id": "be103e80cde3347622b62f0cea356481b2adce6b",
+          "url": "https://github.com/tsnlab/tickle/commit/e30b0e94ca3075f349021708a69808f30a42f6cf"
+        },
+        "date": 1789904893734,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05378142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.046810000000000004,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.046092857142857144,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.044527142857142855,
             "unit": "ms"
           }
         ]
