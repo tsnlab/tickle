@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789936794918,
+  "lastUpdate": 1789936798579,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -44689,6 +44689,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.000004223414829799107,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8dd2079209c3087424557d5c9b3809f696125e4e",
+          "message": "examples/perf_hil/{cyclonedds,fastdds}: fix same server -d bug found in the TickLE twins\n\nConfirmed both DDS vendors' own best_effort_throughput/reliable_throughput\nserver.c/.cpp had the identical run_scenario.sh -d dual-meaning collision\nalready fixed on the TickLE-native twins (examples/perf_hil/tickle: fix\nserver -d misinterpretation ...) - the same +15s safety_cap_s buffer applied\nhere. Needed before any fresh, trustworthy cross-framework throughput\nre-measurement.",
+          "timestamp": "2026-09-21T05:38:35+09:00",
+          "tree_id": "57828ad745b579abe0045006cd2162f2df8d8b3b",
+          "url": "https://github.com/tsnlab/tickle/commit/8dd2079209c3087424557d5c9b3809f696125e4e"
+        },
+        "date": 1789936797452,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9903979982648577,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9905519485473633,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030477796282087053,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030464444841657366,
             "unit": "Mbit/s"
           }
         ]
