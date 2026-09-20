@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789914555147,
+  "lastUpdate": 1789914558337,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -46517,6 +46517,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 821.01,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "215b1f98d60de5114c1fbd10db7e8032b1529c92",
+          "message": "examples/perf_hil: add scenario 9, lifespan_expiry (CycloneDDS + FastDDS) - closes the 9-scenario design\n\nLIFESPAN matched on writer and reader, deliberately paired with a generous\nHISTORY KEEP_ALL (unlike scenario 6's own shallow KEEP_LAST(8)), so any loss\nobserved is attributable purely to per-sample age-based expiry, not queue-depth\neviction - keeping the two mechanisms cleanly separated across scenarios.\n\nVerified on the rig, reproducible (2/2 each framework):\n- Within lifespan (0.05s pause, 0.1s lifespan): 100/100 received, 0 lost, both\n  frameworks.\n- Beyond lifespan (0.3s pause, 0.1s lifespan): CycloneDDS loses exactly 10\n  ((pause-lifespan)/interval = (0.3-0.1)/0.02 = 10, matches the arithmetic\n  exactly), FastDDS loses exactly 5 (half of CycloneDDS's own count) - a real,\n  reproducible 2x cross-vendor difference, not noise, plausibly from the two\n  vendors checking sample age at different pipeline points.\n\nA dds_wait_for_acks() timeout was observed on the CycloneDDS writer in every\nrun of this scenario, including the 0-loss case - cosmetic (stderr only, no\neffect on the real RESULT counts), not scenario-specific or investigated\nfurther.\n\nThis closes the 9-scenario HIL QoS-matrix design (comparison.md's own\n\"Scenario list\" table) - all 9 scenarios now have real, reproduced results on\nboth CycloneDDS and FastDDS. TickLE core's own native HIL examples still only\ncover scenarios 1-2; extending them through 3-9 is the natural next step.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T23:26:36+09:00",
+          "tree_id": "80d830a295c3185345ff58e9d33f3f573fe5f19a",
+          "url": "https://github.com/tsnlab/tickle/commit/215b1f98d60de5114c1fbd10db7e8032b1529c92"
+        },
+        "date": 1789914557223,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 935.025,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 817.523,
             "unit": "Mbps"
           }
         ]
