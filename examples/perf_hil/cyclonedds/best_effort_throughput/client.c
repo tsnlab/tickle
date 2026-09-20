@@ -4,6 +4,18 @@
  * one-way stream (no pong) - mirrors TickLE's own examples/linux/perf/perf_client.c: the sender
  * just blasts samples, the *receiver* (server.c) is the authoritative side for loss/throughput,
  * since only it can see what actually arrived.
+ *
+ * Explicit match-wait, restored (2026-09-20): the real upstream eclipse-cyclonedds/cyclonedds
+ * example for THIS shape of test - a one-way writer/reader pair, not a symmetric round trip - is
+ * examples/throughput/publisher.c, not roundtrip/ping.c. Its own wait_for_reader() *does* call
+ * dds_set_status_mask()+a waitset before writing a single sample; roundtrip's ping.c looks like it
+ * skips this, but only because it substitutes its own up-to-5s data-driven warm-up loop instead (a
+ * real distinction, confirmed by reading both), which has no equivalent for a one-way stream with
+ * no data flowing back. Removing this in a prior pass on this same file caused a real, reproduced
+ * recv=0 on the rig; a live CycloneDDS trace log during that regression showed discovery itself
+ * genuinely completing a couple seconds in, on this hardware - past the point this scenario had
+ * already started sending, since nothing here waited for it - so restoring this matches upstream's
+ * own throughput example, not just this repo's earlier design.
  */
 #include <dds/dds.h>
 #include <signal.h>
@@ -56,7 +68,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!wait_for_writer_match(writer, 10.0)) {
+    if (!wait_for_writer_match(participant, writer, 15.0)) {
         fprintf(stderr, "timed out waiting for a matched reader\n");
         return 1;
     }

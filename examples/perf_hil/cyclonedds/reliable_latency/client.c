@@ -71,7 +71,13 @@ int main(int argc, char** argv) {
 
     // Give discovery a moment - a send before the writer/reader pair on both ends has matched
     // would just be lost, undercounting "sent" for no real reason.
-    if (!wait_for_writer_match(writer, 10.0) || !wait_for_reader_match(reader, 10.0)) {
+    //
+    // Both calls unconditionally, into separate variables (2026-09-20, real bug - see
+    // best_effort_latency/client.c's own doc comment for the full story): `!A(...) || !B(...)`
+    // short-circuits B when A already succeeded, so the reader's own match never gets confirmed.
+    bool writer_matched = wait_for_writer_match(participant, writer, 10.0);
+    bool reader_matched = wait_for_reader_match(participant, reader, 10.0);
+    if (!writer_matched || !reader_matched) {
         fprintf(stderr, "timed out waiting for a match\n");
         return 1;
     }

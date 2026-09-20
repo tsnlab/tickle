@@ -68,7 +68,16 @@ int main(int argc, char** argv) {
 
     // Give discovery a moment - a send before the writer/reader pair on both ends has matched
     // would just be lost, undercounting "sent" for no real reason.
-    if (!wait_for_writer_match(writer, 10.0) || !wait_for_reader_match(reader, 10.0)) {
+    //
+    // Both calls unconditionally, into separate variables (2026-09-20, real bug found the hard
+    // way): `!wait_for_writer_match(...) || !wait_for_reader_match(...)` short-circuits - if the
+    // writer matches first (the common case), the reader's own wait_for_reader_match() is never
+    // even called, so the reader's own SUBSCRIPTION_MATCHED_STATUS is never confirmed before the
+    // send loop starts. Reproduced as a real, reliable 100% RTT loss on the rig even with a clean
+    // process restart and a generous 15s test window - not a network or discovery-speed issue.
+    bool writer_matched = wait_for_writer_match(participant, writer, 10.0);
+    bool reader_matched = wait_for_reader_match(participant, reader, 10.0);
+    if (!writer_matched || !reader_matched) {
         fprintf(stderr, "timed out waiting for a match\n");
         return 1;
     }

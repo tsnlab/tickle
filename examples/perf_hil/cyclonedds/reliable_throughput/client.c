@@ -42,11 +42,17 @@ int main(int argc, char** argv) {
     dds_entity_t participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
     dds_entity_t topic = dds_create_topic(participant, &Bench_desc, "stream", NULL, NULL);
 
-    // scenario "reliable_throughput" - BEST_EFFORT, matched exactly across frameworks
-    // (comparison.md's design principle 3).
+    // scenario "reliable_throughput" - RELIABLE, matched exactly across frameworks
+    // (comparison.md's design principle 3). KEEP_ALL + generous resource_limits (2026-09-20,
+    // matching the real upstream eclipse-cyclonedds/cyclonedds examples/throughput/publisher.c's
+    // own prepare_dds()): KEEP_LAST(8) was real, bisected root cause of a genuine 53% loss under
+    // RELIABLE at full send rate on the rig (a shallow writer history queue backpressures/drops
+    // under sustained high-rate writes long before the network itself is the bottleneck) - not a
+    // discovery/matching problem, a resource-limits tuning gap against the official example.
     dds_qos_t* qos = dds_create_qos();
-    dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
-    dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, 8);
+    dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(10));
+    dds_qset_history(qos, DDS_HISTORY_KEEP_ALL, 0);
+    dds_qset_resource_limits(qos, 4000, DDS_LENGTH_UNLIMITED, DDS_LENGTH_UNLIMITED);
     dds_entity_t writer = dds_create_writer(participant, topic, qos, NULL);
     dds_delete_qos(qos);
     if (writer < 0) {
@@ -54,7 +60,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (!wait_for_writer_match(writer, 10.0)) {
+    if (!wait_for_writer_match(participant, writer, 10.0)) {
         fprintf(stderr, "timed out waiting for a matched reader\n");
         return 1;
     }

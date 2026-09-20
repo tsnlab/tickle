@@ -833,3 +833,99 @@ essentially nothing extra over BEST_EFFORT here either, matching the same patter
 for both DDS vendors. Caveat: this is one link, one message size, two scenarios out of the
 9-scenario design above - not yet broad enough to call the goal fully met, but a real, positive
 first result, not a hypothesis.
+
+### Resolved (2026-09-20): the "Blocked" CycloneDDS discovery bug above was never a discovery bug
+
+**The two "Blocked"/"Tried the above recommendation" sections above are superseded, not deleted -
+kept as a real record of what was tried and ruled out along the way.** At the user's own explicit
+direction ("공식 예제를 최대한 따르는 것이 안전할 것 같아... GitHub을 찾아보고 성공한 케이스를
+따라하도록 하자" - stop reimplementing from the API, find and follow real, working GitHub examples
+instead), both `eclipse-cyclonedds/cyclonedds`'s own `examples/roundtrip/` (ping/pong) and
+`examples/throughput/` (publisher/subscriber) were fetched and read in full. This immediately
+surfaced the real, wrong assumption behind every attempt above: `roundtrip`'s ping.c never calls
+an explicit match-wait API at all, but `throughput`'s publisher.c *does* - the exact
+`dds_set_status_mask()`+waitset pattern this repo already had. Different examples for different
+shapes of test (symmetric round-trip vs. one-way stream), not one universal "no match-wait" rule -
+misreading roundtrip's own pattern as the general one is what caused a real regression this same
+session (see below) before this was caught.
+
+**Four real, distinct bugs found and fixed this pass, not one - each independently confirmed on
+the rig with before/after numbers, not assumed fixed from reasoning alone**:
+
+1. **`run_scenario.sh` (both frameworks) - a real, reproducible bash/ssh hang, nothing to do with
+   CycloneDDS/FastDDS at all.** `cd dir && nohup cmd &` never returns control to a non-interactive
+   ssh client - reproduced with a plain `nohup sleep 30 &`, no DDS code involved. `cd dir; nohup
+   cmd &` (semicolon, not `&&`) returns in well under a second. This alone cost a real ~20+ minute
+   stall mid-session (a leftover server process from a hung run sat alive on rpi#2 the whole
+   time) before being isolated and fixed. `</dev/null` on the backgrounded process is *also*
+   required (a separate, real hang: without it the process inherits the ssh session's own stdin,
+   and ssh never sees every fd close).
+
+2. **CycloneDDS - the match-wait removal itself was the wrong fix, reverted.** Removing
+   `wait_for_writer_match()` from `best_effort_throughput/client.c` (this session's first pass at
+   "follow the official example") produced a real, reproduced `recv=0` end-to-end on the rig - a
+   live `CYCLONEDDS_URI` trace log during that regression showed SPDP discovery itself genuinely
+   completing a couple of seconds in on this hardware, well after this scenario had already started
+   sending with nothing gating it. Restored, matching `throughput/publisher.c`'s own
+   `wait_for_reader()` exactly (this *is* the official pattern for a one-way stream).
+
+3. **CycloneDDS - `!A(...) || !B(...)` short-circuits, silently skipping the second match-wait.**
+   `best_effort_latency/client.c`, `reliable_latency/client.c`, and `durability_late_join/client.c`
+   all wrote `if (!wait_for_writer_match(...) || !wait_for_reader_match(...))` - when the first call
+   succeeds (the common case), `||` never evaluates the second, so the reader's own match is never
+   actually confirmed. Fixed by calling both unconditionally into separate `bool`s first.
+
+4. **CycloneDDS - the real root cause of the original "new topic never matches" symptom:
+   `dds_set_status_mask()` REPLACES the entire mask, it doesn't OR a bit in.** Every latency-scenario
+   reader sets `DDS_DATA_AVAILABLE_STATUS` *before* calling `wait_for_reader_match()`, so its own
+   long-lived receive waitset can wake on real data later. `wait_for_reader_match()`'s own
+   `dds_set_status_mask(reader, DDS_SUBSCRIPTION_MATCHED_STATUS)` silently clobbered that outright
+   and never restored it - so after a successful, correctly-reported match, the reader's own
+   receive waitset could still block forever, because its mask no longer included the one bit it
+   was actually waiting on. This is why the symptom looked exactly like "never matches" from the
+   outside (permanent 100% loss) while a live trace during the same regression showed the peer
+   genuinely receiving and ACKing real RTPS data the whole time - the bug was never in discovery at
+   all. Fixed in `common.h`: both `wait_for_writer_match()`/`wait_for_reader_match()` now
+   `dds_get_status_mask()` first, OR the match-status bit in for the wait, and restore the caller's
+   original mask afterward.
+
+5. **CycloneDDS `reliable_throughput` - a real, separate QoS-tuning gap, not a matching bug.**
+   `DDS_HISTORY_KEEP_LAST(8)` on both writer and reader was too shallow for RELIABLE at full send
+   rate (~145k samples/s) - genuine 53.3% app-level loss (a full history queue backpressures/drops
+   under sustained high-rate writes, independent of the network). Matched `throughput/publisher.c`/
+   `subscriber.c`'s own actual settings: `DDS_HISTORY_KEEP_ALL` + `dds_qset_resource_limits(4000,
+   UNLIMITED, UNLIMITED)`, plus batch-`dds_take()` on the reader (was one sample per wake, now up to
+   1000) to keep the app from itself being the drain-rate bottleneck.
+
+**Results after all five fixes, both frameworks, all 4 of scenarios 3-6** (`-i 0.001/0.05 -d 10`,
+fresh process restarts, real rig numbers - `durability_late_join` remains open, see below):
+
+| Scenario | Framework | Result |
+|---|---|---|
+| best_effort_latency | CycloneDDS | 199/199, 0% loss, RTT 0.231/0.242/0.343 ms |
+| best_effort_latency | FastDDS | 199/199, 0% loss, RTT 0.253/0.296/3.295 ms |
+| reliable_latency | CycloneDDS | 199/199, 0% loss, RTT 0.230/0.302/10.865 ms |
+| reliable_latency | FastDDS | 199/199, 0% loss, RTT 0.271/0.297/0.603 ms |
+| best_effort_throughput | CycloneDDS | sent=9312, recv=9311, 0.0% loss, 0.596 Mbps |
+| best_effort_throughput | FastDDS | sent=9166, recv=9166, 0.0% loss, 0.587 Mbps |
+| reliable_throughput | CycloneDDS | sent=757409, recv=757409, 0.0% loss, 47.8 Mbps |
+| reliable_throughput | FastDDS | sent=9062, recv=9062, 0.0% loss, 0.580 Mbps |
+
+**Reading**: both frameworks now cleanly match `ping`/`pong`-topic RTTs from the earlier "Results:
+scenarios 1-2" section (no regression from any of the above), *and* the previously-"blocked"
+`stream`-topic throughput scenarios now work identically well on a topic name that never worked
+before this pass, on both frameworks - the original "new topic never matches" symptom is gone, not
+worked around. CycloneDDS's `reliable_throughput` number (47.8 Mbps) is dramatically higher than
+FastDDS's own (0.580 Mbps) *only* because the test used `-i 0.001` for CycloneDDS (its writer isn't
+paced, RELIABLE backpressure alone governs its real rate) vs. an accidental leftover pacing
+interval on the FastDDS run - not a real apples-to-apples throughput comparison yet; a follow-up
+run with matched, unpaced (`-i 0`) settings on both is needed before citing these two throughput
+numbers against each other.
+
+**Still open**: `durability_late_join` (CycloneDDS) still returns `received=0` when actually tested
+with `-D` (TRANSIENT_LOCAL) - this is a *different*, not-yet-diagnosed issue in that scenario's own
+client/server timing handshake (the generic `run_scenario.sh` 2-second sleep between starting the
+server and the client may not suit this specific scenario's "publish a full backlog, then let a
+late joiner connect" shape), not a rediscovery of any of the five bugs above. FastDDS has no
+`durability_late_join` scenario built yet. Scenarios 7-9 (deadline, liveliness, lifespan) remain
+entirely unbuilt for both frameworks.

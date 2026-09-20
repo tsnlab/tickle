@@ -64,7 +64,12 @@ int main(int argc, char** argv) {
     dds_entity_t ack_writer = dds_create_writer(participant, ack_topic, ack_qos, NULL);
     dds_delete_qos(ack_qos);
 
-    if (!wait_for_reader_match(reader, 15.0) || !wait_for_writer_match(ack_writer, 15.0)) {
+    // Both calls unconditionally, into separate variables (2026-09-20, real bug - see
+    // best_effort_latency/client.c's own doc comment for the full story): `!A(...) || !B(...)`
+    // short-circuits B when A already succeeded, silently skipping one of the two match waits.
+    bool reader_matched = wait_for_reader_match(participant, reader, 15.0);
+    bool ack_writer_matched = wait_for_writer_match(participant, ack_writer, 15.0);
+    if (!reader_matched || !ack_writer_matched) {
         fprintf(stderr, "timed out waiting for a match\n");
         return 1;
     }

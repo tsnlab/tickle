@@ -36,7 +36,15 @@ ssh_run() {
     ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 "ci@$host" "$@"
 }
 
-ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR && nohup ./server > /tmp/cdds_${SCENARIO}_server.log 2>&1 &"
+# </dev/null on the backgrounded remote process, and ';' (not '&&') between cd and nohup (2026-09-20,
+# both real hangs found the hard way, isolated one at a time via minimal repro over plain ssh): with
+# '&&', `cd dir && nohup cmd &` never returns control to the local ssh client at all - reproduced with
+# a plain `nohup sleep 30 &`, nothing CycloneDDS-specific about it - while the equivalent `cd dir;
+# nohup cmd &` returns in well under a second. Without </dev/null, the backgrounded process inherits
+# this ssh session's own stdin, so ssh never sees every fd close and never returns either. Skipping
+# either fix makes run_scenario.sh stall forever on this exact line (not a CycloneDDS bug at all, easy
+# to mistake for one mid-debugging since sleep 2/the client step below never even get reached).
+ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR; nohup ./server > /tmp/cdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
 sleep 2
 ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; export CYCLONEDDS_URI='$CDDS_URI'; cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
 ssh_run "$RPI_SERVER" "pkill -INT -x server" || true

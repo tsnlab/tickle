@@ -4,6 +4,19 @@
  * only it can see what actually arrived (see client.c's own doc comment). Runs until SIGINT
  * (sent by the orchestrating run_scenario.sh once the client's own -d duration elapses) or its
  * own generous safety cap, matching run_perf.sh's own perf_server.c precedent.
+ *
+ * No explicit match-wait (2026-09-20, rewritten to match the real upstream
+ * eclipse-cyclonedds/cyclonedds examples/roundtrip/pong.c pattern - see client.c's own doc
+ * comment for the full rationale): the official example creates its waitset and attaches a
+ * data-availability condition immediately after the reader, with no prior match-status check at
+ * all. Whatever is lost during the initial discovery window is an accepted warm-up cost, not a
+ * condition to detect and gate on.
+ *
+ * Dummy reciprocal writer (2026-09-20, retest): see client.c's own doc comment - a real rig run
+ * with the match-wait removed still produced recv=0 end-to-end, isolating this participant's own
+ * read-only shape (mismatched against every official/working example, which always pairs a
+ * writer+reader on the same participant) as the next hypothesis to test, independent of the
+ * match-wait fix already applied above.
  */
 #include <dds/dds.h>
 #include <signal.h>
@@ -41,13 +54,15 @@ int main(int argc, char** argv) {
 
     dds_entity_t participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
     dds_entity_t topic = dds_create_topic(participant, &Bench_desc, "stream", NULL, NULL);
+    dds_entity_t ack_topic = dds_create_topic(participant, &Bench_desc, "stream_ack", NULL, NULL);
 
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_BEST_EFFORT, 0);
     dds_entity_t reader = dds_create_reader(participant, topic, qos, NULL);
+    dds_entity_t dummy_writer = dds_create_writer(participant, ack_topic, qos, NULL);
     dds_delete_qos(qos);
-    if (reader < 0) {
-        fprintf(stderr, "dds_create_reader failed\n");
+    if (reader < 0 || dummy_writer < 0) {
+        fprintf(stderr, "dds_create_reader/writer failed\n");
         return 1;
     }
 
