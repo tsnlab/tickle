@@ -41,6 +41,9 @@ CFLAGS="-O2 -I$GEN_DIR -I$CDDS_INCLUDE"
 # binary is self-contained regardless of whether the invoking shell sourced anything.
 LDFLAGS="-L$CDDS_LIB -Wl,-rpath,$CDDS_LIB -Wl,--disable-new-dtags -lddsc -lm"
 
+# shellcheck disable=SC2086 # CFLAGS/LDFLAGS are deliberately word-split into multiple flags -
+# same convention .github/scripts/run_perf.sh/test.sh already use for the identical case.
 $CC $CFLAGS -o "$SCEN_DIR/server" "$SCEN_DIR/server.c" "$GEN_DIR/Bench.c" $LDFLAGS
+# shellcheck disable=SC2086
 $CC $CFLAGS -o "$SCEN_DIR/client" "$SCEN_DIR/client.c" "$GEN_DIR/Bench.c" $LDFLAGS
 echo "Built $SCEN_DIR/{client,server}"

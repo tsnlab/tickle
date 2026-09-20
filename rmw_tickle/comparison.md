@@ -461,9 +461,54 @@ examples/perf_hil/cyclonedds/<scenario>/{client,server}.c
 examples/perf_hil/tickle/<scenario>/{client,server}.c    - added once TickLE Dev's queue clears
 ```
 
-**Whose work this is**: writing the actual example programs and wiring them into `run_perf.sh`'s
-own HIL rig is real development, not this session's ("TickLE Plan"'s) own observation/design
-remit - it goes to TickLE Dev's own queue, gated on the user's own direct approval in that
-session, same as every other TickLE Dev task. This section's own job is the design/scenario list/
-sequencing above; the 9-scenario list itself needs the user's own confirmation (which frameworks/
-scenarios to build first) before being handed to TickLE Dev as a real task.
+**Whose work this is - superseded, 2026-09-20**: the paragraph above (this section's own original
+text) called writing the actual example programs "real development... goes to TickLE Dev's own
+queue" - the user's own direct, explicit instruction overrode that: since FastDDS/CycloneDDS
+examples touch nothing in TickLE Dev's own active core/`rmw_tickle` work, "TickLE Plan" built and
+ran them directly, in parallel with TickLE Dev's own separate queue. See "Results" below.
+
+### Results: scenarios 1-2, FastDDS + CycloneDDS (2026-09-20)
+
+**Real HIL runs** (`tickle-hil` rig, rpi#1=client/rpi#2=server, the actual dedicated physical
+link - not same-host) - `examples/perf_hil/{cyclonedds,fastdds}/{best_effort_latency,
+reliable_latency}/`, 3 runs each, `-i 0.1 -d 10` (100 pings/run). TickLE's own numbers not
+included yet (deferred until TickLE Dev's current queue clears, per the sequencing above).
+
+| Scenario | Framework | Run 1 (min/avg/max ms) | Run 2 | Run 3 | Loss |
+|---|---|---|---|---|---|
+| best_effort_latency | CycloneDDS | 0.221/0.237/0.331 | 0.227/0.238/0.322 | 0.222/0.238/0.363 | 0% all 3 |
+| best_effort_latency | FastDDS | 0.274/0.293/0.590 | 0.254/0.280/0.566 | 0.262/0.283/0.620 | 0% all 3 |
+| reliable_latency | CycloneDDS | 0.222/0.249/0.375 | 0.236/0.248/0.385 | 0.225/0.250/0.518 | 0% all 3 |
+| reliable_latency | FastDDS | 0.284/0.301/0.575 | 0.296/0.313/0.601 | 0.274/0.291/0.569 | 0% all 3 |
+
+**Reading**: CycloneDDS runs consistently ~0.04-0.05ms faster on average than FastDDS on this
+exact link, in both scenarios - small but consistent across all 6 runs per framework, not noise.
+RELIABLE costs essentially nothing extra over BEST_EFFORT for either framework at this scale (no
+loss to recover from in any run) - CycloneDDS's own reliable_latency avg (~0.249ms) is barely
+above its best_effort_latency avg (~0.238ms); FastDDS shows the same pattern (~0.302ms vs
+~0.285ms). Both fully within the same low-jitter band `rmw_tickle`'s own same-host numbers showed
+earlier in this document, but this is real point-to-point hardware, not loopback.
+
+**A real bug found and fixed while building the FastDDS side, documented for anyone reusing this
+harness**: `DataReader::take_next_sample()` is FIFO, and the reader can buffer more than one
+not-yet-taken sample - the first working version took only one sample per
+`wait_for_unread_message()` wakeup, which silently returned an already-stale response (matching
+the *previous* request, not the current one) every single time once the reader had more than one
+queued. Confirmed via an instrumented debug build showing `resp.seq` exactly one behind `req.seq`
+on every iteration after the first. Fixed by draining every currently-buffered sample and keeping
+only the newest before matching it against the current request's own seq
+(`examples/perf_hil/fastdds/*/client.cpp`).
+
+**A real infrastructure gap found while running this, not a code bug**: the existing automatic HIL
+CI (`Performance Test` workflow, `.github/scripts/run_perf.sh`, triggered on every push to `main`)
+runs `git reset --hard` + `git clean -fdq` on these same two rpis - confirmed firsthand this
+deletes any uncommitted scenario files (not just built binaries) sitting on either rpi, colliding
+with this exact kind of interactive HIL session whenever a push (from either "TickLE Plan" or
+TickLE Dev) lands on `main` while a manual run is in progress. Worked around this session by (1)
+committing scenario source promptly so it survives a reset, (2) coordinating pushes with TickLE
+Dev directly while both were using the same rig. Not yet a real fix (e.g. a way to pause the
+auto-trigger during a manual session) - flagged here as a real, reusable-lesson gap for next time,
+not solved.
+
+**Not yet done**: scenarios 3-9 (throughput, durability, history, deadline, liveliness, lifespan)
+for both frameworks; TickLE's own numbers for scenarios 1-2 (deferred per the sequencing above).

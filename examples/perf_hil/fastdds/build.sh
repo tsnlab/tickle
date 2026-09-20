@@ -60,7 +60,10 @@ CXX="${CXX:-g++}"
 CXXFLAGS="-O2 -std=c++17 -I$GEN_DIR -I$FDDS_INCLUDE -I$FASTCDR_INCLUDE"
 LDFLAGS="-L$FDDS_LIB -lfastrtps -lfastcdr -lpthread"
 
+# shellcheck disable=SC2086 # CXXFLAGS/LDFLAGS are deliberately word-split - see
+# cyclonedds/build.sh's own identical note.
 $CXX $CXXFLAGS -o "$SCEN_DIR/server" "$SCEN_DIR/server.cpp" "$GEN_DIR/Bench.cxx" "$GEN_DIR/BenchPubSubTypes.cxx" $LDFLAGS
+# shellcheck disable=SC2086
 $CXX $CXXFLAGS -o "$SCEN_DIR/client" "$SCEN_DIR/client.cpp" "$GEN_DIR/Bench.cxx" "$GEN_DIR/BenchPubSubTypes.cxx" $LDFLAGS
 echo "Built $SCEN_DIR/{client,server}"
 echo "Run with: LD_LIBRARY_PATH=$FDDS_LIB ./client|./server"
