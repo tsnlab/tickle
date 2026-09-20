@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789938462479,
+  "lastUpdate": 1789938465842,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -51204,6 +51204,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 819.544,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "4d1ae84111df8705988a70d6826e952369a68ef2",
+          "message": "comparison.md: redesign scenario 3/4 methodology, consolidate tables, TickLE-first order\n\nThe user's own explicit review feedback (2026-09-21): tables lacked a fixed\ncolumn order, native/rmw results were split across multiple tables per\nsection, and best_effort_throughput/reliable_throughput weren't clearly\nrun under matched, controlled conditions across frameworks.\n\nFixed: every table now orders columns TickLE, FastDDS, CycloneDDS (fixed\nconvention, noted up top). Native results (§3) and rmw results (§5) are each\nexactly one table. Scenario 3 redesigned to max-rate/8s/no-injected-loss,\nmeasuring real recv/loss. Scenario 4 redesigned to use real tc/netem-injected\nloss (0%/1%/5%) on the sender's own egress, same max-rate/8s send, for all\nthree frameworks - a genuinely new experiment, not previously run.\n\nFound and fixed two real bugs before trusting any of the new numbers: (1)\nthe CycloneDDS/FastDDS twins had the identical run_scenario.sh -d\ndual-meaning bug already fixed on the TickLE-native scripts - server.c/.cpp\nin both frameworks' best_effort_throughput/reliable_throughput gained the\nsame +15s safety_cap_s buffer. (2) The CycloneDDS/FastDDS run_scenario.sh\nscripts never actually printed the server's own RESULT line at all (only\npkill'd it) - fixed to cat the log after pkill, matching the TickLE script's\nown already-fixed pattern. This means the original scenario 3 numbers\npredate a real methodology fix and shouldn't be trusted as apples-to-apples.\n\nReal new finding from the redesigned scenario 4: at identical tc-injected\nloss, CycloneDDS's own RELIABLE fully recovers 100% of it (0% observed loss\nat both 1% and 5% injected, 2/2), FastDDS's own RELIABLE recovers\nessentially none of it (observed loss tracks the injected rate almost\nexactly), and TickLE's own RELIABLE mostly doesn't recover it either -\nplausibly because TickLE's own much higher throughput means its\ndepth=64 cache retention window is shorter than one real ACKNACK round\ntrip. Reproduced 2/2, not yet root-caused for the FastDDS/TickLE side -\ntracked in §6.",
+          "timestamp": "2026-09-21T06:02:04+09:00",
+          "tree_id": "2711c56f6c21a749b2a90411dad6e649e1104bfb",
+          "url": "https://github.com/tsnlab/tickle/commit/4d1ae84111df8705988a70d6826e952369a68ef2"
+        },
+        "date": 1789938464723,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 934.983,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 819.288,
             "unit": "Mbps"
           }
         ]
