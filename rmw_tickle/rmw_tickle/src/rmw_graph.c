@@ -247,19 +247,23 @@ size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_context_impl_t* con
     return count_not_alive_matching_locked(context_impl, topic_name, kind);
 }
 
-// Milestone 31/28(a) observability follow-on - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE/RMW_EVENT_
-// REQUESTED_QOS_INCOMPATIBLE's own real DDS RxO comparison, generalized to whichever side is
-// "requesting" vs "offering" - true if a pairing requesting `requested_reliable`/`requested_
-// durable` can never be satisfied by one offering `offered_reliable`/`offered_durable`. Mirrors
-// tickle.c's own subscriber_incompatible_with_publisher() exactly (same two bits, same "requested
-// but not offered" direction), just evaluated here against struct tt_DiscoveredEntity.qos
-// (already populated by Milestone 31) instead of a live DATA packet's own sender - see this
-// function's own two callers below for which side's own local qos.reliable/.durable plays which
-// role. Reports which policy was found incompatible via *out_kind (RELIABILITY takes priority
-// over DURABILITY when both mismatch - an arbitrary but stable choice, real DDS's own wording
-// only ever promises "one of the policies", not a specific one when several apply).
-static bool qos_incompatible(bool requested_reliable, bool requested_durable, bool offered_reliable,
-                             bool offered_durable, rmw_qos_policy_kind_t* out_kind) {
+// Milestone 31/28(a) + #2 (DEADLINE)/#3 (LIVELINESS) RxO (Milestone 49) observability follow-on -
+// RMW_EVENT_OFFERED_QOS_INCOMPATIBLE/RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own real DDS RxO
+// comparison, generalized to whichever side is "requesting" vs "offering" - true if a pairing
+// requesting these values can never be satisfied by one offering them. Mirrors tickle.c's own
+// subscriber_incompatible_with_publisher()/deadline_liveliness_incompatible() exactly (same
+// fields, same "requested but not offered" direction, same priority order when several mismatch -
+// real DDS's own wording only ever promises "one of the policies", not a specific one) - a
+// separate implementation, not a shared call, since TickLE core has no rmw_qos_profile_t concept
+// at all (ROS/rmw-agnostic) to call this file's own code with, or vice versa. Evaluated here
+// against struct tt_DiscoveredEntity's own fields (already populated by Milestone 31/49) instead
+// of a live DATA/UPDATE packet's own sender - see this function's own two callers below for which
+// side's own local values play which role. Reports which policy was found incompatible via
+// *out_kind.
+static bool qos_incompatible(bool requested_reliable, bool requested_durable, bool requested_manual,
+                             uint64_t requested_deadline_ns, uint64_t requested_lease_ns, bool offered_reliable,
+                             bool offered_durable, bool offered_manual, uint64_t offered_deadline_ns,
+                             uint64_t offered_lease_ns, rmw_qos_policy_kind_t* out_kind) {
     if (requested_reliable && !offered_reliable) {
         *out_kind = RMW_QOS_POLICY_RELIABILITY;
         return true;
@@ -268,17 +272,31 @@ static bool qos_incompatible(bool requested_reliable, bool requested_durable, bo
         *out_kind = RMW_QOS_POLICY_DURABILITY;
         return true;
     }
+    if (requested_deadline_ns != 0 && (offered_deadline_ns == 0 || offered_deadline_ns > requested_deadline_ns)) {
+        *out_kind = RMW_QOS_POLICY_DEADLINE;
+        return true;
+    }
+    if (requested_manual && !offered_manual) {
+        *out_kind = RMW_QOS_POLICY_LIVELINESS;
+        return true;
+    }
+    if (requested_lease_ns != 0 && (offered_lease_ns == 0 || offered_lease_ns > requested_lease_ns)) {
+        *out_kind = RMW_QOS_POLICY_LIVELINESS;
+        return true;
+    }
     return false;
 }
 
 // rmw_tickle.h's own declaration - RMW_EVENT_OFFERED_QOS_INCOMPATIBLE's own live count: how many
 // currently-alive discovered remote Subscribers on `topic_name` request something this Publisher
-// (offering `offered_reliable`/`offered_durable`) doesn't. Same "poll-thread-only, no locking of
-// its own" rule as count_matching_locked() - called only from check_publisher_qos_incompatible()
-// (rmw_publisher.c), which already holds context_impl->node_mutex via the same tt_Node_schedule()-
-// callback contract that function's own doc comment explains.
+// (offering `offered_*`) doesn't. Same "poll-thread-only, no locking of its own" rule as count_
+// matching_locked() - called only from check_publisher_qos_incompatible() (rmw_publisher.c),
+// which already holds context_impl->node_mutex via the same tt_Node_schedule()-callback contract
+// that function's own doc comment explains.
 size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                         bool offered_reliable, bool offered_durable,
+                                                        bool offered_manual, uint64_t offered_deadline_ns,
+                                                        uint64_t offered_lease_ns,
                                                         rmw_qos_policy_kind_t* out_last_policy_kind) {
     size_t matched = 0;
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
@@ -289,8 +307,11 @@ size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_
         }
         bool requested_reliable = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
         bool requested_durable = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
+        bool requested_manual = (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
         rmw_qos_policy_kind_t kind;
-        if (qos_incompatible(requested_reliable, requested_durable, offered_reliable, offered_durable, &kind)) {
+        if (qos_incompatible(requested_reliable, requested_durable, requested_manual, entity->deadline_duration_ns,
+                             entity->liveliness_lease_duration_ns, offered_reliable, offered_durable, offered_manual,
+                             offered_deadline_ns, offered_lease_ns, &kind)) {
             matched++;
             *out_last_policy_kind = kind;
         }
@@ -300,10 +321,12 @@ size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_
 
 // rmw_tickle.h's own declaration - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own counterpart: how
 // many currently-alive discovered remote Publishers on `topic_name` offer less than this
-// Subscription (requesting `requested_reliable`/`requested_durable`) needs. Called only from
-// check_subscription_qos_incompatible() (rmw_subscription.c) - same threading rule.
+// Subscription (requesting `requested_*`) needs. Called only from check_subscription_qos_
+// incompatible() (rmw_subscription.c) - same threading rule.
 size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                        bool requested_reliable, bool requested_durable,
+                                                       bool requested_manual, uint64_t requested_deadline_ns,
+                                                       uint64_t requested_lease_ns,
                                                        rmw_qos_policy_kind_t* out_last_policy_kind) {
     size_t matched = 0;
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
@@ -314,8 +337,11 @@ size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t
         }
         bool offered_reliable = (entity->qos & tt_UPDATE_QOS_RELIABLE) != 0;
         bool offered_durable = (entity->qos & tt_UPDATE_QOS_DURABLE) != 0;
+        bool offered_manual = (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
         rmw_qos_policy_kind_t kind;
-        if (qos_incompatible(requested_reliable, requested_durable, offered_reliable, offered_durable, &kind)) {
+        if (qos_incompatible(requested_reliable, requested_durable, requested_manual, requested_deadline_ns,
+                             requested_lease_ns, offered_reliable, offered_durable, offered_manual,
+                             entity->deadline_duration_ns, entity->liveliness_lease_duration_ns, &kind)) {
             matched++;
             *out_last_policy_kind = kind;
         }

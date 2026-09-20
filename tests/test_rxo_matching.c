@@ -140,11 +140,13 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
     return tail + sizeof(value);
 }
 
-// Builds an UpdateHeader with a single following TOPIC_SUBSCRIBER UpdateEntity carrying `qos` in
-// node->rx_buffer, returning the tail offset - same shape as tests/test_durability_pubsub.c's own
-// write_update_one_subscriber(), extended with the QoS byte this milestone added to the wire.
-static uint32_t write_update_one_subscriber_with_qos(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id,
-                                                     uint8_t qos) {
+// Builds an UpdateHeader with a single following TOPIC_SUBSCRIBER UpdateEntity carrying `qos`/
+// `deadline_duration_ns`/`liveliness_lease_duration_ns` in node->rx_buffer, returning the tail
+// offset - same shape as tests/test_durability_pubsub.c's own write_update_one_subscriber(),
+// extended with the fields Milestone 31/49 added to the wire.
+static uint32_t write_update_one_subscriber_full(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id,
+                                                 uint8_t qos, uint64_t deadline_duration_ns,
+                                                 uint64_t liveliness_lease_duration_ns) {
     struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)node->rx_buffer;
     update_header->last_modified = last_modified;
     update_header->entity_count = 1;
@@ -154,12 +156,21 @@ static uint32_t write_update_one_subscriber_with_qos(struct tt_Node* node, uint6
     entity->endpoint_id = endpoint_id;
     entity->kind = tt_KIND_TOPIC_SUBSCRIBER;
     entity->qos = qos;
+    entity->deadline_duration_ns = deadline_duration_ns;
+    entity->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
     tail += sizeof(struct tt_UpdateEntity);
 
     tt_encode_string(node->rx_buffer, &tail, tt_MAX_BUFFER_LENGTH * 2, "test_topic");
     tt_encode_string(node->rx_buffer, &tail, tt_MAX_BUFFER_LENGTH * 2, "test_subscriber");
 
     return tail;
+}
+
+// Milestone 31's own original helper, kept for its existing call sites - RELIABILITY/DURABILITY-
+// only tests don't need to spell out the two Milestone 49 duration params every time.
+static uint32_t write_update_one_subscriber_with_qos(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id,
+                                                     uint8_t qos) {
+    return write_update_one_subscriber_full(node, last_modified, endpoint_id, qos, 0, 0);
 }
 
 // --- Subscriber-side gate: process_data()'s own subscriber_incompatible_with_publisher() ---
@@ -183,7 +194,7 @@ static void test_reliable_subscriber_drops_data_from_besteffort_publisher(void) 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
     // Discovered Publisher offers neither RELIABLE nor DURABLE (qos = 0) - incompatible with this
     // Subscriber's own sub.reliable request.
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, "test_topic",
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "test_topic",
                              "test_publisher");
 
     struct tt_Header header;
@@ -210,7 +221,7 @@ static void test_reliable_subscriber_receives_data_from_reliable_publisher(void)
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, tt_UPDATE_QOS_RELIABLE,
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, tt_UPDATE_QOS_RELIABLE, 0, 0,
                              "test_topic", "test_publisher");
 
     struct tt_Header header;
@@ -237,7 +248,7 @@ static void test_durable_subscriber_drops_data_from_volatile_publisher(void) {
     struct tt_Discovery discovery;
     memset(&discovery, 0, sizeof(discovery));
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
-    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, "test_topic",
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "test_topic",
                              "test_publisher");
 
     struct tt_Header header;
@@ -341,6 +352,192 @@ static void test_publisher_side_gate_accepts_compatible_subscriber(void) {
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
 }
 
+// --- Subscriber-side gate: DEADLINE RxO (Milestone 49) ---
+
+// A Subscriber requesting a tighter DEADLINE than a discovered Publisher offers must not receive
+// its DATA - the Publisher's own promised max inter-publish gap is too loose to satisfy the
+// request.
+static void test_deadline_subscriber_drops_data_from_looser_publisher(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.deadline_duration_ns = 100000000; // requests <= 100ms
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    // Discovered Publisher only promises 200ms - too loose for this Subscriber's 100ms request.
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 200000000, 0, "test_topic",
+                             "test_publisher");
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 1000, 42);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(0, subscriber_callback_count);
+}
+
+// The mirror image: a discovered Publisher offering a tighter (or equal) DEADLINE than requested
+// is compatible.
+static void test_deadline_subscriber_receives_data_from_tighter_publisher(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.deadline_duration_ns = 200000000; // requests <= 200ms - happy with anything at or under
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 100000000, 0, "test_topic",
+                             "test_publisher");
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 1000, 42);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(1, subscriber_callback_count);
+}
+
+// --- Subscriber-side gate: LIVELINESS RxO (Milestone 49) ---
+
+// A Subscriber requiring MANUAL_BY_TOPIC liveliness must not receive DATA from a discovered
+// Publisher that only offers AUTOMATIC.
+static void test_liveliness_manual_subscriber_drops_data_from_automatic_publisher(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.liveliness_manual = true;
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    // Discovered Publisher offers AUTOMATIC (qos = 0, no tt_UPDATE_QOS_LIVELINESS_MANUAL bit).
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 0, "test_topic",
+                             "test_publisher");
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 1000, 42);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(0, subscriber_callback_count);
+}
+
+// The mirror image: a discovered Publisher offering MANUAL_BY_TOPIC satisfies a Subscriber
+// requiring it.
+static void test_liveliness_manual_subscriber_receives_data_from_manual_publisher(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.liveliness_manual = true;
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER,
+                             tt_UPDATE_QOS_LIVELINESS_MANUAL, 0, 0, "test_topic", "test_publisher");
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 1000, 42);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(1, subscriber_callback_count);
+}
+
+// A Subscriber requesting a tighter liveliness LEASE duration than offered must not receive DATA,
+// independent of kind (both AUTOMATIC here) - real DDS's own LIVELINESS policy is (kind, lease)
+// as one combined unit, not two independently-checked concepts.
+static void test_liveliness_lease_subscriber_drops_data_from_looser_publisher(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.liveliness_lease_duration_ns = 1000000000; // requests <= 1s, AUTOMATIC is fine
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Node_set_discovery(&node, &discovery, NULL, NULL));
+    // Discovered Publisher's own lease is 2s - too loose for this Subscriber's 1s requirement.
+    upsert_discovered_entity(&node, REMOTE_NODE_ID, ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, 0, 0, 2000000000,
+                             "test_topic", "test_publisher");
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 1000, 42);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT(0, subscriber_callback_count);
+}
+
+// --- Publisher-side gate: DEADLINE/LIVELINESS RxO (Milestone 49) ---
+
+// A remote Subscriber requesting a tighter DEADLINE than this Publisher offers must never become
+// a peer.
+static void test_publisher_side_gate_skips_subscriber_requesting_tighter_deadline(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+    pub.deadline_duration_ns = 200000000; // offers only 200ms
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber_full(&node, 100, ENDPOINT_ID, 0, 100000000, 0); // requests 100ms
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+}
+
+// A remote Subscriber requiring MANUAL_BY_TOPIC liveliness from an AUTOMATIC-only Publisher must
+// never become a peer.
+static void test_publisher_side_gate_skips_subscriber_requesting_manual_liveliness(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+    // pub.liveliness_manual left false (AUTOMATIC).
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_update_one_subscriber_full(&node, 100, ENDPOINT_ID, tt_UPDATE_QOS_LIVELINESS_MANUAL, 0, 0);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+}
+
 int main(void) {
     test_reliable_subscriber_drops_data_from_besteffort_publisher();
     test_reliable_subscriber_receives_data_from_reliable_publisher();
@@ -349,6 +546,13 @@ int main(void) {
     test_publisher_not_yet_discovered_delivers();
     test_publisher_side_gate_skips_incompatible_subscriber();
     test_publisher_side_gate_accepts_compatible_subscriber();
+    test_deadline_subscriber_drops_data_from_looser_publisher();
+    test_deadline_subscriber_receives_data_from_tighter_publisher();
+    test_liveliness_manual_subscriber_drops_data_from_automatic_publisher();
+    test_liveliness_manual_subscriber_receives_data_from_manual_publisher();
+    test_liveliness_lease_subscriber_drops_data_from_looser_publisher();
+    test_publisher_side_gate_skips_subscriber_requesting_tighter_deadline();
+    test_publisher_side_gate_skips_subscriber_requesting_manual_liveliness();
 
     printf("test_rxo_matching: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

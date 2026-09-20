@@ -272,20 +272,23 @@ size_t rmw_tickle_count_not_alive_matching_locked(rmw_tickle_context_impl_t* con
                                                   uint8_t kind);
 
 // RMW_EVENT_OFFERED_QOS_INCOMPATIBLE's own live count (rmw_graph.c) - how many currently-alive
-// discovered remote Subscribers on `topic_name` request something (RELIABLE/TRANSIENT_LOCAL,
-// tt_UPDATE_QOS_RELIABLE/_DURABLE) this Publisher doesn't offer (`offered_reliable`/`offered_
-// durable`). Same "poll-thread-only, no locking of its own" rule as rmw_tickle_count_matching_
-// locked() above - called only from check_publisher_qos_incompatible() (rmw_publisher.c).
+// discovered remote Subscribers on `topic_name` request something (RELIABLE/TRANSIENT_LOCAL/
+// DEADLINE/LIVELINESS - Milestone 49 added the latter two) this Publisher doesn't offer
+// (`offered_*`). Same "poll-thread-only, no locking of its own" rule as rmw_tickle_count_
+// matching_locked() above - called only from check_publisher_qos_incompatible() (rmw_publisher.c).
 size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                         bool offered_reliable, bool offered_durable,
+                                                        bool offered_manual, uint64_t offered_deadline_ns,
+                                                        uint64_t offered_lease_ns,
                                                         rmw_qos_policy_kind_t* out_last_policy_kind);
 
 // RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own counterpart (rmw_graph.c) - how many currently-alive
 // discovered remote Publishers on `topic_name` offer less than what this Subscription requests
-// (`requested_reliable`/`requested_durable`). Called only from check_subscription_qos_
-// incompatible() (rmw_subscription.c).
+// (`requested_*`). Called only from check_subscription_qos_incompatible() (rmw_subscription.c).
 size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                        bool requested_reliable, bool requested_durable,
+                                                       bool requested_manual, uint64_t requested_deadline_ns,
+                                                       uint64_t requested_lease_ns,
                                                        rmw_qos_policy_kind_t* out_last_policy_kind);
 
 // QoS roadmap #2 (DEADLINE) + #3 (LIVELINESS) - shared by every status this rmw tracks below.

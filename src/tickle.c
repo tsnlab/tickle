@@ -420,7 +420,8 @@ static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id) {
 // every caller below calls this unconditionally rather than checking node->discovery first, the
 // same way logging macros check their own level instead of every call site checking it.
 static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
-                                     uint8_t qos, const char* type, const char* name) {
+                                     uint8_t qos, uint64_t deadline_duration_ns, uint64_t liveliness_lease_duration_ns,
+                                     const char* type, const char* name) {
     if (node->discovery == NULL) {
         return;
     }
@@ -462,6 +463,8 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
     slot->endpoint_id = endpoint_id;
     slot->kind = kind;
     slot->qos = qos;
+    slot->deadline_duration_ns = deadline_duration_ns;
+    slot->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
     slot->alive = true;
     size_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH);
     _tt_memcpy(slot->type, type, type_len);
@@ -599,24 +602,83 @@ static const char* endpoint_type_name(struct tt_Endpoint* endpoint) {
     }
 }
 
-// QoS roadmap #1 (RxO matching, Milestone 31) - the tt_UPDATE_QOS_* bits this endpoint's own
-// UpdateEntity announces, offered (a Publisher) or requested (a Subscriber) depending on kind -
-// see their own doc comment (tickle.h). Always 0 for a service/client: RELIABILITY there is
-// already unconditional via tt_Client_call()'s own retry (no negotiation needed), and DURABILITY
-// has no service/client analog at all - matches endpoint_type_name()'s own kind-dispatch shape.
+// QoS roadmap #1 (RxO matching, Milestone 31) / #3 (LIVELINESS, Milestone 49) - the tt_UPDATE_
+// QOS_* bits this endpoint's own UpdateEntity announces, offered (a Publisher) or requested (a
+// Subscriber) depending on kind - see their own doc comment (tickle.h). Always 0 for a service/
+// client: RELIABILITY there is already unconditional via tt_Client_call()'s own retry (no
+// negotiation needed), and DURABILITY/LIVELINESS-kind have no service/client analog at all -
+// matches endpoint_type_name()'s own kind-dispatch shape.
 static uint8_t endpoint_qos_bits(struct tt_Endpoint* endpoint) {
     switch (endpoint->kind) {
     case tt_KIND_TOPIC_PUBLISHER: {
         struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
-        return (uint8_t)((pub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (pub->durable ? tt_UPDATE_QOS_DURABLE : 0));
+        return (uint8_t)((pub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (pub->durable ? tt_UPDATE_QOS_DURABLE : 0) |
+                         (pub->liveliness_manual ? tt_UPDATE_QOS_LIVELINESS_MANUAL : 0));
     }
     case tt_KIND_TOPIC_SUBSCRIBER: {
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-        return (uint8_t)((sub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (sub->durable ? tt_UPDATE_QOS_DURABLE : 0));
+        return (uint8_t)((sub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (sub->durable ? tt_UPDATE_QOS_DURABLE : 0) |
+                         (sub->liveliness_manual ? tt_UPDATE_QOS_LIVELINESS_MANUAL : 0));
     }
     default:
         return 0;
     }
+}
+
+// QoS roadmap #2 (DEADLINE) RxO, Milestone 49 - this endpoint's own offered/requested DEADLINE
+// duration, the numeric counterpart endpoint_qos_bits() above can't carry (a bit says "which
+// policy", not "how long"). Same kind-dispatch shape/convention as endpoint_qos_bits().
+static uint64_t endpoint_deadline_duration_ns(struct tt_Endpoint* endpoint) {
+    switch (endpoint->kind) {
+    case tt_KIND_TOPIC_PUBLISHER:
+        return ((struct tt_Publisher*)endpoint)->deadline_duration_ns;
+    case tt_KIND_TOPIC_SUBSCRIBER:
+        return ((struct tt_Subscriber*)endpoint)->deadline_duration_ns;
+    default:
+        return 0;
+    }
+}
+
+// QoS roadmap #3 (LIVELINESS) RxO, Milestone 49 - this endpoint's own offered/requested
+// liveliness lease duration, independent of the tt_UPDATE_QOS_LIVELINESS_MANUAL bit
+// (endpoint_qos_bits() above) - see tt_UpdateEntity.liveliness_lease_duration_ns's own doc
+// comment (tickle.h) for why kind and lease duration travel as two separate wire fields.
+static uint64_t endpoint_liveliness_lease_duration_ns(struct tt_Endpoint* endpoint) {
+    switch (endpoint->kind) {
+    case tt_KIND_TOPIC_PUBLISHER:
+        return ((struct tt_Publisher*)endpoint)->liveliness_lease_duration_ns;
+    case tt_KIND_TOPIC_SUBSCRIBER:
+        return ((struct tt_Subscriber*)endpoint)->liveliness_lease_duration_ns;
+    default:
+        return 0;
+    }
+}
+
+// QoS roadmap #2 (DEADLINE) / #3 (LIVELINESS) RxO, Milestone 49 - true iff a pairing requesting
+// `requested_deadline_ns`/`requested_manual`/`requested_lease_ns` can never be satisfied by one
+// offering `offered_deadline_ns`/`offered_manual`/`offered_lease_ns`. Mirrors rmw_tickle's own
+// already-correct, already-tested static rmw_qos_profile_check_compatible() (rmw_qos.c) exactly -
+// TickLE core can't call that directly (it has no concept of rmw_qos_profile_t, being ROS/rmw-
+// agnostic), so this is the identical logic re-expressed against TickLE's own plain duration/bool
+// primitives instead. 0 means "no requirement/infinite" on either side for both duration fields,
+// matching every other 0-disabled convention this codebase already uses (tt_Publisher.lifespan_
+// duration_ns etc.) - DEADLINE: an offered duration must be <= whatever's requested (0 offered =
+// infinite, always too loose for any finite request; 0 requested = no requirement, anything
+// satisfies it). LIVELINESS: AUTOMATIC can't satisfy a MANUAL_BY_TOPIC request (this rmw's only
+// two kinds, Milestone 32's own finding); the lease duration itself follows the identical
+// offered<=requested rule as DEADLINE, independent of kind (real DDS's own LIVELINESS policy is
+// (kind, lease_duration) as one combined unit - a Subscriber may legitimately request AUTOMATIC
+// with a tight lease requirement, not just a MANUAL_BY_TOPIC one).
+static bool deadline_liveliness_incompatible(uint64_t requested_deadline_ns, uint64_t offered_deadline_ns,
+                                             bool requested_manual, bool offered_manual, uint64_t requested_lease_ns,
+                                             uint64_t offered_lease_ns) {
+    if (requested_deadline_ns != 0 && (offered_deadline_ns == 0 || offered_deadline_ns > requested_deadline_ns)) {
+        return true;
+    }
+    if (requested_manual && !offered_manual) {
+        return true;
+    }
+    return requested_lease_ns != 0 && (offered_lease_ns == 0 || offered_lease_ns > requested_lease_ns);
 }
 
 // scheduler[] is a binary min-heap keyed on TCB.time (heap[0] = earliest), sized by
@@ -2010,6 +2072,10 @@ static int encode_update_entities(struct tt_Node* node, struct tt_Endpoint* cons
         update_entity->endpoint_id = endpoint->id;
         update_entity->kind = endpoint->kind;
         update_entity->qos = endpoint_qos_bits(endpoint);
+        update_entity->reserved[0] = 0;
+        update_entity->reserved[1] = 0;
+        update_entity->deadline_duration_ns = endpoint_deadline_duration_ns(endpoint);
+        update_entity->liveliness_lease_duration_ns = endpoint_liveliness_lease_duration_ns(endpoint);
 
         if (!encode_string(node, type) || !encode_string(node, endpoint->name)) {
             return -1;
@@ -2236,23 +2302,34 @@ struct update_peer_ctx {
     uint32_t sender_ip;
     uint16_t sender_port;
     uint16_t qos;
+    // QoS roadmap #2 (DEADLINE) / #3 (LIVELINESS) RxO, Milestone 49 - the remote Subscriber's own
+    // requested deadline/liveliness-lease durations, rd64()'d in decode_update_entities() the same
+    // way qos above is already native-endian by the time it lands here.
+    uint64_t deadline_duration_ns;
+    uint64_t liveliness_lease_duration_ns;
 };
 
 static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct update_peer_ctx* ctx = (struct update_peer_ctx*)ctx_ptr;
     struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
 
-    // QoS roadmap #1 (RxO matching, Milestone 31) - a remote Subscriber requesting a policy this
-    // local Publisher doesn't offer never becomes a peer at all: no unicast optimization, no
-    // durability backlog, no discovery-triggered Heartbeat - matching real DDS's own "an
-    // incompatible pair simply never connects" semantics. See process_data()'s own subscriber_
-    // incompatible_with_publisher() for this check's own mirror image on the Subscriber side (the
-    // more consequential half, since it's what actually stops broadcast DATA delivery too - this
-    // Publisher-side half alone only gates the unicast-only enhancements, tickle.c's own doc
-    // comment on tt_UPDATE_QOS_RELIABLE/_DURABLE explains why both halves are needed).
+    // QoS roadmap #1 (RxO matching, Milestone 31) / #2 (DEADLINE) / #3 (LIVELINESS, Milestone 49) -
+    // a remote Subscriber requesting a policy this local Publisher doesn't offer never becomes a
+    // peer at all: no unicast optimization, no durability backlog, no discovery-triggered
+    // Heartbeat - matching real DDS's own "an incompatible pair simply never connects" semantics.
+    // See process_data()'s own subscriber_incompatible_with_publisher() for this check's own
+    // mirror image on the Subscriber side (the more consequential half, since it's what actually
+    // stops broadcast DATA delivery too - this Publisher-side half alone only gates the unicast-
+    // only enhancements, tickle.c's own doc comment on tt_UPDATE_QOS_RELIABLE/_DURABLE explains
+    // why both halves are needed).
     bool requested_reliable = (ctx->qos & tt_UPDATE_QOS_RELIABLE) != 0;
     bool requested_durable = (ctx->qos & tt_UPDATE_QOS_DURABLE) != 0;
-    bool incompatible = (requested_reliable && !pub->reliable) || (requested_durable && !pub->durable);
+    bool requested_manual = (ctx->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
+    bool incompatible =
+        (requested_reliable && !pub->reliable) || (requested_durable && !pub->durable) ||
+        deadline_liveliness_incompatible(ctx->deadline_duration_ns, pub->deadline_duration_ns, requested_manual,
+                                         pub->liveliness_manual, ctx->liveliness_lease_duration_ns,
+                                         pub->liveliness_lease_duration_ns);
     if (incompatible) {
         return;
     }
@@ -2281,15 +2358,19 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         struct tt_UpdateEntity* update_entity = decode(node, buffer, head, tail, sizeof(struct tt_UpdateEntity));
         uint32_t entity_id = rd32(header, update_entity->endpoint_id);
 
+        uint64_t deadline_duration_ns = rd64(header, update_entity->deadline_duration_ns);
+        uint64_t liveliness_lease_duration_ns = rd64(header, update_entity->liveliness_lease_duration_ns);
+
         TT_LOG_DEBUG("UpdateEntity");
         TT_LOG_DEBUG("  endpoint_id: %08x", entity_id);
         TT_LOG_DEBUG("  kind: %d", update_entity->kind);
 
         if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            struct update_peer_ctx ctx = {header, sender_ip, sender_port, update_entity->qos};
+            struct update_peer_ctx ctx = {
+                header, sender_ip, sender_port, update_entity->qos, deadline_duration_ns, liveliness_lease_duration_ns};
             for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id, register_subscriber_peer_on_publisher, &ctx);
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
-            struct update_peer_ctx ctx = {header, sender_ip, sender_port, 0};
+            struct update_peer_ctx ctx = {header, sender_ip, sender_port, 0, 0, 0};
             for_each_endpoint(node, tt_KIND_SERVICE_CLIENT, entity_id, register_server_peer_on_client, &ctx);
         }
 
@@ -2312,7 +2393,8 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         // Recorded regardless of kind or whether a local endpoint matched above - discovery
         // (tt_Node_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
-        upsert_discovered_entity(node, header->source, entity_id, update_entity->kind, update_entity->qos, type, name);
+        upsert_discovered_entity(node, header->source, entity_id, update_entity->kind, update_entity->qos,
+                                 deadline_duration_ns, liveliness_lease_duration_ns, type, name);
     }
 
     return true;
@@ -2418,7 +2500,11 @@ static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct 
     }
     bool offered_reliable = (publisher->qos & tt_UPDATE_QOS_RELIABLE) != 0;
     bool offered_durable = (publisher->qos & tt_UPDATE_QOS_DURABLE) != 0;
-    return (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable);
+    bool offered_manual = (publisher->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
+    return (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable) ||
+           deadline_liveliness_incompatible(sub->deadline_duration_ns, publisher->deadline_duration_ns,
+                                            sub->liveliness_manual, offered_manual, sub->liveliness_lease_duration_ns,
+                                            publisher->liveliness_lease_duration_ns);
 }
 
 // Milestone 35 - for_each_endpoint()'s own visitor context for delivering one arriving DATA

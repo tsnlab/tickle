@@ -91,7 +91,9 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
     rmw_qos_policy_kind_t last_kind = RMW_QOS_POLICY_INVALID;
     size_t current = rmw_tickle_count_incompatible_subscribers_locked(
         pub_impl->node->context_impl, pub_impl->rmw_publisher.topic_name, pub_impl->tickle_publisher.reliable,
-        pub_impl->tickle_publisher.durable, &last_kind);
+        pub_impl->tickle_publisher.durable, pub_impl->tickle_publisher.liveliness_manual,
+        pub_impl->tickle_publisher.deadline_duration_ns, pub_impl->tickle_publisher.liveliness_lease_duration_ns,
+        &last_kind);
     rmw_tickle_qos_incompatible_status_t* status = &pub_impl->offered_qos_incompatible;
     if ((int)current > status->last_incompatible_count) {
         int delta = (int)current - status->last_incompatible_count;
@@ -316,6 +318,19 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
             lease_ns > 0 ? (uint64_t)lease_ns : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
         atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
     }
+
+    // QoS roadmap #2 (DEADLINE) / #3 (LIVELINESS) RxO, Milestone 49 - what this Publisher
+    // announces on the wire (tickle_publisher.deadline_duration_ns/liveliness_lease_duration_ns/
+    // .liveliness_manual, tickle.h) so a remote Subscriber's own discovery-driven RxO check can
+    // compare against it - see tt_UpdateEntity's own doc comment for the wire format. For the
+    // Publisher side specifically, these are the *exact same values* deadline_period_ns/
+    // liveliness_lease_ns above already resolved (the real, enforced values, not the raw request) -
+    // copied straight across rather than recomputed, since tickle_publisher.liveliness_manual ==
+    // (qos_profile->liveliness == MANUAL_BY_TOPIC) is exactly what pub_impl->liveliness_lease_ns's
+    // own "!= 0" sentinel already distinguishes.
+    pub_impl->tickle_publisher.deadline_duration_ns = pub_impl->deadline_period_ns;
+    pub_impl->tickle_publisher.liveliness_lease_duration_ns = pub_impl->liveliness_lease_ns;
+    pub_impl->tickle_publisher.liveliness_manual = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness;
 
     return &pub_impl->rmw_publisher;
 }

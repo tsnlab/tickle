@@ -311,6 +311,44 @@ int main(void) {
 
     assert(RMW_RET_OK == rmw_destroy_publisher(node, offered_pub));
 
+    // Milestone 49 (LIVELINESS RxO) - a fresh Publisher, offering AUTOMATIC (base_qos()) and
+    // otherwise compatible (RELIABLE/DURABLE both left at BEST_EFFORT/VOLATILE on both sides), but
+    // a discovered remote Subscriber requiring MANUAL_BY_TOPIC specifically must still be
+    // incompatible - this exercises rmw_graph.c's own new offered_manual/requested_manual
+    // comparison path, not just the RELIABILITY one the block above already proved end to end.
+    rmw_publisher_t* liveliness_pub =
+        rmw_create_publisher(node, type_support, "offered_liveliness_pub_topic", &offered_pub_qos, &pub_opts);
+    assert(NULL != liveliness_pub);
+
+    rmw_event_t liveliness_offered_event = rmw_get_zero_initialized_event();
+    assert(RMW_RET_OK ==
+           rmw_publisher_event_init(&liveliness_offered_event, liveliness_pub, RMW_EVENT_OFFERED_QOS_INCOMPATIBLE));
+
+    pthread_mutex_lock(&context_impl->node_mutex);
+    struct tt_DiscoveredEntity* manual_sub_slot = &context_impl->discovery.entities[2];
+    manual_sub_slot->node_id = FAKE_REMOTE_NODE_ID;
+    manual_sub_slot->endpoint_id = 0;
+    manual_sub_slot->kind = tt_KIND_TOPIC_SUBSCRIBER;
+    manual_sub_slot->qos = tt_UPDATE_QOS_LIVELINESS_MANUAL; // requests MANUAL_BY_TOPIC - RELIABLE/DURABLE not requested
+    manual_sub_slot->alive = true;
+    snprintf(manual_sub_slot->type, sizeof(manual_sub_slot->type), "test_events/msg/FakeMsg");
+    snprintf(manual_sub_slot->name, sizeof(manual_sub_slot->name), "offered_liveliness_pub_topic");
+    pthread_mutex_unlock(&context_impl->node_mutex);
+
+    events_storage[0] = &liveliness_offered_event;
+    events.event_count = 1;
+    assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &qos_wait_timeout));
+    assert(NULL != events.events[0]);
+
+    rmw_offered_qos_incompatible_event_status_t liveliness_offered_status;
+    taken = false;
+    assert(RMW_RET_OK == rmw_take_event(&liveliness_offered_event, &liveliness_offered_status, &taken));
+    assert(taken);
+    assert(liveliness_offered_status.total_count >= 1);
+    assert(RMW_QOS_POLICY_LIVELINESS == liveliness_offered_status.last_policy_kind);
+
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, liveliness_pub));
+
     // RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE - the Subscription-side counterpart, same technique,
     // opposite direction: this Subscription requests RELIABLE, a discovered remote Publisher
     // offering neither bit is incompatible.

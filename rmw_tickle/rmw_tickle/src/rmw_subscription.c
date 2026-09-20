@@ -212,7 +212,9 @@ static void check_subscription_qos_incompatible(struct tt_Node* node, uint64_t t
     rmw_qos_policy_kind_t last_kind = RMW_QOS_POLICY_INVALID;
     size_t current = rmw_tickle_count_incompatible_publishers_locked(
         sub_impl->node->context_impl, sub_impl->rmw_subscription.topic_name, sub_impl->tickle_subscriber.reliable,
-        sub_impl->tickle_subscriber.durable, &last_kind);
+        sub_impl->tickle_subscriber.durable, sub_impl->tickle_subscriber.liveliness_manual,
+        sub_impl->tickle_subscriber.deadline_duration_ns, sub_impl->tickle_subscriber.liveliness_lease_duration_ns,
+        &last_kind);
     rmw_tickle_qos_incompatible_status_t* status = &sub_impl->requested_qos_incompatible;
     if ((int)current > status->last_incompatible_count) {
         int delta = (int)current - status->last_incompatible_count;
@@ -393,6 +395,23 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     rmw_duration_t lifespan_ns = rmw_time_total_nsec(qos_profile->lifespan);
     if (lifespan_ns > 0) {
         sub_impl->lifespan_ns = (uint64_t)lifespan_ns;
+    }
+
+    // QoS roadmap #2 (DEADLINE) / #3 (LIVELINESS) RxO, Milestone 49 - what this Subscription
+    // announces on the wire (tickle_subscriber.deadline_duration_ns/liveliness_lease_duration_ns/
+    // .liveliness_manual, tickle.h) as *requested*, computed directly from qos_profile here
+    // rather than reusing sub_impl->deadline_period_ns/liveliness_lease_ns above: the latter stays
+    // 0 until/unless the application actually requests the matching RMW_EVENT_* (rmw_subscription_
+    // event_init()'s own lazy-start doc comment for LIVELINESS_CHANGED especially), but RxO
+    // compatibility must reflect what was requested via QoS regardless of which events the
+    // application happens to ask for. deadline_period_ns specifically is *not* lazy (set
+    // unconditionally above), so reusing it here is safe and avoids a redundant conversion.
+    sub_impl->tickle_subscriber.deadline_duration_ns = sub_impl->deadline_period_ns;
+    sub_impl->tickle_subscriber.liveliness_manual =
+        RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness;
+    rmw_duration_t requested_lease_ns = rmw_time_total_nsec(qos_profile->liveliness_lease_duration);
+    if (requested_lease_ns > 0) {
+        sub_impl->tickle_subscriber.liveliness_lease_duration_ns = (uint64_t)requested_lease_ns;
     }
 
     return &sub_impl->rmw_subscription;

@@ -218,12 +218,22 @@ struct tt_DiscoveredEntity {
     bool alive;
 
     // QoS roadmap #1 (RxO matching, Milestone 31) - a copy of this entity's own announced
-    // struct tt_UpdateEntity.qos (tt_UPDATE_QOS_RELIABLE/_DURABLE), refreshed on every UPDATE
-    // (upsert_discovered_entity(), tickle.c) the same way type/name are. Lets process_data()'s own
-    // subscriber_incompatible_with_publisher() look up what a remote Publisher offers via this
-    // same discovery table, rather than a second, separate cache - real DDS's own equivalent
-    // ("Publications" built-in topic) is exactly this kind of discovery-table row too.
+    // struct tt_UpdateEntity.qos (tt_UPDATE_QOS_RELIABLE/_DURABLE/_LIVELINESS_MANUAL, the last one
+    // added by Milestone 49 below), refreshed on every UPDATE (upsert_discovered_entity(),
+    // tickle.c) the same way type/name are. Lets process_data()'s own subscriber_incompatible_
+    // with_publisher() look up what a remote Publisher offers via this same discovery table,
+    // rather than a second, separate cache - real DDS's own equivalent ("Publications" built-in
+    // topic) is exactly this kind of discovery-table row too.
     uint8_t qos;
+
+    // QoS roadmap #2 (DEADLINE) / #3 (LIVELINESS) RxO, Milestone 49 - a copy of this entity's own
+    // announced struct tt_UpdateEntity.deadline_duration_ns/.liveliness_lease_duration_ns, same
+    // "refreshed on every UPDATE" reasoning as qos above. 0 means "no requirement/infinite" on
+    // either side for both, the same convention every other 0-disabled duration field in this
+    // codebase already uses (tt_Publisher.lifespan_duration_ns etc.) - see deadline_liveliness_
+    // incompatible()'s own doc comment (tickle.c) for the actual comparison these back.
+    uint64_t deadline_duration_ns;
+    uint64_t liveliness_lease_duration_ns;
 };
 
 // Fixed-capacity graph cache a caller opts a struct tt_Node into via tt_Node_set_discovery() -
@@ -561,6 +571,26 @@ struct tt_Publisher { // extends endpoint
     // (see rmw_tickle_subscriber_t.lifespan_ns's own doc comment) - no coordination needed between
     // the two.
     uint64_t lifespan_duration_ns;
+
+    // QoS roadmap #2 (DEADLINE) RxO, Milestone 49. 0 (tt_Node_create_publisher()'s own default):
+    // no DEADLINE offered. Non-zero: what this Publisher announces on the wire (tt_UpdateEntity.
+    // deadline_duration_ns) as its own maximum inter-publish gap - purely a wire-announcement
+    // field, TickLE core itself never enforces or checks this on its own (the rmw layer already
+    // does that independently, e.g. rmw_tickle's own check_publisher_deadline()); this only feeds
+    // decode_update_entities()'s own Publisher-side gate and subscriber_incompatible_with_
+    // publisher()'s own comparison (both tickle.c) on the *receiving* side. A plain caller-owned
+    // field, same convention as reliable/durable/lifespan_duration_ns above.
+    uint64_t deadline_duration_ns;
+    // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49 - this Publisher's own offered liveliness
+    // lease duration, in nanoseconds; 0 = no specific lease requirement announced. Independent of
+    // liveliness_manual below - see tt_UpdateEntity.liveliness_lease_duration_ns's own doc comment
+    // (tickle.h) for why kind and lease duration are two separate pieces of information, not one.
+    uint64_t liveliness_lease_duration_ns;
+    // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49. false (tt_Node_create_publisher()'s own
+    // default): AUTOMATIC. true: MANUAL_BY_TOPIC (the only manual kind this package's own rmw
+    // layer still supports, Milestone 32's own finding) - see tt_UPDATE_QOS_LIVELINESS_MANUAL's
+    // own doc comment (tickle.h) for the wire bit this becomes.
+    bool liveliness_manual;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
@@ -698,6 +728,19 @@ struct tt_Subscriber { // extends endpoint
     // (unlike reliable just above) didn't exist on this struct at all before this milestone, since
     // backlog delivery itself was always purely a Publisher-side decision with no reader opt-out.
     bool durable;
+
+    // QoS roadmap #2 (DEADLINE) RxO, Milestone 49 - see tt_Publisher.deadline_duration_ns's own
+    // doc comment (tickle.h) for the full reasoning, mirrored here as the "requested" half: 0
+    // (tt_Node_create_subscriber()'s own default) means no DEADLINE required.
+    uint64_t deadline_duration_ns;
+    // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49 - see tt_Publisher.liveliness_lease_duration_ns's
+    // own doc comment, mirrored here as the "requested" half: 0 means no specific lease requirement.
+    uint64_t liveliness_lease_duration_ns;
+    // QoS roadmap #3 (LIVELINESS) RxO, Milestone 49 - see tt_Publisher.liveliness_manual's own doc
+    // comment, mirrored here as the "requested" half: false (tt_Node_create_subscriber()'s own
+    // default) means this Subscriber accepts AUTOMATIC liveliness; true means it requires
+    // MANUAL_BY_TOPIC specifically.
+    bool liveliness_manual;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
@@ -838,7 +881,9 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // same version or newer - there is no partial-compatibility case to handle.
 // Bumped 2 -> 3 for Milestone 47 - struct tt_DataHeader/tt_AckNackHeader/tt_HeartbeatHeader each
 // grew an entity_id field, the same "no partial-compatibility case to handle" reasoning applies.
-#define tt_VERSION 3
+// Bumped 3 -> 4 for Milestone 49 - struct tt_UpdateEntity grew deadline_duration_ns/liveliness_
+// lease_duration_ns and a new tt_UPDATE_QOS_LIVELINESS_MANUAL qos bit, the identical reasoning.
+#define tt_VERSION 4
 
 struct tt_Header {
     union {
@@ -872,22 +917,44 @@ struct tt_UpdateHeader {
     */
 } __attribute__((packed));
 
-// QoS roadmap #1 (RxO matching, Milestone 31) - the two bits struct tt_UpdateEntity.qos below
-// carries, one per policy this package actually implements a wire-visible mechanism for (services/
+// QoS roadmap #1 (RxO matching, Milestone 31) - the bits struct tt_UpdateEntity.qos below
+// carries, one per policy this package implements a wire-visible mechanism for (services/
 // clients always encode 0 here - RELIABILITY there is already unconditional via tt_Client_call()'s
-// own retry, no QoS negotiation needed, and DURABILITY has no service/client analog at all). Same
-// bit positions regardless of direction: on a TOPIC_PUBLISHER entity this is what that Publisher
-// *offers* (tt_Publisher.reliable/.durable); on a TOPIC_SUBSCRIBER entity it's what that
-// Subscriber *requests* (tt_Subscriber.reliable/.durable) - decode_update_entities()'s own
-// tt_KIND_TOPIC_SUBSCRIBER branch and process_data()'s own subscriber_incompatible_with_
-// publisher() (both tickle.c) are what actually compare the two sides.
+// own retry, no QoS negotiation needed, and DURABILITY/LIVELINESS-kind have no service/client
+// analog at all). Same bit positions regardless of direction: on a TOPIC_PUBLISHER entity this is
+// what that Publisher *offers* (tt_Publisher.reliable/.durable/.liveliness_manual); on a TOPIC_
+// SUBSCRIBER entity it's what that Subscriber *requests* (tt_Subscriber.reliable/.durable/
+// .liveliness_manual) - decode_update_entities()'s own tt_KIND_TOPIC_SUBSCRIBER branch and
+// process_data()'s own subscriber_incompatible_with_publisher() (both tickle.c) are what actually
+// compare the two sides.
 #define tt_UPDATE_QOS_RELIABLE (1U << 0)
 #define tt_UPDATE_QOS_DURABLE (1U << 1)
+// QoS roadmap #3 (LIVELINESS) RxO, Milestone 49 - set iff this entity's own LIVELINESS kind is
+// MANUAL_BY_TOPIC (the only manual kind this package's own rmw layer still supports, Milestone
+// 32's own finding) rather than AUTOMATIC. The lease duration itself travels separately, as a
+// real numeric field (tt_UpdateEntity.liveliness_lease_duration_ns below) - unlike RELIABLE/
+// DURABLE, a single bit can't carry "how long", only "which kind".
+#define tt_UPDATE_QOS_LIVELINESS_MANUAL (1U << 2)
 
 struct tt_UpdateEntity {
     uint32_t endpoint_id; // hash(topic/service name + endpoint name)
     uint8_t kind;
-    uint8_t qos; // tt_UPDATE_QOS_RELIABLE / tt_UPDATE_QOS_DURABLE - see their own doc comment above
+    uint8_t qos; // tt_UPDATE_QOS_RELIABLE / _DURABLE / _LIVELINESS_MANUAL - see their own doc comment above
+    // Milestone 49 - pad 6 -> 8 so the two uint64_t fields below stay 4-aligned (TickLE's own
+    // CDR-4 convention, DESIGN.md's "Interface serialization" - 8-byte types are 4-aligned, not
+    // 8-aligned, here).
+    uint8_t reserved[2];
+    // QoS roadmap #2 (DEADLINE) RxO - this entity's own offered (Publisher) or requested
+    // (Subscriber) deadline, in nanoseconds; 0 = no DEADLINE requested/offered ("infinite"),
+    // matching every other 0-disabled duration field in this codebase. Always 0 for a service/
+    // client, same reasoning as the qos bits above.
+    uint64_t deadline_duration_ns;
+    // QoS roadmap #3 (LIVELINESS) RxO - this entity's own offered/requested liveliness lease
+    // duration, in nanoseconds; 0 = no specific lease requirement. Independent of the
+    // tt_UPDATE_QOS_LIVELINESS_MANUAL bit above - real DDS's own LIVELINESS policy is (kind,
+    // lease_duration) as one combined unit, so e.g. a Subscriber may legitimately request
+    // AUTOMATIC with a tight lease requirement, not just MANUAL_BY_TOPIC ones.
+    uint64_t liveliness_lease_duration_ns;
     /* Dynamically allocated
     uint16_t type_len;
     char type[];
