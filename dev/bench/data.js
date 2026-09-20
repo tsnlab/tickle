@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789918636871,
+  "lastUpdate": 1789918640375,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -61781,6 +61781,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.57,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a2ce190856d91b11138d3a0f45a2fb0903f6257d",
+          "message": "comparison.md: scenario 3 TickLE-native results, real rig runs (3/3)\n\nAdds examples/perf_hil/tickle/run_scenario.sh (mirrors cyclonedds/run_scenario.sh's\nown SSH-backgrounding fixes; no such script existed yet for the TickLE-native track).\n\nReal finding, not a bug: TickLE's near-zero per-message overhead lets the client\noffer 95-155k msg/s at max rate, two orders of magnitude past either DDS vendor's\nown max-rate ceiling for this scenario - genuinely saturating the single-threaded\nserver's UDP drain rate, causing real kernel-level receive-buffer loss (57-70%,\nsent vs recv). Also documents a real harness methodology gap: the server's own\ngap-based loss counter can't see loss trailing off the end of the stream (no later\nsample to diff against) - same class of blind spot as scenario 6's leading-gap fix,\nmirrored at the other end. sent-vs-recv across the two RESULT lines is the only\ntrustworthy loss figure for this scenario shape.",
+          "timestamp": "2026-09-21T00:34:24+09:00",
+          "tree_id": "6c22094b59f1eb4fde6dddf272ea39419f1e3e24",
+          "url": "https://github.com/tsnlab/tickle/commit/a2ce190856d91b11138d3a0f45a2fb0903f6257d"
+        },
+        "date": 1789918639266,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.45,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.269,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.151,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.837,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.51,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 73.179,
             "unit": "Mbps"
           }
         ]
