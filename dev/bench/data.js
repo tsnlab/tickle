@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789947064213,
+  "lastUpdate": 1789947067822,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -76018,6 +76018,60 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/24f9d38806a6e92dd419a8b732b94ab994bd9358"
         },
         "date": 1789945787969,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ad6d48bfa0e408d89486f4b2603bdb08e3de65b8",
+          "message": "tickle.c: fix real throughput regression in receive-side dedup from previous commit\n\nThe previous commit (dab6f49) treated any seq_no < proxy->ack_seq_no as\nan always-duplicate, but that comparison alone is not reliable evidence\nof \"already delivered\" once jump_ack_baseline() has ever fired for a\nproxy: it abandons tracking for its own jumped-past range rather than\nconfirming any of it was actually received. Under real reordering at\nnear-line-rate (plausible on real hardware, not just genuine loss), every\nstill-in-flight sample from that abandoned range then legitimately\narrives with seq_no < ack_seq_no and was being wrongly suppressed as a\nduplicate.\n\nReal CI (Performance Test) caught this: \"reliable recv throughput\"\ndropped from a consistent ~820 Mbps across the prior 7 pushes to 66.276\nMbps (12.38x), with the receiver's own total_received_msgs capped at\nexactly 65,536 for the whole run while best-effort throughput in the\nsame run stayed a normal ~900 Mbps.\n\nNarrowed the dedup gate to only the bitmap-bit-already-set case -\nseq_no < ack_seq_no reverted to always deliver, matching pre-Milestone-60\nbehavior for that branch exactly. A set bit is always fresh, current-\nwindow evidence (jump_ack_baseline() zeroes received_bitmap on every\njump), so it can never be contaminated by an abandoned range. This no\nlonger catches an already-cumulatively-passed-watermark duplicate, but\ncarries no risk of misclassifying a genuinely new sample.\n\nMilestone 60 (rmw_tickle/PLAN.md).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T08:28:05+09:00",
+          "tree_id": "744585cc916203e139ab35332a3ebd40209e7508",
+          "url": "https://github.com/tsnlab/tickle/commit/ad6d48bfa0e408d89486f4b2603bdb08e3de65b8"
+        },
+        "date": 1789947066694,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
