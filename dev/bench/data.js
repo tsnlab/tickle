@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789908513804,
+  "lastUpdate": 1789908665427,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -32256,6 +32256,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.05035,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2a6af2a62a197b64d8048d9730b6fc7a32b08861",
+          "message": "PLAN.md: fix stale Milestone 45 header (item 1 already implemented + measured)\n\nThe row's own leading status/summary hadn't been updated since 403840a\n(buffer pooling) and comparison.md's own follow-up measurement (both by\nTickLE Dev and independently by TickLE Plan) landed - it still read \"not\nyet handed to implementation\" despite the addendum paragraph immediately\nbelow it, and comparison.md itself, already documenting the real (negative)\nresult.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:47:02+09:00",
+          "tree_id": "b129e74d96f43cbe8268f2e6b783e8d7c216eb4a",
+          "url": "https://github.com/tsnlab/tickle/commit/2a6af2a62a197b64d8048d9730b6fc7a32b08861"
+        },
+        "date": 1789908661245,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.10675142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.052738571428571426,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04923142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.048998571428571426,
             "unit": "ms"
           }
         ]
