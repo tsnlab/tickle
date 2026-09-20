@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789906077338,
+  "lastUpdate": 1789906080807,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -39139,6 +39139,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03045599801199777,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f4bd2d49c6f707d540629ced5a03d44da8aa597",
+          "message": "check-all.yml: install colcon-override-check (Milestone 54 CI failure, take 2)\n\nThe previous fix (--allow-overriding before --packages-select) exposed the real\nunderlying issue: \"colcon: error: unrecognized arguments: --allow-overriding\nrcl_interfaces builtin_interfaces\" - this time from colcon's own top-level parser,\nnot build's --packages-select, confirming the flag was never recognized on this\nrunner at all. --allow-overriding isn't part of colcon's own core - it's provided\nby the separate colcon-override-check extension, which ros-tooling/setup-ros's own\nbaseline install doesn't include.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:06:44+09:00",
+          "tree_id": "8defa735aa8c0c54a82f67f63c3d6a2f8f7cda77",
+          "url": "https://github.com/tsnlab/tickle/commit/7f4bd2d49c6f707d540629ced5a03d44da8aa597"
+        },
+        "date": 1789906079708,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9899399621146066,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.989990370614188,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030477660042898997,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03047316414969308,
             "unit": "Mbit/s"
           }
         ]
