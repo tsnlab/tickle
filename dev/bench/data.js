@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789899944540,
+  "lastUpdate": 1789899948167,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -46213,6 +46213,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/e38be7e5ca02f50596ff1b47c9736f2fd9c4dae4"
         },
         "date": 1789899392025,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1828253a3562b66512c70403b034e15e8d07e245",
+          "message": "PLAN.md: confirm Milestone 51 real CI green (Check all + Test all, 5569e81)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T19:16:55+09:00",
+          "tree_id": "4b654c4cf8171d8d069a067c61967b6ced225d52",
+          "url": "https://github.com/tsnlab/tickle/commit/1828253a3562b66512c70403b034e15e8d07e245"
+        },
+        "date": 1789899947087,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
