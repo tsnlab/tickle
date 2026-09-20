@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789906170923,
+  "lastUpdate": 1789906174329,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -55741,6 +55741,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.598,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f4bd2d49c6f707d540629ced5a03d44da8aa597",
+          "message": "check-all.yml: install colcon-override-check (Milestone 54 CI failure, take 2)\n\nThe previous fix (--allow-overriding before --packages-select) exposed the real\nunderlying issue: \"colcon: error: unrecognized arguments: --allow-overriding\nrcl_interfaces builtin_interfaces\" - this time from colcon's own top-level parser,\nnot build's --packages-select, confirming the flag was never recognized on this\nrunner at all. --allow-overriding isn't part of colcon's own core - it's provided\nby the separate colcon-override-check extension, which ros-tooling/setup-ros's own\nbaseline install doesn't include.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:06:44+09:00",
+          "tree_id": "8defa735aa8c0c54a82f67f63c3d6a2f8f7cda77",
+          "url": "https://github.com/tsnlab/tickle/commit/7f4bd2d49c6f707d540629ced5a03d44da8aa597"
+        },
+        "date": 1789906173193,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.222,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 60.93,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.018,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.685,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.42,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.604,
             "unit": "Mbps"
           }
         ]
