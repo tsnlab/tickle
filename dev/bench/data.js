@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789887276181,
+  "lastUpdate": 1789887279657,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -40643,6 +40643,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 818.007,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fd9db40696cd0b37051750df7e3f54bcc6763561",
+          "message": "examples/perf_hil/tickle: native TickLE core HIL examples (closes Goal 2's own gap)\n\nbest_effort_latency/reliable_latency, same ping/pong topics and single-clock\nRTT methodology as the FastDDS/CycloneDDS scenarios already in this tree -\nthe first real numbers this document has for Project Goal 2 (TickLE core's\nown raw performance vs FastDDS/CycloneDDS, no rmw). Hand-written BenchData\ncodec (common/Bench.h/.c), not tools/typesupport-generated, matching the\nFastDDS/CycloneDDS scenarios' own identical wire shape (uint32 seq, uint64\nsend_ns, uint8[64] payload) for a genuinely apples-to-apples comparison.\nBuilt via `make install` to a scratch prefix + pkg-config (build.sh),\ndeliberately not touching platform/linux/Makefile or TickLE Dev's own\nexample set.\n\nA real bug found and fixed on the first run: neither file set\n_tt_CONFIG.broadcast, so tt_get_node_id()'s own auto-detection (matches the\nlocal address against the broadcast address's subnet) silently broke against\nthis rig's real subnet - 100% loss both scenarios until fixed to match every\nother example's own explicit convention.\n\nResults (3 clean runs each, comparison.md's own new section): TickLE core's\nnative RTT (~0.20-0.22ms avg) beats both DDS vendors' own native numbers on\nthe identical link (FastDDS ~0.28-0.30ms, CycloneDDS ~0.24-0.25ms) - a real,\npositive first data point for Project Goal 2, not yet broad enough (one link,\ntwo of nine scenarios) to call the goal fully met.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T15:51:59+09:00",
+          "tree_id": "6c67267b32e240e6b73f1af70585411803783675",
+          "url": "https://github.com/tsnlab/tickle/commit/fd9db40696cd0b37051750df7e3f54bcc6763561"
+        },
+        "date": 1789887278553,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 934.998,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 818.225,
             "unit": "Mbps"
           }
         ]
