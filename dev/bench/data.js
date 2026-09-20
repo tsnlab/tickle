@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789916624910,
+  "lastUpdate": 1789916628248,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -68859,6 +68859,60 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/82506c0575b28bee623ae8f786198099c33dc09e"
         },
         "date": 1789916026472,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5427f15e2c7c965553e88e5204dba1a9705a791a",
+          "message": "check-all.yml: wire rmw_perf_pingpong into compile_commands.json coverage\n\nConfirmed via real CI (commit 82506c0): cpp-linter's own clang-tidy\nsub-check had no compile_commands.json entry for ping_node.cpp/\npong_node.cpp at all ('rclcpp/rclcpp.hpp' file not found, 48 findings) -\nrmw_perf_pingpong had never been wired into any CI workflow since it was\ncreated. Fixed by folding it into the existing rmw_tickle compile-commands\ncolcon build call (it's a plain rclcpp package, no build-time dependency\non rmw_tickle itself) rather than a new step.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T00:00:45+09:00",
+          "tree_id": "0524067bca2bf123e6e13ec10cc5e6650433054c",
+          "url": "https://github.com/tsnlab/tickle/commit/5427f15e2c7c965553e88e5204dba1a9705a791a"
+        },
+        "date": 1789916627149,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
