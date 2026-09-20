@@ -13,7 +13,6 @@
 // reliable_latency/client.c's own logic exactly - single-clock RTT (this side's own
 // tt_get_ns(), both send and receipt), same RESULT line shape, for direct comparison.
 
-#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -23,7 +22,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -34,8 +32,12 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
+static const double default_duration_s = 10.0;
+static const double discovery_margin_s = 2.0;
+static const double ns_per_ms = 1e6;
+
 static double interval_s = 1.0;
-static double duration_s = 10.0;
+static double duration_s = default_duration_s;
 static uint64_t transmitted = 0, received = 0;
 static double rtt_min_ms = -1.0, rtt_max_ms = 0.0, rtt_sum_ms = 0.0;
 static uint32_t seq = 0;
@@ -45,7 +47,7 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     (void)sub;
     (void)timestamp;
     (void)seq_no;
-    double rtt_ms = (double)(tt_get_ns() - data->send_ns) / 1e6;
+    double rtt_ms = (double)(tt_get_ns() - data->send_ns) / ns_per_ms;
     received++;
     if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
         rtt_min_ms = rtt_ms;
@@ -91,9 +93,9 @@ int main(int argc, char** argv) {
     // subnet, config.h's own doc comment) - found the hard way (0 received, first real run).
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -125,8 +127,8 @@ int main(int argc, char** argv) {
     sub.reliable = true;
 
     uint64_t start = tt_get_ns();
-    tt_Node_schedule(&node, start + (uint64_t)(2.0 * (double)tt_SECOND), ping, NULL); // discovery margin
-    tt_Node_schedule(&node, start + (uint64_t)((2.0 + duration_s) * (double)tt_SECOND), stop, NULL);
+    tt_Node_schedule(&node, start + (uint64_t)(discovery_margin_s * (double)tt_SECOND), ping, NULL);
+    tt_Node_schedule(&node, start + (uint64_t)((discovery_margin_s + duration_s) * (double)tt_SECOND), stop, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {

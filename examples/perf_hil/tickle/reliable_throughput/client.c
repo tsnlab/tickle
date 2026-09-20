@@ -27,7 +27,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -38,9 +37,15 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
+static const double default_duration_s = 10.0;
+static const double default_drain_s = 3.0;
+static const double discovery_margin_s = 2.0;
+static const double bits_per_byte = 8.0;
+static const double bits_per_megabit = 1e6;
+
 static double interval_s = 0.0; // 0 = as fast as possible, matching best_effort_throughput's own default
-static double duration_s = 10.0;
-static double drain_s = 3.0;
+static double duration_s = default_duration_s;
+static double drain_s = default_drain_s;
 static uint64_t sent = 0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
@@ -82,9 +87,9 @@ int main(int argc, char** argv) {
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -107,7 +112,7 @@ int main(int argc, char** argv) {
     pub.reliable = true;
     g_pub = &pub;
 
-    uint64_t send_start = tt_get_ns() + (uint64_t)(2.0 * (double)tt_SECOND); // discovery margin
+    uint64_t send_start = tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
     tt_Node_schedule(&node, send_start, send_one, NULL);
 
@@ -123,7 +128,9 @@ int main(int argc, char** argv) {
         ret = tt_Node_poll(&node, -1);
     }
 
-    double mbps = duration_s > 0.0 ? ((double)sent * sizeof(struct BenchData) * 8.0) / 1e6 / duration_s : 0.0;
+    double mbps = duration_s > 0.0
+                      ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / duration_s
+                      : 0.0;
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
            "send_mbps=%.3f\n",
            (unsigned long)sent, duration_s, mbps);

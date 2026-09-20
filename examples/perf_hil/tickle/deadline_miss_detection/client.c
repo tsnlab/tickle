@@ -37,7 +37,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -48,9 +47,16 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
-static double deadline_s = 0.05;
-static double duration_s = 10.0;
-static uint32_t skip_at_seq = 30; // ~1.5s in at the default 50ms interval
+static const double default_deadline_s = 0.05;
+static const double default_duration_s = 10.0;
+static const uint32_t default_skip_at_seq = 30; // ~1.5s in at the default 50ms interval
+static const double skip_interval_multiplier = 3.0;
+static const double discovery_margin_s = 2.0;
+static const double check_deadline_start_periods = 1.5;
+
+static double deadline_s = default_deadline_s;
+static double duration_s = default_duration_s;
+static uint32_t skip_at_seq = default_skip_at_seq;
 static uint64_t sent = 0;
 static uint32_t seq = 0;
 static uint32_t misses = 0;
@@ -69,8 +75,9 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
         sent++;
         last_publish_ns = tt_get_ns();
     }
-    uint64_t next_interval_ns =
-        (seq == skip_at_seq) ? (uint64_t)(3.0 * deadline_s * (double)tt_SECOND) : (uint64_t)(deadline_s * (double)tt_SECOND);
+    uint64_t next_interval_ns = (seq == skip_at_seq)
+                                    ? (uint64_t)(skip_interval_multiplier * deadline_s * (double)tt_SECOND)
+                                    : (uint64_t)(deadline_s * (double)tt_SECOND);
     tt_Node_schedule(node, time + next_interval_ns, send_one, NULL);
 }
 
@@ -107,9 +114,9 @@ int main(int argc, char** argv) {
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -128,7 +135,7 @@ int main(int argc, char** argv) {
     g_pub = &pub;
 
     uint64_t start = tt_get_ns();
-    uint64_t send_start = start + (uint64_t)(2.0 * (double)tt_SECOND); // discovery margin
+    uint64_t send_start = start + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
     tt_Node_schedule(&node, send_start, send_one, NULL);
     // Half-period phase offset from send_one's own schedule (2026-09-21, real bug found the hard
@@ -139,7 +146,8 @@ int main(int argc, char** argv) {
     // `> deadline_s` on nearly every healthy cycle (writer_misses=31 over a 10s run for what should
     // have been one ~3-miss deliberate gap, the real symptom this fixes). A half-period offset
     // gives a robust safety margin against that jitter either direction.
-    tt_Node_schedule(&node, send_start + (uint64_t)(1.5 * deadline_s * (double)tt_SECOND), check_deadline, NULL);
+    tt_Node_schedule(&node, send_start + (uint64_t)(check_deadline_start_periods * deadline_s * (double)tt_SECOND),
+                     check_deadline, NULL);
     tt_Node_schedule(&node, g_deadline_ns + (uint64_t)(1.0 * (double)tt_SECOND), stop, NULL);
 
     ret = tt_RET_OK;

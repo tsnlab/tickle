@@ -22,7 +22,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -42,8 +41,10 @@ static void ping_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     tt_Publisher_publish(g_pub, (struct tt_Data*)data);
 }
 
+static const double default_safety_cap_s = 40.0;
+
 int main(int argc, char** argv) {
-    double safety_cap_s = 40.0;
+    double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
@@ -56,9 +57,9 @@ int main(int argc, char** argv) {
     // subnet, config.h's own doc comment) - found the hard way (0 received, first real run).
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -83,9 +84,11 @@ int main(int argc, char** argv) {
     }
 
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
+    // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
+    const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, 500 * 1000 * 1000); // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs
+        ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
     printf("RESULT: framework=tickle scenario=best_effort_latency role=server\n");

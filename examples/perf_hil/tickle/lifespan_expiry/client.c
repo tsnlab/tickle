@@ -31,7 +31,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -42,10 +41,16 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
-static double interval_s = 0.02;
-static double lifespan_s = 0.1;
-static double drain_s = 3.0;
-static uint32_t count = 100;
+static const double default_interval_s = 0.02;
+static const double default_lifespan_s = 0.1;
+static const double default_drain_s = 3.0;
+static const uint32_t default_count = 100;
+static const double near_zero_discovery_margin_s = 0.05;
+
+static double interval_s = default_interval_s;
+static double lifespan_s = default_lifespan_s;
+static double drain_s = default_drain_s;
+static uint32_t count = default_count;
 static uint64_t sent = 0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
@@ -87,9 +92,9 @@ int main(int argc, char** argv) {
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -116,7 +121,7 @@ int main(int argc, char** argv) {
     // completes for lifespan expiry to have anything to bite on, but `lifespan_s` itself (100ms
     // default) is small enough that even this scenario's own established 2.0s margin (used
     // everywhere else) would swamp it.
-    tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(0.05 * (double)tt_SECOND), send_one, NULL);
+    tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(near_zero_discovery_margin_s * (double)tt_SECOND), send_one, NULL);
 
     ret = tt_RET_OK;
     while (!g_interrupted && !g_sending_done && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {

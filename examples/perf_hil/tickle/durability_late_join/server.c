@@ -36,7 +36,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -64,10 +63,13 @@ static void stop(struct tt_Node* node, uint64_t time, void* param) {
     g_interrupted = 1;
 }
 
+static const uint32_t default_backlog_count = 20;
+static const double default_wait_s = 40.0;
+
 int main(int argc, char** argv) {
     bool durable = false;
-    uint32_t backlog_count = 20;
-    double wait_s = 40.0;
+    uint32_t backlog_count = default_backlog_count;
+    double wait_s = default_wait_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-D") == 0) {
             durable = true;
@@ -80,9 +82,9 @@ int main(int argc, char** argv) {
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -123,9 +125,11 @@ int main(int argc, char** argv) {
     printf("Waiting up to %.0fs for the late subscriber's own ack...\n", wait_s);
     tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(wait_s * (double)tt_SECOND), stop, NULL);
 
+    // 500ms (nanoseconds), so the g_acked check re-runs.
+    const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && !g_acked && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, 500 * 1000 * 1000); // 500ms (nanoseconds), so the g_acked check re-runs
+        ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
     printf("RESULT: framework=tickle scenario=durability_late_join role=server durable=%d "

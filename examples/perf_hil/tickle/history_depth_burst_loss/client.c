@@ -29,7 +29,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -40,9 +39,14 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
-static double interval_s = 0.05;
-static double drain_s = 5.0;
-static uint32_t count = 160;
+static const double default_interval_s = 0.05;
+static const double default_drain_s = 5.0;
+static const uint32_t default_count = 160;
+static const double discovery_margin_s = 2.0;
+
+static double interval_s = default_interval_s;
+static double drain_s = default_drain_s;
+static uint32_t count = default_count;
 static uint64_t sent = 0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
@@ -82,9 +86,9 @@ int main(int argc, char** argv) {
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -107,7 +111,7 @@ int main(int argc, char** argv) {
     pub.reliable = true;
     g_pub = &pub;
 
-    uint64_t send_start = tt_get_ns() + (uint64_t)(2.0 * (double)tt_SECOND); // discovery margin
+    uint64_t send_start = tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
     tt_Node_schedule(&node, send_start, send_one, NULL);
 
     ret = tt_RET_OK;

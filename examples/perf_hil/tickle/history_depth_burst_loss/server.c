@@ -34,7 +34,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -60,9 +59,14 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     received++;
 }
 
+static const double default_pause_s = 3.0;
+static const double default_safety_cap_s = 30.0;
+static const double safety_cap_buffer_s = 15.0;
+static const double ns_per_s = 1e9;
+
 int main(int argc, char** argv) {
-    double pause_s = 3.0;
-    double safety_cap_s = 30.0;
+    double pause_s = default_pause_s;
+    double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-p") == 0 && i + 1 < argc) {
             pause_s = atof(argv[++i]);
@@ -75,20 +79,23 @@ int main(int argc, char** argv) {
     // send duration" on the client vs. "don't hang forever" here - taken verbatim, this side could
     // exit mid-stream, before the client - which starts several seconds later - had even finished).
     // Not directly hit this pass (no -d was passed testing this scenario), fixed preemptively.
-    safety_cap_s += 15.0;
+    safety_cap_s += safety_cap_buffer_s;
 
     // real HIL link's own broadcast address - see best_effort_latency/server.c's own doc comment
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     printf("Subscriber: deliberately not joining for %.1fs, before the writer's own depth=8 ring can "
            "evict anything published during that window\n",
            pause_s);
-    struct timespec pause_ts = {.tv_sec = (time_t)pause_s, .tv_nsec = (long)((pause_s - (time_t)pause_s) * 1e9)};
+    struct timespec pause_ts = {
+        .tv_sec = (time_t)pause_s,
+        .tv_nsec = (long)((pause_s - (double)(time_t)pause_s) * ns_per_s),
+    };
     nanosleep(&pause_ts, NULL);
 
     struct tt_Node node;
@@ -107,9 +114,11 @@ int main(int argc, char** argv) {
     sub.reliable = true;
 
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
+    // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
+    const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, 500 * 1000 * 1000); // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs
+        ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
     uint64_t total = received + lost;

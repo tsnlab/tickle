@@ -24,12 +24,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -39,6 +37,9 @@ static void handle_sigint(int sig) {
     (void)sig;
     g_interrupted = 1;
 }
+
+static const double default_collect_s = 15.0;
+static const double ns_per_ms = 1e6;
 
 static uint32_t received = 0;
 static struct tt_Publisher* g_ack_pub;
@@ -72,7 +73,7 @@ static void stop(struct tt_Node* node, uint64_t time, void* param) {
 
 int main(int argc, char** argv) {
     bool durable = false;
-    double collect_s = 15.0;
+    double collect_s = default_collect_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-D") == 0) {
             durable = true;
@@ -83,9 +84,9 @@ int main(int argc, char** argv) {
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -120,7 +121,7 @@ int main(int argc, char** argv) {
         ret = tt_Node_poll(&node, -1);
     }
 
-    double backlog_delivery_ms = received > 0 ? (double)(tt_get_ns() - start) / 1e6 : -1.0;
+    double backlog_delivery_ms = received > 0 ? (double)(tt_get_ns() - start) / ns_per_ms : -1.0;
 
     printf("RESULT: framework=tickle scenario=durability_late_join role=client durable=%d "
            "received=%u backlog_delivery_ms=%.3f\n",

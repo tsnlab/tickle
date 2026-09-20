@@ -13,10 +13,15 @@
 
 #include "Bench.h"
 
+#include <stdint.h>
 #include <string.h> // memcpy
 
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
+
+// Matches struct BenchData's own asserted wire size and payload field size (Bench.h).
+static const int32_t bench_data_wire_size = 76;
+static const uint32_t bench_payload_size = 64;
 
 struct tt_Topic BenchTopic = {
     .name = "BenchTopic",
@@ -31,7 +36,7 @@ struct tt_Topic BenchTopic = {
 
 int32_t BenchData_encode_size(struct BenchData* data) {
     (void)data;
-    return 76;
+    return bench_data_wire_size;
 }
 
 int32_t BenchData_encode(struct BenchData* data, uint8_t* payload, uint32_t len) {
@@ -48,11 +53,11 @@ int32_t BenchData_encode(struct BenchData* data, uint8_t* payload, uint32_t len)
     *(uint64_t*)(payload + encoded) = data->send_ns;
     encoded += 8;
 
-    if ((uint32_t)encoded + 64 > len) {
+    if ((uint32_t)encoded + bench_payload_size > len) {
         return -1;
     }
-    memcpy(payload + encoded, data->payload, 64);
-    encoded += 64;
+    memcpy(payload + encoded, data->payload, bench_payload_size);
+    encoded += (int32_t)bench_payload_size;
 
     return encoded;
 }
@@ -80,22 +85,22 @@ int32_t BenchData_decode(struct BenchData* data, const uint8_t* payload, uint32_
     data->send_ns = send_ns_raw;
     decoded += 8;
 
-    if ((uint32_t)decoded + 64 > len) {
+    if ((uint32_t)decoded + bench_payload_size > len) {
         return -1;
     }
-    memcpy(data->payload, payload + decoded, 64);
-    decoded += 64;
+    memcpy(data->payload, payload + decoded, bench_payload_size);
+    decoded += (int32_t)bench_payload_size;
 
     return decoded;
 }
 
 int32_t BenchData_encode_inplace(struct BenchData* data, const uint8_t** payload_out) {
     *payload_out = (const uint8_t*)data;
-    return 76;
+    return bench_data_wire_size;
 }
 
 struct BenchData* BenchData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian) {
-    if (!is_native_endian || len < 76) {
+    if (!is_native_endian || len < (uint32_t)bench_data_wire_size) {
         return NULL;
     }
     return (struct BenchData*)payload;

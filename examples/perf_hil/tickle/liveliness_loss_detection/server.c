@@ -35,7 +35,6 @@
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
-#include <tickle/log.h>
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
@@ -45,6 +44,11 @@ static void handle_sigint(int sig) {
     (void)sig;
     g_interrupted = 1;
 }
+
+static const double default_lease_s = 2.0;
+static const double default_safety_cap_s = 40.0;
+static const double safety_cap_buffer_s = 15.0;
+static const double ns_per_ms = 1e6;
 
 static uint64_t received = 0;
 static uint64_t last_received_ns = 0;
@@ -74,8 +78,8 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
 }
 
 int main(int argc, char** argv) {
-    double lease_s = 2.0;
-    double safety_cap_s = 40.0;
+    double lease_s = default_lease_s;
+    double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
             lease_s = atof(argv[++i]);
@@ -87,15 +91,15 @@ int main(int argc, char** argv) {
     // avoids. This scenario is invoked manually (not via run_scenario.sh's shared $CLIENT_ARGS,
     // since it needs a custom kill -9 step), so it wasn't hit here, fixed preemptively for
     // consistency with every other scenario's own server.c.
-    safety_cap_s += 15.0;
+    safety_cap_s += safety_cap_buffer_s;
 
     // real HIL link's own broadcast address - see best_effort_latency/server.c's own doc comment
     // for the real bug this avoids.
     _tt_CONFIG.broadcast = "192.168.10.255";
 
-    struct sigaction sa = {0};
-    sa.sa_handler = handle_sigint;
-    sigaction(SIGINT, &sa, NULL);
+    struct sigaction sigint_action = {0};
+    sigint_action.sa_handler = handle_sigint;
+    sigaction(SIGINT, &sigint_action, NULL);
 
     struct tt_Node node;
     tt_ret_t ret = tt_Node_create(&node);
@@ -116,13 +120,15 @@ int main(int argc, char** argv) {
     sub.liveliness_lease_duration_ns = (uint64_t)(lease_s * (double)tt_SECOND);
 
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
+    // 200ms - fine enough granularity to measure detection latency.
+    const int64_t poll_timeout_ns = 200LL * 1000 * 1000;
     ret = tt_RET_OK;
     while (!g_interrupted && !departed && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, 200 * 1000 * 1000); // 200ms - fine enough granularity to measure detection latency
+        ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
     double detect_latency_ms =
-        (departed && last_received_ns != 0) ? (double)(departed_detected_ns - last_received_ns) / 1e6 : -1.0;
+        (departed && last_received_ns != 0) ? (double)(departed_detected_ns - last_received_ns) / ns_per_ms : -1.0;
 
     printf("RESULT: framework=tickle scenario=liveliness_loss_detection role=server recv=%lu departed=%d "
            "detect_latency_ms=%.3f\n",
