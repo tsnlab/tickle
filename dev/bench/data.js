@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789870210482,
+  "lastUpdate": 1789870213809,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35692,6 +35692,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030434472220284597,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c29cc0c2bb17907875f15fd8a17b999439bcf015",
+          "message": "examples/perf_hil: fix shellcheck SC2086, record real HIL results (scenarios 1-2)\n\nbuild.sh (both frameworks): quote-related shellcheck SC2086 on the intentionally\nword-split CFLAGS/CXXFLAGS/LDFLAGS invocation - was failing Check all on every\npush since cf1bbd7 (found and reported by TickLE Dev, thanks). Fixed with the\nsame per-line shellcheck disable convention .github/scripts/run_perf.sh/test.sh\nalready use for this identical, legitimate case.\n\ncomparison.md: recorded real tickle-hil results (rpi#1/rpi#2, the actual\ndedicated physical link) for scenarios 1-2 (best_effort_latency/\nreliable_latency), 3 runs each, both FastDDS and CycloneDDS - CycloneDDS\nconsistently ~0.04-0.05ms faster on average, RELIABLE essentially free over\nBEST_EFFORT for both at this scale. Documented two real findings from getting\nhere: the FastDDS take_next_sample() FIFO/stale-response bug (fixed in\nclient.cpp, described in comparison.md), and a real infrastructure gap - the\nexisting automatic HIL CI's own git reset --hard/git clean on these same rpis\ncollides with any manual interactive HIL session, triggered by either\nsession's own push to main.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T11:08:58+09:00",
+          "tree_id": "99f22a72f8882c069bcc54e5a709d0266733275b",
+          "url": "https://github.com/tsnlab/tickle/commit/c29cc0c2bb17907875f15fd8a17b999439bcf015"
+        },
+        "date": 1789870212732,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9901274272373745,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.0006566728864397321,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030443191528320312,
             "unit": "Mbit/s"
           }
         ]
