@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789890628125,
+  "lastUpdate": 1789890631393,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -58029,6 +58029,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "88b3b0b672430ade54ae33d2e2eb96835670c893",
+          "message": "rmw_tickle/comparison.md: rmw_perf_pingpong cross-host results\n\n18/18 runs, zero loss, all sub-millisecond and trustworthy (single-clock\nRTT). rmw_tickle and rmw_fastrtps_cpp land within noise of each other\n(~0.52ms); rmw_cyclonedds_cpp is genuinely faster (~0.44ms). No measurable\nreliability tax for any rmw at this message size/rate - matches\nupdate_reliable_ack()'s own \"healthy stream needs no ACKNACK\" design.\n\nAlso documents two real, reproducible false alarms this pass surfaced and\nthen ruled out, both bugs in the new measurement harness itself, not\nrmw_tickle: a classic `pkill -f` self-match (the running pkill's own\ncommand line contained its own search pattern) left duplicate pong_node\nprocesses fighting over TickLE's fixed port, briefly looking like a severe\nRELIABLE data-loss bug; and a leftover busy-poll interval change from an\nunrelated, already-resolved investigation briefly looking like an 8x\nreliability latency tax. Neither was real once corrected.",
+          "timestamp": "2026-09-20T16:46:41+09:00",
+          "tree_id": "39c8db6f336c72ae3e794444328a407b42e8eb63",
+          "url": "https://github.com/tsnlab/tickle/commit/88b3b0b672430ade54ae33d2e2eb96835670c893"
+        },
+        "date": 1789890630318,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 8.377,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 8.62,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 8.891,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 9.158,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.37,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 9.666,
             "unit": "ms"
           }
         ]
