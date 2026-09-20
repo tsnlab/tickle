@@ -1,6 +1,34 @@
 {
   "history": [
     {
+      "commit": "31255c81168131c26e6f69c62e6b37eded6c3b74",
+      "commit_short": "31255c81168",
+      "date": "2026-09-20T08:29Z",
+      "perf": {
+        "besteffort_loss_10pct_pct": 9.7,
+        "besteffort_loss_1pct_pct": 1.0,
+        "besteffort_loss_5pct_pct": 4.9,
+        "build": "pass",
+        "commit": "31255c81168131c26e6f69c62e6b37eded6c3b74",
+        "commit_short": "31255c81168",
+        "date": "2026-09-20T08:29Z",
+        "integration": "pass",
+        "loss_pct": 2,
+        "reliable_loss_10pct_pct": 0.2,
+        "reliable_loss_1pct_pct": 0.0,
+        "reliable_loss_5pct_pct": 0.0,
+        "reliable_throughput_10pct_mbps": 72.447,
+        "reliable_throughput_1pct_mbps": 63.513,
+        "reliable_throughput_5pct_mbps": 67.774,
+        "rtt_avg_ms": 0.199,
+        "rtt_mdev_ms": 0.011,
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35499572316",
+        "smallmsg_rate_msgs_s": 481810,
+        "throughput_recv_mbps": 899.246,
+        "throughput_send_mbps": 935.09
+      }
+    },
+    {
       "buildtest": {
         "branch": "main",
         "commit": "7f775406abea016661baddd75321d6e7a7b72fa0",
@@ -1247,31 +1275,7 @@
         "throughput_recv_mbps": 902.14,
         "throughput_send_mbps": 937.721
       }
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "12795480ee5a56ce4078d5c93a2d04bdb3b4e534",
-        "commit_short": "1279548",
-        "date": "2026-09-19T14:06Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35447289888"
-      },
-      "commit": "12795480ee5a56ce4078d5c93a2d04bdb3b4e534",
-      "commit_short": "1279548",
-      "date": "2026-09-19T14:06Z"
     }
   ],
-  "updated": "2026-09-20 08:24 UTC"
+  "updated": "2026-09-20 08:29 UTC"
 }
