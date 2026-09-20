@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789912239492,
+  "lastUpdate": 1789912243089,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -24817,6 +24817,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.022,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2fc3901cfcf75ec63ec2873a330c9c1b9c8b3836",
+          "message": "PLAN.md: confirm Milestone 55 real CI green (cb92c6c)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T22:38:48+09:00",
+          "tree_id": "887a466e22803783584130a98d2360bae1cf321e",
+          "url": "https://github.com/tsnlab/tickle/commit/2fc3901cfcf75ec63ec2873a330c9c1b9c8b3836"
+        },
+        "date": 1789912241708,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.012,
             "unit": "ms"
           }
         ]
