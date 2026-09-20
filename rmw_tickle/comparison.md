@@ -443,6 +443,52 @@ real performance finding.
    entry - tracked as the next real step for actual cross-host performance measurement, replacing
    this section's own retracted attempt.
 
+### Design: `rmw_perf_pingpong` - the RTT-based replacement, for TickLE Dev to build
+
+**Single-clock RTT, exactly the same principle already proven working in this document's own
+native (no-rmw) HIL scenarios** (`examples/perf_hil/{cyclonedds,fastdds}/best_effort_latency/`,
+`reliable_latency/`) - a pinging side publishes a sample carrying its own send timestamp, a ponger
+echoes it back verbatim, and the pinger computes RTT entirely against *its own* clock reading at
+receipt. Never subtracts a timestamp read on a different machine, so it needs no cross-host clock
+agreement at all - NTP-synchronized or not is irrelevant to its correctness.
+
+**Why pub/sub, not `rclcpp::Client`/`Service` (RPC)**: the numbers this replaces (Milestone 44, the
+retracted item 5 attempt above) are all pub/sub-path latency - a request/response RPC call would
+exercise a genuinely different code path (and, for `rmw_tickle`, real wire-level differences
+between its pub/sub and RPC submessage handling) and wouldn't be comparable to any of the existing
+recorded numbers. Two plain topics, `ping`/`pong`, mirrors `buildfarm_perf_tests`' own topology
+closely enough to stay comparable, minus the one-way-clock flaw.
+
+**Message**: a new small interface package (e.g. `perf_pingpong_msgs/msg/Bench.msg`) with the
+*exact* same field shape as `examples/perf_hil/idl/Bench.idl` (`uint32 seq`, `uint64 send_ns`,
+`uint8[64] payload`) - deliberate, not a coincidence: using the identical layout at both the native
+(no-rmw) and rmw layers means a later "how much does the `rmw_tickle` wrapper itself cost" question
+(comparing this tool's own `rmw_tickle` numbers against `examples/perf_hil`'s native TickLE-core
+numbers on literally the same message) becomes answerable directly, without a second message
+design. Two nodes, `ping_node`/`pong_node`, built once and run under all three `RMW_IMPLEMENTATION`
+values (matches `buildfarm_perf_tests`' own portability) - `ping_node` publishes on `ping` with
+`send_ns = now()` embedded, subscribes `pong`; `pong_node` subscribes `ping`, republishes the exact
+same sample unmodified on `pong`. RTT = `ping_node`'s own `now()` at receipt minus that same
+sample's own embedded `send_ns` - one clock, start to finish.
+
+**QoS**: matched exactly across all three `RMW_IMPLEMENTATION`s per run, same "QoS value matrix"
+discipline the native HIL scenarios already established (`examples/perf_hil/`'s own design
+principle 3) - start with the two cases already measured natively (`BEST_EFFORT`, `RELIABLE` +
+`HISTORY` depth 8) so the two tracks stay comparable pairwise, not just internally consistent.
+
+**Topology**: reuses the same `tickle-hil` rpi#1/rpi#2 pair and roles `run_perf.sh`/this item 5
+attempt already exercised - same-host (both nodes on one rpi, the existing Milestone 44/Post-
+Milestone-47 numbers' own topology) *and* cross-host (rpi#1 `ping_node`, rpi#2 `pong_node`) using
+the *same* binary and QoS, so the "how much of the gap is the same-host SHM shortcut" question
+(comparison.md's own long-standing Milestone 14 concern) becomes a direct, paired same-tool
+same-host-vs-cross-host comparison instead of two differently-built measurements.
+
+**Supersedes `buildfarm_perf_tests` for this document's own performance-numbers going forward**,
+per standing principle 1 above - `buildfarm_perf_tests` stays in use for conformance/regression
+(its own proven value: Milestone 12's wire-level bugs, this pass's own `/parameter_events`/
+oversized-message gaps), this new tool replaces it wherever a trustworthy latency *number* is the
+actual goal, same-host or cross-host.
+
 ## Planned: HIL 3-way QoS-matrix comparison (raw TickLE/FastDDS/CycloneDDS, no rmw)
 
 **Status (2026-09-20): design only, not scheduled yet.** Everything below is "TickLE Plan"'s own
