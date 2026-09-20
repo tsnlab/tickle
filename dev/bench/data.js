@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789874175931,
+  "lastUpdate": 1789874179169,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -35877,6 +35877,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030443191528320312,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "dcdaa30b97a9481d3145aa88f49638c1e3ecb8f8",
+          "message": "examples/perf_hil: active match-wait fix + throughput/durability scenarios (partially blocked)\n\ncommon.h: shared wait_for_writer_match()/wait_for_reader_match() helpers, replacing every\nscenario's own blind sleep-based discovery wait with an active poll on real match status -\ntwo real bugs found and fixed while building this: dds_get_publication_matched_status()/\ndds_get_subscription_matched_status() don't reliably return DDS_RETCODE_OK on this install\neven once current_count has genuinely gone non-zero (gating on the return code silently\ndiscarded real matches); cyclonedds/build.sh needed -fno-strict-aliasing at -O2 (a real,\nbisected strict-aliasing UB in the DDS C API's own void*-based dds_take()/samples[] pattern).\n\nbest_effort_throughput/reliable_throughput/durability_late_join: built and briefly verified\nworking at least once each, but blocked by a separate, deep, unresolved CycloneDDS discovery\nbug found while testing them - any topic name other than the two latency scenarios' own\nping/pong essentially never completes matching on this rig's specific CycloneDDS install\n(0.10.5), confirmed via real packet capture that the underlying network traffic is fine (not\nan IGMP/multicast infrastructure issue, checked directly per the user's own hypothesis) - the\nCycloneDDS application-level match status API just never reflects it. Root cause not found\ndespite real effort (bisecting build flags, tracing, packet capture, unicast-peer discovery,\nattempting to force broadcast); documented in full in comparison.md's own \"Blocked\" section\nfor whoever picks this up next, likely needing a newer CycloneDDS or source-level debugging.\n\nScenarios 5-9 (history/deadline/liveliness/lifespan) not started - stopped here at the user's\nown explicit call once this same discovery bug also broke the one scenario built past 1-2.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T12:15:03+09:00",
+          "tree_id": "c702b1b1880e6d59502de82076e43036bc4a2ae4",
+          "url": "https://github.com/tsnlab/tickle/commit/dcdaa30b97a9481d3145aa88f49638c1e3ecb8f8"
+        },
+        "date": 1789874178064,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905569893973214,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9905413218906948,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030477796282087053,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.000008446829659598215,
             "unit": "Mbit/s"
           }
         ]
