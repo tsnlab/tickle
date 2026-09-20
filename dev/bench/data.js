@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789868796320,
+  "lastUpdate": 1789868799725,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -62393,6 +62393,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d6b880774e92419c3816a2a13e22ee1aba0b2db3",
+          "message": "rmw_tickle/PLAN.md: Milestone 45 (2)/(3) real perf profiling findings\n\nReal perf record -g captures of a two-process rmw_tickle perf_test run\n(not code-reading guesses) resolve candidate (2): the eventfd write in\ntt_Node_interrupt() is a genuine ~3% publisher-thread cost (~1/6 of\nrmw_publish()'s own total), but the lock pair in the same hypothesis\nturns out cheap (~0.15%) - tt_Publisher_publish() itself takes no lock\nat all. Candidate (3) stays open: the cross-thread wait_cond hand-off\nshows under 0.02% in this profile, but that's a measurement-method\nartifact (cycle-based sampling can't see off-CPU wake latency), not\nproof the cost is zero - needs perf sched or direct timestamping next.",
+          "timestamp": "2026-09-20T10:43:36+09:00",
+          "tree_id": "d4ac82a30e41b6fcb6fae3a6eccaca6e15f98b3d",
+          "url": "https://github.com/tsnlab/tickle/commit/d6b880774e92419c3816a2a13e22ee1aba0b2db3"
+        },
+        "date": 1789868798616,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
             "unit": "%"
           }
         ]
