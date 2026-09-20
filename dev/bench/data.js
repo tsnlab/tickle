@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789938996804,
+  "lastUpdate": 1789939000492,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -45420,6 +45420,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030478477478027344,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "bc482a2306167274921e2fd7063a47d140127d57",
+          "message": "comparison.md: scenario 6/9 duplicate delivery likely a separate root cause\n\nTickLE Dev's own follow-up investigation found deliver_data_to_subscriber()\nhas no seq_no-based dedup at all (by design, Milestone 47's own documented\nresidual) - any ACKNACK retransmit overlapping an already-delivered original\nreaches the app twice, independent of the liveliness false-positive Milestone\n59 fixed. Supporting evidence added: every scenario 6/9 reproduction this\npass showed no \"presumed dead\" warning, unlike scenario 5's own cases, which\nalways showed one. TickLE Dev confirming final scope with the user.",
+          "timestamp": "2026-09-21T06:15:18+09:00",
+          "tree_id": "d26c2e3aa2a8369ca57a195060bd9202e952c177",
+          "url": "https://github.com/tsnlab/tickle/commit/bc482a2306167274921e2fd7063a47d140127d57"
+        },
+        "date": 1789938999372,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905523572649274,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9898429598127093,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030477523803710938,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030477660042898997,
             "unit": "Mbit/s"
           }
         ]
