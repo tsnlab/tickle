@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789919775152,
+  "lastUpdate": 1789919778508,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -79915,6 +79915,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9027041e77f508e7e9f06efcdbbfe22d198d67bb",
+          "message": "examples/perf_hil/tickle: add deadline_miss_detection + liveliness_loss_detection (TickLE core native)\n\nScenario 7: pub.deadline_duration_ns/sub.deadline_duration_ns are wire/RxO-only\n(Milestone 49) - core never enforces or checks them, so this implements the\ncheck itself via a periodic checker on its own fixed cadence (mirrors a real\nDDS implementation's own internal timer, not tied to individual publish()\ncalls). Detection latency is bounded by the checker's own tick granularity -\ncoarser than the DDS twins' own near-instant listener callback, a real and\nexpected difference (TickLE has no internal listener thread to lean on).\n\nScenario 8: real peer-departure detection is node-level in TickLE, not\nper-Publisher-entity - tt_Node_set_discovery()/tt_DISCOVERY_CALLBACK fires on\ncheck_liveliness()'s own fixed ~3s window (tt_LIVELINESS_MISS_THRESHOLD *\ntt_NODE_UPDATE_INTERVAL), independent of the announced lease value. Detection\nlatency measured single-clock (subscriber's own last-received vs\ndeparture-detected timestamps).",
+          "timestamp": "2026-09-21T00:52:10+09:00",
+          "tree_id": "bcba1e22e7470cef0f78dd298405dab744365045",
+          "url": "https://github.com/tsnlab/tickle/commit/9027041e77f508e7e9f06efcdbbfe22d198d67bb"
+        },
+        "date": 1789919777375,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
             "unit": "%"
           }
         ]
