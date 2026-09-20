@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789922796704,
+  "lastUpdate": 1789922800023,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -50240,6 +50240,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 818.234,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6f9f692d3e4ed51094e47b50c2c2757a294644fd",
+          "message": "examples/perf_hil/tickle: fix clang-format/clang-tidy across every scenario\n\n\"Check all\" had been silently failing on every commit that touched a file in\nthis tree this session (confirmed via gh run list - d39e6b4, ba7bbbb, 632e140,\nae61599, 9027041, 583d723, 42f0493 all failed) - only the separate rig-facing\nPerformance Test/rmw_tickle performance workflows were being watched, not this\none. Also affected the two pre-existing scenarios (best_effort_latency,\nreliable_latency), which had never been clean either.\n\nPure style fix, no behavior change: magic numbers replaced with named\nstatic const file-scope constants (lower_case, matching .clang-tidy's own\nConstantCase rule), reusing the same name+value everywhere it recurs (e.g.\npoll_timeout_ns for the 500ms server-side poll granularity used in every\nserver.c) so it reads as one convention. `sa` renamed to `sigint_action`\n(matches examples/linux/perf/perf_{client,server}.c's own existing\nprecedent). Unused `<tickle/log.h>` (and a couple of other genuinely-unused\nheaders) removed. One narrowing-conversion warning made explicit.\n\nVerified locally: every file clean under both `clang-format --dry-run\n--Werror` and `clang-tidy` (repo's own .clang-tidy config), every scenario\nstill builds via build.sh.",
+          "timestamp": "2026-09-21T01:43:49+09:00",
+          "tree_id": "d9473931f6537700f05addb53f46bea6e0629baa",
+          "url": "https://github.com/tsnlab/tickle/commit/6f9f692d3e4ed51094e47b50c2c2757a294644fd"
+        },
+        "date": 1789922798922,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 935.004,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 821.34,
             "unit": "Mbps"
           }
         ]
