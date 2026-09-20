@@ -83,6 +83,11 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         }
     }
+    // +15s buffer - see deadline_miss_detection/server.c's own doc comment for the real bug this
+    // avoids. This scenario is invoked manually (not via run_scenario.sh's shared $CLIENT_ARGS,
+    // since it needs a custom kill -9 step), so it wasn't hit here, fixed preemptively for
+    // consistency with every other scenario's own server.c.
+    safety_cap_s += 15.0;
 
     // real HIL link's own broadcast address - see best_effort_latency/server.c's own doc comment
     // for the real bug this avoids.

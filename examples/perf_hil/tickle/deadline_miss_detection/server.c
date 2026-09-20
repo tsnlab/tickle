@@ -68,6 +68,16 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         }
     }
+    // +15s buffer (2026-09-21, real bug found the hard way): run_scenario.sh forwards the same
+    // $CLIENT_ARGS to both sides, and `-d` means something different on each - the client's own
+    // real send duration vs. this side's own "don't hang forever" upper bound. Taking it verbatim
+    // here made this side exit (and print its RESULT, ending the count) *before* the client had
+    // even finished sending: the client doesn't start until run_scenario.sh's own PRE_CLIENT_SLEEP
+    // (default 3s) plus its own ~2s discovery margin have elapsed, both counted against *this*
+    // side's clock too. `-d 10` reproducibly gave recv=91/sent=198 (not genuine loss - this
+    // side's own 10s cap expired mid-stream, cutting off the tail) - identical both times, which
+    // is itself the tell: real network loss wouldn't reproduce to the exact same sample.
+    safety_cap_s += 15.0;
 
     // real HIL link's own broadcast address - see best_effort_latency/server.c's own doc comment
     // for the real bug this avoids.

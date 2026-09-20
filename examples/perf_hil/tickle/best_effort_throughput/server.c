@@ -58,6 +58,11 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         }
     }
+    // +15s buffer - see deadline_miss_detection/server.c's own doc comment for the real bug this
+    // avoids (run_scenario.sh forwards the same -d to both sides, but it means "this side's own
+    // send duration" on the client vs. "don't hang forever" here - taken verbatim, this side could
+    // exit mid-stream, before the client - which starts several seconds later - had even finished).
+    safety_cap_s += 15.0;
 
     // real HIL link's own broadcast address - see best_effort_latency/server.c's own doc comment
     // for the real bug this avoids.
