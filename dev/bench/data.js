@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789915489769,
+  "lastUpdate": 1789915493067,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -68177,6 +68177,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 8.291,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "19ae87c9856fc83e3961e428cbf4716ead570b3f",
+          "message": "PLAN.md: confirm Milestone 56 real CI green (171e288)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T23:41:53+09:00",
+          "tree_id": "ab19ae0ac5e2ecd0267c017bed77d3c8a2032562",
+          "url": "https://github.com/tsnlab/tickle/commit/19ae87c9856fc83e3961e428cbf4716ead570b3f"
+        },
+        "date": 1789915491971,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 5.718,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 5.613,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5.478,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 5.412,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 5.251,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 5.221,
             "unit": "ms"
           }
         ]
