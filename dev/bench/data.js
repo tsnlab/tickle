@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789913698670,
+  "lastUpdate": 1789913702118,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -58761,6 +58761,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.735,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "08617b0635fa8eb5999f0a0a0ff7348d4da3a69a",
+          "message": "examples/perf_hil: add scenario 8, liveliness_loss_detection (CycloneDDS + FastDDS)\n\nLIVELINESS AUTOMATIC, matched lease duration on writer and reader. The publisher\nruns normally for a few seconds, then the orchestrating test sends it a genuine\nkill -9 (not a graceful SIGINT this process could react to) - a real crash\nsimulation. The subscriber independently detects the loss via its own\nLIVELINESS_CHANGED_STATUS listener.\n\nDetection latency is computed entirely from the subscriber's own clock (gap\nbetween its own last-received-sample timestamp and its own loss-detected\ntimestamp) - never against the publisher's own kill time on the other host,\nwhich would need real clock sync this scenario has no way to guarantee, per\ncomparison.md's own standing \"Item 5\" principle.\n\nOne real QoS bug found on the rig: FastDDS's create_datawriter rejected the QoS\noutright (\"LeaseDuration <= announcement period\") - its default announcement_period\nsits too close to a 2s lease. Fixed with announcement_period = lease/3, matching\nthis exercise's own established convention (the same ratio rmw_tickle's own\ntt_LIVELINESS_MISS_THRESHOLD already uses). CycloneDDS didn't need this fix.\n\nVerified on the rig (kill -9 after 3s, 2/2 repeats each): both frameworks detect\nthe crash within a fraction of a millisecond of the configured lease boundary -\nCycloneDDS ~2000.07ms (slightly after), FastDDS ~1999.08ms (slightly before), both\nwell under 1ms of the nominal 2000ms target. No false detections either way.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T23:12:11+09:00",
+          "tree_id": "db17033ccbf3cb7f38c38b030d065c08f103db1d",
+          "url": "https://github.com/tsnlab/tickle/commit/08617b0635fa8eb5999f0a0a0ff7348d4da3a69a"
+        },
+        "date": 1789913700991,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.829,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.07,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.96,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.452,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.742,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.536,
             "unit": "Mbps"
           }
         ]
