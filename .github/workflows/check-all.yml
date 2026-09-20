@@ -439,7 +439,19 @@ jobs:
           # build's --packages-select, confirming the flag itself was never recognized on this
           # runner at all, not a positioning issue) - ros-tooling/setup-ros's own baseline install
           # doesn't include it.
-          pip install colcon-override-check
+          #
+          # apt, not pip (2026-09-20, a third real CI failure caused by the *fix* for the second
+          # one): `pip install colcon-override-check` pulled in its own fresh colcon-core 0.21.3,
+          # which pip installed alongside - and ahead of, on sys.path - the apt-installed one every
+          # other `ros-jazzy-colcon-*` extension package (already on this runner via ros-tooling/
+          # setup-ros) registers itself against via Python entry points. The result wasn't a
+          # missing flag any more but a colcon that suddenly only knew two verbs at all (`build`,
+          # `test` - down from the usual dozen+) and rejected even `--base-paths`, a completely
+          # unrelated, previously-working flag from a *different* colcon extension - the pip
+          # install had silently shadowed the whole apt-installed extension ecosystem, not just
+          # added one flag to it. Installing the same apt-packaged `python3-colcon-override-check`
+          # instead keeps everything on one consistent, already-integrated channel.
+          sudo apt install -y python3-colcon-override-check
           # --allow-overriding rcl_interfaces builtin_interfaces: both are already present via
           # ros-jazzy-ros-base (apt), and colcon warns (not errors) without this when a locally-
           # built package shadows an already-installed one in the same workspace - deliberate here,
