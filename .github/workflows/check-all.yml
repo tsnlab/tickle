@@ -377,11 +377,20 @@ jobs:
           # test_msgs - its own `rolling` branch trimmed test_msgs down to a handful of DDS-
           # security-key messages missing the classic BasicTypes/Constants/Empty/Strings set the
           # tests here actually need).
+          #
+          # rcl_interfaces itself (Milestone 54, rmw_tickle/PLAN.md) is now also actually *built*
+          # with rosidl_typesupport_tickle_c below, not just cloned for its own bundled test_msgs -
+          # every real rclcpp::Node unconditionally subscribes to /parameter_events
+          # (rcl_interfaces/msg/ParameterEvent), so a real build is the only way to catch a
+          # regression there before it surfaces downstream. rcl_interfaces_rmw_tickle.patch's own
+          # `# @capacity` annotations (ParameterValue.msg's own header comment has the full 'why')
+          # are what make that build possible at all.
           git clone --branch jazzy --depth 1 https://github.com/ros2/rmw_implementation test_ws/src/rmw_implementation
           git clone --branch rolling --depth 1 https://github.com/ros2/test_interface_files test_ws/src/test_interface_files
           git clone --branch jazzy --depth 1 https://github.com/ros2/rcl_interfaces test_ws/src/rcl_interfaces
           git -C test_ws/src/rmw_implementation apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/rmw_implementation_rmw_tickle.patch"
           git -C test_ws/src/rcl_interfaces apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/test_msgs_rmw_tickle.patch"
+          git -C test_ws/src/rcl_interfaces apply "$GITHUB_WORKSPACE/.github/scripts/rmw-conformance-patches/rcl_interfaces_rmw_tickle.patch"
           source /opt/ros/jazzy/setup.bash
           # This GitHub-hosted runner is fresh every run - ros-tooling/setup-ros installs rosdep
           # itself but never actually initializes/updates its own sources cache, unlike a real
@@ -392,17 +401,21 @@ jobs:
           # fresh one.
           sudo rosdep init || true
           rosdep update --rosdistro jazzy
-          # --from-paths narrowed to the three packages actually wanted, not the whole of either
-          # clone: rmw_implementation's *other* package (also named rmw_implementation, confusingly
-          # - the runtime dispatch one, not test_rmw_implementation) build_depends on all five DDS-
-          # vendor rmws including rmw_connextdds (proprietary, not apt-installable at all) - it's
-          # already on this runner anyway (part of ros-jazzy-ros-base, found via AMENT_PREFIX_PATH),
-          # nothing here needs to rebuild it from source. rcl_interfaces similarly ships several
-          # other packages (action_msgs, builtin_interfaces, ...) this step has no use for.
+          # --from-paths narrowed to the packages actually wanted, not the whole of either clone:
+          # rmw_implementation's *other* package (also named rmw_implementation, confusingly - the
+          # runtime dispatch one, not test_rmw_implementation) build_depends on all five DDS-vendor
+          # rmws including rmw_connextdds (proprietary, not apt-installable at all) - it's already
+          # on this runner anyway (part of ros-jazzy-ros-base, found via AMENT_PREFIX_PATH), nothing
+          # here needs to rebuild it from source. rcl_interfaces similarly ships several other
+          # packages (action_msgs, composition_interfaces, ...) this step has no use for -
+          # builtin_interfaces is the one exception (below), needed to actually build rcl_interfaces
+          # itself (its own msg/Log.msg, msg/ParameterEvent.msg both nest builtin_interfaces/Time).
           rosdep install --from-paths \
             test_ws/src/rmw_implementation/test_rmw_implementation \
             test_ws/src/test_interface_files \
             test_ws/src/rcl_interfaces/test_msgs \
+            test_ws/src/rcl_interfaces/builtin_interfaces \
+            test_ws/src/rcl_interfaces/rcl_interfaces \
             --ignore-src -y --rosdistro jazzy
           # test_msgs' own ament_cmake_python step builds a setuptools egg for its (unused here)
           # Python bindings - the earlier "Set up Python" step's actions/setup-python@v5 puts a
@@ -419,8 +432,20 @@ jobs:
           # (a stale-shell-ordering bug, not this specific line, but the identical underlying
           # "which typesupports were visible when this package configured" trap).
           source install/setup.bash
+          # --allow-overriding rcl_interfaces builtin_interfaces: both are already present via
+          # ros-jazzy-ros-base (apt), and colcon warns (not errors) without this when a locally-
+          # built package shadows an already-installed one in the same workspace - deliberate here,
+          # not silently accepted: rcl_interfaces needs rosidl_typesupport_tickle_c, which the apt
+          # package obviously doesn't have; builtin_interfaces has to be rebuilt alongside it purely
+          # because rcl_interfaces' own generated adapters #include its *locally-generated* Time.h
+          # (resolve.Ros2Resolver's own "found on the -I search path -> assume independently
+          # generated there too" contract - see its class docstring - needs a real, matching
+          # rosidl_typesupport_tickle_c build of builtin_interfaces to actually exist alongside it,
+          # not just its plain .msg text; builtin_interfaces itself carries no rmw_tickle-specific
+          # patch, Time.msg has no array fields to need one).
           colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \
-            --packages-select test_interface_files test_msgs \
+            --packages-select test_interface_files test_msgs builtin_interfaces rcl_interfaces \
+            --allow-overriding rcl_interfaces builtin_interfaces \
             --cmake-args -DCMAKE_BUILD_TYPE=Release
           source test_ws/install/setup.bash
           colcon build --base-paths test_ws --build-base test_ws/build --install-base test_ws/install \

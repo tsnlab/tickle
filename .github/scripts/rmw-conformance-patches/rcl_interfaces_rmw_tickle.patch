@@ -101,3 +101,155 @@ index 4fba1bd..3429a5c 100644
  # An array of string values.
 -string[] string_array_value
 +string[] string_array_value  # @capacity 1
+diff --git a/rcl_interfaces/srv/DescribeParameters.srv b/rcl_interfaces/srv/DescribeParameters.srv
+index a8f0b91..08158f0 100644
+--- a/rcl_interfaces/srv/DescribeParameters.srv
++++ b/rcl_interfaces/srv/DescribeParameters.srv
+@@ -1,8 +1,10 @@
++# Local, rmw_tickle-specific patch (not upstream) - see SetParameters.srv's own header
++# comment for the full 'why' (bare string[]/array-of-nested-message-type capacity annotation).
+ # A list of parameters of which to get the descriptor.
+-string[] names
++string[] names  # @capacity 8
+ 
+ ---
+ # A list of the descriptors of all parameters requested in the same order
+ # as they were requested. This list has the same length as the list of
+ # parameters requested.
+-ParameterDescriptor[] descriptors
++ParameterDescriptor[] descriptors  # @capacity 8
+diff --git a/rcl_interfaces/srv/GetLoggerLevels.srv b/rcl_interfaces/srv/GetLoggerLevels.srv
+index 3c0884e..cfa12f8 100644
+--- a/rcl_interfaces/srv/GetLoggerLevels.srv
++++ b/rcl_interfaces/srv/GetLoggerLevels.srv
+@@ -1,7 +1,9 @@
++# Local, rmw_tickle-specific patch (not upstream) - see SetParameters.srv's own header
++# comment for the full 'why' (bare string[]/array-of-nested-message-type capacity annotation).
+ # A list of logger names to get.
+-string[] names
++string[] names  # @capacity 8
+ 
+ ---
+ # List of logger levels which is the same order as the provided names. If a
+ # logger was not yet set, the value will have 'unknown' as the value.
+-LoggerLevel[] levels
++LoggerLevel[] levels  # @capacity 8
+diff --git a/rcl_interfaces/srv/GetParameterTypes.srv b/rcl_interfaces/srv/GetParameterTypes.srv
+index cdf0e78..80cd799 100644
+--- a/rcl_interfaces/srv/GetParameterTypes.srv
++++ b/rcl_interfaces/srv/GetParameterTypes.srv
+@@ -1,6 +1,8 @@
++# Local, rmw_tickle-specific patch (not upstream) - see SetParameters.srv's own header
++# comment for the full 'why' (bare string[]/array-of-nested-message-type capacity annotation).
+ # A list of parameter names.
+ # TODO(wjwwood): link to parameter naming rules.
+-string[] names
++string[] names  # @capacity 8
+ 
+ ---
+ # List of types which is the same length and order as the provided names.
+diff --git a/rcl_interfaces/srv/GetParameters.srv b/rcl_interfaces/srv/GetParameters.srv
+index 1822479..ddc3b33 100644
+--- a/rcl_interfaces/srv/GetParameters.srv
++++ b/rcl_interfaces/srv/GetParameters.srv
+@@ -1,3 +1,5 @@
++# Local, rmw_tickle-specific patch (not upstream) - see SetParameters.srv's own header
++# comment for the full 'why' (bare string[]/array-of-nested-message-type capacity annotation).
+ # TODO(wjwwood): Decide on the rules for grouping, nodes, and parameter "names"
+ # in general, then link to that.
+ #
+@@ -6,10 +8,10 @@
+ # https://github.com/ros2/design/pull/241
+ 
+ # A list of parameter names to get.
+-string[] names
++string[] names  # @capacity 8
+ 
+ ---
+ # List of values which is the same length and order as the provided names. If a
+ # parameter was not yet set, the value will have PARAMETER_NOT_SET as the
+ # type.
+-ParameterValue[] values
++ParameterValue[] values  # @capacity 8
+diff --git a/rcl_interfaces/srv/ListParameters.srv b/rcl_interfaces/srv/ListParameters.srv
+index ee1b7a6..5d1857b 100644
+--- a/rcl_interfaces/srv/ListParameters.srv
++++ b/rcl_interfaces/srv/ListParameters.srv
+@@ -1,8 +1,10 @@
++# Local, rmw_tickle-specific patch (not upstream) - see SetParameters.srv's own header
++# comment for the full 'why' (bare string[]/array-of-nested-message-type capacity annotation).
+ # Recursively get parameters with unlimited depth.
+ uint64 DEPTH_RECURSIVE=0
+ 
+ # The list of parameter prefixes to query.
+-string[] prefixes
++string[] prefixes  # @capacity 8
+ 
+ # Relative depth from given prefixes to return.
+ #
+diff --git a/rcl_interfaces/srv/SetLoggerLevels.srv b/rcl_interfaces/srv/SetLoggerLevels.srv
+index 7a83b1b..869eeb2 100644
+--- a/rcl_interfaces/srv/SetLoggerLevels.srv
++++ b/rcl_interfaces/srv/SetLoggerLevels.srv
+@@ -1,6 +1,8 @@
++# Local, rmw_tickle-specific patch (not upstream) - see SetParameters.srv's own header
++# comment for the full 'why' (bare string[]/array-of-nested-message-type capacity annotation).
+ # A list of loggers to set.
+-LoggerLevel[] levels
++LoggerLevel[] levels  # @capacity 8
+ 
+ ---
+ # Indicates whether setting each logger succeeded or not and why.
+-SetLoggerLevelsResult[] results
++SetLoggerLevelsResult[] results  # @capacity 8
+diff --git a/rcl_interfaces/srv/SetParameters.srv b/rcl_interfaces/srv/SetParameters.srv
+index 97d1179..9abeff1 100644
+--- a/rcl_interfaces/srv/SetParameters.srv
++++ b/rcl_interfaces/srv/SetParameters.srv
+@@ -1,6 +1,29 @@
++# Local, rmw_tickle-specific patch (not upstream) - see check-all.yml's own real rcl_interfaces
++# build step (rmw_tickle/PLAN.md's Milestone for it) for why this package needs to actually build
++# with rosidl_typesupport_tickle_c at all, not just ship the /parameter_events message set
++# (ParameterValue.msg's own header comment covers that earlier, narrower need). Two different,
++# unrelated-to-each-other limitations than ParameterValue.msg's own ("multiple variable arrays in
++# one struct"), both surfacing across rcl_interfaces' own real .srv shapes: (1) an unbounded array
++# of a *nested message type that is itself not fixed-size* (Parameter, which nests ParameterValue -
++# this field) can't have its capacity auto-derived at all, regardless of how many other arrays
++# share the struct, since there's no fixed per-element wire size to divide a byte budget by; (2) a
++# bare 'string[] field' (adapt.py's own _resolve_auto_capacities()) can *never* auto-derive either,
++# even alone/first in a struct - a string's own wire size varies per instance, so there's no fixed
++# per-element size to divide by there either (this is genuinely different from Milestone 7's own
++# already-working array-of-string support, which is about *bounded* string arrays or ones with an
++# explicit annotation - auto-derivation specifically was never meant to cover strings, fixed-size-
++# element arrays like int64[]/bool[]/byte[] are the only kind it ever handles). Every rcl_interfaces
++# .srv/.msg field hitting either shape (a plain '<Message>[] f'/'string[] f', no explicit ROS 2
++# upper bound of its own, no annotation) gets the same explicit annotation, 8 as a deliberately
++# generous but arbitrary default (this is about making the package *build*, not about a specific
++# real workload's own batch size - widen per-field if one ever needs more). The nested-array half
++# ((1) above) goes away on its own once TickLE's own array-of-nested-message-type auto-derivation
++# lands (rmw_tickle/PLAN.md's own Milestone 38 array follow-on); the string-array half (2) is a
++# permanent, by-design limit, not a gap anything is expected to later close - either way, an
++# explicit annotation stays harmless to keep, just redundant once/if (1) ever lands.
+ # A list of parameters to set.
+-Parameter[] parameters
++Parameter[] parameters  # @capacity 8
+ 
+ ---
+ # Indicates whether setting each parameter succeeded or not and why.
+-SetParametersResult[] results
++SetParametersResult[] results  # @capacity 8
+diff --git a/rcl_interfaces/srv/SetParametersAtomically.srv b/rcl_interfaces/srv/SetParametersAtomically.srv
+index 2df928a..936014e 100644
+--- a/rcl_interfaces/srv/SetParametersAtomically.srv
++++ b/rcl_interfaces/srv/SetParametersAtomically.srv
+@@ -1,7 +1,9 @@
++# Local, rmw_tickle-specific patch (not upstream) - see SetParameters.srv's own header
++# comment for the full 'why' (bare string[]/array-of-nested-message-type capacity annotation).
+ # A list of parameters to set atomically.
+ #
+ # This call will either set all values, or none of the values.
+-Parameter[] parameters
++Parameter[] parameters  # @capacity 8
+ 
+ ---
+ # Indicates whether setting all of the parameters succeeded or not and why.
