@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789921143592,
+  "lastUpdate": 1789921147008,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -44134,6 +44134,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030473981584821428,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d39e6b403b3b83e5e981054a8ec7934f4353dc9c",
+          "message": "deadline_miss_detection/server.c: widen reader-miss tolerance to 1.5x deadline\n\nSame symptom class as client.c's own phase-offset fix, different cause:\nthis checker and the remote client's own send schedule run on two different\nmachines' independent clocks with no controlled phase relationship (unlike\nclient.c's own send_one/check_deadline, which share one process). A strict\n> deadline_s threshold tripped on essentially any unlucky relative timing -\nreader_misses=30 over a 10s run where recv=sent=198 (every sample actually\narrived on time). 1.5x absorbs that cross-machine jitter while still\ncatching a genuine multi-period gap.",
+          "timestamp": "2026-09-21T01:17:44+09:00",
+          "tree_id": "c710d45afc88c291e97013ba60eeee6f1ebad69a",
+          "url": "https://github.com/tsnlab/tickle/commit/d39e6b403b3b83e5e981054a8ec7934f4353dc9c"
+        },
+        "date": 1789921145894,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9898362840924945,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030434063502720425,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473572867257253,
             "unit": "Mbit/s"
           }
         ]
