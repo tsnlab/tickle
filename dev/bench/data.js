@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789918221956,
+  "lastUpdate": 1789918225525,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -61479,6 +61479,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 70.099,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "583d723f1c62dd37e2cbe0a2aaf2fa6f024f235d",
+          "message": "comparison.md: correct stale DEADLINE native-QoS row, document liveliness discovery callback\n\nRe-read tickle.h directly instead of trusting the earlier note: DEADLINE is now\na real wire/RxO field via Milestone 49 (still not core-enforced). Also documents\ntt_Node_set_discovery()/tt_DISCOVERY_CALLBACK, the actual mechanism scenario 8\n(liveliness_loss_detection) will need on the TickLE-native side - node-level,\nfixed ~3s window, distinct from the per-entity announced lease value.\n\nAlso adds examples/perf_hil/tickle/best_effort_throughput/{client,server}.c,\nthe first of TickLE-native scenarios 3-9 (closing Project Goal 2 fully). One-way\nstream mirroring the CycloneDDS/FastDDS twin's role split (server is the\nauthoritative side for loss/throughput) and scenario 6's gap-detection fix\n(last_seq initialized to 0, not the first-received sample).",
+          "timestamp": "2026-09-21T00:27:26+09:00",
+          "tree_id": "0a5d3b09fa675e2c00c3f337246e86307841ccc9",
+          "url": "https://github.com/tsnlab/tickle/commit/583d723f1c62dd37e2cbe0a2aaf2fa6f024f235d"
+        },
+        "date": 1789918224409,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.918,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 63.538,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 62.652,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 23.85,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.455,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.57,
             "unit": "Mbps"
           }
         ]
