@@ -1088,4 +1088,39 @@ every run. Detection latency is near-instant (sub-millisecond) on both once meas
 a listener, confirming the deadline-missed event fires essentially at the real period boundary, not
 on some coarser polling cycle.
 
-Scenarios 8-9 (liveliness, lifespan) remain unbuilt for both frameworks.
+### Results: scenario 8, `liveliness_loss_detection` (2026-09-20), both frameworks
+
+**Design**: LIVELINESS AUTOMATIC, matched lease duration (`-L`, default 2s) on writer and reader.
+The publisher runs normally, matches, publishes for a few real seconds, then the *orchestrating
+test itself* sends it a genuine `kill -9` (not a graceful `SIGINT` this process's own handler could
+react to) - a real crash simulation, not a simulated flag. The subscriber independently detects the
+loss via its own `LIVELINESS_CHANGED_STATUS` listener.
+
+**Single-clock design, deliberately** (comparison.md's own standing principle since "Item 5" -
+never subtract a timestamp read on a different host): detection latency is computed entirely from
+the *subscriber's own clock* - the gap between its own last-received-sample timestamp and its own
+loss-detected timestamp - never against the publisher's own kill time on the other host, which
+would need real clock sync this scenario has no way to guarantee.
+
+**One real QoS bug found on the rig, not assumed**: FastDDS's own `create_datawriter` rejected the
+QoS outright ("`LeaseDuration <= announcement period`") the first time this ran - FastDDS's default
+`announcement_period` sits too close to a 2s lease to satisfy its own internal RTPS check. Fixed by
+setting `announcement_period = lease / 3` explicitly, matching this exercise's own already-
+established "announce at least 3x within the lease window" convention (the same ratio
+`rmw_tickle`'s own `tt_LIVELINESS_MISS_THRESHOLD` already uses). CycloneDDS's own default didn't
+need this - only FastDDS's own stricter QoS validation caught it.
+
+**Results, real rig runs (kill -9 after 3s of normal publishing, 2/2 repeats each)**:
+
+| framework | lease | detect latency | reading |
+|---|---:|---:|---|
+| CycloneDDS | 2.000s | 2000.064ms, 2000.069ms | essentially exact (+0.06-0.07ms over the lease) |
+| FastDDS | 2.000s | 1999.086ms, 1999.083ms | essentially exact (-0.9-0.92ms under the lease) |
+
+**Reading**: both frameworks detect a genuine writer crash within a fraction of a millisecond of
+the configured lease boundary - CycloneDDS trips very slightly *after* the lease, FastDDS very
+slightly *before* it (both well under 1ms of the nominal 2000ms target either way) - real,
+reproducible, sub-millisecond-precision differences between two independent implementations, not
+noise. No false detections - `loss_detected` only ever flips once, right at the real kill.
+
+Scenario 9 (lifespan) remains unbuilt for both frameworks.
