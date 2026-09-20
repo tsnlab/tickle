@@ -961,13 +961,25 @@ of any of the five above**:
 
 After both fixes: match succeeds reliably (3/3 real runs, previously 0/3), the VOLATILE control
 case correctly still shows `received=0` (proving the harness itself isn't just broken), and the
-TRANSIENT_LOCAL case now receives most of the backlog (8-11 of 20 across repeated runs) instead of
+TRANSIENT_LOCAL case receives most of the backlog (8-11 of 20 across repeated runs) instead of
 none - the scenario is unblocked and the actual thing under test (TRANSIENT_LOCAL vs VOLATILE
-backlog delivery) is demonstrated for real. **Not fully closed**: delivery is still short of 20/20
-and varies run to run even with a generous 15s collection window and all `dds_write()` calls on the
-writer confirmed successful (no silent write-side rejection) - likely CycloneDDS's own real
-ACKNACK-based redelivery pacing for a durability backlog under RELIABLE, not a resource-limits
-ceiling; not root-caused further this pass, tracked as a real, separate follow-on.
+backlog delivery) is demonstrated for real.
+
+**Fully closed (2026-09-20), an eighth real bug - a client-side batch-take gap, not writer-side
+pacing.** A live `CYCLONEDDS_URI` trace of `ddsi_writer_add_connection()` (the real upstream
+source, `src/core/ddsi/src/ddsi_endpoint_match.c`, read directly rather than guessed) confirmed
+the writer's own reliable-delivery bookkeeping behaves completely normally for a fresh reliable,
+non-PSMX reader (`pretend_everything_acked` stays false; a heartbeat gets scheduled to solicit a
+real ACKNACK exchange) - ruling out the "writer secretly treats the reader as already caught up"
+theory the earlier "ACKNACK pacing" guess implied. The real cause was on the *client* side, the
+same class of bug as fix 5 above (`reliable_throughput/server.c`'s own single-sample `dds_take()`):
+`client.c`'s receive loop took exactly one sample per waitset wake - a durability backlog replay
+arrives as one fast burst, not one sample per network round trip, and `DDS_DATA_AVAILABLE_STATUS`
+doesn't necessarily re-signal per individual buffered sample once several have already arrived, so
+a single-sample take per wake could leave already-delivered samples sitting unread in the reader's
+own queue, silently undercounted by this loop despite the writer having done its job correctly.
+Fixed by batch-draining (`dds_take()` in a loop until it returns 0, matching fix 5's own pattern) -
+**`received=20/20`, reproduced 3/3 real runs**, matching FastDDS's own clean result below exactly.
 
 **FastDDS `durability_late_join` - built fresh this pass, same design, clean result** (not a port
 of CycloneDDS's own buggy first draft - the `-D`-forwarding and `backlog_count`-depth fixes above
@@ -977,8 +989,10 @@ FastDDS's own `get_subscription_matched_status()`/`get_publication_matched_statu
 exercise's own established FastDDS idiom, `best_effort_throughput/client.cpp`'s own precedent), QoS
 mirrors the CycloneDDS design (`RELIABLE`, `KEEP_LAST(20)`, `TRANSIENT_LOCAL` + matching
 `durability_service` depth when `-D`). **Result: `received=20/20`, reproduced 3/3 real runs** - the
-VOLATILE control case correctly shows `received=0`. FastDDS's own durability replay is either
-faster or less ACKNACK-round-trip-bound than CycloneDDS's on this same rig/link - genuinely full,
-not just "unblocked."
+VOLATILE control case correctly shows `received=0`. FastDDS's own `client.cpp` already
+batch-drained its receive loop from the start (this exercise's own established idiom, unrelated to
+the CycloneDDS-specific batch-take bug above) - both frameworks now show the identical clean
+`20/20` result once each side's own real bug was fixed, not a genuine cross-framework performance
+difference.
 
 Scenarios 7-9 (deadline, liveliness, lifespan) remain entirely unbuilt for both frameworks.

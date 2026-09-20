@@ -89,17 +89,33 @@ int main(int argc, char** argv) {
     // sample over the actual network, not an instant local replay, and 5s wasn't reliably enough
     // for all 20 on this rig.
     uint64_t deadline = now_ns() + 15ULL * 1000000000ULL;
-    struct Bench sample;
-    void* samples[1] = {&sample};
-    dds_sample_info_t infos[1];
+    // Batch-take, draining every buffered sample per wake (2026-09-20, real bug - same class
+    // already found/fixed in reliable_throughput/server.c): taking one sample at a time here left
+    // this variable, run-to-run partial delivery unexplained by the writer side alone - CycloneDDS
+    // doesn't necessarily re-signal DDS_DATA_AVAILABLE_STATUS for every sample individually once
+    // several arrive in one burst (the durability backlog replay arrives essentially all at once,
+    // not one-by-one at network pace), so a single dds_take() per waitset wake could leave already-
+    // arrived samples sitting unread in the reader's own queue, silently missed by this loop even
+    // though the writer had already delivered them.
+#define DURABILITY_MAX_BATCH 64
+    static struct Bench batch[DURABILITY_MAX_BATCH];
+    void* samples[DURABILITY_MAX_BATCH];
+    dds_sample_info_t infos[DURABILITY_MAX_BATCH];
+    for (int i = 0; i < DURABILITY_MAX_BATCH; i++) {
+        samples[i] = &batch[i];
+    }
     while (!g_interrupted && now_ns() < deadline) {
         dds_return_t rc = dds_waitset_wait(waitset, NULL, 0, DDS_MSECS(500));
         if (rc <= 0) {
             continue;
         }
-        dds_return_t n = dds_take(reader, samples, infos, 1, 1);
-        if (n > 0 && infos[0].valid_data) {
-            received++;
+        dds_return_t n;
+        while ((n = dds_take(reader, samples, infos, DURABILITY_MAX_BATCH, DURABILITY_MAX_BATCH)) > 0) {
+            for (dds_return_t i = 0; i < n; i++) {
+                if (infos[i].valid_data) {
+                    received++;
+                }
+            }
         }
     }
     double backlog_delivery_ms = received > 0 ? (double)(now_ns() - start) / 1e6 : -1.0;
