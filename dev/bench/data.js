@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789867010916,
+  "lastUpdate": 1789867014111,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -34952,6 +34952,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030477660042898997,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cf1bbd704fda4d053daeb74e92e22e3dac21df44",
+          "message": "examples/perf_hil: add CycloneDDS best_effort_latency scenario (native, no rmw)\n\nFirst of the 9 scenarios from comparison.md's design, CycloneDDS side only for\nnow (FastDDS blocked on a codegen version mismatch between this repo's dev box\nand the tickle-hil rpis, being resolved separately). Client/server ping-pong\npair using CycloneDDS's own ddsc C API directly, matched QoS (BEST_EFFORT) per\ndesign principle 3, RESULT line shaped to match TickLE's own\nexamples/linux/ping_pong/ping.c for direct comparison.\n\nbuild.sh generates the Bench binding fresh via this host's own idlc rather\nthan committing it - idlc's output is tied to the installed CycloneDDS\nversion, which differs between hosts (confirmed: dev box has libddsc.so.11,\nthe rpis have libddsc.so.0/0.10.5) - generating per host is what actually\nstays correct, not a snapshot from one.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T10:15:32+09:00",
+          "tree_id": "11c444840adc570fe0d53dfbe61b11ccdbef8f7c",
+          "url": "https://github.com/tsnlab/tickle/commit/cf1bbd704fda4d053daeb74e92e22e3dac21df44"
+        },
+        "date": 1789867013040,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9894144875662667,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9894302913120815,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030460493905203685,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030420984540666853,
             "unit": "Mbit/s"
           }
         ]
