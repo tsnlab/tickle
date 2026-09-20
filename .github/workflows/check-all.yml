@@ -192,8 +192,14 @@ jobs:
           # ROS 2 against are visible here. pip install rather than `apt install python3-...`, for
           # the same reason as catkin_pkg right below: actions/setup-python's own Python 3.12 is
           # first on PATH, so that's the python3 CMake's find_package(Python3) resolves to, not
-          # the system one apt's packages would land in.
-          pip install numpy lark catkin_pkg
+          # the system one apt's packages would land in. setuptools: any rosidl_generate_
+          # interfaces() package's own ament_cmake_python step builds a setuptools egg for its
+          # (unused here) Python bindings - jazzy's own apt-packaged system Python ships it, this
+          # hosted-tool one doesn't (same real CI failure, "No module named 'setuptools'", the
+          # "Run the upstream rmw conformance suite" step below already documents for test_msgs -
+          # rmw_perf_pingpong, Milestone 57, is the first package *this* step's own colcon build
+          # call hits it for).
+          pip install numpy lark catkin_pkg setuptools
           # Two colcon build calls, not one covering all four packages: rosidl_typesupport_tickle_c_
           # tests' own rosidl_generate_interfaces() call needs rosidl_typesupport_tickle_c/_cpp to
           # already be *discoverable via the ament index*, not just find_package()-able. A one-off diagnostic
