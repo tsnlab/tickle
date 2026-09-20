@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789911579876,
+  "lastUpdate": 1789911583378,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -73355,6 +73355,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c555ef831b6ff1a15e7efdf9149093b608a25566",
+          "message": "examples/perf_hil: fix clang-format style violations in scenario 6\n\nReal Check all failure on cb92c6c - clang-tidy itself passed clean (confirming the\nearlier compile_commands.json coverage fix works), only clang-format flagged\ninclude-ordering and a spacing issue in 3 files. Auto-fixed via clang-format -i,\nno behavioral change.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T22:36:48+09:00",
+          "tree_id": "cddd77eb4d828138afbbbf09db6a71c11b54a3b9",
+          "url": "https://github.com/tsnlab/tickle/commit/c555ef831b6ff1a15e7efdf9149093b608a25566"
+        },
+        "date": 1789911582234,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 0.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10.2,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.2,
             "unit": "%"
           }
         ]
