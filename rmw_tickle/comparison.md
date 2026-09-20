@@ -338,3 +338,90 @@ broadcast reaches a peer) is literally impossible - matching real DDS's own iden
 limitation for an ungraceful shutdown - but a real, substantial drop in observed frequency (3/5 →
 0/3) on the exact same reproducer that found it in the first place, which is the honest answer
 this specific question can give without a much larger sample than manual runs support well.
+
+## Planned: HIL 3-way QoS-matrix comparison (raw TickLE/FastDDS/CycloneDDS, no rmw)
+
+**Status (2026-09-20): design only, not scheduled yet.** Everything below is "TickLE Plan"'s own
+design pass, at the user's explicit request, for closing a real gap this whole document otherwise
+leaves open: every performance number above is *rmw-layer* (`rmw_tickle` vs `rmw_fastrtps_cpp` vs
+`rmw_cyclonedds_cpp`, via `buildfarm_perf_tests`) - Project Goal 2 (TickLE core's own raw
+latency/throughput vs FastDDS/CycloneDDS used directly, no `rmw` in the loop at all) currently has
+**zero cross-vendor numbers**. TickLE's own HIL rig (`.github/scripts/run_perf.sh`, real
+rpi#1/rpi#2 over a dedicated physical link, `tickle-hil` self-hosted runner) already measures
+TickLE alone; this plan extends that same rig to run FastDDS's and CycloneDDS's own native
+C++/C APIs side by side, not through ROS 2/rmw at all.
+
+**Explicitly deferred - the user's own call (2026-09-20)**: this whole effort waits until the
+current milestone queue TickLE Dev is working through (Milestone 47's post-fix validation, then
+"A" `RMW_EVENT_OFFERED_INCOMPATIBLE_QOS`/`REQUESTED_INCOMPATIBLE_QOS`, "B" `LIVELINESS`/`DEADLINE`
+RxO, Milestone 45's real profiling pass, and cross-host rmw-layer measurement - see
+`rmw_tickle/PLAN.md`) is fully done. Not to be started before then.
+
+### Design principles (the user's own, 2026-09-20)
+
+1. All three frameworks transmit the same data - conceptually identical IDL across every scenario,
+   not framework-specific message shapes.
+2. A handful of scenarios chosen to best exercise each of the 6 QoS policies (not a generic
+   ping/pong) - these replace the existing example set for this purpose, not sit alongside it.
+3. QoS values are set identically across all three frameworks for a given scenario (e.g. HISTORY
+   depth = 8 means literally 8 in TickLE's, FastDDS's, and CycloneDDS's own APIs, not "whatever
+   each vendor's own default happens to be").
+4. Each run's summary (scenario, framework, the QoS values used, the measured numbers) is tracked
+   in this file's own dashboard-style summary, not left as free-form prose only.
+
+**Correction folded in from an earlier draft of this design**: an earlier pass of this same
+discussion mentioned TickLE's "1ms flush batching" as a design constraint to work around - wrong,
+per the user's own correction: `tt_Publisher.batch` (`include/tickle/tickle.h`) already defaults
+to `false` (flush immediately on every `tt_Publisher_publish()` call, same as RPC) since
+`rmw_tickle/PLAN.md`'s own "RPC and Publish flush immediately by default; batching is opt-in"
+change - batching is something a caller opts into per-Publisher, not TickLE's own default
+behavior, so it needs no special handling in this design at all.
+
+### What's actually native at the TickLE core level (verified by reading `tickle.h` directly, not assumed)
+
+| QoS | Native core mechanism |
+|---|---|
+| RELIABILITY | `tt_Publisher.reliable`/`tt_Subscriber.reliable` + `reliable_cache` + ACKNACK |
+| DURABILITY | `tt_Publisher.durable` + `deliver_durability_backlog()` |
+| HISTORY | `tt_ReliableCache.depth` (1..`tt_MAX_RELIABLE_HISTORY` = 64) |
+| LIFESPAN | `tt_Publisher.lifespan_duration_ns` (age-based cache-entry expiry) |
+| LIVELINESS | `check_liveliness()` + `tt_LIVELINESS_MISS_THRESHOLD` (peer-liveliness loss - a different mechanism from `rmw_tickle`'s own Milestone 30 watchdog, which detects the *local* process's own poll thread hanging, not a remote peer's liveliness) |
+| DEADLINE | **not native** - no wire concept, no core field wired to anything (`tickle.h`'s own `deadline_duration` field on `struct tt_Topic` is vestigial, "reserved... ignored in this one"). Purely a local timestamp-comparison check, same as `rmw_tickle`'s own rmw-layer implementation - the HIL example programs implement it directly, no core API needed. |
+
+### Common test infrastructure
+
+- **Message/IDL set**: reuse the existing `Array1k`/`Struct16` conceptual shapes (already used by
+  the rmw-layer comparison above, for continuity) plus a `Bulk`-sized one (~1438B, matching
+  `examples/perf/Bulk.msg`) to make allocation-related costs visible - each defined three times,
+  once per framework's own native format, at an identical wire-visible byte layout.
+- **Topology**: reuse `run_perf.sh`'s existing rpi#1 (client)/rpi#2 (server) roles and
+  `tickle-hil` runner - real physical link, not same-host loopback.
+- **Naming**: `perf_client_<scenario>`/`perf_server_<scenario>`, three builds per scenario (one
+  per framework), extending the existing `perf_client`/`perf_server` naming `run_perf.sh` already
+  uses for TickLE's own HIL binaries.
+- **QoS value matrix**: one shared table of exact values (e.g. HISTORY depth = 8, DEADLINE =
+  50ms, LIFESPAN = 100ms, LIVELINESS lease = a value derived from TickLE's own
+  `tt_NODE_UPDATE_INTERVAL * tt_LIVELINESS_MISS_THRESHOLD`, then matched exactly in FastDDS's and
+  CycloneDDS's own QoS policy settings) - lives in this file so a future re-run can confirm every
+  side really used the same numbers, not just "roughly comparable" ones.
+
+### Scenario list (9, each built for all three frameworks)
+
+| # | Scenario | QoS exercised | Method | Metric(s) |
+|---|---|---|---|---|
+| 1 | `best_effort_latency` | RELIABILITY (BEST_EFFORT) | low-rate ping-pong RTT | median/p99 latency |
+| 2 | `reliable_latency` | RELIABILITY (RELIABLE) | same RTT pattern, RELIABLE | latency, delta vs #1 ("reliability tax") |
+| 3 | `best_effort_throughput` | RELIABILITY (BEST_EFFORT) | max-rate saturating stream | achieved throughput, loss % |
+| 4 | `reliable_throughput` | RELIABILITY (RELIABLE) | same stream, RELIABLE | achieved throughput, retransmit count, delta vs #3 |
+| 5 | `durability_late_join` | DURABILITY | publish N samples, subscriber joins late; TRANSIENT_LOCAL vs VOLATILE side by side | backlog-delivery latency; VOLATILE side receives 0 of the pre-published samples (functional check) |
+| 6 | `history_depth_burst_loss` | HISTORY | RELIABLE + depth = 8 (fixed, matched across all three), inject a burst loss both within and beyond that depth | recovery success rate, retransmit latency, confirms real data loss once the burst exceeds depth |
+| 7 | `deadline_miss_detection` | DEADLINE | duration = 50ms (fixed), one intentionally-missed interval | time-to-detect the miss, false-positive rate under normal cadence, per-publish overhead delta vs #2 |
+| 8 | `liveliness_loss_detection` | LIVELINESS | matched lease duration, AUTOMATIC, publisher process killed mid-stream | peer-loss detection latency, idle-state overhead of the periodic announce/heartbeat traffic itself |
+| 9 | `lifespan_expiry` | LIFESPAN | RELIABLE + duration = 100ms (fixed), artificial delay injected past that duration | confirms the sample is correctly not delivered/retransmitted past expiry (functional check), per-publish bookkeeping overhead (should be near-zero) |
+
+### Dashboard tracking (design principle 4)
+
+Replace this section's own current free-form-prose style with a scenario × framework matrix table
+(9 scenarios × 3 frameworks = 27 cells) once real runs exist - each cell holding the measured
+metric(s), the exact QoS values used, and the run's date/commit, so a later reader can confirm two
+runs actually used the same settings before comparing their numbers.
