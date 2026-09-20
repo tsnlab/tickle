@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789903742228,
+  "lastUpdate": 1789903745610,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -38326,6 +38326,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030469213213239397,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8a7e93bfae7d17fe9b370c1f0896cd66a5fa509e",
+          "message": "check-all.yml: build examples/perf_hil for real compile_commands.json coverage\n\ncpp-linter's own clang-tidy sub-check had no compile_commands.json entries at all for\nexamples/perf_hil/{cyclonedds,fastdds} - every push touching those files failed \"Check\nall\" on a plain \"'dds/dds.h'/'fastdds/...' file not found\", a real, repeated regression\n(dcdaa30, fd9db40, e38be7e, b56b982 all hit it), not this specific change's own fault but\na pre-existing infra gap finally worth fixing directly.\n\nReuses each scenario's own real build.sh under `bear` rather than hand-rolling a second,\nparallel set of -I flags - bear intercepts every gcc/g++ invocation build.sh's own loop\nspawns and records it. continue-on-error: true and a missing-file fallback before the\njq merge, since build.sh is written for/verified on the tickle-hil rpis (aarch64), not\nthis job's own x86_64 runner - a build hiccup here should never block the rest of the\njob (colcon build, rmw_tickle's own tests, the conformance suite).\n\nfastddsgen added to the job's own apt install (fastdds/build.sh's codegen dependency);\nidlc needs nothing extra, it ships inside ros-jazzy-cyclonedds.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T20:28:07+09:00",
+          "tree_id": "c8dabccfb4d3e71c0aef8b0c6915c62a497f77b0",
+          "url": "https://github.com/tsnlab/tickle/commit/8a7e93bfae7d17fe9b370c1f0896cd66a5fa509e"
+        },
+        "date": 1789903744522,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.0007854189191545759,
             "unit": "Mbit/s"
           }
         ]
