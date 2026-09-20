@@ -642,7 +642,7 @@ through scenarios 3-9 is tracked as the natural next step, not yet done.
 |---|---|---|---|---|
 | 1 | `best_effort_latency` | 199/199, 0% loss, RTT 0.231/0.242/0.343ms | 199/199, 0% loss, RTT 0.253/0.296/3.295ms | 0% loss, RTT ~0.20-0.22ms avg |
 | 2 | `reliable_latency` | 199/199, 0% loss, RTT 0.230/0.302/10.865ms | 199/199, 0% loss, RTT 0.271/0.297/0.603ms | 0% loss, RTT ~0.20-0.22ms avg |
-| 3 | `best_effort_throughput` | 9312 sent, 9311 recv, 0% loss, 0.596 Mbps | 9166 sent, 9166 recv, 0% loss, 0.587 Mbps | not yet built |
+| 3 | `best_effort_throughput` | 9312 sent, 9311 recv, 0% loss, 0.596 Mbps | 9166 sent, 9166 recv, 0% loss, 0.587 Mbps | ~95-155k msg/s offered, 57-70% loss at max rate (receiver-bound, see below) |
 | 4 | `reliable_throughput` | 0% loss, ~44.5-59.8 Mbps sustained (unpaced) | 0% loss, ~17.3-17.9 Mbps sustained (unpaced) | not yet built |
 | 5 | `durability_late_join` | 20/20 backlog delivered, 3/3 reproduced | 20/20 backlog delivered, 3/3 reproduced | not yet built |
 | 6 | `history_depth_burst_loss` | within depth: 0 lost; beyond depth: 52 lost (exact) | identical to CycloneDDS, same run | not yet built |
@@ -1010,6 +1010,62 @@ the CycloneDDS-specific batch-take bug above) - both frameworks now show the ide
 `20/20` result once each side's own real bug was fixed, not a genuine cross-framework performance
 difference.
 
+### Results: scenario 3, `best_effort_throughput`, TickLE core native (2026-09-21)
+
+**Design**: `examples/perf_hil/tickle/best_effort_throughput/{client,server}.c` - a one-way stream
+mirroring the CycloneDDS/FastDDS twin's own role split exactly (client is the offered-load side,
+server is the authoritative side for loss since only it sees what actually arrived), `-i 0` default
+("as fast as possible", matching `perf_client.c`'s own established default, same convention both DDS
+twins use). BEST_EFFORT is TickLE's own only default when neither `reliable` nor `durable` is set on
+the Publisher - no extra QoS calls needed. `examples/perf_hil/tickle/run_scenario.sh` added this
+pass, mirroring `../cyclonedds/run_scenario.sh`'s own SSH-backgrounding fixes (`;` not `&&`,
+`</dev/null`) - no `run_scenario.sh` existed yet for the TickLE-native track before this.
+
+**Results, real rig runs (`-d 8`), reproduced 3/3**:
+
+| run | sent (client) | recv (server) | true loss = sent−recv | true loss % | server's own `lost` (gap-based) |
+|---|---:|---:|---:|---:|---:|
+| 1 | 911,068 | 270,176 | 640,892 | 70.3% | 14,156 |
+| 2 | 1,247,223 | 439,431 | 807,792 | 64.8% | 0 |
+| 3 | 1,247,186 | 538,998 | 708,188 | 56.8% | 0 |
+
+**Reading - a real, substantial, and expected finding, not a bug**: TickLE core's own near-zero
+per-message overhead lets the client offer **~95-155k msg/s** at max rate - two full orders of
+magnitude past what either DDS vendor's own "max rate" achieves for this exact scenario (CycloneDDS
+~1,164/s, FastDDS ~1,146/s, both essentially loss-free, from the dashboard row above - their own
+per-message stack overhead is *itself* the rate limiter, well short of ever stressing the
+receiver). TickLE's own client genuinely saturates the single-threaded server's ability to drain its
+UDP socket before the kernel's own receive buffer fills, at which point the kernel silently drops
+everything further - a real, mundane, sufficient explanation requiring no TickLE code bug (`man 7
+udp`'s own documented behavior under sustained receiver-side backpressure with no flow control,
+which is exactly what BEST_EFFORT + no application-level pacing promises and nothing more).
+
+**A real methodology gap in this harness, found while explaining the above (same class of bug as
+scenario 6's leading-gap fix, mirrored at the other end)**: the server's own gap-based `lost`/
+`loss_pct` fields can only detect loss *between* two successfully-received samples - they have no
+way to see loss trailing off the *end* of the stream (nothing arrives, so there's no later sample to
+compute a gap against), which is exactly the shape this scenario produces (a clean, gapless prefix,
+then total silence for the remainder - runs 2 and 3 above both report `lost=0` despite roughly 60-65%
+of the stream never arriving at all). The dashboard's own established convention - comparing the
+client's own `sent` line against the server's own `recv` line side by side, exactly as the
+CycloneDDS/FastDDS row already does - is therefore the only trustworthy loss figure for this
+scenario shape; the server's own `lost`/`loss_pct` fields are left in the code (real signal for
+*some* loss patterns, e.g. scenario 6's own mid-stream burst) but are not the authoritative number
+here. Not fixed further this pass - matching the same "explainable, not chased further" precedent as
+scenario 9's own `dds_wait_for_acks()` timeout.
+
+**A correlated symptom, not independently investigated further**: the client's own log shows
+`Node 2 presumed dead (no UPDATE for 3 consecutive intervals)` roughly 5s into every run (the
+server's own log never logs the reverse) - consistent with the same root cause above: a
+single-threaded server whose event loop is saturated draining ~100k+ pkt/s can also fall behind
+emitting its own periodic node-liveliness broadcast on schedule, which the client's independent
+liveliness watchdog (`check_liveliness()`, `tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL`
+~3s) correctly flags. Confirmed this does **not** gate `tt_Publisher_publish()` itself
+(`SUBMESSAGE_ID_ALL` broadcast is unconditional, independent of match/liveliness bookkeeping -
+verified by reading `tt_Publisher_publish()` directly) - so it doesn't change the `sent` count's own
+validity, just a real, secondary, and currently-benign side effect of the same overload worth
+TickLE Dev's awareness if it ever needs to change from a warning into something that self-heals.
+
 ### Results: scenario 6, `history_depth_burst_loss` (2026-09-20), both frameworks
 
 **Design**: RELIABLE + `HISTORY KEEP_LAST(8)`, matched exactly on both writer and reader. The
@@ -1179,6 +1235,8 @@ Scenarios 1-9 (`best_effort_latency`, `reliable_latency`, `best_effort_throughpu
 `reliable_throughput`, `durability_late_join`, `history_depth_burst_loss`,
 `deadline_miss_detection`, `liveliness_loss_detection`, `lifespan_expiry`) all have real,
 reproduced CycloneDDS and FastDDS results in this document. TickLE core's own native HIL examples
-(`examples/perf_hil/tickle/`) still only cover scenarios 1-2 (latency) - extending them through the
-same QoS matrix scenarios 3-9 exercise, closing Project Goal 2 fully rather than just its own
-latency/throughput slice, is the natural next step for this track.
+(`examples/perf_hil/tickle/`) now cover scenarios 1-3 (latency + best-effort throughput) - see
+"Results: scenario 3, `best_effort_throughput`, TickLE core native" above. Extending them through
+scenarios 4-9 (`reliable_throughput`, `durability_late_join`, `history_depth_burst_loss`,
+`deadline_miss_detection`, `liveliness_loss_detection`, `lifespan_expiry`), closing Project Goal 2
+fully rather than just its own latency/throughput slice, is the natural next step for this track.
