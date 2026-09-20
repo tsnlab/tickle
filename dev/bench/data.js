@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789865490379,
+  "lastUpdate": 1789865864002,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -28001,6 +28001,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.05094142857142857,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e014805a50d0e6e55f47862975ff701a31c5e40e",
+          "message": "comparison.md: design a HIL 3-way QoS-matrix comparison (raw TickLE/FastDDS/CycloneDDS)\n\nFills a real gap this document otherwise leaves open: every performance number\nso far is rmw-layer only (buildfarm_perf_tests) - Project Goal 2's own core-level\n(no rmw) comparison has zero cross-vendor numbers. Design-only pass per the\nuser's own explicit request and stated principles: identical conceptual IDL\nacross all three frameworks, 9 scenarios chosen to exercise each of the 6 QoS\npolicies (replacing the generic ping/pong example set for this purpose), QoS\nvalues matched exactly across frameworks per scenario, and a scenario x\nframework dashboard matrix for tracking runs.\n\nVerified against the actual code (include/tickle/tickle.h) which QoS policies\nare genuinely native at the TickLE core level vs rmw_tickle-layer-only (DEADLINE\nhas no core wire concept at all - a pure local timestamp check).\n\nExplicitly deferred: not to be started until the current milestone queue\nTickLE Dev is working through finishes.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T09:56:30+09:00",
+          "tree_id": "d44ad238aea5cb4792dccf34a30ffb07bb3f8690",
+          "url": "https://github.com/tsnlab/tickle/commit/e014805a50d0e6e55f47862975ff701a31c5e40e"
+        },
+        "date": 1789865860371,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04697285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04854714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04385428571428572,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.08194285714285714,
             "unit": "ms"
           }
         ]
