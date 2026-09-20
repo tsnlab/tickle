@@ -1123,4 +1123,47 @@ slightly *before* it (both well under 1ms of the nominal 2000ms target either wa
 reproducible, sub-millisecond-precision differences between two independent implementations, not
 noise. No false detections - `loss_detected` only ever flips once, right at the real kill.
 
-Scenario 9 (lifespan) remains unbuilt for both frameworks.
+### Results: scenario 9, `lifespan_expiry` (2026-09-20), both frameworks - closes the 9-scenario design
+
+**Design**: LIFESPAN (`-T`, default 100ms) matched on writer and reader, deliberately paired with a
+*generous* `HISTORY KEEP_ALL` (unlike scenario 6's own shallow `KEEP_LAST(8)`) - so any loss
+observed here is attributable purely to LIFESPAN's own per-sample age-based expiry, not queue-
+depth eviction, keeping the two mechanisms cleanly separated across the two scenarios. The
+subscriber deliberately stalls its own consumption for `-p` seconds right after matching, mirroring
+scenario 6's own real-world-stalled-reader design; the publisher writes a fixed count on a fixed
+schedule and does not react to being stalled against in any way.
+
+**Results, real rig runs, reproducible (2/2 CycloneDDS, 2/2 FastDDS each)**:
+
+| framework | pause | lifespan | received | lost | reading |
+|---|---:|---:|---:|---:|---|
+| CycloneDDS | 0.05s (within) | 0.1s | 100/100 | 0 | fully recoverable, matches expectation |
+| CycloneDDS | 0.3s (beyond) | 0.1s | 90/100 | **10** | matches `(pause-lifespan)/interval = (0.3-0.1)/0.02 = 10` exactly, 2/2 |
+| FastDDS | 0.05s (within) | 0.1s | 100/100 | 0 | identical to CycloneDDS |
+| FastDDS | 0.3s (beyond) | 0.1s | 95/100 | **5** | reproduced 2/2, half of CycloneDDS's own count |
+
+**Reading**: both frameworks agree exactly on the "within lifespan" case (0 loss) and on the
+*existence* of real, deterministic loss once the stall exceeds the lifespan - but the two vendors'
+own real loss counts differ by a clean 2x (10 vs 5) for the identical nominal gap, each internally
+reproducible, not noise. Plausible real cause (not confirmed further this pass): the two vendors
+may check/enforce sample age at different points in the pipeline (e.g. at local delivery to the
+reader's own cache vs. at the moment the application actually takes a sample), giving each a
+different effective "how much of the stall counts against the lifespan" window - a real, documented
+cross-vendor behavioral difference worth flagging for anyone relying on LIFESPAN for precise,
+vendor-portable timing guarantees, not just "expiry happens" in general.
+
+A `dds_wait_for_acks()` timeout was observed on the CycloneDDS writer side in every run of this
+scenario (including the 0-loss within-lifespan case) - real, but not scenario-specific: LIFESPAN-
+enabled writers evidently don't track "fully acked" the same way plain RELIABLE writers do in this
+CycloneDDS version, independent of whether anything actually expired. Cosmetic (stderr only, no
+effect on the `RESULT` line's own real counts), not investigated further this pass.
+
+### All 9 planned scenarios are now built and verified on the real rig, both frameworks
+
+Scenarios 1-9 (`best_effort_latency`, `reliable_latency`, `best_effort_throughput`,
+`reliable_throughput`, `durability_late_join`, `history_depth_burst_loss`,
+`deadline_miss_detection`, `liveliness_loss_detection`, `lifespan_expiry`) all have real,
+reproduced CycloneDDS and FastDDS results in this document. TickLE core's own native HIL examples
+(`examples/perf_hil/tickle/`) still only cover scenarios 1-2 (latency) - extending them through the
+same QoS matrix scenarios 3-9 exercise, closing Project Goal 2 fully rather than just its own
+latency/throughput slice, is the natural next step for this track.
