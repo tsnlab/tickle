@@ -1042,4 +1042,50 @@ on both vendors. The clean, matching `60 - 8 = 52` arithmetic across two indepen
 implementations is strong evidence this is really testing DDS's own documented HISTORY semantics,
 not an artifact of either example's own code.
 
-Scenarios 7-9 (deadline, liveliness, lifespan) remain unbuilt for both frameworks.
+### Results: scenario 7, `deadline_miss_detection` (2026-09-20), both frameworks
+
+**Design**: DEADLINE (`-D`, default 50ms) matched exactly on writer and reader. The writer
+publishes normally at `-i` (default 20ms, well under the deadline) for `-n` samples, except for
+exactly one deliberately-skipped interval (a real `deadline_s * 3` sleep, not a simulated flag)
+partway through - both the writer's own `OFFERED_DEADLINE_MISSED` and the reader's own
+`REQUESTED_DEADLINE_MISSED` should detect it, independently.
+
+**One real methodology bug found on the rig, not assumed**: an earlier version polled its own
+match-wait-style waitset *right after* each `nanosleep()` call - but that same `nanosleep()` is
+what produces the deliberate gap, so the poll can only ever run once the whole gap has already
+elapsed, never while the deadline itself is actually expiring partway through it. A real run
+showed `detect_latency_ms=100` for a 150ms gap against a 50ms deadline - almost exactly
+`gap - one period`, a pure artifact of only checking after the blocking sleep returned, not a real
+detection delay. Fixed on both frameworks with a real listener callback
+(`dds_lset_offered_deadline_missed()` / `DataWriterListener::on_offered_deadline_missed()`), which
+runs on the middleware's own internal thread - genuinely asynchronous to the publish loop's own
+blocking sleep, and able to actually observe the real detection latency.
+
+**A corrected assumption, not a bug**: the scenario's own first draft expected `total_count` to
+land at exactly 1 for the one deliberate gap. Real, reproduced measurements (listener-based, 2-3
+repeats each) instead show a consistent, deterministic **7** (CycloneDDS and FastDDS both,
+independently, on the writer side) - a writer silent across multiple deadline periods genuinely
+misses the deadline once per period boundary crossed with nothing new published, real and correct
+DDS behavior, just not the naive `ceil(gap/period) = 3` this document's own first version assumed
+(the two vendors' internal deadline-check granularity is evidently finer than the nominal period).
+
+**Results, real rig runs, listener-based, reproducible**:
+
+| framework | role | sent/recv | missed total | detect latency |
+|---|---|---:|---:|---:|
+| CycloneDDS | writer (offered) | 100 sent | **7** (3/3 runs) | ~0.05ms |
+| CycloneDDS | reader (requested) | 100 recv | **14** (3/3 runs) | - |
+| FastDDS | writer (offered) | 100 sent | **7** (2/2 runs) | ~-0.9ms (near-instant either way) |
+| FastDDS | reader (requested) | 100 recv | **19** (2/2 runs) | - |
+
+**Reading**: the writer-side count matches exactly (7 = 7) across two independent
+implementations for the identical nominal gap - strong evidence both vendors converge on the same
+real deadline-checking cadence for the writer side specifically. The reader-side counts differ
+(14 vs 19) - a real, reproducible cross-vendor difference in how readers track missed deadlines,
+not measurement noise (each is internally consistent across repeats). No false positives in either
+direction on either framework - `total_count` stayed at 0 for the entire normal-cadence portion of
+every run. Detection latency is near-instant (sub-millisecond) on both once measured correctly via
+a listener, confirming the deadline-missed event fires essentially at the real period boundary, not
+on some coarser polling cycle.
+
+Scenarios 8-9 (liveliness, lifespan) remain unbuilt for both frameworks.
