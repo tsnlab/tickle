@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789869071823,
+  "lastUpdate": 1789869075353,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -50003,6 +50003,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.876,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "25a39935d3e75a6b1c2f652358fbd0cc4b2b2c1c",
+          "message": "examples/perf_hil: add FastDDS scenario 1-2 + CycloneDDS reliable_latency (verified on real HIL)\n\nCompletes the second framework and scenario for the two latency scenarios\n(comparison.md's design), all now verified end-to-end on the real tickle-hil\nrig (rpi#1/rpi#2), not just compiled:\n\n- CycloneDDS reliable_latency: RELIABLE + HISTORY depth=8, matched exactly to\n  FastDDS's own QoS per comparison.md's design principle 3.\n- FastDDS best_effort_latency/reliable_latency (build.sh, both scenarios): a\n  real, confirmed FastDDS 2.14.6-vs-fastddsgen-2.3.0+dfsg codegen mismatch\n  needed two live-verified sed patches (Cdr::DDS_CDR relocated to a free enum,\n  getSerializedDataLength() renamed snake_case) plus bypassing the generated\n  header's own GEN_API_VER==1 guard - checked the actually-installed\n  TopicDataType.hpp's real virtual interface directly first to confirm\n  bypassing it doesn't skip a genuine ABI change, only a stale version tag.\n- A real bug found and fixed while getting FastDDS's own first clean run: the\n  ping client's take_next_sample() is FIFO and the reader can buffer more than\n  one not-yet-taken sample, so a single take() after wait_for_unread_message()\n  returned an already-stale response (always exactly one request behind,\n  confirmed via an instrumented debug build) - fixed by draining every\n  buffered sample and keeping only the newest before matching it against the\n  current request's own seq.\n\nCommitting this now (not just scp'ing for iteration, this repo's own earlier\npractice this session) because the existing automatic HIL CI (run_perf.sh,\ntriggered on every push to main) does a real git reset --hard + git clean\n-fdq on these same two rpis - confirmed firsthand to delete uncommitted,\nscp'd-only scenario directories entirely, not just built binaries. Committed\nfiles survive that reset; only truly-generated artifacts (fastdds/generated/,\ncyclonedds/generated/, built binaries - already .gitignore'd) do not, and are\nregenerated fresh per host by build.sh regardless.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T10:48:26+09:00",
+          "tree_id": "edafa3b55ad8f55ef0499e143eaea26c5093a6b0",
+          "url": "https://github.com/tsnlab/tickle/commit/25a39935d3e75a6b1c2f652358fbd0cc4b2b2c1c"
+        },
+        "date": 1789869074221,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.657,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.179,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.936,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.46,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.603,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.689,
             "unit": "Mbps"
           }
         ]
