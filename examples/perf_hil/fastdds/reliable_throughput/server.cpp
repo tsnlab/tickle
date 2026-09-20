@@ -41,6 +41,9 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         }
     }
+    // +15s buffer - see best_effort_throughput/server.cpp's own doc comment (this same directory)
+    // for the real bug this avoids.
+    safety_cap_s += 15.0;
 
     std::signal(SIGINT, handle_sigint);
 

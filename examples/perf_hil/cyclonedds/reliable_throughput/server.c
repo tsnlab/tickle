@@ -34,6 +34,9 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         }
     }
+    // +15s buffer - see best_effort_throughput/server.c's own doc comment (this same directory)
+    // for the real bug this avoids.
+    safety_cap_s += 15.0;
 
     struct sigaction sa = {0};
     sa.sa_handler = handle_sigint;

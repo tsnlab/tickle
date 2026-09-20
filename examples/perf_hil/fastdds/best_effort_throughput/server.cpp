@@ -41,6 +41,13 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         }
     }
+    // +15s buffer (2026-09-21, real bug found the hard way - see the identical fix on the TickLE
+    // twin's own server.c for the full story): run_scenario.sh forwards the same -d to both
+    // sides, but it means "the client's own send duration" there vs. "this side's own don't-hang-
+    // forever cap" here - taken verbatim, this side could exit and stop counting before the
+    // client (which starts several seconds later, run_scenario.sh's own pre-client sleep) had
+    // even finished sending.
+    safety_cap_s += 15.0;
 
     std::signal(SIGINT, handle_sigint);
 
