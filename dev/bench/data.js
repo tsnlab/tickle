@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789916020841,
+  "lastUpdate": 1789916024225,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -60271,6 +60271,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.753,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "82506c0575b28bee623ae8f786198099c33dc09e",
+          "message": "rmw_perf_pingpong: add Array1k/Struct16 payload-size variants (Milestone 57)\n\nAdds a -m <bench|array1k|struct16> flag to ping_node/pong_node. bench stays\nthe default (unchanged 64-byte payload, matches examples/perf_hil/idl/\nBench.idl for the native-HIL comparison this tool was built for);\narray1k/struct16 reuse buildfarm_perf_tests' own existing message shapes\n(field definitions copied locally, not a real dependency on the upstream\nperformance_test package - that package pulls in its own Boost/Java/Maven\nbuild toolchain just to reuse two small message types) for direct\ncomparability with comparison.md's own existing Performance comparison\nnumbers.\n\nping_node.cpp is templated on the message type via a small BenchTraits<T>\ntrait (each type's own differently-named seq/send_ns-equivalent fields)\nrather than three near-duplicate copies of the file; pong_node.cpp needed\nonly a plain function template (a pure echo has no type-specific logic).\n\nVerified: real colcon build clean; clang-format clean; real same-host\nsmoke tests for all three -m values, 0% loss each. rmw_perf_pingpong has\nnever been wired into any CI workflow, so whether this trips Check all's\nown clang-tidy sub-check (no compile_commands.json coverage, the same\nclass of gap examples/perf_hil hit before 8a7e93b) is left to real CI to\nanswer, not guessed at preemptively.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T23:50:46+09:00",
+          "tree_id": "5b8d63b45cd2b6f1d71ffb684f8811dc9521f755",
+          "url": "https://github.com/tsnlab/tickle/commit/82506c0575b28bee623ae8f786198099c33dc09e"
+        },
+        "date": 1789916023117,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 65.396,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 63.285,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.089,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.62,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.473,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 69.882,
             "unit": "Mbps"
           }
         ]
