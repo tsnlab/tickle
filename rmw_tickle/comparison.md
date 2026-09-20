@@ -995,4 +995,51 @@ the CycloneDDS-specific batch-take bug above) - both frameworks now show the ide
 `20/20` result once each side's own real bug was fixed, not a genuine cross-framework performance
 difference.
 
-Scenarios 7-9 (deadline, liveliness, lifespan) remain entirely unbuilt for both frameworks.
+### Results: scenario 6, `history_depth_burst_loss` (2026-09-20), both frameworks
+
+**Design**: RELIABLE + `HISTORY KEEP_LAST(8)`, matched exactly on both writer and reader. The
+writer publishes a fixed *count* (`-n`, default 160) at a fixed rate (`-i`, default 50ms = 20/s)
+regardless of whether the subscriber is consuming; the subscriber deliberately stalls its own
+consumption for `-p` seconds right after matching, before ever taking a single sample - a stalled/
+slow subscriber, not a network-level packet drop, is the real-world case HISTORY depth actually
+protects against. `dds_wait_for_acks()`/`wait_for_acknowledgments()` before the writer tears down,
+and a sample-*count* (not duration) loop, were both real fixes needed to observe this cleanly - see
+below.
+
+**Two real, non-trivial bugs found while building this, not assumed from the API**:
+
+1. **A duration-based writer loop tears itself down mid-catch-up, discarding real backlog for a
+   reason that has nothing to do with HISTORY at all.** The first version's writer ran for a fixed
+   wall-clock `-d` regardless of whether the reader had caught up yet - a real, reproduced 52-
+   sample gap traced to the writer's own participant being deleted while a reliable catch-up was
+   still in flight. Fixed by writing a fixed *count* instead, then blocking on
+   `dds_wait_for_acks()`/`wait_for_acknowledgments()` before ever tearing down.
+
+2. **The real bug, and the one actually worth documenting**: after fixing (1), CycloneDDS still
+   reported `recv=108, lost=0` for 160 sent - technically consistent (108+52=160) but *hiding* the
+   very phenomenon this scenario exists to observe. Root cause was in this repo's own measurement
+   code: the reader-side gap-detection logic treated whichever sample it happened to take *first*
+   as sequence position zero, rather than comparing against the writer's own real starting sequence
+   (1) - so when the reader's own `KEEP_LAST(8)` cache had already evicted samples 1-52 during its
+   deliberate stall (the correct, expected DDS behavior under test) and its first-ever `dds_take()`
+   returned sample 53, the code treated 53 as "the beginning" instead of "52 already missing".
+   Fixed by initializing the gap tracker to 0 (the writer's real starting point), not to the first
+   observed sample - immediately surfaced the real loss on both frameworks identically.
+
+**Results, both regimes, both frameworks, real rig runs**:
+
+| framework | pause | samples arrived during pause | received | lost | reading |
+|---|---:|---:|---:|---:|---|
+| CycloneDDS | 0.2s (within depth) | ~4 (< 8) | 40/40 | 0 | fully recoverable, matches expectation |
+| CycloneDDS | 3.0s (beyond depth) | 60 (> 8) | 108/160 | **52** | exactly `60 - depth(8)`, reproduced 3/3 |
+| FastDDS | 0.2s (within depth) | ~4 (< 8) | 40/40 | 0 | identical to CycloneDDS |
+| FastDDS | 3.0s (beyond depth) | 60 (> 8) | 108/160 | **52** | identical to CycloneDDS, same run |
+
+**Reading**: both frameworks implement `HISTORY KEEP_LAST` identically for this real-world case (a
+stalled reader, not a network drop) - a stall shorter than what the depth can absorb costs nothing;
+a stall that lets more than `depth` samples accumulate loses exactly the excess, deterministically,
+on both vendors. The clean, matching `60 - 8 = 52` arithmetic across two independent
+implementations is strong evidence this is really testing DDS's own documented HISTORY semantics,
+not an artifact of either example's own code.
+
+Scenarios 7-9 (deadline, liveliness, lifespan) remain unbuilt for both frameworks.
