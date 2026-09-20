@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789898915706,
+  "lastUpdate": 1789898919510,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -37231,6 +37231,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03046907697405134,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5569e8180763a483536739a9c25255552fb47641",
+          "message": "Re-skip TestClient/TestService.check_qos with the accurate reason\n\nThe GID fix (previous commit) cleared TestUniqueIdentifierAPI for\nreal, but real CI found TestClient/TestService.check_qos still fail -\nfor a third, still-genuine reason this time, not the stale \"all three\nQoS features rejected\" one the removed skip claimed. Both tests\nrequest liveliness_lease_duration = {1, 1} (~1 second), below\nrmw_tickle's own real, still-current floor\n(tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL, 3s, rmw_qos.c's\nown QoS roadmap #3 floor) - a legitimate rejection, not a gap.\n\nRe-skipped with the accurate reason (DEADLINE/LIFESPAN genuinely\naccepted now, only the lease-duration floor blocks this test's own\nchosen value) rather than left failing.\n\nPatch regenerated the pristine-clone-diff way, git apply --check clean\non a fresh clone.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T18:08:46+09:00",
+          "tree_id": "9aa1040f68a5695bf9045b2654484c64beeb4a8c",
+          "url": "https://github.com/tsnlab/tickle/commit/5569e8180763a483536739a9c25255552fb47641"
+        },
+        "date": 1789898918414,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905316489083427,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.0001415525163922991,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03046894073486328,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473572867257253,
             "unit": "Mbit/s"
           }
         ]
