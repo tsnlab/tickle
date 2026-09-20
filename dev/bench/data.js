@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789920477826,
+  "lastUpdate": 1789920481199,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -80730,6 +80730,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 10.2,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "632e140c054096b8de7fbffd98317f6c78d50df4",
+          "message": "deadline_miss_detection/client.c: fix spurious deadline-miss false positives\n\ncheck_deadline and send_one were two independently-scheduled periodic timers\non the exact same nominal period with no phase offset - ordinary scheduling\njitter could flip their relative firing order cycle to cycle, spuriously\ntripping the > deadline_s threshold on nearly every healthy cycle instead of\njust the one deliberate gap (writer_misses=31 over a 10s run, real symptom).\nHalf-period offset gives a robust safety margin either direction.",
+          "timestamp": "2026-09-21T01:05:00+09:00",
+          "tree_id": "163ca556528dc6b82d20b94f6c3fdd36475e9585",
+          "url": "https://github.com/tsnlab/tickle/commit/632e140c054096b8de7fbffd98317f6c78d50df4"
+        },
+        "date": 1789920480092,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.9,
             "unit": "%"
           },
           {
