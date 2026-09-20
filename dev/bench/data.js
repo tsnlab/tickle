@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789920935580,
+  "lastUpdate": 1789920939172,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -49802,6 +49802,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 820.105,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ba7bbbb2ff36d6a0586495c2bc6a66a492055494",
+          "message": "examples/perf_hil/tickle: fix server -d misinterpretation across every throughput-style scenario\n\nA significant test-methodology bug, found while investigating deadline_miss_\ndetection's own reproducible (not random) recv=91/sent=198: run_scenario.sh\nforwards the same $CLIENT_ARGS to both sides, but \"-d\" means something\ndifferent on each - the client's own real send duration vs. this side's own\n\"don't hang forever\" safety cap. Taken verbatim, a short -d (e.g. 8-10s, used\nfor every throughput scenario so far) let the server exit and print its\nRESULT - ending the count - before the client, which doesn't start sending\nuntil run_scenario.sh's own PRE_CLIENT_SLEEP (default 3s) plus its own ~2s\ndiscovery margin have elapsed, had even finished sending.\n\nThis casts real doubt on the already-committed scenario 3/4 \"receiver-bound\noverload\" explanation in comparison.md - the loss recorded there may be\nsubstantially this artifact, not genuine kernel-level loss under max-rate\nflooding. Re-testing scenarios 3/4/7/9 with the fix next; comparison.md will\nbe corrected based on what those re-runs actually show, not assumed.\n\nFix: +15s buffer added to safety_cap_s after parsing, in every throughput-\nstyle scenario's own server.c (best_effort_throughput, reliable_throughput,\nhistory_depth_burst_loss, deadline_miss_detection, liveliness_loss_detection,\nlifespan_expiry).",
+          "timestamp": "2026-09-21T01:12:48+09:00",
+          "tree_id": "06f0d613a38df43da9f3d0f9d171b201fceafef5",
+          "url": "https://github.com/tsnlab/tickle/commit/ba7bbbb2ff36d6a0586495c2bc6a66a492055494"
+        },
+        "date": 1789920938072,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 935.044,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 819.749,
             "unit": "Mbps"
           }
         ]
