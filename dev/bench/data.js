@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789911118485,
+  "lastUpdate": 1789911121773,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -57553,6 +57553,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.666,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cb92c6cde3048796fff332421df9ce5d7969a343",
+          "message": "examples/perf_hil: add scenario 6, history_depth_burst_loss (CycloneDDS + FastDDS)\n\nRELIABLE + HISTORY KEEP_LAST(8), matched exactly on both writer and reader. The\nwriter publishes a fixed count at a fixed rate regardless of whether the subscriber\nis consuming; the subscriber deliberately stalls its own consumption for a fixed\nwindow right after matching - a stalled/slow subscriber, not a network-level packet\ndrop, is the real-world case HISTORY depth protects against.\n\nTwo real bugs found while building this, not assumed from the API:\n\n1. A duration-based writer loop tears itself down mid-catch-up, discarding real\n   backlog for a reason unrelated to HISTORY - fixed with a fixed sample count plus\n   dds_wait_for_acks()/wait_for_acknowledgments() before teardown.\n2. The real one: this repo's own gap-detection logic treated whichever sample was\n   taken *first* as sequence position zero instead of comparing against the\n   writer's real start (1) - so a reader-side KEEP_LAST(8) cache eviction during\n   the stall (the correct DDS behavior under test) went completely uncounted.\n   Fixed by initializing the gap tracker to the writer's real starting point.\n\nVerified on the rig via the standard run_scenario.sh, both frameworks, both\nregimes: a stall short enough to stay within depth loses nothing (40/40, 0 lost);\na stall that lets 60 samples accumulate loses exactly 52 (60 - depth 8),\nreproduced identically on both CycloneDDS and FastDDS.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T22:29:13+09:00",
+          "tree_id": "d52aa9d916cde3d8b82b708c528c93bccce5826a",
+          "url": "https://github.com/tsnlab/tickle/commit/cb92c6cde3048796fff332421df9ce5d7969a343"
+        },
+        "date": 1789911120627,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.164,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.061,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 65.022,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.811,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.626,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 73.604,
             "unit": "Mbps"
           }
         ]
