@@ -100,8 +100,20 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
 
   set(_msg_output_dir "${_output_path}/${_parent_folder}")
   set(_ros_name "${PROJECT_NAME}__${_parent_folder}__${_idl_name}")
-  set(_out_h "${_msg_output_dir}/${_idl_name}.h")
-  set(_out_c "${_msg_output_dir}/${_idl_name}.c")
+  # Milestone 56 (rmw_tickle/PLAN.md): a same-package .msg and .srv can share one base name (real,
+  # found via test_msgs' own BasicTypes.msg + BasicTypes.srv) - ros2_cli.py's own generate() writes
+  # a .srv's own TickLE-side file as "<name>_srv.h/.c", not the bare "<name>.h/.c" a .msg gets,
+  # specifically so the two can never collide under a real compile unit's own same-directory-first
+  # quoted-include search (both msg/ and srv/ sit on one target's -I list at once). This OUTPUT
+  # declaration has to name the exact same file ros2_cli.py actually writes, or `add_custom_command`
+  # itself fails outright ("No such file or directory") - not just a lint/style mismatch.
+  if("${_parent_folder}" STREQUAL "srv")
+    set(_tickle_file_stem "${_idl_name}_srv")
+  else()
+    set(_tickle_file_stem "${_idl_name}")
+  endif()
+  set(_out_h "${_msg_output_dir}/${_tickle_file_stem}.h")
+  set(_out_c "${_msg_output_dir}/${_tickle_file_stem}.c")
 
   set(_outputs "${_out_h}" "${_out_c}")
   set(_sources "${_out_c}")

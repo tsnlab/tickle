@@ -134,16 +134,31 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
         return written
 
     if subfolder == "srv":
+        # Milestone 55/56 - a same-package .msg and .srv can share one base name (real, found via
+        # test_msgs' own BasicTypes.msg + BasicTypes.srv): both would otherwise write a bare
+        # "<name>.h/.c" into their own msg/srv output subdirectory, and since a real CMake build
+        # puts *both* directories on one compile unit's own -I list simultaneously, the C
+        # preprocessor's own same-directory-first quoted-include search silently picks whichever
+        # one lives in *this* file's own directory - wrong whenever a .srv needs the .msg's own
+        # struct (Arrays.srv nesting the real BasicTypes message, say), a hard "incomplete element
+        # type" compile error, not a warning. A .srv's own file, unlike a .msg's, is never a valid
+        # *nested-field* target (ROS 2's grammar has no way to nest a .srv inside anything), so
+        # nothing outside this one function ever looks a .srv's own TickLE-side name up again the
+        # way resolve.Ros2Resolver does for a .msg - safe to qualify only this side, leaving every
+        # .msg's own existing bare "<name>.h/.c" convention (and resolve.Ros2Resolver's own
+        # matching "{msg_name}.h" computation) completely untouched.
+        srv_tickle_name = f"{name}_srv"
         spec = rosidl.parse_service_string(package, name, text)
-        ir = adapt.adapt_service(name, spec, resolver)
+        ir = adapt.adapt_service(srv_tickle_name, spec, resolver)
         header, source = render.render_service(ir)
-        written = list(cli._write_generated(name, header, source, source_label, outdir, fmt_dir))
+        written = list(cli._write_generated(srv_tickle_name, header, source, source_label, outdir, fmt_dir))
+        srv_tickle_header = f"{srv_tickle_name}.h"
         ros_service_name = f"{package}__srv__{name}"
         written += _generate_message_typesupport(
-            ir.request, f"{ros_service_name}_Request", tickle_header, source_label, outdir, fmt_dir
+            ir.request, f"{ros_service_name}_Request", srv_tickle_header, source_label, outdir, fmt_dir
         )
         written += _generate_message_typesupport(
-            ir.response, f"{ros_service_name}_Response", tickle_header, source_label, outdir, fmt_dir
+            ir.response, f"{ros_service_name}_Response", srv_tickle_header, source_label, outdir, fmt_dir
         )
         service_type_support_source = ros2_adapter.render_service_type_support(ros_service_name)
         written.append(

@@ -1,8 +1,8 @@
 diff --git a/test_msgs/CMakeLists.txt b/test_msgs/CMakeLists.txt
-index 433833b..01cfccf 100644
+index 433833b..ad178e3 100644
 --- a/test_msgs/CMakeLists.txt
 +++ b/test_msgs/CMakeLists.txt
-@@ -22,13 +22,60 @@ find_package(rosidl_default_generators REQUIRED)
+@@ -22,13 +22,57 @@ find_package(rosidl_default_generators REQUIRED)
  find_package(test_interface_files REQUIRED)
  
  # TODO(sloretz) Change to test_msgs_interfaces when ros2/rosidl_typesupport#120 is fixed
@@ -38,25 +38,22 @@ index 433833b..01cfccf 100644
 +# only entries below (msg/Builtins.msg, action/NestedMessage.action) - rmw_tickle has no action
 +# support at all (see rmw_client.c/rmw_service.c). SRV_FILES is kept (rosidl_typesupport_tickle_cpp
 +# now generates .srv typesupport too - rmw_tickle/PLAN.md's Milestone 11 row); BasicTypes.srv/
-+# Empty.srv are both flat/plain-type and kept. `Arrays.srv` stays excluded too, but for a **third,
-+# genuinely new kind of bug found this same pass (Milestone 55), unrelated to arrays or capacity at
-+# all**: `test_msgs` also has both `msg/BasicTypes.msg` and `srv/BasicTypes.srv` - two *different*
-+# interfaces sharing one base name - and this generator writes each one's own TickLE-side header to
-+# a bare `BasicTypes.h` (in its own `msg/`/`srv/` output subdirectory respectively). `Arrays.srv`'s
-+# own request nests the real `BasicTypes` *message*, but a bare `#include "BasicTypes.h"` from a
-+# file living in `srv/` resolves via the C preprocessor's own same-directory-first quoted-include
-+# search to `srv/BasicTypes.h` (`BasicTypesRequest`/`_Response`, from the unrelated *service*) -
-+# not `msg/BasicTypes.h` (`BasicTypesData`, the one actually needed) - even though both directories
-+# are on the real compile command's own `-I` list, confirmed via a real "incomplete element type
-+# 'struct BasicTypesData'" compile error. A real same-package `.msg`/`.srv` base-name collision in
-+# this generator's own header-naming convention, not anything Milestone 55 introduced - tracked as
-+# a real follow-up (directory-qualified or ROS-name-qualified generated header names), not fixed in
-+# this narrower pass; `Arrays.srv` itself doesn't need array-of-nested-type support at all (it's
-+# fixed-`[3]`-only, same as `Arrays.msg`) - the collision is the entire and only reason it stays
-+# excluded.
++# Empty.srv are both flat/plain-type and kept. `Arrays.srv` is no longer excluded either (Milestone
++# 56, following on from a real bug Milestone 55 found but didn't fix): `test_msgs` has both `msg/
++# BasicTypes.msg` and `srv/BasicTypes.srv` - two *different* interfaces sharing one base name - and
++# this generator used to write each one's own TickLE-side header to a bare `BasicTypes.h` (in its
++# own `msg/`/`srv/` output subdirectory respectively); `Arrays.srv`'s own request nests the real
++# `BasicTypes` *message*, but a bare `#include "BasicTypes.h"` from a file living in `srv/` resolved
++# via the C preprocessor's own same-directory-first quoted-include search to `srv/BasicTypes.h`
++# (`BasicTypesRequest`/`_Response`, from the unrelated *service*) instead of `msg/BasicTypes.h`
++# (`BasicTypesData`, the one actually needed) - even with both directories on the real compile
++# command's own `-I` list. Fixed at the source (`ros2_cli.py`'s own `generate()`): a `.srv`'s own
++# TickLE-side file name is now `<name>_srv.h/.c`, never colliding with any same-package `.msg`'s own
++# bare `<name>.h/.c` - safe because nothing ever looks a `.srv`'s own TickLE-side name back up the
++# way `resolve.Ros2Resolver` does for a `.msg` (ROS 2's own grammar has no way to nest a `.srv`
++# inside anything, so a `.srv` is never itself a *target* of this exact collision, only a *source*).
 +list(FILTER test_interface_files_MSG_FILES EXCLUDE REGEX
 +  ".*/(MultiNested|WStrings)\\.msg$")
-+list(FILTER test_interface_files_SRV_FILES EXCLUDE REGEX ".*/Arrays\\.srv$")
  rosidl_generate_interfaces(test_msgs
    ${test_interface_files_MSG_FILES}
    ${test_interface_files_SRV_FILES}
@@ -67,7 +64,7 @@ index 433833b..01cfccf 100644
    DEPENDENCIES builtin_interfaces
    ADD_LINTER_TESTS
  )
-@@ -41,26 +88,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
+@@ -41,26 +85,11 @@ target_include_directories(${PROJECT_NAME}_includes INTERFACE
  
  ament_export_targets(export_${PROJECT_NAME})
  
