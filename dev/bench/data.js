@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789899386505,
+  "lastUpdate": 1789899389828,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -42079,6 +42079,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 822.054,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e38be7e5ca02f50596ff1b47c9736f2fd9c4dae4",
+          "message": "perf_hil: fix 5 real bugs blocking CycloneDDS/FastDDS non-ping/pong scenarios\n\nThe \"new topic never matches\" symptom was never a discovery bug: CycloneDDS's\nwait_for_reader_match() called dds_set_status_mask() with DDS_SUBSCRIPTION_MATCHED_STATUS,\nwhich replaces the entire mask rather than OR-ing a bit in, silently clobbering the\nDDS_DATA_AVAILABLE_STATUS bit readers need for their own long-lived receive waitset.\nMatching succeeded but the receive loop could then never wake for real data again.\n\nAlso fixes, found while root-causing the above:\n- run_scenario.sh (both frameworks): `cd dir && nohup cmd &` never returns over a\n  non-interactive ssh session; `;` instead of `&&`, plus </dev/null on the backgrounded\n  process.\n- best_effort_throughput/client.c: restores the explicit match-wait removed in an earlier\n  pass on this branch - the correct official pattern for a one-way stream is\n  examples/throughput/publisher.c's wait_for_reader(), not roundtrip/ping.c's warm-up loop.\n- best_effort_latency/reliable_latency/durability_late_join client.c: `!A() || !B()`\n  short-circuited the second match-wait whenever the first succeeded.\n- reliable_throughput: DDS_HISTORY_KEEP_LAST(8) was too shallow for RELIABLE at full send\n  rate (53% app-level loss); switched to KEEP_ALL + resource_limits + batched dds_take(),\n  matching the official throughput example's own QoS.\n\nVerified on the rpi rig: all 4 of best_effort_latency/reliable_latency/\nbest_effort_throughput/reliable_throughput now pass at 0% loss on both CycloneDDS and\nFastDDS. durability_late_join remains open (separate orchestration-timing issue).\n\nAdds FastDDS best_effort_throughput/reliable_throughput scenarios (previously only\nCycloneDDS had them).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T19:13:43+09:00",
+          "tree_id": "4ff8c43159b9e3374be70c9f42869387aba2ccac",
+          "url": "https://github.com/tsnlab/tickle/commit/e38be7e5ca02f50596ff1b47c9736f2fd9c4dae4"
+        },
+        "date": 1789899388737,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 934.998,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 819.514,
             "unit": "Mbps"
           }
         ]
