@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789907936131,
+  "lastUpdate": 1789907939366,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -71710,6 +71710,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2cbea8f378d87385bda7842c5ce7628f82c40610",
+          "message": "PLAN.md: confirm Milestone 54 real CI green (eb85698, 4 CI-plumbing round trips)\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T21:35:58+09:00",
+          "tree_id": "63b0f2812e60b4c37e394d0630fdb7b019e0a5ef",
+          "url": "https://github.com/tsnlab/tickle/commit/2cbea8f378d87385bda7842c5ce7628f82c40610"
+        },
+        "date": 1789907938257,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.8,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0.1,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.9,
             "unit": "%"
           },
           {
