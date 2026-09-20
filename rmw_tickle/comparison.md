@@ -628,12 +628,26 @@ behavior, so it needs no special handling in this design at all.
 | 8 | `liveliness_loss_detection` | LIVELINESS | matched lease duration, AUTOMATIC, publisher process killed mid-stream | peer-loss detection latency, idle-state overhead of the periodic announce/heartbeat traffic itself |
 | 9 | `lifespan_expiry` | LIFESPAN | RELIABLE + duration = 100ms (fixed), artificial delay injected past that duration | confirms the sample is correctly not delivered/retransmitted past expiry (functional check), per-publish bookkeeping overhead (should be near-zero) |
 
-### Dashboard tracking (design principle 4)
+### Dashboard tracking (design principle 4) - all 9 scenarios populated, 2026-09-20
 
-Replace this section's own current free-form-prose style with a scenario × framework matrix table
-(9 scenarios × 3 frameworks = 27 cells) once real runs exist - each cell holding the measured
-metric(s), the exact QoS values used, and the run's date/commit, so a later reader can confirm two
-runs actually used the same settings before comparing their numbers.
+The matrix table this section originally planned, now populated with real, reproduced rig results
+(every cell below has its own full narrative - root causes, real bugs found, repeat counts - in the
+"Results: scenario N" sections further down; this table is a summary/index into those, not a
+replacement for them). `rmw_tickle`/TickLE-native columns are blank except scenarios 1-2 - see
+"Results: scenarios 1-2, TickLE core native" below; extending TickLE's own native HIL examples
+through scenarios 3-9 is tracked as the natural next step, not yet done.
+
+| # | scenario | CycloneDDS | FastDDS | TickLE native |
+|---|---|---|---|---|
+| 1 | `best_effort_latency` | 199/199, 0% loss, RTT 0.231/0.242/0.343ms | 199/199, 0% loss, RTT 0.253/0.296/3.295ms | 0% loss, RTT ~0.20-0.22ms avg |
+| 2 | `reliable_latency` | 199/199, 0% loss, RTT 0.230/0.302/10.865ms | 199/199, 0% loss, RTT 0.271/0.297/0.603ms | 0% loss, RTT ~0.20-0.22ms avg |
+| 3 | `best_effort_throughput` | 9312 sent, 9311 recv, 0% loss, 0.596 Mbps | 9166 sent, 9166 recv, 0% loss, 0.587 Mbps | not yet built |
+| 4 | `reliable_throughput` | 0% loss, ~44.5-59.8 Mbps sustained (unpaced) | 0% loss, ~17.3-17.9 Mbps sustained (unpaced) | not yet built |
+| 5 | `durability_late_join` | 20/20 backlog delivered, 3/3 reproduced | 20/20 backlog delivered, 3/3 reproduced | not yet built |
+| 6 | `history_depth_burst_loss` | within depth: 0 lost; beyond depth: 52 lost (exact) | identical to CycloneDDS, same run | not yet built |
+| 7 | `deadline_miss_detection` | writer misses=7 (3/3); reader misses=14; detect ~0.05ms | writer misses=7 (2/2, matches CycloneDDS); reader misses=19; detect ~-0.9ms | not yet built |
+| 8 | `liveliness_loss_detection` | detect ~2000.07ms (lease 2000ms) | detect ~1999.08ms (lease 2000ms) | not yet built |
+| 9 | `lifespan_expiry` | within: 0 lost; beyond: 10 lost (exact formula match) | within: 0 lost; beyond: 5 lost (2x fewer than CycloneDDS) | not yet built |
 
 ### Implementation plan and sequencing (2026-09-20, the user's own explicit order)
 
