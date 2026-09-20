@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789901475974,
+  "lastUpdate": 1789901479548,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -67967,6 +67967,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d305a3d1af5bdea2d3dfd8ef753c534f97ab6551",
+          "message": "Fix Ros2Resolver's .srv-nested-.msg sibling-lookup bug (Milestone 52)\n\nros2_cli.py's generate() computed sibling_dir as plain\nos.path.dirname(input_path) - correct for a .msg referencing a same-package\nsibling .msg, but wrong for a .srv doing the same thing, since ROS 2's own\npkg/{msg,srv}/ layout puts a .srv one directory away from msg/. The lookup\nsilently missed and fell through to the -I search path instead (a different,\npossibly stale copy) or UnresolvedTypeError with no -I given at all.\n\nFix: derive sibling_dir as <package root>/msg (two directories up from\n--input, then back down into msg/) rather than --input's own immediate\nparent - correct for both .msg and .srv inputs. Removes the CMake-level\nworkaround this same bug forced onto rcl_interfaces' own .srv files\n(Milestone 50).\n\nNew tests/test_ros2_srv_sibling.py reproduces the original failure before\nthe fix and passes after it. tests/test_ros2_nested.py's own Leaf.msg/\nBranch.msg fixtures moved into a real pkg/msg/ layout (fixtures_own/\ntest_msgs/msg/) - their old flat layout happened to work under the buggy\nlogic but not the corrected one.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T19:40:13+09:00",
+          "tree_id": "48b49eb43b29736a1e891a168bba3c794999ade7",
+          "url": "https://github.com/tsnlab/tickle/commit/d305a3d1af5bdea2d3dfd8ef753c534f97ab6551"
+        },
+        "date": 1789901478440,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.2,
             "unit": "%"
           }
         ]
