@@ -25,6 +25,12 @@ ssh_run() {
 ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/tickle_${SCENARIO}_server.log 2>&1 < /dev/null &"
 sleep 3
 ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
+# SIGINT the server right after the client finishes, then read its log - not just a fixed sleep
+# (2026-09-21, real bug found the hard way): some scenarios' own server.c only prints its own
+# RESULT line once interrupted or once its own (possibly much longer than the client's) internal
+# deadline elapses - durability_late_join/server.c's own `-d` (ack wait, default 40s) is the clear
+# example. A bare `sleep 1; cat log` raced that and found no RESULT line yet, and `pipefail` then
+# aborted the whole script (the real symptom this fixes) before ever reaching the pkill below.
+ssh_run "$RPI_SERVER" "pkill -INT -x server" || true
 sleep 1
 ssh_run "$RPI_SERVER" "cat /tmp/tickle_${SCENARIO}_server.log" | grep '^RESULT:'
-ssh_run "$RPI_SERVER" "pkill -INT -x server" || true

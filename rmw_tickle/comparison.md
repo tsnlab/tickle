@@ -643,8 +643,8 @@ through scenarios 3-9 is tracked as the natural next step, not yet done.
 | 1 | `best_effort_latency` | 199/199, 0% loss, RTT 0.231/0.242/0.343ms | 199/199, 0% loss, RTT 0.253/0.296/3.295ms | 0% loss, RTT ~0.20-0.22ms avg |
 | 2 | `reliable_latency` | 199/199, 0% loss, RTT 0.230/0.302/10.865ms | 199/199, 0% loss, RTT 0.271/0.297/0.603ms | 0% loss, RTT ~0.20-0.22ms avg |
 | 3 | `best_effort_throughput` | 9312 sent, 9311 recv, 0% loss, 0.596 Mbps | 9166 sent, 9166 recv, 0% loss, 0.587 Mbps | ~95-155k msg/s offered, 57-70% loss at max rate (receiver-bound, see below) |
-| 4 | `reliable_throughput` | 0% loss, ~44.5-59.8 Mbps sustained (unpaced) | 0% loss, ~17.3-17.9 Mbps sustained (unpaced) | not yet built |
-| 5 | `durability_late_join` | 20/20 backlog delivered, 3/3 reproduced | 20/20 backlog delivered, 3/3 reproduced | not yet built |
+| 4 | `reliable_throughput` | 0% loss, ~44.5-59.8 Mbps sustained (unpaced) | 0% loss, ~17.3-17.9 Mbps sustained (unpaced) | 57-100% loss, high variance (depth=64 cushion negligible at TickLE's own max rate - see below) |
+| 5 | `durability_late_join` | 20/20 backlog delivered, 3/3 reproduced | 20/20 backlog delivered, 3/3 reproduced | durable: 20/20 (3/4; 1 run showed 7x duplicate delivery); volatile: 57 received, not 0 (real semantic difference - see below) |
 | 6 | `history_depth_burst_loss` | within depth: 0 lost; beyond depth: 52 lost (exact) | identical to CycloneDDS, same run | not yet built |
 | 7 | `deadline_miss_detection` | writer misses=7 (3/3); reader misses=14; detect ~0.05ms | writer misses=7 (2/2, matches CycloneDDS); reader misses=19; detect ~-0.9ms | not yet built |
 | 8 | `liveliness_loss_detection` | detect ~2000.07ms (lease 2000ms) | detect ~1999.08ms (lease 2000ms) | not yet built |
@@ -1066,6 +1066,93 @@ verified by reading `tt_Publisher_publish()` directly) - so it doesn't change th
 validity, just a real, secondary, and currently-benign side effect of the same overload worth
 TickLE Dev's awareness if it ever needs to change from a warning into something that self-heals.
 
+### Results: scenario 4, `reliable_throughput`, TickLE core native (2026-09-21)
+
+**Design**: same one-way max-rate stream as scenario 3, plus RELIABLE + `depth =
+tt_MAX_RELIABLE_HISTORY` (64, TickLE's own hard architectural cap - see
+`examples/perf_hil/tickle/reliable_throughput/client.c`'s own doc comment). No blocking
+"wait for all acks" API exists in `tickle.h` (only `tt_Publisher_request_ack()`, which solicits
+but doesn't block) - a fixed 3s drain period after the send loop substitutes.
+
+**Results, real rig runs (`-d 8`), reproduced 3/3 - severe loss every time, high variance**:
+
+| run | sent | recv | true loss = sent−recv | true loss % | server's own `lost` (gap-based) |
+|---|---:|---:|---:|---:|---:|
+| 1 | 1,281,287 | 3 | 1,281,284 | ~100% | 473,504 |
+| 2 | 874,640 | 279,907 | 594,733 | 68.0% | 2,874 |
+| 3 | 1,214,011 | 522,878 | 691,133 | 56.9% | 49,730 |
+
+**Reading**: a mathematically expected consequence, not a surprise once framed this way -
+`depth=64` at TickLE's own ~95-155k msg/s max-rate ceiling (scenario 3) represents under a
+millisecond of cushion, vs. the CycloneDDS/FastDDS twins' own `depth=4000`-ish workaround
+representing several seconds of cushion at *their* much lower ~1,000-1,200/s ceiling - RELIABLE
+retransmission traffic competing for the same already-saturated link only compounds scenario 3's
+own receiver-bound loss rather than curing it. Run 1's near-total collapse (`recv=3`) is a real,
+observed extreme of the same failure mode, not an outlier to discard - high run-to-run variance is
+itself part of the finding (this scenario, as designed - unbounded max rate, matching scenario 3's
+own methodology for comparability - does not produce a stable, repeatable throughput number for
+TickLE the way it does for either DDS vendor). The server's own gap-based `lost` field has the
+identical trailing-blind-spot limitation documented under scenario 3 above; sent-vs-recv is again
+the only trustworthy figure.
+
+### Results: scenario 5, `durability_late_join`, TickLE core native (2026-09-21) - a real cross-framework QoS semantic difference, not a bug
+
+**Design**: `examples/perf_hil/tickle/durability_late_join/{client,server}.c` - same role split as
+the CycloneDDS/FastDDS twins (server.c publishes `backlog_count=20` samples on "ping" before any
+subscriber exists, waits for client.c's own late ack on "pong"). `run_scenario.sh` needed a real
+fix this pass: its generic "sleep 1; cat log" tail raced this scenario's own much longer server-side
+wait (up to `-d`, default 40s, for an ack that might be delayed) - fixed by `pkill -INT`ing the
+server immediately after the client returns, then reading its log (the server's own SIGINT handler
+makes it print its RESULT line and exit within its 500ms poll granularity, not up to 40s later).
+
+**Results, durable (`-D`), reproduced 4 runs**:
+
+| run | received | expected | note |
+|---|---:|---:|---|
+| 1 | 140 | 20 | `140 = 7×20` exactly - see below |
+| 2 | 20 | 20 | clean |
+| 3 | 20 | 20 | clean |
+| 4 | 20 | 20 | clean |
+
+**Results, volatile (no `-D`), reproduced 3/3 - NOT 0 as expected**:
+
+| run | received | expected (DDS convention) |
+|---|---:|---:|
+| 1 | 57 | 0 |
+| 2 | 57 | 0 |
+| 3 | 57 | 0 |
+
+**Reading #1 - a real duplicate-delivery bug, correlated with the same liveliness false-positive
+documented under scenario 3/4 above**: run 1's `received=140` is exactly `7×20` - a clean, whole
+multiple, not noise. Read directly (`register_subscriber_peer_on_publisher()`, `tickle.c`):
+`deliver_durability_backlog()` fires on every `upsert_peer()` call that returns "genuinely new" for
+a source - and `check_liveliness()`'s own `forget_peers_from_source()` (the same function behind
+the "presumed dead" warning) wipes a peer's bookkeeping entirely, so the *next* UPDATE from that
+same, still-alive peer looks like a fresh discovery and re-triggers a full backlog re-push. Run 1
+happened immediately after three back-to-back scenario 4 runs that left the link/nodes genuinely
+overloaded (matching scenario 3/4's own "presumed dead" observations); runs 2-4, started with more
+of a gap, came back clean. **This elevates the scenario 3/4 "presumed dead" warning from a benign
+log line into a real, reproduced, data-duplicating correctness issue for DURABLE Publishers under
+sustained load** - worth flagging to TickLE Dev directly, not just noting here (done, see below).
+
+**Reading #2 - a genuine, code-confirmed cross-framework QoS semantic difference (not a bug)**: the
+volatile control case is expected to deliver 0 samples (the CycloneDDS/FastDDS dashboard rows both
+show exactly this). TickLE consistently, deterministically delivers 57 instead. Root cause, read
+directly in `tickle.c`: `process_acknack()`'s retransmit loop is explicitly **not** gated by
+`pub->durable` at all ("answers any ACKNACK it can, straight off `reliable_cache`, regardless" -
+`tickle.c`'s own comment) - only `deliver_durability_backlog()`'s *proactive push* path checks
+`durable`. Both this scenario's server.c (matching reliable_throughput's own "as deep as this
+framework allows" choice) and the CycloneDDS/FastDDS twins set RELIABLE unconditionally, independent
+of the durable toggle - but real DDS's own RELIABLE repair is scoped to samples still in flight
+*after* a reader matches, so a reader joining after everything was already written and acked gets
+nothing extra without DURABILITY explicitly extending the writer's retained history. TickLE's
+`reliable_cache`-backed repair makes no such distinction: any newly-matched RELIABLE subscriber's
+ACKNACK gets served from whatever is currently cached, regardless of when it joined or whether
+`durable` was ever set - so "RELIABLE + VOLATILE" in TickLE does not achieve the same late-joiner
+isolation it does in DDS. The exact repeat count (57, not a single clean `20`) reproduces
+deterministically but wasn't chased down to its precise retransmission-count formula this pass -
+real, worth TickLE Dev's awareness (see below), not investigated further here.
+
 ### Results: scenario 6, `history_depth_burst_loss` (2026-09-20), both frameworks
 
 **Design**: RELIABLE + `HISTORY KEEP_LAST(8)`, matched exactly on both writer and reader. The
@@ -1235,8 +1322,10 @@ Scenarios 1-9 (`best_effort_latency`, `reliable_latency`, `best_effort_throughpu
 `reliable_throughput`, `durability_late_join`, `history_depth_burst_loss`,
 `deadline_miss_detection`, `liveliness_loss_detection`, `lifespan_expiry`) all have real,
 reproduced CycloneDDS and FastDDS results in this document. TickLE core's own native HIL examples
-(`examples/perf_hil/tickle/`) now cover scenarios 1-3 (latency + best-effort throughput) - see
-"Results: scenario 3, `best_effort_throughput`, TickLE core native" above. Extending them through
-scenarios 4-9 (`reliable_throughput`, `durability_late_join`, `history_depth_burst_loss`,
-`deadline_miss_detection`, `liveliness_loss_detection`, `lifespan_expiry`), closing Project Goal 2
-fully rather than just its own latency/throughput slice, is the natural next step for this track.
+(`examples/perf_hil/tickle/`) now cover scenarios 1-5 (latency, throughput, and durability) - see
+"Results: scenario 3/4/5, TickLE core native" above, including two real findings worth TickLE Dev's
+own attention (a liveliness false-positive causing duplicate DURABLE delivery under load, and a
+real RELIABLE+VOLATILE semantic difference from DDS). Extending them through scenarios 6-9
+(`history_depth_burst_loss`, `deadline_miss_detection`, `liveliness_loss_detection`,
+`lifespan_expiry`), closing Project Goal 2 fully rather than just its own latency/throughput/
+durability slice, is the natural next step for this track.
