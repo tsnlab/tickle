@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789945778994,
+  "lastUpdate": 1789945782408,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -56863,6 +56863,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/bc482a2306167274921e2fd7063a47d140127d57"
         },
         "date": 1789939109010,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "24f9d38806a6e92dd419a8b732b94ab994bd9358",
+          "message": "comparison.md: add explicit sent/recv counts + send/recv Mbps to scenario 3-4\n\nThe user's own explicit feedback (2026-09-21): loss alone doesn't show the\nfull picture - sent, received, and both offered and actually-delivered\nthroughput need to be visible together to read performance correctly,\nespecially for scenario 4's own cross-vendor RELIABLE-recovery divergence\n(TickLE/FastDDS lose real throughput to unrecovered loss; CycloneDDS fully\nrecovers but at whatever its own noisy send rate happens to be that run).\n\nrecv Mbps is computed uniformly for all three (TickLE's own server.c doesn't\nprint it) from recv_count * 76 bytes * 8 / elapsed_s, noted explicitly so the\nderivation isn't hidden. Every condition shown as a 2/2 range, not averaged,\nsince the run-to-run variance itself is part of the finding for several rows.",
+          "timestamp": "2026-09-21T08:06:49+09:00",
+          "tree_id": "e8b612ab8dfa24633ee08bb4599df26ed5737475",
+          "url": "https://github.com/tsnlab/tickle/commit/24f9d38806a6e92dd419a8b732b94ab994bd9358"
+        },
+        "date": 1789945781297,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
