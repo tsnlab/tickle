@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789939110096,
+  "lastUpdate": 1789939113569,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -65883,6 +65883,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.883,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "bc482a2306167274921e2fd7063a47d140127d57",
+          "message": "comparison.md: scenario 6/9 duplicate delivery likely a separate root cause\n\nTickLE Dev's own follow-up investigation found deliver_data_to_subscriber()\nhas no seq_no-based dedup at all (by design, Milestone 47's own documented\nresidual) - any ACKNACK retransmit overlapping an already-delivered original\nreaches the app twice, independent of the liveliness false-positive Milestone\n59 fixed. Supporting evidence added: every scenario 6/9 reproduction this\npass showed no \"presumed dead\" warning, unlike scenario 5's own cases, which\nalways showed one. TickLE Dev confirming final scope with the user.",
+          "timestamp": "2026-09-21T06:15:18+09:00",
+          "tree_id": "d26c2e3aa2a8369ca57a195060bd9202e952c177",
+          "url": "https://github.com/tsnlab/tickle/commit/bc482a2306167274921e2fd7063a47d140127d57"
+        },
+        "date": 1789939112475,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 65.157,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 63.388,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.719,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.783,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.696,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 70.384,
             "unit": "Mbps"
           }
         ]
