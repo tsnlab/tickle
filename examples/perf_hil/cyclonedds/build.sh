@@ -33,7 +33,13 @@ fi
 
 CC="${CC:-gcc}"
 CFLAGS="-O2 -I$GEN_DIR -I$CDDS_INCLUDE"
-LDFLAGS="-L$CDDS_LIB -Wl,-rpath,$CDDS_LIB -lddsc -lm"
+# --disable-new-dtags: DT_RPATH (old-style, transitively searched by every library this binary
+# loads, including libddsc.so's own dependency on libiceoryx_binding_c.so) instead of the
+# linker's modern default DT_RUNPATH, which only covers this executable's own *direct*
+# dependencies - found the hard way (repeat runs failing to find libiceoryx_binding_c.so unless
+# /opt/ros/*/setup.bash was sourced first in that exact shell, easy to forget) - this way the
+# binary is self-contained regardless of whether the invoking shell sourced anything.
+LDFLAGS="-L$CDDS_LIB -Wl,-rpath,$CDDS_LIB -Wl,--disable-new-dtags -lddsc -lm"
 
 $CC $CFLAGS -o "$SCEN_DIR/server" "$SCEN_DIR/server.c" "$GEN_DIR/Bench.c" $LDFLAGS
 $CC $CFLAGS -o "$SCEN_DIR/client" "$SCEN_DIR/client.c" "$GEN_DIR/Bench.c" $LDFLAGS
