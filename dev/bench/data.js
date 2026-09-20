@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789914904312,
+  "lastUpdate": 1789914907859,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -51231,6 +51231,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/215b1f98d60de5114c1fbd10db7e8032b1529c92"
         },
         "date": 1789914560619,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "171e288c64d19a0ac2f1b8946a2d24722a74df8f",
+          "message": "Fix same-package .msg/.srv header-name collision for real (Milestone 56)\n\nUn-excludes Arrays.srv, closing Milestone 55's own real follow-up. A\nsame-package .msg and .srv sharing one base name (test_msgs' own\nBasicTypes.msg + BasicTypes.srv) wrote colliding bare `<name>.h/.c`\nTickLE-side headers into their own msg/srv output subdirectories - since\nboth directories sit on one compile unit's own -I list at once, the C\npreprocessor's own same-directory-first quoted-include search picked\nwhichever one lived in the including file's own directory, wrong whenever\na .srv needed a same-package .msg's own struct.\n\nFixed at the source: ros2_cli.py's generate() now writes a .srv's own\nTickLE-side file as `<name>_srv.h/.c`, never `<name>.h/.c` - safe because\nnothing else ever looks a .srv's own TickLE-side name back up the way\nresolve.Ros2Resolver does for a .msg (ROS 2's grammar has no way to nest\na .srv inside anything). rosidl_typesupport_tickle_c_generate_interfaces.cmake's\nown add_custom_command(OUTPUT ...) declaration needed the matching fix -\nfound only once this hit a real CMake build, not caught by calling\nros2_cli.generate() directly from Python.\n\nVerified: full tools/typesupport pytest suite (69/69, no regressions); a\nfrom-scratch local colcon build of test_interface_files+builtin_interfaces+\ntest_msgs+rcl_interfaces (Arrays.srv now included) builds clean, 4/4\npackages. Real CI confirmation pending on push.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-20T23:27:46+09:00",
+          "tree_id": "e51614e201ebf08fb6eff64ca9c572a7e69f9fcf",
+          "url": "https://github.com/tsnlab/tickle/commit/171e288c64d19a0ac2f1b8946a2d24722a74df8f"
+        },
+        "date": 1789914906747,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
