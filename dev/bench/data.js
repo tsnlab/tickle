@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789919457093,
+  "lastUpdate": 1789919460469,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -48926,6 +48926,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 821.563,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "de3fa6e10d1cb3b306413c22fb0f7b69a4be0bf6",
+          "message": "comparison.md: scenario 4+5 TickLE-native results; run_scenario.sh ack-wait fix\n\nScenario 4 (reliable_throughput): 57-100% loss, high variance, reproduced 3/3 -\ndepth=64 (TickLE's own hard cap) is negligible cushion at TickLE's own\n~95-155k msg/s max-rate ceiling (scenario 3), unlike the DDS twins' own\ndepth~4000 workaround at their much lower ~1,000/s ceiling.\n\nScenario 5 (durability_late_join): two real findings.\n1. A liveliness false-positive (the same \"presumed dead\" warning from scenario\n   3/4) causes real duplicate DURABLE backlog delivery under load - forget_peers_\n   from_source() wipes a peer's bookkeeping, so the next UPDATE from that same,\n   still-alive peer looks like a fresh discovery and re-triggers a full backlog\n   push (received=140=7x20 in one run). Elevates that warning from benign log\n   line to a real correctness issue worth TickLE Dev's attention.\n2. RELIABLE+VOLATILE doesn't achieve DDS-equivalent late-joiner isolation:\n   process_acknack()'s retransmit loop isn't gated by pub->durable at all (only\n   the proactive push path is) - a newly-matched RELIABLE subscriber's ACKNACK\n   gets served from whatever's cached regardless of when it joined. Volatile\n   control case delivered 57 samples (deterministic, reproduced 3/3), not the\n   0 DDS's own RELIABLE+VOLATILE correctly gives.\n\nrun_scenario.sh: pkill -INT the server right after the client finishes, then\nread its log - not a bare sleep, which raced durability_late_join/server.c's\nown much longer ack-wait and aborted the script under pipefail.",
+          "timestamp": "2026-09-21T00:47:41+09:00",
+          "tree_id": "fc03fecf0319ff1b0987b2fb6fbb0d91e3117aa8",
+          "url": "https://github.com/tsnlab/tickle/commit/de3fa6e10d1cb3b306413c22fb0f7b69a4be0bf6"
+        },
+        "date": 1789919459331,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 935.028,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 821.375,
             "unit": "Mbps"
           }
         ]
