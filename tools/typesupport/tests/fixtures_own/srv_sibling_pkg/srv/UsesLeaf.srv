@@ -1,0 +1,10 @@
+# Nests Leaf with no package prefix, resolved to *this* package's own msg/ dir - the same
+# same-package-sibling case Branch.msg exercises for a .msg-from-.msg nested lookup (see
+# fixtures_own/Leaf.msg's own comment), but here the *referencing* file is a .srv, one directory
+# level away from msg/Leaf.msg (srv/UsesLeaf.srv vs. msg/Leaf.msg) - the real ROS 2 pkg/{msg,srv}
+# layout rcl_interfaces' own SetParameters.srv (nesting msg/Parameter) hits, and the exact shape
+# ros2_cli.generate()'s own sibling_dir computation used to get wrong (it looked in this file's own
+# srv/ directory instead of msg/, silently falling through to the -I search path instead).
+Leaf leaf_value
+---
+bool ok

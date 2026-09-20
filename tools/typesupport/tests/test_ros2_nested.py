@@ -101,12 +101,17 @@ def ros2_nested_generated(tmp_path_factory):
     invocation shape, as the real CMake extension - into one shared outdir. The ONLY place in this
     module that calls ros2_cli.generate() (see this module's own docstring on why) - returns
     (outdir, branch_written) so every test below shares this one generation pass instead of
-    triggering empy a second time."""
+    triggering empy a second time. Both fixtures live under a real pkg/msg/ layout (fixtures_own/
+    test_msgs/msg/), not a flat directory - ros2_cli.generate()'s own sibling_dir computation
+    derives msg/ from --input's own *package root* (two directories up), not just its immediate
+    parent, matching a real ROS 2 package's actual layout (see test_ros2_srv_sibling.py for the
+    case this distinction actually matters: a .srv nesting a same-package .msg)."""
     outdir = tmp_path_factory.mktemp("ros2_nested")
+    pkg_dir = FIXTURES_OWN / "test_msgs" / "msg"
 
-    ros2_cli.generate("test_msgs", "msg", "Leaf", str(FIXTURES_OWN / "Leaf.msg"), str(outdir), style_dir=str(REPO_ROOT))
+    ros2_cli.generate("test_msgs", "msg", "Leaf", str(pkg_dir / "Leaf.msg"), str(outdir), style_dir=str(REPO_ROOT))
     branch_written = ros2_cli.generate(
-        "test_msgs", "msg", "Branch", str(FIXTURES_OWN / "Branch.msg"), str(outdir), style_dir=str(REPO_ROOT)
+        "test_msgs", "msg", "Branch", str(pkg_dir / "Branch.msg"), str(outdir), style_dir=str(REPO_ROOT)
     )
     return outdir, branch_written
 

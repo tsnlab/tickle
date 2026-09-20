@@ -108,11 +108,20 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
     source_label = os.path.basename(input_path)
     text = open(input_path, encoding="utf-8").read()
     tickle_header = f"{name}.h"
-    # A nested field's own type is looked for alongside this exact .msg/.srv first (resolve.
-    # Ros2Resolver's own "same-package sibling" case - see its doc comment) - the directory
-    # holding --input is exactly where a sibling .msg would live too, ROS 2's own pkg/msg/*.msg
-    # layout.
-    resolver = resolve.Ros2Resolver(package, os.path.dirname(input_path), include_dirs)
+    # A nested field's own type is looked for in this package's own msg/ dir first (resolve.
+    # Ros2Resolver's own "same-package sibling" case - see its doc comment) - a *nested* field is
+    # always some other .msg, never a .srv (ROS 2's own grammar doesn't allow a .srv to nest another
+    # .srv), so this is msg/ regardless of whether --input itself is a .msg or a .srv: for a .msg,
+    # os.path.dirname(input_path) already *is* <pkg>/msg, so going up one more level and back down
+    # into "msg" is a no-op; for a .srv, plain os.path.dirname(input_path) would give <pkg>/srv
+    # instead - the real bug this sidesteps (found via rcl_interfaces' own SetParameters.srv, which
+    # nests msg/Parameter - a same-package sibling *lookup that used to look in the wrong
+    # directory and silently fall through to a stale copy on the -I search path instead, e.g. an
+    # apt-installed rcl_interfaces missing rcl_interfaces_rmw_tickle.patch's own `# @capacity`
+    # annotations - see rosidl_typesupport_tickle_c_generate_interfaces.cmake's own former .srv
+    # skip, removed together with this fix).
+    package_root = os.path.dirname(os.path.dirname(input_path))
+    resolver = resolve.Ros2Resolver(package, os.path.join(package_root, "msg"), include_dirs)
 
     if subfolder == "msg":
         spec = rosidl.parse_message_string(package, name, text)
