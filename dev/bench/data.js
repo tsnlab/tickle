@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790007743562,
+  "lastUpdate": 1790007747493,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -99922,6 +99922,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/acc7e7afe92e69464e0e1f65b512a4c7d00a8232"
         },
         "date": 1790005634443,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "volatile recv",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ae7b075010edae63bd7c67b2bb5c00c0a3435421",
+          "message": "run_perf.sh: fix SC2086 shellcheck failure, verify with a real local shellcheck for the first time\n\nCheck all failed on b505ba3 (SC2086 - the deliberately-unquoted \\$client_args word-splitting in\nrun_scenario()). A shellcheck directive comment placed between a `&&` line continuation and its\nfollowing command confused shellcheck's own parser (SC1009/SC1073/SC1126/SC1072) - moved the\nexplanatory comment and the disable directive above the whole subshell instead, and collapsed the\ntwo-line `cd ... &&`/command continuation into one line, so the directive sits directly above the\none command it applies to.\n\nDownloaded shellcheck v0.10.0 locally (no shellcheck/docker was available in this environment)\nand ran it directly against every script under .github/scripts/ before this push - clean now.\nShould have done this before the very first push instead of relying on synthetic bash-level tests\nalone; the SC2034 and SC2086 failures on the last two commits were both real, both something a\nlocal shellcheck run would have caught immediately.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T01:16:34+09:00",
+          "tree_id": "edfcf5e308f5b366c4e03b45c4a463a51d8c631a",
+          "url": "https://github.com/tsnlab/tickle/commit/ae7b075010edae63bd7c67b2bb5c00c0a3435421"
+        },
+        "date": 1790007746255,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
