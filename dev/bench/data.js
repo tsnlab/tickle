@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789990045396,
+  "lastUpdate": 1789990049149,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -92493,6 +92493,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d05cd079e2345e7543d4d8eba5165454a7544c55",
+          "message": "tickle.c: fire per-entity-lease liveliness departure from discovery_callback too\n\nMilestone 62 row 3 added tt_Node_entity_alive() but only wired it into\nrmw_tickle's count_matching_locked()/count_not_alive_matching_locked().\nTickLE Plan noticed, ahead of re-measuring comparison.md scenario 8, that\ncheck_liveliness()'s own fixed ~3s node-level sweep was still the only\nthing firing discovery_callback(departed=true) - the native\nliveliness_loss_detection HIL scenario reads that same is_departed flag,\nso the entity-lease fix was invisible to it. Independently confirmed via\ngrep/read before acting. User decision: extend the native path too\n(\"2번으로 진행하자\"), rather than document raw core as node-level-only.\n\nNew tombstone_entities_past_own_lease(node, time), called once per\ncheck_liveliness() tick right after the existing node-level loop: walks\nnode->discovery->entities[] directly, and for any alive entity with a\nnon-zero liveliness_lease_duration_ns, tombstones it (and fires\ndeparted=true) as soon as tt_Node_entity_alive() reports it stale -\nindependent of whether the whole owning node is presumed dead. Same\n~1s granularity as the existing sweep (reuses its own tick), so a\nleased entity's departure now surfaces within about one tick of its\nown lease boundary instead of only ever at the ~3s node-wide mark.\nZero-lease entities are untouched, matching Milestone 62's own\nzero-lease behavior.\n\nTwo new whitebox tests in tests/test_discovery.c pin the behavior and\nits contrast case (still within lease -> no callback).\n\nVerified: make test/make sanitize/make -C platform/freertos/\nclang-format --dry-run --Werror/clang-tidy all clean; rmw_tickle\nrebuilt clean and its own 20/20 tests pass (no crash cluster this\nrun - needed `source setup.bash` in the same shell as colcon test).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T15:34:29+09:00",
+          "tree_id": "bd5110284a4da4f1afedddddeafd84a455b931a8",
+          "url": "https://github.com/tsnlab/tickle/commit/d05cd079e2345e7543d4d8eba5165454a7544c55"
+        },
+        "date": 1789990048014,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1.1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 5,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10.1,
             "unit": "%"
           },
           {
