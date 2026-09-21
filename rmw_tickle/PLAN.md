@@ -90,7 +90,7 @@ wire-protocol work last):
 
 `rmw_tickle_validate_qos_profile()` (`src/rmw_qos.c`, Milestone 7) is what actually enforces "rejected until implemented" above - see that milestone's own row for the exact per-policy accepted-value list.
 
-## DDS semantic-parity backlog (found 2026-09-21, not yet started)
+## DDS semantic-parity backlog (found 2026-09-21, closed 2026-09-21 - all 5 rows implemented/verified or closed by decision)
 
 The table above tracks whether each policy's own `rmw` API surface is wired up at all - every row
 is ✅. This is a different, narrower question: for the policies that *are* wired up, does TickLE
@@ -131,6 +131,165 @@ current core/`rmw_tickle` split, no work needed). Row 5 (LIFESPAN) verified and 
 real HIL slope test, matches the expected formula within noise). **The DDS semantic-parity backlog
 table is now fully closed** - every row either implemented-and-verified or closed by explicit user
 decision.
+
+## DDS QoS policy coverage inventory (2026-09-21, TickLE Plan, at the user's own request)
+
+The DDS semantic-parity backlog above only covers the six policies TickLE core already has some
+wire-visible mechanism for - it never asked the broader question: of the OMG DDS spec's full
+22-policy QoS set, which does TickLE core implement *at all*, and for the rest, is that a real gap
+worth closing or a deliberate non-goal given TickLE's own design constraints (malloc-free, fixed-
+capacity tables, embedded targets, no `rmw`-exposed use case demanding it)? Verified by direct
+`grep`/read of `include/tickle/tickle.h`, `include/tickle/config.h`, and `src/tickle.c` for every
+policy name below - not assumed from the "QoS roadmap" table's own already-known six.
+
+**Implemented (6/22)** - exactly the six the "QoS roadmap" table above already tracks, which is not
+a coincidence: this is also the *entire* field set ROS 2's own `rmw_qos_profile_t` exposes
+(`history`/`depth`, `reliability`, `durability`, `deadline`, `lifespan`, `liveliness`/
+`liveliness_lease_duration`) - `rmw_tickle`'s own `rmw_qos_profile_check_compatible()`
+(`rmw_qos.c`) confirms no other policy is even reachable through the `rmw` layer today. TickLE core
+already covers 100% of what its own stated primary consumer (ROS 2 via `rmw_tickle`) can ask for.
+
+**Not implemented (16/22)** - zero fields, zero wire bits, zero mentions anywhere in
+`tickle.h`/`tickle.c`/`config.h` (confirmed by grep, not assumed):
+
+| Policy | Why TickLE doesn't have it | Recommendation |
+|---|---|---|
+| OWNERSHIP | Arbitrates between multiple Writers of the *same instance* (keyed topic) - TickLE has no instance/key concept at all, only flat per-topic delivery. Meaningless without that foundation. | **Not planned** - would need a fundamentally different data model (per-key identity, keyed history), out of scope unless TickLE itself grows keyed topics as a feature |
+| OWNERSHIP_STRENGTH | Depends entirely on OWNERSHIP above. | **Not planned**, same reason |
+| WRITER_DATA_LIFECYCLE | Governs an *instance's* disposal on unregister - same missing foundation as OWNERSHIP. | **Not planned**, same reason |
+| READER_DATA_LIFECYCLE | Governs purging a *no-writer*/disposed *instance* - same missing foundation. | **Not planned**, same reason |
+| DURABILITY_SERVICE | Only meaningful for TRANSIENT/PERSISTENT durability (a service-managed history that outlives the Writer's own process) - TickLE only implements TRANSIENT_LOCAL (tied to the live Publisher's own in-process `reliable_cache`), the same real-DDS level `rmw_tickle`'s own QoS roadmap row 4 already limits itself to. | **Not planned** unless TRANSIENT/PERSISTENT durability itself is ever added (a much bigger feature needing real persistent storage - in tension with TickLE's embedded/malloc-free design) |
+| PRESENTATION | Coordinates atomic/ordered access across a *group* of instances/topics - a multi-topic transactional feature. `rmw_qos_profile_t` doesn't expose it either. | **Not planned** - high implementation cost, no evidence any real consumer (ROS 2 or otherwise) needs it through this stack |
+| ENTITY_FACTORY | Controls whether a newly-created entity starts enabled or not. TickLE's `tt_Node_create_*()` calls are synchronous construct-and-use with no separate enable step at all. | **N/A by design** - the policy is moot against TickLE's own construction API shape |
+| TRANSPORT_PRIORITY | A hint for underlying transport-level QoS (e.g. DSCP tagging). TickLE runs over plain UDP broadcast with no transport-level prioritization hook today. | **Not planned** until/unless TickLE grows its own transport-level QoS support (a separate, bigger feature) |
+| USER_DATA / TOPIC_DATA / GROUP_DATA | Opaque application-defined byte blobs carried on discovery announces. Mechanically easy to add (a length-prefixed field on `tt_UpdateEntity`, the same shape `type`/`name` already use) but adds wire overhead to every UPDATE broadcast with no concrete consumer asking for it yet. | **Low priority, deferred** - cheap to add later if a real use case shows up, not worth the broadcast overhead speculatively |
+| PARTITION | String-set-based logical topic grouping. ROS 2 users already get an equivalent through fully-qualified topic namespacing, so this would be largely redundant for `rmw_tickle`'s own consumers; a native TickLE user might still want it for raw grouping without separate topic names. | **Low priority, deferred** - no driving use case yet, moderate effort (a partition-string comparison in discovery matching) |
+| LATENCY_BUDGET | A hint that delivery may be delayed up to some duration, letting an implementation batch for efficiency. TickLE already has a coarse, binary version of this idea - `tt_Publisher.batch` (flush-immediately vs. defer-to-`tt_NODE_TX_INTERVAL`) - just not as a numeric, QoS-negotiated duration. | **Worth doing** - natural extension of an already-existing mechanism, see implementation plan below |
+| TIME_BASED_FILTER | Subscriber-side `minimum_separation` - drop deliveries that arrive faster than the reader wants them, even if the writer sends faster. Real value for a bandwidth/CPU-constrained embedded consumer that only wants, say, one update per 100ms from a 1kHz publisher. No architectural conflict with TickLE's design. | **Worth doing** - see implementation plan below |
+| DESTINATION_ORDER | BY_RECEPTION_TIMESTAMP vs. BY_SOURCE_TIMESTAMP delivery ordering. TickLE already delivers in receive order today (the de facto BY_RECEPTION_TIMESTAMP behavior) but never declares this as a QoS knob, offers the alternative, or validates RxO compatibility for it. | **Worth formalizing** - see implementation plan below (the cheapest of the three, since the default behavior already matches one of the two kinds) |
+| RESOURCE_LIMITS | `max_samples`/`max_instances`/`max_samples_per_instance`. The non-keyed subset (`max_samples`) is already functionally covered by `tt_ReliableCache.capacity` (Milestone 61); the instance-scoped parts need the same missing foundation as OWNERSHIP. | **Mostly already covered in spirit** - no separate work needed beyond what Milestone 61 already did, until/unless keyed topics exist |
+
+### Implementation plan for the three "worth doing" policies
+
+All three are additive (a new RxO-compatible field/bit, no change to any existing behavior when
+unset/default) and share one wire-protocol shape: extend `struct tt_UpdateEntity` (another
+`tt_VERSION` bump, the same "no partial-compatibility case to handle" pattern already used four
+times - `tickle.h`'s own version-history comment) with the new duration/enum fields, mirror them
+onto `tt_Publisher`/`tt_Subscriber` as offered/requested pairs (the exact same shape
+`deadline_duration_ns`/`liveliness_lease_duration_ns` already use), and add the RxO compatibility
+check to `subscriber_incompatible_with_publisher()`.
+
+1. **DESTINATION_ORDER** (cheapest - do first): add a `bool destination_order_by_source` (or a
+   2-value enum) to `tt_Publisher`/`tt_Subscriber`, wire bit alongside the existing
+   `tt_UPDATE_QOS_*` bits. BY_RECEPTION_TIMESTAMP needs zero new logic (already the real behavior).
+   BY_SOURCE_TIMESTAMP needs a small per-`tt_WriterProxy` reorder step: hold a late-arriving-but-
+   earlier-timestamped sample back from `callback` until any still-outstanding earlier-timestamped
+   gap is resolved or given up on - a bounded, small addition to the existing gap-tracking
+   machinery already in `update_reliable_ack()`, not a new subsystem. RxO: a Subscriber requesting
+   BY_SOURCE_TIMESTAMP against a Publisher that never promised delivery-order metadata should be
+   incompatible the same way DEADLINE/LIVELINESS RxO already works.
+2. **LATENCY_BUDGET**: add `uint64_t latency_budget_duration_ns` to `tt_Publisher`, defaulting 0
+   ("no budget", i.e. today's flush-immediately-unless-`batch`-is-set behavior unchanged). Non-zero
+   reframes the existing `batch` flag as a *duration* instead of a bare boolean:
+   `tt_Publisher_publish()` defers the actual `node_flush()` up to that many nanoseconds (still
+   bounded by `tt_NODE_TX_INTERVAL`'s own existing tick, not a new timer subsystem) instead of
+   either "always immediate" or "always deferred to the next tick" - a real efficiency knob for a
+   Publisher that wants to coalesce bursts without giving up all latency control the way plain
+   `batch = true` does today. RxO: purely advisory in real DDS (offered <= requested, matching
+   `duration_offered_satisfies_requested()`'s own existing pattern in `rmw_qos.c`), same
+   compatibility direction as DEADLINE/LIVELINESS.
+3. **TIME_BASED_FILTER**: add `uint64_t minimum_separation_ns` to `tt_Subscriber`, defaulting 0
+   ("no filter", every delivery passes through, today's only behavior). Non-zero: `process_data()`
+   tracks a per-`tt_WriterProxy` `last_delivered_ns` and silently drops (never calls `callback`,
+   but still updates `received_bitmap`/`ack_seq_no` normally - RELIABLE's own delivery-confirmation
+   contract must stay intact even for a filtered-out sample, exactly the same "delivered to the
+   protocol, dropped at the application boundary" split LIFESPAN's own expiry already establishes)
+   any arrival within `minimum_separation_ns` of the last one actually delivered. No RxO concept in
+   real DDS for this policy (Subscriber-only, no Publisher-side equivalent to negotiate against).
+
+**Suggested order**: DESTINATION_ORDER first (cheapest, formalizes existing behavior), then
+TIME_BASED_FILTER (clearest standalone embedded-use-case value), then LATENCY_BUDGET (extends an
+existing mechanism, lowest urgency since `batch` already provides a coarse version of it). None of
+the three are urgent - no real scenario or `rmw_tickle` consumer is blocked on any of them today;
+listed here so the gap is documented and scoped rather than undiscovered, per the user's own
+request. Not assigned to TickLE Dev yet - pending the user's own prioritization against the perf-
+comparison findings below.
+
+## TickLE-native performance: comparison and improvement plan (2026-09-21, TickLE Plan, at the user's own request)
+
+Scope: TickLE core (native, no `rmw`) vs. FastDDS and CycloneDDS's own native APIs, using
+`comparison.md` §3's own already-measured, real-HIL numbers (scenarios 1-9) - not `rmw_tickle`'s
+own separate same-host/cross-host gap (§5, already tracked under this document's "QoS roadmap"
+Milestone 45 and now also assigned to TickLE Dev as a `perf sched` follow-up).
+
+**Where TickLE already wins, decisively** - scenarios 1-3 (`best_effort_latency`/`reliable_latency`/
+`best_effort_throughput`): TickLE's own raw latency (~0.20-0.22ms avg RTT) beats both DDS vendors
+(FastDDS ~0.25-0.30ms, CycloneDDS ~0.23-0.24ms) on identical hardware, and TickLE's own best-effort
+throughput (1.244-1.245M sent/recv, 0% loss, 94.5 Mbps) is both *higher* and *cleaner* than either
+DDS vendor's own noisy, loss-heavy numbers at the same max-send-rate/8s design (FastDDS 19.6→10.4-
+18.7 Mbps with 4.6-47.2% loss; CycloneDDS 68-72→59.6-63.0 Mbps with 7.2-17.2% loss). The likely
+reason, not separately profiled but well-supported by the codebase's own design: TickLE's minimal
+CDR-4 wire format and small, malloc-free codebase carry far less per-message processing overhead
+than a full RTPS stack's own discovery/QoS/wire-compatibility machinery - real DDS vendors are
+paying for generality TickLE's own narrower scope doesn't need to. **This leanness is itself the
+asset worth protecting** - any fix below should be judged partly by whether it keeps this margin,
+not just by whether it closes the gap in scenario 4.
+
+**Where TickLE is measurably behind** - scenario 4 (`reliable_throughput`, RELIABLE +
+`tc`/`netem`-injected loss): the one real, substantial, already-diagnosed weakness. At 1% injected
+loss, TickLE recovers only 1.1-3.1% short of full (i.e. it still loses 1.1-3.1% at delivery,
+not fully NACK-recovered); at 5% injected loss, a consistent ~5.2-5.3% loss remains. Both DDS
+vendors fully recover 100% of the same injected loss at both rates (§3, §6 item 7). Root cause,
+already found and documented (`struct tt_ReliableCache`'s own doc comment, `tickle.h`; PLAN.md's
+DDS semantic-parity backlog row 2's own re-measurement, `comparison.md` §6 item 9): a Publisher's
+own retained-cache depth is *not* the bottleneck (re-measured at depth 512/8192, zero improvement)
+- the real ceiling is `struct tt_WriterProxy.received_bitmap`, a bare `uint64_t` bounded by
+`tt_RELIABLE_BITMAP_BITS` (64, `config.h`). Once a gap spans more than 64 newer samples before it's
+resolved, `update_reliable_ack()` is forced to `jump_ack_baseline()` and abandon that gap outright
+- and at TickLE's own real measured throughput (~1.2M msg/s), 64 samples pass in roughly 53
+microseconds, almost certainly shorter than one real ACKNACK round trip on any physical link.
+
+**Improvement plan - widen the ACKNACK tracking window (highest-leverage, standards-aligned fix)**:
+the wire itself is the actual limit, not just the in-memory `tt_WriterProxy.received_bitmap` field
+- `struct tt_AckNackHeader.bitmap` (`tickle.h`) is *also* a bare `uint64_t`, so widening the
+in-memory field alone wouldn't be enough; this needs a real wire-protocol change (another
+`tt_VERSION` bump, same established pattern). This is not a novel idea - real RTPS's own
+SequenceNumberSet (the ACKNACK bitmap DDS/RTPS itself uses) is already wider than 64 bits in
+practice (typically up to 256), confirming "widen the bitmap" is the standard, proven answer here,
+not something TickLE would be inventing from scratch.
+
+- Change `tt_AckNackHeader.bitmap`/`tt_WriterProxy.received_bitmap` from `uint64_t` to a
+  fixed-width multi-word field (e.g. `uint64_t[4]`, 256 bits total, matching real RTPS's own
+  practical width) and `tt_RELIABLE_BITMAP_BITS` from 64 to 256 (`config.h`) - a 4x wider tolerable
+  gap before `jump_ack_baseline()` has to give up, directly targeting the measured bottleneck.
+- Every bit-manipulation site touching `received_bitmap` (`highest_received_bit()`,
+  `update_reliable_ack()`, `jump_ack_baseline()`, `send_acknack()`, `process_heartbeat()`) needs
+  its single-word shift/compare logic converted to operate across the wider field - mechanical but
+  real work, not a one-line change; `_Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_
+  BITS, ...)` already documents this exact coupling and would need re-verifying against the new
+  width.
+- Memory cost is trivial at TickLE's own real table sizes: `tt_MAX_PEER_COUNT` (8, `config.h`)
+  `tt_WriterProxy` entries per Subscriber, each gaining 24 bytes (8→32 bytes for the bitmap field)
+  - about 192 bytes per Subscriber, negligible even for an embedded target.
+- **One explicit caution, learned the hard way earlier this same session** (PLAN.md's own row-2
+  re-measurement, `comparison.md` §6 item 9/10): a wider fixed-size structure is not automatically
+  free - `find_resendable_cache_entry()`'s own O(depth) linear-scan regression at `-K 8192` showed
+  a naive "just make the array bigger" change can measurably *hurt* performance if the access
+  pattern isn't kept O(1)/O(word-count) rather than O(bit-count). Whoever implements this should
+  budget real re-measurement (the exact `reliable_throughput` HIL scenario already used for this
+  investigation) as part of the change, not just a correctness check.
+- **Honest expectation, not a guaranteed full fix**: widening 64→256 bits should raise TickLE's own
+  tolerable gap size roughly 4x (to ~213μs of send time at TickLE's own real ~1.2M msg/s), likely
+  closing most or all of the observed 1.1-5.3% residual loss at TickLE's own real ACKNACK RTT on
+  the `tickle-hil` rig - but the real link's own RTT, not this window alone, sets the actual limit;
+  a slower or lossier link than the rig's own real hardware could still exceed even a 256-bit
+  window. Re-measurement on real HIL (the exact same `reliable_throughput` `-K`/`tc` matrix already
+  established) is the only way to confirm the actual improvement, not something to claim from
+  theory alone.
+
+**Not assigned yet** - this is a proposal, not a task handed to TickLE Dev; pending the user's own
+prioritization against the QoS coverage gaps above and TickLE Dev's own currently-assigned `perf
+sched`/10Base-T1S/CycloneDDS-flakiness work.
 
 ## Concept mapping
 
