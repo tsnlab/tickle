@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789952592156,
+  "lastUpdate": 1789952595631,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -58322,6 +58322,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/28a9c39dc13c8c13213c77764c13657cc785a2a4"
         },
         "date": 1789951781384,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "51aaca1edb4643fb7f2edb952ee1202e9594b7c2",
+          "message": "comparison.md: verify scenario 5 fully fixed (RxO-based), scenario 6 now clean too\n\nRe-verified after TickLE Dev's own root-cause fix (28a9c39, keyed on\nsub->durable via the Heartbeat-path first-contact branch, not the earlier\nMilestone 60 DATA-path attempt which left this scenario unchanged).\n\nScenario 5 volatile: 3/3, received=0 exactly, matches DDS RELIABLE+VOLATILE\nprecisely now. Durable case re-confirmed 20/20 (2/2), no regression.\n\nScenario 6: also re-verified clean this pass (3/3, recv < sent, 4-13 real\nloss per run, no more duplicate signature) - not deterministic the way\nCycloneDDS's own exact 52 is, and TickLE Dev's own PLAN.md still documents\na narrow accepted theoretical residual, but not observed this pass.",
+          "timestamp": "2026-09-21T10:00:20+09:00",
+          "tree_id": "e66b58b5ba615b525a5845ce3c32673310424846",
+          "url": "https://github.com/tsnlab/tickle/commit/51aaca1edb4643fb7f2edb952ee1202e9594b7c2"
+        },
+        "date": 1789952594422,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
