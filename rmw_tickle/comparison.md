@@ -82,8 +82,8 @@ replacing this document's own earlier mix of ranges/min-max/single-value styles)
 | 2 | `reliable_latency` | - | 0.21±0.01ms, 0% loss | 0.30ms†, 0% loss | 0.30ms†, 0% loss |
 | 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent 1244.0K±0.7K msgs, recv 1244.0K±0.7K msgs, 0% loss, sent 94.5Mbps, recv 94.5Mbps, loss 0Mbps | sent 245.4K±0.1K msgs, recv 181.9K±74.0K msgs, 25.9% loss, sent 19.6Mbps, recv 14.6Mbps, loss 5.1Mbps | sent 874.0K±35.4K msgs, recv 766.5K±30.4K msgs, 12.2% loss, sent 70.0Mbps, recv 61.3Mbps, loss 8.7Mbps |
 | 4 | `reliable_throughput` | `tc` loss=0% | sent 1240.0K±1.4K msgs, recv 1240.0K±1.4K msgs, 0% loss, sent 94.25Mbps, recv 94.25Mbps, loss 0Mbps | sent 179.1K±0.8K msgs, recv 179.1K±0.8K msgs, 0% loss, sent 14.35Mbps, recv 14.35Mbps, loss 0Mbps | sent 809.0K±342.2K msgs, recv 809.0K±342.2K msgs, 0% loss, sent 61.45Mbps, recv 61.45Mbps, loss 0Mbps |
-| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | sent 1144.0K±105.4K msgs, recv 1118.0K±85.6K msgs, 2.1% loss, sent 86.85Mbps, recv 85.0Mbps, loss 1.85Mbps | sent 179.9K±2.2K msgs, recv 179.9K±2.2K msgs, 0% loss (fully recovered - see §6 item 7), sent 14.4Mbps, recv 14.4Mbps, loss 0Mbps | sent 152.4K±9.8K msgs, recv 152.4K±9.8K msgs, 0% loss (fully recovered), sent 11.6Mbps, recv 11.6Mbps, loss 0Mbps |
-| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | sent 1241.0K±0.1K msgs, recv 1176.0K±0.7K msgs, 5.25% loss, sent 94.3Mbps, recv 89.35Mbps, loss 4.95Mbps | sent 167.0K±6.8K msgs, recv 167.0K±6.8K msgs, 0% loss (fully recovered - see §6 item 7), sent 13.35Mbps, recv 13.35Mbps, loss 0Mbps | sent 35.4K±1.4K msgs, recv 35.4K±1.4K msgs, 0% loss (fully recovered), sent 2.7Mbps, recv 2.7Mbps, loss 0Mbps |
+| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | **post-bitmap-fix (2026-09-21, Milestone 65, see §6 item 11)**: sent 1219.5K±0.7K msgs, recv 1182.8K±19.3K msgs, 3.0% loss, sent 92.7Mbps, recv 89.9Mbps, loss 2.8Mbps — pre-fix (depth=64/64-bit bitmap, superseded): sent 1144.0K±105.4K msgs, recv 1118.0K±85.6K msgs, 2.1% loss, sent 86.85Mbps, recv 85.0Mbps, loss 1.85Mbps | sent 179.9K±2.2K msgs, recv 179.9K±2.2K msgs, 0% loss (fully recovered - see §6 item 7), sent 14.4Mbps, recv 14.4Mbps, loss 0Mbps | sent 152.4K±9.8K msgs, recv 152.4K±9.8K msgs, 0% loss (fully recovered), sent 11.6Mbps, recv 11.6Mbps, loss 0Mbps |
+| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | **post-bitmap-fix (2026-09-21, Milestone 65, see §6 item 11)**: sent 1242.0K±3.0K msgs, recv 1155.4K±23.3K msgs, 6.95% loss, sent 94.4Mbps, recv 87.8Mbps, loss 6.6Mbps — pre-fix (depth=64/64-bit bitmap, superseded): sent 1241.0K±0.1K msgs, recv 1176.0K±0.7K msgs, 5.25% loss, sent 94.3Mbps, recv 89.35Mbps, loss 4.95Mbps | sent 167.0K±6.8K msgs, recv 167.0K±6.8K msgs, 0% loss (fully recovered - see §6 item 7), sent 13.35Mbps, recv 13.35Mbps, loss 0Mbps | sent 35.4K±1.4K msgs, recv 35.4K±1.4K msgs, 0% loss (fully recovered), sent 2.7Mbps, recv 2.7Mbps, loss 0Mbps |
 | 5 | `durability_late_join` | - | durable: recv 20.0±0/20 msgs, 0% loss; volatile: recv 0.0±0/20 msgs, 100% loss (correctly excludes backlog, matches DDS exactly - see §6) | recv 20/20 msgs, 0% loss | recv 20/20 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | beyond depth | recv 150.0±5.2/160 msgs, 6.25% loss (**non-deterministic**, n=3 - see §6) | recv 108/160 msgs, 32.5% loss (deterministic) | recv 108/160 msgs, 32.5% loss (deterministic) |
@@ -379,3 +379,50 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
     likely a reasonable trade-off for embedded targets that want a hard upper bound on detection
     latency) - noted here rather than left undocumented. `comparison.md` §3, scenario 8's own TickLE
     column updated with these numbers.
+
+11. **[TickLE core, real HIL - a real methodology correction, and further throughput research]**
+    PLAN.md's own Milestone 65 reported the widened (256-bit) ACKNACK bitmap fully recovering
+    real `tc`/`netem`-injected loss (0.0% at both 1% and 5%) - a real, correctly-measured result,
+    but **from a different tool than this section's own scenario 4** (`perf_client`/`perf_server
+    -R` via `run_perf.sh`, the automated `Performance Test` CI workflow's own benchmark - "a
+    modest (~500 message) sample at `LOSS_TEST_INTERVAL_SEC`'s own pacing" per that workflow's
+    own comment, a real but much lower, paced rate). **Re-measured with the exact scenario 4
+    methodology this section uses** (`examples/perf_hil/tickle/reliable_throughput`, real max
+    send rate, no pacing) once the bitmap fix landed on `main`: real, reproducible residual loss
+    remains at TickLE's own true max throughput - 1.9-4.1% at 1% injected (2 reps), 5.8-8.1% at 5%
+    injected (2 reps) - a real improvement over the old 64-bit baseline (was 1.1-3.1%/5.2-5.3%,
+    roughly comparable, not dramatically better) but **not** the full recovery the low-rate CI
+    benchmark's own 0.0% figure might suggest at a glance. Both numbers are real and correctly
+    measured for what each actually tests; the honest summary is that a 256-bit window is enough
+    to fully recover loss at a modest, paced rate, but not yet enough at TickLE's own real
+    ~150-200K msg/s max throughput - `comparison.md` §3's own TickLE column updated with both the
+    new post-fix numbers and the old pre-fix ones side by side, not silently replaced.
+
+    **Further hypothesis-driven research, at the user's own explicit instruction to keep
+    investigating latency/throughput levers**: a real, previously-undiscovered `reliable_
+    throughput/server.c` bug was found and fixed along the way (commit `474e755`) -
+    `stream_callback()` had no `seq_no`-based dedup of its own, and core's own `update_reliable_
+    ack()` explicitly documents it doesn't catch every duplicate once `jump_ack_baseline()` has
+    fired for a writer ("an accepted, narrow miss", that function's own doc comment) - a genuine
+    `recv > sent` was reproduced for real at low throughput/high retry ratio before this fix.
+
+    A second, complementary hypothesis (PLAN.md's own "Further latency research") - bounding how
+    many scheduler tasks `tt_Node_poll()`'s own inner loop may run consecutively before forcing a
+    non-blocking I/O check, so a continuously-rescheduling max-rate Publisher can't starve
+    `tt_receive()` for a whole call's own timeout budget - was implemented on a separate branch
+    (`experiment/poll-loop-io-interleave-v2`, rebased onto the bitmap-widened `main`, not merged)
+    and re-measured with the now-fixed harness, same `tc`/`netem` matrix, 2 reps each: **1% loss**
+    - sent 1531776/1304978, recv 1489346/1292070, **2.8%/1.0% loss** (avg 1.9%, vs. the plain-
+    `main` baseline's own 3.0% avg above), send_mbps 116.4/99.2; **5% loss** - sent
+    1306406/1577933, recv 1240526/1470818, **5.0%/6.8% loss** (avg 5.9%, vs. `main`'s own 6.95%
+    avg), send_mbps 99.3/119.9. **A real, now twice-reproduced effect** (this and the original
+    pre-bitmap-fix experiment, `experiment/poll-loop-io-interleave`, both showed it independently):
+    the poll-loop fix achieves substantially higher real throughput every single run (99-120 Mbps
+    vs. plain `main`'s own consistent 92-95 Mbps here) - a robust ~15-25% increase across 8 total
+    runs now, cause not yet instrumented/confirmed. Loss% this time was directionally *better*
+    with the fix at both conditions (not worse, unlike the first, pre-bitmap-fix experiment, which
+    was confounded differently) - a favorable signal, but still only n=2 per condition, not a
+    strong statistical claim. **Not merged, not recommended for `main` yet** - a real, reproducible
+    throughput effect worth pursuing further (with more reps, and ideally direct instrumentation
+    of real `tt_receive()` call frequency to confirm the actual mechanism), but not yet proven
+    enough to commit to. See PLAN.md's own experiment write-up for the full numbers and reasoning.

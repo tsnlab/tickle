@@ -510,6 +510,44 @@ branch ref on both Pis was found 427 commits stale, apparently from well before 
 fast-forwarded to match `origin/main`, not something this experiment itself caused but worth
 noting since it could have confused a future manual rig session).
 
+#### Follow-up v2 (2026-09-21, TickLE Plan, at the user's own further instruction: "latency를 줄이고 throughput을 늘릴 수 있는 연구를 계속 해줘. 가설을 세우고 하나씩 검증해보자.") - real harness bug fixed, real methodology correction found, effect reproduced but still not merged
+
+**Hypothesis 1, tested first: is the `recv > sent` anomaly from the earlier controlled-rate
+attempt a real bug?** Yes - confirmed by reading `update_reliable_ack()`'s own doc comment
+directly (`tickle.c`): it explicitly documents that it does **not** catch every duplicate once
+`jump_ack_baseline()` has fired for a writer - a retransmit racing the original (or a stale
+packet from an abandoned range) with `seq_no < ack_seq_no` is delivered to the application again,
+by design ("an accepted, narrow miss... real DDS readers de-duplicate by (writer GUID, sequence
+number)"). `reliable_throughput/server.c`'s own `stream_callback()` never finished that dedup at
+the application level - fixed (commit `474e755`, harness-only, no TickLE core change) with a
+`seq_no <= last_seq` guard.
+
+**Hypothesis 2, re-tested with the now-fixed harness, on top of the just-landed bitmap widening
+(Milestone 65)**: does the poll-loop I/O-interleave fix still show an effect once the bitmap fix
+is also present? Rebased the fix onto post-bitmap `main` (`experiment/poll-loop-io-interleave-v2`,
+commit `a365f4b`, clean cherry-pick, `make test`/`sanitize` clean) and re-ran the same `tc`/`netem`
+matrix, 2 reps each, against a plain-`main` (bitmap+harness-fix-only) baseline built fresh
+alongside it. Full numbers and the real methodology correction found along the way (the
+automated `Performance Test` CI's own "0.0% loss" figure measures a *different*, lower-rate tool
+than scenario 4's own `reliable_throughput`, not a contradiction, just a different question) are
+now in `comparison.md` §3 (scenario 4's own TickLE column, both pre/post-bitmap-fix numbers shown
+side by side) and §6 item 11 - not duplicated here in full.
+
+**Summary of the v2 result**: the throughput increase first seen in the pre-bitmap-fix experiment
+reproduced again, independently, on this rebased branch (99-120 Mbps vs. plain-`main`'s own
+92-95 Mbps, consistent across all 4 new runs, 8 total now across both experiments) - a real,
+robust effect, cause still not confirmed by direct instrumentation. Loss% this time was
+*favorable* with the fix at both 1% and 5% injected loss (not worse, unlike the original
+pre-bitmap-fix comparison) - a positive signal, but still only n=2 per condition. **Still not
+merged or recommended for `main`** - the effect is real and increasingly well-replicated, but the
+underlying mechanism isn't confirmed yet (the scheduler-loop reasoning in the section above is
+still the best available explanation, not directly measured), and a larger rep count would be
+needed before recommending this for real adoption. Left as `experiment/poll-loop-io-interleave-v2`
+on its own branch, pushed, not merged - a good candidate for a future session (this one or
+TickLE Dev's) to pick up with proper instrumentation (e.g. counting real `tt_receive()` calls
+during a saturated run) rather than only inferring the mechanism from throughput/loss numbers
+alone.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
