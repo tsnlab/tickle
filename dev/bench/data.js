@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789958693488,
+  "lastUpdate": 1789958696993,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -70934,6 +70934,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.536,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2128839fac71cbf0acfe3900f381a62ab345adda",
+          "message": "comparison.md/PLAN.md: verify HISTORY depth re-measurement (Milestone 61 prediction confirmed)\n\nRe-measured reliable_throughput on real HIL with -K 512/-K 8192 against the same tc/netem\n1%/5% loss matrix as the depth=64 baseline. Confirms the predicted result: a deeper Publisher\ncache does not improve RELIABLE recovery (server logs show \"64 ahead\" gap-tracking regardless\nof -K, pointing at the Subscriber's own fixed 64-bit received_bitmap as the real bottleneck).\nAlso found one new thing: -K 8192 reproducibly measured worse loss (7.5-7.6% vs 5.1-5.4%) than\n-K 512 at the same 5% injected condition - not yet root-caused, flagged as a candidate follow-up.",
+          "timestamp": "2026-09-21T11:42:06+09:00",
+          "tree_id": "7b3db56cd5a94346feb416a7ed93a21ddfd7ef16",
+          "url": "https://github.com/tsnlab/tickle/commit/2128839fac71cbf0acfe3900f381a62ab345adda"
+        },
+        "date": 1789958695854,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.199,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.106,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.848,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.569,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.53,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.681,
             "unit": "Mbps"
           }
         ]
