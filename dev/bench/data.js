@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790001086245,
+  "lastUpdate": 1790001090200,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -97589,6 +97589,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "besteffort @ 10% loss",
             "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "474e75512bf03415125269f961735cd6cba4ba06",
+          "message": "reliable_throughput/server.c: fix a real recv>sent duplicate-counting bug\n\nFound while researching throughput/latency levers (TickLE Plan, real HIL). Core's own\nupdate_reliable_ack() (tickle.c) explicitly documents it doesn't catch every duplicate: once\njump_ack_baseline() has fired for a writer, a retransmit racing the original (or a stale packet\nfrom the abandoned range) with seq_no < ack_seq_no is delivered to the callback again,\nundetected by design - \"an accepted, narrow miss... real DDS readers de-duplicate by (writer\nGUID, sequence number)\" per that function's own doc comment. This scenario's own receive\ncallback never finished that dedup itself, so a duplicate redelivery both double-counted\n`received` (recv > sent, reproduced for real at low throughput/high retry-to-data ratio) and\ncould regress `last_seq` backward, corrupting the next genuine gap's own loss count too. Adds\nthe missing seq_no <= last_seq guard.",
+          "timestamp": "2026-09-21T23:28:26+09:00",
+          "tree_id": "3fca4406ce84ecf8732665aef6a4b952dd10719c",
+          "url": "https://github.com/tsnlab/tickle/commit/474e75512bf03415125269f961735cd6cba4ba06"
+        },
+        "date": 1790001088835,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 9.9,
             "unit": "%"
           },
           {
