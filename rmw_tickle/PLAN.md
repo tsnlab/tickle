@@ -361,9 +361,20 @@ without conflicting with it: widening raises the ceiling before a gap becomes un
 voluntary self-throttling reduces how often a real Publisher would ever get close to that ceiling
 in the first place.
 
-**Not assigned yet** - both the bitmap-widening fix and this follow-up research are proposals, not
-tasks handed to TickLE Dev; pending the user's own prioritization against the QoS coverage gaps
-above and TickLE Dev's own currently-assigned `perf sched`/10Base-T1S/CycloneDDS-flakiness work.
+**Decided (2026-09-21, the user's own explicit instruction): widen the bitmap to 256 bits** -
+confirmed against real vendor evidence, not just the RTPS spec's own stated max: FastDDS's own
+installed header on this machine (`/opt/ros/lyrical/include/fastdds/fastdds/rtps/common/
+SequenceNumber.hpp:368`) reads `using SequenceNumberSet_t = BitmapRange<SequenceNumber_t,
+SequenceNumberDiff, 256>` - a direct, verified 256-bit width, not inferred. CycloneDDS's own
+internal RTPS wire types aren't in this machine's installed headers (only its own higher-level
+public API is) to verify the identical way, but as a DDSI-RTPS-interoperable vendor it necessarily
+uses the same wire-format bound for real interop with FastDDS - standards compliance, not a
+separately-confirmed vendor-specific number. **Assigned to TickLE Dev, queued after the two
+already-in-progress QoS items** (`HISTORY.KEEP_ALL` done, `BEST_AVAILABLE` in progress) - same
+confirmation requirement as every other assignment above (TickLE Dev needs the user's own direct
+confirmation in that session before starting). The self-throttle follow-up research above remains
+a proposal, not yet assigned - it's a documentation/example-pattern suggestion, not a code change,
+and complements this fix rather than blocking on it.
 
 ## Concept mapping
 
