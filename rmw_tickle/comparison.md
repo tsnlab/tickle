@@ -64,9 +64,9 @@ pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-mea
 | 1 | `best_effort_latency` | - | 0% loss, RTT ~0.20-0.22ms avg | 199/199, 0% loss, RTT 0.253/0.296/3.295ms | 199/199, 0% loss, RTT 0.231/0.242/0.343ms |
 | 2 | `reliable_latency` | - | 0% loss, RTT ~0.20-0.22ms avg | 199/199, 0% loss, RTT 0.271/0.297/0.603ms | 199/199, 0% loss, RTT 0.230/0.302/10.865ms |
 | 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent 1.244-1.245M, recv 1.244-1.245M, **0% loss** (2/2), send 94.5→recv 94.5 Mbps | sent 245.4-245.5K, recv 129.6-234.3K, **4.6-47.2% loss** (noisy, 2/2), send 19.6→recv 10.4-18.7 Mbps | sent 849-899K, recv 745-788K, **7.2-17.2% loss** (noisy, 2/2), send 68-72→recv 59.6-63.0 Mbps |
-| 4 | `reliable_throughput` | `tc` loss=0% | sent 1.239-1.241M, recv 1.239-1.241M, **0% loss** (2/2), 94.2-94.3 Mbps (send=recv) | sent 222.3-223.3K, recv 222.3-223.3K, **0% loss** (2/2), 16.9-17.0 Mbps (send=recv) | sent 567K-1.051M (itself noisy run to run), recv = sent, **0% loss** (2/2), 43.1-79.8 Mbps (send=recv) |
-| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | sent 1.069-1.218M, recv 1.058-1.179M, **1.1-3.1% loss** (not reliably recovered, 2/2), send 81.2-92.5→recv 80.4-89.6 Mbps | sent 222.2-222.9K, recv 219.9-220.8K, **1.0% loss** (not recovered, 2/2), send 16.9→recv 16.7-16.8 Mbps | sent 145.5-159.4K, recv = sent, **0% loss** (fully recovered, 2/2), 11.1-12.1 Mbps (send=recv) |
-| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | sent 1.2408-1.2410M, recv 1.175-1.176M, **5.2-5.3% loss** (not recovered, 2/2), send 94.3→recv 89.3-89.4 Mbps | sent 222.3-222.9K, recv 211.2-211.5K, **5.0-5.1% loss** (not recovered, 2/2), send 16.9→recv 16.0-16.1 Mbps | sent 34.4-36.4K, recv = sent, **0% loss** (fully recovered, 2/2), 2.6-2.8 Mbps (send=recv) |
+| 4 | `reliable_throughput` | `tc` loss=0% | sent 1.239-1.241M, recv 1.239-1.241M, **0% loss** (2/2), 94.2-94.3 Mbps (send=recv) | sent 178.5-179.6K, recv = sent, **0% loss** (2/2), 14.3-14.4 Mbps (send=recv) | sent 567K-1.051M (itself noisy run to run), recv = sent, **0% loss** (2/2), 43.1-79.8 Mbps (send=recv) |
+| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | sent 1.069-1.218M, recv 1.058-1.179M, **1.1-3.1% loss** (not reliably recovered, 2/2), send 81.2-92.5→recv 80.4-89.6 Mbps | sent 178.4-181.5K, recv = sent, **0% loss** (fully recovered, 2/2, corrected - see §6 item 7), 14.3-14.5 Mbps (send=recv) | sent 145.5-159.4K, recv = sent, **0% loss** (fully recovered, 2/2), 11.1-12.1 Mbps (send=recv) |
+| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | sent 1.2408-1.2410M, recv 1.175-1.176M, **5.2-5.3% loss** (not recovered, 2/2), send 94.3→recv 89.3-89.4 Mbps | sent 162.2-171.8K, recv = sent, **0% loss** (fully recovered, 2/2, corrected - see §6 item 7), 13.0-13.7 Mbps (send=recv) | sent 34.4-36.4K, recv = sent, **0% loss** (fully recovered, 2/2), 2.6-2.8 Mbps (send=recv) |
 | 5 | `durability_late_join` | - | durable: 20/20 (2/2); volatile: **0 received**, matches DDS exactly (3/3, fixed - see §6) | 20/20 backlog delivered | 20/20 backlog delivered |
 | 6 | `history_depth_burst_loss` | within depth | 160/160 clean | identical to CycloneDDS | 0 lost |
 | 6 | `history_depth_burst_loss` | beyond depth | 4-13 lost (**not deterministic** - 13/4/13 across 3 runs, unlike CycloneDDS's exact 52 - see §6) | identical to CycloneDDS | 52 lost (exact) |
@@ -90,20 +90,26 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
   4.6-47.2%, CycloneDDS 7.2-17.2%) that neither vendor's own number should be read as a precise
   figure, only as "genuinely lossy under sustained max-rate BEST_EFFORT on this rig, unlike
   TickLE."
-- **Reliable throughput under controlled loss (4) - the most interesting result this pass**: at
-  identical, real, `tc`/`netem`-injected loss, the three frameworks diverge sharply. **CycloneDDS's
-  own RELIABLE fully recovers 100% of injected loss at both 1% and 5%, every time (2/2)** - `recv`
-  loss stays at exactly 0% regardless of the injected rate. **FastDDS's own RELIABLE recovers
-  essentially none of it** - observed loss tracks the injected rate almost exactly (1.0% in →
-  ~1.0% observed; 5% in → ~5.0-5.1% observed), both runs. **TickLE's own RELIABLE also mostly
-  doesn't recover it**, and is noisier about it (1.1-3.1% observed at 1% injected; a consistent
-  ~5.2-5.3% at 5% injected) - plausibly explained by TickLE's own extremely high throughput at this
-  rate: `depth=64` (`tt_MAX_RELIABLE_HISTORY`, TickLE's own hard cap) represents on the order of
-  tens of microseconds of retention at ~1.2M msg/s, almost certainly shorter than one real
-  ACKNACK-retry round trip on this link - a lost sample is likely evicted from the cache long
-  before a retransmit request for it could ever be serviced. Not confirmed by direct
-  instrumentation this pass, but consistent with every other observation here. This is a genuine,
-  reproduced, cross-vendor behavioral difference, not noise - see §6, item 7.
+- **Reliable throughput under controlled loss (4)**: at identical, real, `tc`/`netem`-injected
+  loss, **CycloneDDS and FastDDS both fully recover 100% of it, at both 1% and 5%, every time
+  (2/2 each)** - `recv` loss stays at exactly 0% regardless of the injected rate for either DDS
+  vendor. FastDDS's own initial result here looked like a real cross-vendor difference (loss
+  tracking the injected rate almost exactly, not recovered at all) - turned out to be a real
+  harness bug instead, not a vendor difference: `examples/perf_hil/fastdds/reliable_throughput`
+  had never received the same `KEEP_ALL`+`resource_limits(4000)` fix the CycloneDDS twin got early
+  in this exercise, left at a shallow `depth=8` that couldn't retain a lost sample long enough for
+  its own retry to land. Fixed and re-verified 4/4 clean - see §6, item 7 for the full story.
+  **TickLE's own RELIABLE, unlike either DDS vendor, still mostly doesn't recover it**, and is
+  noisier about it (1.1-3.1% observed at 1% injected; a consistent ~5.2-5.3% at 5% injected) -
+  plausibly explained by TickLE's own extremely high throughput at this rate: `depth=64`
+  (`tt_MAX_RELIABLE_HISTORY`, TickLE's own hard cap at the time of this measurement) represents on
+  the order of tens of microseconds of retention at ~1.2M msg/s, almost certainly shorter than one
+  real ACKNACK-retry round trip on this link - a lost sample is likely evicted from the cache long
+  before a retransmit request for it could ever be serviced. This part **is** a genuine TickLE
+  characteristic worth its own re-measurement once the depth ceiling becomes configurable
+  (PLAN.md's own DDS semantic-parity backlog, row 2, assigned to TickLE Dev) - though TickLE Dev's
+  own design note there flags a separate, deeper structural limit (`tt_WriterProxy.received_bitmap`
+  is a fixed 64 bits) that a deeper Publisher-side cache alone may not fix.
 - **QoS mechanics (5-9)**: HISTORY depth, LIFESPAN expiry, and DEADLINE/LIVELINESS detection are
   all confirmed working in TickLE, each with the expected numbers where the mechanism is directly
   comparable to DDS's own. Two real, TickLE-specific findings surfaced along the way - see §6.
@@ -218,10 +224,13 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
    above are this fresh baseline, run after Milestones 46-58 landed. No regression from the
    Milestone 44 baseline; the ~1.3-1.6x same-host gap and the cross-host FastDDS-parity/
    CycloneDDS-ahead pattern both persist unchanged.
-5. **[`rmw_tickle`, methodology gap]** The same-host `rmw_tickle` comparison (§5) is still
-   same-host/`lo`-adjacent only, unlike §2-3's own real cross-host HIL rig - a genuine cross-host
-   `rmw_tickle` vs. FastDDS/CycloneDDS run, ideally over the real target network medium
-   (10Base-T1S, not the rig's own Ethernet), is still open.
+5. **[`rmw_tickle`, methodology gap - hardware-blocked]** §5's own cross-host numbers
+   (`rmw_perf_pingpong` on the `tickle-hil` rig) already cover real cross-host `rmw_tickle` vs.
+   FastDDS/CycloneDDS, so this item is narrower than it once read: that run is still over the rig's
+   own regular Ethernet link, not the real target network medium (10Base-T1S) §2-3's own raw-core
+   HIL comparison is *also* still measured over (a pre-existing, separately-tracked gap, not new
+   here). Genuinely blocked on real 10Base-T1S hardware being available on the rig at all - not
+   something reachable by re-running existing tools differently.
 6. **[Methodology, found and fixed 2026-09-21]** The original scenario 3/4 numbers (and, it turned
    out, every CycloneDDS/FastDDS scenario where the server is the authoritative side) were measured
    under a real, confirmed bug: `run_scenario.sh` forwards the same `-d` to both the client and the
@@ -238,13 +247,19 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
    and the DDS twins (0.3s) - TickLE's own discovery is fast enough on this rig that 0.3s doesn't
    reliably create a stale-enough gap to observe expiry (see the git history for the full
    investigation) - left as a flagged, honest inconsistency rather than silently normalized.
-7. **[Real finding, not yet root-caused]** §3's own reliable-throughput-under-loss result deserves
-   real investigation, not just reporting: why does CycloneDDS's RELIABLE fully recover 5% injected
-   loss while FastDDS's doesn't recover any of it at all, using each vendor's own default/
-   near-default RELIABLE QoS? Is FastDDS's own `reliable_throughput/client.cpp` missing a QoS
-   setting CycloneDDS's own `KEEP_ALL`+`resource_limits(4000)` equivalent needs, or is this a real,
-   inherent behavioral difference between the two vendors' own default reliability windows? Not
-   investigated further this pass.
+7. **[Harness bug, found and fixed 2026-09-21 - closed]** §3's own original reliable-throughput-
+   under-loss result looked like a real cross-vendor difference (CycloneDDS's RELIABLE fully
+   recovering 5% injected loss, FastDDS's recovering none of it) - it wasn't. Root cause, found
+   independently of TickLE Dev's own concurrent HISTORY-depth work (no file overlap):
+   `examples/perf_hil/fastdds/reliable_throughput/{client,server}.cpp` had never received the same
+   `KEEP_ALL`+`resource_limits(4000)` fix the CycloneDDS twin got earlier in this exercise (see §3's
+   own methodology note) - left at a shallow `KEEP_LAST(8)` (plus a stale doc comment that still
+   said "BEST_EFFORT", a copy-paste leftover never updated for this scenario's own real RELIABLE
+   design) that couldn't retain a lost sample long enough for a NACK-driven retry to land, the exact
+   same failure mode CycloneDDS's own original client.c doc comment already named. Fixed to match;
+   re-verified real HIL, `tc`/`netem` 1%/5% loss, **0% observed loss both times, reproduced 4/4** -
+   FastDDS and CycloneDDS now behave identically here, both fully recovering real injected loss.
+   No inherent vendor difference exists for this QoS combination after all.
 8. **[TickLE core, verified - LIFESPAN follows the expected formula]** PLAN.md's own DDS
    semantic-parity backlog flagged one open gap for LIFESPAN, the policy already closest to real
    DDS: TickLE's own beyond-lifespan loss count had never been checked against a hand-derived
