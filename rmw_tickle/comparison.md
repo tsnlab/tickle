@@ -197,14 +197,23 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
    ordinary timing variance in exactly when late-join matching completes relative to the
    Publisher's own continuous send rate and the `depth=8` ring's own eviction, not yet
    instrumented directly.
-3. **[`rmw_tickle`, performance]** Close the remaining same-host `rmw_tickle` latency gap
-   (PLAN.md Milestone 45): item (1), pooling the scratch conversion buffers, is done but was a
-   verified *negative result* (no measurable improvement - likely already below glibc `tcache`
-   noise at this message size). Item (2), the unconditional `tt_Node_interrupt()`+lock pair on
-   every `rmw_publish()` call, is confirmed real but small (~3%). Item (3), the actual
-   cross-thread wake-up cost between the poll thread and the application's executor thread, is
-   still unmeasured - needs off-CPU/scheduling-latency tracing (`perf sched`/`ftrace`), not the
-   cycle-based `perf record` already tried.
+3. **[`rmw_tickle`, performance - item 3 now has a real number]** Close the remaining same-host
+   `rmw_tickle` latency gap (PLAN.md Milestone 45): item (1), pooling the scratch conversion
+   buffers, is done but was a verified *negative result* (no measurable improvement - likely
+   already below glibc `tcache` noise at this message size). Item (2), the unconditional
+   `tt_Node_interrupt()`+lock pair on every `rmw_publish()` call, is confirmed real but small
+   (~3%). **Item (3), the cross-thread wake-up cost between the poll thread and the application's
+   executor thread**: `perf sched`/`ftrace` itself needs kernel tracepoint access this box doesn't
+   have without an interactive `sudo` password (no TTY available) - measured the underlying
+   `pthread_cond_wait`/`broadcast` primitive directly instead, via a standalone benchmark
+   reproducing `rmw_tickle.h`'s exact `wait_mutex`/`wait_cond` shape. **Real result, reproduced
+   4/4**: avg ≈ 9.4-9.6μs, p50 ≈ 8.6-8.7μs, p99 ≈ 13-16.5μs - closely matching the observed
+   same-host gap itself (§5's own numbers put the gap at ~9-22μs). Real, converging evidence that
+   this mechanism's own inherent cost is the right order of magnitude to explain the whole gap -
+   not proof no DDS vendor pays a comparable cost for their own equivalent hand-off (not measured
+   this pass), so suggestive rather than closed. Full detail and the suggested next step (a real
+   `perf sched latency` capture inside the actual two-process run, once `perf_event_paranoid` is
+   lowered) in PLAN.md's own Milestone 45 addendum.
 4. **[`rmw_tickle`, re-measurement]** Done (2026-09-21, the user's own go-ahead) - §5's own numbers
    above are this fresh baseline, run after Milestones 46-58 landed. No regression from the
    Milestone 44 baseline; the ~1.3-1.6x same-host gap and the cross-host FastDDS-parity/
