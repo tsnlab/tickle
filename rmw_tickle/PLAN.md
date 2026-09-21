@@ -193,10 +193,36 @@ undiscovered gaps, both confirmed by reading `rmw_tickle`'s own source, not the 
    than silently downgrading it."** KEEP_ALL-for-Publishers is exactly the silent-downgrade case
    that philosophy exists to prevent, and it currently isn't caught.
 
-### Implementation plan for the two real gaps
+### Implementation plan for the two real gaps - both now decided, assigned to TickLE Dev, in this order
 
-1. **`BEST_AVAILABLE`** (moderate effort - the only one needing new *behavior*, not just a
-   validation change): resolve it once, at entity-creation time, by querying `tt_Discovery` for
+**Work order (2026-09-21, the user's own explicit instruction: finish the QoS gaps first)**: item
+1 first (small, self-contained, no new behavior beyond sizing), then item 2 (larger, real new
+resolution logic). Both are `rmw_tickle`-layer only - neither needs a TickLE core/wire-protocol
+change (`tt_VERSION` unchanged), since `tt_Discovery` and `tt_ReliableCache.capacity` already carry
+everything each fix needs. TickLE Dev needs the user's own direct confirmation in that session
+before starting, a peer relay doesn't count - same requirement as every other assignment above.
+
+1. **`HISTORY.KEEP_ALL` for Publishers - do first.** **Decided (2026-09-21, the user's own explicit
+   choice): honor it, don't reject it** - using Milestone 61's now-dynamic
+   `tt_ReliableCache.capacity` to size a large-but-still-bounded cache instead of today's silent
+   small-`depth` downgrade. **Concrete default: 8192 entries** (matching `MAX_RELIABLE_DEPTH` in
+   `examples/perf_hil/tickle/reliable_throughput/client.c`, the same "far past the old 64 ceiling"
+   convention already established in this codebase, and the same order of magnitude as CycloneDDS/
+   FastDDS's own `resource_limits(4000)` used throughout this session's own HIL scenario fixes) -
+   real memory cost, stated honestly: `tt_ReliableCacheEntry` is ~1490 bytes
+   (`tt_MAX_BUFFER_LENGTH`=1472 dominates it), so 8192 entries is ~12.2MB per KEEP_ALL Publisher -
+   the exact same figure `comparison.md` §6 item 9/10 already found and called out for `-K 8192`,
+   so this isn't a new cost, just the same already-understood one applied here. Acceptable given
+   `rmw_tickle` already targets a heap-allocating Linux ROS 2 host (unlike TickLE-core-only
+   embedded/FreeRTOS callers, which never go through this code path at all) and KEEP_ALL is always
+   an explicit, deliberate opt-in, never a default. Implementation: `setup_reliable_cache()`
+   (`rmw_publisher.c`) gains a `RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history` branch that
+   uses this 8192 default instead of reading `qos_profile->depth` (still subject to the same
+   existing `1..UINT16_MAX` bounds check already there); `rmw_qos.c`'s own KEEP_ALL rejection stays
+   exactly as-is for Subscriptions (unaffected, still correctly rejected there - a fixed-capacity
+   reader queue is a different, still-real constraint this change doesn't touch).
+2. **`BEST_AVAILABLE` - do second** (moderate effort - the only one needing new *behavior*, not
+   just a sizing choice): resolve it once, at entity-creation time, by querying `tt_Discovery` for
    already-known entities matching the same topic name and opposite kind, then apply exactly the
    header's own documented algorithm - for a Subscription requesting `BEST_AVAILABLE` reliability,
    choose RELIABLE if every currently-discovered matching Publisher offers RELIABLE, else
@@ -212,21 +238,6 @@ undiscovered gaps, both confirmed by reading `rmw_tickle`'s own source, not the 
    whatever's already in the discovery table when the entity is created. The two `_BEST_AVAILABLE`
    duration sentinels should route through the same resolution instead of falling into the ordinary
    finite-value path.
-2. **`HISTORY.KEEP_ALL` for Publishers** (cheap either way - two options, a real choice for the
-   user, not decided here): **(a) reject it**, extending `rmw_qos.c` line 126's own existing check
-   to cover `RMW_TICKLE_ENTITY_PUBLISHER` too - the minimal fix, one line, immediately closes the
-   silent-downgrade violation, matches Subscriptions' own already-correct behavior. **(b) honor
-   it**, using Milestone 61's now-dynamic `tt_ReliableCache.capacity` (up to `UINT16_MAX`) to size a
-   large-but-still-bounded cache instead of a small default - closer to KEEP_ALL's own real
-   intent ("subject to resource limits", which a fixed-capacity system always has anyway), but
-   needs a concrete numeric ceiling decided (an unbounded allocation isn't possible in a
-   malloc-based-but-still-finite system either) and doesn't fix Subscriptions' own already-correct
-   rejection (still a fixed-capacity-only reader queue there, a different constraint). **(a) is
-   the smaller, safer fix and the one this analysis leans toward** given the project's own stated
-   preference for explicit rejection over silent downgrading, but this is the user's call.
-
-**Not assigned to TickLE Dev yet** - both are proposals pending the user's own prioritization,
-same as the performance-improvement plan below.
 
 ## TickLE-native performance: comparison and improvement plan (2026-09-21, TickLE Plan, at the user's own request)
 
