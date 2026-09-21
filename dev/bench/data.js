@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789953478045,
+  "lastUpdate": 1789954765012,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -37702,6 +37702,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.047447142857142854,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e40fad9c663b0c0f71db47a3c8ce479a1f46754f",
+          "message": "PLAN.md: answer the LIVELINESS open question - rmw_tickle doesn't compensate\n\nRead rmw_subscription.c/rmw_graph.c directly: check_subscription_liveliness()\ndoes reschedule on the Subscription's own real liveliness_lease_ns (a\ncorrect per-entity poll cadence), but rmw_tickle_count_not_alive_matching_\nlocked() checks nothing but struct tt_DiscoveredEntity.alive - the exact\nsame flag core's own node-level check_liveliness() (fixed ~3s window)\nexclusively sets. No independent per-entity alive/dead determination exists\nanywhere in rmw_tickle - it's a thin poller over core's own shared,\nnode-level ground truth. A short lease can't detect faster than ~3s; a long\nlease can add its own extra latency on top of the ~3s core cycle.\n\nRow 3 promoted in the suggested order: it's now a scoped, real fix (land\nonce in core; rmw_tickle's own poll cadence needs no further change), not\nan open question anymore.",
+          "timestamp": "2026-09-21T10:38:04+09:00",
+          "tree_id": "0f212f81936be600891d64d9f937e4c70f17b4b7",
+          "url": "https://github.com/tsnlab/tickle/commit/e40fad9c663b0c0f71db47a3c8ce479a1f46754f"
+        },
+        "date": 1789954759459,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.05186142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04665857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04604285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.051149999999999994,
             "unit": "ms"
           }
         ]
