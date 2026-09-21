@@ -59,23 +59,40 @@ pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-mea
 
 ## 3. Results
 
+**Notation** (unified 2026-09-21, the user's own explicit request - every cell in this section
+uses one of these fixed templates so results are directly, visually comparable at a glance,
+replacing this document's own earlier mix of ranges/min-max/single-value styles):
+
+- **Latency**: `avg±stdev ms, X% loss`
+- **Throughput**: `sent avg±stdev msgs, recv avg±stdev msgs, X% loss, sent Y Mbps, recv Z Mbps, loss (Y-Z) Mbps`
+- **Count-based** (DURABILITY/HISTORY/LIFESPAN - no sustained rate to report a Mbps for): the same
+  `msgs`/`loss%` half of the Throughput template, without the Mbps fields.
+- `avg±stdev` is computed from every individually-recorded run for that cell (sample stdev, `n-1`;
+  for exactly 2 runs this reduces to `stdev = |a-b|/√2`). **`†` marks a value with no computable
+  stdev** - either a single, unrepeated observation, or (scenarios 1/2/8's own DDS-vendor cells,
+  §5's own table) a run where only the tool's own already-summarized min/avg/max was recorded at
+  the time, not the raw per-sample data a real stdev needs - shown as `avg` alone, not invented.
+  `loss %`/`Mbps` fields are plain means (not `±stdev`) even where the underlying msgs count has
+  one, matching this section's own literal template; `loss Mbps` is the derived `sent - recv`
+  aggregate, not an independently re-measured quantity.
+
 | # | Scenario | Condition | TickLE (native) | FastDDS | CycloneDDS |
 |---|---|---|---|---|---|
-| 1 | `best_effort_latency` | - | 0% loss, RTT ~0.20-0.22ms avg | 199/199, 0% loss, RTT 0.253/0.296/3.295ms | 199/199, 0% loss, RTT 0.231/0.242/0.343ms |
-| 2 | `reliable_latency` | - | 0% loss, RTT ~0.20-0.22ms avg | 199/199, 0% loss, RTT 0.271/0.297/0.603ms | 199/199, 0% loss, RTT 0.230/0.302/10.865ms |
-| 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent 1.244-1.245M, recv 1.244-1.245M, **0% loss** (2/2), send 94.5→recv 94.5 Mbps | sent 245.4-245.5K, recv 129.6-234.3K, **4.6-47.2% loss** (noisy, 2/2), send 19.6→recv 10.4-18.7 Mbps | sent 849-899K, recv 745-788K, **7.2-17.2% loss** (noisy, 2/2), send 68-72→recv 59.6-63.0 Mbps |
-| 4 | `reliable_throughput` | `tc` loss=0% | sent 1.239-1.241M, recv 1.239-1.241M, **0% loss** (2/2), 94.2-94.3 Mbps (send=recv) | sent 178.5-179.6K, recv = sent, **0% loss** (2/2), 14.3-14.4 Mbps (send=recv) | sent 567K-1.051M (itself noisy run to run), recv = sent, **0% loss** (2/2), 43.1-79.8 Mbps (send=recv) |
-| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | sent 1.069-1.218M, recv 1.058-1.179M, **1.1-3.1% loss** (not reliably recovered, 2/2), send 81.2-92.5→recv 80.4-89.6 Mbps | sent 178.4-181.5K, recv = sent, **0% loss** (fully recovered, 2/2, corrected - see §6 item 7), 14.3-14.5 Mbps (send=recv) | sent 145.5-159.4K, recv = sent, **0% loss** (fully recovered, 2/2), 11.1-12.1 Mbps (send=recv) |
-| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | sent 1.2408-1.2410M, recv 1.175-1.176M, **5.2-5.3% loss** (not recovered, 2/2), send 94.3→recv 89.3-89.4 Mbps | sent 162.2-171.8K, recv = sent, **0% loss** (fully recovered, 2/2, corrected - see §6 item 7), 13.0-13.7 Mbps (send=recv) | sent 34.4-36.4K, recv = sent, **0% loss** (fully recovered, 2/2), 2.6-2.8 Mbps (send=recv) |
-| 5 | `durability_late_join` | - | durable: 20/20 (2/2); volatile: **0 received**, matches DDS exactly (3/3, fixed - see §6) | 20/20 backlog delivered | 20/20 backlog delivered |
-| 6 | `history_depth_burst_loss` | within depth | 160/160 clean | identical to CycloneDDS | 0 lost |
-| 6 | `history_depth_burst_loss` | beyond depth | 4-13 lost (**not deterministic** - 13/4/13 across 3 runs, unlike CycloneDDS's exact 52 - see §6) | identical to CycloneDDS | 52 lost (exact) |
-| 7 | `deadline_miss_detection` | - | writer misses=3 (own math), sent=recv=198 (0% loss), reader_misses=30 (harmless, unexplained) | writer misses=7, reader misses=19, detect ~-0.9ms | writer misses=7, reader misses=14, detect ~0.05ms |
-| 8 | `liveliness_loss_detection` | - | **re-measured 2026-09-21, now scales with lease for lease < ~3s** (Milestone 62/63 core fix - see §6, item 10): lease=1.0s → detect 1256-1495ms; lease=2.0s → detect 1732-2390ms; lease=4.0s → detect 3065-3399ms (a real, honest ceiling - see item 10) | detect ~1999.08ms (lease 2000ms) | detect ~2000.07ms (lease 2000ms) |
+| 1 | `best_effort_latency` | - | 0.21±0.01ms, 0% loss | 0.30ms†, 0% loss | 0.24ms†, 0% loss |
+| 2 | `reliable_latency` | - | 0.21±0.01ms, 0% loss | 0.30ms†, 0% loss | 0.30ms†, 0% loss |
+| 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent 1244.0K±0.7K msgs, recv 1244.0K±0.7K msgs, 0% loss, sent 94.5Mbps, recv 94.5Mbps, loss 0Mbps | sent 245.4K±0.1K msgs, recv 181.9K±74.0K msgs, 25.9% loss, sent 19.6Mbps, recv 14.6Mbps, loss 5.1Mbps | sent 874.0K±35.4K msgs, recv 766.5K±30.4K msgs, 12.2% loss, sent 70.0Mbps, recv 61.3Mbps, loss 8.7Mbps |
+| 4 | `reliable_throughput` | `tc` loss=0% | sent 1240.0K±1.4K msgs, recv 1240.0K±1.4K msgs, 0% loss, sent 94.25Mbps, recv 94.25Mbps, loss 0Mbps | sent 179.1K±0.8K msgs, recv 179.1K±0.8K msgs, 0% loss, sent 14.35Mbps, recv 14.35Mbps, loss 0Mbps | sent 809.0K±342.2K msgs, recv 809.0K±342.2K msgs, 0% loss, sent 61.45Mbps, recv 61.45Mbps, loss 0Mbps |
+| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | sent 1144.0K±105.4K msgs, recv 1118.0K±85.6K msgs, 2.1% loss, sent 86.85Mbps, recv 85.0Mbps, loss 1.85Mbps | sent 179.9K±2.2K msgs, recv 179.9K±2.2K msgs, 0% loss (fully recovered - see §6 item 7), sent 14.4Mbps, recv 14.4Mbps, loss 0Mbps | sent 152.4K±9.8K msgs, recv 152.4K±9.8K msgs, 0% loss (fully recovered), sent 11.6Mbps, recv 11.6Mbps, loss 0Mbps |
+| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | sent 1241.0K±0.1K msgs, recv 1176.0K±0.7K msgs, 5.25% loss, sent 94.3Mbps, recv 89.35Mbps, loss 4.95Mbps | sent 167.0K±6.8K msgs, recv 167.0K±6.8K msgs, 0% loss (fully recovered - see §6 item 7), sent 13.35Mbps, recv 13.35Mbps, loss 0Mbps | sent 35.4K±1.4K msgs, recv 35.4K±1.4K msgs, 0% loss (fully recovered), sent 2.7Mbps, recv 2.7Mbps, loss 0Mbps |
+| 5 | `durability_late_join` | - | durable: recv 20.0±0/20 msgs, 0% loss; volatile: recv 0.0±0/20 msgs, 100% loss (correctly excludes backlog, matches DDS exactly - see §6) | recv 20/20 msgs, 0% loss | recv 20/20 msgs, 0% loss |
+| 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
+| 6 | `history_depth_burst_loss` | beyond depth | recv 150.0±5.2/160 msgs, 6.25% loss (**non-deterministic**, n=3 - see §6) | recv 108/160 msgs, 32.5% loss (deterministic) | recv 108/160 msgs, 32.5% loss (deterministic) |
+| 7 | `deadline_miss_detection` | - | sent 198±0 msgs, recv 198±0 msgs, 0% loss, writer_misses=3† (own math), reader_misses=30† (harmless, unexplained) | writer_misses=7†, reader_misses=19†, detect -0.90ms† | writer_misses=7†, reader_misses=14†, detect 0.05ms† |
+| 8 | `liveliness_loss_detection` | - | lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10) | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
-| 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | 28/43/79 lost avg (**not the same condition as the other two** - see §6, item 6; slope-verified against the expected formula, see §6, item 8) | 5 lost (pause=0.3s) | 10 lost (exact, pause=0.3s) |
+| 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | pause=1.0s: lost 28.0±1.4; pause=1.5s: lost 43.0±12.7; pause=2.0s: lost 79.0±0 (**not the same condition as the other two** - see §6 item 6; slope-verified against the expected formula, see §6 item 8) | lost 5† (pause=0.3s) | lost 10† (pause=0.3s) |
 
-Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "send Mbps" is each framework's own printed client-side rate. Both runs (reproduced 2/2 for every condition) are given as ranges, not averaged, since the run-to-run variance itself is part of the finding for several rows (CycloneDDS's own scenario 4 send rate, FastDDS/CycloneDDS's own scenario 3 loss %).
+Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "sent Mbps" is each framework's own printed client-side rate. Every condition was reproduced 2/2 (scenario 6 beyond-depth: 3 runs; scenario 9 beyond-lifespan pause=1.5s: 4 runs - see §6 items 6/8) - see the Notation block above for how each cell's `avg±stdev` was computed from those runs.
 
 **Reading**:
 
@@ -100,7 +117,7 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
   in this exercise, left at a shallow `depth=8` that couldn't retain a lost sample long enough for
   its own retry to land. Fixed and re-verified 4/4 clean - see §6, item 7 for the full story.
   **TickLE's own RELIABLE, unlike either DDS vendor, still mostly doesn't recover it**, and is
-  noisier about it (1.1-3.1% observed at 1% injected; a consistent ~5.2-5.3% at 5% injected) -
+  noisier about it (2.1% avg observed at 1% injected; a consistent ~5.25% avg at 5% injected) -
   plausibly explained by TickLE's own extremely high throughput at this rate: `depth=64`
   (`tt_MAX_RELIABLE_HISTORY`, TickLE's own hard cap at the time of this measurement) represents on
   the order of tens of microseconds of retention at ~1.2M msg/s, almost certainly shorter than one
@@ -133,16 +150,20 @@ Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
 ## 5. Results
 
 One table, both topologies together (`Array1k`=1024-byte array, `Struct16`=16-byte struct, `Bench`
-QoS-tagged=the cross-host tool's own ping/pong shape at 50 samples/run, 3 runs/combination):
+QoS-tagged=the cross-host tool's own ping/pong shape at 50 samples/run, 3 runs/combination). Same
+notation as §3 (`avg±stdev`, `†` = no computable stdev) - every cell here is `†`: the underlying
+tools (`buildfarm_perf_tests`, `rmw_perf_pingpong`) only ever printed their own already-averaged
+figure, not the raw per-run samples a real stdev needs, the same limitation as §3's DDS-vendor
+min/avg/max cells:
 
 | Topology | Message | Mode | TickLE (`rmw_tickle`) | FastDDS | CycloneDDS |
 |---|---|---|---:|---:|---:|
-| Same-host | Array1k | async | 0.0487ms, 0.9905 Mbit/s | 0.0375ms, 0.9901 Mbit/s | (skipped - see note) |
-| Same-host | Array1k | sync | 0.0467ms, 0.9904 Mbit/s | 0.0363ms, 0.9905 Mbit/s | 0.0322ms, 0.9878 Mbit/s |
-| Same-host | Struct16 | async | 0.0543ms, 0.0304 Mbit/s | 0.0369ms, 0.0305 Mbit/s | (skipped - see note) |
-| Same-host | Struct16 | sync | 0.0464ms, 0.0305 Mbit/s | 0.0310ms, 0.0305 Mbit/s | 0.0357ms, 0.0304 Mbit/s |
-| Cross-host | Bench, QoS=best_effort | - | 0.524ms avg RTT | 0.516ms avg RTT | 0.440ms avg RTT |
-| Cross-host | Bench, QoS=reliable | - | 0.523ms avg RTT | 0.523ms avg RTT | 0.449ms avg RTT |
+| Same-host | Array1k | async | 0.0487ms†, 0.9905 Mbit/s | 0.0375ms†, 0.9901 Mbit/s | (skipped - see note) |
+| Same-host | Array1k | sync | 0.0467ms†, 0.9904 Mbit/s | 0.0363ms†, 0.9905 Mbit/s | 0.0322ms†, 0.9878 Mbit/s |
+| Same-host | Struct16 | async | 0.0543ms†, 0.0304 Mbit/s | 0.0369ms†, 0.0305 Mbit/s | (skipped - see note) |
+| Same-host | Struct16 | sync | 0.0464ms†, 0.0305 Mbit/s | 0.0310ms†, 0.0305 Mbit/s | 0.0357ms†, 0.0304 Mbit/s |
+| Cross-host | Bench, QoS=best_effort | - | 0.524ms† avg RTT, 0% loss | 0.516ms† avg RTT, 0% loss | 0.440ms† avg RTT, 0% loss |
+| Cross-host | Bench, QoS=reliable | - | 0.523ms† avg RTT, 0% loss | 0.523ms† avg RTT, 0% loss | 0.449ms† avg RTT, 0% loss |
 
 (CycloneDDS's own same-host `async` rows are missing - skipped by `ctest` on this particular run, a
 test-registration flakiness unrelated to any of the three `rmw`s, not yet chased down. Cross-host:
