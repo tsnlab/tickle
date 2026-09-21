@@ -4012,15 +4012,36 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
         return drain_rx(node, process_datagram(node, len, ip, port));
     }
 
+    // EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
+    // latency research" section) - counts scheduler entries run back-to-back without a receive
+    // check, so a continuously-rescheduling task (a max-rate Publisher's own send loop) can't
+    // starve tt_receive() for this whole call's own timeout budget. See tt_SCHEDULER_IO_INTERLEAVE's
+    // own doc comment (config.h) for the full reasoning.
+    uint32_t consecutive_scheduler_runs = 0;
+
     while (timeout > 0) {
         struct tt_TCB* tcb = peek_scheduler(node);
 
-        if (tcb != NULL && tcb->time <= time) {
+        if (tcb != NULL && tcb->time <= time && consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE) {
             // Run scheduler first
             tcb->function(node, time, tcb->param);
             pop_scheduler(node);
+            consecutive_scheduler_runs++;
+        } else if (tcb != NULL && tcb->time <= time) {
+            // A scheduler entry is still due, but tt_SCHEDULER_IO_INTERLEAVE consecutive ones have
+            // already run without a receive check - force one non-blocking peek before letting more
+            // scheduler work run. Not the caller's own real wait (never blocks): if nothing's
+            // there, fall straight back into scheduler processing next iteration.
+            consecutive_scheduler_runs = 0;
+            uint32_t ip = 0;
+            uint16_t port = 0;
+            int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+            if (len >= 0) {
+                return drain_rx(node, process_datagram(node, len, ip, port));
+            }
         } else {
             // Run network I/O next
+            consecutive_scheduler_runs = 0;
             int64_t rest = timeout;
             bool woke_for_scheduler = false;
             if (tcb != NULL && tcb->time - time < (uint64_t)timeout) {

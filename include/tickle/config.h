@@ -130,6 +130,16 @@
 // was standing in for this exact primitive not existing yet.
 #define tt_SERVER_DEFERRED_RESPONSE_TIMEOUT (5 * tt_SECOND)
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // Network socket default receive timeout
+// EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
+// latency research" section) - tt_Node_poll()'s own inner loop favors an already-due scheduler
+// entry over ever calling tt_receive(), with no cap on how many may run consecutively before an
+// I/O check happens. A continuously-rescheduling task (e.g. a max-rate Publisher's own send loop,
+// interval_s=0) can then starve tt_receive() for a whole call's own tt_RECEIVE_TIMEOUT budget,
+// meaning ACKNACK responsiveness ends up bounded by how rarely the scheduler queue goes idle, not
+// by real network RTT. This bounds how many scheduler entries may run back-to-back before a
+// forced, non-blocking tt_try_receive() peek is squeezed in between them - unvalidated on real HIL
+// yet, this specific value (8) is a first guess, not yet tuned.
+#define tt_SCHEDULER_IO_INTERLEAVE 8
 // Requested SO_SNDBUF/SO_RCVBUF size. The kernel silently clamps this to whatever
 // net.core.[rw]mem_max allows for an unprivileged process, so asking for more than that is
 // harmless - it's cheap insurance against drops under bursty send/receive on systems where the
