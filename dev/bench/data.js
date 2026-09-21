@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789957565982,
+  "lastUpdate": 1789957569540,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -48380,6 +48380,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030460493905203685,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3767e76fceed8c4c343405b16374b000ab916354",
+          "message": "comparison.md: FastDDS reliable_throughput was a harness bug, not a vendor difference\n\nReal HIL re-verification after fixing examples/perf_hil/fastdds/\nreliable_throughput's own stale KEEP_LAST(8) config: FastDDS now fully\nrecovers 100% of tc/netem-injected loss at both 1%/5%, reproduced 4/4,\nidentical to CycloneDDS. The \"FastDDS doesn't recover loss\" finding was\nentirely a test-harness configuration gap (never received the same\nKEEP_ALL+resource_limits(4000) fix the CycloneDDS twin got, plus a stale\n\"BEST_EFFORT\" doc comment copy-pasted from another scenario) - no inherent\ncross-vendor difference exists for this QoS combination.\n\nAlso corrected §6 item 5's own stale text (implied same-host-only when\ncross-host via rmw_perf_pingpong was already done - the real remaining gap\nis specifically the 10Base-T1S medium, hardware-blocked, not reachable by\nre-running existing tools).",
+          "timestamp": "2026-09-21T11:21:21+09:00",
+          "tree_id": "1d6d1e26f965e45b0add42ed2d99bd9a077fa4b9",
+          "url": "https://github.com/tsnlab/tickle/commit/3767e76fceed8c4c343405b16374b000ab916354"
+        },
+        "date": 1789957568417,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905503136771066,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.990253039768764,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03046063014439174,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030469213213239397,
             "unit": "Mbit/s"
           }
         ]
