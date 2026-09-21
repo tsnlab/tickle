@@ -132,88 +132,101 @@ real HIL slope test, matches the expected formula within noise). **The DDS seman
 table is now fully closed** - every row either implemented-and-verified or closed by explicit user
 decision.
 
-## DDS QoS policy coverage inventory (2026-09-21, TickLE Plan, at the user's own request)
+## DDS QoS policy coverage inventory (2026-09-21, TickLE Plan; scope corrected same day at the user's own explicit direction - see below)
 
-The DDS semantic-parity backlog above only covers the six policies TickLE core already has some
-wire-visible mechanism for - it never asked the broader question: of the OMG DDS spec's full
-22-policy QoS set, which does TickLE core implement *at all*, and for the rest, is that a real gap
-worth closing or a deliberate non-goal given TickLE's own design constraints (malloc-free, fixed-
-capacity tables, embedded targets, no `rmw`-exposed use case demanding it)? Verified by direct
-`grep`/read of `include/tickle/tickle.h`, `include/tickle/config.h`, and `src/tickle.c` for every
-policy name below - not assumed from the "QoS roadmap" table's own already-known six.
+**Scope correction, stated plainly**: the first pass of this section (now superseded) measured
+TickLE core against the OMG DDS spec's full 22-policy QoS set. The user's own explicit direction
+corrected that framing: **TickLE implements DDS QoS, but only the subset ROS 2's own `rmw`
+middleware interface actually exposes** - not the full DDS standard. That is a real, different
+scope, not a rewording of the same one, and it changes the conclusion substantially.
 
-**Implemented (6/22)** - exactly the six the "QoS roadmap" table above already tracks, which is not
-a coincidence: this is also the *entire* field set ROS 2's own `rmw_qos_profile_t` exposes
-(`history`/`depth`, `reliability`, `durability`, `deadline`, `lifespan`, `liveliness`/
-`liveliness_lease_duration`) - `rmw_tickle`'s own `rmw_qos_profile_check_compatible()`
-(`rmw_qos.c`) confirms no other policy is even reachable through the `rmw` layer today. TickLE core
-already covers 100% of what its own stated primary consumer (ROS 2 via `rmw_tickle`) can ask for.
+**Verified directly from the installed `rmw` headers on this machine**
+(`/opt/ros/lyrical/include/rmw/rmw/types.h`), not assumed: `struct rmw_qos_profile_s` (the entire
+QoS surface any ROS 2 caller can ever set, line 579) has exactly eight fields - `history`,
+`depth`, `reliability`, `durability`, `deadline`, `lifespan`, `liveliness`,
+`liveliness_lease_duration` (plus `avoid_ros_namespace_conventions`, a namespacing flag, not a QoS
+policy at all). There is no field for OWNERSHIP, PARTITION, USER_DATA, PRESENTATION,
+LATENCY_BUDGET, TIME_BASED_FILTER, DESTINATION_ORDER, RESOURCE_LIMITS, or any of the other DDS
+policies the superseded first pass discussed - `rmw` simply has no way to carry them from a ROS 2
+application into any rmw implementation, TickLE or otherwise. **Under the corrected scope, those
+16 policies aren't "low priority" or "deferred" - they're out of scope by definition**: there is no
+rmw-exposed path for a ROS 2 user to ever request them, so implementing them in TickLE core would
+be unreachable dead code from `rmw_tickle`'s own perspective. The three "worth doing" items the
+superseded pass proposed (DESTINATION_ORDER, LATENCY_BUDGET, TIME_BASED_FILTER) are retracted on
+this basis, not because the underlying analysis was wrong, but because the premise (TickLE should
+track the full DDS spec) was the wrong premise per the user's own stated intent.
 
-**Not implemented (16/22)** - zero fields, zero wire bits, zero mentions anywhere in
-`tickle.h`/`tickle.c`/`config.h` (confirmed by grep, not assumed):
+**Headline conclusion under the corrected scope**: TickLE core already implements all 6/6 policies
+`rmw_qos_profile_t` exposes (HISTORY/DEPTH, RELIABILITY, DURABILITY, DEADLINE, LIFESPAN,
+LIVELINESS) - confirmed already by the now-closed DDS semantic-parity backlog above. There is no
+missing *policy* to add. But "does TickLE implement every field" is a different, narrower question
+than "does TickLE implement every *value* `rmw` itself defines for those fields" - checking the
+latter directly against the same installed headers found two real, concrete, previously-
+undiscovered gaps, both confirmed by reading `rmw_tickle`'s own source, not the DDS spec:
 
-| Policy | Why TickLE doesn't have it | Recommendation |
-|---|---|---|
-| OWNERSHIP | Arbitrates between multiple Writers of the *same instance* (keyed topic) - TickLE has no instance/key concept at all, only flat per-topic delivery. Meaningless without that foundation. | **Not planned** - would need a fundamentally different data model (per-key identity, keyed history), out of scope unless TickLE itself grows keyed topics as a feature |
-| OWNERSHIP_STRENGTH | Depends entirely on OWNERSHIP above. | **Not planned**, same reason |
-| WRITER_DATA_LIFECYCLE | Governs an *instance's* disposal on unregister - same missing foundation as OWNERSHIP. | **Not planned**, same reason |
-| READER_DATA_LIFECYCLE | Governs purging a *no-writer*/disposed *instance* - same missing foundation. | **Not planned**, same reason |
-| DURABILITY_SERVICE | Only meaningful for TRANSIENT/PERSISTENT durability (a service-managed history that outlives the Writer's own process) - TickLE only implements TRANSIENT_LOCAL (tied to the live Publisher's own in-process `reliable_cache`), the same real-DDS level `rmw_tickle`'s own QoS roadmap row 4 already limits itself to. | **Not planned** unless TRANSIENT/PERSISTENT durability itself is ever added (a much bigger feature needing real persistent storage - in tension with TickLE's embedded/malloc-free design) |
-| PRESENTATION | Coordinates atomic/ordered access across a *group* of instances/topics - a multi-topic transactional feature. `rmw_qos_profile_t` doesn't expose it either. | **Not planned** - high implementation cost, no evidence any real consumer (ROS 2 or otherwise) needs it through this stack |
-| ENTITY_FACTORY | Controls whether a newly-created entity starts enabled or not. TickLE's `tt_Node_create_*()` calls are synchronous construct-and-use with no separate enable step at all. | **N/A by design** - the policy is moot against TickLE's own construction API shape |
-| TRANSPORT_PRIORITY | A hint for underlying transport-level QoS (e.g. DSCP tagging). TickLE runs over plain UDP broadcast with no transport-level prioritization hook today. | **Not planned** until/unless TickLE grows its own transport-level QoS support (a separate, bigger feature) |
-| USER_DATA / TOPIC_DATA / GROUP_DATA | Opaque application-defined byte blobs carried on discovery announces. Mechanically easy to add (a length-prefixed field on `tt_UpdateEntity`, the same shape `type`/`name` already use) but adds wire overhead to every UPDATE broadcast with no concrete consumer asking for it yet. | **Low priority, deferred** - cheap to add later if a real use case shows up, not worth the broadcast overhead speculatively |
-| PARTITION | String-set-based logical topic grouping. ROS 2 users already get an equivalent through fully-qualified topic namespacing, so this would be largely redundant for `rmw_tickle`'s own consumers; a native TickLE user might still want it for raw grouping without separate topic names. | **Low priority, deferred** - no driving use case yet, moderate effort (a partition-string comparison in discovery matching) |
-| LATENCY_BUDGET | A hint that delivery may be delayed up to some duration, letting an implementation batch for efficiency. TickLE already has a coarse, binary version of this idea - `tt_Publisher.batch` (flush-immediately vs. defer-to-`tt_NODE_TX_INTERVAL`) - just not as a numeric, QoS-negotiated duration. | **Worth doing** - natural extension of an already-existing mechanism, see implementation plan below |
-| TIME_BASED_FILTER | Subscriber-side `minimum_separation` - drop deliveries that arrive faster than the reader wants them, even if the writer sends faster. Real value for a bandwidth/CPU-constrained embedded consumer that only wants, say, one update per 100ms from a 1kHz publisher. No architectural conflict with TickLE's design. | **Worth doing** - see implementation plan below |
-| DESTINATION_ORDER | BY_RECEPTION_TIMESTAMP vs. BY_SOURCE_TIMESTAMP delivery ordering. TickLE already delivers in receive order today (the de facto BY_RECEPTION_TIMESTAMP behavior) but never declares this as a QoS knob, offers the alternative, or validates RxO compatibility for it. | **Worth formalizing** - see implementation plan below (the cheapest of the three, since the default behavior already matches one of the two kinds) |
-| RESOURCE_LIMITS | `max_samples`/`max_instances`/`max_samples_per_instance`. The non-keyed subset (`max_samples`) is already functionally covered by `tt_ReliableCache.capacity` (Milestone 61); the instance-scoped parts need the same missing foundation as OWNERSHIP. | **Mostly already covered in spirit** - no separate work needed beyond what Milestone 61 already did, until/unless keyed topics exist |
+1. **`BEST_AVAILABLE` (reliability/durability/liveliness enums, plus the `RMW_QOS_*_BEST_AVAILABLE`
+   sentinel duration constants) is a real, present-day `rmw` QoS value TickLE doesn't implement at
+   all.** `rmw_qos_reliability_policy_e`/`_durability_policy_e`/`_liveliness_policy_e` (`rmw/
+   types.h`) each define a `_BEST_AVAILABLE` enumerator - "a policy will be chosen at the time of
+   creating a subscription or publisher... matching if it matches with all discovered endpoints,
+   otherwise [the looser policy] will be chosen" (the header's own doc comment, verified directly).
+   `rmw_tickle_validate_qos_profile()` (`rmw_qos.c` lines 41-43, 61-64, 86-92) whitelists only
+   `{BEST_EFFORT, SYSTEM_DEFAULT, RELIABLE}` / `{VOLATILE, SYSTEM_DEFAULT, TRANSIENT_LOCAL}` /
+   `{AUTOMATIC, MANUAL_BY_TOPIC, SYSTEM_DEFAULT}` respectively - `BEST_AVAILABLE` matches none of
+   these, so any ROS 2 caller requesting it today gets `RMW_RET_UNSUPPORTED` outright. Separately,
+   `RMW_QOS_DEADLINE_BEST_AVAILABLE`/`RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE` are sentinel
+   *values* (`{9223372036, 854775806}` = `RMW_DURATION_INFINITE - 1`, `rmw/types.h` line 548), not
+   enum members - these aren't rejected (deadline/lease-duration validation only checks "is this
+   finite", and this sentinel technically is), but are silently mis-handled: treated as a literal
+   ~292-year deadline/lease instead of triggering the intended "resolve against discovered
+   endpoints" behavior.
+2. **`RMW_QOS_POLICY_HISTORY_KEEP_ALL` is accepted-but-silently-wrong for Publishers, not rejected
+   the way it correctly is for Subscriptions.** `rmw_tickle_validate_qos_profile()` (`rmw_qos.c`
+   line 126) only checks `RMW_TICKLE_ENTITY_SUBSCRIPTION == entity_kind` before rejecting KEEP_ALL -
+   a Publisher requesting it passes validation untouched. But `setup_reliable_cache()`
+   (`rmw_publisher.c` lines 131-166) never reads `qos_profile->history` at all, only
+   `qos_profile->depth` (falling back to `tt_MAX_RELIABLE_HISTORY`=64 if unset) - a Publisher that
+   asks for KEEP_ALL (conceptually "retain everything") silently gets an ordinary bounded KEEP_LAST
+   cache instead, sized by whatever `depth` happened to be set to (often left at its own default).
+   This is a real violation of this file's own stated design philosophy, quoted verbatim at the top
+   of `rmw_qos.c`: **"Rejects anything outside the currently-supported set explicitly... rather
+   than silently downgrading it."** KEEP_ALL-for-Publishers is exactly the silent-downgrade case
+   that philosophy exists to prevent, and it currently isn't caught.
 
-### Implementation plan for the three "worth doing" policies
+### Implementation plan for the two real gaps
 
-All three are additive (a new RxO-compatible field/bit, no change to any existing behavior when
-unset/default) and share one wire-protocol shape: extend `struct tt_UpdateEntity` (another
-`tt_VERSION` bump, the same "no partial-compatibility case to handle" pattern already used four
-times - `tickle.h`'s own version-history comment) with the new duration/enum fields, mirror them
-onto `tt_Publisher`/`tt_Subscriber` as offered/requested pairs (the exact same shape
-`deadline_duration_ns`/`liveliness_lease_duration_ns` already use), and add the RxO compatibility
-check to `subscriber_incompatible_with_publisher()`.
+1. **`BEST_AVAILABLE`** (moderate effort - the only one needing new *behavior*, not just a
+   validation change): resolve it once, at entity-creation time, by querying `tt_Discovery` for
+   already-known entities matching the same topic name and opposite kind, then apply exactly the
+   header's own documented algorithm - for a Subscription requesting `BEST_AVAILABLE` reliability,
+   choose RELIABLE if every currently-discovered matching Publisher offers RELIABLE, else
+   BEST_EFFORT (durability/liveliness mirror this, ranked the same way `rmw_qos_profile_check_
+   compatible()` already ranks them: VOLATILE < TRANSIENT_LOCAL, AUTOMATIC < MANUAL_BY_TOPIC).
+   TickLE's own discovery table (`tt_Discovery_find()`/iteration) already has everything this needs
+   - no new core-level tracking, just a resolution step in `rmw_qos.c` invoked from
+   `rmw_create_publisher()`/`rmw_create_subscription()` before `setup_reliable_cache()` runs. Real
+   DDS's own documented semantics say this resolution happens *once*, not re-evaluated later even
+   if new incompatible endpoints appear afterward ("the middleware is not expected to update the
+   policy after creating... even if the chosen policy is incompatible with newly discovered
+   endpoints") - a genuine simplification: no ongoing watch needed, just a one-shot check against
+   whatever's already in the discovery table when the entity is created. The two `_BEST_AVAILABLE`
+   duration sentinels should route through the same resolution instead of falling into the ordinary
+   finite-value path.
+2. **`HISTORY.KEEP_ALL` for Publishers** (cheap either way - two options, a real choice for the
+   user, not decided here): **(a) reject it**, extending `rmw_qos.c` line 126's own existing check
+   to cover `RMW_TICKLE_ENTITY_PUBLISHER` too - the minimal fix, one line, immediately closes the
+   silent-downgrade violation, matches Subscriptions' own already-correct behavior. **(b) honor
+   it**, using Milestone 61's now-dynamic `tt_ReliableCache.capacity` (up to `UINT16_MAX`) to size a
+   large-but-still-bounded cache instead of a small default - closer to KEEP_ALL's own real
+   intent ("subject to resource limits", which a fixed-capacity system always has anyway), but
+   needs a concrete numeric ceiling decided (an unbounded allocation isn't possible in a
+   malloc-based-but-still-finite system either) and doesn't fix Subscriptions' own already-correct
+   rejection (still a fixed-capacity-only reader queue there, a different constraint). **(a) is
+   the smaller, safer fix and the one this analysis leans toward** given the project's own stated
+   preference for explicit rejection over silent downgrading, but this is the user's call.
 
-1. **DESTINATION_ORDER** (cheapest - do first): add a `bool destination_order_by_source` (or a
-   2-value enum) to `tt_Publisher`/`tt_Subscriber`, wire bit alongside the existing
-   `tt_UPDATE_QOS_*` bits. BY_RECEPTION_TIMESTAMP needs zero new logic (already the real behavior).
-   BY_SOURCE_TIMESTAMP needs a small per-`tt_WriterProxy` reorder step: hold a late-arriving-but-
-   earlier-timestamped sample back from `callback` until any still-outstanding earlier-timestamped
-   gap is resolved or given up on - a bounded, small addition to the existing gap-tracking
-   machinery already in `update_reliable_ack()`, not a new subsystem. RxO: a Subscriber requesting
-   BY_SOURCE_TIMESTAMP against a Publisher that never promised delivery-order metadata should be
-   incompatible the same way DEADLINE/LIVELINESS RxO already works.
-2. **LATENCY_BUDGET**: add `uint64_t latency_budget_duration_ns` to `tt_Publisher`, defaulting 0
-   ("no budget", i.e. today's flush-immediately-unless-`batch`-is-set behavior unchanged). Non-zero
-   reframes the existing `batch` flag as a *duration* instead of a bare boolean:
-   `tt_Publisher_publish()` defers the actual `node_flush()` up to that many nanoseconds (still
-   bounded by `tt_NODE_TX_INTERVAL`'s own existing tick, not a new timer subsystem) instead of
-   either "always immediate" or "always deferred to the next tick" - a real efficiency knob for a
-   Publisher that wants to coalesce bursts without giving up all latency control the way plain
-   `batch = true` does today. RxO: purely advisory in real DDS (offered <= requested, matching
-   `duration_offered_satisfies_requested()`'s own existing pattern in `rmw_qos.c`), same
-   compatibility direction as DEADLINE/LIVELINESS.
-3. **TIME_BASED_FILTER**: add `uint64_t minimum_separation_ns` to `tt_Subscriber`, defaulting 0
-   ("no filter", every delivery passes through, today's only behavior). Non-zero: `process_data()`
-   tracks a per-`tt_WriterProxy` `last_delivered_ns` and silently drops (never calls `callback`,
-   but still updates `received_bitmap`/`ack_seq_no` normally - RELIABLE's own delivery-confirmation
-   contract must stay intact even for a filtered-out sample, exactly the same "delivered to the
-   protocol, dropped at the application boundary" split LIFESPAN's own expiry already establishes)
-   any arrival within `minimum_separation_ns` of the last one actually delivered. No RxO concept in
-   real DDS for this policy (Subscriber-only, no Publisher-side equivalent to negotiate against).
-
-**Suggested order**: DESTINATION_ORDER first (cheapest, formalizes existing behavior), then
-TIME_BASED_FILTER (clearest standalone embedded-use-case value), then LATENCY_BUDGET (extends an
-existing mechanism, lowest urgency since `batch` already provides a coarse version of it). None of
-the three are urgent - no real scenario or `rmw_tickle` consumer is blocked on any of them today;
-listed here so the gap is documented and scoped rather than undiscovered, per the user's own
-request. Not assigned to TickLE Dev yet - pending the user's own prioritization against the perf-
-comparison findings below.
+**Not assigned to TickLE Dev yet** - both are proposals pending the user's own prioritization,
+same as the performance-improvement plan below.
 
 ## TickLE-native performance: comparison and improvement plan (2026-09-21, TickLE Plan, at the user's own request)
 
