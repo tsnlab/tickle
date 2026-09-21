@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789998594668,
+  "lastUpdate": 1789998598889,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -75032,6 +75032,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.805,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "94af74e100ffbdf4fa2055e3146133b9b5da5203",
+          "message": "PLAN.md: Milestone 64 - record KEEP_ALL/BEST_AVAILABLE implementation and real CI green\n\nDocuments both DDS QoS policy coverage inventory gaps (commits 3e7a928,\nabcffa1) as implemented and verified, with the RxO-compatibility-derived\ndesign reasoning for BEST_AVAILABLE's Publisher/Subscription asymmetry\nand the 0-as-unconstrained duration min/max convention.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T22:46:41+09:00",
+          "tree_id": "3a1f65f74691243a1774f5476ef07f634ffbfb53",
+          "url": "https://github.com/tsnlab/tickle/commit/94af74e100ffbdf4fa2055e3146133b9b5da5203"
+        },
+        "date": 1789998597717,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.443,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 63.356,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.79,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.588,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 59.194,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.727,
             "unit": "Mbps"
           }
         ]
