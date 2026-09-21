@@ -145,12 +145,42 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
     return tail + sizeof(value);
 }
 
+// `bitmap` fills word 0 only (every call site in this file fits well within 64 bits) - the rest of
+// acknack_header->bitmap[] relies on node->rx_buffer starting zeroed, same as every other
+// multi-byte field this helper leaves at its default.
 static uint32_t write_acknack(struct tt_Node* node, uint32_t endpoint_id, uint32_t seq_no, uint64_t bitmap) {
     struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
     acknack_header->endpoint_id = endpoint_id;
     acknack_header->seq_no = seq_no;
-    acknack_header->bitmap = bitmap;
+    acknack_header->bitmap[0] = bitmap;
+    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
+        acknack_header->bitmap[w] = 0;
+    }
     return sizeof(struct tt_AckNackHeader);
+}
+
+// Compares the multi-word received_bitmap against a plain uint64_t test expectation - every test
+// value in this file fits in word 0, so this is "word 0 == low, every other word == 0".
+static bool bitmap_equals_u64(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint64_t low) {
+    if (bitmap[0] != low) {
+        return false;
+    }
+    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
+        if (bitmap[w] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Sets received_bitmap's own word 0 to `low`, zeroing every other word - the test-side equivalent
+// of bitmap_set_bit()/bitmap_clear() combined, for tests that pre-seed proxy state directly rather
+// than driving it through a real ACKNACK/DATA packet.
+static void bitmap_set_u64(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint64_t low) {
+    bitmap[0] = low;
+    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
+        bitmap[w] = 0;
+    }
 }
 
 // tt_Publisher_publish() on a Publisher with reliable_cache set must snapshot every sample into
@@ -217,7 +247,7 @@ static void test_reliable_subscribe_in_order_no_acknack(void) {
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(4, proxy->ack_seq_no);
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
 }
@@ -246,8 +276,8 @@ static void test_reliable_subscribe_gap_then_close(void) {
 
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
-    EXPECT_EQ_U32(2, proxy->ack_seq_no);         // still waiting on 2
-    EXPECT_TRUE(proxy->received_bitmap == 2ULL); // bit 1 -> seq_no 3 (ack_seq_no + 1) received early
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);                          // still waiting on 2
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 2ULL)); // bit 1 -> seq_no 3 (ack_seq_no + 1) received early
     EXPECT_TRUE(proxy->acknack_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // immediate ACKNACK
     EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
@@ -257,7 +287,7 @@ static void test_reliable_subscribe_gap_then_close(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(4, proxy->ack_seq_no); // 2 lands, then absorbs the already-buffered bit for 3
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
     EXPECT_TRUE(!proxy->acknack_scheduled);
 }
 
@@ -386,8 +416,8 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     tail = write_data(&node, 5, 500, 5);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(2, proxy->ack_seq_no);          // 2 still the watermark - neither 4 nor 5 fill it
-    EXPECT_TRUE(proxy->received_bitmap == 12ULL); // bits 2,3: (ack_seq_no+2)=4, (ack_seq_no+3)=5
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);                           // 2 still the watermark - neither 4 nor 5 fill it
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 12ULL)); // bits 2,3: (ack_seq_no+2)=4, (ack_seq_no+3)=5
 
     tail = write_data(&node, 2, 200, 2); // fills the watermark itself via an exact match
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
@@ -395,12 +425,12 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
     // any further); the bitmap must re-align to keep tracking 4 and 5 correctly relative to the
     // new watermark, not silently start claiming 5 and 6 are the ones already received.
     EXPECT_EQ_U32(3, proxy->ack_seq_no);
-    EXPECT_TRUE(proxy->received_bitmap == 6ULL); // bits 1,2: (ack_seq_no+1)=4, (ack_seq_no+2)=5
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 6ULL)); // bits 1,2: (ack_seq_no+1)=4, (ack_seq_no+2)=5
 
     tail = write_data(&node, 3, 300, 3); // the last real gap closes
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(6, proxy->ack_seq_no); // 3 lands, then absorbs the already-buffered 4 and 5 too
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
 }
 
 // Regression test for a third real bug found via run_perf.sh's own tc/netem loss-injection
@@ -449,7 +479,11 @@ static void test_acknack_retry_bulk_skip_matches_depth_vs_bitmap_width(void) {
     // represent at all, whichever is narrower.
     const bool bulk_skip_possible = tt_MAX_RELIABLE_HISTORY + 6 < tt_RELIABLE_BITMAP_BITS;
     const uint32_t far_seq = bulk_skip_possible ? tt_MAX_RELIABLE_HISTORY + 6 : tt_RELIABLE_BITMAP_BITS;
-    proxy->received_bitmap = 1ULL << (far_seq - 1); // bit (far_seq - 1): ack_seq_no(1) + (far_seq - 1) = far_seq
+    // bit (far_seq - 1): ack_seq_no(1) + (far_seq - 1) = far_seq. bitmap_set_bit() (tickle.c, not a
+    // raw `1ULL << (far_seq - 1)`) since far_seq - 1 can now exceed 63 once the bitmap is wider than
+    // one word - a bare shift by >= 64 is undefined behavior, exactly the class of bug this
+    // milestone's own production-code fix (update_reliable_ack()) already had to avoid.
+    bitmap_set_bit(proxy->received_bitmap, far_seq - 1);
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->acknack_scheduled = true;
@@ -470,13 +504,23 @@ static void test_acknack_retry_bulk_skip_matches_depth_vs_bitmap_width(void) {
         EXPECT_EQ_U32(far_seq - tt_MAX_RELIABLE_HISTORY + 1, proxy->ack_seq_no);
         // bit (tt_MAX_RELIABLE_HISTORY - 1): ack_seq_no + (tt_MAX_RELIABLE_HISTORY - 1) = far_seq,
         // the sample already known received - still correctly tracked, not lost in the jump.
-        EXPECT_TRUE(proxy->received_bitmap == (1ULL << (tt_MAX_RELIABLE_HISTORY - 1)));
+        EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 1ULL << (tt_MAX_RELIABLE_HISTORY - 1)));
     } else {
         // depth >= bitmap width: far_seq's own bit is always within the tracking window by
         // construction, so this correctly resolves through the normal retry cycle instead - no
         // bulk skip, same reasoning Milestone 24's own removed test proved directly.
         EXPECT_EQ_U32(2, proxy->ack_seq_no);
-        EXPECT_TRUE(proxy->received_bitmap == (1ULL << (far_seq - 2)));
+        // far_seq - 2 can also exceed 63 in principle (same reasoning as the seeding above) - not
+        // reachable with today's tt_MAX_RELIABLE_HISTORY/tt_RELIABLE_BITMAP_BITS values (this
+        // branch only runs when bulk_skip_possible is false, i.e. far_seq == tt_RELIABLE_BITMAP_
+        // BITS itself is the ceiling), but bitmap_test_bit() over bitmap_equals_u64()'s own raw
+        // shift keeps this branch correct regardless of what those constants become later.
+        EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, far_seq - 2));
+        for (uint32_t bit = 0; bit < tt_RELIABLE_BITMAP_BITS; bit++) {
+            if (bit != far_seq - 2) {
+                EXPECT_TRUE(!bitmap_test_bit(proxy->received_bitmap, bit));
+            }
+        }
     }
 }
 
@@ -495,7 +539,8 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
     EXPECT_TRUE(proxy != NULL);
     proxy->ack_seq_no = 5;
-    proxy->received_bitmap = 2ULL; // seq_no 5 still missing, seq_no 6 already received (bit j: ack_seq_no + j)
+    bitmap_set_u64(proxy->received_bitmap,
+                   2ULL); // seq_no 5 still missing, seq_no 6 already received (bit j: ack_seq_no + j)
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->acknack_scheduled = true;
@@ -509,7 +554,7 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up
 
     EXPECT_TRUE(!proxy->acknack_scheduled);
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
     EXPECT_EQ_U32(7, proxy->ack_seq_no); // skipped past seq_no 5, absorbed the already-known 6 too
 }
 
@@ -551,8 +596,8 @@ static void test_acknack_retry_budget_resets_for_next_gap(void) {
 
     tail = write_data(&node, 2, 200, 2); // seq_no 2 recovers - a *different* gap (seq_no 3) remains
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(3, proxy->ack_seq_no);      // now waiting on 3, not 2
-    EXPECT_TRUE(proxy->received_bitmap != 0); // still a gap (3 missing, 4 already in)
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);                  // now waiting on 3, not 2
+    EXPECT_TRUE(!bitmap_is_zero(proxy->received_bitmap)); // still a gap (3 missing, 4 already in)
     // Without the fix, this would read 2 (inherited from seq_no 2's own already-used attempts)
     // instead of a fresh budget for the new watermark.
     EXPECT_EQ_U32(0, (uint32_t)proxy->retry);
@@ -567,7 +612,7 @@ static void test_acknack_retry_budget_resets_for_next_gap(void) {
 }
 
 // Regression test for PLAN.md's Milestone 20: a gap so wide it can't even be represented in
-// received_bitmap (>= tt_RELIABLE_BITMAP_BITS, the wire format's own fixed 64-bit ceiling) used
+// received_bitmap (>= tt_RELIABLE_BITMAP_BITS, the wire format's own fixed-width ceiling) used
 // to just warn and leave ack_seq_no frozen forever - every later arrival, however perfectly
 // in-order from that point on, had the exact same too-wide offset relative to the still-stuck
 // ack_seq_no, so a healthy stream never recovered once this happened once. Most likely to bite a
@@ -588,7 +633,7 @@ static void test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_o
     init_header(&header);
 
     // ack_seq_no starts at 1 (init_subscriber_registered_on_node()'s own default) - first-ever
-    // arrival is seq_no 1000, an offset (999) far past tt_RELIABLE_BITMAP_BITS (64).
+    // arrival is seq_no 1000, an offset (999) far past tt_RELIABLE_BITMAP_BITS.
     uint32_t tail = write_data(&node, 1000, 100000, 1000);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
@@ -596,7 +641,7 @@ static void test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_o
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(1001, proxy->ack_seq_no);
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
     EXPECT_TRUE(!proxy->acknack_scheduled); // no phantom gap left armed for 1..999
 
     // The stream must now track normally from here - a small, genuinely resolvable gap right
@@ -607,8 +652,8 @@ static void test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_o
     tail = write_data(&node, 1002, 100200, 1002); // 1001 skipped
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(1001, proxy->ack_seq_no);      // still correctly waiting on 1001
-    EXPECT_TRUE(proxy->received_bitmap == 2ULL); // bit 1 -> seq_no 1002 (1001 + 1) received early
+    EXPECT_EQ_U32(1001, proxy->ack_seq_no);                       // still correctly waiting on 1001
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 2ULL)); // bit 1 -> seq_no 1002 (1001 + 1) received early
     EXPECT_TRUE(proxy->acknack_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK for 1001
 }
@@ -637,14 +682,14 @@ static void test_reliable_first_contact_via_data_does_not_request_pre_match_hist
 
     // First-ever arrival from this writer is seq_no 50 - a VOLATILE Publisher already 49 samples
     // into its own stream by the time this Subscriber matched it, well within tt_RELIABLE_BITMAP_
-    // BITS (64) of the stale ack_seq_no==1 default.
+    // BITS of the stale ack_seq_no==1 default.
     uint32_t tail = write_data(&node, 50, 5000, 50);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(51, proxy->ack_seq_no);                     // synced straight to just past this first sample
-    EXPECT_TRUE(proxy->received_bitmap == 0);                 // nothing "missing" before it - never tracked at all
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));      // nothing "missing" before it - never tracked at all
     EXPECT_TRUE(!proxy->acknack_scheduled);                   // no phantom gap for 1..49
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // no ACKNACK ever sent requesting them
 

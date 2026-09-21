@@ -346,7 +346,7 @@ static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_receive
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);           // Milestone 47 - created lazily, first contact
     EXPECT_EQ_U32(97, proxy->ack_seq_no); // learned directly from the Heartbeat, no DATA involved
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
     EXPECT_EQ_U32(100, proxy->heartbeat_last_seq_no);
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)proxy->node_id);
     EXPECT_TRUE(proxy->acknack_scheduled); // 97..100 gap revealed -> a real ACKNACK cycle
@@ -382,7 +382,7 @@ static void test_heartbeat_first_contact_volatile_subscriber_skips_backlog(void)
     // oldest retained sample. +1, not last_seq_no itself: ack_seq_no means "next not yet
     // accounted for" - leaving it at 100 would still treat that one sample as outstanding.
     EXPECT_EQ_U32(101, proxy->ack_seq_no);
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
     EXPECT_EQ_U32(100, proxy->heartbeat_last_seq_no);
     EXPECT_TRUE(!proxy->acknack_scheduled);                   // no gap from this Subscriber's own point of view
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // no ACKNACK requesting any of 97..100
@@ -421,7 +421,7 @@ static void test_heartbeat_oversized_gap_jumps_baseline(void) {
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(1001, proxy->ack_seq_no);
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
 }
 
 // A Heartbeat arriving at an already-tracking Subscriber, revealing a gap that still fits inside
@@ -448,8 +448,8 @@ static void test_heartbeat_gap_within_window_widens_request_without_jumping(void
         write_heartbeat(&node, ENDPOINT_ID, 1, 5, tt_HEARTBEAT_FLAG_FINAL); // gap of 4 - well within the window
     EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(1, proxy->ack_seq_no);      // untouched - this is not the oversized-gap case
-    EXPECT_TRUE(proxy->received_bitmap == 0); // nothing *confirmed* received either
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);                 // untouched - this is not the oversized-gap case
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap)); // nothing *confirmed* received either
     EXPECT_EQ_U32(5, proxy->heartbeat_last_seq_no);
     EXPECT_TRUE(proxy->acknack_scheduled); // still triggers a real ACKNACK cycle
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);

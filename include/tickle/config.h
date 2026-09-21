@@ -54,12 +54,16 @@
 // no other reason to pick something different (tt_ReliableCache's own doc comment) - not a limit
 // on what a caller *may* choose, just a reasonable, historically-tuned starting point.
 //
-// Whether raising *either* role's own value past tt_RELIABLE_BITMAP_BITS (64, below) would help
-// anything: see struct tt_ReliableCache's own doc comment (tickle.h) for the honest answer (only
-// DURABILITY's own one-shot backlog push benefits from a deeper *Publisher*-side cache at all;
-// RELIABLE's own ACKNACK-driven recovery under sustained loss is bottlenecked by the Subscriber's
-// own fixed 64-bit received_bitmap regardless, which this constant's own role (1) above already
-// respects via the _Static_assert (tickle.c) keeping it at or under that same width).
+// Whether raising *either* role's own value past tt_RELIABLE_BITMAP_BITS (below) would help
+// anything: see struct tt_ReliableCache's own doc comment (tickle.h) for the fuller answer - a
+// deeper *Publisher*-side cache alone was never the fix for RELIABLE's own ACKNACK-driven recovery
+// under sustained loss (only DURABILITY's own one-shot backlog push benefits from that); the real
+// bottleneck was always the Subscriber's own received_bitmap width, which this constant's own
+// role (1) above already respects via the _Static_assert (tickle.c) keeping it at or under
+// whatever that width currently is. That width was widened 64 -> 256 bits (rmw_tickle/PLAN.md's
+// "TickLE-native performance" plan) once real HIL confirmed it, not just the cache depth, was the
+// actual ceiling - see tt_RELIABLE_BITMAP_BITS's own doc comment for the honest "raises the
+// tolerable gap, doesn't remove the ceiling entirely" framing.
 //
 // History: 8 -> 10 -> 64, chasing a real cache-eviction-vs-ACKNACK-round-trip-recovery race under
 // run_perf.sh's own loss-injection scenarios (LOSS_TEST_INTERVAL_SEC's own comment) - the retained
@@ -84,13 +88,36 @@
 // depth (and RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no
 // independent "durability depth" concept to keep in sync with anything, only ever one cache.
 #define tt_MAX_RELIABLE_HISTORY 64
-// Width of tt_AckNackHeader.bitmap/tt_WriterProxy.received_bitmap - inherent to their uint64_t
-// wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()
-// (tickle.c) don't compare against a bare 64. tt_MAX_RELIABLE_HISTORY above must never exceed
-// this (tickle.c's own _Static_assert enforces it) - a gap this wide can never be named in a
-// single ACKNACK bitmap in the first place, so a deeper cache couldn't be selectively recovered
-// from anyway.
-#define tt_RELIABLE_BITMAP_BITS 64
+// Width of tt_AckNackHeader.bitmap/tt_WriterProxy.received_bitmap, both now tt_RELIABLE_BITMAP_
+// WORDS-word uint64_t arrays (256 bits total - widened from a single, bare-uint64_t 64 bits,
+// rmw_tickle/PLAN.md's "TickLE-native performance" plan, tt_VERSION bumped 4 -> 5 for the wire
+// layout change). tt_MAX_RELIABLE_HISTORY above must never exceed this (tickle.c's own
+// _Static_assert enforces it) - a gap this wide can never be named in a single ACKNACK bitmap in
+// the first place, so a deeper cache couldn't be selectively recovered from anyway. Matches real
+// RTPS's own practical SequenceNumberSet width (typically up to 256) - not a novel choice.
+// Real-HIL-measured motivation: at TickLE's own real throughput (~1.2M msg/s), the old 64-bit
+// window represented only ~53us of send time - almost certainly shorter than one real ACKNACK
+// round trip on any physical link, capping RELIABLE's own tc-loss recovery well below 100% even
+// though the Publisher's own retained-cache depth (Milestone 61) was never the actual bottleneck
+// (comparison.md §6 item 9/10's own re-measurement already ruled that out). See struct tt_
+// WriterProxy.received_bitmap's own doc comment (tickle.h) for the honest "this raises the
+// tolerable gap ~4x, not a guaranteed full fix - the real link's own ACKNACK RTT still sets the
+// actual limit" caveat.
+#define tt_RELIABLE_BITMAP_BITS 256
+// Word count backing the tt_RELIABLE_BITMAP_BITS-wide bitmap arrays above - every bit-manipulation
+// site (highest_received_bit()/update_reliable_ack()/jump_ack_baseline()/send_acknack()/
+// process_heartbeat(), tickle.c) operates in units of this many uint64_t words, not raw bits, to
+// stay O(word-count) rather than O(bit-count) wherever the access pattern allows it (the same
+// "O(1)/O(word-count), not O(size)" lesson Milestone 61's own find_resendable_cache_entry()
+// regression - a naive per-element scan across a widened fixed structure measurably regressing
+// performance - already taught this codebase once).
+// Bits per word in the arrays tt_RELIABLE_BITMAP_WORDS sizes - the width of the uint64_t this
+// codebase's own bitmap_*() helpers (tickle.c, next to highest_received_bit()) shift/index within,
+// named so those helpers don't compare against a bare 64 (clang-tidy's own readability-magic-
+// numbers check, matching this file's own established "name it" convention for every other fixed
+// width here).
+#define tt_RELIABLE_BITMAP_WORD_BITS 64
+#define tt_RELIABLE_BITMAP_WORDS (tt_RELIABLE_BITMAP_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)

@@ -1711,16 +1711,120 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
 // submessage back to proxy->sender_*, reporting proxy->ack_seq_no/received_bitmap. Not
 // fatal on failure, same philosophy as resend_call_request()'s own comment: whichever caller
 // armed a retry (update_reliable_ack()/acknack_retry()) will just try again.
-// Highest bit index set in a tt_Subscriber's own received_bitmap (bit j: "received(ack_seq_no +
-// j)" - see struct tt_Subscriber's own doc comment, tickle.h), or -1 if none are set. Shared by
-// send_acknack() and skip_unrecoverable_backlog() below - both need "how far ahead does anything
-// *confirmed* reach", not just "which bits happen to be 0".
-static int highest_received_bit(uint64_t received_bitmap) {
-    int highest = tt_RELIABLE_BITMAP_BITS - 1;
-    while (highest >= 0 && !((received_bitmap >> (unsigned)highest) & 1)) {
-        highest--;
+// tt_RELIABLE_BITMAP_WORDS-word bitmap operations (config.h's own doc comment on that constant) -
+// the small, fixed set struct tt_WriterProxy.received_bitmap/struct tt_AckNackHeader.bitmap (both
+// tickle.h) need, each replacing exactly one single-word uint64_t expression this file used before
+// the widening (rmw_tickle/PLAN.md's "TickLE-native performance" plan) - not a generic bitset
+// library. Every one of these (except bitmap_shift_right(), which needs a genuine cross-word
+// carry) is O(word-count), not O(bit-count), by construction.
+
+static bool bitmap_is_zero(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        if (bitmap[word] != 0) {
+            return false;
+        }
     }
-    return highest;
+    return true;
+}
+
+static void bitmap_clear(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        bitmap[word] = 0;
+    }
+}
+
+// bit 0 of the whole bitmap (word 0's own lowest bit) - the "is the position right after the
+// watermark already received" check advance_ack_seq_no()'s/skip_unrecoverable_backlog()'s own
+// absorb loops use.
+static bool bitmap_lowest_bit_set(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
+    return (bitmap[0] & 1) != 0;
+}
+
+static bool bitmap_test_bit(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32_t offset) {
+    return (bitmap[offset / tt_RELIABLE_BITMAP_WORD_BITS] & (1ULL << (offset % tt_RELIABLE_BITMAP_WORD_BITS))) != 0;
+}
+
+static void bitmap_set_bit(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32_t offset) {
+    bitmap[offset / tt_RELIABLE_BITMAP_WORD_BITS] |= (1ULL << (offset % tt_RELIABLE_BITMAP_WORD_BITS));
+}
+
+// Shifts the whole multi-word bitmap right by exactly one bit, carrying word N+1's own bit 0 into
+// word N's own top bit - advance_ack_seq_no()'s own per-step realigning shift, now spanning
+// tt_RELIABLE_BITMAP_WORDS words instead of the single one this file used before the widening.
+static void bitmap_shift_right_one(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS - 1; word++) {
+        bitmap[word] = (bitmap[word] >> 1) | (bitmap[word + 1] << (tt_RELIABLE_BITMAP_WORD_BITS - 1));
+    }
+    bitmap[tt_RELIABLE_BITMAP_WORDS - 1] >>= 1;
+}
+
+// Shifts the whole multi-word bitmap right by `shift_bits` bits, 0 <= shift_bits <
+// tt_RELIABLE_BITMAP_BITS - skip_unrecoverable_backlog()'s own jump-ahead shift (its own call site
+// handles shift_bits >= tt_RELIABLE_BITMAP_BITS separately, via bitmap_clear() instead - a
+// full-width-or-wider shift has nothing left to carry and would be undefined behavior for the
+// per-word `<<`/`>>` below anyway). The only one of these helpers that isn't a plain O(word-count)
+// loop - a genuine cross-word carry at an arbitrary bit offset needs it - but shift_bits itself is
+// still bounded by the fixed, small tt_RELIABLE_BITMAP_BITS width, not by anything that scales
+// with cache depth or config the way Milestone 61's own O(depth) regression did.
+static void bitmap_shift_right(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32_t shift_bits) {
+    uint32_t word_shift = shift_bits / tt_RELIABLE_BITMAP_WORD_BITS;
+    uint32_t bit_shift = shift_bits % tt_RELIABLE_BITMAP_WORD_BITS;
+    uint64_t shifted[tt_RELIABLE_BITMAP_WORDS] = {0};
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        uint32_t src = (uint32_t)word + word_shift;
+        if (src >= tt_RELIABLE_BITMAP_WORDS) {
+            continue;
+        }
+        shifted[word] = bitmap[src] >> bit_shift;
+        if (bit_shift != 0 && src + 1 < tt_RELIABLE_BITMAP_WORDS) {
+            shifted[word] |= bitmap[src + 1] << (tt_RELIABLE_BITMAP_WORD_BITS - bit_shift);
+        }
+    }
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        bitmap[word] = shifted[word];
+    }
+}
+
+// Highest bit index set across the whole multi-word bitmap (bit j: "received(ack_seq_no + j)" -
+// see struct tt_WriterProxy's own doc comment, tickle.h), or -1 if none are set. Shared by send_
+// acknack() and skip_unrecoverable_backlog() below - both need "how far ahead does anything
+// *confirmed* reach", not just "which bits happen to be 0". Skips whole zero words from the top
+// down before falling back to a per-bit scan within the one word that actually has something set -
+// O(word-count) in the common (few bits set, high words empty) case, only ever O(word-bits) worst
+// case within a single word, never O(tt_RELIABLE_BITMAP_BITS) as a flat scan would be.
+static int bitmap_highest_bit(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
+    for (int word = tt_RELIABLE_BITMAP_WORDS - 1; word >= 0; word--) {
+        if (bitmap[word] == 0) {
+            continue;
+        }
+        int bit_in_word = tt_RELIABLE_BITMAP_WORD_BITS - 1;
+        while (bit_in_word >= 0 && !((bitmap[word] >> (unsigned)bit_in_word) & 1)) {
+            bit_in_word--;
+        }
+        return (word * tt_RELIABLE_BITMAP_WORD_BITS) + bit_in_word;
+    }
+    return -1;
+}
+
+// Builds a `highest + 1`-bit-wide low mask (bits 0..highest set, the rest clear) across the whole
+// multi-word bitmap - send_acknack()'s own "which positions are even worth asking about" mask,
+// mirroring the single-word `(1ULL << (highest + 1)) - 1` this file used before the widening.
+// highest < 0 yields an all-zero mask (nothing to ask about); highest >= tt_RELIABLE_BITMAP_BITS - 1
+// yields an all-ones mask, matching the single-word version's own `~0ULL` special case (avoiding a
+// would-be full-width undefined-shift the same way that one avoided `1ULL << 64` directly).
+static void bitmap_low_mask(uint64_t mask[tt_RELIABLE_BITMAP_WORDS], int highest) {
+    bitmap_clear(mask);
+    if (highest < 0) {
+        return;
+    }
+    int full_words = (highest + 1) / tt_RELIABLE_BITMAP_WORD_BITS;
+    int remaining_bits = (highest + 1) % tt_RELIABLE_BITMAP_WORD_BITS;
+    for (int word = 0; word < full_words && word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        mask[word] = ~0ULL;
+    }
+    if (remaining_bits != 0 && full_words < tt_RELIABLE_BITMAP_WORDS) {
+        mask[full_words] = (1ULL << remaining_bits) - 1;
+    }
 }
 
 // Milestone 47 - finds sub's existing WriterProxy for (node_id, entity_id), or NULL if this
@@ -1766,7 +1870,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sender_ip = 0;
             proxy->sender_port = 0;
             proxy->ack_seq_no = 1;
-            proxy->received_bitmap = 0;
+            bitmap_clear(proxy->received_bitmap);
             proxy->retry = 0;
             proxy->acknack_scheduled = false;
             proxy->heartbeat_last_seq_no = 0;
@@ -1786,7 +1890,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 
 // QoS roadmap #5 (RELIABILITY) follow-up - the highest bit position (bit j: seq_no proxy->
 // ack_seq_no + j needs attention, one way or another) this writer currently has *any* reason to
-// ask about - received_bitmap's own highest confirmed-out-of-order bit (highest_received_bit()
+// ask about - received_bitmap's own highest confirmed-out-of-order bit (bitmap_highest_bit()
 // above, the only signal before this follow-up existed), widened by the highest seq_no the most
 // recent struct tt_HeartbeatHeader from this writer claimed the Publisher has published, if that
 // reaches further. A Heartbeat can reveal the Subscriber is behind even with zero out-of-order
@@ -1795,7 +1899,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 // (whether there's anything to do at all) - both need the same widened answer, not just received_
 // bitmap's own. -1 if neither signal has anything to report.
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
-    int highest = highest_received_bit(proxy->received_bitmap);
+    int highest = bitmap_highest_bit(proxy->received_bitmap);
     if (proxy->heartbeat_last_seq_no >= proxy->ack_seq_no) {
         uint64_t hb_offset = (uint64_t)proxy->heartbeat_last_seq_no - proxy->ack_seq_no;
         int hb_highest = hb_offset < tt_RELIABLE_BITMAP_BITS ? (int)hb_offset : tt_RELIABLE_BITMAP_BITS - 1;
@@ -1836,19 +1940,17 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
     // "not found" ACKNACKs against a run of only ~500 total messages - only possible if most
     // requests were for seq_nos that were never sent, not actually lost ones.
     //
-    // highest_relevant_bit() (not the plain received_bitmap-only highest_received_bit() this
+    // highest_relevant_bit() (not the plain received_bitmap-only bitmap_highest_bit() this
     // comment's own numbers were found against) also considers the most recent Heartbeat's own
     // last_seq_no - QoS roadmap #5's own follow-up, struct tt_HeartbeatHeader's doc comment
     // (tickle.h) - widening the request range to cover a gap a Heartbeat revealed even when
     // nothing has arrived out of order yet to set any bit here at all.
     int highest = highest_relevant_bit(proxy);
-    uint64_t request_mask = 0;
-    if (highest >= tt_RELIABLE_BITMAP_BITS - 1) {
-        request_mask = ~0ULL; // highest is the top bit - avoid a 64-bit shift's own UB below
-    } else if (highest >= 0) {
-        request_mask = (1ULL << (highest + 1)) - 1;
+    uint64_t request_mask[tt_RELIABLE_BITMAP_WORDS];
+    bitmap_low_mask(request_mask, highest);
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        acknack_header->bitmap[word] = ~proxy->received_bitmap[word] & request_mask[word];
     }
-    acknack_header->bitmap = ~proxy->received_bitmap & request_mask;
     // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
     // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
     acknack_header->entity_id = proxy->entity_id;
@@ -1875,7 +1977,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 
     struct tt_WriterProxy* proxy = param;
 
-    if (proxy->received_bitmap == 0) {
+    if (bitmap_is_zero(proxy->received_bitmap)) {
         // A DATA arrival already closed the gap since this timer was armed.
         proxy->acknack_scheduled = false;
         return;
@@ -1933,9 +2035,9 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 // single isolated loss.
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
     proxy->ack_seq_no++;
-    proxy->received_bitmap >>= 1;
-    while (proxy->received_bitmap & 1) { // absorb whatever out-of-order run already follows it
-        proxy->received_bitmap >>= 1;
+    bitmap_shift_right_one(proxy->received_bitmap);
+    while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever out-of-order run already follows it
+        bitmap_shift_right_one(proxy->received_bitmap);
         proxy->ack_seq_no++;
     }
     proxy->retry = 0;
@@ -1952,11 +2054,11 @@ static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
 // give-up cycle, everything behind it also needed its own full cycle serially, one at a time,
 // even though most of that range was just as hopeless from the moment it first appeared.
 static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy) {
-    if (proxy->received_bitmap == 0) {
+    if (bitmap_is_zero(proxy->received_bitmap)) {
         return; // nothing else known to be ahead - nothing to skip
     }
 
-    int highest = highest_received_bit(proxy->received_bitmap);
+    int highest = bitmap_highest_bit(proxy->received_bitmap);
     // highest's own absolute sequence number is ack_seq_no + highest (received_bitmap's own bit
     // j means "received(ack_seq_no + j)" - see struct tt_WriterProxy's own doc comment, tickle.h).
     uint32_t highest_seq_no = proxy->ack_seq_no + (uint32_t)highest;
@@ -1966,10 +2068,14 @@ static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy) {
 
     uint32_t new_ack_seq_no = highest_seq_no - tt_MAX_RELIABLE_HISTORY + 1;
     uint32_t skipped = new_ack_seq_no - proxy->ack_seq_no;
-    proxy->received_bitmap = skipped < tt_RELIABLE_BITMAP_BITS ? (proxy->received_bitmap >> skipped) : 0;
+    if (skipped < tt_RELIABLE_BITMAP_BITS) {
+        bitmap_shift_right(proxy->received_bitmap, skipped);
+    } else {
+        bitmap_clear(proxy->received_bitmap);
+    }
     proxy->ack_seq_no = new_ack_seq_no;
-    while (proxy->received_bitmap & 1) { // absorb whatever's already confirmed right after the jump
-        proxy->received_bitmap >>= 1;
+    while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever's already confirmed right after the jump
+        bitmap_shift_right_one(proxy->received_bitmap);
         proxy->ack_seq_no++;
     }
 }
@@ -2009,12 +2115,12 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
 // shared by update_reliable_ack()'s own oversized-DATA-gap branch and process_heartbeat()'s own
 // oversized-Heartbeat-gap case (PLAN.md's Milestone 20 and its own Heartbeat follow-up
 // respectively): an offset >= tt_RELIABLE_BITMAP_BITS can never be named in a tt_AckNackHeader.
-// bitmap at all (fixed 64 bits wide on the wire), so nothing genuinely recoverable is given up on
-// by not tracking it - see update_reliable_ack()'s own call site for the full "why" comment, not
-// repeated here.
+// bitmap at all (tt_RELIABLE_BITMAP_BITS bits wide on the wire, config.h), so nothing genuinely
+// recoverable is given up on by not tracking it - see update_reliable_ack()'s own call site for
+// the full "why" comment, not repeated here.
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
     proxy->ack_seq_no = seq_no;
-    proxy->received_bitmap = 0;
+    bitmap_clear(proxy->received_bitmap);
     advance_ack_seq_no(proxy);
 }
 
@@ -2116,26 +2222,26 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // has had its fair tt_RELIABLE_RETRY attempts, not preempting them.
         uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
         if (offset < tt_RELIABLE_BITMAP_BITS) {
-            uint64_t bit = 1ULL << offset;
-            if (proxy->received_bitmap & bit) {
+            if (bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
                 is_new = false; // already received this one out of order before - a duplicate
             } else {
-                proxy->received_bitmap |= bit;
+                bitmap_set_bit(proxy->received_bitmap, (uint32_t)offset);
             }
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
             // own comment above warns against fast-forwarding on, an offset this wide (>=
             // tt_RELIABLE_BITMAP_BITS) can *never* be requested at all - tt_AckNackHeader.bitmap
-            // is a fixed 64 bits wide on the wire, so no ACKNACK this Subscriber could ever send
-            // has a way to name a position past bit 63 in the first place, regardless of what
-            // ack_seq_no does about it. Leaving ack_seq_no untouched here (this function's own
-            // behavior before PLAN.md's Milestone 20) permanently wedges it: every later arrival,
-            // however perfectly in-order from this point on, has the exact same too-wide offset
-            // relative to the still-stuck ack_seq_no, forever - a healthy stream never recovers.
-            // Most visible for a QoS roadmap #4 (DURABILITY) backlog delivered to a brand-new
-            // Subscriber whose default ack_seq_no (1) starts arbitrarily far behind a Publisher
-            // that's been running a while, but applies equally to a RELIABLE-only stream that
-            // takes one real burst loss wider than 64 - jump the baseline to this arrival instead,
+            // is a fixed tt_RELIABLE_BITMAP_BITS bits wide on the wire (config.h), so no ACKNACK
+            // this Subscriber could ever send has a way to name a position past the top bit in the
+            // first place, regardless of what ack_seq_no does about it. Leaving ack_seq_no
+            // untouched here (this function's own behavior before PLAN.md's Milestone 20)
+            // permanently wedges it: every later arrival, however perfectly in-order from this
+            // point on, has the exact same too-wide offset relative to the still-stuck ack_seq_no,
+            // forever - a healthy stream never recovers. Most visible for a QoS roadmap #4
+            // (DURABILITY) backlog delivered to a brand-new Subscriber whose default ack_seq_no (1)
+            // starts arbitrarily far behind a Publisher that's been running a while, but applies
+            // equally to a RELIABLE-only stream that takes one real burst loss wider than the
+            // bitmap - jump the baseline to this arrival instead,
             // the same "give up on what's provably unrecoverable, keep the stream moving" logic
             // skip_unrecoverable_backlog() already applies once retries are exhausted, just
             // applied here the instant it's already known un-trackable rather than after wasting
@@ -3346,8 +3452,9 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 // measurably *hurting* RELIABLE recovery rather than merely not helping it (the honest limitation
 // Milestone 61 already documented) - root-caused to this exact O(depth) scan: at depth=8192,
 // entries[] is ~12MB (each entry carries a 1472-byte buffer), and process_acknack() calls this once
-// per set ACKNACK bit (up to tt_RELIABLE_BITMAP_BITS=64 times), so a single ACKNACK could walk that
-// whole ~12MB region up to 64 times, almost entirely cache misses on real hardware. Assumes `depth`
+// per set ACKNACK bit (up to tt_RELIABLE_BITMAP_BITS times - 64 at the time of this finding, since
+// widened to 256), so a single ACKNACK could walk that whole ~12MB region up to that many times,
+// almost entirely cache misses on real hardware. Assumes `depth`
 // stays the same between the write that placed a sample and this lookup for it - true for every
 // current caller (depth is set once at setup time, never changed mid-stream by anything in this
 // codebase today) but not structurally enforced; the write side's own `cache->next % depth`
@@ -3378,34 +3485,45 @@ static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_Relia
 // process_acknack() below purely to keep that function's own cognitive complexity under clang-
 // tidy's threshold, same reasoning find_resendable_cache_entry() above was split out for (the new
 // pub->reliable gate this milestone added tipped it over on its own). Only ever called when pub->
-// reliable is true - see that call site's own doc comment for why.
+// reliable is true - see that call site's own doc comment for why. `bitmap` now spans tt_RELIABLE_
+// BITMAP_WORDS words (config.h's own ACKNACK-widening plan) - the outer per-word loop skips a
+// whole zero word (the common case for a request that only names a handful of missing samples)
+// without touching find_resendable_cache_entry() at all, keeping this O(word-count + set-bit-
+// count) rather than a flat O(tt_RELIABLE_BITMAP_BITS) scan - the same "stay O(word-count)" care
+// tt_RELIABLE_BITMAP_WORDS's own doc comment calls for.
 static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
-                                        uint16_t depth, uint32_t seq_no, uint64_t bitmap,
-                                        const struct tt_Peer* target) {
-    for (int bit = 0; bit < tt_RELIABLE_BITMAP_BITS; bit++) {
-        if (!(bitmap & (1ULL << bit))) {
+                                        uint16_t depth, uint32_t seq_no,
+                                        const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], const struct tt_Peer* target) {
+    for (int word_idx = 0; word_idx < tt_RELIABLE_BITMAP_WORDS; word_idx++) {
+        uint64_t word = bitmap[word_idx];
+        if (word == 0) {
             continue;
         }
-        uint32_t missing_seq_no = seq_no + (uint32_t)bit;
+        for (int bit_idx = 0; bit_idx < tt_RELIABLE_BITMAP_WORD_BITS; bit_idx++) {
+            if (!((word >> (unsigned)bit_idx) & 1)) {
+                continue;
+            }
+            uint32_t missing_seq_no = seq_no + (uint32_t)((word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + bit_idx);
 
-        struct tt_ReliableCacheEntry* cache_entry =
-            find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns);
-        if (cache_entry == NULL) {
-            continue;
-        }
+            struct tt_ReliableCacheEntry* cache_entry =
+                find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns);
+            if (cache_entry == NULL) {
+                continue;
+            }
 
-        uint32_t old_tx_tail = node->tx_tail;
-        void* buf = encode(node, cache_entry->len);
-        if (buf == NULL) {
-            TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
-            rollback(node, old_tx_tail);
-            continue;
-        }
-        _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
-        if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
-            rollback(node, old_tx_tail);
-        } else {
-            cache_entry->retry++;
+            uint32_t old_tx_tail = node->tx_tail;
+            void* buf = encode(node, cache_entry->len);
+            if (buf == NULL) {
+                TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
+                rollback(node, old_tx_tail);
+                continue;
+            }
+            _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+            if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
+                rollback(node, old_tx_tail);
+            } else {
+                cache_entry->retry++;
+            }
         }
     }
 }
@@ -3427,7 +3545,10 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
 
     uint32_t endpoint_id = rd32(header, acknack_header->endpoint_id);
     uint32_t seq_no = rd32(header, acknack_header->seq_no);
-    uint64_t bitmap = rd64(header, acknack_header->bitmap);
+    uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS];
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        bitmap[word] = rd64(header, acknack_header->bitmap[word]);
+    }
     uint32_t entity_id = rd32(header, acknack_header->entity_id);
 
     TT_LOG_DEBUG("AckNack");
@@ -3562,7 +3683,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
         // ACKNACK-request it (highest_relevant_bit() sees heartbeat_last_seq_no == ack_seq_no as
         // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
         proxy->ack_seq_no = sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1;
-        proxy->received_bitmap = 0;
+        bitmap_clear(proxy->received_bitmap);
     } else if (ctx->last_seq_no >= proxy->ack_seq_no) {
         uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;
         if (offset >= tt_RELIABLE_BITMAP_BITS) {

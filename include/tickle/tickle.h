@@ -468,20 +468,25 @@ struct tt_Data {
 //
 // Honest, load-bearing limitation, found while making depth caller-configurable and worth stating
 // plainly rather than implying "just raise depth" fixes every retention-window problem: raising a
-// specific Publisher's own `depth`/`capacity` past tt_RELIABLE_BITMAP_BITS (64) only ever helps
+// specific Publisher's own `depth`/`capacity` past tt_RELIABLE_BITMAP_BITS only ever helps
 // DURABILITY's own one-shot backlog push (deliver_durability_backlog() walks entries[] directly,
 // no ACKNACK/bitmap involved at all) - it does NOT, by itself, improve RELIABLE's own ACKNACK-
 // driven recovery under sustained loss at high throughput, because struct tt_WriterProxy.
-// received_bitmap (the *Subscriber's* own out-of-order tracking) is a fixed uint64_t: once more
-// than 64 newer samples arrive while one gap stays unresolved, update_reliable_ack() is forced to
-// jump_ack_baseline() and abandon that gap outright, regardless of how deep the Publisher's own
-// cache still reaches back. At TickLE's own real measured throughput (~1.2M msg/s), 64 samples
-// pass in roughly 53 microseconds - almost certainly shorter than one real ACKNACK round trip on
-// any real network - so this Subscriber-side ceiling, not the Publisher-side cache depth fixed
-// here, is very likely the actual bottleneck behind TickLE's own comparatively poor tc-loss
-// recovery at high throughput (rmw_tickle/comparison.md). Closing that would need a genuinely
-// different Subscriber-side tracking mechanism (e.g. more than one simultaneously-open gap
-// window), out of scope for this change.
+// received_bitmap (the *Subscriber's* own out-of-order tracking) is a fixed-width field: once more
+// than tt_RELIABLE_BITMAP_BITS newer samples arrive while one gap stays unresolved, update_
+// reliable_ack() is forced to jump_ack_baseline() and abandon that gap outright, regardless of how
+// deep the Publisher's own cache still reaches back. At TickLE's own real measured throughput
+// (~1.2M msg/s), the original 64-bit width passed in roughly 53 microseconds - almost certainly
+// shorter than one real ACKNACK round trip on any real network - so this Subscriber-side ceiling,
+// not the Publisher-side cache depth fixed here, was very likely the actual bottleneck behind
+// TickLE's own comparatively poor tc-loss recovery at high throughput (rmw_tickle/comparison.md).
+// **Update, rmw_tickle/PLAN.md's "TickLE-native performance" plan**: tt_RELIABLE_BITMAP_BITS was
+// since widened 64 -> 256 (a real wire-protocol change, tt_VERSION bumped) once this same
+// diagnosis pointed at it directly - raises the tolerable gap ~4x, likely closing most or all of
+// the measured residual loss at TickLE's own real ACKNACK RTT, but honestly still not a guaranteed
+// full fix: the real link's own RTT, not this window alone, sets the actual ceiling, and a
+// genuinely different Subscriber-side tracking mechanism (e.g. more than one simultaneously-open
+// gap window) would be needed to remove the ceiling concept entirely, out of this change's scope.
 //
 // One cache for both, not two (PLAN.md's Milestone 24) - matches real DDS/RTPS, where DURABILITY
 // at the TRANSIENT_LOCAL level this package implements isn't a separately-sized cache at all: a
@@ -733,8 +738,20 @@ struct tt_WriterProxy {
     // exactly (bit 0 is ack_seq_no itself, always 0 here since ack_seq_no only ever advances once
     // confirmed received - see update_reliable_ack()'s own comment on why that still needs its
     // own explicit realigning shift, not just a plain compare), so building the wire "please
-    // resend" bitmap is a straight ~received_bitmap, no additional offset.
-    uint64_t received_bitmap;
+    // resend" bitmap is a straight ~received_bitmap, no additional offset. tt_RELIABLE_BITMAP_
+    // WORDS-word array (config.h), word 0 holding bits 0-63, word 1 bits 64-127, and so on - widened
+    // from a single bare uint64_t (rmw_tickle/PLAN.md's "TickLE-native performance" plan) since the
+    // old 64-bit width was the real bottleneck behind RELIABLE's own measured tc-loss recovery gap
+    // vs. FastDDS/CycloneDDS (comparison.md §3/§6 item 7), not the Publisher's own retained-cache
+    // depth (Milestone 61 already ruled that out on real HIL). tickle.c's own small, fixed set of
+    // bitmap_*() helpers (next to highest_received_bit()) are the only code that manipulates this
+    // array directly - every call site here goes through one of them, not raw per-word arithmetic,
+    // matching the "stay O(word-count), not O(bit-count)" discipline tt_RELIABLE_BITMAP_WORDS's own
+    // doc comment (config.h) explains. Honest, not a guaranteed full fix: raises the tolerable gap
+    // ~4x (64 -> 256 bits), likely closing most or all of the measured residual loss at TickLE's own
+    // real ACKNACK RTT on the `tickle-hil` rig - but the real link's own RTT, not this window alone,
+    // sets the actual ceiling; a slower/lossier link could still exceed even a 256-bit window.
+    uint64_t received_bitmap[tt_RELIABLE_BITMAP_WORDS];
     // How many ACKNACK retries have been sent for the *current* outstanding gap against this
     // writer - reset to 0 when a new gap first opens, capped at tt_RELIABLE_RETRY (mirrors
     // call_retry()'s own client->service->call_retry_count check) before this Subscriber gives up
@@ -988,7 +1005,11 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // grew an entity_id field, the same "no partial-compatibility case to handle" reasoning applies.
 // Bumped 3 -> 4 for Milestone 49 - struct tt_UpdateEntity grew deadline_duration_ns/liveliness_
 // lease_duration_ns and a new tt_UPDATE_QOS_LIVELINESS_MANUAL qos bit, the identical reasoning.
-#define tt_VERSION 4
+// Bumped 4 -> 5 for the ACKNACK bitmap widening (rmw_tickle/PLAN.md's "TickLE-native performance"
+// plan) - struct tt_AckNackHeader.bitmap grew from a single uint64_t to a tt_RELIABLE_BITMAP_WORDS-
+// word array (256 bits total, config.h), a real on-the-wire layout change; the identical "no
+// partial-compatibility case to handle" reasoning applies.
+#define tt_VERSION 5
 
 struct tt_Header {
     union {
@@ -1083,12 +1104,16 @@ struct tt_DataHeader {
 } __attribute__((packed));
 
 struct tt_AckNackHeader {
-    uint32_t endpoint_id; // target Publisher - same leading-field convention as tt_DataHeader/
-                          // tt_CallRequestHeader/tt_CallResponseHeader (one node can host many
-                          // endpoints, so the submessage receiver alone isn't enough)
-    uint32_t seq_no;      // cumulative ack: every seq_no below this was received
-    uint64_t bitmap;      // bit j set: (seq_no + j) is still missing, please resend - same
-                          // direction as RTPS's own AckNack SequenceNumberSet
+    uint32_t endpoint_id;                      // target Publisher - same leading-field convention as tt_DataHeader/
+                                               // tt_CallRequestHeader/tt_CallResponseHeader (one node can host many
+                                               // endpoints, so the submessage receiver alone isn't enough)
+    uint32_t seq_no;                           // cumulative ack: every seq_no below this was received
+    uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]; // bit j set: (seq_no + j) is still missing, please
+                                               // resend - same direction as RTPS's own AckNack SequenceNumberSet, now
+                                               // tt_RELIABLE_BITMAP_WORDS words wide (config.h) - see struct tt_
+                                               // WriterProxy.received_bitmap's own doc comment for the full "why widen"
+                                               // reasoning; word 0 holds bits 0-63, word 1 bits 64-127, etc., each word
+                                               // independently rd64()'d on decode like any other 8-byte wire field
     // Milestone 47 - the *target* Publisher's own struct tt_Endpoint.entity_id, mirroring
     // endpoint_id's own "target Publisher" role above rather than identifying the sending
     // Subscriber itself (an ACKNACK's sender never needs disambiguating the way a matched

@@ -17,8 +17,11 @@
 // 64 for continuity with earlier measurements, -K raises it up to MAX_RELIABLE_DEPTH below without
 // a rebuild, for directly re-measuring whether a deeper Publisher-side cache actually improves
 // RELIABLE's own tc-loss recovery at TickLE's own real max throughput, or - per struct tt_
-// ReliableCache's own doc comment's honest answer - the Subscriber-side 64-bit received_bitmap
-// window is the real bottleneck regardless of how deep this side's own cache reaches back. No
+// ReliableCache's own doc comment's honest answer - the Subscriber-side received_bitmap window
+// (widened 64 -> 256 bits, rmw_tickle/PLAN.md's "TickLE-native performance" plan, once real HIL
+// pointed at it directly) is the real bottleneck regardless of how deep this side's own cache
+// reaches back - a deeper Publisher-side cache alone still can't help past whatever that window
+// currently is. No
 // blocking "wait for all acks" API exists in tickle.h (only tt_Publisher_request_ack(), which
 // solicits but doesn't block) - a fixed drain period after the send loop substitutes for that,
 // polling so any in-flight retransmits can still land before teardown.

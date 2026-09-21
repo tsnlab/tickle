@@ -145,12 +145,32 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
 }
 
 // See write_data()'s own comment - same helper as tests/test_reliable_pubsub.c's own write_acknack().
+// `bitmap` fills word 0 only (every call site in this file fits well within 64 bits) - the rest of
+// acknack_header->bitmap[] relies on node->rx_buffer starting zeroed (see this file's own note on
+// that), same as every other multi-byte field this helper leaves at its default.
 static uint32_t write_acknack(struct tt_Node* node, uint32_t endpoint_id, uint32_t seq_no, uint64_t bitmap) {
     struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
     acknack_header->endpoint_id = endpoint_id;
     acknack_header->seq_no = seq_no;
-    acknack_header->bitmap = bitmap;
+    acknack_header->bitmap[0] = bitmap;
+    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
+        acknack_header->bitmap[w] = 0;
+    }
     return sizeof(struct tt_AckNackHeader);
+}
+
+// Compares the multi-word received_bitmap against a plain uint64_t test expectation - every test
+// value in this file fits in word 0, so this is "word 0 == low, every other word == 0".
+static bool bitmap_equals_u64(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint64_t low) {
+    if (bitmap[0] != low) {
+        return false;
+    }
+    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
+        if (bitmap[w] != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // tt_Publisher_publish() on a Publisher with durable set (and reliable_cache backing it - see
@@ -578,7 +598,7 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     struct tt_WriterProxy* proxy = find_writer_proxy(&sub, REMOTE_NODE_ID, 0);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(98, proxy->ack_seq_no); // jumped to just past 97, not stuck at 1 - the Milestone 20 fix
-    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 0));
 
     // seq_no 98 is "lost in flight" (deliver_durability_backlog()'s own unicast never arrives) -
     // seq_no 100 (the newest retained sample) arrives instead.
@@ -586,8 +606,8 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     tail = write_data(&node, 100, 10000, 100);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(98, proxy->ack_seq_no);        // correctly still waiting on 98 (and 99)
-    EXPECT_TRUE(proxy->received_bitmap == 4ULL); // bit 2 -> seq_no 100 (98 + 2) received early
+    EXPECT_EQ_U32(98, proxy->ack_seq_no);                         // correctly still waiting on 98 (and 99)
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 4ULL)); // bit 2 -> seq_no 100 (98 + 2) received early
     EXPECT_TRUE(proxy->acknack_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK requesting 98 (and 99)
 
