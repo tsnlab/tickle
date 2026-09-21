@@ -169,9 +169,11 @@ result_field() {
 run_scenario() {
     local label="$1" scenario="$2" pre_client_sleep="$3" client_args="${4:-}"
     echo "== $label =="
+    # $client_args below is deliberately unquoted - it's a space-separated flag list (e.g. "-i
+    # 0.02 -T 0.1 -n 250 -p 1.5") that must word-split into separate argv entries.
+    # shellcheck disable=SC2086
     (
-        cd "$SCEN_ROOT" &&
-            PRE_CLIENT_SLEEP="$pre_client_sleep" ./run_scenario.sh "$scenario" $client_args
+        cd "$SCEN_ROOT" && PRE_CLIENT_SLEEP="$pre_client_sleep" ./run_scenario.sh "$scenario" $client_args
     ) > "$LOG_DIR/${label}.log" 2>&1 || true
 }
 
