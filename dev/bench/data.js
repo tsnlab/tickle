@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789992635567,
+  "lastUpdate": 1789992639403,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -62588,6 +62588,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/78466e7423a4475ccdbd1123db7f9e63c9cdabd1"
         },
         "date": 1789991188201,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9034114c55754b2e3b5dab12ae19f0f2aed1caca",
+          "message": "PLAN.md: DDS QoS coverage inventory and TickLE-native performance improvement plan\n\nAt the user's own request: (1) inventoried all 22 OMG DDS QoS policies against TickLE core\n(verified by direct grep/read, not assumed) - 6/22 implemented (matching rmw_qos_profile_t's\nown full surface), 16/22 absent, each categorized by whether it's a real gap or a deliberate\nnon-goal given TickLE's no-keyed-instance, malloc-free design. Flags DESTINATION_ORDER,\nLATENCY_BUDGET, and TIME_BASED_FILTER as worth implementing, with a concrete plan for each.\n(2) Compared TickLE-native vs FastDDS/CycloneDDS using comparison.md's own real HIL numbers:\nTickLE already wins on raw latency/best-effort throughput (leaner CDR-4 wire format, no full\nRTPS overhead); the one real weakness is RELIABLE recovery under loss (scenario 4), root-caused\nto the 64-bit ACKNACK bitmap window. Proposes widening it to 256 bits (matching real RTPS's own\npractical width) as the highest-leverage fix, with the wire-protocol-version-bump mechanics,\nmemory cost, and an explicit caution against Milestone 61's own O(depth) mistake.\n\nNeither is assigned to TickLE Dev yet - both are proposals pending the user's own prioritization.",
+          "timestamp": "2026-09-21T21:07:51+09:00",
+          "tree_id": "592a4c029792773a8a39baedc460224cc8aac560",
+          "url": "https://github.com/tsnlab/tickle/commit/9034114c55754b2e3b5dab12ae19f0f2aed1caca"
+        },
+        "date": 1789992638224,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
