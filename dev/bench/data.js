@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789958600789,
+  "lastUpdate": 1789958604210,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -48565,6 +48565,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030469213213239397,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2128839fac71cbf0acfe3900f381a62ab345adda",
+          "message": "comparison.md/PLAN.md: verify HISTORY depth re-measurement (Milestone 61 prediction confirmed)\n\nRe-measured reliable_throughput on real HIL with -K 512/-K 8192 against the same tc/netem\n1%/5% loss matrix as the depth=64 baseline. Confirms the predicted result: a deeper Publisher\ncache does not improve RELIABLE recovery (server logs show \"64 ahead\" gap-tracking regardless\nof -K, pointing at the Subscriber's own fixed 64-bit received_bitmap as the real bottleneck).\nAlso found one new thing: -K 8192 reproducibly measured worse loss (7.5-7.6% vs 5.1-5.4%) than\n-K 512 at the same 5% injected condition - not yet root-caused, flagged as a candidate follow-up.",
+          "timestamp": "2026-09-21T11:42:06+09:00",
+          "tree_id": "7b3db56cd5a94346feb416a7ed93a21ddfd7ef16",
+          "url": "https://github.com/tsnlab/tickle/commit/2128839fac71cbf0acfe3900f381a62ab345adda"
+        },
+        "date": 1789958603086,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905529022216797,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9903990881783622,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030460493905203685,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030469485691615512,
             "unit": "Mbit/s"
           }
         ]
