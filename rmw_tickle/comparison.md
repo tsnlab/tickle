@@ -67,9 +67,9 @@ pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-mea
 | 4 | `reliable_throughput` | `tc` loss=0% | sent 1.239-1.241M, recv 1.239-1.241M, **0% loss** (2/2), 94.2-94.3 Mbps (send=recv) | sent 222.3-223.3K, recv 222.3-223.3K, **0% loss** (2/2), 16.9-17.0 Mbps (send=recv) | sent 567K-1.051M (itself noisy run to run), recv = sent, **0% loss** (2/2), 43.1-79.8 Mbps (send=recv) |
 | 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | sent 1.069-1.218M, recv 1.058-1.179M, **1.1-3.1% loss** (not reliably recovered, 2/2), send 81.2-92.5→recv 80.4-89.6 Mbps | sent 222.2-222.9K, recv 219.9-220.8K, **1.0% loss** (not recovered, 2/2), send 16.9→recv 16.7-16.8 Mbps | sent 145.5-159.4K, recv = sent, **0% loss** (fully recovered, 2/2), 11.1-12.1 Mbps (send=recv) |
 | 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | sent 1.2408-1.2410M, recv 1.175-1.176M, **5.2-5.3% loss** (not recovered, 2/2), send 94.3→recv 89.3-89.4 Mbps | sent 222.3-222.9K, recv 211.2-211.5K, **5.0-5.1% loss** (not recovered, 2/2), send 16.9→recv 16.0-16.1 Mbps | sent 34.4-36.4K, recv = sent, **0% loss** (fully recovered, 2/2), 2.6-2.8 Mbps (send=recv) |
-| 5 | `durability_late_join` | - | durable: 20/20 (see §6); volatile: 57 received, not 0 (see §6) | 20/20 backlog delivered | 20/20 backlog delivered |
+| 5 | `durability_late_join` | - | durable: 20/20 (2/2); volatile: **0 received**, matches DDS exactly (3/3, fixed - see §6) | 20/20 backlog delivered | 20/20 backlog delivered |
 | 6 | `history_depth_burst_loss` | within depth | 160/160 clean | identical to CycloneDDS | 0 lost |
-| 6 | `history_depth_burst_loss` | beyond depth | `recv > sent` (see §6) | identical to CycloneDDS | 52 lost (exact) |
+| 6 | `history_depth_burst_loss` | beyond depth | 4-13 lost (**not deterministic** - 13/4/13 across 3 runs, unlike CycloneDDS's exact 52 - see §6) | identical to CycloneDDS | 52 lost (exact) |
 | 7 | `deadline_miss_detection` | - | writer misses=3 (own math), sent=recv=198 (0% loss), reader_misses=30 (harmless, unexplained) | writer misses=7, reader misses=19, detect ~-0.9ms | writer misses=7, reader misses=14, detect ~0.05ms |
 | 8 | `liveliness_loss_detection` | - | detect ~3080-3620ms (fixed node-level window, independent of lease - see §6) | detect ~1999.08ms (lease 2000ms) | detect ~2000.07ms (lease 2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
@@ -156,40 +156,46 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
 
 ## 6. To-do, from TickLE's own perspective
 
-1. **[TickLE core, real correctness bug - partially fixed, two separate root causes confirmed]** A
-   liveliness false-positive was found causing real duplicate delivery under load:
-   `check_liveliness()`'s own `forget_peers_from_source()` wipes a still-alive peer's bookkeeping
-   on a false "presumed dead" timeout, so the next UPDATE from that same peer looks like a fresh
-   discovery and re-triggers redelivery. TickLE Dev's PLAN.md Milestone 59 (2026-09-21) fixed the
-   **DURABLE push path** (`deliver_durability_backlog()`) - scenario 5's own durable case
-   re-verified 3/3 clean, `received=20/20` exactly every time (was 140=7×20 in one run before the
-   fix).
+1. **[TickLE core, real correctness bug - fixed]** A liveliness false-positive was found causing
+   real duplicate delivery under load: `check_liveliness()`'s own `forget_peers_from_source()`
+   wipes a still-alive peer's bookkeeping on a false "presumed dead" timeout, so the next UPDATE
+   from that same peer looks like a fresh discovery and re-triggers redelivery. TickLE Dev's
+   PLAN.md Milestone 59 (2026-09-21) fixed the **DURABLE push path**
+   (`deliver_durability_backlog()`) - scenario 5's own durable case re-verified clean,
+   `received=20/20` exactly every time (was 140=7×20 in one run before the fix).
 
    Scenarios 6/9's own `recv > sent` signature turned out to be a real, separate cause:
    `deliver_data_to_subscriber()` (`tickle.c`) had no `seq_no`-based dedup at all - any
    ACKNACK-driven retransmission overlapping an already-delivered original reached the application
-   callback twice. TickLE Dev's PLAN.md Milestone 60 (2026-09-21) fixed this by making
-   `update_reliable_ack()` return a bool (already-seen, tracked via `received_bitmap`) and gating
-   the callback on it. **Re-verified (2026-09-21): scenario 9 fixed** - 2/2 clean, both runs show
-   `recv <= sent` with only genuine loss, no more duplicate signature. **Scenario 6 still
-   reproduces `recv > sent` 3/3** (165/168/168 vs. `sent=160`), unchanged from before Milestone 60.
-   Not yet root-caused why depth=8 (scenario 6) still shows it while depth=64 (scenario 9) doesn't -
-   relayed to TickLE Dev (2026-09-21), one plausible but unconfirmed guess is an interaction
-   between `jump_ack_baseline()`'s own more-frequent triggering at a shallow depth and its own
-   `received_bitmap` reset.
-2. **[TickLE core, design decision made - fixed, but not yet verified working]** TickLE's own
-   `RELIABLE + VOLATILE` doesn't isolate a late joiner from history the way DDS's own
-   RELIABLE+VOLATILE does: `process_acknack()`'s retransmit loop isn't gated by `pub->durable` at
-   all, so a newly-matched RELIABLE subscriber's ACKNACK gets served from whatever's cached
-   regardless of when it joined (scenario 5's volatile control case delivered 57 samples, not the
-   0 DDS gives). **The user's own explicit decision (2026-09-21): fix it to match DDS semantics.**
-   TickLE Dev's PLAN.md Milestone 60 (2026-09-21) implemented this alongside item 1's own dedup fix
-   (root cause: `update_reliable_ack()` always started a new `WriterProxy`'s own `ack_seq_no` at 1,
-   so a late joiner's first ACKNACK requested the writer's *entire* history regardless of durable;
-   fixed by syncing `ack_seq_no` to the real first-contact `seq_no`). **Re-verified (2026-09-21):
-   still reproduces, unchanged** - scenario 5's volatile case shows `received=57` 3/3, the exact
-   same value as before the fix. Relayed back to TickLE Dev; not yet root-caused why this specific
-   fix didn't change this specific scenario's own result.
+   callback twice. TickLE Dev's PLAN.md Milestone 60 fixed this by making `update_reliable_ack()`
+   return a bool (already-seen, tracked via `received_bitmap`) and gating the callback on it.
+   **Re-verified (2026-09-21, after TickLE Dev's follow-up fix below): both scenarios now clean.**
+   Scenario 9: 2/2, `recv <= sent`, only genuine loss. Scenario 6, re-verified a second time after
+   TickLE Dev's own scenario-5 root-cause fix (below) also touched the same first-contact path:
+   3/3, `recv < sent` (147/156/147 vs. `sent=160`, real loss only, 4-13 lost per run - not yet
+   deterministic the way CycloneDDS's own exact 52 is, but no more duplicate signature). TickLE
+   Dev's own PLAN.md entry still documents a narrow, accepted theoretical residual (a duplicate
+   arriving after a normal, non-jump watermark advance) - not observed in this pass's own 3/3, but
+   not proven impossible either.
+2. **[TickLE core, design decision made - fixed and verified]** TickLE's own `RELIABLE + VOLATILE`
+   didn't isolate a late joiner from history the way DDS's own RELIABLE+VOLATILE does (scenario
+   5's volatile control case delivered 57 samples, not the 0 DDS gives). **The user's own explicit
+   decision (2026-09-21): fix it to match DDS semantics.** First attempt (Milestone 60, keyed on
+   `update_reliable_ack()`'s own DATA-path first-contact sync) left this scenario's own result
+   completely unchanged - re-verified 3/3, `received=57` decimal-identical to before the fix.
+   Root-caused why: this scenario's server publishes its whole backlog *before any Subscriber
+   exists*, so a fresh Subscriber's *first contact* is always resolved by the discovery-triggered
+   Heartbeat (`inform_subscriber_of_heartbeat()`), not DATA - a separate, older first-contact
+   branch Milestone 60 didn't touch, and which synced every Subscriber's baseline to
+   `first_available_seq_no` unconditionally, regardless of that Subscriber's own requested
+   `durable`. **Real DDS/RTPS analysis before the fix, at the user's own request**: DURABILITY is
+   a Requested-vs-Offered QoS like RELIABILITY/DEADLINE/LIVELINESS - the fix belongs on the
+   requesting (Subscriber) side, keyed on `sub->durable` (not `pub->durable`), mirroring real
+   RTPS's own newly-matched-VOLATILE-reader baseline (the writer's *current* position at match
+   time, not its oldest retained sample). Fixed by syncing `ack_seq_no` to `first_available_seq_no`
+   only when `sub->durable`, otherwise to `last_seq_no + 1`. **Re-verified (2026-09-21): fixed** -
+   3/3, `received=0` exactly, matching DDS precisely; durable case re-confirmed still 20/20 (2/2),
+   no regression.
 3. **[`rmw_tickle`, performance]** Close the remaining same-host `rmw_tickle` latency gap
    (PLAN.md Milestone 45): item (1), pooling the scratch conversion buffers, is done but was a
    verified *negative result* (no measurable improvement - likely already below glibc `tcache`
