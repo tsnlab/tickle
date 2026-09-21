@@ -71,7 +71,7 @@ pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-mea
 | 6 | `history_depth_burst_loss` | within depth | 160/160 clean | identical to CycloneDDS | 0 lost |
 | 6 | `history_depth_burst_loss` | beyond depth | 4-13 lost (**not deterministic** - 13/4/13 across 3 runs, unlike CycloneDDS's exact 52 - see §6) | identical to CycloneDDS | 52 lost (exact) |
 | 7 | `deadline_miss_detection` | - | writer misses=3 (own math), sent=recv=198 (0% loss), reader_misses=30 (harmless, unexplained) | writer misses=7, reader misses=19, detect ~-0.9ms | writer misses=7, reader misses=14, detect ~0.05ms |
-| 8 | `liveliness_loss_detection` | - | detect ~3080-3620ms (fixed node-level window, independent of lease - see §6) | detect ~1999.08ms (lease 2000ms) | detect ~2000.07ms (lease 2000ms) |
+| 8 | `liveliness_loss_detection` | - | **re-measured 2026-09-21, now scales with lease for lease < ~3s** (Milestone 62/63 core fix - see §6, item 10): lease=1.0s → detect 1256-1495ms; lease=2.0s → detect 1732-2390ms; lease=4.0s → detect 3065-3399ms (a real, honest ceiling - see item 10) | detect ~1999.08ms (lease 2000ms) | detect ~2000.07ms (lease 2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
 | 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | 28/43/79 lost avg (**not the same condition as the other two** - see §6, item 6; slope-verified against the expected formula, see §6, item 8) | 5 lost (pause=0.3s) | 10 lost (exact, pause=0.3s) |
 
@@ -320,3 +320,41 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
    still not a sensible default either way - it does not help recovery (per the bottleneck above)
    and, with today's linear-scan read path, actively costs more the deeper it goes. `tc qdisc`
    cleared back to default (`fq_codel`) after all runs.
+
+10. **[TickLE core, re-measured - row 3 (LIVELINESS) fix verified, one honest limit found]**
+    PLAN.md's own DDS semantic-parity backlog, row 3, flagged that TickLE's `check_liveliness()`
+    only ever ran one fixed, node-level ~3s sweep, ignoring each entity's own announced
+    `liveliness_lease_duration_ns` entirely - the user's own explicit go-ahead (2026-09-21) had
+    this fixed (Milestone 62: new `tt_Node_entity_alive()`, computed fresh per-entity from its own
+    lease; Milestone 63: wired into `check_liveliness()`'s own discovery-departed path too, via
+    `tombstone_entities_past_own_lease()`, so the TickLE-native HIL scenario below - which doesn't
+    go through `rmw_tickle` at all - actually exercises the new code, not just `rmw_tickle`'s own
+    consumer of it). Re-measured on real HIL, `liveliness_loss_detection`, `kill -9` mid-stream,
+    2 reps per lease:
+    - `-T 1.0` (1.0s lease): detect 1495.3ms / 1256.1ms
+    - `-T 2.0` (2.0s lease): detect 2390.2ms / 1731.6ms
+    - `-T 4.0` (4.0s lease): detect 3065.3ms / 3398.7ms
+
+    **Confirms the fix for short leases**: at 1.0s/2.0s (both shorter than the old fixed ~3s
+    window), detection now tracks the announced lease directly - a dramatic improvement from the
+    old fixed ~3080-3620ms regardless of lease, and much closer to CycloneDDS/FastDDS's own
+    lease-proportional behavior (§3, scenario 8: both DDS vendors detect within ~0.07-1ms of their
+    own 2000ms lease).
+
+    **One honest limit, not glossed over**: at 4.0s (a lease *longer* than the old fixed ~3s
+    window), detection did **not** scale up to ~4s - it landed at 3065-3399ms instead, right in the
+    old fixed-window's own range. Root cause is structural, not a bug: `check_liveliness()` still
+    runs its own original node-level sweep (fixed `tt_LIVELINESS_MISS_THRESHOLD *
+    tt_NODE_UPDATE_INTERVAL` ≈ 3s) in the same pass as the new per-entity lease check, and whichever
+    of the two fires first wins (the discovery-departed callback only fires once, guarded by
+    `!departed`). For a lease shorter than ~3s, the new per-entity check fires first, so detection
+    tracks the lease. For a lease longer than ~3s, the *old* node-level sweep fires first instead,
+    capping real-world detection at ~3-3.6s regardless of how long the announced lease actually is
+    - the opposite of true DDS per-entity semantics, where a longer lease means TickLE would keep
+    treating the peer as alive for the entity's own full requested duration. In TickLE's favor, this
+    means a long-lease Publisher's real death is *never* detected slower than ~3.6s even if it asked
+    for a much longer grace period - but it does mean TickLE cannot yet honor a genuinely long lease
+    the way real DDS does. Not investigated further this pass (a real behavior, not a bug, and
+    likely a reasonable trade-off for embedded targets that want a hard upper bound on detection
+    latency) - noted here rather than left undocumented. `comparison.md` §3, scenario 8's own TickLE
+    column updated with these numbers.
