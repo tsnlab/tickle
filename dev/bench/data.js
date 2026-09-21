@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789955075564,
+  "lastUpdate": 1789955078969,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -78896,6 +78896,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 18.098,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d7b4cf958aa16ce5e7a1d7d45d5a09d4b5d49afc",
+          "message": "PLAN.md/comparison.md: real number for Milestone 45's item (3), cross-thread wake-up cost\n\nperf sched record/latency needs kernel tracepoint access this box doesn't\nhave without an interactive sudo password (no TTY available) - rather than\nask for that system-wide change, measured the underlying pthread_cond_wait/\nbroadcast primitive directly via a standalone userspace benchmark\nreproducing rmw_tickle.h's exact wait_mutex/wait_cond shape.\n\nReal result, reproduced 4/4 runs (10000 samples each): avg ~9.4-9.6us,\np50 ~8.6-8.7us, p99 ~13-16.5us. Closely matches the actual observed\nsame-host latency gap (~9-22us, comparison.md's own numbers) - real,\nconverging evidence the handoff's own inherent cost is the right order of\nmagnitude to explain the whole gap, though not proof no DDS vendor pays a\ncomparable cost for their own equivalent mechanism (not measured this pass).",
+          "timestamp": "2026-09-21T10:41:09+09:00",
+          "tree_id": "3f399d83bf906ee5250c6c80b2b21edb24a53f76",
+          "url": "https://github.com/tsnlab/tickle/commit/d7b4cf958aa16ce5e7a1d7d45d5a09d4b5d49afc"
+        },
+        "date": 1789955077857,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 17.023,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 16.953,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 16.855,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 16.822,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 16.701,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 16.709,
             "unit": "ms"
           }
         ]
