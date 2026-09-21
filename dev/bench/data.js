@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789997876382,
+  "lastUpdate": 1789997947539,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -11178,6 +11178,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d7addbf78e525b705d4da11f599d3ceaae6c829b",
+          "message": "comparison.md: unify §3/§5 result notation to avg±stdev, at the user's own explicit request\n\nReplaced the document's own earlier mix of ranges/min-max/single-value styles with two fixed\ntemplates: Latency (\"avg±stdev ms, X% loss\") and Throughput (\"sent avg±stdev msgs, recv avg±stdev\nmsgs, X% loss, sent Y Mbps, recv Z Mbps, loss Mbps\"), plus a count-based variant (no Mbps) for\nDURABILITY/HISTORY/LIFESPAN. Every avg±stdev is a real computation from the actual recorded\nper-run values (sample stdev, n-1; |a-b|/sqrt(2) for n=2) - verified with a script, not hand\narithmetic. Cells where only a tool-summarized min/avg/max (not raw per-run data) was ever\nrecorded are marked with a dagger and shown as avg alone, rather than inventing a stdev that\ncan't be computed from what was actually preserved.",
+          "timestamp": "2026-09-21T22:35:42+09:00",
+          "tree_id": "ebb14b5a627f994e1eab3ee9c442b7ae8b844709",
+          "url": "https://github.com/tsnlab/tickle/commit/d7addbf78e525b705d4da11f599d3ceaae6c829b"
+        },
+        "date": 1789997941410,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.202,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 4,
             "unit": "%"
           }
         ]
