@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790000779489,
+  "lastUpdate": 1790000783271,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -22018,6 +22018,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 900.823,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cdac0826c1f5a61a2b35f0def741431b2bd74b7b",
+          "message": "PLAN.md: real HIL experiment for the poll-loop I/O-starvation hypothesis - inconclusive\n\nAt the user's own direct instruction: implemented tt_SCHEDULER_IO_INTERLEAVE on a separate\nbranch (experiment/poll-loop-io-interleave, not merged) and ran real HIL tests on reliable_\nthroughput. Found and corrected a real earlier arithmetic error in this document (~1.2M msg/s\nwas wrong; real rate is ~150-200K msg/s). The max-rate comparison (2 reps at 1%/5% tc loss)\nshowed a real, reproducible throughput increase (99-121 Mbps vs baseline's 81-94 Mbps) but loss%\nthat's worse at 5% loss and roughly comparable at 1% - confounded by the throughput increase\nitself, so neither confirms nor refutes the underlying hypothesis cleanly. A follow-up controlled\nequal-rate comparison meant to isolate the confound hit a separate, real, previously-undiscovered\ncounting artifact (recv > sent on unmodified main at low rate) before producing usable data - not\ninvestigated further this pass. Branch left pushed but not merged/recommended as-is. Also fixed\nan unrelated slip found during rig cleanup: both Pis' local main branch ref was 427 commits stale,\nfast-forwarded to match origin/main.",
+          "timestamp": "2026-09-21T23:23:38+09:00",
+          "tree_id": "b78c64bbfc370d89c176e65f0d554e9c7c292abc",
+          "url": "https://github.com/tsnlab/tickle/commit/cdac0826c1f5a61a2b35f0def741431b2bd74b7b"
+        },
+        "date": 1790000782041,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 934.998,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 901.16,
             "unit": "Mbps"
           }
         ]
