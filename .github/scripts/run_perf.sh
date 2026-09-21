@@ -150,18 +150,29 @@ result_field() {
     grep -oP "(?<= )${field}=\K[^\s]+" "$log" 2>/dev/null | tail -1 || true
 }
 
-# Runs one scenario invocation (a "run_scenario.sh <scenario> [client_args]" over SSH from this
-# runner, matching that script's own usage exactly), capturing combined output to
-# $LOG_DIR/<label>.log for result_field() above to read back. `pre_client_sleep` is forwarded as
-# run_scenario.sh's own PRE_CLIENT_SLEEP env override (0 for history_depth_burst_loss - see that
-# scenario's own comment on why the usual pre-client sleep would hide the real race; the
+# Runs one scenario invocation. run_scenario.sh (examples/perf_hil/tickle/run_scenario.sh) is
+# itself the orchestrator - it SSHes to *both* Pis on its own (RPI_CLIENT/RPI_SERVER, hardcoded
+# inside it) using whatever host it's invoked from as the origin, mirroring the cyclonedds/fastdds
+# twins' own run_scenario.sh pattern. It must run directly on this runner (which is where
+# ~/.ssh/tickle_ci_ed25519 actually lives, per this script's own top-of-file assumption) - an
+# earlier version of this function wrapped it in its own extra `ssh_run "$RPI_CLIENT_HOST" ...`
+# hop, which meant rpi#1 itself (not this runner) tried to SSH onward to rpi#2/itself with a key
+# it doesn't have - every invocation failed in well under a second (real CI evidence: all-N/A
+# results despite a "successful" exit, `|| true` below swallowing the real error) rather than
+# taking the real several-second scenario runtime. Captures combined output (run_scenario.sh's
+# own stdout already interleaves the client's and server's own RESULT: lines, per its own script)
+# to $LOG_DIR/<label>.log for result_field() above to read back. `pre_client_sleep` is forwarded
+# as run_scenario.sh's own PRE_CLIENT_SLEEP env override (0 for history_depth_burst_loss - see
+# that scenario's own comment on why the usual pre-client sleep would hide the real race; the
 # run_scenario.sh default, 3, for everything else - passed explicitly here anyway so this function
 # never silently depends on that script's own default not changing later).
 run_scenario() {
     local label="$1" scenario="$2" pre_client_sleep="$3" client_args="${4:-}"
     echo "== $label =="
-    ssh_run "$RPI_CLIENT_HOST" "cd ~/$REMOTE_DIR/$SCEN_ROOT && PRE_CLIENT_SLEEP=$pre_client_sleep ./run_scenario.sh $scenario $client_args" \
-        > "$LOG_DIR/${label}.log" 2>&1 || true
+    (
+        cd "$SCEN_ROOT" &&
+            PRE_CLIENT_SLEEP="$pre_client_sleep" ./run_scenario.sh "$scenario" $client_args
+    ) > "$LOG_DIR/${label}.log" 2>&1 || true
 }
 
 # --- Scenario definitions, matching rmw_tickle/COMPARISON.MD §2-3 exactly ---
