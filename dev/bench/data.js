@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789955292311,
+  "lastUpdate": 1789955295717,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -59562,6 +59562,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/d7b4cf958aa16ce5e7a1d7d45d5a09d4b5d49afc"
         },
         "date": 1789955070973,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "06fcafdb0c58deddec222cc6a8b1d2d015cf981e",
+          "message": "PLAN.md: record user decisions on HISTORY depth and DEADLINE, assign HISTORY task\n\nThe user's own explicit decisions (2026-09-21): make tt_ReliableCache's own\ndepth ceiling caller-configurable (DDS resource_limits-style), assigned to\nTickLE Dev - design left to their own judgment. Keep DEADLINE's current\ncore/rmw_tickle split as-is (rmw_tickle already covers it), closed with no\nfurther work planned.\n\nUpdated the DDS semantic-parity backlog's own suggested order to reflect all\nfive rows' current status.",
+          "timestamp": "2026-09-21T10:43:50+09:00",
+          "tree_id": "0cec142e4115375481bca2ecf3e1d39efecf44b0",
+          "url": "https://github.com/tsnlab/tickle/commit/06fcafdb0c58deddec222cc6a8b1d2d015cf981e"
+        },
+        "date": 1789955294549,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
