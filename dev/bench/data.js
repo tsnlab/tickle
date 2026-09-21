@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789956106173,
+  "lastUpdate": 1789956110247,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -69726,6 +69726,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.455,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "bb61828c6789781fe48a05934ecf20ff533adef2",
+          "message": "PLAN.md/comparison.md: verify LIFESPAN follows the expected formula, close it\n\nReal HIL slope test since lifespan_expiry's own pause_s is measured from\nprocess start (not a completed match like the DDS twins' own design), so\nthe exact discovery-timing offset is an unknown constant - tested the slope\ninstead of the absolute count. pause_s=1.0/1.5/2.0s (2-4 reps each): full-\nrange slope from 1.0s to 2.0s is 51 samples lost/sec, matching the expected\n1/interval_s=50/s almost exactly (2% off). Confirms TickLE's own age-based\nexpiry follows the same linear, interval-driven relationship DDS's own\nexact (pause-lifespan)/interval match demonstrated.\n\nDDS semantic-parity backlog now has only one open row (LIVELINESS) -\nLIFESPAN closed, HISTORY assigned to TickLE Dev, DEADLINE closed by the\nuser's own decision, process_acknack() row already closed by Milestone 60.",
+          "timestamp": "2026-09-21T10:58:44+09:00",
+          "tree_id": "932ed83b0f0dff024a1fda0d6d458f46d537d06a",
+          "url": "https://github.com/tsnlab/tickle/commit/bb61828c6789781fe48a05934ecf20ff533adef2"
+        },
+        "date": 1789956109114,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 68.004,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 61.045,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.779,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.583,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 61.488,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.485,
             "unit": "Mbps"
           }
         ]
