@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789958935712,
+  "lastUpdate": 1789959016785,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10804,6 +10804,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e9d39af3bde685d37d98ce1db102ad7872dcb012",
+          "message": "PLAN.md: root-cause the depth=8192 regression TickLE Plan's re-measurement found\n\nReal HIL re-measurement confirmed Milestone 61's own honest finding\nexactly (no RELIABLE recovery improvement from a deeper cache, server\nlogs showing the 64-bit received_bitmap ceiling directly), but also\nfound depth=8192 measuring worse than depth=512 at the same loss rate,\nunpredicted by that analysis.\n\nRoot cause, confirmed by reading the code rather than left unexplained:\nfind_resendable_cache_entry() (process_acknack()'s own per-ACKNACK-bit\nlookup) does an O(depth) linear scan over cache->entries, unlike the\nwrite side (cache_reliable_sample()) which computes its own ring slot\ndirectly. At depth=8192, entries[] is ~12MB (each entry carries a\n1472-byte buffer) - far past any real L2/L3 cache, so a single ACKNACK\nwith several set bits can trigger multiple ~8192-entry scans through\nthat region, almost entirely cache misses.\n\nFlagged as a real, scoped follow-up candidate (an O(1) direct-index\nfix), not implemented here - out of this milestone's own original scope.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T11:47:25+09:00",
+          "tree_id": "5f08d745250dbdbc2632bb158bcc5ed981d0cffe",
+          "url": "https://github.com/tsnlab/tickle/commit/e9d39af3bde685d37d98ce1db102ad7872dcb012"
+        },
+        "date": 1789959010948,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.199,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 6,
             "unit": "%"
           }
         ]
