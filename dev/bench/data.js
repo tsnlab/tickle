@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789992650763,
+  "lastUpdate": 1789994047928,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -39842,6 +39842,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.048535714285714286,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3ee0873628a079d6accb89399a249a015dc30494",
+          "message": "PLAN.md: correct DDS QoS analysis scope to rmw-only, find two real gaps\n\nUser's explicit correction: TickLE should implement DDS QoS only within what ROS 2's rmw\ninterface actually exposes, not the full 22-policy DDS spec. Verified directly from the\ninstalled rmw/types.h: rmw_qos_profile_t has exactly 6 QoS fields, and TickLE core already\nimplements all 6 - the prior pass's \"16 missing policies, 3 worth implementing\" framing is\nretracted as out of scope under the corrected premise.\n\nRe-analyzed within the correct scope and found two real, previously-undiscovered gaps by\nreading rmw_tickle's own source against rmw's real enum/sentinel definitions:\n1. BEST_AVAILABLE (reliability/durability/liveliness enums + the two _BEST_AVAILABLE duration\n   sentinels) is a real rmw QoS value TickLE doesn't implement - rejected outright for the three\n   enums, silently mishandled as a near-infinite literal for the two duration sentinels.\n2. HISTORY.KEEP_ALL is silently downgraded to a bounded KEEP_LAST cache for Publishers (only\n   rejected for Subscriptions) - a real violation of rmw_qos.c's own stated \"reject explicitly,\n   never silently downgrade\" design philosophy.\n\nBoth get a concrete implementation plan. Neither assigned to TickLE Dev yet - proposals pending\nthe user's own prioritization.",
+          "timestamp": "2026-09-21T21:32:53+09:00",
+          "tree_id": "04bbeed1c86ddb771e7f830fb43800cca7baa3c3",
+          "url": "https://github.com/tsnlab/tickle/commit/3ee0873628a079d6accb89399a249a015dc30494"
+        },
+        "date": 1789994041709,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.047912857142857146,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04781285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.049434285714285715,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.048862857142857145,
             "unit": "ms"
           }
         ]
