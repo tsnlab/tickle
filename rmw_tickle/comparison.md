@@ -306,11 +306,17 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
 
    **One more thing, not predicted going in**: pushing depth all the way to 8192 made loss
    measurably *worse* (7.5-7.6% vs. 5.1-5.4% at the same 512 depth and the same 5% injected loss),
-   reproduced 2/2. Not investigated further this pass, but the likely cause is real and separate
-   from the 64-bit bitmap finding above - `process_acknack()`/reliable-cache bookkeeping scale with
-   `capacity`, so an 8192-entry cache does more work per publish/ACKNACK than a 512-entry one at
-   the same ~93-95 Mbps send rate, and that extra per-message cost is itself consuming enough of
-   the CPU budget to cause more real loss, not less. A very deep Publisher cache is not a
-   sensible default - it does not help recovery (per the bottleneck above) and appears to cost
-   something real once pushed far past a Subscriber's own bitmap width for no offsetting benefit.
-   `tc qdisc` cleared back to default (`fq_codel`) after all runs.
+   reproduced 2/2. **Root-caused by TickLE Dev directly from the code** (not re-measured/profiled,
+   but a high-confidence structural explanation): `process_acknack()` calls
+   `find_resendable_cache_entry()` once per set ACKNACK bit, and that function does a *linear scan*
+   over `cache->entries[0..depth)` comparing `seq_no` - unlike the write side
+   (`cache_reliable_sample()`), which indexes directly via `next % depth`. At depth=64 the scan is
+   cheap; at depth=8192, `struct tt_ReliableCacheEntry` carries a 1472-byte buffer, so the full
+   `entries[]` array is ~12MB - past any real L2/L3 cache - and an ACKNACK with several bits set
+   re-scans that large an array repeatedly, taking a real cache-miss hit nearly every time. Fixable
+   (make `find_resendable_cache_entry()` direct-index like the write side, O(1) instead of O(depth))
+   but a separate optimization, not done this pass - flagged as a PLAN.md follow-up candidate,
+   pending the user's own go-ahead before any core code changes. A very deep Publisher cache is
+   still not a sensible default either way - it does not help recovery (per the bottleneck above)
+   and, with today's linear-scan read path, actively costs more the deeper it goes. `tc qdisc`
+   cleared back to default (`fq_codel`) after all runs.
