@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790008330028,
+  "lastUpdate": 1790008333721,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -100278,6 +100278,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 156,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6ef01098f81b01ccb6431663254a3d9836c08bfa",
+          "message": "PLAN.md: Milestone 66 - dashboard rebuild around COMPARISON.MD's HIL methodology; correct Milestone 65\n\nMilestone 66: documents the full dashboard rebuild (run_perf.sh/performance.yml/rmw-perf.yml/\ndashboard.py, commits 432b854..ae7b075) - the user's own three-point request - including the\nthree real bugs found only once run against the actual rig (double-SSH-hop making every scenario\nfail silently, liveliness_loss_detection hanging the full 20-minute job timeout, two real\nshellcheck findings), none of which local verification (bash -n, synthetic RESULT-line JSON,\npy_compile, merge/inject dry runs) could have caught. Confirmed working end-to-end against the\nlive gh-pages page, not just a green CI conclusion.\n\nMilestone 65 correction: TickLE Plan's own second finding - the \"loss_pct -> 0.0%\" claim, even\nthe harness-confound-free version, was measured with run_perf.sh's old low-pacing tool, not\nCOMPARISON.MD's own real scenario-4 max-rate methodology. Real re-measurement shows 3.0%/6.95%\nresidual loss at 1%/5% tc loss at TickLE's true max throughput - a real improvement over the old\nbaseline, but not the full recovery the milestone previously claimed. COMPARISON.MD itself was\nalready corrected by TickLE Plan (1bad2ee); this closes the same gap in PLAN.md's own citation.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T01:25:59+09:00",
+          "tree_id": "037e579b315e678f8b1b780eeb9b35d056e702ef",
+          "url": "https://github.com/tsnlab/tickle/commit/6ef01098f81b01ccb6431663254a3d9836c08bfa"
+        },
+        "date": 1790008332559,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 148,
             "unit": "count"
           }
         ]
