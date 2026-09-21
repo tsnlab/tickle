@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789952606638,
+  "lastUpdate": 1789952753595,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -37420,6 +37420,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.048358571428571424,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6d575e5efa127e785435be474ba316558e5d333f",
+          "message": "PLAN.md: correct scenario 6 diagnosis - same RxO fix as scenario 5, not a separate dedup residual\n\nReal HIL re-verification (TickLE Plan) showed history_depth_burst_loss's\nown recv > sent signal disappeared entirely once the durability RxO fix\n(28a9c39) landed, not independently of it. That scenario's Subscriber is\nvolatile and deliberately joins late against a shallow depth=8 cache -\nthe identical Heartbeat-driven backlog leak durability_late_join had,\nmisdiagnosed here as a separate, still-open receive-side dedup gap.\nCorrected Milestone 60's own entry and the DDS semantic-parity backlog's\nrow 1 to reflect both scenarios being closed by the same fix.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T10:02:13+09:00",
+          "tree_id": "481a040db6d607c5a74675706788936d6440d803",
+          "url": "https://github.com/tsnlab/tickle/commit/6d575e5efa127e785435be474ba316558e5d333f"
+        },
+        "date": 1789952747030,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04962285714285714,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04702714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.08651571428571428,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04931571428571428,
             "unit": "ms"
           }
         ]
