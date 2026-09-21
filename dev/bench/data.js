@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789966890467,
+  "lastUpdate": 1789966967036,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10872,6 +10872,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 4,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b42f08fbacbffdfbaf48bbddbc2cd19a522124fa",
+          "message": "tickle.c: three DDS semantic-parity fixes - ACKNACK reliability gate, O(1) resend lookup, per-entity liveliness\n\n1. process_acknack() now gated on pub->reliable, not merely\nreliable_cache != NULL: a DURABLE-but-not-RELIABLE Publisher still has\nreliable_cache allocated (Milestone 24's unified cache) but retransmission\nis RELIABILITY's own exclusive contract, already fully separate from\nDURABILITY's one-shot backlog push. Gated on pub->reliable specifically\nrather than pub->durable, since the latter would break the legitimate\nin-flight-loss recovery a VOLATILE+RELIABLE Publisher must still guarantee.\nThe gate wraps only the retransmission loop - peer_ack_seq_no's own update\nstays unconditional on reliable_cache != NULL alone, since\ntt_Publisher_wait_for_all_acked() legitimately needs it for durable-only\nPublishers too. Split the retransmit loop into retransmit_reliable_samples()\nto keep process_acknack()'s own cognitive complexity under threshold.\n\nExposed two pre-existing test bugs: test_process_acknack_retransmits_cached_sample()\nand test_durability_backlog_recovered_via_acknack_when_reliable_too() both\nconstructed a reliable_cache but never set pub.reliable, passing only\nbecause the old check never verified it.\n\n2. find_resendable_cache_entry() converted from an O(depth) linear scan\nto O(1) direct indexing: cache_reliable_sample()'s write side always\nplaces seq_no N at entries[(N - 1) % depth], so the read side can compute\nthat slot directly instead of scanning. Closes the real regression\nMilestone 61's own real-HIL re-measurement found (a deeper cache\nmeasurably hurting RELIABLE recovery due to cache misses walking a\nmulti-MB entries[] array once per ACKNACK bit).\n\n3. New tt_Node_entity_alive() computes an entity's liveliness fresh from\nits own liveliness_lease_duration_ns against update_last_seen[], instead\nof only ever reflecting check_liveliness()'s coarse ~3s node-level sweep.\nEntities without a specific lease still defer to the existing .alive\nflag unchanged. rmw_tickle's count_matching_locked()/\ncount_not_alive_matching_locked() now call it instead of reading .alive\ndirectly, so check_subscription_liveliness()'s own already-correct\nper-lease polling cadence actually gets faster, accurate ground truth.\n\nMilestone 62 (rmw_tickle/PLAN.md).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T14:00:05+09:00",
+          "tree_id": "f96ad51a9c8e83ff297f9371225c33de0d541787",
+          "url": "https://github.com/tsnlab/tickle/commit/b42f08fbacbffdfbaf48bbddbc2cd19a522124fa"
+        },
+        "date": 1789966961120,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
             "unit": "%"
           }
         ]
