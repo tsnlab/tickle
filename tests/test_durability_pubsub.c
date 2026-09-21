@@ -532,6 +532,14 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     reliable_cache.depth = 4;
     pub.reliable_cache = &reliable_cache;
     pub.durable = true;
+    // Milestone 62 (rmw_tickle/PLAN.md) - a real, pre-existing gap this function's own name/intent
+    // ("_when_reliable_too") never actually matched its own setup: process_acknack() didn't check
+    // pub->reliable at all before this milestone, so the ACKNACK-driven recovery this test exists
+    // to prove worked "by accident" purely off reliable_cache being non-NULL - once process_acknack()
+    // correctly started gating on pub->reliable too, this test's own final assertion started failing
+    // (a durable-only Publisher, as this one actually was, no longer answers ACKNACK at all) until
+    // this line was added to match what the test was always meant to exercise.
+    pub.reliable = true;
 
     for (uint32_t i = 0; i < 100; i++) { // simulates a long-running stream, seq_no 1..100
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));

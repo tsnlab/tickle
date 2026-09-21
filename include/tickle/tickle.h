@@ -949,6 +949,33 @@ uint32_t tt_Discovery_count(const struct tt_Discovery* discovery);
 const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* discovery, uint8_t node_id,
                                                     uint32_t endpoint_id);
 
+// QoS roadmap #3 (LIVELINESS) RxO, Milestone 62 (rmw_tickle/PLAN.md's own "DDS semantic-parity
+// backlog" row 3) - computes whether `entity` is alive right now, freshly, independent of its own
+// `.alive` field's own periodic background sweep (check_liveliness(), tickle.c). check_liveliness()
+// watches per-*node* UPDATE traffic on one fixed window (tt_LIVELINESS_MISS_THRESHOLD *
+// tt_NODE_UPDATE_INTERVAL, ~3s) - correct for a "did this whole node disappear" participant-level
+// signal, but too coarse for an entity that requested its own, different `liveliness_lease_
+// duration_ns` (a Publisher/Subscriber field, carried on the wire since Milestone 49 and already
+// stored per discovery entry, but never actually consulted for detection before this milestone -
+// only for RxO compatibility gating). Two cases:
+//   - `entity->liveliness_lease_duration_ns == 0` (no specific lease requested, the common/default
+//     case): unchanged from before this function existed - returns `entity->alive` verbatim,
+//     deferring entirely to check_liveliness()'s own coarser, node-level sweep, since an entity
+//     that never asked for a specific lease has no individual timeout of its own to compute.
+//   - non-zero: computed fresh from `node->update_last_seen[entity->node_id]` against that lease
+//     directly, bypassing `.alive`/the periodic sweep's own timing entirely - accurate to whatever
+//     cadence the caller itself polls at (e.g. rmw_tickle's own check_subscription_liveliness(),
+//     which already reschedules itself at each Subscription's own liveliness_lease_ns - it previously
+//     had nothing faster than the ~3s sweep to poll *for*, this is what makes that already-correct
+//     cadence actually pay off). Honest scope limit, not glossed over: this still only distinguishes
+//     "how long since ANY UPDATE from this entity's own node", the same underlying signal AUTOMATIC
+//     liveliness always used (correct for it) - it does not separately implement MANUAL_BY_TOPIC's
+//     own stricter real-DDS semantic (an entity must itself specifically publish/assert within its
+//     lease, not merely share a node with other traffic); doing that would need a genuinely new,
+//     per-entity activity signal TickLE's wire protocol doesn't carry today, out of this milestone's
+//     own scope. `node` must be the same tt_Node `entity`'s own discovery table is attached to.
+bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now);
+
 tt_ret_t tt_Node_destroy(struct tt_Node* node);
 
 // Bumped 1 -> 2 for QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - struct tt_

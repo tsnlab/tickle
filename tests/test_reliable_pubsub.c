@@ -678,6 +678,8 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
+    pub.reliable = true; // Milestone 62 (rmw_tickle/PLAN.md) - retransmission is gated on this now,
+                         // this test's own name/intent ("retransmits_cached_sample") needs it set
 
     uint32_t value = 42;
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
@@ -693,6 +695,72 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
     EXPECT_EQ_U32(1, (uint32_t)cache.entries[0].retry);
+}
+
+// Milestone 62 (rmw_tickle/PLAN.md) - find_resendable_cache_entry()'s own direct-index math
+// ((missing_seq_no - 1) % depth), pinned against the exact ring-wraparound shape that would expose
+// a wrong-slot bug: with depth=4 and 6 samples published (seq_no 1..6), the ring has wrapped once
+// - slot 0 now holds seq_no 5 (overwrote seq_no 1's own old slot), slot 1 holds seq_no 6 (overwrote
+// seq_no 2's), slots 2/3 still hold their original seq_no 3/4 (never overwritten, only 6 total
+// published). Confirms three distinct cases the old linear scan handled correctly by construction
+// but a direct-index computation could get subtly wrong: an evicted seq_no whose own slot now holds
+// a *different*, newer seq_no (must not false-match that newer entry), a wrapped-into slot 0, and
+// an un-wrapped slot 2 - each checked by seeing exactly one entries[]'s own retry counter increment,
+// confirming the correct physical slot was found, not merely that *some* retransmit happened.
+static void test_process_acknack_direct_index_correct_after_wraparound(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+
+    for (uint32_t i = 0; i < 6; i++) { // seq_no 1..6, ring wraps once past depth 4
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+    }
+    EXPECT_EQ_U32(5, cache.entries[0].seq_no); // slot 0: seq_no 1 evicted, now holds 5
+    EXPECT_EQ_U32(6, cache.entries[1].seq_no); // slot 1: seq_no 2 evicted, now holds 6
+    EXPECT_EQ_U32(3, cache.entries[2].seq_no); // slot 2: never overwritten
+    EXPECT_EQ_U32(4, cache.entries[3].seq_no); // slot 3: never overwritten
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // Evicted: seq_no 1's own slot (0) now genuinely holds seq_no 5, not seq_no 1 - must not
+    // false-match and retransmit the wrong (newer) sample.
+    test_mock_send_to_call_count = 0;
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(0, (uint32_t)cache.entries[0].retry); // untouched - correctly not matched
+
+    // Wrapped-into slot 0, genuinely retained: seq_no 5.
+    test_mock_send_to_call_count = 0;
+    tail = write_acknack(&node, ENDPOINT_ID, 5, 1ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)cache.entries[0].retry); // found via slot 0, the right one
+    EXPECT_EQ_U32(0, (uint32_t)cache.entries[2].retry); // slot 2 untouched by this request
+
+    // Un-wrapped slot 2, genuinely retained: seq_no 3.
+    test_mock_send_to_call_count = 0;
+    tail = write_acknack(&node, ENDPOINT_ID, 3, 1ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)cache.entries[2].retry); // found via slot 2, the right one
 }
 
 // QoS roadmap #6 (LIFESPAN) - a cached sample past pub->lifespan_duration_ns must not be
@@ -718,6 +786,9 @@ static void test_process_acknack_skips_expired_sample(void) {
     cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
+    pub.reliable = true; // Milestone 62 - must be set so the "skipped" result below is genuinely
+                         // caused by the lifespan-expiry check inside the retransmit loop, not by
+                         // that whole loop being gated off before ever reaching it
     pub.lifespan_duration_ns = 1000;
 
     uint32_t value = 42;
@@ -756,6 +827,45 @@ static void test_process_acknack_ignored_for_besteffort_publisher(void) {
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+}
+
+// Milestone 62 (rmw_tickle/PLAN.md) - a DURABLE-but-not-RELIABLE Publisher (TRANSIENT_LOCAL backlog
+// offered, no ongoing loss-recovery guarantee) must ignore an ACKNACK too, even though Milestone
+// 24's own unified cache means it still has a real, populated reliable_cache (deliver_durability_
+// backlog()'s own one-shot push already served that peer through a completely different path, no
+// ACKNACK involved) - the "reliable_cache == NULL" check alone (test above) doesn't catch this
+// shape at all, since this Publisher's own cache is very much non-NULL and non-empty.
+static void test_process_acknack_ignored_for_durable_only_publisher(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.durable = true; // deliberately NOT pub.reliable = true
+
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1, cached
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL); // requesting the one real, cached sample
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // not answered - RELIABILITY's own contract, not offered
 }
 
 // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). An ACKNACK from a
@@ -896,8 +1006,10 @@ int main(void) {
     test_reliable_first_contact_via_data_does_not_request_pre_match_history();
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();
+    test_process_acknack_direct_index_correct_after_wraparound();
     test_process_acknack_skips_expired_sample();
     test_process_acknack_ignored_for_besteffort_publisher();
+    test_process_acknack_ignored_for_durable_only_publisher();
     test_process_acknack_updates_peer_ack_seq_no();
     test_process_acknack_does_not_regress_peer_ack_seq_no();
     test_process_acknack_from_unmatched_peer_updates_nothing();

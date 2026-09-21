@@ -38,6 +38,7 @@
 #include <string.h>
 
 #include <tickle/config.h> // tt_NODE_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES
+#include <tickle/hal.h>    // tt_get_ns() - tt_Node_entity_alive()'s own "now" argument
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h" // rcutils_allocator_is_valid()
@@ -192,12 +193,15 @@ rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node, rcutils_strin
 // (rmw_tickle.h - RMW_EVENT_LIVELINESS_CHANGED's own periodic check, rmw_subscription.c). Assumes
 // context_impl->node_mutex is already held by the caller - see rmw_tickle_count_matching_locked()'s
 // own doc comment for why that one can't take it itself. Only ever counts *alive* discovery
-// entries (struct tt_DiscoveredEntity.alive's own doc comment, tickle.h) - a tombstoned one
-// (presumed dead via a liveliness timeout, not a normal departure) shouldn't count as "currently
-// offered/requested" for rmw_count_publishers()/_subscribers() or RMW_EVENT_LIVELINESS_CHANGED's
-// own alive_count either; see count_not_alive_matching_locked() below for its own counterpart.
-// Local endpoints have no tombstone concept at all - they're either present in tickle_node.
-// endpoints[] or destroyed outright, so no matching check is needed for them.
+// entries - Milestone 62 (rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 3) switched
+// this from reading struct tt_DiscoveredEntity.alive directly to tt_Node_entity_alive() (tickle.h),
+// computed fresh against each entity's own liveliness_lease_duration_ns when it requested one,
+// instead of only ever reflecting check_liveliness()'s own coarser ~3s node-level sweep - see that
+// function's own doc comment for the full "why". A tombstoned/expired one shouldn't count as
+// "currently offered/requested" for rmw_count_publishers()/_subscribers() or RMW_EVENT_LIVELINESS_
+// CHANGED's own alive_count either; see count_not_alive_matching_locked() below for its own
+// counterpart. Local endpoints have no tombstone concept at all - they're either present in
+// tickle_node.endpoints[] or destroyed outright, so no matching check is needed for them.
 static size_t count_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t kind) {
     size_t matched = 0;
     for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count; ++i) {
@@ -206,10 +210,11 @@ static size_t count_matching_locked(rmw_tickle_context_impl_t* context_impl, con
             matched++;
         }
     }
+    uint64_t now = tt_get_ns();
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID && entity->alive && entity->kind == kind &&
-            strcmp(entity->name, topic_name) == 0) {
+        if (entity->node_id != tt_NODE_ID_INVALID && tt_Node_entity_alive(&context_impl->tickle_node, entity, now) &&
+            entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
             matched++;
         }
     }
@@ -218,16 +223,18 @@ static size_t count_matching_locked(rmw_tickle_context_impl_t* context_impl, con
 
 // count_matching_locked()'s own tombstone counterpart - QoS roadmap #3 (LIVELINESS)'s own
 // RMW_EVENT_LIVELINESS_CHANGED.not_alive_count (a live snapshot, rmw_subscription.c/rmw_event.c),
-// now backed by real data (struct tt_DiscoveredEntity.alive's own doc comment) instead of always
-// 0. Local endpoints are never counted here for the same reason count_matching_locked() never
-// checks them for aliveness - no tombstone concept applies to them.
+// now backed by real data (tt_Node_entity_alive(), see count_matching_locked()'s own doc comment
+// for why this reads that instead of struct tt_DiscoveredEntity.alive directly since Milestone 62)
+// instead of always 0. Local endpoints are never counted here for the same reason count_matching_
+// locked() never checks them for aliveness - no tombstone concept applies to them.
 static size_t count_not_alive_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                               uint8_t kind) {
     size_t matched = 0;
+    uint64_t now = tt_get_ns();
     for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
         const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
-        if (entity->node_id != tt_NODE_ID_INVALID && !entity->alive && entity->kind == kind &&
-            strcmp(entity->name, topic_name) == 0) {
+        if (entity->node_id != tt_NODE_ID_INVALID && !tt_Node_entity_alive(&context_impl->tickle_node, entity, now) &&
+            entity->kind == kind && strcmp(entity->name, topic_name) == 0) {
             matched++;
         }
     }

@@ -177,6 +177,85 @@ static void test_reschedules_itself(void) {
     EXPECT_EQ_U32((uint32_t)(1000 + tt_NODE_UPDATE_INTERVAL), (uint32_t)tcb->time);
 }
 
+// Milestone 62 (rmw_tickle/PLAN.md) - tt_Node_entity_alive()'s own zero-lease branch: an entity
+// that never requested a specific liveliness_lease_duration_ns must defer entirely to its own
+// .alive field (whatever the coarser, node-level check_liveliness() sweep last set it to) -
+// verbatim, in both directions, regardless of what update_last_seen[] says.
+static void test_entity_alive_with_zero_lease_defers_to_alive_flag(void) {
+    struct tt_Node node;
+    init_node(&node);
+
+    struct tt_DiscoveredEntity entity = {0};
+    entity.node_id = REMOTE_NODE_ID;
+    entity.liveliness_lease_duration_ns = 0;
+    entity.alive = true;
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1000));
+
+    entity.alive = false;
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000));
+}
+
+// An entity that *did* request a specific lease gets a freshly-computed answer instead, checked
+// right at the boundary in both directions - within the lease is alive, one nanosecond past it
+// is not, independent of the coarser sweep's own ~3s cadence.
+static void test_entity_alive_with_lease_computed_fresh_at_boundary(void) {
+    struct tt_Node node;
+    init_node(&node);
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 1000;
+
+    struct tt_DiscoveredEntity entity = {0};
+    entity.node_id = REMOTE_NODE_ID;
+    entity.liveliness_lease_duration_ns = 500;
+    entity.alive = true; // deliberately irrelevant here - a non-zero lease ignores this field
+
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1000));  // exactly at last_seen
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1500));  // exactly at the lease boundary
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1501)); // one ns past it
+}
+
+// The real point of this milestone: a short-lease entity whose lease has genuinely expired must
+// report not-alive even while .alive still (incorrectly, from this entity's own specific lease's
+// point of view) says true, because the slower ~3s node-level sweep hasn't caught up yet - this
+// function is authoritative for a leased entity, not the periodic sweep's own timing.
+static void test_entity_alive_with_lease_ignores_stale_true_alive_flag(void) {
+    struct tt_Node node;
+    init_node(&node);
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 0;
+
+    struct tt_DiscoveredEntity entity = {0};
+    entity.node_id = REMOTE_NODE_ID;
+    entity.liveliness_lease_duration_ns = 100;
+    entity.alive = true; // the coarse sweep (fixed ~3s window) hasn't run yet
+
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000)); // far past its own 100ns lease
+}
+
+// A node id never heard from at all (update_seen[] still false) must report not-alive for a
+// leased entity, not crash or fall through to some stale default.
+static void test_entity_alive_never_seen_node_returns_false(void) {
+    struct tt_Node node;
+    init_node(&node);
+
+    struct tt_DiscoveredEntity entity = {0};
+    entity.node_id = REMOTE_NODE_ID;
+    entity.liveliness_lease_duration_ns = 500;
+    entity.alive = true;
+
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000));
+}
+
+// An empty/never-populated discovery slot (node_id == tt_NODE_ID_INVALID, this struct's own
+// zero-init default) must report not-alive - a safe, harmless no-op, not a crash.
+static void test_entity_alive_invalid_node_id_returns_false(void) {
+    struct tt_Node node;
+    init_node(&node);
+
+    struct tt_DiscoveredEntity entity = {0}; // node_id stays tt_NODE_ID_INVALID
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000));
+}
+
 int main(void) {
     test_mock_reset();
     test_expires_peer_after_missed_intervals();
@@ -188,6 +267,16 @@ int main(void) {
     test_never_seen_node_id_is_not_flagged();
     test_mock_reset();
     test_reschedules_itself();
+    test_mock_reset();
+    test_entity_alive_with_zero_lease_defers_to_alive_flag();
+    test_mock_reset();
+    test_entity_alive_with_lease_computed_fresh_at_boundary();
+    test_mock_reset();
+    test_entity_alive_with_lease_ignores_stale_true_alive_flag();
+    test_mock_reset();
+    test_entity_alive_never_seen_node_returns_false();
+    test_mock_reset();
+    test_entity_alive_invalid_node_id_returns_false();
 
     if (test_result() != 0) {
         return 1;

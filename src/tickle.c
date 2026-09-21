@@ -3300,27 +3300,79 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 // roadmap #6, LIFESPAN) it's aged out of pub->lifespan_duration_ns. Split out of process_acknack()
 // below purely to keep that function's own cognitive complexity under clang-tidy's threshold, same
 // reasoning cache_reliable_sample()/reliable_cache_oldest_seq_no() were split out for.
+//
+// Milestone 62 (rmw_tickle/PLAN.md) - direct-indexed, not a linear scan over entries[0..depth)
+// (this function's own previous shape): cache_reliable_sample()'s own write side always places
+// seq_no N at entries[(N - 1) % depth] (cache->next starts at 0, a Publisher's own first seq_no is
+// always 1 - tt_Publisher_publish()'s data_header->seq_no = pub->seq_no + 1 - and both cache->next
+// and seq_no advance exactly one slot per publish, in lockstep), so the position for any given
+// seq_no is computable directly instead of searched for. Found and fixed after TickLE Plan's own
+// real HIL re-measurement of Milestone 61 (caller-configurable depth) showed a deeper cache
+// measurably *hurting* RELIABLE recovery rather than merely not helping it (the honest limitation
+// Milestone 61 already documented) - root-caused to this exact O(depth) scan: at depth=8192,
+// entries[] is ~12MB (each entry carries a 1472-byte buffer), and process_acknack() calls this once
+// per set ACKNACK bit (up to tt_RELIABLE_BITMAP_BITS=64 times), so a single ACKNACK could walk that
+// whole ~12MB region up to 64 times, almost entirely cache misses on real hardware. Assumes `depth`
+// stays the same between the write that placed a sample and this lookup for it - true for every
+// current caller (depth is set once at setup time, never changed mid-stream by anything in this
+// codebase today) but not structurally enforced; the write side's own `cache->next % depth`
+// indexing already silently relies on the identical assumption, so this isn't a new risk, just the
+// same one now also load-bearing on the read side.
 static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
                                                                  uint32_t missing_seq_no,
                                                                  uint64_t lifespan_duration_ns) {
-    for (int i = 0; i < depth; i++) {
-        struct tt_ReliableCacheEntry* cache_entry = &cache->entries[i];
-        if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
+    uint32_t slot = (missing_seq_no - 1) % depth;
+    struct tt_ReliableCacheEntry* cache_entry = &cache->entries[slot];
+    if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
+        return NULL; // empty slot, or overwritten by a different seq_no since (evicted)
+    }
+    if (cache_entry->retry >= tt_RELIABLE_RETRY) {
+        return NULL; // give up on this one sample - the Subscriber's own retry cap will too
+    }
+    // Same "as if it had never been sent" rule deliver_durability_backlog() applies, here for a
+    // live NACK'd retransmit instead of a discovery-triggered backlog push. Matches real DDS:
+    // LIFESPAN removes data from the Writer's history outright, RELIABLE's own retry guarantee
+    // doesn't override it.
+    if (reliable_cache_entry_expired(cache_entry, lifespan_duration_ns)) {
+        return NULL;
+    }
+    return cache_entry;
+}
+
+// Milestone 62 (rmw_tickle/PLAN.md) - the actual per-bit retransmit loop, split out of
+// process_acknack() below purely to keep that function's own cognitive complexity under clang-
+// tidy's threshold, same reasoning find_resendable_cache_entry() above was split out for (the new
+// pub->reliable gate this milestone added tipped it over on its own). Only ever called when pub->
+// reliable is true - see that call site's own doc comment for why.
+static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
+                                        uint16_t depth, uint32_t seq_no, uint64_t bitmap,
+                                        const struct tt_Peer* target) {
+    for (int bit = 0; bit < tt_RELIABLE_BITMAP_BITS; bit++) {
+        if (!(bitmap & (1ULL << bit))) {
             continue;
         }
-        if (cache_entry->retry >= tt_RELIABLE_RETRY) {
-            return NULL; // give up on this one sample - the Subscriber's own retry cap will too
+        uint32_t missing_seq_no = seq_no + (uint32_t)bit;
+
+        struct tt_ReliableCacheEntry* cache_entry =
+            find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns);
+        if (cache_entry == NULL) {
+            continue;
         }
-        // Same "as if it had never been sent" rule deliver_durability_backlog() applies, here for
-        // a live NACK'd retransmit instead of a discovery-triggered backlog push. Matches real
-        // DDS: LIFESPAN removes data from the Writer's history outright, RELIABLE's own retry
-        // guarantee doesn't override it.
-        if (reliable_cache_entry_expired(cache_entry, lifespan_duration_ns)) {
-            return NULL;
+
+        uint32_t old_tx_tail = node->tx_tail;
+        void* buf = encode(node, cache_entry->len);
+        if (buf == NULL) {
+            TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
+            rollback(node, old_tx_tail);
+            continue;
         }
-        return cache_entry;
+        _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+        if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
+            rollback(node, old_tx_tail);
+        } else {
+            cache_entry->retry++;
+        }
     }
-    return NULL;
 }
 
 // Milestone 35 - deliberately still uses find_endpoint()'s single-match lookup: retransmission
@@ -3358,7 +3410,8 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
 
     struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
     if (pub->reliable_cache == NULL) {
-        return true; // not a reliable Publisher (or a stale ack) - nothing cached to resend
+        return true; // not a reliable/durable Publisher (or a stale ack) - nothing cached to
+                     // resend or to update peer_ack_seq_no against
     }
 
     struct tt_ReliableCache* cache = pub->reliable_cache;
@@ -3373,39 +3426,35 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     // ACKNACK carrying a smaller seq_no than what's already recorded must not regress it - UDP
     // gives no ordering guarantee between two ACKNACKs from the same peer). A sender not currently
     // in peers[] (already forgotten, e.g. via forget_publisher_peer(), or never matched in the
-    // first place) has nothing to record against - retransmission below still answers it
-    // regardless, same as today, since that's keyed off the wire seq_no directly, not peers[].
+    // first place) has nothing to record against. Unconditional on pub->reliable (unlike the
+    // retransmission loop below) - matches tt_Publisher_wait_for_all_acked()'s own gate (pub->
+    // reliable_cache != NULL, not pub->reliable specifically), since a DURABLE-only Publisher can
+    // legitimately solicit and track an ACKNACK reply too (tt_Publisher_request_ack()'s own
+    // Heartbeat, answered regardless of pub->reliable) - only the actual byte retransmission below
+    // is RELIABILITY's own exclusive contract.
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (pub->peers[i].node_id == header->source && seq_no > pub->peer_ack_seq_no[i]) {
             pub->peer_ack_seq_no[i] = seq_no;
         }
     }
 
-    for (int bit = 0; bit < tt_RELIABLE_BITMAP_BITS; bit++) {
-        if (!(bitmap & (1ULL << bit))) {
-            continue;
-        }
-        uint32_t missing_seq_no = seq_no + (uint32_t)bit;
-
-        struct tt_ReliableCacheEntry* cache_entry =
-            find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns);
-        if (cache_entry == NULL) {
-            continue;
-        }
-
-        uint32_t old_tx_tail = node->tx_tail;
-        void* buf = encode(node, cache_entry->len);
-        if (buf == NULL) {
-            TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
-            rollback(node, old_tx_tail);
-            continue;
-        }
-        _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
-        if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, &target, 1)) {
-            rollback(node, old_tx_tail);
-        } else {
-            cache_entry->retry++;
-        }
+    // Milestone 62 (rmw_tickle/PLAN.md) - gated on pub->reliable specifically, not merely pub->
+    // reliable_cache != NULL: Milestone 24 unified RELIABILITY's and DURABILITY's own storage into
+    // one cache, so a DURABLE-but-not-RELIABLE Publisher (TRANSIENT_LOCAL backlog offered, no
+    // ongoing loss-recovery guarantee) still has reliable_cache allocated - but ACKNACK-driven
+    // *retransmission* is squarely RELIABILITY's own contract, not DURABILITY's (which is already
+    // served entirely by deliver_durability_backlog()'s own one-shot push, no ACKNACK involved at
+    // all). The DDS semantic-parity backlog's own row 1 originally considered gating this on pub->
+    // durable instead - rejected (see that row's own doc comment) since it would have broken the
+    // legitimate in-flight-loss recovery a VOLATILE+RELIABLE Publisher must still guarantee to an
+    // already-matched Subscriber; gating on pub->reliable alone has no such risk, since a Publisher
+    // that never offered RELIABLE was never obligated to answer an ACKNACK's retransmission request
+    // in the first place - a matching Subscriber's own RxO check (subscriber_incompatible_with_
+    // publisher()) already refuses to match a reliable-requesting Subscriber against a non-reliable
+    // Publisher, so no compatible peer would ever legitimately request one here anyway; this is the
+    // defensive, spec-honest half of that same contract, on the answering side.
+    if (pub->reliable) {
+        retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, &target);
     }
 
     return true;
@@ -3883,6 +3932,20 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
         }
     }
     return NULL;
+}
+
+// See this function's own doc comment (tickle.h).
+bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
+    if (node == NULL || entity == NULL || entity->node_id == tt_NODE_ID_INVALID) {
+        return false;
+    }
+    if (entity->liveliness_lease_duration_ns == 0) {
+        return entity->alive; // no specific lease requested - defer to the node-level sweep
+    }
+    if (!node->update_seen[entity->node_id]) {
+        return false; // never heard from this node id at all
+    }
+    return (now - node->update_last_seen[entity->node_id]) <= entity->liveliness_lease_duration_ns;
 }
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {
