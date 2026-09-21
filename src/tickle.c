@@ -1308,8 +1308,11 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 // complexity under clang-tidy's threshold.
 static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
                                   struct tt_ReliableCache* cache, uint32_t seq_no) {
-    uint16_t depth =
-        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+    if (cache->capacity == 0) {
+        return; // entries[]/capacity never set up (struct tt_ReliableCache's own doc comment) -
+                // nothing to cache into, same safe no-op every other clamp site below shares
+    }
+    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
     size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
     struct tt_ReliableCacheEntry* cache_entry = &cache->entries[cache->next % depth];
     _tt_memcpy(cache_entry->buffer, submessage_header, length);
@@ -1471,8 +1474,11 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 // so it doubles as "empty" here). Shared by send_heartbeat()'s own periodic announce and send_
 // initial_heartbeat()'s own discovery-triggered one-off, below.
 static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache) {
-    uint16_t depth =
-        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+    if (cache->capacity == 0) {
+        return 0; // not set up - same "nothing retained" return this already uses for a genuinely
+                  // empty cache, see this function's own doc comment
+    }
+    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
     uint32_t first_seq_no = 0;
     for (int i = 0; i < depth; i++) {
         if (cache->entries[i].len != 0 && (first_seq_no == 0 || cache->entries[i].seq_no < first_seq_no)) {
@@ -2350,8 +2356,10 @@ static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher
         return;
     }
     struct tt_ReliableCache* cache = pub->reliable_cache;
-    uint16_t depth =
-        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+    if (cache->capacity == 0) {
+        return; // entries[]/capacity never set up - nothing to deliver from
+    }
+    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
 
     // entries[] is a ring buffer tt_Publisher_publish() writes round-robin via cache->next -
     // starting the scan there and wrapping around visits oldest-to-newest in both the
@@ -3354,8 +3362,10 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     }
 
     struct tt_ReliableCache* cache = pub->reliable_cache;
-    uint16_t depth =
-        (cache->depth > 0 && cache->depth <= tt_MAX_RELIABLE_HISTORY) ? cache->depth : tt_MAX_RELIABLE_HISTORY;
+    if (cache->capacity == 0) {
+        return true; // entries[]/capacity never set up - nothing cached to resend
+    }
+    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
     struct tt_Peer target = {header->source, sender_ip, sender_port};
 
     // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). peer_ack_seq_no's

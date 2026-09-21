@@ -166,8 +166,12 @@ static void test_reliable_publish_caches_and_evicts(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
 
@@ -666,8 +670,12 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
 
@@ -702,8 +710,12 @@ static void test_process_acknack_skips_expired_sample(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.lifespan_duration_ns = 1000;
@@ -760,8 +772,12 @@ static void test_process_acknack_updates_peer_ack_seq_no(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.peers[0].node_id = REMOTE_NODE_ID;
@@ -790,8 +806,12 @@ static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.peers[0].node_id = REMOTE_NODE_ID;
@@ -822,8 +842,12 @@ static void test_process_acknack_from_unmatched_peer_updates_nothing(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache; // pub.peers[] left entirely empty
 

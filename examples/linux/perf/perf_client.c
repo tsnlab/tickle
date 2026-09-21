@@ -93,8 +93,15 @@ static struct BulkData bulk = {0}; // static: zero-initialized, reused for every
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) - only actually used (pub.reliable_cache pointed at it)
 // when -R is passed; otherwise inert, matching tt_Publisher.reliable_cache's own "NULL costs
-// nothing" default. depth == tt_MAX_RELIABLE_HISTORY: the largest retained-sample window this
-// build supports, so -R measures the mechanism's worst-case (biggest) retransmit cache cost.
+// nothing" default. rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - entries[]/
+// capacity are this file's own backing array now, not an embedded tt_MAX_RELIABLE_HISTORY-sized
+// one (struct tt_ReliableCache's own doc comment, tickle.h) - sized to MAX_RELIABLE_DEPTH below,
+// deliberately far past the old 64 default, so -K can reach a genuinely deeper depth than this
+// build's own former hard ceiling to actually test whether that improves RELIABLE's own tc-loss
+// recovery at high throughput, or - per that same doc comment's honest answer - the Subscriber's
+// own fixed-width received_bitmap is the real bottleneck regardless.
+#define MAX_RELIABLE_DEPTH 8192
+static struct tt_ReliableCacheEntry reliable_cache_entries[MAX_RELIABLE_DEPTH];
 static struct tt_ReliableCache reliable_cache = {0};
 
 static uint64_t total_sent_msgs = 0;
@@ -169,9 +176,12 @@ static void print_usage(const char* prog) {
                     "      default; batching is opt-in\")\n");
     fprintf(stderr, "  -R  RELIABLE instead of BEST_EFFORT delivery (QoS roadmap #5, rmw_tickle/PLAN.md) -\n"
                     "      retains published samples for retransmission on a Subscriber's ACKNACK\n");
-    fprintf(stderr, "  -K  reliable cache depth, requires -R (default: tt_MAX_RELIABLE_HISTORY, the\n"
-                    "      build-time ceiling) - the real, freely-configurable retention window\n"
-                    "      (struct tt_ReliableCache.depth), independent of a rebuild\n");
+    fprintf(stderr,
+            "  -K  reliable cache depth, requires -R (default: tt_MAX_RELIABLE_HISTORY=%d) -\n"
+            "      the real, freely-configurable retention window (struct tt_ReliableCache.\n"
+            "      depth), up to this build's own MAX_RELIABLE_DEPTH=%d, independent of a\n"
+            "      rebuild\n",
+            tt_MAX_RELIABLE_HISTORY, MAX_RELIABLE_DEPTH);
 }
 
 static int parse_args(int argc, char** argv, struct tt_example_cli_options* opts) {
@@ -291,11 +301,13 @@ int main(int argc, char** argv) {
     }
     if (opts.reliable) {
         uint32_t depth = opts.reliable_depth != 0 ? opts.reliable_depth : (uint32_t)tt_MAX_RELIABLE_HISTORY;
-        if (depth > (uint32_t)tt_MAX_RELIABLE_HISTORY) {
-            printf("Requested reliable cache depth %u exceeds tt_MAX_RELIABLE_HISTORY (%d); clamping.\n", depth,
-                   tt_MAX_RELIABLE_HISTORY);
-            depth = (uint32_t)tt_MAX_RELIABLE_HISTORY;
+        if (depth > (uint32_t)MAX_RELIABLE_DEPTH) {
+            printf("Requested reliable cache depth %u exceeds this build's own MAX_RELIABLE_DEPTH (%d); clamping.\n",
+                   depth, MAX_RELIABLE_DEPTH);
+            depth = (uint32_t)MAX_RELIABLE_DEPTH;
         }
+        reliable_cache.entries = reliable_cache_entries;
+        reliable_cache.capacity = (uint16_t)depth;
         reliable_cache.depth = (uint16_t)depth;
         pub.reliable_cache = &reliable_cache;           // -R - see tt_Publisher.reliable_cache's own doc comment
         pub.reliable = true;                            // -R - see tt_Publisher.reliable's own doc comment

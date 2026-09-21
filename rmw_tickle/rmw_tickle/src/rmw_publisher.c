@@ -121,6 +121,51 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
                            pub_impl);
 }
 
+// Split out of rmw_create_publisher() below purely to keep that function's own cognitive
+// complexity under clang-tidy's threshold - see rmw_tickle_publisher_t.reliable_cache's own doc
+// comment for the full "why" this exists at all. Returns false (with RMW_SET_ERROR_MSG already
+// called) only on a real failure; true covers both "successfully set up" and "neither RELIABLE
+// nor TRANSIENT_LOCAL was requested, nothing to do" - the caller doesn't need to tell those two
+// apart, only whether to bail out and run its own (unrelated - tt_Node_create_publisher() et al.)
+// cleanup.
+static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos_profile_t* qos_profile,
+                                 rcutils_allocator_t* allocator) {
+    if (RMW_QOS_POLICY_RELIABILITY_RELIABLE != qos_profile->reliability &&
+        RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL != qos_profile->durability) {
+        return true;
+    }
+
+    size_t depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
+                                                                             : (size_t)tt_MAX_RELIABLE_HISTORY;
+    if (depth == 0 || depth > (size_t)UINT16_MAX) {
+        RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE/TRANSIENT_LOCAL publisher depth must be 1.."
+                          "UINT16_MAX (struct tt_ReliableCache.depth/capacity's own uint16_t "
+                          "width) - see rmw_tickle/PLAN.md's QoS roadmap #4/#5");
+        return false;
+    }
+
+    pub_impl->reliable_cache =
+        (struct tt_ReliableCache*)allocator->zero_allocate(1, sizeof(struct tt_ReliableCache), allocator->state);
+    if (NULL == pub_impl->reliable_cache) {
+        RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
+        return false;
+    }
+    pub_impl->reliable_cache->entries = (struct tt_ReliableCacheEntry*)allocator->zero_allocate(
+        depth, sizeof(struct tt_ReliableCacheEntry), allocator->state);
+    if (NULL == pub_impl->reliable_cache->entries) {
+        RMW_SET_ERROR_MSG("failed to allocate reliable_cache entries");
+        allocator->deallocate(pub_impl->reliable_cache, allocator->state);
+        pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
+        return false;
+    }
+    pub_impl->reliable_cache->capacity = (uint16_t)depth;
+    pub_impl->reliable_cache->depth = (uint16_t)depth;
+    pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
+    pub_impl->tickle_publisher.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
+    pub_impl->tickle_publisher.durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
+    return true;
+}
+
 rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_message_type_support_t* type_support,
                                       const char* topic_name, const rmw_qos_profile_t* qos_profile,
                                       const rmw_publisher_options_t* publisher_options) {
@@ -232,50 +277,34 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see rmw_tickle_publisher_t.reliable_cache's
     // own doc comment. One shared struct tt_ReliableCache backs both policies now (PLAN.md's
     // Milestone 24 - matches real DDS/RTPS's own single Writer History Cache), allocated once if
-    // either is requested; depth defaults to tt_MAX_RELIABLE_HISTORY (the largest this build
-    // supports, the only cap now - RELIABILITY and DURABILITY used to have independently-tunable,
-    // independently-capped depths here) when unset (RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT); an
-    // explicit depth past that cap is rejected outright rather than silently clamped, matching this
-    // package's own "Rejects anything outside the currently-supported set explicitly" design
-    // philosophy. ROS 2's own rmw_qos_profile_t.depth is a single shared field regardless - both
-    // policies always read the exact same requested depth, so merging this into one allocation/one
-    // check changes no observable behavior for a Publisher requesting just one of the two, and
-    // fixes a real asymmetry for one requesting both: a depth between the old, smaller DURABILITY
-    // cap and the old, larger RELIABILITY cap used to reject the whole publisher outright even
-    // though RELIABILITY alone would have accepted it.
-    if (RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability ||
-        RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability) {
-        size_t depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
-                                                                                 : (size_t)tt_MAX_RELIABLE_HISTORY;
-        if (depth > (size_t)tt_MAX_RELIABLE_HISTORY) {
-            RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE/TRANSIENT_LOCAL publisher can retain at most "
-                              "tt_MAX_RELIABLE_HISTORY samples - see rmw_tickle/PLAN.md's QoS "
-                              "roadmap #4/#5");
-            tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-            pthread_mutex_lock(&node_impl->context_impl->node_mutex);
-            tt_Publisher_destroy(&pub_impl->tickle_publisher);
-            pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
-            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
-            allocator->deallocate(pub_impl, allocator->state);
-            return NULL;
-        }
-
-        pub_impl->reliable_cache =
-            (struct tt_ReliableCache*)allocator->zero_allocate(1, sizeof(struct tt_ReliableCache), allocator->state);
-        if (NULL == pub_impl->reliable_cache) {
-            RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
-            tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-            pthread_mutex_lock(&node_impl->context_impl->node_mutex);
-            tt_Publisher_destroy(&pub_impl->tickle_publisher);
-            pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
-            allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
-            allocator->deallocate(pub_impl, allocator->state);
-            return NULL;
-        }
-        pub_impl->reliable_cache->depth = (uint16_t)depth;
-        pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
-        pub_impl->tickle_publisher.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
-        pub_impl->tickle_publisher.durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
+    // either is requested; depth defaults to tt_MAX_RELIABLE_HISTORY when unset
+    // (RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT). ROS 2's own rmw_qos_profile_t.depth is a single shared
+    // field regardless - both policies always read the exact same requested depth, so merging this
+    // into one allocation/one check changes no observable behavior for a Publisher requesting just
+    // one of the two, and fixes a real asymmetry for one requesting both: a depth between the old,
+    // smaller DURABILITY cap and the old, larger RELIABILITY cap used to reject the whole publisher
+    // outright even though RELIABILITY alone would have accepted it.
+    //
+    // rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - entries[]/capacity are now
+    // caller-owned (struct tt_ReliableCache's own doc comment, tickle.h), not a single build-wide
+    // tt_MAX_RELIABLE_HISTORY=64 ceiling every rmw_tickle Publisher used to be capped by alike -
+    // this caller (rmw_tickle, which already accepts dynamic allocation everywhere else, unlike
+    // TickLE core's own embedded-facing examples) allocates entries[] sized to *whatever* real
+    // depth the ROS 2 caller actually requested, no artificial rejection past 64 anymore, matching
+    // real rmw_fastrtps_cpp/rmw_cyclonedds_cpp's own dynamic-depth support instead of trailing it.
+    // The only remaining rejection is the hard type-width limit struct tt_ReliableCache.depth/
+    // capacity (uint16_t) itself imposes - not a business-logic choice, so still explicit-reject
+    // rather than silently clamp, matching this package's own established design philosophy for
+    // genuinely out-of-range requests. setup_reliable_cache() (above) does the actual work, split
+    // out purely to keep this function's own cognitive complexity under clang-tidy's threshold.
+    if (!setup_reliable_cache(pub_impl, qos_profile, allocator)) {
+        tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+        pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+        tt_Publisher_destroy(&pub_impl->tickle_publisher);
+        pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+        allocator->deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator->state);
+        allocator->deallocate(pub_impl, allocator->state);
+        return NULL;
     }
 
     // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.deadline_period_ns's own doc comment.
@@ -361,6 +390,13 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
+    // entries[] freed before the struct that (used to) point at it - reliable_cache is NULL when
+    // neither RELIABLE nor TRANSIENT_LOCAL was requested, in which case entries is also still NULL
+    // (both zero_allocate()'s own default and never touched) - both deallocate() calls are then
+    // no-ops, see their own doc comment.
+    if (NULL != pub_impl->reliable_cache) {
+        allocator.deallocate(pub_impl->reliable_cache->entries, allocator.state);
+    }
     allocator.deallocate(pub_impl->reliable_cache, allocator.state);   // NULL is a no-op, see its own doc comment
     allocator.deallocate(pub_impl->owning_node_name, allocator.state); // NULL is a no-op too (a failed strdup)
     allocator.deallocate(pub_impl->owning_node_namespace, allocator.state);

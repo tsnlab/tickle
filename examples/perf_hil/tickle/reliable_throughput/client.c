@@ -10,13 +10,18 @@
 
 // HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/comparison.md) -
 // TickLE core native client/sender role (no rmw). Same one-way max-rate stream as
-// best_effort_throughput's own client.c, plus RELIABLE + the deepest HISTORY TickLE allows
-// (depth = tt_MAX_RELIABLE_HISTORY = 64, config.h - TickLE's own hard architectural cap, unlike
-// CycloneDDS/FastDDS's own KEEP_ALL + resource_limits(4000) workaround for this exact scenario,
-// which have no comparable fixed ceiling). No blocking "wait for all acks" API exists in
-// tickle.h (only tt_Publisher_request_ack(), which solicits but doesn't block) - a fixed drain
-// period after the send loop substitutes for that, polling so any in-flight retransmits can
-// still land before teardown.
+// best_effort_throughput's own client.c, plus RELIABLE + a caller-configurable HISTORY depth
+// (rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache's
+// entries[]/capacity are caller-owned now, tickle.h, no longer a single build-wide
+// tt_MAX_RELIABLE_HISTORY=64 ceiling every Publisher was capped by alike) - defaults to that same
+// 64 for continuity with earlier measurements, -K raises it up to MAX_RELIABLE_DEPTH below without
+// a rebuild, for directly re-measuring whether a deeper Publisher-side cache actually improves
+// RELIABLE's own tc-loss recovery at TickLE's own real max throughput, or - per struct tt_
+// ReliableCache's own doc comment's honest answer - the Subscriber-side 64-bit received_bitmap
+// window is the real bottleneck regardless of how deep this side's own cache reaches back. No
+// blocking "wait for all acks" API exists in tickle.h (only tt_Publisher_request_ack(), which
+// solicits but doesn't block) - a fixed drain period after the send loop substitutes for that,
+// polling so any in-flight retransmits can still land before teardown.
 
 #include <signal.h>
 #include <stdbool.h>
@@ -43,9 +48,15 @@ static const double discovery_margin_s = 2.0;
 static const double bits_per_byte = 8.0;
 static const double bits_per_megabit = 1e6;
 
+// Compile-time backing-array ceiling for this scenario's own -K flag below - deliberately far
+// past the old tt_MAX_RELIABLE_HISTORY=64 default, since re-measuring at a genuinely deeper depth
+// is this flag's entire purpose (struct tt_ReliableCache's own doc comment, tickle.h).
+#define MAX_RELIABLE_DEPTH 8192
+
 static double interval_s = 0.0; // 0 = as fast as possible, matching best_effort_throughput's own default
 static double duration_s = default_duration_s;
 static double drain_s = default_drain_s;
+static uint32_t reliable_depth = tt_MAX_RELIABLE_HISTORY; // -K overrides; 0 stays the historical default
 static uint64_t sent = 0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
@@ -80,7 +91,14 @@ int main(int argc, char** argv) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
+            reliable_depth = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
+    }
+    if (reliable_depth == 0 || reliable_depth > MAX_RELIABLE_DEPTH) {
+        printf("Requested reliable cache depth %u out of range (1..%u); clamping to %u.\n", reliable_depth,
+               MAX_RELIABLE_DEPTH, (unsigned)tt_MAX_RELIABLE_HISTORY);
+        reliable_depth = tt_MAX_RELIABLE_HISTORY;
     }
 
     // real HIL link's own broadcast address - see best_effort_latency/client.c's own doc comment
@@ -104,10 +122,15 @@ int main(int argc, char** argv) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
-    // scenario "reliable_throughput" - RELIABLE + the deepest HISTORY TickLE allows (64, its own
-    // hard cap - see this file's own doc comment above).
+    // scenario "reliable_throughput" - RELIABLE + a caller-chosen HISTORY depth (-K, default 64 -
+    // see this file's own doc comment above). entries[]/capacity are this file's own backing
+    // array now, not an embedded tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own
+    // doc comment, tickle.h) - sized to MAX_RELIABLE_DEPTH so -K can actually reach past 64.
+    static struct tt_ReliableCacheEntry pub_cache_entries[MAX_RELIABLE_DEPTH];
     static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.depth = tt_MAX_RELIABLE_HISTORY;
+    pub_cache.entries = pub_cache_entries;
+    pub_cache.capacity = (uint16_t)reliable_depth;
+    pub_cache.depth = (uint16_t)reliable_depth;
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
     g_pub = &pub;
@@ -132,8 +155,8 @@ int main(int argc, char** argv) {
                       ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / duration_s
                       : 0.0;
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f\n",
-           (unsigned long)sent, duration_s, mbps);
+           "send_mbps=%.3f reliable_depth=%u\n",
+           (unsigned long)sent, duration_s, mbps, reliable_depth);
 
     tt_Node_destroy(&node);
     return 0;

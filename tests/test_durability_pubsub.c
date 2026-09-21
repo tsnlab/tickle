@@ -167,8 +167,12 @@ static void test_durability_publish_caches_and_evicts(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.durable = true;
@@ -212,8 +216,12 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.durable = true;
@@ -259,8 +267,12 @@ static void test_durability_skips_expired_backlog_entries(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.durable = true;
@@ -315,8 +327,12 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.durable = true;
@@ -358,8 +374,12 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.durable = true;
@@ -414,8 +434,12 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
     struct tt_ReliableCache cache;
     memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
     cache.depth = 4;
     pub.reliable_cache = &cache;
     pub.durable = true;
@@ -499,8 +523,12 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
+    struct tt_ReliableCacheEntry reliable_cache_entries[4];
+    memset(reliable_cache_entries, 0, sizeof(reliable_cache_entries));
     struct tt_ReliableCache reliable_cache;
     memset(&reliable_cache, 0, sizeof(reliable_cache));
+    reliable_cache.entries = reliable_cache_entries;
+    reliable_cache.capacity = 4;
     reliable_cache.depth = 4;
     pub.reliable_cache = &reliable_cache;
     pub.durable = true;

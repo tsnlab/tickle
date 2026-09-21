@@ -372,16 +372,19 @@ typedef struct rmw_tickle_publisher_t {
     rmw_qos_profile_t qos;
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - NULL unless qos.reliability is RMW_QOS_
     // POLICY_RELIABILITY_RELIABLE and/or qos.durability is RMW_QOS_POLICY_DURABILITY_TRANSIENT_
-    // LOCAL, in which case rmw_create_publisher() allocator->zero_allocate()s one (sized by
-    // qos.depth, clamped to tt_MAX_RELIABLE_HISTORY) and points tickle_publisher.reliable_cache at
-    // it, setting tickle_publisher.reliable/.durable to match whichever of the two was actually
-    // requested - see struct tt_ReliableCache's own doc comment (tickle.h) for why one cache/one
-    // depth cap now serves both policies (used to be two independently-allocated caches here,
-    // struct tt_DurableCache, since removed - PLAN.md's Milestone 24). Freed in rmw_destroy_
-    // publisher(); NULL is also this field's own "neither policy requested" sentinel. No matching
-    // field exists on rmw_tickle_subscriber_t below (or on struct tt_Subscriber itself) for
-    // durability specifically - it's purely a Publisher-side decision, a Subscription just
-    // receives whatever backlog arrives.
+    // LOCAL, in which case rmw_create_publisher() allocator->zero_allocate()s one, plus a second
+    // allocation for its own entries[] backing array sized exactly to qos.depth (rmw_tickle/
+    // PLAN.md's own "DDS semantic-parity backlog" row 2 - no longer clamped to a single build-wide
+    // tt_MAX_RELIABLE_HISTORY ceiling, only to struct tt_ReliableCache.depth/capacity's own
+    // uint16_t width), and points tickle_publisher.reliable_cache at it, setting tickle_publisher.
+    // reliable/.durable to match whichever of the two was actually requested - see struct tt_
+    // ReliableCache's own doc comment (tickle.h) for why one cache/one depth now serves both
+    // policies (used to be two independently-allocated caches here, struct tt_DurableCache, since
+    // removed - PLAN.md's Milestone 24). Both allocations freed in rmw_destroy_publisher() (entries
+    // first, then the struct that pointed at it); NULL is also this field's own "neither policy
+    // requested" sentinel. No matching field exists on rmw_tickle_subscriber_t below (or on struct
+    // tt_Subscriber itself) for durability specifically - it's purely a Publisher-side decision, a
+    // Subscription just receives whatever backlog arrives.
     struct tt_ReliableCache* reliable_cache;
 
     // QoS roadmap #2 (DEADLINE) - deadline_period_ns == 0 (rmw_create_publisher()'s own default):

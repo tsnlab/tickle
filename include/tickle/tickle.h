@@ -441,13 +441,47 @@ struct tt_Data {
 // best-effort Publisher (today's only default) leaves tt_Publisher.reliable_cache NULL and pays
 // nothing for this; one that wants either policy provides a zeroed struct tt_ReliableCache of its
 // own (stack/static/wherever, must stay valid and unmoved until tt_Publisher_destroy() - same
-// lifetime rule as every other tt_* struct) sized by `depth` (1..tt_MAX_RELIABLE_HISTORY) and
-// points reliable_cache at it - set directly any time after tt_Node_create_publisher() returns,
-// same "caller-owned, plain field access" convention as pub->batch. tt_Publisher_publish() appends
-// the raw encoded DATA submessage bytes here after every successful send (KEEP_LAST eviction once
-// `depth` slots are full); an incoming ACKNACK (process_submessage()) looks samples up here by
-// seq_no to retransmit, and a newly-discovered Subscriber (decode_update_entities()) gets every
-// currently-retained entry unicast straight to it, oldest first, when tt_Publisher.durable is set.
+// lifetime rule as every other tt_* struct) and points reliable_cache at it - set directly any
+// time after tt_Node_create_publisher() returns, same "caller-owned, plain field access"
+// convention as pub->batch. tt_Publisher_publish() appends the raw encoded DATA submessage bytes
+// here after every successful send (KEEP_LAST eviction once `depth` slots are full); an incoming
+// ACKNACK (process_submessage()) looks samples up here by seq_no to retransmit, and a newly-
+// discovered Subscriber (decode_update_entities()) gets every currently-retained entry unicast
+// straight to it, oldest first, when tt_Publisher.durable is set.
+//
+// entries[]/capacity, not a fixed tt_MAX_RELIABLE_HISTORY-sized array embedded here directly
+// (rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2) - the caller also owns the
+// backing entries array (any struct tt_ReliableCacheEntry[N] it likes: stack, static, or - for a
+// caller that already accepts dynamic allocation elsewhere, like rmw_tickle - heap), the same
+// "caller decides the size, no malloc inside TickLE core itself" idiom struct tt_Discovery already
+// uses for tt_MAX_DISCOVERED_ENTITIES. This is what actually makes `depth` a real, *per-Publisher*
+// DDS RESOURCE_LIMITS/HISTORY.depth equivalent instead of a single build-wide ceiling every
+// Publisher paid for or was capped by alike: an embedded-target Publisher that only ever needs a
+// handful of retries can size its own array tiny, while a high-throughput Linux one (or a real
+// ROS 2 caller's own requested QoS depth, rmw_tickle) can size it far past the old
+// tt_MAX_RELIABLE_HISTORY=64 default without recompiling TickLE core itself or wasting memory on
+// every *other* Publisher that doesn't want it. `depth` (1..capacity) is still the real in-use
+// ring size within that array - kept a separate field from `capacity` on purpose, mirroring DDS's
+// own separate HISTORY.depth vs RESOURCE_LIMITS.max_samples: a caller can shrink `depth` at
+// runtime (a plain field write) without touching the backing array at all, the same way DDS lets
+// HISTORY.depth vary independently of a fixed resource ceiling.
+//
+// Honest, load-bearing limitation, found while making depth caller-configurable and worth stating
+// plainly rather than implying "just raise depth" fixes every retention-window problem: raising a
+// specific Publisher's own `depth`/`capacity` past tt_RELIABLE_BITMAP_BITS (64) only ever helps
+// DURABILITY's own one-shot backlog push (deliver_durability_backlog() walks entries[] directly,
+// no ACKNACK/bitmap involved at all) - it does NOT, by itself, improve RELIABLE's own ACKNACK-
+// driven recovery under sustained loss at high throughput, because struct tt_WriterProxy.
+// received_bitmap (the *Subscriber's* own out-of-order tracking) is a fixed uint64_t: once more
+// than 64 newer samples arrive while one gap stays unresolved, update_reliable_ack() is forced to
+// jump_ack_baseline() and abandon that gap outright, regardless of how deep the Publisher's own
+// cache still reaches back. At TickLE's own real measured throughput (~1.2M msg/s), 64 samples
+// pass in roughly 53 microseconds - almost certainly shorter than one real ACKNACK round trip on
+// any real network - so this Subscriber-side ceiling, not the Publisher-side cache depth fixed
+// here, is very likely the actual bottleneck behind TickLE's own comparatively poor tc-loss
+// recovery at high throughput (rmw_tickle/comparison.md). Closing that would need a genuinely
+// different Subscriber-side tracking mechanism (e.g. more than one simultaneously-open gap
+// window), out of scope for this change.
 //
 // One cache for both, not two (PLAN.md's Milestone 24) - matches real DDS/RTPS, where DURABILITY
 // at the TRANSIENT_LOCAL level this package implements isn't a separately-sized cache at all: a
@@ -494,9 +528,22 @@ struct tt_DurableDeliveryRecord {
     uint64_t last_modified; // the announcing node's own last_modified as of the delivery below
 };
 struct tt_ReliableCache {
-    uint16_t depth; // in-use ring capacity, 1..tt_MAX_RELIABLE_HISTORY
+    // The actual size of the caller-provided entries[] array below, in element count - the real
+    // per-Publisher ceiling depth is clamped against everywhere in tickle.c (replaces every former
+    // bare tt_MAX_RELIABLE_HISTORY reference). 0 (this struct's own zero-init default, before a
+    // caller sets entries/capacity) is a legitimate, safe "nothing usable yet" state - every depth-
+    // clamping call site treats it exactly like "no cache" (see cache_reliable_sample()/deliver_
+    // durability_backlog()/process_acknack()'s own shared clamp expression).
+    uint16_t capacity;
+    uint16_t depth; // in-use ring size, 1..capacity - see this struct's own doc comment for why
+                    // this stays a separate field from capacity rather than always equaling it
     uint16_t next;  // next entries[] slot tt_Publisher_publish() writes into (mod depth)
-    struct tt_ReliableCacheEntry entries[tt_MAX_RELIABLE_HISTORY];
+    // Caller-owned backing storage, capacity entries long (stack/static/heap - caller's choice,
+    // see this struct's own doc comment) - NOT embedded here directly, unlike almost every other
+    // fixed-size table in this file. NULL (this struct's own zero-init default) is the "not set up
+    // yet" / "capacity is still 0" state, handled the same safe way capacity's own doc comment
+    // describes.
+    struct tt_ReliableCacheEntry* entries;
     // Only ever consulted when tt_Publisher.durable is set (register_subscriber_peer_on_
     // publisher(), tickle.c) - costs a best-effort or reliable-only Publisher nothing beyond the
     // unused array slots themselves, no extra allocation or opt-in flag needed. Same capacity as

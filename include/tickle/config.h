@@ -32,44 +32,57 @@
 // deadline_duration/lifespan_duration (tickle.h) are still reserved for #2/#6, not this.
 #define tt_RELIABLE_DEADLINE 0 // nanosecond, 0 is auto
 #define tt_RELIABLE_RETRY 3    // count
-// Max retained-sample cache depth for a RELIABLE Publisher's opt-in struct tt_ReliableCache
-// (tickle.h) - the fixed array dimension backing whatever depth a caller actually requests
-// (clamped to this at setup time, e.g. rmw_tickle from qos_profile->depth). Same "small hard
-// cap, caller picks a real value within it" trade-off as tt_MAX_PEER_COUNT/tt_MAX_SERVER_CACHE_COUNT.
+// rmw_tickle/PLAN.md's "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache (tickle.h)
+// no longer embeds a fixed-size array sized by this constant: entries[]/capacity are now caller-
+// owned (any size the caller's own backing array happens to be - stack, static, or, for a caller
+// that already accepts dynamic allocation elsewhere like rmw_tickle, heap), so a specific
+// Publisher's own real ceiling is whatever array it was actually given, not a single build-wide
+// constant every Publisher was capped by or paid for alike. This constant now serves two much
+// narrower, purely *Subscriber*-side roles instead, both about struct tt_WriterProxy's own gap-
+// tracking, not about sizing anything on the Publisher side:
 //
-// This is a *compile-time ceiling*, not the depth any given Publisher actually uses at runtime -
-// struct tt_ReliableCache.depth (tickle.h) is the real, freely-configurable knob (clamped to this
-// constant), exactly mirroring real DDS's own split between a resource-limit ceiling
-// (RESOURCE_LIMITS.max_samples_per_instance) and the actual requested value (HISTORY.depth) - a
-// caller picks whatever it wants at or below this cap without needing a rebuild. Fixed at 64,
-// tt_RELIABLE_BITMAP_BITS's own hard ceiling below - a single ACKNACK can never name a gap wider
-// than that, so raising this constant past it would only add slots update_reliable_ack() could
-// never selectively recover anyway, regardless of what any caller's own depth requests.
+// (1) skip_unrecoverable_backlog()'s (tickle.c) own bulk-skip give-up heuristic - a Subscriber's
+// own assumption about how deep a *remote* Publisher's cache plausibly still reaches back, used
+// only to decide how many ACKNACK retries are worth attempting before giving up on a stuck gap.
+// The Subscriber has no way to know a specific remote Publisher's own real capacity (that's a
+// wire-level unknown, unlike this constant's old role as a hard local ceiling) - this is now an
+// educated guess, not an enforced bound; a real Publisher configured deeper than this may still
+// answer a retransmit request after this Subscriber would otherwise have given up, a safe, merely
+// suboptimal miss (an extra unnecessary give-up), never a correctness problem.
+//
+// (2) The reference value examples/tests default a Publisher's own array size to when they have
+// no other reason to pick something different (tt_ReliableCache's own doc comment) - not a limit
+// on what a caller *may* choose, just a reasonable, historically-tuned starting point.
+//
+// Whether raising *either* role's own value past tt_RELIABLE_BITMAP_BITS (64, below) would help
+// anything: see struct tt_ReliableCache's own doc comment (tickle.h) for the honest answer (only
+// DURABILITY's own one-shot backlog push benefits from a deeper *Publisher*-side cache at all;
+// RELIABLE's own ACKNACK-driven recovery under sustained loss is bottlenecked by the Subscriber's
+// own fixed 64-bit received_bitmap regardless, which this constant's own role (1) above already
+// respects via the _Static_assert (tickle.c) keeping it at or under that same width).
 //
 // History: 8 -> 10 -> 64, chasing a real cache-eviction-vs-ACKNACK-round-trip-recovery race under
 // run_perf.sh's own loss-injection scenarios (LOSS_TEST_INTERVAL_SEC's own comment) - the retained
 // window (depth * send interval) has to outlast a real retransmit round trip before an unacked
 // sample gets evicted, or genuine, otherwise-recoverable loss gets written off too early. Settled
-// at 64 (this constant's own hard ceiling) once PLAN.md's Milestone 25 traced the residual ~0.1%
-// loss_pct floor this whole tuning history was chasing to an unrelated measurement bug in
-// examples/linux/perf/perf_server.c's own drop-counting, not real TickLE-core loss or this
-// constant's own value at all - every earlier loss_pct figure this constant was ever tuned against
-// (the 5.2%/9.6%/8.0% cliff at depth 8, etc.) was measured through that same buggy counter, so none
-// of it was trustworthy calibration data regardless. With the counter fixed, this constant no
-// longer needs to double as a *tuning* knob at all - run_perf.sh's own loss-injection client passes
-// an explicit -K <depth> (examples/linux/perf/perf_client.c, cli_opts.h/.c) to set struct tt_
-// ReliableCache.depth directly for that experiment, leaving this constant free to just be the
-// structural ceiling it always should have been.
+// at 64 once PLAN.md's Milestone 25 traced the residual ~0.1% loss_pct floor this whole tuning
+// history was chasing to an unrelated measurement bug in examples/linux/perf/perf_server.c's own
+// drop-counting, not real TickLE-core loss or this constant's own value at all - every earlier
+// loss_pct figure this constant was ever tuned against (the 5.2%/9.6%/8.0% cliff at depth 8, etc.)
+// was measured through that same buggy counter, so none of it was trustworthy calibration data
+// regardless. run_perf.sh's own loss-injection client passes an explicit -K <depth> (examples/
+// linux/perf/perf_client.c, cli_opts.h/.c) to set struct tt_ReliableCache.depth directly for that
+// experiment, independent of whatever this constant's own default is used for elsewhere.
 //
-// Also now the *only* retained-sample cache depth in this file - QoS roadmap #4 (DURABILITY)
-// used to have its own separate tt_MAX_DURABLE_HISTORY constant and struct tt_DurableCache
-// (tickle.h) sized independently of this one, requiring a _Static_assert (tickle.c) to keep the
-// two in sync whenever either changed. Unified into this one constant/cache instead (PLAN.md's
-// Milestone 24) - matching real DDS/RTPS, where DURABILITY (at the TRANSIENT_LOCAL level this
-// package implements) isn't a separately-sized cache at all: a late-joining reader just gets
-// whatever's currently sitting in the Writer's own single History Cache, which HISTORY.depth (and
-// RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no independent
-// "durability depth" concept to keep in sync with anything, because there's only ever one cache.
+// Also still the only retained-sample cache depth concept in this file - QoS roadmap #4
+// (DURABILITY) used to have its own separate tt_MAX_DURABLE_HISTORY constant and struct tt_
+// DurableCache (tickle.h) sized independently of this one, requiring a _Static_assert (tickle.c)
+// to keep the two in sync whenever either changed. Unified into this one constant/cache instead
+// (PLAN.md's Milestone 24) - matching real DDS/RTPS, where DURABILITY (at the TRANSIENT_LOCAL
+// level this package implements) isn't a separately-sized cache at all: a late-joining reader
+// just gets whatever's currently sitting in the Writer's own single History Cache, which HISTORY.
+// depth (and RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no
+// independent "durability depth" concept to keep in sync with anything, only ever one cache.
 #define tt_MAX_RELIABLE_HISTORY 64
 // Width of tt_AckNackHeader.bitmap/tt_WriterProxy.received_bitmap - inherent to their uint64_t
 // wire/in-memory type, not a tunable, but named anyway so update_reliable_ack()/process_acknack()

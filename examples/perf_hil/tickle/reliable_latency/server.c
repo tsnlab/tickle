@@ -74,7 +74,12 @@ int main(int argc, char** argv) {
         printf("Cannot create publisher: %d\n", ret);
         return ret;
     }
+    // entries[]/capacity are this file's own backing array now, not an embedded
+    // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
+    static struct tt_ReliableCacheEntry pub_cache_entries[8];
     static struct tt_ReliableCache pub_cache = {0};
+    pub_cache.entries = pub_cache_entries;
+    pub_cache.capacity = 8;
     pub_cache.depth = 8;
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;

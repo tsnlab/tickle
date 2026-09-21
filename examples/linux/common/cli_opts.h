@@ -76,11 +76,13 @@ struct tt_example_cli_options {
     bool reliable;
 
     // -K <depth>: perf_client only. struct tt_ReliableCache.depth's own real, freely-configurable
-    // value (clamped to tt_MAX_RELIABLE_HISTORY, the build-time ceiling - tickle.h's own doc
-    // comment) - 0 (this struct's own zero-init default) means "unset, use tt_MAX_RELIABLE_HISTORY
-    // itself" (today's exact pre-existing behavior). Lets a HIL run (or any caller) tune the
-    // retention window independently of a rebuild, e.g. to study how RELIABLE's own recovery rate
-    // varies with it under real tc/netem loss (rmw_tickle/PLAN.md's Milestone 25).
+    // value, clamped to perf_client.c's own max_reliable_depth (its backing entries[] array's
+    // actual size, tickle.h's struct tt_ReliableCache doc comment - no longer a single build-wide
+    // tt_MAX_RELIABLE_HISTORY ceiling) - 0 (this struct's own zero-init default) means "unset, use
+    // tt_MAX_RELIABLE_HISTORY itself" (today's exact pre-existing behavior). Lets a HIL run (or any
+    // caller) tune the retention window independently of a rebuild, e.g. to study how RELIABLE's
+    // own recovery rate varies with it under real tc/netem loss (rmw_tickle/PLAN.md's Milestone
+    // 25) - now reaching genuinely past the old 64 default, not just up to it.
     uint32_t reliable_depth;
 };
 
