@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789951779194,
+  "lastUpdate": 1789951782491,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -58074,6 +58074,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ba65c66b6216a77b78bf28b552682e040685b7be"
         },
         "date": 1789951274548,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "28a9c39dc13c8c13213c77764c13657cc785a2a4",
+          "message": "tickle.c: fix RELIABLE+VOLATILE Subscriber leaking pre-match backlog via Heartbeat\n\ndurability_late_join's own volatile-Subscriber HIL scenario was\nunaffected by the earlier RELIABLE+VOLATILE fix: that scenario's server\npublishes its whole backlog before any Subscriber exists, so the\ndiscovery-triggered Heartbeat (not DATA) always resolves first contact.\ninform_subscriber_of_heartbeat()'s first-contact branch synced every\nSubscriber's baseline to first_available_seq_no unconditionally,\nregardless of the Subscriber's own requested durability.\n\nDURABILITY is a Requested-vs-Offered (RxO) QoS policy in DDS, the same\nfamily as RELIABILITY/DEADLINE/LIVELINESS: the Offered side (Publisher)\nonly gates compatibility, the Requested side (Subscriber) defines what\nthat Subscriber actually gets. A VOLATILE-requesting Subscriber does not\nwant pre-match history even when matched against a durable Publisher -\nreal RTPS initializes a newly-matched VOLATILE reader's baseline to the\nwriter's current position, not its oldest retained sample.\n\nKeyed the fix on sub->durable (the Subscriber's own existing local\nfield, no wire or discovery dependency needed): first contact now syncs\nto first_available_seq_no only when sub->durable, otherwise to\nlast_seq_no + 1 (not last_seq_no itself - ack_seq_no means \"next not yet\naccounted for\", so last_seq_no alone would still request that one\nalready-published sample). update_reliable_ack()'s own DATA-arrival\nfirst-contact fix is untouched.\n\nCorrected PLAN.md's own \"DDS semantic-parity backlog\" row 1, which had\nmisdiagnosed process_acknack() as the root cause of both scenario 5 and\n6 - traced both for real: scenario 5 is this fix, scenario 6 is an\nunrelated, already-documented dedup residual.\n\nMilestone 60 (rmw_tickle/PLAN.md).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T09:46:46+09:00",
+          "tree_id": "4806ff4036a70bdfdb09bac2181b61b6e66c1f92",
+          "url": "https://github.com/tsnlab/tickle/commit/28a9c39dc13c8c13213c77764c13657cc785a2a4"
+        },
+        "date": 1789951781384,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
