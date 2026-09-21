@@ -251,7 +251,7 @@ summarize() {
         lat_loss=$(result_field "$LOG_DIR/reliable_latency.log" "loss_pct")
         echo "| reliable_latency | - | avg ${lat_avg:-N/A}ms, ${lat_loss:-N/A}% loss |"
 
-        local sent recv loss
+        local recv loss
         recv=$(result_field "$LOG_DIR/best_effort_throughput.log" "recv")
         loss=$(result_field "$LOG_DIR/best_effort_throughput.log" "loss_pct")
         echo "| best_effort_throughput | max rate, 8s | recv ${recv:-N/A}, ${loss:-N/A}% loss |"
