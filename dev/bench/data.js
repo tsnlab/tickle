@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789964305773,
+  "lastUpdate": 1789964309628,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -48960,6 +48960,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03045640672956194,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "26548a39da7bbb370505c43a8483469eff38cad3",
+          "message": "PLAN.md: close row 1 by user decision, assign rows 2's O(1) follow-up and row 3 to TickLE Dev\n\nUser's explicit decisions (2026-09-21): row 1 (process_acknack() unconditional cache-answering)\nkept as-is, closed - no real scenario ever needed it gated. Row 2's find_resendable_cache_entry()\nO(depth) regression and row 3 (LIVELINESS entity-level tracking) both get the go-ahead to fix,\nassigned to TickLE Dev pending that session's own direct user confirmation.",
+          "timestamp": "2026-09-21T13:17:12+09:00",
+          "tree_id": "47c407d775340586a8360edc362d5d2bfc2a5800",
+          "url": "https://github.com/tsnlab/tickle/commit/26548a39da7bbb370505c43a8483469eff38cad3"
+        },
+        "date": 1789964308491,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905474526541573,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9898350579398019,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03047316414969308,
             "unit": "Mbit/s"
           }
         ]
