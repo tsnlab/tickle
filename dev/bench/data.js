@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789996623205,
+  "lastUpdate": 1789996730178,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -40124,6 +40124,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04571000000000001,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d86f9d539d2d2d8fc740981ef57a2e4931c21af7",
+          "message": "PLAN.md: follow-up research on scenario 4 - a second root cause, no core change needed\n\nAt the user's own further request to keep researching the FastDDS/CycloneDDS performance gap.\nTwo findings from re-reading the actual retry/publish code paths: (1) ACKNACK retry cadence is\nconfirmed NOT part of the problem - the first retry is already sent synchronously/immediately on\ngap detection, only a second attempt waits on tt_CALL_RETRY_INTERVAL, so the real limit is\ngenuinely the physical RTT, strengthening the existing bitmap-widening case. (2) A second, real,\npreviously-undiscovered root cause: tt_Publisher_publish()/cache_reliable_sample() have zero\ncongestion-awareness - a Publisher at max rate keeps burying an open gap under new samples the\nwhole time it's unresolved, actively shortening the real recovery window. A blocking fix would\nconflict with TickLE's own stated \"never block publish()\" design philosophy, but a zero-core-\nchange alternative already exists: tt_Publisher.peer_ack_seq_no[] is already a public field a\ncaller can read today to voluntarily self-throttle - proposed as a documented pattern/convenience\nwrapper, not a new mechanism, complementary to the bitmap-widening fix rather than competing\nwith it. Not assigned to TickLE Dev - still a proposal.",
+          "timestamp": "2026-09-21T22:17:37+09:00",
+          "tree_id": "86c2a7e62436a45139c55bfd4c22e27a4af7a222",
+          "url": "https://github.com/tsnlab/tickle/commit/d86f9d539d2d2d8fc740981ef57a2e4931c21af7"
+        },
+        "date": 1789996724323,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04832714285714285,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04728,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.047867142857142865,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.047232857142857146,
             "unit": "ms"
           }
         ]
