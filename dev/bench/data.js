@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789956095438,
+  "lastUpdate": 1789956099365,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -20760,6 +20760,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv throughput",
             "value": 898.551,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "bb61828c6789781fe48a05934ecf20ff533adef2",
+          "message": "PLAN.md/comparison.md: verify LIFESPAN follows the expected formula, close it\n\nReal HIL slope test since lifespan_expiry's own pause_s is measured from\nprocess start (not a completed match like the DDS twins' own design), so\nthe exact discovery-timing offset is an unknown constant - tested the slope\ninstead of the absolute count. pause_s=1.0/1.5/2.0s (2-4 reps each): full-\nrange slope from 1.0s to 2.0s is 51 samples lost/sec, matching the expected\n1/interval_s=50/s almost exactly (2% off). Confirms TickLE's own age-based\nexpiry follows the same linear, interval-driven relationship DDS's own\nexact (pause-lifespan)/interval match demonstrated.\n\nDDS semantic-parity backlog now has only one open row (LIVELINESS) -\nLIFESPAN closed, HISTORY assigned to TickLE Dev, DEADLINE closed by the\nuser's own decision, process_acknack() row already closed by Milestone 60.",
+          "timestamp": "2026-09-21T10:58:44+09:00",
+          "tree_id": "932ed83b0f0dff024a1fda0d6d458f46d537d06a",
+          "url": "https://github.com/tsnlab/tickle/commit/bb61828c6789781fe48a05934ecf20ff533adef2"
+        },
+        "date": 1789956098158,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "send throughput",
+            "value": 935.042,
+            "unit": "Mbps"
+          },
+          {
+            "name": "recv throughput",
+            "value": 898.645,
             "unit": "Mbps"
           }
         ]
