@@ -21,8 +21,15 @@
         "run_url": "https://github.com/tsnlab/tickle/actions/runs/35621732723"
       },
       "commit": "460945ecc15699b7e1879ab78bfe2850bfc8186b",
-      "commit_short": "460945e",
-      "date": "2026-09-21T15:59Z"
+      "commit_short": "460945ecc15",
+      "date": "2026-09-21T15:59Z",
+      "perf": {
+        "build": "fail",
+        "commit": "460945ecc15699b7e1879ab78bfe2850bfc8186b",
+        "commit_short": "460945ecc15",
+        "date": "2026-09-21T15:51Z",
+        "integration": "fail"
+      }
     },
     {
       "buildtest": {
@@ -1429,5 +1436,5 @@
       }
     }
   ],
-  "updated": "2026-09-21 16:00 UTC"
+  "updated": "2026-09-21 16:11 UTC"
 }
