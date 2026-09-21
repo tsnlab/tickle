@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790001728135,
+  "lastUpdate": 1790002808053,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -41481,6 +41481,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.046264285714285716,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1bad2eeccf425cc8472991250b9080f7f117d97b",
+          "message": "comparison.md/PLAN.md: correct CI-vs-HIL methodology gap, reproduce poll-loop throughput effect\n\nReal HIL re-measurement of scenario 4 (reliable_throughput, TickLE's own max-rate methodology)\nafter the bitmap widening landed on main: found that automated Performance Test CI's own\n\"0.0% loss\" figure (Milestone 65) comes from a different, lower-rate tool (perf_client -R via\nrun_perf.sh) than comparison.md's own scenario 4. At real max throughput, residual loss remains\neven with the 256-bit bitmap (1.9-4.1% at 1% injected, 5.8-8.1% at 5%) - a real improvement over\nthe old 64-bit baseline but not full recovery. comparison.md updated with both pre/post-bitmap-fix\nnumbers side by side, not silently replaced.\n\nRebased the poll-loop I/O-interleave experiment onto the bitmap-widened main\n(experiment/poll-loop-io-interleave-v2) and re-measured with the now-fixed harness: the\nthroughput increase (99-120 Mbps vs 92-95 Mbps) reproduced independently a second time (8 total\nruns now), and loss% was favorable this time at both conditions (not worse, unlike the first\npre-bitmap-fix comparison). Still not merged - real, increasingly well-replicated effect, but\nmechanism not yet confirmed by direct instrumentation.",
+          "timestamp": "2026-09-21T23:58:50+09:00",
+          "tree_id": "dbc5426d6b2f7486379935ef09f2bb927bcea812",
+          "url": "https://github.com/tsnlab/tickle/commit/1bad2eeccf425cc8472991250b9080f7f117d97b"
+        },
+        "date": 1790002798299,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.06103000000000001,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.04973142857142857,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.049447142857142856,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.046382857142857135,
             "unit": "ms"
           }
         ]
