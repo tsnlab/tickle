@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789951185608,
+  "lastUpdate": 1789951262218,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10357,6 +10357,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt avg",
             "value": 0.199,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ba65c66b6216a77b78bf28b552682e040685b7be",
+          "message": "PLAN.md: add DDS semantic-parity backlog - TickLE core vs. real DDS behavior\n\nThe user's own explicit request (2026-09-21): a concrete task list for\nfixing TickLE's own runtime behavior to match real DDS semantics, based on\nTickLE Plan's own direct source analysis (tickle.h/tickle.c) plus the HIL\nscenario 1-9 empirical results in comparison.md. For future TickLE Dev\nsession work, not started yet.\n\nFive items, priority-ordered: process_acknack() isn't policy-aware (likely\nroot cause of both still-open scenario 5/6 bugs), no KEEP_ALL/large-depth\nequivalent (depth hard-capped at 64, a real design trade-off not just a\nconstant to raise), LIVELINESS is node-level not per-entity and ignores the\nannounced lease (with an open question on whether rmw_tickle's own watchdog\nalready compensates), DEADLINE has no core enforcement at all (looks like\ndeliberate design, needs a decision not a fix), LIFESPAN already closest to\nDDS (lowest priority, one timing-verification gap left).",
+          "timestamp": "2026-09-21T09:38:20+09:00",
+          "tree_id": "99f2b0af23864328c7b8b4d682e370d01ab36771",
+          "url": "https://github.com/tsnlab/tickle/commit/ba65c66b6216a77b78bf28b552682e040685b7be"
+        },
+        "date": 1789951256044,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.2,
             "unit": "ms"
           },
           {
