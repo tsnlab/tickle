@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790001090200,
+  "lastUpdate": 1790001346779,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -41199,6 +41199,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.04520857142857143,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1c3b232705c34552a74a5cf49f2a52ec74fdc114",
+          "message": "PLAN.md: Milestone 65 - record ACKNACK bitmap widening + real HIL confirmation\n\nreliable_throughput's own tc-loss matrix (commit cdac082's Performance\nTest run) confirms RELIABLE loss_pct dropped to 0.0% at both 1% and 5%\ninjected tc loss, down from the previously-measured 1.1-5.3% residual -\nexceeding the \"likely closes most or all of it\" honest expectation\nstated when the 64 -> 256 bit widening was implemented.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T23:33:58+09:00",
+          "tree_id": "bd33c968dae43c9725597450dba317f92f23e9a3",
+          "url": "https://github.com/tsnlab/tickle/commit/1c3b232705c34552a74a5cf49f2a52ec74fdc114"
+        },
+        "date": 1790001340193,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.04708857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.045758571428571426,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.07965142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04937999999999999,
             "unit": "ms"
           }
         ]
