@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 # Hardware-in-the-loop performance test, run from the self-hosted runner (tickle-hil).
 #
-# Roles (fixed, per the two dedicated test Pis):
-#   rpi#1 - client role (ping, perf_client)
-#   rpi#2 - server role (pong, perf_server)
+# Rebuilt 2026-09-22 (the user's own explicit request) around rmw_tickle/COMPARISON.MD's own §2-3
+# TickLE-core HIL methodology (examples/perf_hil/tickle/*, run via run_scenario.sh, TickLE's real
+# max send rate) instead of this script's own former tool (examples/linux/perf/{perf_client,
+# perf_server}, examples/linux/ping_pong/{ping,pong} - a different, lower-pacing tool). Motivation:
+# a real, concrete confusion this mismatch caused, not just a cosmetic inconsistency - Milestone 65's
+# own dashboard-sourced "loss_pct -> 0.0%" claim for the ACKNACK bitmap widening was measured under
+# the *old* tool and did not hold up when re-measured with COMPARISON.MD's own real max-rate
+# scenario 4 (1.9-8.1% loss). This script (and the dashboard it feeds) now measures the same thing
+# COMPARISON.MD documents, so the two can never silently diverge like that again.
+#
+# Roles (fixed, per the two dedicated test Pis - unchanged from before this rewrite):
+#   rpi#1 - client role
+#   rpi#2 - server role
 #
 # Assumes:
 #   - This runner already has an SSH key at ~/.ssh/tickle_ci_ed25519 authorized for
@@ -11,133 +21,40 @@
 #   - Both Pis already have ~/tickle cloned (this script only fetches/checks out).
 set -euo pipefail
 
-RPI_CLIENT_HOST="${RPI_CLIENT_HOST:-10.1.1.214}" # rpi#1 (was .207 until 2026-09; DHCP reassigned)
+RPI_CLIENT_HOST="${RPI_CLIENT_HOST:-10.1.1.214}" # rpi#1
 RPI_SERVER_HOST="${RPI_SERVER_HOST:-10.1.1.213}" # rpi#2
 SSH_USER="ci"
 SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
 REMOTE_DIR="tickle"
+SCEN_ROOT="examples/perf_hil/tickle"
 
-# RPI_CLIENT_HOST/RPI_SERVER_HOST above are the Pis' *management* addresses (this script's own
-# SSH target) - a separate network from the dedicated point-to-point link the actual TickLE test
-# traffic runs over, which every example binary this script runs defaults its own `-b` broadcast
-# address to (examples/linux/common/cli_opts.c) and this script never overrides. probe_loss_
-# testing() below needs *that* link's own interface on rpi#1, not whichever one happens to route
-# toward RPI_SERVER_HOST's management IP (that could be a shared Wi-Fi/LAN uplink instead).
+# Same separate-network reasoning as before this rewrite: RPI_CLIENT_HOST/RPI_SERVER_HOST above are
+# the Pis' own *management* addresses (this script's own SSH target); the actual TickLE test traffic
+# always broadcasts to PERF_LINK_BROADCAST instead (examples/linux/common/cli_opts.c's own -b
+# default, which every perf_hil/tickle/*/client.c also uses unchanged) - a real, separate link
+# probe_loss_testing() below needs rpi#1's own outgoing interface *for*, not whichever one happens
+# to route toward RPI_SERVER_HOST's management IP.
 PERF_LINK_BROADCAST="${PERF_LINK_BROADCAST:-192.168.10.255}"
 
-PING_COUNT="${PING_COUNT:-50}"
-PING_INTERVAL="${PING_INTERVAL:-0.1}"
-PERF_DURATION_SEC="${PERF_DURATION_SEC:-10}"
-SMALL_MSG_SIZE="${SMALL_MSG_SIZE:-100}"
-# The loss-injection scenarios' own send interval.
-#
-# tt_MAX_RELIABLE_HISTORY (8 samples, config.h) holding 8 * (send interval) worth of wall-clock
-# time before an entry is evicted was the working theory for what to tune here, to find a rate
-# where RELIABLE's own retransmission just barely keeps up at low tc loss but starts occasionally
-# losing the race at high tc loss - RELIABLE's own reported loss_pct should then differentiate
-# across tc's own 1%/5%/10% instead of independently flatlining at whatever a clean run's own
-# residual (non-tc-loss) artifact rate is. 20ms (~160ms window) through 1ms (~8ms window) - a 20x
-# range in four halving steps - all landed on the *exact same* ~0.1% regardless of tc's own loss
-# level, which is far too flat and far too independent of both variables to be the eviction race
-# this constant was meant to expose; some other small, fixed-time (not fixed-message-count, since
-# it stayed a constant *fraction* as message count scaled with 1/interval) artifact - most likely
-# discovery/registration startup timing - dominates every one of those four attempts completely.
-# 0 (firehose) confirmed the other end: RELIABLE's own loss_pct jumped to ~10-14% at *every* tc
-# loss level, no longer differentiating by level at all, and ran *worse* than BEST_EFFORT's own -
-# pure ACKNACK/retransmit overhead on an already-saturated link, this comment's own original
-# warning. Between the two ends sits a sharp, narrow-band cliff, not a smooth slope: 350us and
-# 310us landed flat at RELIABLE's own clean ~0.1% for every level, every time; 170us pushed 10% all
-# the way to 9.8% (matching BEST_EFFORT's own ~10% rate there outright); 80us and below overshoot
-# badly enough that even 1% fails to recover much of anything. 280us sits inside that cliff, and
-# three separate runs at the *same* value came back 5.2%/9.6%/8.0% at 10% tc loss (once even 5%
-# itself showed 1.7%, not its usual ~0.1%) - real hardware timing jitter moves this cliff's own
-# exact position by more than the gap between "280us" and "310us" themselves, so no single fixed
-# interval gives a precisely-sized "a little" loss at 10% on every run on this rig. What *does*
-# hold up across all three: 1% stays clean every time, and 10% never does - real, measurable (if
-# noisy in size) loss shows up specifically as tc's own configured loss gets worse, which is the
-# qualitative shape this search was after even though the exact numbers won't be identical run to
-# run. Keeping 280us; if a future run wants tighter reproducibility, averaging several runs per
-# loss level (this script currently does one) would be the more principled fix, not a "magic"
-# interval - no single fixed value made this cliff's own position stop drifting.
-#
-# Separately (and unaffected by any of this): a faster send interval also raises the sample count
-# for the same PERF_DURATION_SEC into the thousands, which tightens BEST_EFFORT's own loss_pct
-# around tc's actual configured percentage too (it has no retry mechanism to blur the picture, so
-# more samples is a direct accuracy win via less binomial sampling noise) - confirmed at 5ms, 2ms,
-# 1ms, and 0.5ms already (1%/5%/10% configured consistently comes back within ~0.5 points of the
-# actual target); firehose's own besteffort row (1.0/5.0/10.0) confirms the same holds even at the
-# extreme.
-#
-# Follow-up: this whole comment tuned interval at a *fixed* tt_MAX_RELIABLE_HISTORY of 8; the
-# window that actually matters for the cache-eviction-vs-RTT race above is depth * interval, so
-# depth is an equally valid knob. config.h's own tt_MAX_RELIABLE_HISTORY was widened 8 -> 10
-# instead of retuning this interval again, specifically to get 10% tc loss down from that noisy
-# 280us cliff to something smaller and still real, without touching BEST_EFFORT's own accuracy
-# above (which depends on interval, not depth). Real HIL data at this same 280us interval: depth
-# 16 (double) overshot outright - 1%/5%/10% all landed flat at 0.1%, losing 10%'s own
-# differentiation entirely; depth 10 landed 1%/5% at 0.1% (unchanged from depth 8) and 10% at
-# 3.6% (real, and well under BEST_EFFORT's own ~9.8% there, vs. depth 8's own 5.2%/9.6%/8.0%
-# noise across identical re-runs) - one run only, not re-run for reproducibility (see this
-# comment's own point about averaging several runs per level being the more principled fix this
-# script still doesn't do), so treat 3.6% as "a little, real loss," not a precise number that will
-# reproduce exactly next time.
-#
-# All of the above (this whole comment, start to finish) was tuned against a perf_server.c
-# counting bug PLAN.md's Milestone 25 later found and fixed - track_arrival() was reporting false
-# drops for samples that had genuinely arrived, at a rate independent of tc's own configured loss
-# level, which is exactly the "flat ~0.1% regardless of level" shape this search kept running into
-# and blamed on other things (discovery timing, etc.) instead. None of the specific numbers here
-# are trustworthy anymore, though the *qualitative* cliff-search methodology still is. Re-opened
-# post-fix (RELIABLE_CACHE_DEPTH's own comment above) to widen the window-eviction-vs-RTT race back
-# open at a fixed depth of 8: ground truth at 280us was only 0/2/5 genuinely-lost samples at
-# 1%/5%/10% - real, differentiated, but still below the ~18-sample threshold this script's own
-# %.1f loss_pct display needs to show anything but "0.0". Narrowed to 140us (half) specifically to
-# shrink the depth=8 eviction window further (depth * interval, same relationship as always) and
-# push a real, visible loss_pct out of 10% tc loss - re-verify against real HIL, this file's own
-# oldest and most consistent lesson.
-LOSS_TEST_INTERVAL_SEC="${LOSS_TEST_INTERVAL_SEC:-0.00014}"
-# perf_server.c's own -W (cooldown): without this, run_paired_test's pkill -INT right when
-# perf_client exits gave the server's own gap tracking (track_arrival()/finalize_gap_tracking())
-# zero time to let a still-recovering RELIABLE gap near the very end of the run actually resolve -
-# perf_client.c's matching RELIABLE_SHUTDOWN_GRACE_SEC keeps the *sending* side alive just as long,
-# so a late ACKNACK for one of the last few samples still gets a real retransmit. Found the same
-# way as the fix this comment sits next to: reliable's own loss_pct plateaued at the *same* value
-# at two different tc loss levels, which a shutdown race explains far better than anything
-# proportional to loss probability would.
-LOSS_TEST_COOLDOWN_SEC="${LOSS_TEST_COOLDOWN_SEC:-1.5}"
-# perf_client.c's own -K (struct tt_ReliableCache.depth, tickle.h) - PLAN.md's Milestone 25 traced
-# the loss-injection scenarios' own residual ~0.1% loss_pct floor to a perf_server.c measurement
-# bug (fixed), not this depth at all; every earlier depth-tuning data point in this script's own
-# git history was measured through that same buggy counter, so none of it is trustworthy
-# calibration now. Re-tuned from a clean slate with the counter fixed: tt_MAX_RELIABLE_HISTORY's
-# own full 64-deep ceiling (~17.9ms retention window at this file's own LOSS_TEST_INTERVAL_SEC)
-# recovers real tc/netem loss almost perfectly even at 10% (real ground truth: ~3 genuinely-lost
-# samples out of ~35,714) - too close to zero to see RELIABLE's own recovery behavior differ from a
-# clean run at a glance. 16, then 10 (~4.5ms, then ~2.8ms retention window) both narrowed that back
-# down and did produce real, HIL-confirmed differentiation (ground truth 0/1/6 at depth 16, 0/0/5
-# at depth 10, genuinely-lost samples at 1%/5%/10% either time) - but even 5-6 out of ~35,714
-# (~0.014-0.017%) still rounds away to "0.0" in the job summary's own one-decimal loss_pct display,
-# real but not visibly so; the display needs roughly 18+ (~0.05%) to round up to "0.1" at all.
-# Narrowed further to 8 (~2.2ms retention window, this constant's own original pre-Milestone-24
-# depth) to push past that display threshold, while 1%/5% (far less bursty) should still mostly
-# recover within the shorter window. Confirm/re-tune against real HIL after any change here, same
-# as every other constant in this file's own loss-injection tuning.
-RELIABLE_CACHE_DEPTH="${RELIABLE_CACHE_DEPTH:-8}"
+SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
+
+ssh_run() {
+    local host="$1"
+    shift
+    # "$@" is a command line meant to run on $host - it is supposed to expand remotely.
+    # shellcheck disable=SC2029
+    ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" "$@"
+}
 
 LOG_DIR="$(mktemp -d)"
 
-# QoS roadmap #5 (RELIABILITY/RELIABLE) loss-injection scenarios: how BEST_EFFORT vs RELIABLE
-# actually behave under real packet loss, using Linux's own tc/netem on rpi#1's (the sender's)
-# egress toward rpi#2 - nothing TickLE-side, this is purely a network-layer fault injection.
-# Needs passwordless `sudo tc` on rpi#1 (see README.md's own "What's needed") - probed for below,
-# degrades to skipping just this section (not the whole run) if that isn't set up yet.
-LOSS_LEVELS_PCT="${LOSS_LEVELS_PCT:-1 5 10}"
+# QoS roadmap #5 (RELIABILITY/RELIABLE) loss-injection (scenario 4 only, now) - same tc/netem
+# machinery as before this rewrite, just no longer feeding a whole separate matrix of loss${pct}_*
+# scenarios (COMPARISON.MD §3 only measures reliable_throughput at 0/1/5% tc loss, not 10% - that
+# was this script's own prior convention, not COMPARISON.MD's).
 CLIENT_IFACE=""          # resolved below; set_loss() below is always a safe no-op while empty
 LOSS_TESTING_AVAILABLE=0 # 1 once both the interface and passwordless sudo tc are confirmed
 
-# pct == 0 clears any active netem qdisc instead of applying one - the one function both this
-# script's own loss-level loop and the exit trap below (a run that dies mid-loss-level must not
-# leave the *next* run on this same rig - latency/throughput/etc - silently lossy) share.
 set_loss() {
     local pct="$1"
     [ -z "$CLIENT_IFACE" ] && return 0
@@ -150,6 +67,25 @@ set_loss() {
 
 trap 'set_loss 0; rm -rf "$LOG_DIR"' EXIT
 
+probe_loss_testing() {
+    CLIENT_IFACE=$(ssh_run "$RPI_CLIENT_HOST" "ip route get $PERF_LINK_BROADCAST" 2>/dev/null |
+        grep -oP 'dev \K\S+' | head -1 || true)
+    if [ -z "$CLIENT_IFACE" ]; then
+        echo "Could not resolve rpi#1's outgoing interface for $PERF_LINK_BROADCAST - skipping tc loss injection (scenario 4 will only run at 0%)" >&2
+        return
+    fi
+    echo "rpi#1's test-link traffic (toward $PERF_LINK_BROADCAST) goes out $CLIENT_IFACE"
+
+    if ssh_run "$RPI_CLIENT_HOST" "sudo -n tc qdisc replace dev $CLIENT_IFACE root netem loss 1%" >/dev/null 2>&1; then
+        set_loss 0
+        LOSS_TESTING_AVAILABLE=1
+    else
+        CLIENT_IFACE="" # also disarms set_loss()'s own exit-trap cleanup - nothing was ever applied
+        echo "rpi#1 cannot run 'sudo tc' non-interactively - scenario 4 will only run at 0% tc loss" \
+            "(see .github/scripts/README.md's own sudoers requirement)" >&2
+    fi
+}
+
 # Fragment the "Performance Test" workflow hands to .github/scripts/publish_dashboard.sh for the
 # Raspberry Pi row of https://tsnlab.github.io/tickle/dev/bench/. Seed it as a failure now and
 # rewrite it once results exist, so an early abort (build failure, SSH timeout) still leaves the
@@ -158,102 +94,33 @@ FRAG="${DASHBOARD_FRAGMENT:-perf-frag.json}"
 printf '{"build":"fail","integration":"fail","commit":"%s","commit_short":"%s","date":"%s"}\n' \
     "$(git rev-parse HEAD)" "$(git rev-parse --short HEAD)" "$(date -u +%Y-%m-%dT%H:%MZ)" > "$FRAG"
 
-write_dashboard_fragment() {
-    local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps integ smsg_rate smsg_recv smsg_dur
-    local reliable_1pct_mbps reliable_5pct_mbps reliable_10pct_mbps
-    local be_loss_1pct be_loss_5pct be_loss_10pct rel_loss_1pct rel_loss_5pct rel_loss_10pct
-
-    rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
-    rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log" || true)
-    loss_pct=$(grep -oP '\d+(?=% packet loss)' "$LOG_DIR/latency_client.log" || true)
-    send_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_client.log" | tr -d ',' || true)
-    recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_server.log" | tr -d ',' || true)
-    smsg_recv=$(grep -oP 'recv=\K[\d,]+' "$LOG_DIR/smallmsg_server.log" | tail -1 | tr -d ',' || true)
-    smsg_dur=$(grep -oP '[\d.]+(?= sec, avg)' "$LOG_DIR/smallmsg_server.log" | tail -1 || true)
-    # Status-table columns for the tc/netem loss-injection scenarios (see probe_loss_testing()'s
-    # own comment on why these three specific files might not exist at all) - RELIABLE's own
-    # recv-side throughput at each fixed loss level, matching LOSS_LEVELS_PCT's own "1 5 10"
-    # default exactly (a change to that default needs matching field/column renames here and in
-    # dashboard.py's _row()/render_block(), not handled generically on purpose - three fixed
-    # columns are simpler than a dynamic-width table for a rig that's never actually changed this).
-    reliable_1pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss1_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
-    reliable_5pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss5_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
-    reliable_10pct_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$LOG_DIR/loss10_reliable_server.log" 2>/dev/null | tail -1 | tr -d ',' || true)
-    # BEST_EFFORT vs RELIABLE loss_pct at each level - the same direct comparison the job summary's
-    # own table (summarize(), above) shows per push, mirrored here so the persistent dashboard
-    # (https://tsnlab.github.io/tickle/dev/bench/) carries it across runs too, not just the one-off
-    # step summary. Same three fixed loss levels as the throughput fields just above.
-    be_loss_1pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss1_besteffort_server.log" 2>/dev/null | tail -1 || true)
-    be_loss_5pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss5_besteffort_server.log" 2>/dev/null | tail -1 || true)
-    be_loss_10pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss10_besteffort_server.log" 2>/dev/null | tail -1 || true)
-    rel_loss_1pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss1_reliable_server.log" 2>/dev/null | tail -1 || true)
-    rel_loss_5pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss5_reliable_server.log" 2>/dev/null | tail -1 || true)
-    rel_loss_10pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/loss10_reliable_server.log" 2>/dev/null | tail -1 || true)
-
-    # A round trip happened at all (ping got replies, throughput parsed) => integration pass.
-    integ=fail
-    if [ -n "${loss_pct:-}" ] && [ "${loss_pct}" -lt 100 ] && [ -n "${send_mbps:-}" ]; then
-        integ=pass
-    fi
-    smsg_rate=null
-    if [ -n "${smsg_recv:-}" ] && [ -n "${smsg_dur:-}" ]; then
-        smsg_rate=$(awk "BEGIN{printf \"%.0f\", $smsg_recv/$smsg_dur}")
-    fi
-
-    cat > "$FRAG" <<EOF
-{
-  "build": "pass",
-  "integration": "$integ",
-  "commit": "$(git rev-parse HEAD)",
-  "commit_short": "$(git rev-parse --short HEAD)",
-  "date": "$(date -u +%Y-%m-%dT%H:%MZ)",
-  "run_url": "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-tsnlab/tickle}/actions/runs/${GITHUB_RUN_ID:-0}",
-  "throughput_send_mbps": ${send_mbps:-null},
-  "throughput_recv_mbps": ${recv_mbps:-null},
-  "rtt_avg_ms": ${rtt_avg:-null},
-  "rtt_mdev_ms": ${rtt_mdev:-null},
-  "loss_pct": ${loss_pct:-null},
-  "smallmsg_rate_msgs_s": ${smsg_rate},
-  "reliable_throughput_1pct_mbps": ${reliable_1pct_mbps:-null},
-  "reliable_throughput_5pct_mbps": ${reliable_5pct_mbps:-null},
-  "reliable_throughput_10pct_mbps": ${reliable_10pct_mbps:-null},
-  "besteffort_loss_1pct_pct": ${be_loss_1pct:-null},
-  "besteffort_loss_5pct_pct": ${be_loss_5pct:-null},
-  "besteffort_loss_10pct_pct": ${be_loss_10pct:-null},
-  "reliable_loss_1pct_pct": ${rel_loss_1pct:-null},
-  "reliable_loss_5pct_pct": ${rel_loss_5pct:-null},
-  "reliable_loss_10pct_pct": ${rel_loss_10pct:-null}
-}
-EOF
-}
-
-SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new)
-
-ssh_run() {
-    local host="$1"
-    shift
-    # "$@" is a command line meant to run on $host - it is supposed to expand remotely.
-    # shellcheck disable=SC2029
-    ssh "${SSH_OPTS[@]}" "$SSH_USER@$host" "$@"
-}
-
-# Checks out the exact commit the runner itself is building, on both Pis, in parallel.
+# Builds every scenario's own client+server on both Pis, in parallel - mirrors the former
+# update_and_build()'s own parallel-SSH/wait shape. build.sh <scenario> (examples/perf_hil/tickle/
+# build.sh) does a *one-time* `make install PREFIX=~/tickle_local_install`, guarded by a plain
+# `[ -f .../libtickle.a ]` check - left alone across runs, a later push with new TickLE source would
+# silently keep building every scenario against a stale install. Force-cleaned here every run so
+# that can never happen (the same staleness class of bug this whole codebase's own history has hit
+# more than once - see e.g. rmw_tickle/PLAN.md's own pip-install-staleness lesson).
 update_and_build() {
     local sha
     sha="$(git rev-parse HEAD)"
-    echo "Checking out $sha and building on both Pis..."
+    echo "Checking out $sha and building all $((${#SCENARIOS[@]})) scenarios on both Pis..."
 
     local pids=()
     for host in "$RPI_CLIENT_HOST" "$RPI_SERVER_HOST"; do
-        ssh_run "$host" "
-            set -e
-            cd ~/$REMOTE_DIR
-            git fetch --quiet origin
-            git reset --hard --quiet $sha
-            git clean -fdq
-            make clean >/dev/null
-            make all -j4
-        " > "$LOG_DIR/build_$host.log" 2>&1 &
+        {
+            local build_cmds="set -e
+cd ~/$REMOTE_DIR
+git fetch --quiet origin
+git reset --hard --quiet $sha
+git clean -fdq
+rm -rf ~/tickle_local_install"
+            for scenario in "${SCENARIOS[@]}"; do
+                build_cmds="$build_cmds
+cd ~/$REMOTE_DIR/$SCEN_ROOT && ./build.sh $scenario"
+            done
+            ssh_run "$host" "$build_cmds" > "$LOG_DIR/build_$host.log" 2>&1
+        } &
         pids+=("$!")
     done
 
@@ -272,300 +139,274 @@ update_and_build() {
     echo "Build OK on both Pis."
 }
 
-# Starts the server binary in the background (with a generous -d safety cap in case the
-# client hangs), runs the client in the foreground, then proactively stops the server
-# instead of waiting out the safety cap.
-#
-# The example binaries build under platform/linux/ now (the native Linux build moved there when
-# the repo split into platform/linux/ + platform/freertos/), not the repo root - update_and_build
-# still runs `make all` from the root, which forwards there.
-run_paired_test() {
-    local label="$1" server_bin="$2" client_bin="$3" client_args="$4" server_safety_sec="$5" server_args="${6:-}"
+# Every scenario's own client.c/server.c prints "RESULT: framework=tickle scenario=<name>
+# role=<client|server> field=value field=value ..." (a uniform key=value shape, confirmed directly
+# against all 9 scenarios' own source) - one small generic extractor instead of nine bespoke regex
+# blocks. Echoes empty string (not an error) when the field/file is missing, matching every prior
+# "|| true" convention in this script - a missing number should degrade the one JSON/dashboard field
+# that needed it, never abort the whole run.
+result_field() {
+    local log="$1" field="$2"
+    grep -oP "(?<= )${field}=\K[^\s]+" "$log" 2>/dev/null | tail -1 || true
+}
 
+# Runs one scenario invocation (a "run_scenario.sh <scenario> [client_args]" over SSH from this
+# runner, matching that script's own usage exactly), capturing combined output to
+# $LOG_DIR/<label>.log for result_field() above to read back. `pre_client_sleep` is forwarded as
+# run_scenario.sh's own PRE_CLIENT_SLEEP env override (0 for history_depth_burst_loss - see that
+# scenario's own comment on why the usual pre-client sleep would hide the real race; the
+# run_scenario.sh default, 3, for everything else - passed explicitly here anyway so this function
+# never silently depends on that script's own default not changing later).
+run_scenario() {
+    local label="$1" scenario="$2" pre_client_sleep="$3" client_args="${4:-}"
     echo "== $label =="
-    ssh_run "$RPI_SERVER_HOST" "cd ~/$REMOTE_DIR/platform/linux && ./$server_bin -d $server_safety_sec $server_args" \
-        > "$LOG_DIR/${label}_server.log" 2>&1 &
-    local server_pid=$!
-
-    sleep 1 # let the server bind before the client starts sending
-
-    ssh_run "$RPI_CLIENT_HOST" "cd ~/$REMOTE_DIR/platform/linux && ./$client_bin $client_args" \
-        > "$LOG_DIR/${label}_client.log" 2>&1 || true
-
-    # -x matches the exact process name, so this can't accidentally match its own
-    # ssh invocation (which also contains the string "pong"/"perf_server" in argv).
-    ssh_run "$RPI_SERVER_HOST" "pkill -INT -x $server_bin" || true
-    wait "$server_pid" || true
+    ssh_run "$RPI_CLIENT_HOST" "cd ~/$REMOTE_DIR/$SCEN_ROOT && PRE_CLIENT_SLEEP=$pre_client_sleep ./run_scenario.sh $scenario $client_args" \
+        > "$LOG_DIR/${label}.log" 2>&1 || true
 }
 
-# Resolves rpi#1's own outgoing interface for the dedicated rpi#1<->rpi#2 test link (routing to
-# PERF_LINK_BROADCAST, not RPI_SERVER_HOST - see that variable's own comment on why those two can
-# differ) and confirms `sudo tc` actually works non-interactively there - `sudo -n` fails fast
-# instead of hanging on a password prompt that can never be answered over a non-interactive SSH
-# session. Sets CLIENT_IFACE/LOSS_TESTING_AVAILABLE; never fails the script itself (set -e-safe:
-# every check here is the condition of an `if`), just leaves loss testing unavailable with a
-# clear reason logged.
-probe_loss_testing() {
-    CLIENT_IFACE=$(ssh_run "$RPI_CLIENT_HOST" "ip route get $PERF_LINK_BROADCAST" 2>/dev/null |
-        grep -oP 'dev \K\S+' | head -1 || true)
-    if [ -z "$CLIENT_IFACE" ]; then
-        echo "Could not resolve rpi#1's outgoing interface for $PERF_LINK_BROADCAST - skipping loss-injection scenarios" >&2
-        return
-    fi
-    echo "rpi#1's test-link traffic (toward $PERF_LINK_BROADCAST) goes out $CLIENT_IFACE"
+# --- Scenario definitions, matching rmw_tickle/COMPARISON.MD §2-3 exactly ---
+#
+# best_effort_latency/reliable_latency/best_effort_throughput/deadline_miss_detection: no args,
+# fixed default run - client.c/server.c take none (confirmed: no argv parsing in either).
+#
+# durability_late_join: two runs are actually needed, not one - confirmed directly against
+# client.c/server.c's own source (not assumed): the DURABLE/VOLATILE setting lives on the
+# server.c (Publisher) side's own -D flag, and each RESULT line only reports that one run's own
+# received=<N> count (no combined durable-vs-volatile line exists anywhere in either file). Since
+# run_scenario.sh forwards CLIENT_ARGS identically to both sides, passing "-D" reaches the server
+# where it matters; client.c's own -D is bookkeeping-only (its own doc comment says so) and is
+# harmless either way.
+#
+# history_depth_burst_loss: depth=8/interval=0.05s/count=160 are all fixed in the binary itself
+# (not CLI-configurable) - only pause_s varies. "Within depth" needs a stall shorter than the
+# depth*interval=0.4s eviction window; "beyond depth" is the binary's own default (pause_s=3.0,
+# confirmed via source - well past it). No prior automated run of this scenario exists to recover
+# an exact "within depth" value from (this scenario was always run by hand until now) - 0 is the
+# simplest, most defensible choice (the Subscriber joins essentially immediately, deep inside the
+# window), used here rather than an arbitrary intermediate guess.
+#
+# reliable_throughput: 0/1/5% tc loss (COMPARISON.MD's own three rows - not 10%, this script's own
+# former convention, not COMPARISON.MD's own).
+#
+# liveliness_loss_detection: lease=1.0/2.0/4.0s, matching COMPARISON.MD's own already-published
+# values (and Milestone 65's own follow-up interest in the ~3s node-level sweep ceiling).
+#
+# lifespan_expiry: pause_s=1.0/1.5/2.0s with interval=0.02s/lifespan=0.1s/count=250 - the exact
+# slope-test methodology rmw_tickle/PLAN.md's own DDS semantic-parity backlog row 5 and
+# COMPARISON.MD §6 item 8 already verified against the expected formula on real HIL.
 
-    if ssh_run "$RPI_CLIENT_HOST" "sudo -n tc qdisc replace dev $CLIENT_IFACE root netem loss 1%" >/dev/null 2>&1; then
-        set_loss 0
-        LOSS_TESTING_AVAILABLE=1
-    else
-        CLIENT_IFACE="" # also disarms set_loss()'s own exit-trap cleanup - nothing was ever applied
-        echo "rpi#1 cannot run 'sudo tc' non-interactively - skipping loss-injection scenarios" \
-            "(see .github/scripts/README.md's own sudoers requirement)" >&2
+SCENARIOS=(best_effort_latency reliable_latency best_effort_throughput reliable_throughput
+    durability_late_join history_depth_burst_loss deadline_miss_detection liveliness_loss_detection
+    lifespan_expiry)
+
+run_all_scenarios() {
+    run_scenario "best_effort_latency" "best_effort_latency" 3
+    run_scenario "reliable_latency" "reliable_latency" 3
+    run_scenario "best_effort_throughput" "best_effort_throughput" 3
+    run_scenario "deadline_miss_detection" "deadline_miss_detection" 3
+    run_scenario "durability_volatile" "durability_late_join" 3
+    run_scenario "durability_durable" "durability_late_join" 3 "-D"
+
+    run_scenario "history_within_depth" "history_depth_burst_loss" 0 "-p 0"
+    run_scenario "history_beyond_depth" "history_depth_burst_loss" 0
+
+    probe_loss_testing
+    run_scenario "reliable_throughput_0pct" "reliable_throughput" 3
+    if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
+        for pct in 1 5; do
+            if set_loss "$pct"; then
+                run_scenario "reliable_throughput_${pct}pct" "reliable_throughput" 3
+            else
+                echo "Failed to apply ${pct}% tc loss on rpi#1 - skipping reliable_throughput @ ${pct}%" >&2
+            fi
+            set_loss 0
+        done
     fi
+
+    run_scenario "liveliness_lease_1_0" "liveliness_loss_detection" 3 "-T 1.0"
+    run_scenario "liveliness_lease_2_0" "liveliness_loss_detection" 3 "-T 2.0"
+    run_scenario "liveliness_lease_4_0" "liveliness_loss_detection" 3 "-T 4.0"
+
+    for pause in 1.0 1.5 2.0; do
+        local label="lifespan_pause_${pause//./_}"
+        run_scenario "$label" "lifespan_expiry" 3 "-i 0.02 -T 0.1 -n 250 -p $pause"
+    done
 }
+
+# --- Job-summary rendering (mirrors COMPARISON.MD's own §3 table shape directly) ---
 
 summarize() {
     {
-        echo "## Latency (ping / pong)"
-        echo '```'
-        cat "$LOG_DIR/latency_client.log"
-        echo '```'
+        echo "## TickLE HIL scenario results (rmw_tickle/COMPARISON.MD §2-3 methodology)"
         echo
-        echo "## Throughput (perf_client / perf_server)"
-        echo "### Sender (rpi#1)"
-        echo '```'
-        cat "$LOG_DIR/throughput_client.log"
-        echo '```'
-        echo "### Receiver (rpi#2)"
-        echo '```'
-        cat "$LOG_DIR/throughput_server.log"
-        echo '```'
-        echo
-        echo "## RELIABLE throughput (QoS roadmap #5, rmw_tickle/PLAN.md)"
-        echo "### Sender (rpi#1)"
-        echo '```'
-        cat "$LOG_DIR/reliable_client.log"
-        echo '```'
-        echo "### Receiver (rpi#2)"
-        echo '```'
-        cat "$LOG_DIR/reliable_server.log"
-        echo '```'
-        echo
-        if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
-            echo "## RELIABLE vs BEST_EFFORT under packet loss (tc/netem, rpi#1's own egress)"
-            echo
-            echo "One row per tc loss level, BEST_EFFORT and RELIABLE side by side so each metric"
-            echo "compares directly - no need to line up separate rows. One-way latency is the"
-            echo "receiver's clock minus the sender's own wire timestamp - only as accurate as the"
-            echo "two Pis' clock sync (NTP); read it as a same-rig relative comparison, not an"
-            echo "absolute number. loss_pct is perf_server's own expected_seq gap counter, which"
-            echo "(see the \"reliable\" run's own comment above) still counts a"
-            echo "successfully-recovered-but-reordered RELIABLE sample as a gap."
-            echo
-            echo "| tc loss | loss_pct (besteffort) | loss_pct (reliable) | throughput Mbps (besteffort) | throughput Mbps (reliable) | avg latency ms (besteffort) | avg latency ms (reliable) |"
-            echo "|---|---|---|---|---|---|---|"
-            for pct in $LOSS_LEVELS_PCT; do
-                local be_log="$LOG_DIR/loss${pct}_besteffort_server.log"
-                local rel_log="$LOG_DIR/loss${pct}_reliable_server.log"
-                local be_mbps be_lat be_lp rel_mbps rel_lat rel_lp
-                be_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$be_log" 2>/dev/null | tail -1 | tr -d ',' || true)
-                be_lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$be_log" 2>/dev/null | tail -1 || true)
-                be_lp=$(grep -oP 'loss_pct=\K[\d.]+' "$be_log" 2>/dev/null | tail -1 || true)
-                rel_mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$rel_log" 2>/dev/null | tail -1 | tr -d ',' || true)
-                rel_lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$rel_log" 2>/dev/null | tail -1 || true)
-                rel_lp=$(grep -oP 'loss_pct=\K[\d.]+' "$rel_log" 2>/dev/null | tail -1 || true)
-                echo "| ${pct}% | ${be_lp:-N/A} | ${rel_lp:-N/A} | ${be_mbps:-N/A} | ${rel_mbps:-N/A} | ${be_lat:-N/A} | ${rel_lat:-N/A} |"
-            done
-            echo
+        echo "| Scenario | Condition | Result |"
+        echo "|---|---|---|"
 
-            # TEMPORARY (PLAN.md's Milestone 18 residual loss_pct floor) - perf_server.c's own
-            # ground-truth seen_seq[] cross-check (its own "DIAG:" lines) only ever reaches this
-            # job summary for scenarios summarize() cats wholesale (throughput/reliable/smallmsg) -
-            # the loss${pct}_reliable_server.log files it actually matters for are never cat'd, so
-            # surface their own DIAG lines explicitly here. Remove once answered.
-            echo "### One-off: perf_server.c's own ground-truth drop cross-check (reliable)"
-            echo
-            echo '```'
-            for pct in $LOSS_LEVELS_PCT; do
-                echo "${pct}% tc loss:"
-                grep 'DIAG:' "$LOG_DIR/loss${pct}_reliable_server.log" 2>/dev/null || echo "(no DIAG lines)"
-            done
-            echo '```'
-            echo
-        fi
-        echo "## Small-message throughput ($SMALL_MSG_SIZE-byte payloads)"
-        echo "### Sender (rpi#1)"
-        echo '```'
-        cat "$LOG_DIR/smallmsg_client.log"
-        echo '```'
-        echo "### Receiver (rpi#2)"
-        echo '```'
-        cat "$LOG_DIR/smallmsg_server.log"
-        echo '```'
-        local smsg_recv smsg_dur
-        smsg_recv=$(grep -oP 'recv=\K[\d,]+' "$LOG_DIR/smallmsg_server.log" | tail -1 | tr -d ',')
-        smsg_dur=$(grep -oP '[\d.]+(?= sec, avg)' "$LOG_DIR/smallmsg_server.log" | tail -1)
-        if [ -n "${smsg_recv:-}" ] && [ -n "${smsg_dur:-}" ]; then
-            echo
-            echo "small-message rate: $(awk "BEGIN{printf \"%.0f\", $smsg_recv/$smsg_dur}") msg/sec"
-        fi
+        local lat_avg lat_loss
+        lat_avg=$(result_field "$LOG_DIR/best_effort_latency.log" "rtt_avg_ms")
+        lat_loss=$(result_field "$LOG_DIR/best_effort_latency.log" "loss_pct")
+        echo "| best_effort_latency | - | avg ${lat_avg:-N/A}ms, ${lat_loss:-N/A}% loss |"
+
+        lat_avg=$(result_field "$LOG_DIR/reliable_latency.log" "rtt_avg_ms")
+        lat_loss=$(result_field "$LOG_DIR/reliable_latency.log" "loss_pct")
+        echo "| reliable_latency | - | avg ${lat_avg:-N/A}ms, ${lat_loss:-N/A}% loss |"
+
+        local sent recv loss
+        recv=$(result_field "$LOG_DIR/best_effort_throughput.log" "recv")
+        loss=$(result_field "$LOG_DIR/best_effort_throughput.log" "loss_pct")
+        echo "| best_effort_throughput | max rate, 8s | recv ${recv:-N/A}, ${loss:-N/A}% loss |"
+
+        for pct in 0pct 1pct 5pct; do
+            local log="$LOG_DIR/reliable_throughput_${pct}.log"
+            recv=$(result_field "$log" "recv")
+            loss=$(result_field "$log" "loss_pct")
+            echo "| reliable_throughput | tc loss=${pct%pct}% | recv ${recv:-N/A}, ${loss:-N/A}% loss |"
+        done
+
+        local durable_recv volatile_recv
+        durable_recv=$(result_field "$LOG_DIR/durability_durable.log" "received")
+        volatile_recv=$(result_field "$LOG_DIR/durability_volatile.log" "received")
+        echo "| durability_late_join | durable (-D) | recv ${durable_recv:-N/A} |"
+        echo "| durability_late_join | volatile (default) | recv ${volatile_recv:-N/A} |"
+
+        recv=$(result_field "$LOG_DIR/history_within_depth.log" "recv")
+        echo "| history_depth_burst_loss | within depth | recv ${recv:-N/A}/160 |"
+        recv=$(result_field "$LOG_DIR/history_beyond_depth.log" "recv")
+        echo "| history_depth_burst_loss | beyond depth | recv ${recv:-N/A}/160 |"
+
+        local writer_misses
+        writer_misses=$(result_field "$LOG_DIR/deadline_miss_detection.log" "writer_misses")
+        echo "| deadline_miss_detection | - | writer_misses ${writer_misses:-N/A} |"
+
+        for lease in 1_0 2_0 4_0; do
+            local detect
+            detect=$(result_field "$LOG_DIR/liveliness_lease_${lease}.log" "detect_latency_ms")
+            echo "| liveliness_loss_detection | lease=${lease//_/.}s | detect ${detect:-N/A}ms |"
+        done
+
+        for pause in 1_0 1_5 2_0; do
+            local lost
+            lost=$(result_field "$LOG_DIR/lifespan_pause_${pause}.log" "lost")
+            echo "| lifespan_expiry | pause=${pause//_/.}s | lost ${lost:-N/A} |"
+        done
     } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 }
 
-# Pulls the numbers back out of the example binaries' own stdout and writes them as
-# github-action-benchmark's "custom" JSON format, so a later step can hand them
-# straight to that action without this script knowing anything about benchmark storage.
+# --- github-action-benchmark JSON (one pair per scenario/direction that needs one - see this
+# script's own top comment for the "why one file per direction" split) ---
+
 write_benchmark_json() {
-    local rtt_avg rtt_mdev loss_pct send_mbps recv_mbps reliable_send_mbps reliable_recv_mbps reliable_loss_pct
+    local v
 
-    rtt_avg=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
-    rtt_mdev=$(grep -oP 'rtt min/avg/max/mdev = [\d.]+/[\d.]+/[\d.]+/\K[\d.]+' "$LOG_DIR/latency_client.log")
-    loss_pct=$(grep -oP '\d+(?=% packet loss)' "$LOG_DIR/latency_client.log")
-    # perf_client.c/perf_server.c's "avg X Mbps" is comma-grouped past 999 (e.g. "avg 2,037.577
-    # Mbps") - [\d,.]+ captures that, and tr strips the commas back out since a bare comma inside a
-    # JSON number below would make it invalid JSON, not just a formatting choice.
-    send_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_client.log" | tr -d ',')
-    recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/throughput_server.log" | tr -d ',')
-    reliable_send_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/reliable_client.log" | tr -d ',')
-    reliable_recv_mbps=$(grep -oP 'avg \K[\d,.]+(?= Mbps)' "$LOG_DIR/reliable_server.log" | tr -d ',')
-    # perf_server.c's "RESULT: ... loss_pct=X.X" - see run_paired_test's own "reliable" call
-    # comment on why this isn't a clean recovered-vs-lost measurement yet.
-    reliable_loss_pct=$(grep -oP 'loss_pct=\K[\d.]+' "$LOG_DIR/reliable_server.log" | tail -1)
+    v=$(result_field "$LOG_DIR/best_effort_latency.log" "rtt_avg_ms")
+    printf '[{"name": "avg RTT", "unit": "ms", "value": %s}]\n' "${v:-0}" > best_effort_latency-benchmark.json
 
-    cat > latency-benchmark.json <<EOF
-[
-  {"name": "rtt avg", "unit": "ms", "value": $rtt_avg},
-  {"name": "packet loss", "unit": "%", "value": $loss_pct}
-]
-EOF
+    v=$(result_field "$LOG_DIR/reliable_latency.log" "rtt_avg_ms")
+    printf '[{"name": "avg RTT", "unit": "ms", "value": %s}]\n' "${v:-0}" > reliable_latency-benchmark.json
 
-    # rtt mdev (ping's own mean-deviation stat) is inherently noisy on real hardware in a way
-    # avg/loss aren't - it alone tripped performance.yml's 200% alert three separate times in
-    # one session, on commits nowhere near the ping/pong path. Tracked in its own benchmark
-    # group (performance.yml's "Track latency jitter history", fail-on-alert: false) instead of
-    # latency-benchmark.json above, so it still shows up in the history/graphs without being able
-    # to fail the build on its own.
-    cat > latency-jitter-benchmark.json <<EOF
-[
-  {"name": "rtt mdev", "unit": "ms", "value": $rtt_mdev}
-]
-EOF
+    v=$(result_field "$LOG_DIR/best_effort_throughput.log" "recv")
+    printf '[{"name": "recv msgs", "unit": "count", "value": %s}]\n' "${v:-0}" > best_effort_throughput-benchmark.json
 
-    cat > throughput-benchmark.json <<EOF
-[
-  {"name": "send throughput", "unit": "Mbps", "value": $send_mbps},
-  {"name": "recv throughput", "unit": "Mbps", "value": $recv_mbps}
-]
-EOF
+    local mbps_entries="" loss_entries=""
+    for pct in 0pct 1pct 5pct; do
+        local log="$LOG_DIR/reliable_throughput_${pct}.log"
+        local recv loss
+        recv=$(result_field "$log" "recv")
+        loss=$(result_field "$log" "loss_pct")
+        [ -n "$mbps_entries" ] && mbps_entries="$mbps_entries,"
+        mbps_entries="$mbps_entries{\"name\": \"recv @ ${pct%pct}%\", \"unit\": \"count\", \"value\": ${recv:-0}}"
+        if [ "$pct" != "0pct" ]; then
+            [ -n "$loss_entries" ] && loss_entries="$loss_entries,"
+            loss_entries="$loss_entries{\"name\": \"loss_pct @ ${pct%pct}%\", \"unit\": \"%\", \"value\": ${loss:-0}}"
+        fi
+    done
+    printf '[%s]\n' "$mbps_entries" > reliable_throughput_recv-benchmark.json
+    printf '[%s]\n' "$loss_entries" > reliable_throughput_loss-benchmark.json
 
-    cat > reliable-throughput-benchmark.json <<EOF
-[
-  {"name": "reliable send throughput", "unit": "Mbps", "value": $reliable_send_mbps},
-  {"name": "reliable recv throughput", "unit": "Mbps", "value": $reliable_recv_mbps}
-]
-EOF
+    local durable_recv volatile_recv
+    durable_recv=$(result_field "$LOG_DIR/durability_durable.log" "received")
+    volatile_recv=$(result_field "$LOG_DIR/durability_volatile.log" "received")
+    printf '[{"name": "durable recv", "unit": "count", "value": %s}]\n' "${durable_recv:-0}" > durability_late_join_durable-benchmark.json
+    printf '[{"name": "volatile recv", "unit": "count", "value": %s}]\n' "${volatile_recv:-0}" > durability_late_join_volatile-benchmark.json
 
-    # Split from reliable-throughput-benchmark.json above for the same reason latency-jitter is
-    # split from latency-benchmark.json: a different alert direction (smaller is better) - and,
-    # since this number isn't a clean recovered-vs-lost measurement yet (see this file's own
-    # "reliable" run_paired_test comment), it shouldn't be able to fail the build on its own either.
-    cat > reliable-loss-benchmark.json <<EOF
-[
-  {"name": "reliable loss_pct", "unit": "%", "value": $reliable_loss_pct}
-]
-EOF
+    local within beyond
+    within=$(result_field "$LOG_DIR/history_within_depth.log" "recv")
+    beyond=$(result_field "$LOG_DIR/history_beyond_depth.log" "recv")
+    printf '[{"name": "within depth", "unit": "count", "value": %s}, {"name": "beyond depth", "unit": "count", "value": %s}]\n' \
+        "${within:-0}" "${beyond:-0}" > history_depth_burst_loss-benchmark.json
 
-    # tc/netem loss-injection scenarios (see probe_loss_testing()'s own comment on why these might
-    # not exist at all - no passwordless `sudo tc` on rpi#1 yet) - one named entry per (loss level,
-    # mode) combination, all three levels in the *same* two JSON files/benchmark groups (matching
-    # tool: customBiggerIsBetter/customSmallerIsBetter's own "one direction per file" constraint)
-    # rather than one file per level, so they render as one graph with six lines instead of six
-    # separate graphs.
-    if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
-        local throughput_entries="" latency_entries="" percent_entries=""
-        for pct in $LOSS_LEVELS_PCT; do
-            for mode in besteffort reliable; do
-                local log="$LOG_DIR/loss${pct}_${mode}_server.log"
-                local mbps lat lp
-                mbps=$(grep -oP 'avg_mbps=\K[\d,.]+' "$log" 2>/dev/null | tail -1 | tr -d ',' || true)
-                lat=$(grep -oP 'avg_latency_ms=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
-                lp=$(grep -oP 'loss_pct=\K[\d.]+' "$log" 2>/dev/null | tail -1 || true)
-                [ -n "$throughput_entries" ] && throughput_entries="$throughput_entries,"
-                throughput_entries="$throughput_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"Mbps\", \"value\": ${mbps:-0}}"
-                [ -n "$latency_entries" ] && latency_entries="$latency_entries,"
-                latency_entries="$latency_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"ms\", \"value\": ${lat:-0}}"
-                [ -n "$percent_entries" ] && percent_entries="$percent_entries,"
-                percent_entries="$percent_entries{\"name\": \"$mode @ ${pct}% loss\", \"unit\": \"%\", \"value\": ${lp:-0}}"
-            done
-        done
-        printf '[%s]\n' "$throughput_entries" > loss-throughput-benchmark.json
-        printf '[%s]\n' "$latency_entries" > loss-latency-benchmark.json
-        # The most direct evidence of QoS roadmap #5 actually working: BEST_EFFORT's own loss_pct
-        # vs RELIABLE's, side by side at each injected loss level, tracked over time.
-        printf '[%s]\n' "$percent_entries" > loss-percent-benchmark.json
+    local writer_misses
+    writer_misses=$(result_field "$LOG_DIR/deadline_miss_detection.log" "writer_misses")
+    printf '[{"name": "writer_misses", "unit": "count", "value": %s}]\n' "${writer_misses:-0}" > deadline_miss_detection-benchmark.json
+
+    local live_entries=""
+    for lease in 1_0 2_0 4_0; do
+        local detect
+        detect=$(result_field "$LOG_DIR/liveliness_lease_${lease}.log" "detect_latency_ms")
+        [ -n "$live_entries" ] && live_entries="$live_entries,"
+        live_entries="$live_entries{\"name\": \"lease=${lease//_/.}s\", \"unit\": \"ms\", \"value\": ${detect:-0}}"
+    done
+    printf '[%s]\n' "$live_entries" > liveliness_loss_detection-benchmark.json
+
+    local life_entries=""
+    for pause in 1_0 1_5 2_0; do
+        local lost
+        lost=$(result_field "$LOG_DIR/lifespan_pause_${pause}.log" "lost")
+        [ -n "$life_entries" ] && life_entries="$life_entries,"
+        life_entries="$life_entries{\"name\": \"pause=${pause//_/.}s\", \"unit\": \"count\", \"value\": ${lost:-0}}"
+    done
+    printf '[%s]\n' "$life_entries" > lifespan_expiry-benchmark.json
+}
+
+# --- Platform-status dashboard fragment (dashboard.py's own "perf" section, 11-field set matching
+# the new scenario methodology - see .github/scripts/dashboard.py's own _row()/render_block()) ---
+
+write_dashboard_fragment() {
+    local be_lat rel_lat be_tput rel_tput0 rel_loss1 rel_loss5 live2 life1_5 hist_beyond dur_durable dur_volatile
+
+    be_lat=$(result_field "$LOG_DIR/best_effort_latency.log" "rtt_avg_ms")
+    rel_lat=$(result_field "$LOG_DIR/reliable_latency.log" "rtt_avg_ms")
+    be_tput=$(result_field "$LOG_DIR/best_effort_throughput.log" "recv")
+    rel_tput0=$(result_field "$LOG_DIR/reliable_throughput_0pct.log" "recv")
+    rel_loss1=$(result_field "$LOG_DIR/reliable_throughput_1pct.log" "loss_pct")
+    rel_loss5=$(result_field "$LOG_DIR/reliable_throughput_5pct.log" "loss_pct")
+    live2=$(result_field "$LOG_DIR/liveliness_lease_2_0.log" "detect_latency_ms")
+    life1_5=$(result_field "$LOG_DIR/lifespan_pause_1_5.log" "lost")
+    hist_beyond=$(result_field "$LOG_DIR/history_beyond_depth.log" "recv")
+    dur_durable=$(result_field "$LOG_DIR/durability_durable.log" "received")
+    dur_volatile=$(result_field "$LOG_DIR/durability_volatile.log" "received")
+
+    # A round trip happened at all (latency got a real avg) => integration pass.
+    local integ=fail
+    if [ -n "${be_lat:-}" ]; then
+        integ=pass
     fi
+
+    cat > "$FRAG" <<EOF
+{
+  "build": "pass",
+  "integration": "$integ",
+  "commit": "$(git rev-parse HEAD)",
+  "commit_short": "$(git rev-parse --short HEAD)",
+  "date": "$(date -u +%Y-%m-%dT%H:%MZ)",
+  "run_url": "${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-tsnlab/tickle}/actions/runs/${GITHUB_RUN_ID:-0}",
+  "be_latency_ms": ${be_lat:-null},
+  "rel_latency_ms": ${rel_lat:-null},
+  "be_throughput_recv": ${be_tput:-null},
+  "rel_throughput_recv_0pct": ${rel_tput0:-null},
+  "rel_loss_1pct": ${rel_loss1:-null},
+  "rel_loss_5pct": ${rel_loss5:-null},
+  "liveliness_detect_2s_ms": ${live2:-null},
+  "lifespan_lost_1_5s": ${life1_5:-null},
+  "history_beyond_depth_recv": ${hist_beyond:-null},
+  "durability_durable_recv": ${dur_durable:-null},
+  "durability_volatile_recv": ${dur_volatile:-null}
+}
+EOF
 }
 
 update_and_build
-
-run_paired_test "latency" "pong" "ping" "-c $PING_COUNT -i $PING_INTERVAL" \
-    "$(awk "BEGIN { printf \"%d\", ($PING_COUNT * $PING_INTERVAL) + 30 }")"
-
-run_paired_test "throughput" "perf_server" "perf_client" "-d $PERF_DURATION_SEC" \
-    "$((PERF_DURATION_SEC + 30))"
-
-# RELIABLE run: QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - same shape as the
-# best-effort "throughput" run above, but both sides pass -R so perf_client's Publisher retains
-# samples for retransmission and perf_server's Subscriber ACKNACKs on a gap. Tracks reliable
-# delivery's own throughput cost against best-effort - NOT a clean loss/no-loss comparison:
-# perf_server.c's own drop counter (bulk_callback()'s expected_seq check) predates this feature
-# and isn't retransmission-aware, so a sample that *was* successfully recovered but arrived late
-# (out of its original seq_no order) still counts as a gap there, same as a never-recovered one
-# would. Read reliable-run throughput here as the real number; read its loss_pct as "how often
-# reordering happened", not "how much data never arrived" - the latter would need perf_server.c
-# itself taught to recognize a late, out-of-order arrival as a recovered duplicate rather than a
-# fresh gap, left for whenever that distinction is actually needed.
-run_paired_test "reliable" "perf_server" "perf_client" "-d $PERF_DURATION_SEC -R" \
-    "$((PERF_DURATION_SEC + 30))" "-R"
-
-# Loss-injection runs: BEST_EFFORT vs RELIABLE at each of LOSS_LEVELS_PCT, under real tc/netem
-# packet loss instead of a clean link - this is where RELIABLE's own retransmission is actually
-# expected to matter (on the clean-link "reliable" run above, it costs ~nothing to measure,
-# since nothing is ever lost to retransmit). Paced at LOSS_TEST_INTERVAL_SEC (see its own comment
-# on why this isn't the firehose "-i 0" the clean-link runs use) rather than run at max throughput,
-# since the point here is measuring how well RELIABLE actually recovers under loss, not how fast
-# it goes. perf_server.c's own one-way latency stat (its own NTP-clock-sync caveat) is what makes
-# this the closest thing to a "reliable QoS latency" benchmark this rig has - RELIABLE's
-# retransmit-then-deliver path should show up as a measurably higher avg/max latency than
-# BEST_EFFORT's just-drop-it one as loss increases, which throughput/loss_pct alone wouldn't reveal.
-probe_loss_testing
-if [ "$LOSS_TESTING_AVAILABLE" = "1" ]; then
-    for pct in $LOSS_LEVELS_PCT; do
-        if ! set_loss "$pct"; then
-            echo "Failed to apply ${pct}% tc loss on rpi#1 - skipping this loss level" >&2
-            set_loss 0
-            continue
-        fi
-        run_paired_test "loss${pct}_besteffort" "perf_server" "perf_client" "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC" \
-            "$((PERF_DURATION_SEC + 30))" "-W $LOSS_TEST_COOLDOWN_SEC"
-        run_paired_test "loss${pct}_reliable" "perf_server" "perf_client" \
-            "-i $LOSS_TEST_INTERVAL_SEC -d $PERF_DURATION_SEC -R -K $RELIABLE_CACHE_DEPTH" \
-            "$((PERF_DURATION_SEC + 30))" "-R -W $LOSS_TEST_COOLDOWN_SEC"
-        set_loss 0
-    done
-fi
-
-# Small-message run: 100-byte payloads, -B so node_flush() batches several per packet (perf_
-# client's own default flipped to flush-immediately, one packet per message - see DESIGN.md's
-# "RPC and Publish flush immediately by default; batching is opt-in" - which would otherwise make
-# this a link/syscall-bound measurement instead of the per-message-CPU-bound one it's meant to be).
-# With batching restored, this is limited by per-message CPU work (encode/decode/lookup/callback)
-# rather than link bandwidth - the regime where internal optimizations show up as message rate
-# even when a full-MTU run is already at line rate. Reported as messages/sec (its Mbps is mostly
-# framing overhead).
-run_paired_test "smallmsg" "perf_server" "perf_client" "-s $SMALL_MSG_SIZE -d $PERF_DURATION_SEC -B" \
-    "$((PERF_DURATION_SEC + 30))"
-
+run_all_scenarios
 summarize
 write_benchmark_json
 write_dashboard_fragment

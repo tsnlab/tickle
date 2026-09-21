@@ -27,7 +27,7 @@ import sys
 
 MARK_BEGIN = "<!-- TICKLE-STATUS:BEGIN -->"
 MARK_END = "<!-- TICKLE-STATUS:END -->"
-HISTORY_LIMIT = 30
+HISTORY_LIMIT = 100
 
 ICON = {
     "pass": ("✅", "pass"),
@@ -130,33 +130,22 @@ def _row(entry):
     fr = bt_rows.get("freertos") or {}
     has_bt = bool(bt)
 
+    # rmw_tickle/COMPARISON.MD's own §2-3 TickLE-core HIL methodology (run_perf.sh, rewritten
+    # 2026-09-22) - one column per scenario/condition write_dashboard_fragment() reports, not the
+    # old run_perf.sh's examples/linux/perf tool's own field set.
     pf = entry.get("perf") or {}
     has_pf = bool(pf)
-    send = _num(pf.get("throughput_send_mbps"), "{:.0f}")
-    recv = _num(pf.get("throughput_recv_mbps"), "{:.0f}")
-    tput = f"{send}/{recv}" if send and recv else None
-    rtt = _num(pf.get("rtt_avg_ms"), "{:.2f}")
-    msg = _num(pf.get("smallmsg_rate_msgs_s"), "{:,.0f}")
-    # QoS roadmap #5 (RELIABILITY) tc/netem loss-injection scenarios (run_perf.sh's own
-    # probe_loss_testing()) - RELIABLE's own recv-side throughput at each fixed loss level. Only
-    # present once a run's rpi#1 has passwordless `sudo tc` set up; None (rendered "·") otherwise,
-    # same as every other perf field before a first successful HIL run.
-    rel1 = _num(pf.get("reliable_throughput_1pct_mbps"), "{:.0f}")
-    rel5 = _num(pf.get("reliable_throughput_5pct_mbps"), "{:.0f}")
-    rel10 = _num(pf.get("reliable_throughput_10pct_mbps"), "{:.0f}")
-
-    # BEST_EFFORT vs RELIABLE loss_pct at each level, side by side in one cell ("besteffort /
-    # reliable") - the same direct comparison run_perf.sh's own job-summary table shows per push,
-    # carried into the persistent dashboard here. None (rendered "·") if either side is missing,
-    # same convention every other perf field already uses before a first successful HIL run.
-    def loss_pair(pct):
-        be = _num(pf.get(f"besteffort_loss_{pct}pct_pct"), "{:.1f}")
-        rel = _num(pf.get(f"reliable_loss_{pct}pct_pct"), "{:.1f}")
-        return f"{be} / {rel}" if be is not None and rel is not None else None
-
-    loss1 = loss_pair(1)
-    loss5 = loss_pair(5)
-    loss10 = loss_pair(10)
+    be_lat = _num(pf.get("be_latency_ms"), "{:.2f}")
+    rel_lat = _num(pf.get("rel_latency_ms"), "{:.2f}")
+    be_tput = _num(pf.get("be_throughput_recv"), "{:,.0f}")
+    rel_tput0 = _num(pf.get("rel_throughput_recv_0pct"), "{:,.0f}")
+    rel_loss1 = _num(pf.get("rel_loss_1pct"), "{:.1f}")
+    rel_loss5 = _num(pf.get("rel_loss_5pct"), "{:.1f}")
+    live2 = _num(pf.get("liveliness_detect_2s_ms"), "{:.0f}")
+    life1_5 = _num(pf.get("lifespan_lost_1_5s"), "{:.0f}")
+    hist_beyond = _num(pf.get("history_beyond_depth_recv"), "{:.0f}")
+    dur_durable = _num(pf.get("durability_durable_recv"), "{:.0f}")
+    dur_volatile = _num(pf.get("durability_volatile_recv"), "{:.0f}")
 
     def bt_cell(d, key):
         return _cell(d.get(key, "") if has_bt else "")
@@ -173,9 +162,10 @@ def _row(entry):
         + bt_cell(lin, "build") + bt_cell(lin, "unit") + bt_cell(lin, "integration")
         + bt_cell(fr, "build") + bt_cell(fr, "integration")
         + pf_cell("build") + pf_cell("integration")
-        + pf_txt(tput) + pf_txt(rtt) + pf_txt(msg)
-        + pf_txt(rel1) + pf_txt(rel5) + pf_txt(rel10)
-        + pf_txt(loss1) + pf_txt(loss5) + pf_txt(loss10)
+        + pf_txt(be_lat) + pf_txt(rel_lat) + pf_txt(be_tput) + pf_txt(rel_tput0)
+        + pf_txt(rel_loss1) + pf_txt(rel_loss5)
+        + pf_txt(live2) + pf_txt(life1_5)
+        + pf_txt(hist_beyond) + pf_txt(dur_durable) + pf_txt(dur_volatile)
         + "</tr>"
     )
 
@@ -183,7 +173,7 @@ def _row(entry):
 def render_block(status):
     history = status.get("history") or []
     body = "\n".join(_row(e) for e in history) or (
-        '<tr><td colspan="18" style="text-align:center;color:#999">no runs recorded yet</td></tr>'
+        '<tr><td colspan="20" style="text-align:center;color:#999">no runs recorded yet</td></tr>'
     )
     updated = html.escape(status.get("updated", ""))
     return f"""{MARK_BEGIN}
@@ -206,14 +196,17 @@ def render_block(status):
         <th rowspan="2">Commit</th><th rowspan="2">Date (UTC)</th>
         <th colspan="3">Linux x86-64</th>
         <th colspan="2">FreeRTOS RISC-V (QEMU)</th>
-        <th colspan="11">Raspberry Pi (HIL, arm64)</th>
+        <th colspan="13">Raspberry Pi (HIL, arm64)</th>
       </tr>
       <tr>
         <th>Build</th><th>Unit</th><th>Integ.</th>
         <th>Build</th><th>Integ.</th>
-        <th>Build</th><th>Integ.</th><th>Tput ↑/↓<br>Mbps</th><th>RTT<br>ms</th><th>Small-msg<br>msg/s</th>
-        <th>Reliable<br>Tput@1%</th><th>Reliable<br>Tput@5%</th><th>Reliable<br>Tput@10%</th>
-        <th>Loss@1%<br>(BE / Rel)</th><th>Loss@5%<br>(BE / Rel)</th><th>Loss@10%<br>(BE / Rel)</th>
+        <th>Build</th><th>Integ.</th>
+        <th>BE lat<br>ms</th><th>Rel lat<br>ms</th><th>BE tput<br>recv</th><th>Rel tput@0%<br>recv</th>
+        <th>Rel loss@1%<br>%</th><th>Rel loss@5%<br>%</th>
+        <th>Liveliness<br>detect@2.0s ms</th><th>Lifespan<br>lost@1.5s</th>
+        <th>History<br>beyond-depth recv/160</th>
+        <th>Durability<br>durable recv</th><th>Durability<br>volatile recv</th>
       </tr>
     </thead>
     <tbody>

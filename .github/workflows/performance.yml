@@ -26,140 +26,160 @@ jobs:
       - name: Run hardware-in-the-loop performance tests
         run: .github/scripts/run_perf.sh
 
-      - name: Track latency history
+      # All 11 groups below are sourced from examples/perf_hil/tickle/* (comparison.md's own §2-3
+      # HIL methodology), not run_perf.sh's former examples/linux/perf tool - see run_perf.sh's own
+      # top comment for why this switch happened. fail-on-alert: true only for the two throughput
+      # groups (the only ones a 200%-regression alert can distinguish from expected run-to-run
+      # noise); every other group is graphed/summarized but never gates the build, same reasoning
+      # the old workflow used for its own noisy groups (jitter, loss_pct, detection timing).
+      - name: Track best_effort_latency history
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Latency (ping/pong)
+          name: TickLE HIL - best_effort_latency (avg RTT ms)
           tool: customSmallerIsBetter
-          output-file-path: latency-benchmark.json
+          output-file-path: best_effort_latency-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+          max-items-in-chart: 100
+
+      - name: Track reliable_latency history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: TickLE HIL - reliable_latency (avg RTT ms)
+          tool: customSmallerIsBetter
+          output-file-path: reliable_latency-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+          max-items-in-chart: 100
+
+      - name: Track best_effort_throughput history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: TickLE HIL - best_effort_throughput (recv msgs)
+          tool: customBiggerIsBetter
+          output-file-path: best_effort_throughput-benchmark.json
           gh-pages-branch: gh-pages
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           summary-always: true
           fail-on-alert: true
           alert-threshold: "200%"
+          max-items-in-chart: 100
 
-      # rtt mdev (jitter) lives in its own group, not latency-benchmark.json above: it's noisy
-      # enough on real hardware to trip a 200% alert on commits that couldn't have affected it
-      # (three separate false alarms in one session - see run_perf.sh's own comment on why it's
-      # split out). Still tracked/graphed (summary-always, auto-push), just never fails the build.
-      - name: Track latency jitter history
+      - name: Track reliable_throughput recv history
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Latency jitter (ping/pong rtt mdev)
-          tool: customSmallerIsBetter
-          output-file-path: latency-jitter-benchmark.json
-          gh-pages-branch: gh-pages
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          summary-always: true
-          fail-on-alert: false
-
-      - name: Track throughput history
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: Throughput (perf_client/perf_server)
+          name: TickLE HIL - reliable_throughput (recv @ 0/1/5% tc loss)
           tool: customBiggerIsBetter
-          output-file-path: throughput-benchmark.json
+          output-file-path: reliable_throughput_recv-benchmark.json
           gh-pages-branch: gh-pages
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           summary-always: true
           fail-on-alert: true
           alert-threshold: "200%"
+          max-items-in-chart: 100
 
-      # QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - same -R run as the best-effort
-      # throughput one above, tracking RELIABLE delivery's own throughput cost.
-      - name: Track reliable throughput history
+      # loss_pct under real max-rate tc loss - see rmw_tickle/PLAN.md's own Milestone 65 for why
+      # this number is genuinely noisy run-to-run and not (yet) a clean regression signal.
+      - name: Track reliable_throughput loss_pct history
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Reliable throughput (perf_client/perf_server -R)
+          name: TickLE HIL - reliable_throughput (loss_pct @ 1/5% tc loss)
+          tool: customSmallerIsBetter
+          output-file-path: reliable_throughput_loss-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+          max-items-in-chart: 100
+
+      - name: Track durability_late_join durable-recv history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: TickLE HIL - durability_late_join (durable recv)
           tool: customBiggerIsBetter
-          output-file-path: reliable-throughput-benchmark.json
-          gh-pages-branch: gh-pages
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          summary-always: true
-          fail-on-alert: true
-          alert-threshold: "200%"
-
-      # Split from the group above the same way latency jitter is split from latency: a different
-      # alert direction, and - since run_perf.sh's own "reliable" scenario comment explains this
-      # isn't a clean recovered-vs-lost measurement yet - not something that should fail the build
-      # on its own either. Still tracked/graphed (summary-always, auto-push).
-      - name: Track reliable loss history
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: Reliable loss_pct (perf_client/perf_server -R)
-          tool: customSmallerIsBetter
-          output-file-path: reliable-loss-benchmark.json
+          output-file-path: durability_late_join_durable-benchmark.json
           gh-pages-branch: gh-pages
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           summary-always: true
           fail-on-alert: false
+          max-items-in-chart: 100
 
-      # tc/netem loss-injection scenarios (run_perf.sh's own probe_loss_testing()) - these two
-      # files only exist when rpi#1 has passwordless `sudo tc` set up (see .github/scripts/
-      # README.md); `if:` skips both steps cleanly rather than failing the job when they don't,
-      # since github-action-benchmark itself has no "skip if missing" input of its own. Each file
-      # holds six named entries (BEST_EFFORT/RELIABLE x 1%/5%/10% loss) in one group/graph rather
-      # than six separate ones - see run_perf.sh's own comment on why.
-      #
-      # Never gates the build (fail-on-alert: false, unlike the clean-link throughput group
-      # above): LOSS_TEST_INTERVAL_SEC's own send rate (run_perf.sh) is a deliberate methodology
-      # choice, not a stable target throughput to alert on regressions against - changing it (as
-      # this scenario's own history already did once, firehose -> 20ms-paced) makes the absolute
-      # number jump on purpose, which a 200%-regression alert can't tell apart from a real one.
-      # The number that actually matters here is the BEST_EFFORT-vs-RELIABLE comparison *within*
-      # one run (the job summary's own table), not this trend line's own slope.
-      - name: Track loss-injection throughput history
-        if: ${{ hashFiles('loss-throughput-benchmark.json') != '' }}
+      # Expected value is 0 (VOLATILE drops the late-joiner's backlog by design) - tracked
+      # smaller-is-better so a nonzero/growing value would actually be visible as a regression.
+      - name: Track durability_late_join volatile-recv history
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Throughput under packet loss (BEST_EFFORT vs RELIABLE)
+          name: TickLE HIL - durability_late_join (volatile recv, expect 0)
+          tool: customSmallerIsBetter
+          output-file-path: durability_late_join_volatile-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+          max-items-in-chart: 100
+
+      - name: Track history_depth_burst_loss history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: TickLE HIL - history_depth_burst_loss (recv, within/beyond depth)
           tool: customBiggerIsBetter
-          output-file-path: loss-throughput-benchmark.json
+          output-file-path: history_depth_burst_loss-benchmark.json
           gh-pages-branch: gh-pages
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           summary-always: true
           fail-on-alert: false
+          max-items-in-chart: 100
 
-      # One-way latency (perf_server.c's own new avg_latency_ms) is only as accurate as the two
-      # Pis' clock sync (NTP) - see perf_server.c's own comment - so, like rtt jitter and reliable
-      # loss_pct above, this is graphed but never gates the build on its own.
-      - name: Track loss-injection latency history
-        if: ${{ hashFiles('loss-latency-benchmark.json') != '' }}
+      - name: Track deadline_miss_detection history
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Latency under packet loss (BEST_EFFORT vs RELIABLE)
+          name: TickLE HIL - deadline_miss_detection (writer_misses)
           tool: customSmallerIsBetter
-          output-file-path: loss-latency-benchmark.json
+          output-file-path: deadline_miss_detection-benchmark.json
           gh-pages-branch: gh-pages
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           summary-always: true
           fail-on-alert: false
+          max-items-in-chart: 100
 
-      # The most direct evidence QoS roadmap #5 (RELIABILITY) actually works: BEST_EFFORT's own
-      # loss_pct vs RELIABLE's, side by side at each injected loss level. Never gates the build -
-      # loss_pct here is perf_server.c's own measured count over a modest (~500 message) sample at
-      # LOSS_TEST_INTERVAL_SEC's own pacing, so run-to-run variance against tc/netem's own random
-      # per-packet drops is expected and shouldn't fail a push on its own, same reasoning as
-      # reliable loss_pct/latency jitter above.
-      - name: Track loss-injection loss_pct history
-        if: ${{ hashFiles('loss-percent-benchmark.json') != '' }}
+      - name: Track liveliness_loss_detection history
         uses: benchmark-action/github-action-benchmark@v1
         with:
-          name: Loss under packet loss (BEST_EFFORT vs RELIABLE)
+          name: TickLE HIL - liveliness_loss_detection (detect ms @ 1/2/4s lease)
           tool: customSmallerIsBetter
-          output-file-path: loss-percent-benchmark.json
+          output-file-path: liveliness_loss_detection-benchmark.json
           gh-pages-branch: gh-pages
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           summary-always: true
           fail-on-alert: false
+          max-items-in-chart: 100
+
+      - name: Track lifespan_expiry history
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: TickLE HIL - lifespan_expiry (lost @ 1.0/1.5/2.0s pause)
+          tool: customSmallerIsBetter
+          output-file-path: lifespan_expiry-benchmark.json
+          gh-pages-branch: gh-pages
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          summary-always: true
+          fail-on-alert: false
+          max-items-in-chart: 100
 
       # run_perf.sh writes perf-frag.json (Raspberry Pi build/test outcome + the measured
       # numbers) even when it aborts early; hand it to the publish job below.

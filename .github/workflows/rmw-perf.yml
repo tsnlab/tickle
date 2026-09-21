@@ -178,40 +178,13 @@ jobs:
           python3 .github/scripts/rmw_perf_summary.py "$RMW_PERF_RESULTS_DIR" \
             --benchmark-json-dir "$GITHUB_WORKSPACE" >> "$GITHUB_STEP_SUMMARY"
 
-      # fail-on-alert: false on both, matching the "Run the benchmark" step's own `|| true`
-      # philosophy above (this same-host rig's own numbers are for tracking rmw_tickle's before/
-      # after trend, not a release gate - see README-rmw-perf.md/this workflow's own top comment
-      # on why it isn't a fair cross-vendor comparison either) - a real regression should still be
-      # visible on the dashboard/chart, just never block a push on its own.
-      # hashFiles(...) != '' rather than a bare always(): a run that produced zero rows (e.g. a
-      # real environment hiccup on this rig) never writes rmw-latency-benchmark.json at all (see
-      # rmw_perf_summary.py's own comment on why an empty array is deliberately never written) -
-      # this action has no such guard of its own and would just error on a missing input file.
-      - name: Track rmw_tickle latency history
-        if: always() && hashFiles('rmw-latency-benchmark.json') != ''
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: rmw_tickle latency (buildfarm_perf_tests)
-          tool: customSmallerIsBetter
-          output-file-path: rmw-latency-benchmark.json
-          gh-pages-branch: gh-pages
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          summary-always: true
-          fail-on-alert: false
-
-      - name: Track rmw_tickle throughput history
-        if: always() && hashFiles('rmw-throughput-benchmark.json') != ''
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: rmw_tickle throughput (buildfarm_perf_tests)
-          tool: customBiggerIsBetter
-          output-file-path: rmw-throughput-benchmark.json
-          gh-pages-branch: gh-pages
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          summary-always: true
-          fail-on-alert: false
+      # The two github-action-benchmark steps that used to run here (rmw_tickle latency/throughput
+      # dashboard graphs) were removed 2026-09-22, at the user's own request, alongside the
+      # dashboard's broader switch to comparison.md's own TickLE-core HIL methodology - this
+      # same-host rig's numbers stay out of the automated dashboard for now (would need real ROS 2
+      # provisioning on the tickle-hil Pis, not done - see run_perf.sh's own top comment). The
+      # step-summary table above and the raw-results artifact below are untouched; only the
+      # gh-pages graphing was in scope.
 
       - name: Upload raw results
         if: always()
