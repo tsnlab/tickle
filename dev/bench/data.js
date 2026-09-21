@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790004931896,
+  "lastUpdate": 1790004935615,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -99351,6 +99351,37 @@ window.BENCHMARK_DATA = {
             "name": "avg RTT",
             "value": 0,
             "unit": "ms"
+          }
+        ]
+      }
+    ],
+    "TickLE HIL - best_effort_throughput (recv msgs)": [
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f0e248bc444e7489abc92a8f991774dccb30759f",
+          "message": "fix clang-format on FastDDS examples; revert ping/pong_node.cpp rename to keep Check all green\n\nReal bug found: \"Check all\" failed on the rename commit (335d752) not because of the rename\nitself, but because it surfaced two separate pre-existing issues the diff-based linter had\nnever scanned before (these files were never touched by a prior commit):\n\n1. 9 FastDDS example files had a real, pre-existing clang-format violation\n   (`Duration_t timeout{...}` missing a space before `{`) - fixed here, clang-format --Werror\n   now clean on all of them.\n\n2. rmw_perf_pingpong's ping_node.cpp/pong_node.cpp have ~105 pre-existing clang-tidy warnings\n   (missing includes, magic numbers, trailing return types, etc.) - real, but far out of scope\n   for a filename rename. Reverted just the two COMPARISON.MD comment references in these two\n   files back to the old spelling rather than take on an unrelated ~105-warning cleanup as a\n   side effect - a known, minor, deliberate inconsistency (2 comment lines) until someone\n   addresses the underlying debt on its own.",
+          "timestamp": "2026-09-22T00:34:49+09:00",
+          "tree_id": "7285069648ff75b5f62eaf468eef76ab2559636d",
+          "url": "https://github.com/tsnlab/tickle/commit/f0e248bc444e7489abc92a8f991774dccb30759f"
+        },
+        "date": 1790004934420,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv msgs",
+            "value": 0,
+            "unit": "count"
           }
         ]
       }
