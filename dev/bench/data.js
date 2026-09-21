@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789996828563,
+  "lastUpdate": 1789996832370,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -50616,6 +50616,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030477387564522878,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3e7a9286fa55b17ba1e376471ad09da78ee7d1a4",
+          "message": "rmw_publisher.c/rmw_qos.c: honor HISTORY.KEEP_ALL for Publishers instead of silently downgrading\n\nDDS QoS policy coverage inventory gap 2 (rmw_tickle/PLAN.md): rmw_tickle_\nvalidate_qos_profile() only rejected KEEP_ALL for Subscriptions - a\nPublisher requesting it passed validation, then setup_reliable_cache()\nnever read qos_profile->history at all, only ->depth (falling back to\ntt_MAX_RELIABLE_HISTORY=64 if unset), silently downgrading a \"retain\neverything\" request to an ordinary small bounded cache. A real violation\nof this file's own stated philosophy: \"rejects anything outside the\ncurrently-supported set explicitly... rather than silently downgrading\nit.\"\n\nAt the user's own explicit choice: honor it instead of rejecting it.\nsetup_reliable_cache() (rmw_publisher.c) now sizes to a new\nRMW_TICKLE_KEEP_ALL_DEPTH=8192 when history is KEEP_ALL, matching the\nsame order of magnitude already established by MAX_RELIABLE_DEPTH in\nexamples/perf_hil/tickle/reliable_throughput/client.c and already\nmeasured (comparison.md ~12.2MB for the same figure) - not a new cost,\nthe same understood one applied here. Subscription-side KEEP_ALL\nrejection in rmw_qos.c is unchanged.\n\nNew tests/test_history_keep_all.c exercises the real rmw_create_\npublisher() path (not a whitebox include) for both RELIABLE and\nTRANSIENT_LOCAL Publishers requesting KEEP_ALL, plus a KEEP_LAST\ncontrast case proving ordinary ->depth sizing is unaffected.\n\nNo TickLE core/wire-protocol change - tt_ReliableCache.capacity was\nalready caller-sized dynamically since Milestone 61.\n\nVerified: colcon build (clean rebuild) + colcon test (22/22, 0 errors/\nfailures) + clang-tidy -p build/rmw_tickle (0 warnings) + clang-format\n--dry-run --Werror, all clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T22:18:53+09:00",
+          "tree_id": "69965752589ac48414417ad5a5e8efbd3d53f044",
+          "url": "https://github.com/tsnlab/tickle/commit/3e7a9286fa55b17ba1e376471ad09da78ee7d1a4"
+        },
+        "date": 1789996831174,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9892674854823521,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9901129858834403,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.03022357395717076,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.03043433598109654,
             "unit": "Mbit/s"
           }
         ]
