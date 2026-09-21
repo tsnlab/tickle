@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789990281873,
+  "lastUpdate": 1789990285629,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -72440,6 +72440,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 72.689,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d8e5af940b147b0941dbf9de7cce06195f7380dd",
+          "message": "PLAN.md: Milestone 63 - record real CI green + rig eth0 flap root cause\n\nd05cd07's Performance Test failed twice (total 0-msgs-received across\nevery scenario, including ones that never touch this milestone's own\ndiscovery code path - ruling out the code itself before looking\nelsewhere). Root-caused via direct SSH to both rig Pis using\nrun_perf.sh's own CI key: eth0 showed NO-CARRIER/DOWN on both, the\ndedicated point-to-point test-link the perf traffic actually uses -\na separate interface from the wlan0 management network the earlier\nping/ssh checks were unknowingly using instead. TickLE Plan\nindependently reproduced the same finding. The link self-recovered\nwithout physical intervention; Performance Test reran green.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T20:28:34+09:00",
+          "tree_id": "a2ea52c1a897029d367f2156c2ca95e024156528",
+          "url": "https://github.com/tsnlab/tickle/commit/d8e5af940b147b0941dbf9de7cce06195f7380dd"
+        },
+        "date": 1789990284484,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 67.76,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 63.356,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 64.997,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 67.805,
+            "unit": "Mbps"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 60.166,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 72.252,
             "unit": "Mbps"
           }
         ]
