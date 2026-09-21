@@ -2,7 +2,7 @@
 # Builds one TickLE-native HIL scenario's client+server (examples/perf_hil/tickle/<scenario>/).
 # Uses `make install` to a scratch prefix + pkg-config rather than TickLE's own top-level
 # Makefile/examples build - deliberately: this whole examples/perf_hil/ tree is "TickLE Plan"'s
-# own observation/comparison work (rmw_tickle/comparison.md), kept independent of whatever
+# own observation/comparison work (rmw_tickle/COMPARISON.MD), kept independent of whatever
 # TickLE Dev's own queue is doing to platform/linux/Makefile or the example set it manages.
 set -euo pipefail
 

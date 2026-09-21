@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native subscriber role. Same "deliberately doesn't join for `-p` seconds, before
 // creating the Subscriber at all" design as history_depth_burst_loss/server.c's own doc comment
 // explains (TickLE has no DDS-style "matched but hasn't taken yet" state to stall in instead).

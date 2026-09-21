@@ -99,7 +99,7 @@
 // window represented only ~53us of send time - almost certainly shorter than one real ACKNACK
 // round trip on any physical link, capping RELIABLE's own tc-loss recovery well below 100% even
 // though the Publisher's own retained-cache depth (Milestone 61) was never the actual bottleneck
-// (comparison.md §6 item 9/10's own re-measurement already ruled that out). See struct tt_
+// (COMPARISON.MD §6 item 9/10's own re-measurement already ruled that out). See struct tt_
 // WriterProxy.received_bitmap's own doc comment (tickle.h) for the honest "this raises the
 // tolerable gap ~4x, not a guaranteed full fix - the real link's own ACKNACK RTT still sets the
 // actual limit" caveat.

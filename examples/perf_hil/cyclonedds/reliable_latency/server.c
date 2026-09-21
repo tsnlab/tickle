@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) server/pong role. Subscribes on "ping", republishes the exact same
  * sample (same seq/send_ns) on "pong" immediately - the client's own RTT measurement is entirely
  * client-side, this side never logs per-request (matches TickLE's own examples/linux/ping_pong/
@@ -39,8 +39,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // scenario "reliable_latency" - RELIABLE on both sides (comparison.md's design principle
-    // 3: same QoS value across frameworks) + HISTORY depth=8 (comparison.md's own QoS value
+    // scenario "reliable_latency" - RELIABLE on both sides (COMPARISON.MD's design principle
+    // 3: same QoS value across frameworks) + HISTORY depth=8 (COMPARISON.MD's own QoS value
     // matrix), the standing baseline depth used everywhere RELIABLE is on in this exercise.
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));

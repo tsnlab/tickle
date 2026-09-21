@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) client/sender role. Unlike the two latency scenarios, this is a
  * one-way stream (no pong) - mirrors TickLE's own examples/linux/perf/perf_client.c: the sender
  * just blasts samples, the *receiver* (server.c) is the authoritative side for loss/throughput,
@@ -58,7 +58,7 @@ int main(int argc, char** argv) {
     dds_entity_t topic = dds_create_topic(participant, &Bench_desc, "stream", NULL, NULL);
 
     // scenario "best_effort_throughput" - BEST_EFFORT, matched exactly across frameworks
-    // (comparison.md's design principle 3).
+    // (COMPARISON.MD's design principle 3).
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_BEST_EFFORT, 0);
     dds_entity_t writer = dds_create_writer(participant, topic, qos, NULL);

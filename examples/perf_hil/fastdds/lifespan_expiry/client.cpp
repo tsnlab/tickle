@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) publisher role. See the CycloneDDS twin's own doc comment for the full
  * mechanism this mirrors exactly - writes a fixed count with LIFESPAN and a generous
  * `KEEP_ALL` history, deliberately *not* the shallow depth scenario 6 tests, so any loss observed

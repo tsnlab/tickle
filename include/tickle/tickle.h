@@ -479,7 +479,7 @@ struct tt_Data {
 // (~1.2M msg/s), the original 64-bit width passed in roughly 53 microseconds - almost certainly
 // shorter than one real ACKNACK round trip on any real network - so this Subscriber-side ceiling,
 // not the Publisher-side cache depth fixed here, was very likely the actual bottleneck behind
-// TickLE's own comparatively poor tc-loss recovery at high throughput (rmw_tickle/comparison.md).
+// TickLE's own comparatively poor tc-loss recovery at high throughput (rmw_tickle/COMPARISON.MD).
 // **Update, rmw_tickle/PLAN.md's "TickLE-native performance" plan**: tt_RELIABLE_BITMAP_BITS was
 // since widened 64 -> 256 (a real wire-protocol change, tt_VERSION bumped) once this same
 // diagnosis pointed at it directly - raises the tolerable gap ~4x, likely closing most or all of
@@ -742,7 +742,7 @@ struct tt_WriterProxy {
     // WORDS-word array (config.h), word 0 holding bits 0-63, word 1 bits 64-127, and so on - widened
     // from a single bare uint64_t (rmw_tickle/PLAN.md's "TickLE-native performance" plan) since the
     // old 64-bit width was the real bottleneck behind RELIABLE's own measured tc-loss recovery gap
-    // vs. FastDDS/CycloneDDS (comparison.md §3/§6 item 7), not the Publisher's own retained-cache
+    // vs. FastDDS/CycloneDDS (COMPARISON.MD §3/§6 item 7), not the Publisher's own retained-cache
     // depth (Milestone 61 already ruled that out on real HIL). tickle.c's own small, fixed set of
     // bitmap_*() helpers (next to highest_received_bit()) are the only code that manipulates this
     // array directly - every call site here goes through one of them, not raw per-word arithmetic,

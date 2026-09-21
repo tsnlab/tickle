@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native server/receiver role (no rmw). Same one-way stream shape as
 // best_effort_throughput/server.c (this side is the authoritative one for loss/throughput),
 // `sub.reliable = true` to match the client's own RELIABLE Publisher - no cache is needed on the

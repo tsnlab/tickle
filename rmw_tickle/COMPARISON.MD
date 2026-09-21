@@ -377,7 +377,7 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
     for a much longer grace period - but it does mean TickLE cannot yet honor a genuinely long lease
     the way real DDS does. Not investigated further this pass (a real behavior, not a bug, and
     likely a reasonable trade-off for embedded targets that want a hard upper bound on detection
-    latency) - noted here rather than left undocumented. `comparison.md` §3, scenario 8's own TickLE
+    latency) - noted here rather than left undocumented. `COMPARISON.MD` §3, scenario 8's own TickLE
     column updated with these numbers.
 
 11. **[TickLE core, real HIL - a real methodology correction, and further throughput research]**
@@ -395,7 +395,7 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
     benchmark's own 0.0% figure might suggest at a glance. Both numbers are real and correctly
     measured for what each actually tests; the honest summary is that a 256-bit window is enough
     to fully recover loss at a modest, paced rate, but not yet enough at TickLE's own real
-    ~150-200K msg/s max throughput - `comparison.md` §3's own TickLE column updated with both the
+    ~150-200K msg/s max throughput - `COMPARISON.MD` §3's own TickLE column updated with both the
     new post-fix numbers and the old pre-fix ones side by side, not silently replaced.
 
     **Further hypothesis-driven research, at the user's own explicit instruction to keep

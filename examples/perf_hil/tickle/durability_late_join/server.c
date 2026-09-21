@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native publisher role. Same role split as the CycloneDDS/FastDDS twins' own
 // server.c (writer+reader on both ends, "ping" for data / "pong" for the late subscriber's own
 // ack) - publishes `backlog_count` (20, matching the DDS twins exactly) samples on "ping" *before*

@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) client/ping role. Writer on "ping", reader on "pong" - measures
  * round-trip time the same way TickLE's own examples/linux/ping_pong/ping.c does (same
  * RESULT line shape, for direct comparison): send a sample with the current monotonic time

@@ -8,10 +8,10 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native publisher role. `pub.deadline_duration_ns` is purely a wire/RxO-announced
 // field (Milestone 49) - TickLE core itself never enforces or checks it (tickle.h's own doc
-// comment, corrected in comparison.md's own native-QoS table this same pass) - so unlike the
+// comment, corrected in COMPARISON.MD's own native-QoS table this same pass) - so unlike the
 // CycloneDDS/FastDDS twins, there is no `dds_lset_offered_deadline_missed()`-style listener to
 // lean on; this file implements the check itself, the way tickle.h's own doc comment says any
 // consumer must.
@@ -21,7 +21,7 @@
 // individual write() calls) - each tick compares `now - last_publish_ns` against the deadline and
 // counts a miss if exceeded. This makes detection latency bounded by the checker's own tick
 // granularity (== the deadline itself here) - coarser than the CycloneDDS/FastDDS twins' own
-// near-instant listener callback (~0.05ms, comparison.md), a real and expected architectural
+// near-instant listener callback (~0.05ms, COMPARISON.MD), a real and expected architectural
 // difference: TickLE has no internal listener thread to lean on, so a polling checker is the
 // natural implementation, and its own granularity directly bounds how fast a miss can be noticed.
 // Publishes normally at the deadline's own period, then deliberately skips one interval by 3x the

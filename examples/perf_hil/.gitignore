@@ -1,5 +1,5 @@
 # Generated bindings are tied to whichever host's fastddsgen/idlc produced them (a real,
-# confirmed version gap between this repo's dev box and the tickle-hil rpis - comparison.md's own
+# confirmed version gap between this repo's dev box and the tickle-hil rpis - COMPARISON.MD's own
 # design note) - generate fresh per host via each framework's own build.sh instead of committing.
 fastdds/generated/
 cyclonedds/generated/

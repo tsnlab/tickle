@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds one CycloneDDS HIL scenario's client+server (examples/perf_hil/cyclonedds/<scenario>/),
 # generating the shared Bench binding locally (once, reused by every scenario) via this host's own
-# idlc - deliberately not committed to git (comparison.md's own design note): idlc's generated code
+# idlc - deliberately not committed to git (COMPARISON.MD's own design note): idlc's generated code
 # is tied to the installed CycloneDDS version, which differs between hosts (a real, confirmed gap
 # between this repo's dev box and the tickle-hil rpis) - generating fresh on whichever host builds
 # is what actually stays correct everywhere, not a committed snapshot from one specific host.
@@ -33,7 +33,7 @@ fi
 # arch-triplet lib dir), same "generate/build fresh per host" reasoning as Bench.c/.h above.
 # Prefers /opt/ros/rolling if present - a real, confirmed CycloneDDS discovery bug on the rig's
 # own default (jazzy's 0.10.5) never matches on any topic name other than the two latency
-# scenarios' own "ping"/"pong" (comparison.md's own "Blocked" section) - rolling's own CycloneDDS
+# scenarios' own "ping"/"pong" (COMPARISON.MD's own "Blocked" section) - rolling's own CycloneDDS
 # (11.0.1, matching this repo's dev box) installed alongside jazzy specifically to test whether a
 # newer release doesn't have the same defect, per that section's own recommendation.
 CDDS_INCLUDE="$(find /opt/ros/rolling/include -maxdepth 1 -iname CycloneDDS 2>/dev/null | head -1)"

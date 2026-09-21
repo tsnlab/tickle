@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) subscriber role, deliberately started *after* the publisher has already
  * sent its whole backlog (run_scenario.sh's own orchestration sleeps before starting this side) -
  * the actual thing under test: does TRANSIENT_LOCAL (-D) deliver that backlog anyway, while

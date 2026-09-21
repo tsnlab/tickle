@@ -1,8 +1,8 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) server/pong role. Subscribes on "ping", republishes the exact same
  * sample (same seq/send_ns) on "pong" immediately - mirrors the CycloneDDS scenario pair exactly
- * (comparison.md's design principle 1: identical data/behavior, only the framework differs).
+ * (COMPARISON.MD's design principle 1: identical data/behavior, only the framework differs).
  */
 #include <csignal>
 #include <cstdio>
@@ -47,7 +47,7 @@ int main() {
     Topic* pong_topic = participant->create_topic("pong", "Bench", TOPIC_QOS_DEFAULT);
 
     // scenario "reliable_latency" - BEST_EFFORT on both sides, matching CycloneDDS's own QoS
-    // exactly (comparison.md's design principle 3).
+    // exactly (COMPARISON.MD's design principle 3).
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.history().kind = KEEP_LAST_HISTORY_QOS;
     rqos.history().depth = 8;

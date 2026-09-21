@@ -124,7 +124,7 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
 // DDS QoS policy coverage inventory (rmw_tickle/PLAN.md, 2026-09-21) gap 2 - KEEP_ALL conceptually
 // asks for "retain everything," which a fixed-capacity cache can't literally do; matches the same
 // "far past the old 64 ceiling" order of magnitude already established for -K 8192 in examples/
-// perf_hil/tickle/reliable_throughput/client.c's own MAX_RELIABLE_DEPTH (and comparison.md §6 item
+// perf_hil/tickle/reliable_throughput/client.c's own MAX_RELIABLE_DEPTH (and COMPARISON.MD §6 item
 // 9/10's own already-measured ~12.2MB cost for that same figure - not a new cost, the same
 // already-understood one applied here). A large-but-still-bounded cache, not literally unbounded,
 // is the honest approximation the user chose over rejecting KEEP_ALL outright for Publishers.

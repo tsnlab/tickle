@@ -9,7 +9,7 @@
  */
 
 // Hand-written, not `tools/typesupport`-generated (unlike examples/uint64/UInt64.h) - mirrors
-// examples/perf_hil/idl/Bench.idl's exact field shape (rmw_tickle/comparison.md's own HIL
+// examples/perf_hil/idl/Bench.idl's exact field shape (rmw_tickle/COMPARISON.MD's own HIL
 // 3-way QoS-matrix comparison, "Planned" section) so this native-TickLE example, the
 // FastDDS/CycloneDDS native examples, and rmw_perf_pingpong's own ROS 2 message can all be
 // compared on literally the same wire payload, not just "a similar-sized one." Follows

@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) publisher role. Writes on a fixed schedule (`-i`, default 50ms)
  * regardless of whether the subscriber is actually consuming - server.c's own doc comment explains
  * why it deliberately doesn't for its own first `-p` seconds. `max_blocking_time` is short (200ms,

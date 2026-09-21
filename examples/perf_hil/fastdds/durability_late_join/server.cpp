@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) publisher role. Mirrors the now-fixed CycloneDDS scenario pair exactly
  * (examples/perf_hil/cyclonedds/durability_late_join/server.c's own doc comment has the full real
  * bug history this design already bakes in): publishes the full backlog on "ping" *before* any

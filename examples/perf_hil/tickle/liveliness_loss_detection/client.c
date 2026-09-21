@@ -8,9 +8,9 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/comparison.md)
+// HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.MD)
 // - TickLE core native publisher role. `pub.liveliness_lease_duration_ns` (matched lease, `-T`,
-// default 2.0s like the DDS twins) is purely a wire/RxO-announced value in TickLE (comparison.md's
+// default 2.0s like the DDS twins) is purely a wire/RxO-announced value in TickLE (COMPARISON.MD's
 // own native-QoS table, corrected this same pass) - the actual peer-departure DETECTION mechanism
 // is separate and node-level (server.c's own doc comment). This side just publishes normally on a
 // fixed schedule - the orchestration (run_scenario.sh, NOT this program) sends a real `kill -9`

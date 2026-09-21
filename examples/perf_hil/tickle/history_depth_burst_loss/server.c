@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/comparison.md)
+// HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.MD)
 // - TickLE core native subscriber role. Deliberately stalls for `pause_s` seconds (`-p`, default
 // 3.0) *before creating the Subscriber at all* - TickLE has no DDS-style "matched reader that
 // simply hasn't taken anything yet" state to stall in instead (a Subscriber's own callback fires

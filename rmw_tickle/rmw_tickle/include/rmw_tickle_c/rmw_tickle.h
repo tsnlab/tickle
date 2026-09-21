@@ -466,7 +466,7 @@ typedef struct rmw_tickle_publisher_t {
     // scratch TickLE-struct buffer rmw_publish() converts into before tt_Publisher_publish(),
     // allocated once here (callbacks->tickle_struct_size, fixed per Publisher) instead of a fresh
     // allocate()/deallocate() pair on every single publish call - the highest-confidence hot-path
-    // allocation comparison.md's own profiling found. publish_mutex serializes concurrent rmw_
+    // allocation COMPARISON.MD's own profiling found. publish_mutex serializes concurrent rmw_
     // publish() calls on this *same* Publisher around this shared buffer (rmw's own contract:
     // "Publishers are thread-safe objects... safe to call this function using the same publisher
     // concurrently", rmw/rmw.h's own rmw_publish() doc comment) - a separate, narrower lock than

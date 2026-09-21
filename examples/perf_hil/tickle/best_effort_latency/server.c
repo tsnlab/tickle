@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native server/pong role (no rmw). Subscribes "ping", republishes the exact same
 // sample on "pong" immediately - never logs per-request (matches the FastDDS/CycloneDDS server's
 // own identical precedent).

@@ -1,5 +1,5 @@
 /*
- * Shared helper for every CycloneDDS HIL scenario (rmw_tickle/comparison.md) - actively waits for
+ * Shared helper for every CycloneDDS HIL scenario (rmw_tickle/COMPARISON.MD) - actively waits for
  * a real match instead of a blind sleep.
  *
  * THE ACTUAL ROOT CAUSE (2026-09-20, found by diffing against the real upstream

@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) client/sender role. Mirrors the CycloneDDS scenario pair exactly - a
  * one-way stream (no pong), the receiver (server.cpp) is the authoritative side for loss/
  * throughput since only it can see what actually arrived.
@@ -60,11 +60,11 @@ int main(int argc, char** argv) {
     Topic* topic = participant->create_topic("stream", "Bench", TOPIC_QOS_DEFAULT);
 
     // scenario "reliable_throughput" - RELIABLE, matched exactly across frameworks
-    // (comparison.md's design principle 3). KEEP_ALL + generous resource_limits (2026-09-21, real
+    // (COMPARISON.MD's design principle 3). KEEP_ALL + generous resource_limits (2026-09-21, real
     // bug found the hard way - see the CycloneDDS twin's own identical fix, which this file never
     // got the matching update for): the shallow KEEP_LAST(8) this file used before real-CI-caught
     // reliable_throughput's own RELIABLE never recovering any real tc/netem-injected loss at all
-    // (comparison.md §3/§6 - CycloneDDS's own KEEP_ALL+resource_limits(4000) fully recovers 1%/5%
+    // (COMPARISON.MD §3/§6 - CycloneDDS's own KEEP_ALL+resource_limits(4000) fully recovers 1%/5%
     // injected loss every time, this file's own shallow depth=8 recovered none of it) - a shallow
     // writer history queue evicts a lost sample long before a NACK-driven retry can land, the exact
     // same root cause CycloneDDS's own client.c doc comment already names.

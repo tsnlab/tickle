@@ -1,13 +1,13 @@
 // Shared, framework-neutral message for the HIL 3-way QoS-matrix comparison
-// (rmw_tickle/comparison.md's "Planned: HIL 3-way QoS-matrix comparison" section).
+// (rmw_tickle/COMPARISON.MD's "Planned: HIL 3-way QoS-matrix comparison" section).
 //
 // One canonical message for all 9 scenarios, deliberately small and fixed-size: this exercise is
 // about protocol/QoS-handling overhead (RELIABILITY/DURABILITY/HISTORY/DEADLINE/LIVELINESS/
 // LIFESPAN), not payload-size effects - those are already covered by the existing rmw-layer
-// Array1k/Struct16 comparison (comparison.md's own "Performance comparison" section, above).
+// Array1k/Struct16 comparison (COMPARISON.MD's own "Performance comparison" section, above).
 //
 // Both fastddsgen and CycloneDDS's own idlc compile this exact file - "identical data" is a
-// byte-identical source guarantee, not a hand-matched one (comparison.md's own design note).
+// byte-identical source guarantee, not a hand-matched one (COMPARISON.MD's own design note).
 //
 // @extensibility(FINAL) pinned explicitly, not left to whatever each tool's own current default
 // happens to be (idlc warns this may change to "appendable" in a future release) - both vendors

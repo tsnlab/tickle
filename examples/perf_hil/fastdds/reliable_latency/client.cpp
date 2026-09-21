@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) client/ping role. Mirrors the CycloneDDS scenario pair exactly - same
  * RESULT line shape as TickLE's own examples/linux/ping_pong/ping.c, framework field added for
  * this exercise's own dashboard parsing.

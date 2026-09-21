@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native client/sender role (no rmw). Same one-way max-rate stream as
 // best_effort_throughput's own client.c, plus RELIABLE + a caller-configurable HISTORY depth
 // (rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache's

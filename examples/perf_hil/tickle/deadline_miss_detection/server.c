@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native subscriber role. See client.c's own doc comment for the full mechanism this
 // mirrors on the reader side - `sub.deadline_duration_ns` is the RxO-matched requested value
 // (Milestone 49), a periodic checker (own fixed cadence, independent of when samples actually

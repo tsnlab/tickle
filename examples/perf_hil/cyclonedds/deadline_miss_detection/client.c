@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) publisher role. Publishes at a normal cadence (`-i`, default 20ms)
  * well under the DEADLINE (`-D`, default 50ms, matched exactly against server.c's own reader QoS -
  * the actual variable under test) for `-n` samples, except for exactly one deliberately-skipped

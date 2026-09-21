@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) publisher role. Writes a fixed count (`-n`) at a fixed rate (`-i`,
  * default 20ms) with LIFESPAN (`-T`, default 100ms, matched exactly against server.c's own reader
  * QoS - the actual variable under test) and a generous `HISTORY KEEP_ALL` + `resource_limits` -

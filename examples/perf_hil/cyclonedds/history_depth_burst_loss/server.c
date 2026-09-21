@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) subscriber role. Deliberately stalls its own consumption for
  * `pause_s` seconds right after matching (`-p`, default 3.0), *before* ever creating the receive
  * waitset - a stalled/slow subscriber is exactly what HISTORY depth is meant to protect against
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     dds_entity_t participant = dds_create_participant(DDS_DOMAIN_DEFAULT, NULL, NULL);
     dds_entity_t topic = dds_create_topic(participant, &Bench_desc, "stream", NULL, NULL);
 
-    // Fixed depth=8, matched exactly against client.c's own writer QoS (comparison.md's design
+    // Fixed depth=8, matched exactly against client.c's own writer QoS (COMPARISON.MD's design
     // principle 3, and the actual variable under test here).
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));

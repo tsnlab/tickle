@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) publisher role. See the CycloneDDS twin's own doc comment for the full
  * mechanism this mirrors exactly - writes on a fixed schedule regardless of whether the subscriber
  * is consuming, with a short (200ms) max_blocking_time so a stalled reader produces real, timely

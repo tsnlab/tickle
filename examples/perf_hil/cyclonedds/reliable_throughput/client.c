@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) client/sender role. Unlike the two latency scenarios, this is a
  * one-way stream (no pong) - mirrors TickLE's own examples/linux/perf/perf_client.c: the sender
  * just blasts samples, the *receiver* (server.c) is the authoritative side for loss/throughput,
@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
     dds_entity_t topic = dds_create_topic(participant, &Bench_desc, "stream", NULL, NULL);
 
     // scenario "reliable_throughput" - RELIABLE, matched exactly across frameworks
-    // (comparison.md's design principle 3). KEEP_ALL + generous resource_limits (2026-09-20,
+    // (COMPARISON.MD's design principle 3). KEEP_ALL + generous resource_limits (2026-09-20,
     // matching the real upstream eclipse-cyclonedds/cyclonedds examples/throughput/publisher.c's
     // own prepare_dds()): KEEP_LAST(8) was real, bisected root cause of a genuine 53% loss under
     // RELIABLE at full send rate on the rig (a shallow writer history queue backpressures/drops

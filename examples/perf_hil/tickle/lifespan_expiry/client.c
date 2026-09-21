@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native publisher role. Writes a fixed COUNT (`-n`, default 100) at a fixed, paced
 // interval (`-i`, default 0.02s = 50/s, matching the CycloneDDS/FastDDS twins exactly) with
 // LIFESPAN (`-T`, default 100ms, the actual variable under test) and a *generous*

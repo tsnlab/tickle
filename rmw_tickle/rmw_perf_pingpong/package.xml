@@ -4,7 +4,7 @@
   <name>rmw_perf_pingpong</name>
   <version>0.0.1</version>
   <description>
-    RTT-based rmw-layer performance measurement tool (rmw_tickle/comparison.md's own "Design:
+    RTT-based rmw-layer performance measurement tool (rmw_tickle/COMPARISON.MD's own "Design:
     rmw_perf_pingpong" section) - replaces buildfarm_perf_tests for trustworthy latency numbers,
     same-host or cross-host: a pinging side computes round-trip time entirely against its own
     clock reading, never comparing a timestamp read on a different machine, so it needs no

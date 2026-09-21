@@ -1,11 +1,11 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) subscriber role. Mirrors client.c's own LIVELINESS AUTOMATIC + lease
  * duration exactly and monitors this side's own LIVELINESS_CHANGED_STATUS via a listener - the
  * real thing under test is the *latency* between the writer actually going silent (this side's own
  * last received sample) and this side genuinely detecting the loss (`not_alive_count` going from 0
  * to 1) - both timestamps taken on this same host's own clock, deliberately, to avoid the exact
- * cross-host clock-sync pitfall this whole exercise's own earlier cross-host RTT work (comparison.md's
+ * cross-host clock-sync pitfall this whole exercise's own earlier cross-host RTT work (COMPARISON.MD's
  * own "Item 5" section) got burned by: comparing this side's own detection time against the writer's
  * own kill time (a different host, a different clock) would need real clock sync this scenario has
  * no way to guarantee; comparing it against this side's own last-received timestamp needs none.

@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) subscriber role. See the CycloneDDS twin's own doc comment for the full
  * mechanism - mirrors client.cpp's own LIFESPAN + generous `KEEP_ALL` history exactly, then
  * deliberately stalls its own consumption for `-p` seconds right after matching.

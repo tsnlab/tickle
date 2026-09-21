@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orchestrates one CycloneDDS HIL scenario across the two rpis (rpi#1=client, rpi#2=server),
 # mirroring .github/scripts/run_perf.sh's own run_paired_test() pattern for TickLE's own HIL
-# binaries, standalone (not touching that established script - comparison.md's own design note:
+# binaries, standalone (not touching that established script - COMPARISON.MD's own design note:
 # this whole exercise is a separate track from TickLE Dev's own core/rmw_tickle work).
 #
 # LD_LIBRARY_PATH set explicitly rather than relying on the built binary's own rpath - a real,

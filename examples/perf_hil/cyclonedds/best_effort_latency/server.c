@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) server/pong role. Subscribes on "ping", republishes the exact same
  * sample (same seq/send_ns) on "pong" immediately - the client's own RTT measurement is entirely
  * client-side, this side never logs per-request (matches TickLE's own examples/linux/ping_pong/
@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
     }
 
     // scenario "best_effort_latency" - BEST_EFFORT on both sides, matching FastDDS's own QoS
-    // exactly (comparison.md's design principle 3).
+    // exactly (COMPARISON.MD's design principle 3).
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_BEST_EFFORT, 0);
 

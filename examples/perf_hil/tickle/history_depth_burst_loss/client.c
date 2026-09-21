@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/comparison.md)
+// HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.MD)
 // - TickLE core native publisher role. Writes a fixed COUNT (`-n`, default 160) at a fixed,
 // paced interval (`-i`, default 0.05s = 20/s - deliberately paced, not scenario 3/4's own
 // unbounded "as fast as possible": at TickLE's own max-rate ceiling, depth=8 would be
@@ -104,7 +104,7 @@ int main(int argc, char** argv) {
         return ret;
     }
     // scenario "history_depth_burst_loss" - RELIABLE + HISTORY depth=8, matched exactly across
-    // every framework (comparison.md's own design principle 3 / QoS value matrix).
+    // every framework (COMPARISON.MD's own design principle 3 / QoS value matrix).
     // entries[]/capacity are this file's own backing array now, not an embedded
     // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
     static struct tt_ReliableCacheEntry pub_cache_entries[8];

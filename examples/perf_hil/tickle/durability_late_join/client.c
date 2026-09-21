@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native subscriber role, deliberately started *after* the publisher has already sent
 // its whole backlog (run_scenario's own orchestration starts this side second) - the actual thing
 // under test: does DURABLE (-D, server.c's own flag) deliver that backlog anyway, while VOLATILE

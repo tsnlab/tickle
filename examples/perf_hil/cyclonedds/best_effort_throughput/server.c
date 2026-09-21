@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) server/receiver role. The authoritative side for loss/throughput -
  * only it can see what actually arrived (see client.c's own doc comment). Runs until SIGINT
  * (sent by the orchestrating run_scenario.sh once the client's own -d duration elapses) or its

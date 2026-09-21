@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) client/ping role. Writer on "ping", reader on "pong" - measures
  * round-trip time the same way TickLE's own examples/linux/ping_pong/ping.c does (same
  * RESULT line shape, for direct comparison): send a sample with the current monotonic time
@@ -52,7 +52,7 @@ int main(int argc, char** argv) {
     dds_entity_t pong_topic = dds_create_topic(participant, &Bench_desc, "pong", NULL, NULL);
 
     // scenario "reliable_latency" - RELIABLE + HISTORY depth=8, matched exactly across every
-    // framework (comparison.md's own design principle 3 / QoS value matrix).
+    // framework (COMPARISON.MD's own design principle 3 / QoS value matrix).
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(1));
     dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, 8);

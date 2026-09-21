@@ -1,20 +1,20 @@
-// rmw_tickle/comparison.md's "Design: rmw_perf_pingpong" - ping role. Publisher on "ping",
+// rmw_tickle/COMPARISON.MD's "Design: rmw_perf_pingpong" - ping role. Publisher on "ping",
 // subscriber on "pong" - mirrors examples/perf_hil/cyclonedds/best_effort_latency/client.c's own
 // shape exactly (same CLI flags, same blocking send-then-wait-for-echo pattern, same RESULT line)
 // so the two tracks (native no-rmw HIL, this rmw-layer tool) stay directly comparable.
 //
 // RTT is computed entirely against this process's own now_ns() - never a timestamp read on a
-// different machine - so it needs no cross-host clock agreement at all (comparison.md's own
+// different machine - so it needs no cross-host clock agreement at all (COMPARISON.MD's own
 // retracted item 5 attempt mixed two independently-clocked machines' timestamps; this tool never
 // does that).
 //
-// -m <bench|array1k|struct16> (payload-size expansion, comparison.md's own priority list): `Bench`
+// -m <bench|array1k|struct16> (payload-size expansion, COMPARISON.MD's own priority list): `Bench`
 // stays the default (64-byte payload, matches examples/perf_hil/idl/Bench.idl exactly, for the
 // native-HIL-vs-rmw-layer comparison this tool was originally built for); `array1k`/`struct16`
 // give this same single-clock-RTT-correct methodology the same message shapes buildfarm_perf_
 // tests' own Array1k.msg/Struct16.msg already use (msg/Array1k.msg's own header comment explains
 // why they're a deliberate copy here, not a real dependency on that upstream package) - directly
-// comparable against comparison.md's own existing "Performance comparison" section's numbers,
+// comparable against COMPARISON.MD's own existing "Performance comparison" section's numbers,
 // same wire layout. Templated on the message type (BenchTraits<T> below) rather than three near-
 // duplicate copies of this whole file - pong_node.cpp needs no type-specific logic at all (a pure
 // echo), only ping_node.cpp's own sequence-id/send-timestamp field access differs per type.
@@ -44,7 +44,7 @@ namespace {
     // description service is opted out of via a default parameter override here (so this binary
     // works standalone, without needing --ros-args on every invocation); /parameter_events itself
     // needs rmw_tickle to actually have typesupport for rcl_interfaces/msg/ParameterEvent, which is
-    // a separate, real compatibility gap (comparison.md's own item 5 write-up) - not something this
+    // a separate, real compatibility gap (COMPARISON.MD's own item 5 write-up) - not something this
     // tool's own code can work around.
     rclcpp::NodeOptions default_node_options() {
         return rclcpp::NodeOptions()

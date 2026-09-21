@@ -8,9 +8,9 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/comparison.md)
+// HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.MD)
 // - TickLE core native subscriber role. Real peer-departure detection in TickLE is node-level, not
-// per-Publisher-entity (comparison.md's own native-QoS table, corrected this same pass, read
+// per-Publisher-entity (COMPARISON.MD's own native-QoS table, corrected this same pass, read
 // directly from tickle.h): `tt_Node_set_discovery()` + `tt_DISCOVERY_CALLBACK` fires
 // `departed=true` on `check_liveliness()`'s own fixed timeout window
 // (`tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL`, config.h, ~3s) - independent of

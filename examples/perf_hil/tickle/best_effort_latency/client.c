@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "best_effort_latency" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native client/ping role (no rmw). Mirrors examples/perf_hil/{cyclonedds,fastdds}/
 // best_effort_latency/client.c's own logic exactly - single-clock RTT (this side's own
 // tt_get_ns(), both send and receipt), same RESULT line shape, for direct comparison.

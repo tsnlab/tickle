@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/comparison.md) -
+// HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/COMPARISON.MD) -
 // TickLE core native client/sender role (no rmw). Mirrors examples/perf_hil/{cyclonedds,fastdds}/
 // best_effort_throughput/client.c's own logic - a one-way stream (no pong), the *receiver*
 // (server.c) is the authoritative side for loss/throughput since only it can see what actually

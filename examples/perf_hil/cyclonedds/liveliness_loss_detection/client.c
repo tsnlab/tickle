@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.MD) -
  * CycloneDDS native (no rmw) publisher role. Publishes at a steady cadence (`-i`, default 100ms)
  * with LIVELINESS AUTOMATIC and a matched lease duration (`-L`, default 2s, matched exactly against
  * server.c's own reader QoS - the actual variable under test) until it either runs out its own

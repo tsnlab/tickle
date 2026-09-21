@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/comparison.md) -
+ * HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/COMPARISON.MD) -
  * FastDDS native (no rmw) publisher role. See the CycloneDDS twin's own doc comment for the full
  * mechanism this mirrors exactly - publishes at a normal cadence well under the DEADLINE for `-n`
  * samples, except for exactly one deliberately-skipped interval partway through.
