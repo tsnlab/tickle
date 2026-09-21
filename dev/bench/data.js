@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789957340969,
+  "lastUpdate": 1789957419646,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -10702,6 +10702,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "packet loss",
             "value": 4,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6a5c061b9d0766321f6ee3d3419c395405a28bd0",
+          "message": "tickle.h: make tt_ReliableCache's own depth ceiling caller-configurable\n\nstruct tt_ReliableCache.entries was a fixed tt_MAX_RELIABLE_HISTORY=64\narray embedded in the struct, making 64 a single build-wide ceiling\nevery Publisher was capped by or paid for alike, regardless of whether\nit needed a deep cache at all. Replaced with a caller-owned entries\npointer plus a new capacity field (the actual size of whatever backing\narray the caller provides), the same idiom struct tt_Discovery already\nuses - no malloc inside TickLE core itself, but no longer a single\ncompile-time array dimension either. depth (1..capacity) stays a\nseparate field from capacity, mirroring DDS's own split between\nHISTORY.depth and RESOURCE_LIMITS.max_samples.\n\ntickle.c's four depth-clamping call sites (cache_reliable_sample(),\nreliable_cache_oldest_seq_no(), deliver_durability_backlog(),\nprocess_acknack()) now clamp against cache->capacity instead of the\nremoved tt_MAX_RELIABLE_HISTORY ceiling, each gaining a capacity == 0\nguard for a cache whose caller never set entries/capacity up.\ntt_MAX_RELIABLE_HISTORY itself is unchanged in value but narrows to two\nSubscriber-side-only roles now: skip_unrecoverable_backlog()'s own\ngive-up heuristic, and the default array size examples/tests use absent\nanother reason to pick something else.\n\nEvery existing construction site updated to declare its own backing\narray: five perf_hil scenarios at their existing fixed depths,\nexamples/linux/perf/perf_client.c and reliable_throughput/client.c\ngained a new -K-configurable depth up to 8192 (both were already or now\nare the tools used to re-measure this), and rmw_tickle/src/rmw_publisher.c\nswitched from rejecting any qos_profile->depth past 64 to allocating\nentries dynamically at exactly the requested depth, matching real\nrmw_fastrtps_cpp/rmw_cyclonedds_cpp's own dynamic-depth support. The\nthree new sequential allocate-or-fail branches this added pushed\nrmw_create_publisher()'s own cognitive complexity over threshold - split\ninto a new setup_reliable_cache() helper, also removing the triplicated\ncleanup block that came with it.\n\nHonest limitation worth stating plainly: raising a Publisher's own depth\npast tt_RELIABLE_BITMAP_BITS (64) only helps DURABILITY's own one-shot\nbacklog push. It does not, by itself, improve RELIABLE's own\nACKNACK-driven recovery under sustained loss at high throughput, since\nstruct tt_WriterProxy.received_bitmap (the Subscriber's own out-of-order\ntracking) is a fixed uint64_t regardless of how deep the Publisher's own\ncache reaches back - documented in full in struct tt_ReliableCache's own\ndoc comment.\n\nMilestone 61 (rmw_tickle/PLAN.md).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T11:17:21+09:00",
+          "tree_id": "d6085038cac206d8532bec08e67a41fd877e2283",
+          "url": "https://github.com/tsnlab/tickle/commit/6a5c061b9d0766321f6ee3d3419c395405a28bd0"
+        },
+        "date": 1789957411558,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt avg",
+            "value": 0.201,
+            "unit": "ms"
+          },
+          {
+            "name": "packet loss",
+            "value": 2,
             "unit": "%"
           }
         ]
