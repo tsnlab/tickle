@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789958704426,
+  "lastUpdate": 1789958849363,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -38830,6 +38830,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.048537142857142855,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ebb337fe60f8459bd83f415efb4dcb198df54c14",
+          "message": "comparison.md/PLAN.md: record TickLE Dev's root cause for the -K 8192 loss regression\n\nfind_resendable_cache_entry() linear-scans entries[0..depth) per ACKNACK bit instead of\ndirect-indexing like the write side does, so a ~12MB entries[] at depth=8192 takes real\nrepeated cache misses per ACKNACK - explains the reproducible 7.5-7.6% vs 5.1-5.4% loss gap\nfound in the prior commit's re-measurement. A concrete O(1) follow-up, not yet implemented.",
+          "timestamp": "2026-09-21T11:46:15+09:00",
+          "tree_id": "ac2fa7f480ec7f0f9406e11f48ba615b5a17b6fc",
+          "url": "https://github.com/tsnlab/tickle/commit/ebb337fe60f8459bd83f415efb4dcb198df54c14"
+        },
+        "date": 1789958843356,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.049031428571428566,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.07567142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04695714285714286,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04971,
             "unit": "ms"
           }
         ]
