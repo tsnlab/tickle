@@ -100,6 +100,23 @@ typedef enum rmw_tickle_entity_kind_t {
 // function did through Milestone 6.
 rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, rmw_tickle_entity_kind_t entity_kind);
 
+// DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21): resolves every RMW_QOS_
+// POLICY_*_BEST_AVAILABLE value (reliability/durability/liveliness) and the two _BEST_AVAILABLE
+// duration sentinels (deadline/liveliness_lease_duration) in `requested` into a concrete value,
+// computed once against `discovery`'s own currently-known entities matching `topic_name` and the
+// OPPOSITE kind of `entity_kind` - matching every _BEST_AVAILABLE enumerator/sentinel's own doc
+// comment in rmw/types.h verbatim ("the middleware is not expected to update the policy after
+// creating a subscription or publisher, even if the chosen policy is incompatible with newly
+// discovered endpoints" - resolved once, not re-evaluated later). `entity_kind` must be
+// RMW_TICKLE_ENTITY_PUBLISHER or _SUBSCRIPTION - services/clients never reach here (rmw_tickle_
+// validate_qos_profile() already rejects BEST_AVAILABLE for that kind). Caller must already hold
+// context_impl->node_mutex (the same lock every other context_impl->discovery.entities[] reader in
+// this package already requires - rmw_graph.c) - this function itself never locks/unlocks. Fields
+// that weren't requested as BEST_AVAILABLE pass through `requested` unchanged.
+rmw_qos_profile_t rmw_tickle_resolve_best_available(const rmw_qos_profile_t* requested,
+                                                    const struct tt_Discovery* discovery, const char* topic_name,
+                                                    rmw_tickle_entity_kind_t entity_kind);
+
 // Forward reference only (pointer field below) - rmw_tickle_context_impl_t's own full definition
 // needs rmw_tickle_guard_condition_t to already be complete (it embeds one), so the two are
 // declared in this order rather than the other way around.

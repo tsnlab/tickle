@@ -270,6 +270,17 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
     rcutils_allocator_t* allocator = &node_impl->allocator;
 
+    // DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21) - see rmw_publisher.
+    // c's own rmw_create_publisher() for the identical Publisher-side counterpart and the full
+    // reasoning (rmw_tickle_resolve_best_available()'s own doc comment, rmw_tickle.h, has the
+    // algorithm). Reassigning the qos_profile parameter itself keeps every downstream reference
+    // below already correct with no further edits needed.
+    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    rmw_qos_profile_t resolved_qos = rmw_tickle_resolve_best_available(qos_profile, &node_impl->context_impl->discovery,
+                                                                       topic_name, RMW_TICKLE_ENTITY_SUBSCRIPTION);
+    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    qos_profile = &resolved_qos;
+
     rmw_tickle_subscriber_t* sub_impl =
         (rmw_tickle_subscriber_t*)allocator->zero_allocate(1, sizeof(rmw_tickle_subscriber_t), allocator->state);
     if (NULL == sub_impl) {

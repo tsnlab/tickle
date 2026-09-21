@@ -221,6 +221,18 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     rmw_tickle_node_t* node_impl = (rmw_tickle_node_t*)node->data;
     rcutils_allocator_t* allocator = &node_impl->allocator;
 
+    // DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21) - resolve any RMW_
+    // QOS_POLICY_*_BEST_AVAILABLE value/sentinel in qos_profile into a concrete one before anything
+    // below reads it (rmw_tickle_resolve_best_available()'s own doc comment, rmw_tickle.h, has the
+    // full algorithm). Reassigning the qos_profile parameter itself (not shadowing with a new name)
+    // keeps every downstream reference below already correct with no further edits needed - a
+    // profile that requested nothing as BEST_AVAILABLE gets its own values back unchanged.
+    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    rmw_qos_profile_t resolved_qos = rmw_tickle_resolve_best_available(qos_profile, &node_impl->context_impl->discovery,
+                                                                       topic_name, RMW_TICKLE_ENTITY_PUBLISHER);
+    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    qos_profile = &resolved_qos;
+
     rmw_tickle_publisher_t* pub_impl =
         (rmw_tickle_publisher_t*)allocator->zero_allocate(1, sizeof(rmw_tickle_publisher_t), allocator->state);
     if (NULL == pub_impl) {
