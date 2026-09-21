@@ -2261,6 +2261,38 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
+// Milestone 62 follow-up - tt_Node_entity_alive()'s own per-entity-lease freshness (tickle.h)
+// sharpens the discovery_callback(departed=true) signal for entities that requested a lease
+// shorter than the loop above's fixed ~3s node-wide wait: without this, a leased entity's
+// departure was only ever reported at that coarse node-level mark, same as an unleased one,
+// silently discarding the lease it asked for. Runs every tick (this function's own caller already
+// runs every tt_NODE_UPDATE_INTERVAL, ~1s) so a short-leased entity is tombstoned - and the
+// callback fires - within about one tick of its own lease boundary instead of always the ~3s one.
+// Entities with no lease (liveliness_lease_duration_ns == 0) are skipped here - tt_Node_entity_
+// alive() itself defers those to .alive, which only the loop above (or a real farewell) changes,
+// so behavior for them is unchanged. No-op if no discovery cache is attached.
+static void tombstone_entities_past_own_lease(struct tt_Node* node, uint64_t time) {
+    if (node->discovery == NULL) {
+        return;
+    }
+
+    struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        struct tt_DiscoveredEntity* entity = &entities[i];
+        if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->liveliness_lease_duration_ns == 0) {
+            continue;
+        }
+        if (tt_Node_entity_alive(node, entity, time)) {
+            continue;
+        }
+        entity->alive = false;
+        if (node->discovery_callback != NULL) {
+            node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/true,
+                                     node->discovery_callback_param);
+        }
+    }
+}
+
 // Runs once per tt_NODE_UPDATE_INTERVAL (schedule_periodic_tasks()'s own first-run comment
 // applies here too) - the timeout-based counterpart to process_update()'s content-change
 // dedup: a remote node whose announce hasn't been *heard at all* (not just unchanged) for
@@ -2274,7 +2306,8 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 // own RMW_EVENT_LIVELINESS_CHANGED.not_alive_count needs to exclude (struct tt_DiscoveredEntity.
 // alive's own doc comment). Doesn't distinguish "crashed" from "network partitioned" from "just
 // slow" - none of those are observable from here, and DDS-style liveliness has the same
-// limitation.
+// limitation. tombstone_entities_past_own_lease() (above) is this function's own per-entity-lease
+// counterpart - same failure concept, finer timing for entities that asked for it.
 static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
@@ -2292,6 +2325,8 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
             node->update_last_seen[i] = 0;
         }
     }
+
+    tombstone_entities_past_own_lease(node, time);
 
     if (!tt_Node_schedule(node, time + tt_NODE_UPDATE_INTERVAL, check_liveliness, NULL)) {
         TT_LOG_ERROR("Cannot schedule check_liveliness");

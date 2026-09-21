@@ -61,6 +61,29 @@ static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, ui
     return tail;
 }
 
+// Same shape as write_update_one_entity() above, extended with the one wire field Milestone 62's
+// own tombstone_entities_past_own_lease() tests below need - kept local rather than reused from
+// tests/test_rxo_matching.c's own write_update_one_subscriber_full() for the same "no cross-file
+// dependency for one small helper" reasoning as write_update_one_entity() itself.
+static uint32_t write_update_one_entity_with_lease(uint8_t* buf, uint64_t last_modified, uint32_t endpoint_id,
+                                                   uint8_t kind, const char* type, const char* name,
+                                                   uint64_t liveliness_lease_duration_ns) {
+    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)buf;
+    update_header->last_modified = last_modified;
+    update_header->entity_count = 1;
+    uint32_t tail = sizeof(struct tt_UpdateHeader);
+
+    struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + tail);
+    entity->endpoint_id = endpoint_id;
+    entity->kind = kind;
+    entity->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
+    tail += sizeof(struct tt_UpdateEntity);
+
+    tt_encode_string(buf, &tail, tt_MAX_BUFFER_LENGTH * 2, type);
+    tt_encode_string(buf, &tail, tt_MAX_BUFFER_LENGTH * 2, name);
+    return tail;
+}
+
 // Records: (node, callback fire count, last args) - a test-local observer, not part of
 // test_mock.h since discovery callbacks are specific to this file's tests.
 static int callback_calls = 0;
@@ -298,6 +321,67 @@ static void test_detaching_stops_recording(void) {
     EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
 }
 
+// Milestone 62 follow-up (rmw_tickle/PLAN.md) - tombstone_entities_past_own_lease()'s own path:
+// this is the fix the "2번" (option 2) decision was about - a discovery_callback consumer (like
+// examples/perf_hil/tickle/liveliness_loss_detection/server.c) must see departed=true at an
+// entity's own short lease boundary, not only ever at check_liveliness()'s fixed ~3s node-wide
+// sweep. The remote node itself keeps announcing on schedule here (update_seen[]/update_last_
+// seen[] are set by process_update() and never reset) - only this one entity's own shorter lease
+// is what's being tested.
+static void test_short_lease_entity_tombstoned_before_node_level_sweep(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+
+    test_mock_now = 0;
+    struct tt_Header header;
+    init_header(&header, REMOTE_NODE_ID);
+    uint32_t tail = write_update_one_entity_with_lease(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
+                                                       "std_msgs/msg/String", "my_topic", 500);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
+
+    reset_callback_observations();
+    // Well past the entity's own 500ns lease, nowhere near the node-level ~3s sweep threshold.
+    check_liveliness(&node, 501, NULL);
+
+    EXPECT_EQ_INT(1, callback_calls);
+    EXPECT_TRUE(last_departed);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)last_node_id);
+    EXPECT_EQ_U32(ENTITY_ID, last_endpoint_id);
+    EXPECT_EQ_U32(0, tt_Discovery_count(&discovery)); // no longer counted as alive...
+    const struct tt_DiscoveredEntity* tombstoned = tt_Discovery_find(&discovery, REMOTE_NODE_ID, ENTITY_ID);
+    EXPECT_TRUE(tombstoned != NULL);               // ...but tombstoned, not freed - same convention as the
+    EXPECT_TRUE(!tombstoned->alive);               // node-level timeout path above
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]); // the node itself is still considered alive
+}
+
+// The contrast pair to the test above (same shape as test_liveliness.c's own test_does_not_
+// expire_before_threshold()): an entity still within its own lease when check_liveliness() runs
+// must stay untouched, exactly at the boundary.
+static void test_short_lease_entity_not_tombstoned_before_its_own_lease(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
+
+    test_mock_now = 0;
+    struct tt_Header header;
+    init_header(&header, REMOTE_NODE_ID);
+    uint32_t tail = write_update_one_entity_with_lease(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
+                                                       "std_msgs/msg/String", "my_topic", 500);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+
+    reset_callback_observations();
+    check_liveliness(&node, 500, NULL); // exactly at the lease boundary - still alive
+
+    EXPECT_EQ_INT(0, callback_calls);
+    EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
+}
+
 static void test_null_discovery_helpers_are_safe(void) {
     EXPECT_EQ_U32(0, tt_Discovery_count(NULL));
     EXPECT_TRUE(tt_Discovery_find(NULL, REMOTE_NODE_ID, ENTITY_ID) == NULL);
@@ -317,6 +401,10 @@ int main(void) {
     test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full();
     test_mock_reset();
     test_detaching_stops_recording();
+    test_mock_reset();
+    test_short_lease_entity_tombstoned_before_node_level_sweep();
+    test_mock_reset();
+    test_short_lease_entity_not_tombstoned_before_its_own_lease();
     test_null_discovery_helpers_are_safe();
 
     if (test_result() != 0) {
