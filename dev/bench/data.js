@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790005620722,
+  "lastUpdate": 1790005624369,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -99494,6 +99494,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/f0e248bc444e7489abc92a8f991774dccb30759f"
         },
         "date": 1790004938178,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "acc7e7afe92e69464e0e1f65b512a4c7d00a8232",
+          "message": "run_perf.sh: drop unused 'sent' local in summarize() (shellcheck SC2034)\n\nTickLE Plan's own re-push of the dashboard rebuild (432b854) tripped Check all - a real\ncopy-paste leftover from an earlier version of best_effort_throughput's own summary line, never\nactually assigned or read.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T00:45:44+09:00",
+          "tree_id": "bace016f5cc5294df0b57e7861d4834f43f85529",
+          "url": "https://github.com/tsnlab/tickle/commit/acc7e7afe92e69464e0e1f65b512a4c7d00a8232"
+        },
+        "date": 1790005623178,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
