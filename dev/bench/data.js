@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789997219549,
+  "lastUpdate": 1789997786098,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -40450,6 +40450,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.046222857142857135,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "abcffa1d47fd8def9bc0733743037098eac3b1ac",
+          "message": "rmw_qos.c/rmw_publisher.c/rmw_subscription.c: implement RMW_QOS_POLICY_*_BEST_AVAILABLE\n\nDDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md): BEST_AVAILABLE\n(reliability/durability/liveliness enums, plus the deadline/liveliness_lease_\nduration sentinel constants) was a real rmw QoS value TickLE didn't implement\nat all - rmw_tickle_validate_qos_profile() rejected the enum outright\n(RMW_RET_UNSUPPORTED), and the two duration sentinels (RMW_DURATION_INFINITE - 1)\nwere silently mis-handled as a literal ~292-year deadline/lease instead of\ntriggering resolution.\n\nNew rmw_tickle_resolve_best_available() (rmw_qos.c) resolves every BEST_\nAVAILABLE value/sentinel once, at entity-creation time, against context_impl\n->discovery's own currently-known entities on the same topic - matching every\n_BEST_AVAILABLE enumerator/sentinel's own doc comment in rmw/types.h verbatim\n(resolved once, never re-evaluated later). For RELIABILITY/DURABILITY/\nLIVELINESS: an *offering* Publisher always resolves trivially to the strict\nvalue (RELIABLE/TRANSIENT_LOCAL/MANUAL_BY_TOPIC) since offering strict is\nRxO-compatible with any Subscription request; a *requesting* Subscription\nresolves to strict only if every currently-discovered Publisher also offers\nit, else the loose value - derived directly from rmw_qos_profile_check_\ncompatible()'s own existing compatibility rules in this same file, not\nguessed. For DEADLINE/LIVELINESS_LEASE_DURATION: genuinely asymmetric per\nrmw/types.h's own doc comment - a Subscription takes the max of discovered\nPublisher values (loosest bound still compatible with all of them), a\nPublisher takes the min of discovered Subscription values (only as strict as\nthe tightest real requirement demands). A discovered entity's own 0\n(\"no requirement\", struct tt_DiscoveredEntity's own convention) is treated as\nunconstrained for this computation - it never narrows a min, but forces the\nwhole max-computation result to \"no constraint\" too, since staying compatible\nwith an unconstrained peer requires matching its own lack of a bound.\n\nWired into rmw_create_publisher()/rmw_create_subscription() by reassigning\nthe qos_profile parameter to a resolved local copy before anything else\nreads it, under context_impl->node_mutex (the same lock every other\ndiscovery.entities[] reader already requires).\n\nNew tests/test_best_available.c (24 assertions across RELIABILITY/\nDURABILITY/LIVELINESS enum resolution and the DEADLINE/LIVELINESS_LEASE_\nDURATION min/max asymmetry, including the \"0 = unconstrained\" collapse/skip\nedge cases) using the same synthetic-discovered-entity injection technique\ntest_events.c already established.\n\nNo TickLE core/wire-protocol change - tt_Discovery already carries\neverything this needs.\n\nVerified: colcon build (clean rebuild) + colcon test (24/24, 0 errors/\nfailures) + clang-tidy -p build/rmw_tickle (0 warnings across every touched\nfile) + clang-format --dry-run --Werror, all clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T22:33:40+09:00",
+          "tree_id": "e41e432c463a37e60a86c8192d95ae1a312a8aef",
+          "url": "https://github.com/tsnlab/tickle/commit/abcffa1d47fd8def9bc0733743037098eac3b1ac"
+        },
+        "date": 1789997779008,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.012212857142857142,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.049507142857142854,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04627857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04551714285714286,
             "unit": "ms"
           }
         ]
