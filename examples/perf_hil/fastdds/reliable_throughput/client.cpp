@@ -59,12 +59,19 @@ int main(int argc, char** argv) {
 
     Topic* topic = participant->create_topic("stream", "Bench", TOPIC_QOS_DEFAULT);
 
-    // scenario "reliable_throughput" - BEST_EFFORT, matched exactly across frameworks
-    // (comparison.md's design principle 3).
+    // scenario "reliable_throughput" - RELIABLE, matched exactly across frameworks
+    // (comparison.md's design principle 3). KEEP_ALL + generous resource_limits (2026-09-21, real
+    // bug found the hard way - see the CycloneDDS twin's own identical fix, which this file never
+    // got the matching update for): the shallow KEEP_LAST(8) this file used before real-CI-caught
+    // reliable_throughput's own RELIABLE never recovering any real tc/netem-injected loss at all
+    // (comparison.md §3/§6 - CycloneDDS's own KEEP_ALL+resource_limits(4000) fully recovers 1%/5%
+    // injected loss every time, this file's own shallow depth=8 recovered none of it) - a shallow
+    // writer history queue evicts a lost sample long before a NACK-driven retry can land, the exact
+    // same root cause CycloneDDS's own client.c doc comment already names.
     DataWriterQos wqos = DATAWRITER_QOS_DEFAULT;
     wqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
-    wqos.history().kind = KEEP_LAST_HISTORY_QOS;
-    wqos.history().depth = 8;
+    wqos.history().kind = KEEP_ALL_HISTORY_QOS;
+    wqos.resource_limits().max_samples = 4000;
 
     Publisher* publisher = participant->create_publisher(PUBLISHER_QOS_DEFAULT);
     DataWriter* writer = publisher->create_datawriter(topic, wqos);

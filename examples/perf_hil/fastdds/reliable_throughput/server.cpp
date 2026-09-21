@@ -59,10 +59,12 @@ int main(int argc, char** argv) {
 
     Topic* topic = participant->create_topic("stream", "Bench", TOPIC_QOS_DEFAULT);
 
+    // KEEP_ALL + generous resource_limits - matches client.cpp's own identical fix, see its doc
+    // comment for the real bug this avoids.
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
-    rqos.history().kind = KEEP_LAST_HISTORY_QOS;
-    rqos.history().depth = 8;
+    rqos.history().kind = KEEP_ALL_HISTORY_QOS;
+    rqos.resource_limits().max_samples = 4000;
 
     Subscriber* subscriber = participant->create_subscriber(SUBSCRIBER_QOS_DEFAULT);
     DataReader* reader = subscriber->create_datareader(topic, rqos);
