@@ -434,6 +434,82 @@ self-throttle documentation suggestion above, all addressing the same scenario 4
 different, complementary angles (tolerable window size, sender-side pacing, and now receiver-
 responsiveness latency) - pending the user's own prioritization.
 
+#### Real HIL experiment (2026-09-21, TickLE Plan, at the user's own explicit direct instruction: "이 부분은 별도의 branch를 만들어서 구현해보고 이 가설이 옳은지 HIL에서 실험을 진행해줘. 네가 진행해.") - inconclusive, real confound found, not merged
+
+**Implementation**: `tt_SCHEDULER_IO_INTERLEAVE` (config.h, 8) bounds consecutive scheduler-task
+execution in `tt_Node_poll()`'s own inner loop, forcing a non-blocking `tt_try_receive()` peek
+after that many back-to-back scheduler tasks - exactly the fix proposed above. Branch
+`experiment/poll-loop-io-interleave` (commit `8f5ef5a`, pushed - does **not** trigger rig-touching
+CI, only a push to `main` does), based on `origin/main` at `92d248d` (before both TickLE Dev's own
+bitmap-widening work and this fix, to isolate this one variable). `make test`/`make sanitize`
+(ASan+UBSan)/`make -C platform/freertos`/`clang-format --dry-run --Werror`/`clang-tidy` all clean
+before any HIL work.
+
+**A real self-correction, found while designing the HIL comparison**: this section's own earlier
+"~1.2M msg/s" and "64 samples ≈ 53μs" figures were **wrong** - a real arithmetic error, not a
+measurement one. TickLE's own real max-rate throughput is ~150,000-200,000 msg/s (`sent` count ÷
+8s window, e.g. §3's own `1244.5K msgs` over 8s ≈ 155,500/s), not ~1.2M/s (that "1.2M" conflated a
+*total sent count* over the whole 8s run with a *per-second rate* somewhere upstream in this
+document's own earlier writing - not re-audited elsewhere this pass, but this specific figure is
+now known wrong). At the real rate, 64 samples take roughly 320-425μs, not 53μs - a real, meaningful
+correction to the bitmap-width fix's own stated motivation (the window was less severely
+undersized than earlier claimed, though the real HIL loss numbers - the actual evidence, not the
+theoretical model - still show genuine, reproducible recovery gaps regardless of which napkin
+number explains them).
+
+**Real HIL result, `reliable_throughput`, same `tc`/`netem` matrix as the existing baseline, 2 reps
+each, depth=64 (no `-K`), max send rate (`-i` unset)**:
+- 1% loss: sent 1,553,710/1,304,836, recv 1,510,229/1,287,339, **2.8%/2.1% loss**, send_mbps
+  118.1/99.2
+- 5% loss: sent 1,586,534/1,591,737, recv 1,476,644/1,476,388, **7.7%/7.4% loss**, send_mbps
+  120.6/121.0
+
+Compared against the existing depth=64 baseline (`comparison.md` §3, no scheduler fix, no bitmap
+widening): 1% loss was 2.1% avg (1.1-3.1% range) at 81.2-92.5 Mbps send; 5% loss was 5.25% avg
+(5.2-5.3% range) at 94.3 Mbps send.
+
+**Not a clean confirmation - a real, reproducible confound, reported honestly rather than
+glossed over**: the experimental branch achieved **substantially higher raw send throughput**
+every single run (99-121 Mbps vs. the baseline's own historical 81-94 Mbps) - a genuine,
+consistent effect across all 4 runs, not noise, though its own cause isn't established (plausibly
+the fix itself removing some inefficiency, plausibly ordinary rig variance this session hasn't
+seen at this magnitude before - not distinguished this pass). At 1% loss, recorded loss% (2.1-2.8%)
+lands within/near the old baseline range. At 5% loss, recorded loss% (7.4-7.7%) is **worse** than
+the old baseline (5.2-5.3%) - but a higher throughput *mechanically* produces worse loss% at the
+same 64-bit window regardless of any RTT change (more samples pass per unit time, so the same
+absolute window covers less time), so this result **cannot cleanly confirm or refute** the
+underlying I/O-starvation hypothesis - the throughput increase and any RTT change are confounded
+together in this comparison, not isolated.
+
+**Attempted a controlled, equal-rate follow-up to isolate the confound - hit a different, real,
+previously-undiscovered issue, not chased down this pass**: ran both a plain-`main` baseline and
+the experimental branch at a fixed, deliberately-modest `-i` (targeting ~30 Mbps, well under either
+build's own max) to hold throughput equal. The plain-`main` run (unmodified code, not this fix)
+came back with **`recv` (111,090) exceeding `sent` (107,358)** and an actual achieved rate far
+below the target (8.2 Mbps, not ~30) - a real anomaly, not explained by anything this section
+already accounts for, plausibly `reliable_throughput/server.c`'s own naive `received++` per
+callback counting a retransmitted duplicate of an already-delivered sample as a second arrival at
+low rate/high relative retry frequency (this scenario's own receive callback has no `seq_no`-based
+dedup, unlike core's own internal ACKNACK bookkeeping) - **a candidate follow-up item, not
+investigated further this pass**, and not something either this fix or the bitmap widening caused
+(reproduced on plain, unmodified `main`). The experimental side of this specific controlled
+comparison was abandoned once the baseline side's own numbers were already unusable.
+
+**Honest bottom line**: the poll-loop-starvation hypothesis is **not confirmed by this HIL pass** -
+neither cleanly refuted, since the one comparison that was completed (max-rate) is confounded by a
+real, unexplained throughput increase, and the controlled-rate follow-up meant to isolate that
+confound hit a separate, real counting artifact before producing usable data. **This branch is not
+being merged or recommended as-is** - the underlying scheduler-loop change may still be sound
+engineering (it does what it says: forces periodic I/O checks), but this pass did not produce
+evidence it improves `reliable_throughput`'s own real recovery rate, and produced a real,
+unexplained throughput side-effect that itself needs understanding before this could be considered
+for `main`. `experiment/poll-loop-io-interleave` is left pushed on its own branch (not merged) for
+whoever picks this up next; the rig's own two Pis were restored to a clean `main` checkout
+afterward (a real, unrelated slip caught and fixed during cleanup: `~/tickle`'s own local `main`
+branch ref on both Pis was found 427 commits stale, apparently from well before this session -
+fast-forwarded to match `origin/main`, not something this experiment itself caused but worth
+noting since it could have confused a future manual rig session).
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
