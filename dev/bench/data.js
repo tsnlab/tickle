@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789953474714,
+  "lastUpdate": 1789953478045,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -87690,6 +87690,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.3,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1dd3fb2091ea4daafedc2f8c01a92126dc80550d",
+          "message": "comparison.md: merge scenario 5/6 write-up - same root cause, not separate\n\nTickLE Dev's own follow-up (6d575e5) corrected the initial diagnosis:\nscenario 6's recv > sent was misattributed to the receive-side dedup gap\n(item 1's own fix) - actually the identical Heartbeat-driven backlog leak\nas scenario 5 (history_depth_burst_loss/server.c is also a late-joining\nvolatile Subscriber, same structural shape as durability_late_join).\n\nRestructured §6 items 1-2 to match: item 1 now only covers the liveliness\nfalse-positive/DURABLE-push fix (Milestone 59, unrelated). Item 2 documents\nboth fix attempts honestly (attempt 1 left scenario 5 unchanged and\nmisdiagnosed scenario 6; attempt 2, keyed on sub->durable via the\nHeartbeat-path first-contact branch, actually fixed both) rather than just\nshowing the final answer.",
+          "timestamp": "2026-09-21T10:14:49+09:00",
+          "tree_id": "b525140d237b851e84609396ae2296466b52a8dc",
+          "url": "https://github.com/tsnlab/tickle/commit/1dd3fb2091ea4daafedc2f8c01a92126dc80550d"
+        },
+        "date": 1789953476867,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.9,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.2,
             "unit": "%"
           }
         ]
