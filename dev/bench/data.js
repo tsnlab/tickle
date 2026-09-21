@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790002999446,
+  "lastUpdate": 1790004262433,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -41622,6 +41622,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync latency",
             "value": 0.046382857142857135,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "335d752dcfb7d8a03d3c0c4034fae98928803ee2",
+          "message": "rename comparison.md -> COMPARISON.MD, update all references\n\nUser's explicit request. Every tracked reference to the old lowercase filename updated to\nmatch (73 files, doc comments and script echoes only - no functional/CI dependency on the\nexact filename found). .github/scripts/run_perf.sh intentionally excluded - TickLE Dev has\nan active, unrelated in-progress rewrite of that file; its own comparison.md references will\nneed the same update once that work is committed.",
+          "timestamp": "2026-09-22T00:22:54+09:00",
+          "tree_id": "370c1e50a33ed608ee1e7f76600907df83ee7dd9",
+          "url": "https://github.com/tsnlab/tickle/commit/335d752dcfb7d8a03d3c0c4034fae98928803ee2"
+        },
+        "date": 1790004253186,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async latency",
+            "value": 0.03639857142857143,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Array1k sync latency",
+            "value": 0.057941428571428574,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 async latency",
+            "value": 0.04388142857142858,
+            "unit": "ms"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync latency",
+            "value": 0.04763714285714286,
             "unit": "ms"
           }
         ]
