@@ -3443,7 +3443,31 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
         // straight from the Heartbeat, rather than guessing it from whatever DATA happens to
         // arrive first (PLAN.md's Milestone 20's own workaround for not having this signal at
         // all) - the actual DDS-parity fix this whole follow-up is for.
-        proxy->ack_seq_no = ctx->first_available_seq_no;
+        //
+        // Milestone 60 (rmw_tickle/PLAN.md) - which baseline counts as "the real starting point"
+        // depends on THIS Subscriber's own requested durability (sub->durable), not the remote
+        // Publisher's offered one - DDS's own RxO (Requested vs Offered) design philosophy applies
+        // to DURABILITY exactly like every other RxO QoS policy (RELIABILITY, DEADLINE, LIVELINESS,
+        // ...): the Offered side only gates compatibility (offered >= requested, already enforced
+        // by subscriber_incompatible_with_publisher()), the Requested side defines what the
+        // Subscriber actually wants out of the match. A durable (TRANSIENT_LOCAL-equivalent)
+        // Subscriber wants everything the Publisher still retains, so first_available_seq_no (the
+        // oldest still-cached sample) is the right baseline. A volatile Subscriber explicitly does
+        // NOT want pre-match history, even when the matched Publisher happens to be durable and
+        // could offer it (a legal, common DDS pattern) - its own baseline is "whatever's already
+        // been published up to this instant", i.e. ctx->last_seq_no, so only samples published
+        // *after* this point are ever tracked or ACKNACK-requested. Real HIL finding this closes:
+        // durability_late_join's own volatile-Subscriber scenario deterministically leaked an
+        // entire pre-match backlog via this exact branch, unaffected by update_reliable_ack()'s own
+        // first-contact fix (that DATA-arrival path is never reached here - the discovery-triggered
+        // Heartbeat, send_initial_heartbeat(), reaches a freshly-matched Subscriber first whenever
+        // the Publisher's own backlog was written before the Subscriber even existed, exactly this
+        // scenario's own shape). +1 on the volatile side, not last_seq_no itself - ack_seq_no
+        // means "next NOT YET accounted for" (struct tt_WriterProxy's own doc comment), so leaving
+        // it at last_seq_no would still treat that one already-published sample as outstanding and
+        // ACKNACK-request it (highest_relevant_bit() sees heartbeat_last_seq_no == ack_seq_no as
+        // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
+        proxy->ack_seq_no = sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1;
         proxy->received_bitmap = 0;
     } else if (ctx->last_seq_no >= proxy->ack_seq_no) {
         uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;

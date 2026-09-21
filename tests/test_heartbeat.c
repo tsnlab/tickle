@@ -164,6 +164,28 @@ static uint32_t write_heartbeat(struct tt_Node* node, uint32_t endpoint_id, uint
     return sizeof(struct tt_HeartbeatHeader);
 }
 
+// Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail offset
+// (matching what process_packet() would have handed process_data()) - same helper as tests/
+// test_reliable_pubsub.c's own write_data(), needed here too for this file's own Milestone 60
+// volatile-first-contact test (confirming the stream still tracks normally after the Heartbeat-
+// only baseline sync).
+static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
+    struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
+    data_header->endpoint_id = ENDPOINT_ID;
+    data_header->seq_no = seq_no;
+    data_header->timestamp = timestamp;
+    // Explicit, not left to whatever's already in rx_buffer - this file's own tests reuse the same
+    // buffer across write_heartbeat()/write_data() calls, and tt_DataHeader.entity_id's own byte
+    // offset (16) overlaps tt_HeartbeatHeader.flags/reserved[] from an earlier write_heartbeat()
+    // call, so leaving it unset here would silently pick up stale, nonzero bytes - a real bug found
+    // writing this exact helper, matching REMOTE_NODE_ID/entity_id 0's own doc comment below.
+    data_header->entity_id = 0;
+
+    uint32_t tail = sizeof(struct tt_DataHeader);
+    memcpy(node->rx_buffer + tail, &value, sizeof(value));
+    return tail + sizeof(value);
+}
+
 // Builds an UpdateHeader with a single following TOPIC_SUBSCRIBER UpdateEntity in node->rx_buffer,
 // returning the tail offset (matching what process_packet() would have handed process_update()) -
 // same helper as tests/test_durability_pubsub.c's own identically-named one, needed here too for
@@ -284,10 +306,15 @@ static void test_heartbeat_send_skips_when_nothing_retained_yet(void) {
     EXPECT_EQ_INT(1, node.scheduler_tail); // still rescheduled itself for next time
 }
 
-// The actual DDS-parity case this whole feature is for: a brand-new Subscriber that has never
-// received any DATA at all still learns the correct baseline purely from a Heartbeat, and the
-// gap it reveals (nothing received yet, but the Publisher says it has up through last_seq_no)
-// immediately triggers a real ACKNACK - not just silent bookkeeping.
+// The actual DDS-parity case this whole feature is for: a brand-new *durable* Subscriber that has
+// never received any DATA at all still learns the correct baseline purely from a Heartbeat, and
+// the gap it reveals (nothing received yet, but the Publisher says it has up through last_seq_no)
+// immediately triggers a real ACKNACK - not just silent bookkeeping. sub.durable = true here is
+// deliberate (Milestone 60, rmw_tickle/PLAN.md) - a durable Subscriber wants the Publisher's whole
+// still-retained history, matching DDS's own RxO (Requested vs Offered) design: DURABILITY, like
+// every other RxO QoS, is governed by what the Subscriber itself requested, not merely what the
+// matched Publisher can offer - see test_heartbeat_first_contact_volatile_subscriber_skips_backlog()
+// immediately below for the opposite (and today's actual default) case.
 static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_received(void) {
     test_mock_reset();
 
@@ -296,6 +323,7 @@ static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_receive
     struct tt_Subscriber sub;
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.durable = true;
 
     struct tt_Header header;
     init_header(&header);
@@ -311,6 +339,48 @@ static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_receive
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)proxy->node_id);
     EXPECT_TRUE(proxy->acknack_scheduled); // 97..100 gap revealed -> a real ACKNACK cycle
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+}
+
+// Milestone 60 (rmw_tickle/PLAN.md) - the opposite, today's-default case: a brand-new *volatile*
+// Subscriber (sub.durable left false, tt_Node_create_subscriber()'s own default) must NOT request
+// any of a matched Publisher's pre-match history, even though the Heartbeat reveals the Publisher
+// still has samples 97..100 retained and could offer them - a legal, common DDS pattern (a
+// TRANSIENT_LOCAL-capable Publisher matched by a Subscriber that explicitly doesn't want history).
+// Real HIL finding this closes: durability_late_join's own volatile-Subscriber scenario
+// deterministically leaked an entire pre-match backlog through this exact first-contact branch.
+static void test_heartbeat_first_contact_volatile_subscriber_skips_backlog(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 97, 100, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    // Synced to just past last_seq_no (100), not first_available_seq_no (97) - "whatever's already
+    // been published up to this instant" is this Subscriber's own baseline, not the Publisher's
+    // oldest retained sample. +1, not last_seq_no itself: ack_seq_no means "next not yet
+    // accounted for" - leaving it at 100 would still treat that one sample as outstanding.
+    EXPECT_EQ_U32(101, proxy->ack_seq_no);
+    EXPECT_TRUE(proxy->received_bitmap == 0);
+    EXPECT_EQ_U32(100, proxy->heartbeat_last_seq_no);
+    EXPECT_TRUE(!proxy->acknack_scheduled);                   // no gap from this Subscriber's own point of view
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // no ACKNACK requesting any of 97..100
+
+    // The stream must still track normally from here - a real, later gap must still be detected.
+    tail = write_data(&node, 103, 10300, 103); // 101, 102 skipped
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(101, proxy->ack_seq_no); // correctly still waiting on 101
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK for 101
 }
 
 // A Heartbeat arriving at an already-tracking Subscriber, revealing a gap too wide to ever
@@ -683,6 +753,7 @@ int main(void) {
     test_heartbeat_send_derives_range_correctly();
     test_heartbeat_send_skips_when_nothing_retained_yet();
     test_heartbeat_first_contact_sets_baseline_with_no_data_ever_received();
+    test_heartbeat_first_contact_volatile_subscriber_skips_backlog();
     test_heartbeat_oversized_gap_jumps_baseline();
     test_heartbeat_gap_within_window_widens_request_without_jumping();
     test_heartbeat_ignored_for_besteffort_subscriber();
