@@ -311,9 +311,59 @@ not something TickLE would be inventing from scratch.
   established) is the only way to confirm the actual improvement, not something to claim from
   theory alone.
 
-**Not assigned yet** - this is a proposal, not a task handed to TickLE Dev; pending the user's own
-prioritization against the QoS coverage gaps above and TickLE Dev's own currently-assigned `perf
-sched`/10Base-T1S/CycloneDDS-flakiness work.
+### Follow-up research (2026-09-21, TickLE Plan, at the user's own further request) - a second, complementary root cause
+
+Went back to the code to check two things the original analysis above didn't verify: (1) is
+TickLE's own ACKNACK retry cadence itself part of the problem (an artificial delay before the
+first retry, on top of the real network RTT)? (2) is there anything on the *sending* side making
+the 64-sample window get exceeded faster than it has to?
+
+**(1) Retry cadence - confirmed NOT the problem, ruled out with more confidence than before**:
+`maybe_arm_acknack_retry()` (`tickle.c`) sends the *first* ACKNACK immediately, synchronously,
+the instant a gap is detected (`update_reliable_ack()`/`process_heartbeat()`) - only a *second*
+attempt (if the first goes unanswered) waits `tt_RELIABLE_DEADLINE` (0 by default, i.e.
+`tt_CALL_RETRY_INTERVAL`=5ms). So the real limiting factor genuinely is the physical round trip
+(gap detected → ACKNACK out → retransmitted DATA back), not any artificial internal delay -
+TickLE already retries as fast as it physically can. This strengthens the case above (widening the
+window is the only lever on the *receive/retry* side) rather than opening a cheaper alternative.
+
+**(2) A second, real, previously-undiscovered root cause on the *send* side**: `tt_Publisher_
+publish()`/`cache_reliable_sample()` have **no congestion-awareness or backpressure at all** -
+confirmed directly from the code, not inferred: `cache_reliable_sample()` (`tickle.c`) is an
+unconditional ring-buffer overwrite (`cache->entries[cache->next % depth]`, `cache->next = (cache-
+>next + 1) % depth`) with no check of any peer's own outstanding-gap or retry state before evicting
+the oldest entry, and `tt_Publisher_publish()` never blocks or slows down regardless of how far
+behind any matched Subscriber's `peer_ack_seq_no` has fallen. A Publisher sending at max rate keeps
+burying an already-open gap under more new samples the entire time that gap is unresolved, actively
+shortening the real time available to recover it before `jump_ack_baseline()` has to give up -
+compounding the 64-bit-window problem rather than just coexisting with it. Real DDS/RTPS writers
+commonly implement exactly this kind of flow control (e.g. FastDDS's own documented
+`FlowController`s exist specifically to prevent a fast writer from overwhelming a slower reader/
+network) - TickLE has no equivalent today.
+
+**Why a blocking fix would conflict with TickLE's own stated design, and what fits instead**:
+real DDS's own usual RELIABLE-under-resource-pressure answer is to make the writer's own `write()`
+block/reject - but TickLE's own established design philosophy (`tt_Publisher.batch`'s own doc
+comment, DESIGN.md) is "flush immediately by default... lowest latency", and `tt_Publisher_
+publish()` never blocks anywhere else in this codebase either - a mandatory blocking fix would be
+a real, first-of-its-kind exception to that principle, not a natural extension of it. **A cheaper,
+architecture-consistent alternative already exists with zero core change needed**: `tt_Publisher.
+peer_ack_seq_no[]` (`tickle.h`) is already a public, directly-readable field (the same "caller-
+owned, plain field access" convention `batch`/`reliable_cache` already use) - any caller (a native
+TickLE application, or `rmw_tickle` itself) can already compute today, with no new API, how far
+behind its slowest-acking peer is (`pub->seq_no - min(pub->peer_ack_seq_no[i])` across matched
+peers) and *voluntarily* self-throttle its own publish rate if that lag grows large - entirely
+optional, at the caller's own discretion, matching TickLE's own "the caller decides, the core never
+imposes" idiom used everywhere else in this file. Worth documenting as a real, usable pattern
+(maybe a short example or a `tt_Publisher_lag()` convenience wrapper around the existing field, not
+a new mechanism) rather than a core behavior change - complements the bitmap-widening fix above
+without conflicting with it: widening raises the ceiling before a gap becomes unrecoverable;
+voluntary self-throttling reduces how often a real Publisher would ever get close to that ceiling
+in the first place.
+
+**Not assigned yet** - both the bitmap-widening fix and this follow-up research are proposals, not
+tasks handed to TickLE Dev; pending the user's own prioritization against the QoS coverage gaps
+above and TickLE Dev's own currently-assigned `perf sched`/10Base-T1S/CycloneDDS-flakiness work.
 
 ## Concept mapping
 
