@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789996618889,
+  "lastUpdate": 1789996623205,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -94548,6 +94548,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ba1ffb065cdcad0e8c8a4e5eaadc8730ca819fae",
+          "message": "PLAN.md: decide KEEP_ALL-for-Publishers, set work order, assign both QoS gaps to TickLE Dev\n\nUser's explicit decisions (2026-09-21): finish the two rmw-scoped QoS gaps first, in order -\n(1) HISTORY.KEEP_ALL for Publishers, honored (not rejected) with a concrete 8192-entry default\n(~12.2MB, matching the reliable_throughput scenario's own MAX_RELIABLE_DEPTH convention and the\nalready-understood memory cost from comparison.md's own -K 8192 findings), then (2) BEST_AVAILABLE\nresolved once at entity-creation time against tt_Discovery. Both are rmw_tickle-layer only, no\nTickLE core/wire change needed. Assigned to TickLE Dev in this order, pending that session's own\ndirect user confirmation before starting.",
+          "timestamp": "2026-09-21T22:14:02+09:00",
+          "tree_id": "fd0ebc16d3e048ab1593faee13d745de4fe6f478",
+          "url": "https://github.com/tsnlab/tickle/commit/ba1ffb065cdcad0e8c8a4e5eaadc8730ca819fae"
+        },
+        "date": 1789996621986,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 1,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 4.7,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 10,
+            "unit": "%"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 0.3,
             "unit": "%"
           }
         ]
