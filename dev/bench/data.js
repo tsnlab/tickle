@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789955068742,
+  "lastUpdate": 1789955072107,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -59314,6 +59314,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/e40fad9c663b0c0f71db47a3c8ce479a1f46754f"
         },
         "date": 1789954858519,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "reliable loss_pct",
+            "value": 0,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d7b4cf958aa16ce5e7a1d7d45d5a09d4b5d49afc",
+          "message": "PLAN.md/comparison.md: real number for Milestone 45's item (3), cross-thread wake-up cost\n\nperf sched record/latency needs kernel tracepoint access this box doesn't\nhave without an interactive sudo password (no TTY available) - rather than\nask for that system-wide change, measured the underlying pthread_cond_wait/\nbroadcast primitive directly via a standalone userspace benchmark\nreproducing rmw_tickle.h's exact wait_mutex/wait_cond shape.\n\nReal result, reproduced 4/4 runs (10000 samples each): avg ~9.4-9.6us,\np50 ~8.6-8.7us, p99 ~13-16.5us. Closely matches the actual observed\nsame-host latency gap (~9-22us, comparison.md's own numbers) - real,\nconverging evidence the handoff's own inherent cost is the right order of\nmagnitude to explain the whole gap, though not proof no DDS vendor pays a\ncomparable cost for their own equivalent mechanism (not measured this pass).",
+          "timestamp": "2026-09-21T10:41:09+09:00",
+          "tree_id": "3f399d83bf906ee5250c6c80b2b21edb24a53f76",
+          "url": "https://github.com/tsnlab/tickle/commit/d7b4cf958aa16ce5e7a1d7d45d5a09d4b5d49afc"
+        },
+        "date": 1789955070973,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
