@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789997115861,
+  "lastUpdate": 1789997119705,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -50801,6 +50801,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03043433598109654,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "103d9c509820f30606e134142ba73cf068ee02be",
+          "message": "PLAN.md: decide to widen the ACKNACK bitmap to 256 bits, assign to TickLE Dev\n\nUser's explicit decision (2026-09-21), after independently verifying FastDDS's own real\nSequenceNumberSet width from its installed header on this machine (256 bits, not just inferred\nfrom the RTPS spec): widen TickLE's own 64-bit ACKNACK bitmap to match. Assigned to TickLE Dev,\nqueued after the two already-in-progress QoS items (KEEP_ALL done, BEST_AVAILABLE in progress).",
+          "timestamp": "2026-09-21T22:23:58+09:00",
+          "tree_id": "91a7578e11c63dac5011a34f0df0e3295a9db2c7",
+          "url": "https://github.com/tsnlab/tickle/commit/103d9c509820f30606e134142ba73cf068ee02be"
+        },
+        "date": 1789997118536,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.00039918082101004463,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9902567182268415,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473436628069197,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473981584821428,
             "unit": "Mbit/s"
           }
         ]
