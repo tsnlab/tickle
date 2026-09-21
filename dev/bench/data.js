@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789964387029,
+  "lastUpdate": 1789964390460,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -49048,6 +49048,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.03047316414969308,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e03492869a097f760a98103e46f59fa48319d5b2",
+          "message": "PLAN.md: correct row 1 decision - gate process_acknack() by pub->reliable, not keep-as-is\n\nUser correction, moments after the prior commit's \"keep as-is\" close: reopen row 1 and gate\nprocess_acknack() by pub->reliable specifically (narrower than pub->durable, which the row's\nown analysis already flagged as risky for VOLATILE+RELIABLE in-flight recovery). Assigned to\nTickLE Dev alongside rows 2's O(1) follow-up and 3 (LIVELINESS).",
+          "timestamp": "2026-09-21T13:18:07+09:00",
+          "tree_id": "ff19952ed64c88e720a335b5c0ca20754071dcec",
+          "url": "https://github.com/tsnlab/tickle/commit/e03492869a097f760a98103e46f59fa48319d5b2"
+        },
+        "date": 1789964389303,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.00039918082101004463,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9899816513061523,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030460221426827565,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030473572867257253,
             "unit": "Mbit/s"
           }
         ]
