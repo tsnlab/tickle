@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789956967573,
+  "lastUpdate": 1789956971218,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -79964,6 +79964,60 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable @ 10% loss",
             "value": 15.334,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "5063dcdb13c25f8170d05a9a9816af4e23a06751",
+          "message": "examples/perf_hil/fastdds/reliable_throughput: fix real bug - KEEP_ALL not KEEP_LAST(8)\n\nFound while investigating comparison.md §6 item 7 (why CycloneDDS's RELIABLE\nfully recovers tc-injected loss but FastDDS's own recovers none of it):\nthis file was still at the old shallow depth=8 (and had a stale \"BEST_EFFORT\"\ncomment, a copy-paste leftover), never upgraded to match the CycloneDDS\ntwin's own KEEP_ALL+resource_limits(4000) fix for this exact scenario - a\nshallow writer history queue evicts a lost sample long before a NACK-driven\nretry can land, the same root cause CycloneDDS's own doc comment already\nnames. Re-testing with the tc/netem loss matrix next.",
+          "timestamp": "2026-09-21T11:13:10+09:00",
+          "tree_id": "28d97d7ebb49428f90813db4c6c2b9afda554f37",
+          "url": "https://github.com/tsnlab/tickle/commit/5063dcdb13c25f8170d05a9a9816af4e23a06751"
+        },
+        "date": 1789956970073,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "besteffort @ 1% loss",
+            "value": 11.878,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 1% loss",
+            "value": 11.687,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 5% loss",
+            "value": 11.461,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 5% loss",
+            "value": 11.313,
+            "unit": "ms"
+          },
+          {
+            "name": "besteffort @ 10% loss",
+            "value": 11.069,
+            "unit": "ms"
+          },
+          {
+            "name": "reliable @ 10% loss",
+            "value": 10.89,
             "unit": "ms"
           }
         ]
