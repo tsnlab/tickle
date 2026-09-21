@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790001699671,
+  "lastUpdate": 1790001703439,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -30574,6 +30574,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "rtt mdev",
             "value": 0.011,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "89617d8dad7cb0243be6e22caf4e88483fe4db6e",
+          "message": "PLAN.md: correct Milestone 65's own real-HIL citation to the harness-fix-clean re-measurement\n\nTickLE Plan flagged that the first reliable_throughput measurement\n(commit cdac082) predated their own separate recv>sent duplicate-\ncounting harness fix (474e755), which could have inflated recv and\nmasked real loss in that same run. Re-measured on commit 1c3b232\n(already includes the harness fix) instead of trusting the first\nnumber: loss_pct is still 0.0% at 1%/5% tc loss, confirmed clean of\nthat confound. Also picked up a 10% data point (0.3% residual) the\noriginal write-up didn't call out.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T23:39:01+09:00",
+          "tree_id": "e0a93cf0bf000f447ae96fd8d5052a8277e61d0e",
+          "url": "https://github.com/tsnlab/tickle/commit/89617d8dad7cb0243be6e22caf4e88483fe4db6e"
+        },
+        "date": 1790001702301,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "rtt mdev",
+            "value": 0.008,
             "unit": "ms"
           }
         ]
