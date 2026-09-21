@@ -175,6 +175,46 @@ run_scenario() {
     ) > "$LOG_DIR/${label}.log" 2>&1 || true
 }
 
+# liveliness_loss_detection needs its own bespoke orchestration, not run_scenario.sh's generic
+# "start server, run client in foreground, grep its own RESULT: line" pattern - confirmed directly
+# against both client.c's and server.c's own doc comments: the client never exits or prints a
+# RESULT line on its own ("publishing... until killed" - the departure has to be a real `kill -9`,
+# not a graceful exit, to match the DDS twins' own scenario 8 design), so run_scenario.sh's generic
+# "ssh ... ./client ... | grep RESULT:" blocks forever waiting for a line that will never come.
+# Real CI evidence: the first live run of the double-SSH-hop fix (commit 460945e) hung the full
+# 20-minute job timeout on exactly this scenario, right after every other scenario had already
+# completed normally. server.c's own doc comment independently confirms this scenario was always
+# meant to be invoked by hand with a custom kill -9 step, never through run_scenario.sh.
+#
+# Detection is TickLE's own fixed node-level window (tt_LIVELINESS_MISS_THRESHOLD *
+# tt_NODE_UPDATE_INTERVAL = 3 * 1s = 3s, config.h), independent of the announced lease (-T) - the
+# server's own main loop exits as soon as it detects the departure (or its own safety-cap deadline
+# elapses), printing its RESULT line either way. Bounded, polled wait below (max ~10s) rather than
+# a blind sleep, so a detection failure fails this one scenario fast instead of hanging the job
+# again; a final SIGINT is sent regardless, as a safety net that guarantees a RESULT line lands one
+# way or another (departed=0/detect_latency_ms=-1.0 in the worst case - the same "no data, not
+# zero" sentinel durability_late_join's own backlog_delivery_ms already uses).
+run_liveliness_scenario() {
+    local label="$1" lease="$2"
+    echo "== $label =="
+    {
+        local remote_dir="$REMOTE_DIR/$SCEN_ROOT/liveliness_loss_detection"
+        ssh_run "$RPI_SERVER_HOST" "cd ~/$remote_dir; nohup ./server -T $lease > /tmp/tickle_liveliness_server.log 2>&1 < /dev/null &"
+        ssh_run "$RPI_CLIENT_HOST" "cd ~/$remote_dir; nohup ./client -T $lease > /tmp/tickle_liveliness_client.log 2>&1 < /dev/null &"
+        # Discovery margin (2.0s, client.c) plus a handful of the client's own 0.5s-interval
+        # publishes, so the server's own last_received_ns is a real, recent value before the kill.
+        sleep 6
+        ssh_run "$RPI_CLIENT_HOST" "pkill -9 -x client" || true
+        for _ in $(seq 1 10); do
+            ssh_run "$RPI_SERVER_HOST" "grep -q '^RESULT:' /tmp/tickle_liveliness_server.log" 2>/dev/null && break
+            sleep 1
+        done
+        ssh_run "$RPI_SERVER_HOST" "pkill -INT -x server" 2>/dev/null || true
+        sleep 1
+        ssh_run "$RPI_SERVER_HOST" "cat /tmp/tickle_liveliness_server.log" | grep '^RESULT:' || true
+    } > "$LOG_DIR/${label}.log" 2>&1 || true
+}
+
 # --- Scenario definitions, matching rmw_tickle/COMPARISON.MD §2-3 exactly ---
 #
 # best_effort_latency/reliable_latency/best_effort_throughput/deadline_miss_detection: no args,
@@ -234,9 +274,9 @@ run_all_scenarios() {
         done
     fi
 
-    run_scenario "liveliness_lease_1_0" "liveliness_loss_detection" 3 "-T 1.0"
-    run_scenario "liveliness_lease_2_0" "liveliness_loss_detection" 3 "-T 2.0"
-    run_scenario "liveliness_lease_4_0" "liveliness_loss_detection" 3 "-T 4.0"
+    run_liveliness_scenario "liveliness_lease_1_0" 1.0
+    run_liveliness_scenario "liveliness_lease_2_0" 2.0
+    run_liveliness_scenario "liveliness_lease_4_0" 4.0
 
     for pause in 1.0 1.5 2.0; do
         local label="lifespan_pause_${pause//./_}"
