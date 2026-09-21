@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789999756071,
+  "lastUpdate": 1789999760128,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -51444,6 +51444,50 @@ window.BENCHMARK_DATA = {
           {
             "name": "rmw_tickle Struct16 sync throughput",
             "value": 0.030477660042898997,
+            "unit": "Mbit/s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "92d248df108b60df7e0427c60d1c9e5b5adb9ec4",
+          "message": "PLAN.md: research a third latency lever beyond bitmap width - poll-loop scheduler/IO starvation\n\nAt the user's own further request to keep researching latency reduction beyond the ACKNACK\nbitmap widening. Found a real, well-supported (though not yet instrumented) hypothesis reading\ntt_Node_poll()'s own inner loop: a continuously-rescheduling scheduler task (like a max-rate\nPublisher's send_one()) can starve tt_receive() for an entire poll call's timeout budget, since\nthe loop has no cap on consecutive scheduler-task execution before forcing an I/O check. This\nwould mean ACKNACK responsiveness at max send rate is bounded by scheduler-queue idle time, not\nreal network RTT. Corroborated directly by reliable_throughput/client.c's own doc comment, which\nalready bolts on a post-send drain period for exactly this reason. Proposes bounding consecutive\nscheduler-task execution to force periodic non-blocking I/O checks - a core scheduler-loop change,\nno wire-protocol impact, orthogonal to and compatible with the bitmap-width fix. Not assigned to\nTickLE Dev yet - a proposal pending the user's own prioritization, alongside the bitmap fix and\nthe self-throttle documentation suggestion.",
+          "timestamp": "2026-09-21T23:07:57+09:00",
+          "tree_id": "de52253649055a682c8052d953f198ae3dd4b62d",
+          "url": "https://github.com/tsnlab/tickle/commit/92d248df108b60df7e0427c60d1c9e5b5adb9ec4"
+        },
+        "date": 1789999758912,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "rmw_tickle Array1k async throughput",
+            "value": 0.9905353273664202,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Array1k sync throughput",
+            "value": 0.9902560370309013,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 async throughput",
+            "value": 0.030473709106445312,
+            "unit": "Mbit/s"
+          },
+          {
+            "name": "rmw_tickle Struct16 sync throughput",
+            "value": 0.030442782810756137,
             "unit": "Mbit/s"
           }
         ]
