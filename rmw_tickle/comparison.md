@@ -281,3 +281,36 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
    discrete timing-alignment effect in discovery/match completion, not investigated further this
    pass (both the 1.0s and 2.0s endpoints were tight/reproducible, only the middle value showed
    this).
+
+9. **[TickLE core, re-measured - confirms Milestone 61's own prediction, and finds one more thing]**
+   PLAN.md's own DDS semantic-parity backlog, row 2, predicted that raising a Publisher's own
+   `reliable_cache` depth past `tt_RELIABLE_BITMAP_BITS` (64, the Subscriber's own fixed
+   `received_bitmap` width) would *not* fix `reliable_throughput`'s own poor tc-loss recovery,
+   since the bottleneck is Subscriber-side, not Publisher-side. Re-measured on real HIL with the
+   new `-K` flag (`examples/perf_hil/tickle/reliable_throughput/client.c`, Milestone 61), same
+   `tc netem` matrix as §3/scenario 4's own original depth=64 numbers:
+   - `-K 512` (8x the old depth), `tc` loss=1%: sent 1,214,479/1,220,570, recv 1,183,005/1,183,049,
+     **2.6%/3.1% loss** (2/2) - inside the original depth=64 range (1.1-3.1%), no improvement.
+   - `-K 512`, `tc` loss=5%: sent 1,240,256/1,247,211, recv 1,177,152/1,180,082, **5.1%/5.4% loss**
+     (2/2) - matches the original depth=64 range (5.2-5.3%) almost exactly, no improvement.
+   - `-K 8192` (the flag's own max, 128x), `tc` loss=5%: sent 1,229,164/1,230,201, recv
+     1,136,834/1,136,837, **7.5%/7.6% loss** (2/2, reproducible) - *worse* than both the depth=64
+     baseline and `-K 512`, not just flat.
+
+   **Confirms the prediction**: a deeper Publisher cache alone does not improve RELIABLE recovery
+   under real loss - the server's own log makes the reason directly visible, not just inferred:
+   `[WARNING] Reliable gap too large to track (64 ahead of N) - jumping ahead instead of getting
+   stuck` fires regardless of `-K` (seen at both 512 and 8192, "64" never changes), confirming the
+   Subscriber-side `received_bitmap`'s fixed 64-bit window - not the Publisher's own cache depth -
+   is what actually caps how large a gap RELIABLE can recover from.
+
+   **One more thing, not predicted going in**: pushing depth all the way to 8192 made loss
+   measurably *worse* (7.5-7.6% vs. 5.1-5.4% at the same 512 depth and the same 5% injected loss),
+   reproduced 2/2. Not investigated further this pass, but the likely cause is real and separate
+   from the 64-bit bitmap finding above - `process_acknack()`/reliable-cache bookkeeping scale with
+   `capacity`, so an 8192-entry cache does more work per publish/ACKNACK than a 512-entry one at
+   the same ~93-95 Mbps send rate, and that extra per-message cost is itself consuming enough of
+   the CPU budget to cause more real loss, not less. A very deep Publisher cache is not a
+   sensible default - it does not help recovery (per the bottleneck above) and appears to cost
+   something real once pushed far past a Subscriber's own bitmap width for no offsetting benefit.
+   `tc qdisc` cleared back to default (`fq_codel`) after all runs.
