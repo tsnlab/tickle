@@ -41,6 +41,19 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     (void)sub;
     (void)timestamp;
     (void)seq_no;
+    // Real bug found and fixed 2026-09-21 (TickLE Plan, HIL research into throughput/latency
+    // levers) - core's own update_reliable_ack() (tickle.c) explicitly documents that it does
+    // NOT catch every duplicate: once jump_ack_baseline() has fired for a writer, a retransmit
+    // racing the original (or a stale packet from the abandoned range) that arrives with
+    // seq_no < ack_seq_no is delivered to this callback again, undetected - "an accepted, narrow
+    // miss... real DDS readers de-duplicate by (writer GUID, sequence number)" (that function's
+    // own doc comment). This scenario's own receive counting never finished that dedup itself -
+    // without this guard, a duplicate redelivery both double-counts `received` (recv > sent,
+    // observed for real at low throughput/high retry-to-data ratio) and can regress `last_seq`
+    // backward, corrupting the very next genuine gap's own loss count too.
+    if (data->seq <= last_seq) {
+        return;
+    }
     if (data->seq > last_seq + 1) {
         lost += (data->seq - last_seq - 1);
     }
