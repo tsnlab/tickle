@@ -163,39 +163,40 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
    PLAN.md Milestone 59 (2026-09-21) fixed the **DURABLE push path**
    (`deliver_durability_backlog()`) - scenario 5's own durable case re-verified clean,
    `received=20/20` exactly every time (was 140=7×20 in one run before the fix).
+2. **[TickLE core, design decision made - fixed and verified, closes scenarios 5 *and* 6]** TickLE's
+   own `RELIABLE + VOLATILE` didn't isolate a late joiner from history the way DDS's own
+   RELIABLE+VOLATILE does (scenario 5's volatile control case delivered 57 samples, not the 0 DDS
+   gives; scenario 6's own `history_depth_burst_loss` showed the same `recv > sent` shape via a
+   late-joining volatile Subscriber against a shallow `depth=8` Publisher - the identical
+   structural setup, it turned out). **The user's own explicit decision (2026-09-21): fix it to
+   match DDS semantics.**
 
-   Scenarios 6/9's own `recv > sent` signature turned out to be a real, separate cause:
-   `deliver_data_to_subscriber()` (`tickle.c`) had no `seq_no`-based dedup at all - any
-   ACKNACK-driven retransmission overlapping an already-delivered original reached the application
-   callback twice. TickLE Dev's PLAN.md Milestone 60 fixed this by making `update_reliable_ack()`
-   return a bool (already-seen, tracked via `received_bitmap`) and gating the callback on it.
-   **Re-verified (2026-09-21, after TickLE Dev's follow-up fix below): both scenarios now clean.**
-   Scenario 9: 2/2, `recv <= sent`, only genuine loss. Scenario 6, re-verified a second time after
-   TickLE Dev's own scenario-5 root-cause fix (below) also touched the same first-contact path:
-   3/3, `recv < sent` (147/156/147 vs. `sent=160`, real loss only, 4-13 lost per run - not yet
-   deterministic the way CycloneDDS's own exact 52 is, but no more duplicate signature). TickLE
-   Dev's own PLAN.md entry still documents a narrow, accepted theoretical residual (a duplicate
-   arriving after a normal, non-jump watermark advance) - not observed in this pass's own 3/3, but
-   not proven impossible either.
-2. **[TickLE core, design decision made - fixed and verified]** TickLE's own `RELIABLE + VOLATILE`
-   didn't isolate a late joiner from history the way DDS's own RELIABLE+VOLATILE does (scenario
-   5's volatile control case delivered 57 samples, not the 0 DDS gives). **The user's own explicit
-   decision (2026-09-21): fix it to match DDS semantics.** First attempt (Milestone 60, keyed on
-   `update_reliable_ack()`'s own DATA-path first-contact sync) left this scenario's own result
-   completely unchanged - re-verified 3/3, `received=57` decimal-identical to before the fix.
-   Root-caused why: this scenario's server publishes its whole backlog *before any Subscriber
-   exists*, so a fresh Subscriber's *first contact* is always resolved by the discovery-triggered
-   Heartbeat (`inform_subscriber_of_heartbeat()`), not DATA - a separate, older first-contact
-   branch Milestone 60 didn't touch, and which synced every Subscriber's baseline to
-   `first_available_seq_no` unconditionally, regardless of that Subscriber's own requested
-   `durable`. **Real DDS/RTPS analysis before the fix, at the user's own request**: DURABILITY is
-   a Requested-vs-Offered QoS like RELIABILITY/DEADLINE/LIVELINESS - the fix belongs on the
-   requesting (Subscriber) side, keyed on `sub->durable` (not `pub->durable`), mirroring real
-   RTPS's own newly-matched-VOLATILE-reader baseline (the writer's *current* position at match
-   time, not its oldest retained sample). Fixed by syncing `ack_seq_no` to `first_available_seq_no`
-   only when `sub->durable`, otherwise to `last_seq_no + 1`. **Re-verified (2026-09-21): fixed** -
-   3/3, `received=0` exactly, matching DDS precisely; durable case re-confirmed still 20/20 (2/2),
-   no regression.
+   Two attempts were needed, both documented honestly in PLAN.md Milestone 60 rather than
+   silently replaced: **attempt 1** (keyed on `update_reliable_ack()`'s own DATA-path
+   first-contact sync) left scenario 5 completely unchanged - `received=57`, decimal-identical to
+   before the fix. Root cause: this scenario's server publishes its whole backlog *before any
+   Subscriber exists*, so a fresh Subscriber's first contact is always resolved by the
+   discovery-triggered Heartbeat (`inform_subscriber_of_heartbeat()`), not DATA - a separate,
+   older first-contact branch attempt 1 never touched. Scenario 6's own `recv > sent` was, at this
+   point, *mis*-attributed to a believed-separate receive-side dedup gap (`deliver_data_to_
+   subscriber()` had no `seq_no`-based dedup at all, also fixed this same milestone, a real and
+   independently-verified-correct feature - just not the actual cause of either open bug).
+
+   **Attempt 2, after real DDS/RTPS analysis at the user's own request** (DURABILITY is a
+   Requested-vs-Offered QoS like RELIABILITY/DEADLINE/LIVELINESS - the fix belongs on the
+   requesting Subscriber side, keyed on `sub->durable`, mirroring real RTPS's own
+   newly-matched-VOLATILE-reader baseline): fixed `inform_subscriber_of_heartbeat()`'s own
+   first-contact branch to sync `ack_seq_no` to `first_available_seq_no` only when `sub->durable`,
+   otherwise to `last_seq_no + 1`. **Re-verified (2026-09-21): both scenarios fixed.** Scenario 5
+   volatile: 3/3, `received=0` exactly, matching DDS precisely; durable case re-confirmed still
+   20/20 (2/2), no regression. Scenario 6: re-verified clean too once this landed - `recv > sent`
+   gone entirely, replaced by ordinary `recv < sent` (real loss only, 147/156/147 of `sent=160`,
+   confirming it was the *same* Heartbeat-driven leak all along, not the dedup gap first guessed).
+   One honest open observation, left as-is rather than guessed at further: scenario 6's own real
+   loss count varies run to run (4/13/13 lost, vs. CycloneDDS's own deterministic 52) - plausibly
+   ordinary timing variance in exactly when late-join matching completes relative to the
+   Publisher's own continuous send rate and the `depth=8` ring's own eviction, not yet
+   instrumented directly.
 3. **[`rmw_tickle`, performance]** Close the remaining same-host `rmw_tickle` latency gap
    (PLAN.md Milestone 45): item (1), pooling the scratch conversion buffers, is done but was a
    verified *negative result* (no measurable improvement - likely already below glibc `tcache`
