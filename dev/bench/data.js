@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789991182059,
+  "lastUpdate": 1789991185769,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -56627,6 +56627,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "reliable recv throughput",
             "value": 789.324,
+            "unit": "Mbps"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "78466e7423a4475ccdbd1123db7f9e63c9cdabd1",
+          "message": "comparison.md/PLAN.md: verify LIVELINESS per-entity fix on real HIL, close the backlog table\n\nRe-measured liveliness_loss_detection at lease=1.0/2.0/4.0s (2 reps each). Confirms Milestones\n62/63's fix: short leases (1.0s/2.0s) now detect in 1.2-2.4s, tracking the announced lease -\na dramatic improvement over the old fixed ~3080-3620ms. Found one honest limit: a 4.0s lease\nstill detects in ~3.1-3.4s, not ~4s, because check_liveliness()'s own original fixed ~3s\nnode-level sweep still races the new per-entity check and wins whenever the lease exceeds it.\nDocumented as a real, structural trade-off, not a bug. The DDS semantic-parity backlog table\nis now fully closed - every row implemented-and-verified or closed by explicit user decision.",
+          "timestamp": "2026-09-21T20:43:38+09:00",
+          "tree_id": "ad04d57e1a56d76444e84efb246aae923ef91836",
+          "url": "https://github.com/tsnlab/tickle/commit/78466e7423a4475ccdbd1123db7f9e63c9cdabd1"
+        },
+        "date": 1789991184548,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "reliable send throughput",
+            "value": 934.973,
+            "unit": "Mbps"
+          },
+          {
+            "name": "reliable recv throughput",
+            "value": 822.71,
             "unit": "Mbps"
           }
         ]
