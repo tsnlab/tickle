@@ -121,8 +121,13 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
 
     // QoS roadmap #1 (HISTORY/DEPTH) - depth is honored (see rmw_create_subscription()'s own
     // queue_capacity sizing), but KEEP_ALL asks for an *unbounded* queue, which a fixed-capacity
-    // allocation can't provide - only meaningful for subscriptions (a service/client/publisher has
-    // no reader-side queue at all in this rmw's model).
+    // allocation can't provide - rejected here for Subscriptions (a service/client/publisher has no
+    // reader-side queue at all in this rmw's model, so KEEP_ALL is meaningless for them and this
+    // check doesn't apply). A Publisher's own KEEP_ALL is a different, meaningful request instead
+    // (its own reliable/durable retained-sample cache) - DDS QoS policy coverage inventory gap 2
+    // (rmw_tickle/PLAN.md, 2026-09-21): passes validation unrejected, honored by setup_reliable_
+    // cache() (rmw_publisher.c) with a large-but-bounded RMW_TICKLE_KEEP_ALL_DEPTH cache instead of
+    // silently downgrading to a small default depth the way it used to.
     if (RMW_TICKLE_ENTITY_SUBSCRIPTION == entity_kind && RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history) {
         RMW_SET_ERROR_MSG("rmw_tickle doesn't support RMW_QOS_POLICY_HISTORY_KEEP_ALL (an unbounded "
                           "queue) - see rmw_tickle/PLAN.md's QoS roadmap #1 (HISTORY/DEPTH)");

@@ -121,6 +121,15 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
                            pub_impl);
 }
 
+// DDS QoS policy coverage inventory (rmw_tickle/PLAN.md, 2026-09-21) gap 2 - KEEP_ALL conceptually
+// asks for "retain everything," which a fixed-capacity cache can't literally do; matches the same
+// "far past the old 64 ceiling" order of magnitude already established for -K 8192 in examples/
+// perf_hil/tickle/reliable_throughput/client.c's own MAX_RELIABLE_DEPTH (and comparison.md §6 item
+// 9/10's own already-measured ~12.2MB cost for that same figure - not a new cost, the same
+// already-understood one applied here). A large-but-still-bounded cache, not literally unbounded,
+// is the honest approximation the user chose over rejecting KEEP_ALL outright for Publishers.
+#define RMW_TICKLE_KEEP_ALL_DEPTH 8192
+
 // Split out of rmw_create_publisher() below purely to keep that function's own cognitive
 // complexity under clang-tidy's threshold - see rmw_tickle_publisher_t.reliable_cache's own doc
 // comment for the full "why" this exists at all. Returns false (with RMW_SET_ERROR_MSG already
@@ -135,8 +144,19 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
         return true;
     }
 
-    size_t depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
-                                                                             : (size_t)tt_MAX_RELIABLE_HISTORY;
+    // DDS QoS policy coverage inventory gap 2 (rmw_tickle/PLAN.md) - rmw_tickle_validate_qos_
+    // profile() (rmw_qos.c) only rejects HISTORY_KEEP_ALL for Subscriptions; a Publisher requesting
+    // it used to pass validation and then silently fall through to the ordinary ->depth branch
+    // below (defaulting to tt_MAX_RELIABLE_HISTORY=64 if ->depth was also unset) - a real "reject
+    // explicitly, never silently downgrade" violation (this file's own design philosophy, rmw_
+    // qos.c's header comment). Honored here instead of rejected, at the user's own explicit choice.
+    size_t depth;
+    if (RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history) {
+        depth = RMW_TICKLE_KEEP_ALL_DEPTH;
+    } else {
+        depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
+                                                                          : (size_t)tt_MAX_RELIABLE_HISTORY;
+    }
     if (depth == 0 || depth > (size_t)UINT16_MAX) {
         RMW_SET_ERROR_MSG("rmw_tickle's RELIABLE/TRANSIENT_LOCAL publisher depth must be 1.."
                           "UINT16_MAX (struct tt_ReliableCache.depth/capacity's own uint16_t "
