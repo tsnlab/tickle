@@ -376,6 +376,64 @@ confirmation in that session before starting). The self-throttle follow-up resea
 a proposal, not yet assigned - it's a documentation/example-pattern suggestion, not a code change,
 and complements this fix rather than blocking on it.
 
+### Further latency research (2026-09-21, TickLE Plan, at the user's own explicit request: "bitmap 외에 latency를 줄일 수 있는 방법을 좀 더 연구해봐" - ways to reduce latency itself, beyond the bitmap width fix)
+
+The bitmap widening above raises the *tolerable* gap size; it does nothing to reduce the actual
+ACKNACK round-trip time the gap has to survive. This is a different, complementary lever: can the
+real round trip itself (gap detected → ACKNACK out → retransmitted DATA back) be made faster, so
+less of the tolerance gets consumed by internal processing delay rather than genuine network
+transit time?
+
+**A real, previously-undiscovered candidate, found by reading `tt_Node_poll()`'s own inner loop
+(`tickle.c`) closely - stated as a well-supported hypothesis, not yet instrumented/profiled to
+confirm the magnitude**: `tt_Node_poll()`'s own `while (timeout > 0)` loop alternates, one
+`peek_scheduler()` check per iteration - if the earliest-due scheduler entry's own `time <= now`,
+it runs that task (`pop_scheduler()`) and loops again *without ever calling `tt_receive()`*; only
+when nothing is due does it block in `tt_receive()` for the network. A continuously-rescheduling
+task starves network I/O for the *entire* iteration, every time, with no cap on how many scheduler
+tasks may run consecutively before an I/O check is forced. A max-rate Publisher's own `send_one()`
+(the exact shape `reliable_throughput/client.c`'s own scenario uses, `interval_s=0`) reschedules
+itself via `tt_Node_schedule(node, time, send_one, NULL)` - using `time`, the *current* invocation's
+own already-past timestamp, not a fresh `tt_get_ns()` - so the newly-queued entry is already due the
+instant it's next peeked. At TickLE's own real measured ~1.2M msg/s (roughly 833ns/message), this
+plausibly means `tt_Node_poll()` can spend its *entire* `timeout` budget (`tt_RECEIVE_TIMEOUT`=100μs
+default, `config.h`) running back-to-back `send_one()` calls, never reaching `tt_receive()` at all
+in that call - repeating on the next call, for as long as the scheduler keeps finding new work due
+immediately. **`tt_MAX_SCHEDULER_LENGTH`=128 doesn't force a receive check either** (the queue never
+grows past ~1 entry for this pattern - pop-then-repush, not an accumulating backlog) and the send
+socket has no `O_NONBLOCK` set (`hal_linux.c`'s own `socket()` call), so a genuinely full kernel
+send buffer *could* incidentally yield CPU time back, but nothing in the code guarantees it.
+
+**Real, direct textual corroboration this is already an implicitly-known gap, not a novel
+concern**: `reliable_throughput/client.c`'s own doc comment already states "No blocking 'wait for
+all acks' API exists in tickle.h... a fixed drain period after the send loop substitutes for
+that, polling so any in-flight retransmits can still land before teardown" - i.e. the scenario's
+own author already found it necessary to bolt on a dedicated post-send "drain period" specifically
+because the active send loop itself doesn't reliably give ACKNACK processing a chance to run. That
+workaround is exactly what this hypothesis would predict is needed if `tt_receive()` really is
+being starved during the active send phase.
+
+**Proposed fix, not yet implemented**: bound how long `tt_Node_poll()`'s inner loop may run
+scheduler tasks consecutively before forcing an I/O check - e.g. after some small count of
+scheduler tasks (or a small elapsed-time budget, well under `tt_RECEIVE_TIMEOUT`) without one,
+insert one non-blocking `tt_try_receive()`-style peek before resuming scheduler work, rather than
+only ever checking I/O once the scheduler genuinely goes idle or the whole call's `timeout`
+expires. This is a core scheduler-loop change, not a wire-protocol one (no `tt_VERSION` bump
+needed) - orthogonal to and compatible with the bitmap-width fix: bitmap width raises the ceiling;
+this would lower how fast that ceiling gets approached in the first place, by giving ACKNACK
+responses a real chance to happen *during* a busy send loop instead of only after it. **Honest
+caveat, stated plainly**: this is reasoned directly from the scheduler-loop code and corroborated
+by the scenario's own doc comment, but not yet confirmed by direct instrumentation (e.g. counting
+real `tt_receive()` calls during a saturated `reliable_throughput` run) - the actual magnitude of
+the effect, and whether a bounded-task-count or bounded-time-budget interleave point is the better
+design, should be verified before committing to an exact implementation, not assumed from theory
+alone the way the bitmap fix's own honest-expectation caveat already models.
+
+**Not assigned to TickLE Dev yet** - a proposal, alongside the bitmap-widening fix and the
+self-throttle documentation suggestion above, all addressing the same scenario 4 gap from three
+different, complementary angles (tolerable window size, sender-side pacing, and now receiver-
+responsiveness latency) - pending the user's own prioritization.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
