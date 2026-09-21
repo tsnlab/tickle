@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
         writer->write(&req);
         transmitted++;
 
-        eprosima::fastrtps::Duration_t timeout{0, 500 * 1000 * 1000}; // 500ms
+        eprosima::fastrtps::Duration_t timeout {0, 500 * 1000 * 1000}; // 500ms
         if (reader->wait_for_unread_message(timeout)) {
             // Drain every currently-buffered sample, keeping only the newest - a real, confirmed
             // FastDDS behavior found while debugging this exact loop: DataReader's own default

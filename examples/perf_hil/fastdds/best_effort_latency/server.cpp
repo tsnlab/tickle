@@ -67,7 +67,7 @@ int main() {
     Bench sample;
     SampleInfo info;
     while (!g_interrupted) {
-        eprosima::fastrtps::Duration_t timeout{1, 0};
+        eprosima::fastrtps::Duration_t timeout {1, 0};
         if (reader->wait_for_unread_message(timeout)) {
             if (reader->take_next_sample(&sample, &info) == ReturnCode_t::RETCODE_OK && info.valid_data) {
                 writer->write(&sample);

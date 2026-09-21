@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
     uint64_t deadline = start + 15ULL * 1000000000ULL;
     uint32_t received = 0;
     while (!g_interrupted && now_ns() < deadline) {
-        eprosima::fastrtps::Duration_t timeout{1, 0};
+        eprosima::fastrtps::Duration_t timeout {1, 0};
         if (!reader->wait_for_unread_message(timeout)) {
             continue;
         }

@@ -117,7 +117,7 @@ int main(int argc, char** argv) {
     uint64_t deadline = now_ns() + 40ULL * 1000000000ULL;
     bool acked = false;
     while (!g_interrupted && now_ns() < deadline && !acked) {
-        eprosima::fastrtps::Duration_t timeout{1, 0};
+        eprosima::fastrtps::Duration_t timeout {1, 0};
         if (!ack_reader->wait_for_unread_message(timeout)) {
             continue;
         }

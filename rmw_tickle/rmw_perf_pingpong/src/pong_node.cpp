@@ -1,4 +1,4 @@
-// rmw_tickle/COMPARISON.MD's "Design: rmw_perf_pingpong" - pong role. Subscriber on "ping",
+// rmw_tickle/comparison.md's "Design: rmw_perf_pingpong" - pong role. Subscriber on "ping",
 // publisher on "pong" - republishes each received sample unmodified (mirrors examples/perf_hil's
 // own native server.c: an echo, not a transform, so ping_node's own RTT calculation is measuring
 // this round trip and nothing else).
@@ -19,7 +19,7 @@ namespace {
 
     // See ping_node.cpp's own identical helper for why these three are needed - the /parameter_events
     // gap this doesn't work around still applies here too (any rclcpp::Node using rmw_tickle needs
-    // the same rcl_interfaces overlay workaround this tool's own README/COMPARISON.MD entry
+    // the same rcl_interfaces overlay workaround this tool's own README/comparison.md entry
     // documents).
     rclcpp::NodeOptions default_node_options() {
         return rclcpp::NodeOptions()
