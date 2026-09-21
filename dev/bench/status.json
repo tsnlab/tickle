@@ -1,6 +1,34 @@
 {
   "history": [
     {
+      "commit": "78466e7423a4475ccdbd1123db7f9e63c9cdabd1",
+      "commit_short": "78466e7423a",
+      "date": "2026-09-21T11:46Z",
+      "perf": {
+        "besteffort_loss_10pct_pct": 10.0,
+        "besteffort_loss_1pct_pct": 1.0,
+        "besteffort_loss_5pct_pct": 4.9,
+        "build": "pass",
+        "commit": "78466e7423a4475ccdbd1123db7f9e63c9cdabd1",
+        "commit_short": "78466e7423a",
+        "date": "2026-09-21T11:46Z",
+        "integration": "pass",
+        "loss_pct": 2,
+        "reliable_loss_10pct_pct": 0.2,
+        "reliable_loss_1pct_pct": 0.0,
+        "reliable_loss_5pct_pct": 0.0,
+        "reliable_throughput_10pct_mbps": 72.779,
+        "reliable_throughput_1pct_mbps": 61.274,
+        "reliable_throughput_5pct_mbps": 67.774,
+        "rtt_avg_ms": 0.199,
+        "rtt_mdev_ms": 0.009,
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35595605994",
+        "smallmsg_rate_msgs_s": 460653,
+        "throughput_recv_mbps": 899.8,
+        "throughput_send_mbps": 935.045
+      }
+    },
+    {
       "buildtest": {
         "branch": "main",
         "commit": "d8e5af940b147b0941dbf9de7cce06195f7380dd",
@@ -1293,38 +1321,7 @@
         "throughput_recv_mbps": 899.18,
         "throughput_send_mbps": 935.063
       }
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "8dd2079209c3087424557d5c9b3809f696125e4e",
-        "commit_short": "8dd2079",
-        "date": "2026-09-20T20:47Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35536206275"
-      },
-      "commit": "8dd2079209c3087424557d5c9b3809f696125e4e",
-      "commit_short": "8dd2079",
-      "date": "2026-09-20T20:38Z",
-      "perf": {
-        "build": "fail",
-        "commit": "8dd2079209c3087424557d5c9b3809f696125e4e",
-        "commit_short": "8dd2079209c",
-        "date": "2026-09-20T20:38Z",
-        "integration": "fail"
-      }
     }
   ],
-  "updated": "2026-09-21 11:37 UTC"
+  "updated": "2026-09-21 11:47 UTC"
 }
