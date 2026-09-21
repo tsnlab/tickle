@@ -73,7 +73,7 @@ pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-mea
 | 7 | `deadline_miss_detection` | - | writer misses=3 (own math), sent=recv=198 (0% loss), reader_misses=30 (harmless, unexplained) | writer misses=7, reader misses=19, detect ~-0.9ms | writer misses=7, reader misses=14, detect ~0.05ms |
 | 8 | `liveliness_loss_detection` | - | detect ~3080-3620ms (fixed node-level window, independent of lease - see §6) | detect ~1999.08ms (lease 2000ms) | detect ~2000.07ms (lease 2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
-| 9 | `lifespan_expiry` | beyond lifespan | 1/22 lost, 2 runs (**pause=1.0s** - see §6, item 6, for why this isn't the same condition as the other two; re-measured 2026-09-21 post-Milestone-60, no more duplicate-delivery noise) | 5 lost (pause=0.3s) | 10 lost (exact, pause=0.3s) |
+| 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | 28/43/79 lost avg (**not the same condition as the other two** - see §6, item 6; slope-verified against the expected formula, see §6, item 8) | 5 lost (pause=0.3s) | 10 lost (exact, pause=0.3s) |
 
 Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "send Mbps" is each framework's own printed client-side rate. Both runs (reproduced 2/2 for every condition) are given as ranges, not averaged, since the run-to-run variance itself is part of the finding for several rows (CycloneDDS's own scenario 4 send rate, FastDDS/CycloneDDS's own scenario 3 loss %).
 
@@ -245,3 +245,24 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
    setting CycloneDDS's own `KEEP_ALL`+`resource_limits(4000)` equivalent needs, or is this a real,
    inherent behavioral difference between the two vendors' own default reliability windows? Not
    investigated further this pass.
+8. **[TickLE core, verified - LIFESPAN follows the expected formula]** PLAN.md's own DDS
+   semantic-parity backlog flagged one open gap for LIFESPAN, the policy already closest to real
+   DDS: TickLE's own beyond-lifespan loss count had never been checked against a hand-derived
+   expected-loss formula the way CycloneDDS's own exact `(pause-lifespan)/interval` match was
+   (§3, scenario 9). TickLE's own `lifespan_expiry` design can't use that same formula directly -
+   `pause_s` is measured from the *server's own process start*, not from a completed match the way
+   the DDS twins' own design does (§6, item 6's own "not the same condition" note) - so the exact
+   offset from real discovery/match completion time is an unknown constant, not a controlled zero.
+   **Worked around by testing the *slope*, not the absolute count**: real HIL, three `pause_s`
+   values (1.0/1.5/2.0s, same `lifespan=0.1s`/`interval=0.02s`, 250-sample runs), 2-4 reps each.
+   Results: `pause=1.0s` → 27/29 lost (tight); `pause=1.5s` → 54/31/54/33 lost (real, unexplained
+   bimodal variance - two runs cluster near 54, two near 32); `pause=2.0s` → 79/79 lost (exactly
+   reproducible). **The full-range slope from 1.0s to 2.0s is 51 samples lost per second of
+   additional pause** (`(79-28)/1.0`, using each endpoint's own average) - matching the formula's
+   own predicted `1/interval_s = 1/0.02 = 50/s` almost exactly (2% off), confirming TickLE's own
+   age-based expiry genuinely follows the same linear, interval-driven relationship DDS's own
+   exact match demonstrated, independent of not knowing the constant discovery-timing offset. The
+   `pause=1.5s` midpoint's own real bimodal variance is left unexplained - plausibly some real,
+   discrete timing-alignment effect in discovery/match completion, not investigated further this
+   pass (both the 1.0s and 2.0s endpoints were tight/reproducible, only the middle value showed
+   this).
