@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790120397920,
+  "lastUpdate": 1790120402158,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -106694,6 +106694,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/fd266322bfcb9fa20460cd58a43d28ca75c18654"
         },
         "date": 1790109294199,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 155,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "336c20099c9815101a0c597a5efc08a06abb09c8",
+          "message": "perf_hil reliable_throughput: use tt_Publisher_min_acked_seq_no() for -T lag\n\nFixes a build break from 7b266d2: this example's reliable_lag() still indexed\npub->peer_ack_seq_no[], which Phase 3 prerequisite (c) replaced with the\nnode_id-keyed peer_acks[] table. Core gains the matching public accessor\ntt_Publisher_min_acked_seq_no(), the counterpart to\ntt_Publisher_is_acked_by_all_peers(), so a caller never pairs peers[] with the\nack table by index.\n\ncheck-all builds examples/perf_hil with continue-on-error, so this only showed\nup when building the scenario for its own HIL run.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T08:33:38+09:00",
+          "tree_id": "7713c2e740fe6f75219ea0983f4350dddcf97016",
+          "url": "https://github.com/tsnlab/tickle/commit/336c20099c9815101a0c597a5efc08a06abb09c8"
+        },
+        "date": 1790120400580,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
