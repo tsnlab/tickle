@@ -33,32 +33,47 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
+// Order-independent receive tracking (2026-09-22, at the user's own direction, following the
+// real ACKNACK-flood fix in tickle.c). RELIABLE only adds a delivery guarantee via
+// retransmission, not an ordering one (deliver_data_to_subscriber()'s own doc comment, tickle.c;
+// struct tt_WriterProxy's own doc comment makes the identical point) - a successfully recovered
+// retransmit can legitimately arrive *after* later, in-order samples, once one real ACKNACK round
+// trip (a handful of ms) has elapsed. The strict-order counting this file used before
+// (`data->seq <= last_seq -> ignore`) could never credit that: by the time any retransmit could
+// possibly land, `last_seq` had already advanced past it from later arrivals, so the gap was
+// already counted "lost" the moment it was first noticed, and the retransmit's own actual arrival
+// changed nothing - a genuine measurement bug, not a core bug, found investigating why loss_pct
+// stayed far above the injected tc rate even after the flood fix made recovery attempts routine
+// (PLAN.md's real-HIL record for this scenario, 2026-09-22).
+//
+// Fixed with a distinct-sequence-number bitmap instead: any sample that ever arrives, in any
+// order, is counted as received exactly once (first arrival only - a true duplicate re-delivery,
+// same doc-commented core residual as before, is silently ignored the same way). Genuine loss is
+// computed once at the end as "how many sequence numbers up to the highest one ever seen were
+// never received at all" - this correctly credits an out-of-order recovery regardless of when it
+// arrives, rather than penalizing it twice (once for the transient gap, once more by discarding
+// the recovery itself).
+#define MAX_TRACKED_SEQ 20000000u // ~100s worth of headroom at this scenario's own ~200K msg/s max rate
+static uint8_t received_bitmap[(MAX_TRACKED_SEQ / 8) + 1];
 static uint64_t received = 0;
-static uint64_t lost = 0;
-static uint32_t last_seq = 0;
+static uint32_t max_seq_seen = 0;
 
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
     (void)timestamp;
     (void)seq_no;
-    // Real bug found and fixed 2026-09-21 (TickLE Plan, HIL research into throughput/latency
-    // levers) - core's own update_reliable_ack() (tickle.c) explicitly documents that it does
-    // NOT catch every duplicate: once jump_ack_baseline() has fired for a writer, a retransmit
-    // racing the original (or a stale packet from the abandoned range) that arrives with
-    // seq_no < ack_seq_no is delivered to this callback again, undetected - "an accepted, narrow
-    // miss... real DDS readers de-duplicate by (writer GUID, sequence number)" (that function's
-    // own doc comment). This scenario's own receive counting never finished that dedup itself -
-    // without this guard, a duplicate redelivery both double-counts `received` (recv > sent,
-    // observed for real at low throughput/high retry-to-data ratio) and can regress `last_seq`
-    // backward, corrupting the very next genuine gap's own loss count too.
-    if (data->seq <= last_seq) {
-        return;
+    if (data->seq == 0 || data->seq > MAX_TRACKED_SEQ) {
+        return; // out of this scenario's own realistic tracked range - never expected in practice
     }
-    if (data->seq > last_seq + 1) {
-        lost += (data->seq - last_seq - 1);
+    uint32_t idx = data->seq - 1;
+    if (received_bitmap[idx / 8] & (1U << (idx % 8))) {
+        return; // genuine duplicate re-delivery (already counted on first arrival)
     }
-    last_seq = data->seq;
+    received_bitmap[idx / 8] |= (uint8_t)(1U << (idx % 8));
     received++;
+    if (data->seq > max_seq_seen) {
+        max_seq_seen = data->seq;
+    }
 }
 
 static const double default_safety_cap_s = 40.0;
@@ -108,8 +123,8 @@ int main(int argc, char** argv) {
         ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
-    uint64_t total = received + lost;
-    double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
+    uint64_t lost = max_seq_seen > received ? (uint64_t)max_seq_seen - received : 0;
+    double loss_pct = max_seq_seen > 0 ? (100.0 * (double)lost / (double)max_seq_seen) : 0.0;
 
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f\n",
            (unsigned long)received, (unsigned long)lost, loss_pct);
