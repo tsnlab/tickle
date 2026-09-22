@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790058779417,
+  "lastUpdate": 1790058783103,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -101666,6 +101666,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/0898045ea297d7c209e33ec683977561d23b1b5e"
         },
         "date": 1790057570129,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "volatile recv",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d844affde6b464ed7fec034571ddbdce48b87c39",
+          "message": "PLAN.md: record user's decision on RELIABLE self-throttle follow-up\n\nSplit into (1) proactive ACK feedback added to core as an opt-in\nextension of the existing heartbeat_period_ns (assigned to TickLE\nDev, default-off, no behavior change for existing callers) and\n(2) the throttle policy itself staying at the app/example level to\navoid breaking tt_Publisher_publish()'s unconditional-broadcast\ninvariant. TickLE Plan will re-sweep -T on real HIL once (1) lands.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T15:27:18+09:00",
+          "tree_id": "028a2f871ec9d3d52b5546476ccfc8cd798e3850",
+          "url": "https://github.com/tsnlab/tickle/commit/d844affde6b464ed7fec034571ddbdce48b87c39"
+        },
+        "date": 1790058781863,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
