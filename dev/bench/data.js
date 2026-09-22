@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790064081129,
+  "lastUpdate": 1790064084940,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -104641,6 +104641,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/c9cbc5b939fce6f0024179fc5e91ad45b00df803"
         },
         "date": 1790062704480,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b6fb75ae9e31eb53cff4bd0c7ab999244ef30183",
+          "message": "PLAN.md: real HIL re-sweep of -T with proactive ACK - and a real core bug found\n\nProactive ACK solicitation (86c04db) only marginally helped the -T throttle (still a\n~99.7% throughput collapse at lag=64 vs baseline). Probing higher lag thresholds\n(500-4000) surfaced a genuine core bug instead: every run, regardless of threshold,\nfroze at exactly sent=65536 - traced to struct tt_Publisher.seq_no (tickle.h:569)\nbeing uint16_t while the wire format (tt_DataHeader.seq_no, tt_AckNackHeader.seq_no)\nand peer_ack_seq_no[] are both uint32_t. tt_Publisher_publish()'s plain pub->seq_no++\n(tickle.c:1471) silently wraps every 65536 sends - about every 0.34-0.36s at this\nscenario's max rate, so 20+ times per normal 8s run, including every measurement\nalready recorded in this document.\n\nNot fixed here - a src/tickle.c/tickle.h core change, TickLE Dev's file. Reported\nimmediately given the severity. Rig cleaned up.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T16:55:23+09:00",
+          "tree_id": "ffaf8f1da44985a34f1e9dacf749c51e450bd1ca",
+          "url": "https://github.com/tsnlab/tickle/commit/b6fb75ae9e31eb53cff4bd0c7ab999244ef30183"
+        },
+        "date": 1790064083696,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
