@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790085812335,
+  "lastUpdate": 1790085816397,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -103070,6 +103070,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "loss_pct @ 5%",
             "value": 0.7,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1643d4e035f908190f4577e844f3a41c9da028d2",
+          "message": "reliable_stats_print.h: include stdio.h/stdint.h only under tt_RELIABLE_STATS\n\nCheck all (misc-include-cleaner) failed on 55da6b6..a1bf2dc: in the default\nbuild print_reliable_stats() is a no-op, so the unconditional <stdio.h> was\nunused. Move the includes inside the #ifdef, add the <stdint.h> the stats path\nactually uses, and rename the one-letter 's' (readability-identifier-length).\nclang-tidy/clang-format clean with and without -Dtt_RELIABLE_STATS; both\nreliable_throughput examples compile with -Werror either way.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T22:57:39+09:00",
+          "tree_id": "c83645b8d19daaeaf76e748dd1868d036c5610c6",
+          "url": "https://github.com/tsnlab/tickle/commit/1643d4e035f908190f4577e844f3a41c9da028d2"
+        },
+        "date": 1790085815138,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 0.3,
             "unit": "%"
           }
         ]
