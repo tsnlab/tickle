@@ -1985,6 +1985,10 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly.
+uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
+    return min_peer_ack_seq_no((struct tt_Publisher*)(uintptr_t)pub);
+}
+
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (pub->peers[i].node_id == tt_NODE_ID_INVALID) {

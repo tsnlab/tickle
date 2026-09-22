@@ -97,22 +97,17 @@ static const uint32_t default_ack_solicit_us = 200; // well under the time to se
                                                     // messages at max rate for every -T value
                                                     // this scenario tests (64-200)
 
-// Largest "how far ahead of its own last confirmed ack" gap across every currently-matched peer
-// that has sent at least one real ACKNACK so far (peer_ack_seq_no == 0 means "nothing confirmed
-// yet", not "confirmed everything up to 0" - skipped, not treated as an enormous lag at startup
-// before the first ACKNACK has even had a chance to arrive).
+// How far ahead of the slowest currently-matched peer this Publisher has run. 0 while nothing is
+// confirmed yet - tt_Publisher_min_acked_seq_no() returns 0 both when no peer is matched and
+// before the first ACKNACK has arrived, which must not read as an enormous lag at startup
+// (Phase 3 prerequisite (c) moved this bookkeeping behind that accessor; it used to index
+// pub->peer_ack_seq_no[] directly, which no longer exists).
 static uint32_t reliable_lag(const struct tt_Publisher* pub) {
-    uint32_t max_lag = 0;
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id == tt_NODE_ID_INVALID || pub->peer_ack_seq_no[i] == 0) {
-            continue;
-        }
-        uint32_t lag = pub->seq_no - pub->peer_ack_seq_no[i];
-        if (lag > max_lag) {
-            max_lag = lag;
-        }
+    uint32_t min_ack = tt_Publisher_min_acked_seq_no(pub);
+    if (min_ack == 0) {
+        return 0;
     }
-    return max_lag;
+    return pub->seq_no - (min_ack - 1);
 }
 
 static void send_one(struct tt_Node* node, uint64_t time, void* param) {
@@ -221,7 +216,8 @@ int main(int argc, char** argv) {
     // Phase 3 prerequisite (d) - off unless -W asked for it, so the default run is byte-for-byte
     // the Phase 1 experiment.
     if (ack_watermark_pct > 0) {
-        pub.ack_solicit_watermark_pct = (uint8_t)(ack_watermark_pct > 100 ? 100 : ack_watermark_pct);
+        const uint32_t max_pct = 100;
+        pub.ack_solicit_watermark_pct = (uint8_t)(ack_watermark_pct > max_pct ? max_pct : ack_watermark_pct);
     }
     g_pub = &pub;
 
