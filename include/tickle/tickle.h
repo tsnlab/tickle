@@ -813,6 +813,16 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
 // index-aligned with peers[], so a caller must not pair the two arrays by index.
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no);
 
+// The lowest cumulative ack across every currently-matched peer - "every seq_no below this has
+// been acknowledged by all of them". 0 when no peer is matched, or when any matched peer has yet
+// to send its first ACKNACK (tt_PeerAck.ack_seq_no's own "unknown" value), so a caller measuring
+// how far ahead it has run must treat 0 as "nothing confirmed yet", not "confirmed up to 0".
+//
+// The supported way to read peer_acks[] from outside core, alongside
+// tt_Publisher_is_acked_by_all_peers() above: that table is keyed by node_id, not index-aligned
+// with peers[], so a caller must not pair the two arrays by index.
+uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub);
+
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic ACK solicitation - see
 // struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for what it's for and how
 // it differs from tt_Publisher_set_heartbeat_period() above. Same "active scheduler operation, no
