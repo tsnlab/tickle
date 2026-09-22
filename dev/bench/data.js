@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790048481214,
+  "lastUpdate": 1790048484912,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -99727,6 +99727,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "avg RTT",
             "value": 0.228,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": false,
+          "id": "b7d822ab3d291cd71532fb57b3cb4753577227cc",
+          "message": "tickle.c: experimental - bound consecutive scheduler tasks to prevent I/O starvation\n\nAt the user's own explicit instruction: implement and HIL-test the hypothesis from PLAN.md's\n\"Further latency research\" section (branch experiment/poll-loop-io-interleave, not main).\n\ntt_Node_poll()'s own inner loop favored an already-due scheduler entry over ever calling\ntt_receive(), with no cap on consecutive scheduler-task execution. A continuously-rescheduling\ntask (a max-rate Publisher's own send loop, interval_s=0) could starve tt_receive() for a whole\ncall's own timeout budget, meaning ACKNACK responsiveness ends up bounded by scheduler-queue\nidle time, not real network RTT.\n\nNew tt_SCHEDULER_IO_INTERLEAVE (config.h, 8, a first guess not yet tuned) bounds how many\nscheduler entries may run back-to-back before a forced, non-blocking tt_try_receive() peek is\nsqueezed in between them. make test/sanitize/format/tidy and the FreeRTOS platform build are all\nclean. Not yet verified on real HIL - that's the next step, comparing reliable_throughput's own\nloss-recovery rate against the already-documented main-branch baseline (comparison.md).",
+          "timestamp": "2026-09-22T12:28:42+09:00",
+          "tree_id": "6b55fbc61bfea189d542dcf153c5f9d82e39f7f9",
+          "url": "https://github.com/tsnlab/tickle/commit/b7d822ab3d291cd71532fb57b3cb4753577227cc"
+        },
+        "date": 1790048483696,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.227,
             "unit": "ms"
           }
         ]
