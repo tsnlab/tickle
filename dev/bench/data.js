@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790088254829,
+  "lastUpdate": 1790088258784,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -107395,6 +107395,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3626.679,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": false,
+          "id": "ac59daefdde16e4f5142653b2ddb72afa4a9b8ec",
+          "message": "PLAN.md: Phase 1-b HIL result (low rate 0 loss at K=64; max rate now depth/window-limited)\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T23:31:47+09:00",
+          "tree_id": "64d8d987e1a326e2f2d3bfc89741cb6e6e6cd799",
+          "url": "https://github.com/tsnlab/tickle/commit/ac59daefdde16e4f5142653b2ddb72afa4a9b8ec"
+        },
+        "date": 1790088257533,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1582.028,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2624.375,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3619.606,
             "unit": "ms"
           }
         ]
