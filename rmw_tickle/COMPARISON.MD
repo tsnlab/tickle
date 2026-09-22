@@ -81,9 +81,7 @@ replacing this document's own earlier mix of ranges/min-max/single-value styles)
 | 1 | `best_effort_latency` | - | 0.21±0.01ms, 0% loss | 0.30ms†, 0% loss | 0.24ms†, 0% loss |
 | 2 | `reliable_latency` | - | 0.21±0.01ms, 0% loss | 0.30ms†, 0% loss | 0.30ms†, 0% loss |
 | 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent 1244.0K±0.7K msgs, recv 1244.0K±0.7K msgs, 0% loss, sent 94.5Mbps, recv 94.5Mbps, loss 0Mbps | sent 245.4K±0.1K msgs, recv 181.9K±74.0K msgs, 25.9% loss, sent 19.6Mbps, recv 14.6Mbps, loss 5.1Mbps | sent 874.0K±35.4K msgs, recv 766.5K±30.4K msgs, 12.2% loss, sent 70.0Mbps, recv 61.3Mbps, loss 8.7Mbps |
-| 4 | `reliable_throughput` | `tc` loss=0% | sent 1240.0K±1.4K msgs, recv 1240.0K±1.4K msgs, 0% loss, sent 94.25Mbps, recv 94.25Mbps, loss 0Mbps | sent 179.1K±0.8K msgs, recv 179.1K±0.8K msgs, 0% loss, sent 14.35Mbps, recv 14.35Mbps, loss 0Mbps | sent 809.0K±342.2K msgs, recv 809.0K±342.2K msgs, 0% loss, sent 61.45Mbps, recv 61.45Mbps, loss 0Mbps |
-| 4 | `reliable_throughput` | `tc` loss=1% (real, `tc netem` on the sender's own egress) | **post-bitmap-fix (2026-09-21, Milestone 65, see §6 item 11)**: sent 1219.5K±0.7K msgs, recv 1182.8K±19.3K msgs, 3.0% loss, sent 92.7Mbps, recv 89.9Mbps, loss 2.8Mbps — pre-fix (depth=64/64-bit bitmap, superseded): sent 1144.0K±105.4K msgs, recv 1118.0K±85.6K msgs, 2.1% loss, sent 86.85Mbps, recv 85.0Mbps, loss 1.85Mbps | sent 179.9K±2.2K msgs, recv 179.9K±2.2K msgs, 0% loss (fully recovered - see §6 item 7), sent 14.4Mbps, recv 14.4Mbps, loss 0Mbps | sent 152.4K±9.8K msgs, recv 152.4K±9.8K msgs, 0% loss (fully recovered), sent 11.6Mbps, recv 11.6Mbps, loss 0Mbps |
-| 4 | `reliable_throughput` | `tc` loss=5% (real, `tc netem` on the sender's own egress) | **post-bitmap-fix (2026-09-21, Milestone 65, see §6 item 11)**: sent 1242.0K±3.0K msgs, recv 1155.4K±23.3K msgs, 6.95% loss, sent 94.4Mbps, recv 87.8Mbps, loss 6.6Mbps — pre-fix (depth=64/64-bit bitmap, superseded): sent 1241.0K±0.1K msgs, recv 1176.0K±0.7K msgs, 5.25% loss, sent 94.3Mbps, recv 89.35Mbps, loss 4.95Mbps | sent 167.0K±6.8K msgs, recv 167.0K±6.8K msgs, 0% loss (fully recovered - see §6 item 7), sent 13.35Mbps, recv 13.35Mbps, loss 0Mbps | sent 35.4K±1.4K msgs, recv 35.4K±1.4K msgs, 0% loss (fully recovered), sent 2.7Mbps, recv 2.7Mbps, loss 0Mbps |
+| 4 | `reliable_throughput` | see §3a | **superseded - see §3a below** | **superseded (measured over a WiFi path, §6 item 12)** | **superseded - see §3a** |
 | 5 | `durability_late_join` | - | durable: recv 20.0±0/20 msgs, 0% loss; volatile: recv 0.0±0/20 msgs, 100% loss (correctly excludes backlog, matches DDS exactly - see §6) | recv 20/20 msgs, 0% loss | recv 20/20 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | beyond depth | recv 150.0±5.2/160 msgs, 6.25% loss (**non-deterministic**, n=3 - see §6) | recv 108/160 msgs, 32.5% loss (deterministic) | recv 108/160 msgs, 32.5% loss (deterministic) |
@@ -130,6 +128,58 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 - **QoS mechanics (5-9)**: HISTORY depth, LIFESPAN expiry, and DEADLINE/LIVELINESS detection are
   all confirmed working in TickLE, each with the expected numbers where the mechanism is directly
   comparable to DDS's own. Two real, TickLE-specific findings surfaced along the way - see §6.
+
+## 3a. Scenario 4 in detail: RELIABLE under injected loss (re-measured 2026-09-23)
+
+Scenario 4's own single-number rows above were replaced by this section. Two reasons, both real
+bugs found on 2026-09-22/23 (see §6 items 12-13): every earlier TickLE number was measured while
+RELIABLE's own retry path was partly inert or flooding, and **every earlier FastDDS number was
+measured over a path `tc` never touched at all** - FastDDS was sending each sample on both the
+`192.168.10.0/24` test link *and* the `10.1.1.0/24` management WiFi.
+
+The three frameworks are also not answering the same question at their default settings, so a
+single "loss %" cell hides the real difference:
+
+- **TickLE** (today, KEEP_LAST-equivalent, `publish()` never blocks): loss shows up as **lost
+  samples**.
+- **FastDDS/CycloneDDS** (KEEP_ALL + `resource_limits(4000)`): loss shows up as **a slower sender**,
+  and - once `max_blocking_time` is short - as **refused writes** (`write_fail`, added 2026-09-23).
+  Neither ever loses an accepted sample.
+
+So each cell reports **loss % / refused % / Mbps**. `-B` is `max_blocking_time` (DDS only).
+3 reps for TickLE, 2 for the DDS pair.
+
+**Max send rate**:
+
+| `tc` loss | TickLE, depth=64 | TickLE, depth=1024 | FastDDS (default `-B`) | FastDDS (`-B 1ms`) | CycloneDDS (default `-B`) | CycloneDDS (`-B 1ms`) |
+|---|---|---|---|---|---|---|
+| 0% | 0 / - / 107-121 | 0 / - / 107-121 | 0 / 0 / 10.0-11.3 | 0 / 1.3-2.5% / 11.8-17.0 | 0 / 0 / 47-55 | 0 / 0.01-0.1% / 72-93 |
+| 1% | 0.010% / - / 117 | 0.0002-0.014% / - / 117 | 0 / 0 / 8.8-10.8 | 0 / 2.9% / 10.3-10.6 | 0 / 0 / 11.4-11.8 | 0 / 0.73% / 18 |
+| 5% | 0.238% / - / 113 | 0.0385% / - / 113 | 0 / 0 / 5.8-8.3 | 0 / 3.4-3.9% / 8.8-9.7 | 0 / 0 / 2.3-2.7 | 0 / 17-19% / 2.2 |
+| 20% | not measured | not measured | 0 / 0 / 0.9-3.1 | 0 / 15-38% / 0.9-3.0 | 0 / 0 / 0.5 | 0 / 61-66% / 0.3-0.4 |
+| 50% | not measured | not measured | 0 / 0 / 0.6-0.8 | 0 / 64-100% / 0.3-2.9 | 0 / 0 / 0.1 | 0 / 73-79% / 0.1-0.2 |
+
+**Paced to ~8 Mbps** (the rate where all three can keep up):
+
+| `tc` loss | TickLE (depth=64) | FastDDS | CycloneDDS |
+|---|---|---|---|
+| 1% | 0 / - / 8.1 | 0 / 0 / 6.3 | 0 / 0 / 7.1 (0.44% refused at `-B 1ms`) |
+| 5% | 0 / - / 8.1 | 0 / 0 / 6.4 | 0 / 0 / 1.7-2.1 (16-18% refused at `-B 1ms`) |
+| 20%/50% | not measured | 0 / 0 / 6.4 | 0 / 0 / 0.2 / 0.1 |
+
+**Reading**:
+
+- **At a rate all three sustain (~8 Mbps), TickLE now loses nothing either** - the same result the
+  DDS pair gives, at a comparable or higher rate.
+- **At max rate TickLE is 10-100x faster than either DDS** (113-121 Mbps vs. 0.1-17 Mbps under
+  loss) and pays for it with a small residual loss (0.04% at depth=1024, 5% injected). That is the
+  real trade-off today: TickLE keeps sending, DDS slows down or refuses.
+- **DDS's "0% loss" is a different guarantee, not a better recovery rate.** With a 1ms
+  `max_blocking_time` the same conditions produce 3-79% refused writes, i.e. the data never
+  entered the middleware at all.
+- Closing TickLE's remaining gap is `rmw_tickle/PLAN.md`'s Phase 3 (RELIABLE + KEEP_ALL: block the
+  writer, fail the write on timeout), which gives the same guarantee DDS offers, plus Phase 2 if
+  KEEP_LAST at max rate must also reach zero.
 
 ## 4. Experiment: `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`
 
@@ -426,3 +476,27 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
     throughput effect worth pursuing further (with more reps, and ideally direct instrumentation
     of real `tt_receive()` call frequency to confirm the actual mechanism), but not yet proven
     enough to commit to. See PLAN.md's own experiment write-up for the full numbers and reasoning.
+
+12. **[Methodology, found and fixed 2026-09-23 - every earlier FastDDS under-loss number is void]**
+    FastDDS was sending every sample on *both* the `192.168.10.0/24` test link (where `tc netem`
+    injects loss) and the `10.1.1.0/24` management WiFi: `tx_bytes` rose ~30.7MB on each interface
+    in a 4s run, while CycloneDDS used the test link only. The WiFi copy always arrived, so FastDDS
+    reported 0% loss even at **50%** injected loss, and its throughput was partly WiFi-bound. Fixed
+    by pinning FastDDS to the test link (`examples/perf_hil/fastdds/fastdds_eth0_only.xml`, a UDPv4
+    `interfaceWhiteList` + `useBuiltinTransports=false`, applied via `FASTRTPS_DEFAULT_PROFILES_FILE`
+    in that framework's own `run_scenario.sh`, commit `f9cd4c0`) - verified after the fix: eth0
+    +43MB, wlan0 +12KB in the same 4s run, and throughput rose 17.0 -> 21.2 Mbps. §3a's own FastDDS
+    column is the re-measured, eth0-only result; §3's own scenario 4 FastDDS cells are superseded.
+
+13. **[TickLE core, three real RELIABLE bugs found and fixed 2026-09-22/23 - §3's own scenario 4
+    TickLE cells are superseded too]** In order: (a) `struct tt_Publisher.seq_no` was `uint16_t`, so
+    the wire counter wrapped every 65536 sends and `update_reliable_ack()`'s early-return path left
+    retransmission effectively disabled for most of every run; (b) once that was fixed,
+    `maybe_arm_acknack_retry()` was found sending an ACKNACK per *DATA packet* while a gap was open
+    (~70K/s, commit `b393764`); (c) `reliable_throughput/server.c` counted loss assuming in-order
+    arrival, so genuinely recovered retransmits were still counted lost (`84ef9a6`). Phase 1 of
+    PLAN.md's own recovery plan then landed three improvements: 1-a (immediate narrow NACK for a gap
+    that opens while a retry is armed), 1-b (RELIABLE-only 1ms retry interval), 1-c (an eviction
+    Heartbeat carrying `first_available_seq_no`, replacing a compile-time depth guess). Net effect at
+    max rate, 5% injected loss: **4.6% -> 0.24% at depth=64, 0.04% at depth=1024**; at ~8 Mbps, loss
+    is now 0. Full per-phase numbers in `rmw_tickle/PLAN.md`.
