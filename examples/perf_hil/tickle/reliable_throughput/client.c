@@ -89,6 +89,10 @@ static const double throttle_retry_s = 0.00005; // 50us - short enough to resume
 // explicit -A, default_ack_solicit_us below is used instead of leaving it disabled, since a
 // throttle with no proactive solicitation is the exact configuration already shown broken.
 static uint32_t ack_solicit_us = 0;
+// Phase 3 prerequisite (d) (rmw_tickle/PLAN.md) - -W <pct> sets tt_Publisher.ack_solicit_watermark_
+// pct, i.e. solicit an ACK once this percent of the retained cache is unacknowledged. 0 (the
+// default, matching core's own) leaves it off, so a plain run measures exactly what Phase 1 did.
+static uint32_t ack_watermark_pct = 0;
 static const uint32_t default_ack_solicit_us = 200; // well under the time to send throttle_lag
                                                     // messages at max rate for every -T value
                                                     // this scenario tests (64-200)
@@ -155,6 +159,8 @@ static void parse_args(int argc, char** argv) {
             throttle_lag = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-A") == 0 && i + 1 < argc) {
             ack_solicit_us = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
+            ack_watermark_pct = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
     }
     if (throttle_lag > 0 && ack_solicit_us == 0) {
@@ -212,6 +218,11 @@ int main(int argc, char** argv) {
         tt_RELIABLE_CACHE_ARENA_BYTES(reliable_depth, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)));
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
+    // Phase 3 prerequisite (d) - off unless -W asked for it, so the default run is byte-for-byte
+    // the Phase 1 experiment.
+    if (ack_watermark_pct > 0) {
+        pub.ack_solicit_watermark_pct = (uint8_t)(ack_watermark_pct > 100 ? 100 : ack_watermark_pct);
+    }
     g_pub = &pub;
 
     if (ack_solicit_us > 0) {
@@ -242,8 +253,8 @@ int main(int argc, char** argv) {
                       ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / duration_s
                       : 0.0;
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f reliable_depth=%u throttle_lag=%u ack_solicit_us=%u\n",
-           (unsigned long)sent, duration_s, mbps, reliable_depth, throttle_lag, ack_solicit_us);
+           "send_mbps=%.3f reliable_depth=%u throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u\n",
+           (unsigned long)sent, duration_s, mbps, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct);
     print_reliable_stats("client");
 
     tt_Node_destroy(&node);
