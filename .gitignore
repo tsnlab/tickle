@@ -97,3 +97,9 @@ compile_commands.json
 /build/
 /install/
 /log/
+
+# examples/perf_hil/<framework>/<scenario>/{client,server}: built by each framework's own build.sh
+# (not the platform Makefiles), extension-less, and sitting next to their sources - easy to sweep
+# into a commit with `git add -A`, which has happened twice.
+/examples/perf_hil/*/*/client
+/examples/perf_hil/*/*/server
