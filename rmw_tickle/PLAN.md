@@ -871,6 +871,66 @@ for what may be the first time this session. Whether to re-measure anything else
 that leaned on those old numbers (the bitmap-widening verification, the poll-loop fix's own
 loss-is-a-wash conclusion, etc.) is a decision for the user - flagged, not acted on here.
 
+#### depth widening and receiver-side ordering, at the user's own explicit direction (2026-09-22)
+
+With the flood fixed, the user asked the remaining two open items from the earlier "core (proactive
+ACK) vs measurement (ordering)" discussion be finished: does widening the Publisher's own
+retransmission cache (`-K`) help further, and does fixing this scenario's own order-dependent loss
+counting change the picture.
+
+**depth (`-K`) re-measured** (TickLE Dev, real HIL, depth=64 vs. 4000, 1%/5% tc loss, 3 reps each,
+under the flood-fixed `main`): loss% was statistically identical at both depths (1% loss: ~0.5% at
+64, 0.5-0.9% at 4000; 5% loss: 4.6% at both). **Widening the Publisher's own cache does not help** -
+confirms Milestone 65's own original assessment that the real ceiling is the *Subscriber*-side
+`tt_RELIABLE_BITMAP_BITS`=256 tracking window, not configurable via `-K` at all, not Publisher cache
+depth. The apparent depth=4000 improvement TickLE Dev first saw earlier in this same investigation
+(42.4% -> 23.0% at 1% loss) is now understood to have been an artifact of the still-present
+ACKNACK-flood's own bimodal instability, not a genuine depth effect - later reps at identical
+settings swung as wildly as 5.1% to 49.2%, ruling out depth as the explanation before the flood fix
+landed.
+
+**Receiver-side ordering, a measurement fix, not a core one** (`reliable_throughput/server.c`,
+`84ef9a6`): even with the flood fixed, loss% (1.0% at 1% loss, 5.0% at 5%) exactly tracked the raw
+injected tc rate - suspicious, since real retransmits were now confirmed actually being sent (the
+same HIL instrumentation used for the flood fix). Root cause: this file's own loss counting
+(`data->seq <= last_seq -> ignore`) assumes strict in-order arrival, but RELIABLE only guarantees
+delivery, not ordering (`deliver_data_to_subscriber()`'s own doc comment, tickle.c) - a genuinely
+recovered retransmit legitimately arrives *after* later, in-order samples once one real ACKNACK
+round trip has elapsed, by which point `last_seq` had already advanced past it and the gap was
+already counted lost the instant it was first noticed. The retransmit's own real, successful
+arrival changed nothing in the old counting - a measurement bug in the example, not evidence core
+wasn't working. Fixed with a distinct-sequence-number bitmap instead (any sample counted once, in
+whatever order it arrives; loss computed once at the end as "how many sequence numbers up to the
+highest ever seen were never received at all").
+
+**Real HIL result**: 1% tc loss loss% dropped again, 1.0% -> **0.5%** (roughly half the raw
+injected loss is now visibly, correctly credited as recovered) - a second, independent
+confirmation that RELIABLE's own retransmission is doing real, substantial work, just previously
+invisible to both the flood bug and this counting bug stacked on top of each other. 5% tc loss
+stayed close (4.6-4.7%) - at that higher rate, more concurrent gaps compete for the same narrow
+256-bit window within one 5ms retry cycle, leaving a much smaller fraction genuinely recoverable -
+consistent with, not contradicting, the depth finding above.
+
+**Where this leaves things**: TickLE's own real recovery capability (net of both bugs) is real but
+partial - roughly half of a 1% loss is recovered, very little of a 5% loss is, and neither `-K` nor
+anything else tried today changes that ceiling. The structural fix (widening
+`tt_RELIABLE_BITMAP_BITS` itself, a real wire-protocol change well beyond today's session, matching
+Milestone 65's own honest framing of the same ceiling) is the remaining lever, not yet attempted.
+
+**Independent HIL re-verification of the ordering fix** (TickLE Plan, `84ef9a6`, 0/1/5% tc loss, 3
+reps each, depth=64 default):
+
+| loss | sent (avg±stdev) | loss% (avg±stdev) | send Mbps (avg±stdev) |
+|---|---|---|---|
+| 0% | 1,522,274±97,910 | 0.03±0.06% | 115.69±7.44 |
+| 1% | 1,546,470±2,935 | **0.50±0.00%** | 117.53±0.22 |
+| 5% | 1,404,269±157,227 | 4.57±0.06% | 106.72±11.95 |
+
+Matches TickLE Dev's own report exactly (0.5% at 1% loss, tight variance; 4.5-4.6% at 5% loss).
+Confirms both the source-level review (`server.c`'s new distinct-seq bitmap logic, verified against
+the diff before agreeing) and the number are consistent, independently. Rig cleaned up (`tc` back to
+`fq_codel`, both rpis idle).
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
