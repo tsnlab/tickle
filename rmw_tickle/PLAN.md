@@ -1095,6 +1095,40 @@ still overrides it. RPC and `rmw_publisher_wait_for_all_acked()` polling stay at
   max rate, where `null_evicted` is now concentrated. B1 (byte ring) makes K ≥ retry × rate
   affordable by default.
 
+#### Phase 1-c (B2) result: eviction Heartbeat (2026-09-23, Dev implemented + measured, Plan verified raw logs)
+
+`f0b7ae0`: when an ACKNACK names a sample that is gone (evicted or lifespan-expired), the
+Publisher unicasts one FINAL Heartbeat with its real `first_available_seq_no`. An existing proxy
+then advances past everything below it at once (`advance_past_unavailable()`).
+`skip_unrecoverable_backlog()` is removed: its compile-time 64 guess actively discarded samples a
+K=1024 cache still held. No wire change.
+
+Real HIL, 3 reps, max rate (plain build):
+
+| condition | 1-b | 1-c |
+|---|---|---|
+| K64, tc 1% | 0.0101% | 0.0100% (159/142/132) |
+| K64, tc 5% | 0.298% | **0.238%** (3542/3611/2726) |
+| K1024, tc 1% | 0.0001-0.0002% | 2/5/213 lost |
+| K1024, tc 5% | 0.030-0.037% | 0.0385% (419/896/398) |
+| ~8 Mbps, all | 0 | 0-2 lost |
+
+- **At K64/tc5, gone samples are now given up promptly instead of waiting for the window to jump.**
+  `jump_abandoned` fell ~9K → ~1K per run, replaced by `hb_advances` ~3K. Loss drops ~20%; the
+  evicted samples are lost either way, but fewer innocent gaps are dragged down with each jump.
+- **The code never fires at K1024** (`eviction_hb` 0): as expected, a deep enough cache evicts
+  nothing. `jump_heartbeat` 0 and `null_retry_cap` 0 everywhere.
+- **Remaining floor at K1024 = H1 (the 256 window), and it's bursty.** About 1 run in 3-6 loses
+  far more than its siblings (e.g. 4773 vs ~460 at tc5, 213 vs ~3 at tc1), all through the DATA-path
+  `jump_ack_baseline()`. Likely a lost retransmit followed by a lost timer ACKNACK leaves the head
+  gap open longer than the ~1.35ms the window lasts at max rate, and the whole window of tracked
+  gaps is dropped at once. This is Phase 2's target (or, under KEEP_ALL, the Phase 3
+  unacked ≤ window rule).
+- Throughput: the same 107-121 Mbps bimodal band.
+
+**Phase 1 status**: 1-a, 1-b and 1-c (B2) are done. Left: B1 (byte-ring cache, footprint), then the
+Phase 2 decision (the user's call).
+
 #### E2: DDS under loss, incl. 20/50% tc (2026-09-23, Plan, real HIL, 2 reps per cell)
 
 Harness: `37542ad`/`b1054f9` (`write_fail` counter, `-B` max_blocking_time, Cyclone `-i`). The
