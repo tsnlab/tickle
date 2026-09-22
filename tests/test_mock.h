@@ -16,6 +16,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <tickle/config.h>
 #include <tickle/tickle.h>
@@ -43,6 +44,10 @@ int test_mock_send_call_count = 0;
 int test_mock_send_to_call_count = 0;
 uint32_t test_mock_send_to_last_ip = 0;
 uint16_t test_mock_send_to_last_port = 0;
+// Copy of the most recent packet either send function was handed (truncated to the buffer size) -
+// for a test that needs to decode what was actually sent, not just count sends.
+uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
+size_t test_mock_send_last_len = 0;
 int test_mock_wake_signal_call_count = 0;
 #else
 extern uint64_t test_mock_now;
@@ -55,6 +60,8 @@ extern int test_mock_send_call_count;
 extern int test_mock_send_to_call_count;
 extern uint32_t test_mock_send_to_last_ip;
 extern uint16_t test_mock_send_to_last_port;
+extern uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
+extern size_t test_mock_send_last_len;
 extern int test_mock_wake_signal_call_count;
 #endif
 
@@ -70,10 +77,16 @@ static inline void test_mock_reset(void) {
     test_mock_send_to_call_count = 0;
     test_mock_send_to_last_ip = 0;
     test_mock_send_to_last_port = 0;
+    test_mock_send_last_len = 0;
     test_mock_wake_signal_call_count = 0;
 }
 
 #ifdef TEST_MOCK_DEFINE_STORAGE
+static void test_mock_capture_send(const void* buf, size_t len) {
+    test_mock_send_last_len = len < sizeof(test_mock_send_last_buf) ? len : sizeof(test_mock_send_last_buf);
+    memcpy(test_mock_send_last_buf, buf, test_mock_send_last_len);
+}
+
 // These replace the real platform HAL symbols (normally hal_linux.c) in a test binary.
 uint64_t tt_get_ns(void) {
     return test_mock_now;
@@ -103,9 +116,9 @@ tt_ret_t tt_wake_signal(struct tt_Node* node) {
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
     (void)node;
-    (void)buf;
 
     test_mock_send_call_count++;
+    test_mock_capture_send(buf, len);
 
     if (test_mock_send_return_override) {
         return test_mock_send_return;
@@ -120,6 +133,7 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
 
     test_mock_send_call_count++;
     test_mock_send_to_call_count++;
+    test_mock_capture_send(buf, len);
     test_mock_send_to_last_ip = ip;
     test_mock_send_to_last_port = port;
 
