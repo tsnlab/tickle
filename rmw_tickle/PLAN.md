@@ -709,6 +709,52 @@ parts:
 
 TickLE Dev is implementing (1); TickLE Plan will re-run the `-T` sweep on real HIL once it lands.
 
+#### `-T` re-sweep with proactive ACK solicitation (2026-09-22, TickLE Plan) - the ack-cadence fix helped only marginally, and a real core bug was found instead
+
+TickLE Dev's `ack_solicit_period_ns`/`tt_Publisher_set_ack_solicit_period()` (`86c04db`) landed;
+`reliable_throughput/client.c` was reworked (`6bb4eeb`, cognitive-complexity fix `c9cbc5b`) to add
+`-A <period_us>` and auto-arm it at 200us whenever `-T` is given. Re-swept `-T 64/128/200` at 5%
+loss, 3 reps each, on real HIL:
+
+| lag | sent (avg) | loss% (avg) | (for reference: pre-fix sent avg) |
+|---|---|---|---|
+| 0 (baseline) | ~1,585,707 | 6.8% | ~1,474,030 |
+| 64 | ~5,518 | 5.0% | 262 |
+| 128 | ~333 | 4.8% | 455 |
+| 200 | ~1,780 | 5.4% | 313 |
+
+Some improvement at lag=64 (262 → 5,518 sent) but still a ~99.7% throughput collapse versus
+baseline, and loss% is still not meaningfully better than the 6.8% unthrottled baseline. The
+proactive-ACK fix alone does not make this throttle usable.
+
+**A second, more fundamental bug found while probing further**: swept lag 500/1000/2000/4000 (2
+reps each, 5% loss) to find where throughput might recover, and every single run - regardless of
+the lag threshold, 8x apart - stopped at **exactly `sent=65536`**, then flatlined for the rest of
+the 8s run. That exact, threshold-independent round number pointed straight at a width bug, not a
+throttle behavior: **`struct tt_Publisher.seq_no` (`tickle.h:569`) is `uint16_t`**, while the wire
+format it feeds (`tt_DataHeader.seq_no`, `tt_AckNackHeader.seq_no` - both `uint32_t`) and this
+scenario's own `peer_ack_seq_no[]` (`uint32_t`) are not. `tt_Publisher_publish()` (`tickle.c:1471`)
+does a plain `pub->seq_no++` with no wraparound handling, and `data_header->seq_no = pub->seq_no +
+1` (`tickle.c:1418`) writes the already-truncated value to the wire - so **the Publisher's own
+on-wire sequence numbering silently wraps back near 0 every 65536 sends**, not just this example's
+own `reliable_lag()` helper (whose `pub->seq_no - pub->peer_ack_seq_no[i]` underflows to a huge
+`uint32_t` the instant the 16-bit side wraps past the 32-bit side, permanently tripping the
+throttle - this is why the client froze, not a symptom of anything about `-T`/`-A` specifically).
+
+**Why this matters beyond this experiment**: at this scenario's own max rate (~180-190K msg/s),
+65536 messages takes ~0.34-0.36 seconds - so a plain `reliable_throughput` run wraps roughly
+**20+ times over its normal 8-second send window**, every single time, including every `main`/
+`v1`/`v2`/bitmap-widening measurement already recorded earlier in this document. Whether this
+wraparound is *also* a real, uninvestigated contributor to this scenario's own already-recorded
+5-8% baseline loss (not just this throttle branch's own underflow) is an open question, not yet
+demonstrated - flagged here as worth checking, not claimed as proven.
+
+**Not fixed here** - this is a `src/tickle.c`/`tickle.h` core change (widening `struct tt_Publisher.
+seq_no` to `uint32_t`, matching the wire format it already feeds), squarely TickLE Dev's file, and
+a real correctness bug independent of the self-throttle work that surfaced it. Reported to the user
+and TickLE Dev immediately given the severity. Rig cleaned up (`tc` back to default `fq_codel`, both
+rpis idle, no lingering processes).
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
