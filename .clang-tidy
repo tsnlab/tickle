@@ -49,7 +49,10 @@ CheckOptions:
   # lwIP's public API is a small set of umbrella headers (lwip/sockets.h, lwip/netif.h, ...) that
   # deliberately re-export names from private sub-headers; misc-include-cleaner's "include the
   # exact provider" rule fights that design in hal_freertos.c. Suppress it for lwip/ only.
+  # rclcpp/rclcpp.hpp is the identical case for rmw_perf_pingpong's ping_node.cpp/pong_node.cpp -
+  # ROS 2's own documented way to use rclcpp is this one umbrella include, not each symbol's own
+  # private sub-header (rclcpp/node.hpp, rclcpp/qos.hpp, ...).
   - key: misc-include-cleaner.IgnoreHeaders
-    value: 'lwip/.*'
+    value: 'lwip/.*|rclcpp/.*'
   - key: readability-function-cognitive-complexity.IgnoreMacros
     value: true
