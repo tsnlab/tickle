@@ -980,6 +980,34 @@ Goal: at `tc` 1%/5% loss, residual loss ≤0.1% while keeping throughput above F
 Rules: 0/1/5% `tc`, 3 reps each; one change per measurement; Dev works on branches only; announce
 before rig use or any push to `main`.
 
+#### Phase 0-a/0-c results (2026-09-22, Plan, real HIL)
+
+**0-a, loss vs. offered rate** (`reliable_throughput`, depth=64, 3 reps each, residual loss after recovery):
+
+| offered | tc 0% | tc 1% | tc 5% |
+|---|---|---|---|
+| ~4 Mbps (6.6K msg/s) | 0% | 0% | 0.02% (8-13 lost) |
+| ~8-9 Mbps (13-15K msg/s) | 0% | 0.03% (26-52 lost) | 1.1-1.2% |
+| ~67 Mbps | 0% | 0.3-0.4% | 4.4% |
+| ~117-120 Mbps (max) | 0% | 0.5% | 4.6% |
+
+**0-c, instrumented (`83798dc`, 2 reps per cell)**: every datagram carries exactly 1 DATA (no
+batching, ~190K pps at max). All recovered samples arrive <256µs after their first ACKNACK (RTT is
+not the limit, so H1 is ruled out as the root cause). Every lost sample is exactly
+`jump_abandoned_seq` (loss = abandoned by `jump_ack_baseline()`).
+
+- **Low rate (8 Mbps): H3+H4 confirmed.** At depth=64, 64 samples ≈ 4.8ms < the 5ms retry, so a
+  retry for a lost ACKNACK/retransmit finds the sample evicted (`null_evicted` 68-85 at 1%,
+  1110-1229 at 5%). **`-K 1024` alone: 0 lost at 1% (2/2), 1-13 lost at 5% (vs. 1082-1214).**
+- **Max rate: H2 confirmed.** Gaps opened while a retry timer is armed get no ACKNACK:
+  `gaps_opened_while_scheduled` is ~48% of gaps at 1% and ~91% at 5%. The 5ms timer never
+  helps (timer ACKNACKs 0-3 per run), because within 5ms (~950 samples) the 256 window has already
+  jumped and cleared the bitmap. `recovered` ≈ immediate ACKNACK count; `-K 1024` changes nothing
+  here (5%: 72-73K lost either way).
+- Implication: the earlier "`-K` doesn't help" conclusion held only at max rate. Phase 1-a
+  (immediate NACK per new gap) targets the max-rate loss, and 1-c (depth ≥ retry-interval ×
+  rate) plus 1-b (shorter retry) target the low-rate loss.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
