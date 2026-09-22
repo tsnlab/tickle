@@ -2515,6 +2515,7 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
         uint64_t now = tt_get_ns();
         g_rstats.acknack_sent++;
         g_rstats.acknack_bits_sent += rstat_popcount_bitmap(requested, wire_words);
+        g_rstats.acknack_bytes_sent += sizeof(struct tt_AckNackHeader) + ((size_t)wire_words * sizeof(uint64_t));
         for (uint16_t word = 0; word < wire_words; word++) {
             for (uint64_t bits = requested[word]; bits != 0; bits &= bits - 1) {
                 uint32_t seq =
