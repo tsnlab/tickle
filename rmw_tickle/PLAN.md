@@ -1129,6 +1129,36 @@ Real HIL, 3 reps, max rate (plain build):
 **Phase 1 status**: 1-a, 1-b and 1-c (B2) are done. Left: B1 (byte-ring cache, footprint), then the
 Phase 2 decision (the user's call).
 
+#### Phase 1-c/B1 result: byte-arena reliable cache (2026-09-23, Dev implemented + measured, Plan verified raw logs)
+
+`3e5e769`: `struct tt_ReliableCache` is now a caller-owned index ring (24 B/slot: seq_no, offset,
+len, retry, timestamp) plus a caller-owned byte arena, instead of one 1488-byte entry per slot.
+Lookup stays O(1) at `(seq_no-1) % depth`; records are never split, and a record that doesn't fit
+at the end wraps, so the arena is sized `(depth + 1) × max_record` (the +1 is wrap slack). No wire
+change, no behavior change, public API break (no compat shim, per the user's decision).
+
+**Memory** (76-byte samples): depth 64 95,232 → 8,036 B; depth 1024 1,523,712 → 127,076 B;
+the perf client's static `.bss` on the Pi 12.2 MB → 1,016,184 B. About 12x smaller.
+
+**HIL confirms no behavior change** (same matrix as 1-c, 3 reps): 8 Mbps 0-1 lost everywhere;
+max rate K=64 tc1 0.0098% (1-c 0.0100%), tc5 0.237% (1-c 0.238%); K=1024 tc5 0.0276% (1-c 0.0297%).
+Throughput 103-119 Mbps, the same bimodal band. `evict_bytes` and `oversize` are 0 in all 72 cells,
+so with the sizing macro the count bound always binds first - which is what the slack is for.
+
+Two notes worth keeping:
+1. The randomized model test caught a real bug in the first draft: a completely full arena has
+   `tail == head`, which the write path read as "empty" and used to overwrite the oldest record.
+   Removing that fix now fails thousands of assertions.
+2. With a single uniform record size, `depth × max` divides the arena evenly and a wrap wastes
+   nothing, so the slack only matters for varying record sizes. It was kept to make the
+   "depth samples always fit" guarantee unconditional, and both streams are tested.
+
+**Follow-up queued, not done**: `rmw_tickle`'s arena is sized at `tt_MAX_BUFFER_LENGTH` per sample
+because `rosidl_typesupport_tickle_c` exposes no per-type max encoded size, so rmw keeps today's
+memory (plus one record) and gets no reduction. Capturing the 12.2 MB → ~1 MB win for rmw
+KEEP_ALL publishers needs a generated per-type max in the typesupport struct (a generator change).
+The user's call whether to queue it.
+
 #### E2: DDS under loss, incl. 20/50% tc (2026-09-23, Plan, real HIL, 2 reps per cell)
 
 Harness: `37542ad`/`b1054f9` (`write_fail` counter, `-B` max_blocking_time, Cyclone `-i`). The
