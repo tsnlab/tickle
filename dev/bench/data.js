@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790045546503,
+  "lastUpdate": 1790045550163,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -100211,6 +100211,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/6ef01098f81b01ccb6431663254a3d9836c08bfa"
         },
         "date": 1790008325332,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "durable recv",
+            "value": 20,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": false,
+          "id": "1a23571c0265fedba5cf9fb5edf8e419e2822337",
+          "message": "rmw_perf_pingpong: fix ping_node.cpp/pong_node.cpp's ~105 pre-existing clang-tidy warnings\n\nThese two files were never actually linted before (check-all.yml's cpp-linter only covers\nfiles touched by a given push's own diff), so real warnings had accumulated unnoticed until\n2026-09-22's comparison.md->COMPARISON.MD rename touched a comment line in each and exposed\nthem. Fixes cover: missing includes (cstdint/ctime/atomic/memory/cstdio - previously reached\nonly transitively through rclcpp.hpp), trailing return types, magic numbers (named constants,\nfollowing hal_linux.c's own SEC_NS precedent), const-correctness, isolated declarations,\nstd::max over a hand-rolled comparison (which also brings run_ping()'s cognitive complexity\nfrom 28 back under the 25 threshold), and an unhandled-exception-escapes-main risk from\nrclcpp internals (QoS-override parsing, the subscription callback's own std::variant storage)\nnow caught and reported the same way this file already reports every other failure.\n\nAlso adds rclcpp/.* to .clang-tidy's misc-include-cleaner.IgnoreHeaders, alongside the existing\nlwip/.* entry - rclcpp.hpp is ROS 2's own documented umbrella header, the same deliberate\numbrella-header design that entry's own comment already describes for lwIP.\n\nThe two create_subscription() callback params changed from by-value SharedPtr to a reference\n- but to ConstSharedPtr (shared_ptr<const T>&), not SharedPtr& as clang-tidy's own generic\nperformance-unnecessary-value-param fixit suggested first: rclcpp's AnySubscriptionCallback\nvariant has no `const shared_ptr<T>&` alternative, only by-value shared_ptr<T> or\n`const shared_ptr<const T>&` (confirmed by a real build failure against the first fixit, then\na real two-process ping/pong round trip - 0% loss - against this one).\n\nAlso updates the two files' own remaining \"comparison.md\" comment references to COMPARISON.MD,\nmatching the rest of the repo since that rename.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T11:26:14+09:00",
+          "tree_id": "a7abb123b9de6ef5fe3785dc8f658d10f6ee5a9e",
+          "url": "https://github.com/tsnlab/tickle/commit/1a23571c0265fedba5cf9fb5edf8e419e2822337"
+        },
+        "date": 1790045548934,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
