@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790076440015,
+  "lastUpdate": 1790076443761,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -102740,6 +102740,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/84ef9a6bc55c9dfbbc47d800542339d1140babda"
         },
         "date": 1790075558690,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0.5,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 4.6,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "17ad62a0b5997cab2dd74acaeafb6f7b0998c3c0",
+          "message": "PLAN.md: independent HIL re-verification of the order-independent counting fix (84ef9a6)\n\nConfirms TickLE Dev's own reported numbers: loss% 0.50±0.00% at 1% tc loss,\n4.57±0.06% at 5%, matching their report almost exactly. Verified both the\nserver.c diff (distinct-seq bitmap logic) and the resulting numbers\nindependently before recording. Rig cleaned up.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T20:21:42+09:00",
+          "tree_id": "5b4e19e62febf942fd28760c72fde1067eb65283",
+          "url": "https://github.com/tsnlab/tickle/commit/17ad62a0b5997cab2dd74acaeafb6f7b0998c3c0"
+        },
+        "date": 1790076442558,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
