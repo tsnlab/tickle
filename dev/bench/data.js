@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790120406027,
+  "lastUpdate": 1790120410137,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -108675,6 +108675,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3631.863,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "336c20099c9815101a0c597a5efc08a06abb09c8",
+          "message": "perf_hil reliable_throughput: use tt_Publisher_min_acked_seq_no() for -T lag\n\nFixes a build break from 7b266d2: this example's reliable_lag() still indexed\npub->peer_ack_seq_no[], which Phase 3 prerequisite (c) replaced with the\nnode_id-keyed peer_acks[] table. Core gains the matching public accessor\ntt_Publisher_min_acked_seq_no(), the counterpart to\ntt_Publisher_is_acked_by_all_peers(), so a caller never pairs peers[] with the\nack table by index.\n\ncheck-all builds examples/perf_hil with continue-on-error, so this only showed\nup when building the scenario for its own HIL run.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T08:33:38+09:00",
+          "tree_id": "7713c2e740fe6f75219ea0983f4350dddcf97016",
+          "url": "https://github.com/tsnlab/tickle/commit/336c20099c9815101a0c597a5efc08a06abb09c8"
+        },
+        "date": 1790120408838,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1585.641,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2593.34,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3622.62,
             "unit": "ms"
           }
         ]
