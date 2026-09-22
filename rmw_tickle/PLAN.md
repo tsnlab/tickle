@@ -589,6 +589,47 @@ underlying mechanism is real. Still the user's call whether to proceed to that f
 round or merge as-is. Rig fully cleaned up afterward (`~/tickle-instr-{baseline,fixed}` worktrees
 and install prefixes removed on both Pis, no lingering processes).
 
+#### Final validation (2026-09-22, TickLE Plan, at the user's own instruction: "진행해줘") - a clean, honest, mixed result: real throughput win, loss% roughly a wash
+
+Full `tc`/`netem` matrix (0%/1%/5%), 3 reps each, plain `main` (`1d89ac4`, bitmap+harness fix,
+no scheduler change) vs. `experiment/poll-loop-io-interleave-v2` (`a365f4b`, + the scheduler
+fix), both built clean (no instrumentation overhead this time), same real HIL rig:
+
+| Condition | `main` loss% (avg) | `main` send Mbps (avg) | `v2` loss% (avg) | `v2` send Mbps (avg) | Mbps change |
+|---|---|---|---|---|---|
+| 0% | 0.00% | 93.48 | 0.00% | 119.54 | **+27.9%** |
+| 1% | 1.63% (1.6/1.6/1.7) | 92.69 | 1.60% (1.0/1.0/2.8) | 105.92 | **+14.3%** |
+| 5% | 6.03% (5.8/5.9/6.4) | 90.29 | 6.80% (6.7/6.8/6.9) | 119.53 | **+32.4%** |
+
+**Throughput: a real, large, consistent win** - +14.3% to +32.4% across all three conditions,
+now backed by 5 total reps per condition across this run and the earlier v1/v2 experiments (8
+runs total at max rate, every one landing in the 99-121 Mbps band vs. plain `main`'s own
+consistent 90-95 Mbps). Combined with the direct instrumentation above, this has a real, confirmed
+causal explanation, not just correlation.
+
+**Loss%: honestly a wash, not a clear win** - 0% tied, 1% statistically indistinguishable given
+the small sample (1.60% vs. 1.63%, and `v2`'s own 3rd rep at 2.8% shows real variance at this
+condition), 5% measurably *worse* with the fix (6.80% vs. 6.03%). **The likely reason, consistent
+with everything found this session**: the fix's own real throughput increase is itself a
+mechanical cost at the *same* fixed 256-bit ACKNACK window - more messages pass per unit time, so
+the same window covers proportionally less real time, eating back some of the recovery-window
+benefit the earlier (pre-bitmap-fix) v1/v2 experiments happened to see. This is not a regression
+in the sense of "the fix broke something" - it is two real, independent effects (more receive
+checks = better responsiveness; higher throughput = smaller effective window) landing close enough
+to net out to roughly even at real measured throughput.
+
+**Recommendation**: this is a genuine, well-evidenced **throughput improvement**, not a loss-
+recovery improvement - state it as that, not as a broader "makes scenario 4 better" claim. Worth
+merging on that basis alone (the user's own stated goal explicitly included "throughput을 늘릴 수
+있는" - increasing throughput), as long as it's documented honestly that it does not additionally
+close the RELIABLE recovery gap (the bitmap widening already did what it could there; `main`'s own
+1.63%/6.03% at 1%/5% is the current honest floor either way). `tt_SCHEDULER_IO_INTERLEAVE`
+tuning (still just the first-guess value of 8) is a legitimate follow-up but not a blocker - the
+effect is already large and consistent at this setting. Rig fully cleaned up afterward (both
+`~/tickle-v2final` worktrees and install prefixes removed, `tc` back to default, no lingering
+processes). Pending the user's own final go-ahead to actually merge `experiment/poll-loop-io-
+interleave-v2` into `main`.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
