@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790074821423,
+  "lastUpdate": 1790074825245,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -104737,6 +104737,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/b39376490c0358f5bdfdc51c8a7500707eb08568"
         },
         "date": 1790073943769,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "0514e13ff1fd8abaf5d9ae943a939940b40e7d78",
+          "message": "PLAN.md: real HIL confirms the ACKNACK-flood fix (b393764) - loss% now tracks injected rate\n\nRe-measured reliable_throughput at 0/1/5% tc loss, 3 reps each, depth=64 default,\nafter TickLE Dev's fix for the ~70K ACKNACKs/sec flood (maybe_arm_acknack_retry()\ncalling send_acknack() outside the retry-pacing guard). loss% now lands at\n1.00±0.00% and 5.00±0.00% at 1%/5% injected loss - tracking the tc rate almost\nexactly with zero measured variance across reps, versus every earlier measurement\nin this document (all taken with the flood - and earlier, the seq_no wraparound -\nactive) showing real spread and numbers nowhere close to the injected rate.\nThroughput at 5% also higher and far more stable (120.95±0.19 Mbps). Rig cleaned\nup.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T19:54:33+09:00",
+          "tree_id": "70aaa5eba4f314325759bd6f1cc9d2c708aafd77",
+          "url": "https://github.com/tsnlab/tickle/commit/0514e13ff1fd8abaf5d9ae943a939940b40e7d78"
+        },
+        "date": 1790074823996,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
