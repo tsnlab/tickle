@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790066144148,
+  "lastUpdate": 1790067033493,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -99783,6 +99783,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "avg RTT",
             "value": 0.207,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "66b5a29935248d65b91d89a3cb6d70837fc0aa8b",
+          "message": "PLAN.md: seq_no fix wasn't a regression - it exposed RELIABLE's retry path being inert\n\nTickLE Dev traced the real mechanism through update_reliable_ack(): the seq_no <\nack_seq_no early return (tickle.c:2256) delivers but skips bitmap tracking and\nreturns before maybe_arm_acknack_retry() is ever called. Under the old 16-bit wrap,\nthis path caught most of every ~65536-sample cycle, meaning RELIABLE's own ACKNACK/\nretransmission mechanism was silently inert for most of any sustained run - the\n2.4%/6.5% loss numbers recorded earlier in this document were closer to raw,\nunrecovered tc loss than an actual measurement of RELIABLE recovery.\n\nIndependently verified against source (not taken on the report alone). Revises the\nprior recommendation: do not revert 448b9c1 - that would just re-hide this behind\nthe wraparound bug. The real follow-up is understanding RELIABLE's retransmission\nmechanism under genuine sustained loss, which this document's own measurements\nnever actually exercised until now. Flags that earlier reliable_throughput loss%\nnumbers in this document may need re-reading or re-measuring.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T17:44:48+09:00",
+          "tree_id": "fdc28197c6238baafa09c4fa4957bb3ad124838f",
+          "url": "https://github.com/tsnlab/tickle/commit/66b5a29935248d65b91d89a3cb6d70837fc0aa8b"
+        },
+        "date": 1790067025545,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.217,
             "unit": "ms"
           }
         ]
