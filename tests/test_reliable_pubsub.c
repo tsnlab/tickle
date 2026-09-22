@@ -241,7 +241,7 @@ static void test_reliable_subscribe_in_order_no_acknack(void) {
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(4, proxy->ack_seq_no);
-    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
 }
@@ -513,7 +513,7 @@ static void test_reliable_subscribe_gap_then_close(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(4, proxy->ack_seq_no); // 2 lands, then absorbs the already-buffered bit for 3
-    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
     EXPECT_TRUE(!proxy->acknack_scheduled);
 }
 
@@ -793,7 +793,7 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
     tail = write_data(&node, 3, 300, 3); // the last real gap closes
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(6, proxy->ack_seq_no); // 3 lands, then absorbs the already-buffered 4 and 5 too
-    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
 }
 
 // Phase 1-c (rmw_tickle/PLAN.md, B2) - acknack_retry()'s give-up no longer bulk-skips everything
@@ -866,7 +866,7 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up
 
     EXPECT_TRUE(!proxy->acknack_scheduled);
-    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
     EXPECT_EQ_U32(7, proxy->ack_seq_no); // skipped past seq_no 5, absorbed the already-known 6 too
 }
 
@@ -908,8 +908,8 @@ static void test_acknack_retry_budget_resets_for_next_gap(void) {
 
     tail = write_data(&node, 2, 200, 2); // seq_no 2 recovers - a *different* gap (seq_no 3) remains
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(3, proxy->ack_seq_no);                  // now waiting on 3, not 2
-    EXPECT_TRUE(!bitmap_is_zero(proxy->received_bitmap)); // still a gap (3 missing, 4 already in)
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);                                      // now waiting on 3, not 2
+    EXPECT_TRUE(!bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy))); // still a gap (3 missing, 4 already in)
     // Without the fix, this would read 2 (inherited from seq_no 2's own already-used attempts)
     // instead of a fresh budget for the new watermark.
     EXPECT_EQ_U32(0, (uint32_t)proxy->retry);
@@ -953,7 +953,7 @@ static void test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_o
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(1001, proxy->ack_seq_no);
-    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
     EXPECT_TRUE(!proxy->acknack_scheduled); // no phantom gap left armed for 1..999
 
     // The stream must now track normally from here - a small, genuinely resolvable gap right
@@ -1000,8 +1000,9 @@ static void test_reliable_first_contact_via_data_does_not_request_pre_match_hist
 
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
-    EXPECT_EQ_U32(51, proxy->ack_seq_no);                     // synced straight to just past this first sample
-    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));      // nothing "missing" before it - never tracked at all
+    EXPECT_EQ_U32(51, proxy->ack_seq_no); // synced straight to just past this first sample
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap,
+                               proxy_words(proxy)));          // nothing "missing" before it - never tracked at all
     EXPECT_TRUE(!proxy->acknack_scheduled);                   // no phantom gap for 1..49
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // no ACKNACK ever sent requesting them
 
