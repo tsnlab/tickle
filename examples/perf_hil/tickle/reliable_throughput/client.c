@@ -66,10 +66,47 @@ static struct tt_Publisher* g_pub;
 static uint64_t g_deadline_ns;
 static bool g_sending_done = false;
 
+// Self-throttle (-T <lag>, 0 = disabled/default) - rmw_tickle/PLAN.md's own "self-throttle"
+// pattern for a RELIABLE Publisher that wants to actually honor RELIABLE's own delivery
+// guarantee, not just maximize raw throughput (the user's own explicit direction: apply this
+// specifically for RELIABLE, where DDS's own philosophy is correctness over rate - a BEST_EFFORT
+// Publisher has no such guarantee to protect and shouldn't pay this cost). Uses only existing,
+// already-public fields (tt_Publisher.peer_ack_seq_no[]/.peers[], tickle.h's own "caller-owned,
+// plain field access" convention) - no core change needed at all.
+static uint32_t throttle_lag = 0;
+static const double throttle_retry_s = 0.00005; // 50us - short enough to resume promptly once a
+                                                // peer catches up, without spinning the CPU raw
+
+// Largest "how far ahead of its own last confirmed ack" gap across every currently-matched peer
+// that has sent at least one real ACKNACK so far (peer_ack_seq_no == 0 means "nothing confirmed
+// yet", not "confirmed everything up to 0" - skipped, not treated as an enormous lag at startup
+// before the first ACKNACK has even had a chance to arrive).
+static uint32_t reliable_lag(const struct tt_Publisher* pub) {
+    uint32_t max_lag = 0;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id == tt_NODE_ID_INVALID || pub->peer_ack_seq_no[i] == 0) {
+            continue;
+        }
+        uint32_t lag = pub->seq_no - pub->peer_ack_seq_no[i];
+        if (lag > max_lag) {
+            max_lag = lag;
+        }
+    }
+    return max_lag;
+}
+
 static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted || tt_get_ns() >= g_deadline_ns) {
         g_sending_done = true;
+        return;
+    }
+    if (throttle_lag > 0 && reliable_lag(g_pub) >= throttle_lag) {
+        // The slowest-acking peer has fallen too far behind - pause a short beat rather than
+        // publish another sample on top of an already-open gap, so this Publisher doesn't keep
+        // burying that gap deeper (PLAN.md's own "Follow-up v2/v3" scheduler research - the
+        // mechanism this throttle protects against is real, not hypothetical).
+        tt_Node_schedule(node, time + (uint64_t)(throttle_retry_s * (double)tt_SECOND), send_one, NULL);
         return;
     }
     struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
@@ -96,6 +133,8 @@ int main(int argc, char** argv) {
             duration_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
             reliable_depth = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
+            throttle_lag = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
     }
     if (reliable_depth == 0 || reliable_depth > MAX_RELIABLE_DEPTH) {
@@ -158,8 +197,8 @@ int main(int argc, char** argv) {
                       ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / duration_s
                       : 0.0;
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f reliable_depth=%u\n",
-           (unsigned long)sent, duration_s, mbps, reliable_depth);
+           "send_mbps=%.3f reliable_depth=%u throttle_lag=%u\n",
+           (unsigned long)sent, duration_s, mbps, reliable_depth, throttle_lag);
 
     tt_Node_destroy(&node);
     return 0;
