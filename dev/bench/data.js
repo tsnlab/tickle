@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790085396823,
+  "lastUpdate": 1790085400947,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -102910,6 +102910,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "loss_pct @ 5%",
             "value": 4.6,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a1bf2dc1d8d71c5edcfd859931ecf0a48b24e155",
+          "message": "RELIABLE stats: acknack_new_gap counter for Phase 1-a's per-gap NACK\n\nCounts the narrow ACKNACKs update_reliable_ack() sends for a gap opened while a\nretry is armed (2d36ace); printed on the RSTATS acknack_tx line. Stats-only,\ncompiled out by default. 18/18 with and without -Dtt_RELIABLE_STATS.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T22:26:09+09:00",
+          "tree_id": "2599a3b8c746a72a239000fee83bdd311099fdf6",
+          "url": "https://github.com/tsnlab/tickle/commit/a1bf2dc1d8d71c5edcfd859931ecf0a48b24e155"
+        },
+        "date": 1790085399583,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 0.7,
             "unit": "%"
           }
         ]
