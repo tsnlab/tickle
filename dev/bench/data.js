@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790046301722,
+  "lastUpdate": 1790046305208,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -99611,6 +99611,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "avg RTT",
             "value": 0.224,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1d89ac4e1063c89438c066a5ed0ca1a41fe050c1",
+          "message": "PLAN.md: direct instrumentation confirms the poll-loop starvation hypothesis definitively\n\nAt the user's own instruction to continue researching latency/throughput. Added real counters\nto tt_Node_poll() (scheduler_runs, receive_checks, max_consecutive_scheduler_runs) instead of\ncontinuing to infer the mechanism from throughput/loss correlations. Built two matched HIL\nbinaries (plain main + counters vs the poll-loop fix + counters, same bitmap/harness-fix base)\nand ran one real 8s max-rate reliable_throughput run each.\n\nResult: the unfixed baseline hit 1,228,027 consecutive scheduler-task executions with zero\nreceive checks during the real run (1,232,777 total scheduler runs vs only 33,226 receive\nchecks). The fix cuts the max streak to 16 and drives receive checks up 5.7x (188,821). This\ndirectly confirms the starvation mechanism, not just the correlated throughput/loss effect -\nsettling the \"why\" behind the earlier experiments' own observed throughput increase.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T11:59:40+09:00",
+          "tree_id": "775dc4a1f292587082cbc2cfec19f69ab9f80d6d",
+          "url": "https://github.com/tsnlab/tickle/commit/1d89ac4e1063c89438c066a5ed0ca1a41fe050c1"
+        },
+        "date": 1790046304071,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.223,
             "unit": "ms"
           }
         ]
