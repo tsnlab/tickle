@@ -76,7 +76,11 @@ int main(int argc, char** argv) {
     wqos.history().kind = KEEP_ALL_HISTORY_QOS;
     wqos.resource_limits().max_samples = 4000;
     if (max_blocking_ms >= 0.0) {
-        wqos.reliability().max_blocking_time = eprosima::fastdds::dds::Duration_t(max_blocking_ms / 1000.0);
+        // Field-wise, not a Duration_t constructor: the type lives in eprosima::fastrtps on FastDDS
+        // 2.x (the rig's jazzy) but in eprosima::fastdds on 3.x, while seconds/nanosec exist in both.
+        double blocking_s = max_blocking_ms / 1000.0;
+        wqos.reliability().max_blocking_time.seconds = (int32_t)blocking_s;
+        wqos.reliability().max_blocking_time.nanosec = (uint32_t)((blocking_s - (int32_t)blocking_s) * 1e9);
     }
 
     Publisher* publisher = participant->create_publisher(PUBLISHER_QOS_DEFAULT);
