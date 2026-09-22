@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790075552658,
+  "lastUpdate": 1790075556208,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -101903,6 +101903,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1881998,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "84ef9a6bc55c9dfbbc47d800542339d1140babda",
+          "message": "reliable_throughput/server.c: order-independent receive tracking (measurement fix, not core)\n\nAt the user's own direction, continuing the RELIABLE retransmission investigation after the\nACKNACK-flood fix (b393764): with the flood gone, loss_pct at depth=64/1% tc loss dropped to a\nclean 1.0% - but that's still exactly the raw injected rate, meaning genuine retransmission\nrecovery wasn't showing up in the measurement at all, despite retransmits now actually being sent\n(confirmed via the same temporary HIL instrumentation used for the flood fix).\n\nRoot cause, once traced: this file's own loss-counting (`data->seq <= last_seq -> ignore`) assumes\nstrict in-order arrival. RELIABLE only adds a delivery guarantee via retransmission, not an\nordering one (deliver_data_to_subscriber()'s own doc comment, tickle.c) - a successfully recovered\nretransmit legitimately arrives *after* later, in-order samples, once one real ACKNACK round trip\nhas elapsed. By the time any retransmit could possibly land, `last_seq` had already advanced past\nit from later arrivals - the gap was already counted \"lost\" the moment it was first noticed, and\nthe retransmit's own actual, successful arrival changed nothing. A measurement bug in this example,\nnot a core bug - core's own retransmission was doing real work this counting could never credit.\n\nFixed with a distinct-sequence-number bitmap: any sample that ever arrives, in any order, counts\nas received exactly once (a true duplicate re-delivery - the same documented core residual as\nbefore - is still ignored). Loss is computed once at the end as \"how many sequence numbers up to\nthe highest one ever seen were never received at all\", crediting an out-of-order recovery\nregardless of when it arrives.\n\nReal HIL confirmed, depth=64, 3 reps each: 1% tc loss - loss_pct 1.0% -> 0.5% (roughly half the\nraw injected loss is now visibly recovered); 5% tc loss - loss_pct stayed close (4.6-4.7%, only a\nmodest recovery fraction at this rate). Also re-tested reliable_depth (-K) 64 vs 4000 under this\nsame accurate counting to answer whether widening the Publisher's own retransmission cache helps\nfurther: it does not (5% loss: 4.6% at both depths) - confirms the real remaining bottleneck is\nthe Subscriber-side tt_RELIABLE_BITMAP_BITS=256 tracking window (not configurable via -K), not\nPublisher cache depth, matching Milestone 65's own original assessment (rmw_tickle/PLAN.md).\n\nVerified: compiles clean (gcc -Wall -Wextra), clang-format --dry-run --Werror clean, clang-tidy\n(bare invocation) clean after parenthesizing MAX_TRACKED_SEQ's own array-size expression\n(readability-math-missing-parentheses).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T20:06:55+09:00",
+          "tree_id": "a4d2089ede0e0c7ee6bf92c6f91d5fe9a2479e52",
+          "url": "https://github.com/tsnlab/tickle/commit/84ef9a6bc55c9dfbbc47d800542339d1140babda"
+        },
+        "date": 1790075555041,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1975596,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 1921978,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 1892962,
             "unit": "count"
           }
         ]
