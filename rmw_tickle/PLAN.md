@@ -788,6 +788,48 @@ measurement.
 severity; recommended considering a revert of `448b9c1` while the real mechanism is found, rather
 than leaving main in this state - decision left to TickLE Dev/the user, not made unilaterally here.
 
+#### Root cause found (2026-09-22, TickLE Dev, independently verified by TickLE Plan against source) - not a regression, an exposure: RELIABLE's own retry mechanism was silently inert almost the entire time before this fix
+
+TickLE Dev ruled out struct-layout/offset shift first (all field access is recompiled consistently;
+no hardcoded offsets found) and traced the real mechanism through `update_reliable_ack()`
+(`tickle.c:2214`). Independently confirmed against source, not taken on the report alone:
+
+`update_reliable_ack()`'s own early-return guard - `if (seq_no < proxy->ack_seq_no) { return true;
+}` (`tickle.c:2256`) - delivers the sample but returns *before* the bitmap-tracking branch and
+*before* the `maybe_arm_acknack_retry()` call at the function's very end. Under the old bug (16-bit
+wrap), the wire `seq_no` restarts near 0 every 65536 sends while a healthy Subscriber's own
+`proxy->ack_seq_no` has already climbed to just under the old high watermark (~65535) from ordinary
+in-order advancement. Every arrival for most of the *next* ~65536-sample cycle - until the new,
+restarted counter climbs back up past that old watermark, i.e. most of the cycle - has `seq_no <
+proxy->ack_seq_no` and takes this early-return path: delivered, but `ack_seq_no`/`received_bitmap`
+untouched and `maybe_arm_acknack_retry()` never reached. **No gap is ever recorded, so no ACKNACK is
+ever sent, so RELIABLE's own retransmission path was silently disabled for most of every wraparound
+cycle - i.e., for most of any run's real duration.** The 2.4%/6.5% loss numbers this whole document
+recorded under the old bug were not RELIABLE recovery results at all - closer to raw, unrecovered
+tc-injected loss passing straight through with the retry mechanism never actually engaging.
+
+Fixing the wraparound let `ack_seq_no` finally track continuously for the first time under sustained
+real loss, which activated the bitmap/gap-detection/`maybe_arm_acknack_retry()` path for real - and
+that is what exposed 42.6%/48.9% loss: **a second, previously-hidden problem in RELIABLE's own
+retransmission/retry mechanism itself**, not a new bug from the width change. The mechanism itself
+(retransmission storm under real gap-tracking load, retry timing, or something else) is not yet
+root-caused - flagged as a new, high-priority follow-up, separate from both bugs found so far this
+session.
+
+**Revised recommendation, replacing the one above: do not revert `448b9c1`.** Reverting would only
+re-hide this behind the wraparound bug again, not fix anything - matches TickLE Dev's own
+conclusion, independently verified here rather than accepted on trust. The real work is now
+understanding RELIABLE's retransmission mechanism under genuine sustained loss, which no
+measurement in this document was actually exercising until this fix landed.
+
+**Session-wide implication, not yet fully assessed**: every `reliable_throughput` loss% number
+recorded earlier in this document (`main`/v1/v2/bitmap-widening/poll-loop-fix comparisons, the
+Milestone 65 bitmap-widening verification, all of it) was measured while this retry path was
+effectively inert almost the entire time. Those numbers should be read as "raw loss under a
+mostly-inactive retry mechanism," not "RELIABLE's actual recovery capability" - re-measuring
+anything from this document that mattered on that distinction is now an open question, not yet
+decided.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
