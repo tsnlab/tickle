@@ -10,6 +10,8 @@ SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
 RPI_CLIENT="10.1.1.214"
 RPI_SERVER="10.1.1.213"
 LIB_PATH="/opt/ros/jazzy/lib"
+# Pins FastDDS to the eth0 test link, where tc applies - see fastdds_eth0_only.xml's header.
+PROFILE="/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml" # path on the rpis (user ci, as in ssh_run)
 REMOTE_DIR="tickle/examples/perf_hil/fastdds/$SCENARIO"
 
 ssh_run() {
@@ -30,9 +32,9 @@ ssh_run() {
 # incompatibility, not a discovery bug) and a durable match negotiation takes measurably longer
 # than a plain volatile one. Every other scenario's server.cpp only reads -d/-D and ignores
 # anything else, so this is safe to do unconditionally, not just for that one scenario.
-ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/fdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
+ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export FASTRTPS_DEFAULT_PROFILES_FILE=$PROFILE; cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/fdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
 sleep 5
-ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
+ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; export FASTRTPS_DEFAULT_PROFILES_FILE=$PROFILE; cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
 # pkill first, then read the log - not just pkill (2026-09-21, real gap found the hard way): this
 # script never actually printed the server's own RESULT line at all before this fix - only the
 # client's own line ever reached stdout, silently losing every server-side recv/loss number for
