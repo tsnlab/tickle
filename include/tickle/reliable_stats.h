@@ -41,6 +41,7 @@ struct tt_ReliableStats {
     uint64_t skip_backlog_seq;        // seq_nos skipped by them (includes already-received ones in range)
     uint64_t acknack_immediate;       // ACKNACK send attempts from maybe_arm_acknack_retry()
     uint64_t acknack_timer;           // ACKNACK send attempts from the acknack_retry() timer
+    uint64_t acknack_new_gap;         // Phase 1-a: narrow ACKNACK attempts for a gap opened while armed
     uint64_t acknack_sent;            // ...of which actually encoded and flushed
     uint64_t acknack_bits_sent;       // total "please resend" bits across those ACKNACKs
     uint64_t recovered;               // arrivals filling a tracked gap below the highest seen

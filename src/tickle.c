@@ -2533,6 +2533,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     bool retry_already_armed = proxy->acknack_scheduled;
     maybe_arm_acknack_retry(node, proxy);
     if (retry_already_armed && new_gap.low_bit >= 0) {
+        RSTAT_INC(acknack_new_gap);
         send_acknack_range(node, proxy, new_gap.low_bit, new_gap.high_bit);
     }
     return is_new;
