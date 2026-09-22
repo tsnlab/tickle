@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790066140382,
+  "lastUpdate": 1790066144148,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -101399,6 +101399,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1858253,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "448b9c1a977538d8f94476149549d2d82f795c25",
+          "message": "tickle.h: widen struct tt_Publisher.seq_no uint16_t -> uint32_t\n\nAt the user's own explicit instruction (\"seq no를 32bit로 수정하자\"), fixing a real core bug\nTickLE Plan found while re-sweeping the -T/-A self-throttle on real HIL (rmw_tickle/PLAN.md,\nb6fb75a): pub->seq_no was uint16_t, but every downstream seq_no field it ultimately feeds -\ntt_DataHeader.seq_no, tt_AckNackHeader.seq_no, tt_ReliableCacheEntry.seq_no, and pub->\npeer_ack_seq_no[] - is already uint32_t. tt_Publisher_publish()'s own pub->seq_no++ silently\nwrapped to 0 every 65536 publishes regardless of the wire's own 32-bit capacity - at TickLE's real\nmax throughput (~150-190K msg/s), reliable_throughput's own 8-second max-rate runs wrap more than\n20 times per run, reusing already-delivered sequence numbers mid-stream and corrupting RELIABLE\nack tracking/DURABILITY backlog indexing for the rest of that run. Every reliable_throughput\nmeasurement taken this session (main/v1/v2/bitmap-widening) ran under this bug.\n\nIndependently verified (not taken on the peer's own report alone): confirmed struct tt_Publisher.\nseq_no's own type directly, confirmed every downstream field it feeds is uint32_t, confirmed the\nexact wrap site (tt_Publisher_publish(), pub->seq_no++). Deliberately scoped to only this one\nfield - struct tt_Client.seq_no/struct tt_Subscriber.seq_no share the same \"// transcation\"\ncomment and field name but are unrelated: tt_Client.seq_no pairs with tt_CallRequestHeader.seq_no,\na genuinely 16-bit RPC wire field of its own; tt_Subscriber.seq_no has zero call sites anywhere in\ntickle.c (unused), not implicated in this bug at all.\n\nNot a wire format change - tt_DataHeader.seq_no/tt_AckNackHeader.seq_no were already uint32_t on\nthe wire; this only fixes the internal counter that feeds them, so no tt_VERSION bump is needed.\nAt uint32_t width the same wraparound is still structurally possible, just past ~6.3 continuous\nhours at TickLE's own real max rate - not specially handled, matching this file's own existing\n\"an edge case far enough out not to need explicit handling yet\" pragmatism elsewhere.\n\nVerified: make test/make sanitize (ASan+UBSan)/make -C platform/freertos/clang-format --dry-run\n--Werror/clang-tidy (bare invocation, 0 warnings) all clean; rmw_tickle rebuilt clean (12/12\ntests) - unaffected, since it never assumes this field's own width directly.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T17:25:38+09:00",
+          "tree_id": "f67f4654ae4727abdf46a852d0efba9d89d8a1a2",
+          "url": "https://github.com/tsnlab/tickle/commit/448b9c1a977538d8f94476149549d2d82f795c25"
+        },
+        "date": 1790066142905,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1960237,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 892884,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 816755,
             "unit": "count"
           }
         ]
