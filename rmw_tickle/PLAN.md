@@ -1247,6 +1247,32 @@ KEEP_ALL publishers, needs a typesupport generator change), the **intermittent D
 outlier** (~1 run in 3-6 at max rate), and **CI maintenance** (actions still targeting Node.js 20;
 `ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19).
 
+#### Phase 3 step 1 result: prerequisites (2026-09-23, Dev implemented + measured, Plan verified raw logs)
+
+`7b266d2` (branch `experiment/phase3-prereqs`), items (a), (c), (d); item (b) needed the wire
+change and moved into the Phase 2 bundle.
+
+- **(a)** `tombstone_entities_past_own_lease()` now drops a lease-expired remote Subscriber from
+  the matching Publishers' `peers[]` and ack set, so departure follows the entity's own lease
+  instead of the ~3-3.6s node-level sweep.
+- **(c)** Ack state moved from an array index-aligned with `peers[]` to `struct tt_PeerAck
+  {node_id, ack_seq_no}` looked up by node id, so an unrelated `last_modified` change no longer
+  zeroes it; a genuinely dropped match still clears it. New public
+  `tt_Publisher_is_acked_by_all_peers()` replaces index pairing (a second small API break in the
+  same unreleased cycle; its CHANGELOG entry is folded into the Phase 2 one).
+- **(d)** `ack_solicit_watermark_pct` (0 = off by default) solicits one Heartbeat via the existing
+  `tt_Publisher_request_ack()` when unacked samples cross the watermark, throttled by
+  `max(ack_solicit_period_ns, tt_RELIABLE_RETRY_INTERVAL)` shared with the periodic path, skipped
+  entirely with no matched peers. RSTATS counts solicits sent and suppressed.
+
+**HIL, watermark off** (the no-regression check, 3 reps): 8 Mbps 0-1 lost; max K64 tc1 0.0108%,
+tc5 0.249%; K1024 tc1 0.0001%, tc5 0.0339%; 102-117 Mbps. Matches B1 within noise.
+
+**HIL, watermark on (`-W 50`)**: loss unchanged to slightly better (K64 tc5 0.234%, K1024 tc5
+0.0251%), and **the throttle holds its designed bound exactly**: 7954-7977 solicits per 8s run
+(~995/s against the 1ms min gap) with 1.06-1.44M suppressed. At depth 64 it self-limits far lower
+(111-134/run), since the watermark is only crossed when a gap actually stalls the ack.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
