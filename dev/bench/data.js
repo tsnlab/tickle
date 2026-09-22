@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790087821913,
+  "lastUpdate": 1790087825935,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -107998,6 +107998,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/1643d4e035f908190f4577e844f3a41c9da028d2"
         },
         "date": 1790085840095,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "8634aaa034ce069ecf36a974d13cbad1ba6ba1ae",
+          "message": "tickle.c: Phase 1-b - RELIABLE-only 1ms ACKNACK retry interval (H3)\n\nThe reliable Subscriber's ACKNACK retry timer shared RPC's\ntt_CALL_RETRY_INTERVAL (5ms). HIL 0-c/1-a counters put every recovery under\n256us after its ACKNACK, but a retry after a lost ACKNACK or retransmit waited\nthe full 5ms - long enough for the default depth-64 Publisher cache to evict the\nsample (~4.8ms at 13K msg/s, ~0.34ms at max rate), showing up as null_evicted\nand jump-abandoned samples.\n\nNew config.h tt_RELIABLE_RETRY_INTERVAL (1ms, ~4x the measured recovery RTT),\nused by acknack_retry() and maybe_arm_acknack_retry() through one\nreliable_retry_interval() helper. tt_RELIABLE_DEADLINE still overrides it.\nRPC keeps tt_CALL_RETRY_INTERVAL (5ms). rmw_publisher.c's wait_for_all_acked\npoll interval deliberately stays at 5ms; only its comment is corrected, since\nit claimed to mirror the ACKNACK cadence.\n\nTest: test_reliable_acknack_retry_uses_reliable_retry_interval checks the\nscheduled time of both the first arming and a re-arm (fails with the old 5ms).\n18/18 with and without -Dtt_RELIABLE_STATS; clang-format/clang-tidy clean.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T23:30:09+09:00",
+          "tree_id": "a43cedf1a9428207748c3e0cba06077633d400a9",
+          "url": "https://github.com/tsnlab/tickle/commit/8634aaa034ce069ecf36a974d13cbad1ba6ba1ae"
+        },
+        "date": 1790087824700,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
