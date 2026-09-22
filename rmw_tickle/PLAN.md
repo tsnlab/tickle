@@ -1095,6 +1095,38 @@ still overrides it. RPC and `rmw_publisher_wait_for_all_acked()` polling stay at
   max rate, where `null_evicted` is now concentrated. B1 (byte ring) makes K ≥ retry × rate
   affordable by default.
 
+#### E2: DDS under loss, incl. 20/50% tc (2026-09-23, Plan, real HIL, 2 reps per cell)
+
+Harness: `37542ad`/`b1054f9` (`write_fail` counter, `-B` max_blocking_time, Cyclone `-i`). The
+DDS clients consume `seq` before `write()`, so the server counts a refused write as lost too.
+Net network loss = lost - write_fail.
+
+**CycloneDDS** (KEEP_ALL, max_samples=4000):
+
+| tc | max rate, default blocking (10s) | max rate, `-B 1` (1ms) |
+|---|---|---|
+| 0% | 47-55 Mbps, 0 lost | 72-93 Mbps, 0.01-0.1% refused |
+| 1% | 11.4-11.8 Mbps, 0 lost | 18 Mbps, **0.73% refused** |
+| 5% | 2.3-2.7 Mbps, 0 lost | 2.2 Mbps, **17-19% refused** |
+| 20% | 0.5 Mbps, 0 lost | 0.3-0.4 Mbps, **61-66% refused** |
+| 50% | 0.1 Mbps, 0 lost | 0.1-0.2 Mbps, **73-79% refused** |
+
+(~8 Mbps paced: the same shape. 0 lost with default blocking at every tc; 0.4-0.5% / 16-18% /
+68% / 58-78% refused with `-B 1` at 1/5/20/50%.)
+
+- **Confirms the user's hypothesis 4 and Phase 3's design.** DDS never loses an accepted
+  sample: net network loss ≈ 0 in every cell (lost == write_fail within a few samples, which are
+  in flight at shutdown). With long blocking, loss turns into throughput collapse (50% tc →
+  0.1 Mbps). With short blocking, it turns into refused writes, visible to the app.
+- **FastDDS results are invalid (methodology bug).** FastDDS sent every sample on both eth0 (the
+  tc'd test link) and wlan0 (management WiFi): tx_bytes rose ~30.7MB on each in a 4s run, and
+  CycloneDDS used eth0 only. The wlan0 copy always arrived, so FastDDS showed 0 lost, 0 refused
+  and 17 Mbps unchanged even at 50% tc. This also invalidates every earlier FastDDS under-loss
+  number in `COMPARISON.MD` (scenario 4), and FastDDS's low throughput may have been WiFi-bound.
+  Fix: `examples/perf_hil/fastdds/fastdds_eth0_only.xml` (UDPv4 `interfaceWhiteList`, builtin
+  transports off) via `FASTRTPS_DEFAULT_PROFILES_FILE` in `fastdds/run_scenario.sh`. Re-measure
+  pending.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
