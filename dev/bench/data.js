@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790109299422,
+  "lastUpdate": 1790109303509,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -108355,6 +108355,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3631.572,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fd266322bfcb9fa20460cd58a43d28ca75c18654",
+          "message": "test_common.h: parenthesize TEST_RELIABLE_CACHE's macro arguments\n\nCheck all (clang-tidy bugprone-macro-parentheses) failed on 3e5e769: the macro\nbody used `name.field` and `sizeof(name)` unparenthesized. I had linted the\nchanged .c files but not this header, which CI also checks.\n\nNo behavior change; 18/18 with and without -Dtt_RELIABLE_STATS, and clang-tidy\nnow clean in both modes across every file B1 touched.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T05:28:51+09:00",
+          "tree_id": "e1b062cb486df8e0c9e47598b351cfeff0ad7f75",
+          "url": "https://github.com/tsnlab/tickle/commit/fd266322bfcb9fa20460cd58a43d28ca75c18654"
+        },
+        "date": 1790109301953,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1583.829,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2583.867,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3631.863,
             "unit": "ms"
           }
         ]
