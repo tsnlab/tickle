@@ -1211,6 +1211,31 @@ there is enough headroom for RELIABLE to recover everything.)
 - Throughput without the WiFi duplicate is 10-17 Mbps at tc 0%, so the old "14.35 Mbps" figure
   was measured over a different path than TickLE's and CycloneDDS's.
 
+#### Phase 3 kickoff (2026-09-23, the user chose it over Phase 2 and the rmw memory follow-up)
+
+Phase 1 is complete and CI-green: 1-a (`b38c70c`), 1-b (`8634aaa`), 1-c (`f0b7ae0`), B1
+(`3e5e769`/`fd26632`). Max rate at 5% injected loss went 4.6% → 0.24% (depth 64) / 0.028%
+(depth 1024); at ~8 Mbps loss is 0; the cache is ~12x smaller.
+
+Order for Phase 3, from the approved design plus D2:
+1. **Prerequisites (assigned to Dev)**: D2 fixes 1-3 (per-entity lease drops the peer from the ack
+   set; ack state keyed by (node_id, subscriber endpoint id) instead of node alone; preserve ack
+   state across an unrelated `last_modified` change), and ACK solicitation at a cache-fill
+   watermark (~50%) coordinated with `ack_solicit_period_ns`. Design note required for the ack-key
+   change and the watermark before coding.
+2. Core: `publish()` returns "cannot write now" when the cache is full of unacked samples, plus a
+   query function and a "space freed" callback (opt-in).
+3. `rmw_tickle`: `rmw_publish()` waits on the callback up to `max_blocking_time` (default 100ms,
+   user-configurable), then fails. `KEEP_ALL` must stop being rejected in `rmw_qos.c`.
+4. Benchmarks: a `KEEP_ALL` mode and a refused-write counter for TickLE, matching `write_fail` in
+   the DDS harnesses.
+
+Still queued, not dropped: **Phase 2** (256-sample window / H1, a wire change - the user's
+decision), the **rmw per-type max encoded size** follow-up from B1 (12.2 MB → ~1 MB for rmw
+KEEP_ALL publishers, needs a typesupport generator change), the **intermittent DATA-path jump
+outlier** (~1 run in 3-6 at max rate), and **CI maintenance** (actions still targeting Node.js 20;
+`ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19).
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
