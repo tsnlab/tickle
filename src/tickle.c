@@ -2149,6 +2149,13 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
     send_acknack_range(node, proxy, 0, highest_relevant_bit(proxy));
 }
 
+// The reliable Subscriber's ACKNACK retry cadence - tt_RELIABLE_DEADLINE when set, otherwise
+// tt_RELIABLE_RETRY_INTERVAL (config.h, Phase 1-b). Shared by acknack_retry() and
+// maybe_arm_acknack_retry() so the first retry and every later one use the same interval.
+static uint64_t reliable_retry_interval(void) {
+    return tt_RELIABLE_DEADLINE != 0 ? (uint64_t)tt_RELIABLE_DEADLINE : (uint64_t)tt_RELIABLE_RETRY_INTERVAL;
+}
+
 // Scheduled (tt_Node_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
 // 0), re-sending the ACKNACK on a timer for the case where no further DATA ever arrives to
 // re-trigger update_reliable_ack() itself. Mirrors call_retry()'s own schedule/reschedule/give-up
@@ -2191,8 +2198,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     RSTAT_INC(acknack_timer);
     send_acknack(node, proxy);
 
-    uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
-    if (!tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, proxy)) {
+    if (!tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(), acknack_retry, proxy)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
         proxy->acknack_scheduled = false;
     }
@@ -2290,7 +2296,7 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
         // DATA arrival (update_reliable_ack()'s own unconditional call at the end of every DATA it
         // processes), not just once per gap - send_acknack() used to sit *outside* this guard and
         // fire unconditionally on every single call while any gap remained open, completely
-        // bypassing the tt_CALL_RETRY_INTERVAL pacing acknack_retry()'s own timer is supposed to
+        // bypassing the retry-interval pacing acknack_retry()'s own timer is supposed to
         // provide. At TickLE's real max throughput this produced an ACKNACK flood (measured: ~70K
         // ACKNACKs/sec from one WriterProxy, vs. a handful from the actual 5ms retry timer) that
         // starved both ends' own CPU/network budget - the real root cause of reliable_throughput's
@@ -2302,8 +2308,7 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
         RSTAT_INC(acknack_immediate);
         send_acknack(node, proxy);
         proxy->retry = 0;
-        uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
-        if (tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, proxy)) {
+        if (tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
         } else {
             TT_LOG_ERROR("Cannot schedule acknack_retry");
@@ -2522,7 +2527,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
 
     // Phase 1-a (rmw_tickle/PLAN.md, H2) - maybe_arm_acknack_retry() only sends an immediate
     // ACKNACK when no retry timer is armed yet; a gap that opens while one already is used to wait
-    // for that timer (tt_CALL_RETRY_INTERVAL, 5ms). At max rate the 256-sample window moves on in
+    // for that timer (then tt_CALL_RETRY_INTERVAL, 5ms). At max rate the 256-sample window moves on in
     // ~1.35ms, so those gaps were always abandoned by jump_ack_baseline() before the timer fired
     // (HIL 0-c: ~48% of gaps at 1% tc loss, ~91% at 5%, all lost). NACK the new gap immediately -
     // and *only* its own positions: re-requesting every still-open gap here would re-send samples

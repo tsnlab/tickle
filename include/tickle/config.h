@@ -26,12 +26,19 @@
 #define tt_NODE_UPDATE_INTERVAL (1 * tt_SECOND) // nanosecond
 #define tt_NODE_TX_INTERVAL tt_MILLISECOND      // nanosecond
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
-// re-send interval (mirrors tt_CALL_RETRY_INTERVAL's role for RPC; 0 = auto, same convention as
+// re-send interval override (0 = auto, i.e. tt_RELIABLE_RETRY_INTERVAL below; same convention as
 // struct tt_Service.call_retry_interval) and the max retransmit attempts a reliable Publisher
 // makes for one cached sample before giving up on it (mirrors tt_CALL_RETRY_COUNT). A Topic's
 // deadline_duration/lifespan_duration (tickle.h) are still reserved for #2/#6, not this.
 #define tt_RELIABLE_DEADLINE 0 // nanosecond, 0 is auto
 #define tt_RELIABLE_RETRY 3    // count
+// Phase 1-b (rmw_tickle/PLAN.md, H3) - the reliable Subscriber's own default ACKNACK retry
+// interval, separate from RPC's tt_CALL_RETRY_INTERVAL (5ms, which it used to share). Real HIL
+// (Phase 0-c/1-a counters) put every successful recovery under 256us after its ACKNACK, while a
+// retry for a lost ACKNACK/retransmit waited the full 5ms - long enough for a depth-64 Publisher
+// cache (~4.8ms at 13K msg/s, ~0.34ms at max rate) to evict the sample first. 1ms keeps a ~4x
+// margin over that RTT.
+#define tt_RELIABLE_RETRY_INTERVAL (1 * tt_MILLISECOND) // nanosecond
 // rmw_tickle/PLAN.md's "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache (tickle.h)
 // no longer embeds a fixed-size array sized by this constant: entries[]/capacity are now caller-
 // owned (any size the caller's own backing array happens to be - stack, static, or, for a caller
