@@ -1230,8 +1230,19 @@ Order for Phase 3, from the approved design plus D2:
 4. Benchmarks: a `KEEP_ALL` mode and a refused-write counter for TickLE, matching `write_fail` in
    the DDS harnesses.
 
-Still queued, not dropped: **Phase 2** (256-sample window / H1, a wire change - the user's
-decision), the **rmw per-type max encoded size** follow-up from B1 (12.2 MB → ~1 MB for rmw
+**Wire decision (2026-09-23, the user: "2단계와 묶어서 한 번에")**: step 1's item (b) turned out to
+be impossible without a wire change - every Subscriber of one topic shares `endpoint_id`
+(`tt_hash_id(topic, endpoint name)`, tickle.c:1102/1137), `tt_AckNackHeader`'s ids both name the
+*target* Publisher, and `tt_UpdateEntity` carries no entity id at all, so a Publisher cannot tell
+two Subscribers on one node apart (the default ROS shape - `rmw_subscription.c` passes the topic
+name as the endpoint name). Under KEEP_ALL that is silent loss: the faster Subscriber's ACK
+advances the shared entry and the writer unblocks. **Phase 2 is therefore approved and bundled**:
+one `tt_VERSION` bump carrying both per-Subscriber ack identity and the wider Subscriber tracking
+window. Dev owes a combined design note (wire layouts, version mismatch behavior, ack table keying
+and sizing, window sizing and per-ACKNACK cost, the KEEP_ALL "unacked ≤ window" rule restated,
+migration and tests) before implementation.
+
+Still queued, not dropped: the **rmw per-type max encoded size** follow-up from B1 (12.2 MB → ~1 MB for rmw
 KEEP_ALL publishers, needs a typesupport generator change), the **intermittent DATA-path jump
 outlier** (~1 run in 3-6 at max rate), and **CI maintenance** (actions still targeting Node.js 20;
 `ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19).
