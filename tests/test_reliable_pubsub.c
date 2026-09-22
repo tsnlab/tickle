@@ -27,6 +27,7 @@
 
 #define LOCAL_NODE_ID 1
 #define REMOTE_NODE_ID 2
+#define REMOTE_SUB_ENTITY_ID 0x22220001 // Phase 2 - which remote Subscriber entity acks
 #define ENDPOINT_ID 0xaabbccdd
 #define TEST_SENDER_IP 0x0a000001
 #define TEST_SENDER_PORT 12345
@@ -150,13 +151,14 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
 // multi-byte field this helper leaves at its default.
 static uint32_t write_acknack(struct tt_Node* node, uint32_t endpoint_id, uint32_t seq_no, uint64_t bitmap) {
     struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
+    memset(acknack_header, 0, sizeof(*acknack_header));
     acknack_header->endpoint_id = endpoint_id;
+    acknack_header->sender_entity_id = REMOTE_SUB_ENTITY_ID; // Phase 2
     acknack_header->seq_no = seq_no;
+    // Phase 2 - the bitmap is variable length now: one word here, with the count on the wire.
+    acknack_header->bitmap_words = 1;
     acknack_header->bitmap[0] = bitmap;
-    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
-        acknack_header->bitmap[w] = 0;
-    }
-    return sizeof(struct tt_AckNackHeader);
+    return sizeof(struct tt_AckNackHeader) + sizeof(uint64_t);
 }
 
 // Compares the multi-word received_bitmap against a plain uint64_t test expectation - every test
@@ -1251,10 +1253,16 @@ static void test_process_acknack_updates_peer_ack_seq_no(void) {
     struct tt_Header header;
     init_header(&header);
 
+    // Phase 2 - ack entries are claimed when the Subscriber matches (its announce), which this
+    // test skips by wiring peers[] directly; claim it explicitly so the ACKNACK has somewhere to
+    // land. An ACKNACK from an entity that was never matched is deliberately not counted - see
+    // test_process_acknack_from_unmatched_entity_records_nothing() below.
+    EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
+
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL); // seq_no 5, no gap requested
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     EXPECT_TRUE(ack != NULL);
     EXPECT_EQ_U32(5, ack->ack_seq_no);
     // ...and the public aggregation agrees: 4 is acked (5 means "everything below 5"), 5 isn't.
@@ -1280,7 +1288,8 @@ static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     pub.peers[0].node_id = REMOTE_NODE_ID;
     pub.peers[0].ip = TEST_SENDER_IP;
     pub.peers[0].port = TEST_SENDER_PORT;
-    record_peer_ack(&pub, REMOTE_NODE_ID, 10);
+    claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 10);
 
     struct tt_Header header;
     init_header(&header);
@@ -1288,7 +1297,7 @@ static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL); // stale - already at 10
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     EXPECT_TRUE(ack != NULL);
     EXPECT_EQ_U32(10, ack->ack_seq_no);
 }
@@ -1316,7 +1325,8 @@ static void test_process_acknack_from_unmatched_peer_updates_nothing(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL); // nothing recorded for an unmatched node
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) ==
+                NULL); // nothing recorded for an unmatched node
 }
 
 // forget_publisher_peer() must drop a genuinely departed peer's ack state alongside its peers[]
@@ -1332,19 +1342,21 @@ static void test_forget_publisher_peer_resets_ack_seq_no(void) {
     pub.peers[0].node_id = REMOTE_NODE_ID;
     pub.peers[0].ip = TEST_SENDER_IP;
     pub.peers[0].port = TEST_SENDER_PORT;
-    record_peer_ack(&pub, REMOTE_NODE_ID, 42);
+    claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 42);
 
     forget_publisher_peer(&pub, REMOTE_NODE_ID, /*preserve_ack=*/false);
 
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
-    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
 
     // preserve_ack = true keeps it: process_update()'s own forget-then-re-add must not throw away
     // ack state for a Subscriber that never went anywhere (Phase 3 prerequisite (c)).
     pub.peers[0].node_id = REMOTE_NODE_ID;
-    record_peer_ack(&pub, REMOTE_NODE_ID, 42);
+    claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 42);
     forget_publisher_peer(&pub, REMOTE_NODE_ID, /*preserve_ack=*/true);
-    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     EXPECT_TRUE(ack != NULL);
     EXPECT_EQ_U32(42, ack->ack_seq_no);
 }

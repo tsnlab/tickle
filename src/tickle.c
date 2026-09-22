@@ -112,9 +112,9 @@ static void rstat_recovered(uint32_t seq_no) {
     g_rstats_requested_ns[slot] = 0;
 }
 
-static uint32_t rstat_popcount_bitmap(const uint64_t* bitmap) {
+static uint32_t rstat_popcount_bitmap(const uint64_t* bitmap, uint16_t words) {
     uint32_t count = 0;
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+    for (uint16_t word = 0; word < words; word++) {
         count += (uint32_t)__builtin_popcountll(bitmap[word]);
     }
     return count;
@@ -486,52 +486,70 @@ static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
     }
 }
 
-// This node's own entry in pub->peer_acks[] (keyed by node_id, see that field's own doc comment,
-// tickle.h), or NULL if it has never sent an ACKNACK to this Publisher.
-static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id) {
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peer_acks[i].node_id == node_id) {
+// One remote Subscriber entity's own entry in pub->peer_acks[] (keyed by (node_id, entity_id) -
+// see that field's own doc comment, tickle.h), or NULL if this Publisher isn't tracking it.
+static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id) {
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id == node_id && pub->peer_acks[i].entity_id == entity_id) {
             return &pub->peer_acks[i];
         }
     }
     return NULL;
 }
 
-// Drops this node's ack state outright - a real departure (farewell UPDATE, liveliness timeout, or
-// an announce that no longer lists a matching Subscriber), not process_update()'s own transient
-// forget-then-re-add (Phase 3 prerequisite (c): that one must preserve it).
-static void forget_peer_ack(struct tt_Publisher* pub, uint8_t node_id) {
-    struct tt_PeerAck* ack = find_peer_ack(pub, node_id);
+// Claims (or finds) the ack entry for one matched Subscriber entity, at match time rather than on
+// its first ACKNACK: a matched-but-still-silent Subscriber must already count as "hasn't acked
+// anything", or a KEEP_ALL writer would unblock without it (Phase 2/(b)). NULL when the table is
+// full, which register_subscriber_peer_on_publisher() turns into "don't match at all" rather than
+// matching a Subscriber whose acks can never be counted.
+static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id) {
+    struct tt_PeerAck* ack = find_peer_ack(pub, node_id, entity_id);
     if (ack != NULL) {
-        ack->node_id = tt_NODE_ID_INVALID;
-        ack->ack_seq_no = 0;
+        return ack;
+    }
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
+            pub->peer_acks[i].node_id = node_id;
+            pub->peer_acks[i].entity_id = entity_id;
+            pub->peer_acks[i].ack_seq_no = 0;
+            pub->peer_acks[i].tracking_words = 0; // set by the caller from the announce
+            return &pub->peer_acks[i];
+        }
+    }
+    return NULL;
+}
+
+// Drops ack state outright - a real departure (farewell UPDATE, liveliness timeout, or an announce
+// that no longer lists a matching Subscriber), not process_update()'s own transient
+// forget-then-re-add (Phase 3 prerequisite (c): that one must preserve it). entity_id 0 with
+// match_any_entity drops every entity that node hosts (a whole node departing); otherwise just the
+// one named entity (a single Subscriber's own lease expiring while its node stays up).
+static void forget_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, bool match_any_entity) {
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id != node_id) {
+            continue;
+        }
+        if (!match_any_entity && pub->peer_acks[i].entity_id != entity_id) {
+            continue;
+        }
+        pub->peer_acks[i].node_id = tt_NODE_ID_INVALID;
+        pub->peer_acks[i].entity_id = 0;
+        pub->peer_acks[i].ack_seq_no = 0;
     }
 }
 
-// Advances this node's own ack watermark, claiming an entry on first contact. Only ever advances -
-// a stale/reordered ACKNACK carrying a smaller seq_no must not regress it (UDP gives no ordering
-// guarantee between two ACKNACKs from the same node). A node that isn't currently a matched peer,
-// or a full table, records nothing: there's nothing for the ack to mean yet.
-static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t seq_no) {
-    bool matched = false;
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id == node_id) {
-            matched = true;
-            break;
-        }
-    }
-    if (!matched) {
+// Advances one Subscriber entity's own ack watermark. Only ever advances - a stale/reordered
+// ACKNACK carrying a smaller seq_no must not regress it (UDP gives no ordering guarantee between
+// two ACKNACKs from the same sender). An ACKNACK from an entity this Publisher isn't tracking
+// (never matched, already departed, or sender_entity_id 0/unknown) still routes and retransmits,
+// it just isn't counted as an ack - the conservative direction for KEEP_ALL.
+static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t entity_id, uint32_t seq_no) {
+    if (entity_id == 0) {
         return;
     }
-
-    struct tt_PeerAck* ack = find_peer_ack(pub, node_id);
+    struct tt_PeerAck* ack = find_peer_ack(pub, node_id, entity_id);
     if (ack == NULL) {
-        ack = find_peer_ack(pub, tt_NODE_ID_INVALID); // first unused entry
-        if (ack == NULL) {
-            return; // table full - same "nothing to record against" no-op as an unmatched node
-        }
-        ack->node_id = node_id;
-        ack->ack_seq_no = 0;
+        return;
     }
     if (seq_no > ack->ack_seq_no) {
         ack->ack_seq_no = seq_no;
@@ -554,7 +572,7 @@ static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id, boo
         }
     }
     if (!preserve_ack) {
-        forget_peer_ack(pub, node_id);
+        forget_peer_ack(pub, node_id, 0, /*match_any_entity=*/true);
     }
 }
 
@@ -592,7 +610,7 @@ static void drop_ack_state_for_unmatched_source(struct tt_Node* node, uint8_t no
             }
         }
         if (!still_matched) {
-            forget_peer_ack(pub, node_id);
+            forget_peer_ack(pub, node_id, 0, /*match_any_entity=*/true);
         }
     }
 }
@@ -1513,22 +1531,17 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
     uint32_t lowest = 0;
     bool first = true;
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id == tt_NODE_ID_INVALID) {
+    // Phase 2 - one entry per matched Subscriber *entity* (claimed at match time, dropped on
+    // departure), so iterating the table is iterating exactly the set that has to agree.
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
             continue;
         }
-        // Inline rather than find_peer_ack(), which takes a non-const Publisher: this function only
-        // reads, and tt_Publisher_min_acked_seq_no() below takes a const pointer, which used to be
-        // laundered through a uintptr_t cast (clang-tidy performance-no-int-to-ptr, and a real CI
-        // failure on main).
-        const struct tt_PeerAck* ack = NULL;
-        for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
-            if (pub->peer_acks[j].node_id == pub->peers[i].node_id) {
-                ack = &pub->peer_acks[j];
-                break;
-            }
-        }
-        uint32_t value = ack != NULL ? ack->ack_seq_no : 0;
+        // Read straight from the entry: the table is the matched set now, so no lookup is needed,
+        // and this function taking a const pointer is what keeps tt_Publisher_min_acked_seq_no()
+        // from laundering const through a uintptr_t cast (clang-tidy performance-no-int-to-ptr,
+        // a real CI failure on main before d0263b4).
+        uint32_t value = pub->peer_acks[i].ack_seq_no;
         if (first || value < lowest) {
             lowest = value;
             first = false;
@@ -2000,18 +2013,13 @@ uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
 }
 
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id == tt_NODE_ID_INVALID) {
+    // Phase 2 - every matched Subscriber entity must have got this far, not merely every matched
+    // node: two Subscriptions of one topic in one remote process each have their own entry.
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
             continue;
         }
-        const struct tt_PeerAck* ack = NULL;
-        for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
-            if (pub->peer_acks[j].node_id == pub->peers[i].node_id) {
-                ack = &pub->peer_acks[j];
-                break;
-            }
-        }
-        if (ack == NULL || ack->ack_seq_no <= seq_no) {
+        if (pub->peer_acks[i].ack_seq_no <= seq_no) {
             return false; // never acked anything, or not this far yet
         }
     }
@@ -2439,13 +2447,23 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
         return;
     }
 
-    struct tt_AckNackHeader* acknack_header = encode(node, sizeof(struct tt_AckNackHeader));
+    // Phase 2 - only the words this request actually reaches into go on the wire. high_bit is the
+    // highest position worth asking about (highest_relevant_bit(), or the caller's narrower range),
+    // so everything above it is zero by construction and never needs sending.
+    uint16_t words = proxy_words(proxy);
+    uint16_t wire_words = high_bit < 0 ? 0 : (uint16_t)((high_bit / tt_RELIABLE_BITMAP_WORD_BITS) + 1);
+    if (wire_words > words) {
+        wire_words = words;
+    }
+    struct tt_AckNackHeader* acknack_header =
+        encode(node, sizeof(struct tt_AckNackHeader) + ((size_t)wire_words * sizeof(uint64_t)));
     if (acknack_header == NULL) {
         rollback(node, old_tx_tail);
         return;
     }
 
     acknack_header->endpoint_id = endpoint->id;
+    acknack_header->sender_entity_id = endpoint->entity_id; // Phase 2 - which Subscriber is acking
     acknack_header->seq_no = proxy->ack_seq_no;
     // wire direction is "please resend", opposite of received_bitmap - but masked to bits below
     // the highest *confirmed* arrival: a bare ~received_bitmap requested every one of all
@@ -2462,21 +2480,14 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
     // recent Heartbeat's own last_seq_no - QoS roadmap #5's own follow-up, struct
     // tt_HeartbeatHeader's doc comment (tickle.h) - widening the request range to cover a gap a
     // Heartbeat revealed even when nothing has arrived out of order yet to set any bit here at all.
-    uint16_t words = proxy_words(proxy);
     uint64_t request_mask[tt_RELIABLE_BITMAP_MAX_WORDS];
     uint64_t below_low_mask[tt_RELIABLE_BITMAP_MAX_WORDS];
     bitmap_low_mask(request_mask, words, high_bit);
     bitmap_low_mask(below_low_mask, words, low_bit - 1);
-    // The wire's own bitmap is still a fixed tt_RELIABLE_BITMAP_WORDS wide at this step; a window
-    // wider than that becomes requestable once the ACKNACK carries a variable-length bitmap
-    // (Phase 2's wire change, next commit), so only the words the wire can actually carry are
-    // written here.
-    uint16_t wire_words = words < (uint16_t)tt_RELIABLE_BITMAP_WORDS ? words : (uint16_t)tt_RELIABLE_BITMAP_WORDS;
+    acknack_header->bitmap_words = wire_words;
+    acknack_header->reserved = 0;
     for (uint16_t word = 0; word < wire_words; word++) {
         acknack_header->bitmap[word] = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
-    }
-    for (uint16_t word = wire_words; word < (uint16_t)tt_RELIABLE_BITMAP_WORDS; word++) {
-        acknack_header->bitmap[word] = 0;
     }
     // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
     // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
@@ -2491,7 +2502,7 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
     // Copied before end_encode(): a successful flush memmoves tx_buffer, invalidating acknack_header.
     uint64_t requested[tt_RELIABLE_BITMAP_MAX_WORDS];
     uint32_t requested_base = proxy->ack_seq_no;
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+    for (uint16_t word = 0; word < wire_words; word++) {
         requested[word] = acknack_header->bitmap[word];
     }
 #endif
@@ -2503,8 +2514,8 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
     else {
         uint64_t now = tt_get_ns();
         g_rstats.acknack_sent++;
-        g_rstats.acknack_bits_sent += rstat_popcount_bitmap(requested);
-        for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        g_rstats.acknack_bits_sent += rstat_popcount_bitmap(requested, wire_words);
+        for (uint16_t word = 0; word < wire_words; word++) {
             for (uint64_t bits = requested[word]; bits != 0; bits &= bits - 1) {
                 uint32_t seq =
                     requested_base + (uint32_t)(word * tt_RELIABLE_BITMAP_WORD_BITS) + (uint32_t)__builtin_ctzll(bits);
@@ -2659,7 +2670,7 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
 #ifdef tt_RELIABLE_STATS
     if (seq_no > proxy->ack_seq_no) {
         uint64_t span = (uint64_t)seq_no - proxy->ack_seq_no;
-        uint64_t received = rstat_popcount_bitmap(proxy->received_bitmap);
+        uint64_t received = rstat_popcount_bitmap(proxy->received_bitmap, proxy_words(proxy));
         g_rstats.jump_abandoned_seq += span > received ? span - received : 0;
     }
 #endif
@@ -2900,10 +2911,14 @@ static int encode_update_entities(struct tt_Node* node, struct tt_Endpoint* cons
         }
 
         update_entity->endpoint_id = endpoint->id;
+        update_entity->entity_id = endpoint->entity_id; // Phase 2 - which instance, not just which topic
         update_entity->kind = endpoint->kind;
         update_entity->qos = endpoint_qos_bits(endpoint);
-        update_entity->reserved[0] = 0;
-        update_entity->reserved[1] = 0;
+        // Phase 2 - a Subscriber announces the window it can actually track; everything else
+        // announces 0 ("the default"), see tt_UpdateEntity.tracking_words' own doc comment.
+        update_entity->tracking_words = endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER
+                                            ? subscriber_tracking_words((const struct tt_Subscriber*)endpoint)
+                                            : 0;
         update_entity->deadline_duration_ns = endpoint_deadline_duration_ns(endpoint);
         update_entity->liveliness_lease_duration_ns = endpoint_liveliness_lease_duration_ns(endpoint);
 
@@ -3186,6 +3201,11 @@ struct update_peer_ctx {
     uint64_t liveliness_lease_duration_ns;
     // Milestone 58 - the announcing node's own tt_Node.last_modified as of this UPDATE (process_
     // update()'s own already-decoded last_modified, threaded down through decode_update_entities()).
+    // Phase 2 - the announcing entity's own entity_id and, for a Subscriber, the RELIABLE tracking
+    // window it announced (tt_UpdateEntity.tracking_words). Both unused by
+    // register_server_peer_on_client().
+    uint32_t entity_id;
+    uint16_t tracking_words;
     // Unused by register_server_peer_on_client() (Clients/Servers have no durability concept), only
     // meaningful to register_subscriber_peer_on_publisher()'s own durable_delivered[] check below.
     uint64_t announce_last_modified;
@@ -3215,6 +3235,25 @@ static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct t
     if (incompatible) {
         return;
     }
+
+    // Phase 2 (rmw_tickle/PLAN.md, prerequisite (b)) - claim this Subscriber entity's own ack entry
+    // up front, so a matched-but-still-silent Subscriber already counts as "hasn't acked anything"
+    // rather than being invisible until its first ACKNACK. A full table refuses the match outright
+    // (the Subscriber simply doesn't connect to this Publisher, exactly like an incompatible QoS
+    // pair) instead of matching a Subscriber whose acks could never be counted - under Phase 3's
+    // KEEP_ALL blocking that would unblock a writer early, i.e. silent loss.
+    if (pub->reliable && ctx->entity_id != 0) {
+        struct tt_PeerAck* ack = claim_peer_ack(pub, ctx->header->source, ctx->entity_id);
+        if (ack == NULL) {
+            TT_LOG_WARNING("Ack table full (%d entries) - not matching Subscriber %08x on node %d", tt_MAX_ACK_ENTRIES,
+                           ctx->entity_id, ctx->header->source);
+            return;
+        }
+        // Phase 2 - remember how wide a gap this Subscriber can still ask about, so
+        // tt_Publisher_unacked_bound() (Phase 3's KEEP_ALL bound) is the minimum across them.
+        ack->tracking_words = ctx->tracking_words;
+    }
+
     if (upsert_peer(pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {
         struct tt_Peer target = {ctx->header->source, ctx->sender_ip, ctx->sender_port};
         // Milestone 58 - skip a redundant backlog re-delivery when this "genuinely new" peer slot
@@ -3253,27 +3292,35 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
     bool reverse = tt_is_reverse_endian(header);
     for (int i = 0; i < entity_count && *head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, head, tail, sizeof(struct tt_UpdateEntity));
-        uint32_t entity_id = rd32(header, update_entity->endpoint_id);
+        uint32_t endpoint_id = rd32(header, update_entity->endpoint_id);
+        uint32_t remote_entity_id = rd32(header, update_entity->entity_id); // Phase 2
+        uint16_t remote_tracking_words = rd16(header, update_entity->tracking_words);
 
         uint64_t deadline_duration_ns = rd64(header, update_entity->deadline_duration_ns);
         uint64_t liveliness_lease_duration_ns = rd64(header, update_entity->liveliness_lease_duration_ns);
 
         TT_LOG_DEBUG("UpdateEntity");
-        TT_LOG_DEBUG("  endpoint_id: %08x", entity_id);
+        TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
         TT_LOG_DEBUG("  kind: %d", update_entity->kind);
 
         if (update_entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            struct update_peer_ctx ctx = {header,
-                                          sender_ip,
-                                          sender_port,
-                                          update_entity->qos,
-                                          deadline_duration_ns,
-                                          liveliness_lease_duration_ns,
-                                          last_modified};
-            for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, entity_id, register_subscriber_peer_on_publisher, &ctx);
+            // Designated initializers on purpose: this struct gained fields in the middle (Phase
+            // 2's entity_id/tracking_words), and positional init silently mapped last_modified onto
+            // the wrong member - which read as "this peer already has the backlog" and skipped a
+            // real re-delivery. Order can change again; these can't drift.
+            struct update_peer_ctx ctx = {.header = header,
+                                          .sender_ip = sender_ip,
+                                          .sender_port = sender_port,
+                                          .qos = update_entity->qos,
+                                          .deadline_duration_ns = deadline_duration_ns,
+                                          .liveliness_lease_duration_ns = liveliness_lease_duration_ns,
+                                          .entity_id = remote_entity_id,
+                                          .tracking_words = remote_tracking_words,
+                                          .announce_last_modified = last_modified};
+            for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, endpoint_id, register_subscriber_peer_on_publisher, &ctx);
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
-            struct update_peer_ctx ctx = {header, sender_ip, sender_port, 0, 0, 0, 0};
-            for_each_endpoint(node, tt_KIND_SERVICE_CLIENT, entity_id, register_server_peer_on_client, &ctx);
+            struct update_peer_ctx ctx = {.header = header, .sender_ip = sender_ip, .sender_port = sender_port};
+            for_each_endpoint(node, tt_KIND_SERVICE_CLIENT, endpoint_id, register_server_peer_on_client, &ctx);
         }
 
         uint16_t type_len = 0;
@@ -3295,7 +3342,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
         // Recorded regardless of kind or whether a local endpoint matched above - discovery
         // (tt_Node_set_discovery()) lists every remote entity a node has heard of, not just ones
         // this node itself can talk to.
-        upsert_discovered_entity(node, header->source, entity_id, update_entity->kind, update_entity->qos,
+        upsert_discovered_entity(node, header->source, endpoint_id, update_entity->kind, update_entity->qos,
                                  deadline_duration_ns, liveliness_lease_duration_ns, type, name);
     }
 
@@ -4179,23 +4226,23 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
 // count) rather than a flat O(tt_RELIABLE_BITMAP_BITS) scan - the same "stay O(word-count)" care
 // tt_RELIABLE_BITMAP_WORDS's own doc comment calls for.
 static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
-                                        uint16_t depth, uint32_t seq_no,
-                                        const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], const struct tt_Peer* target) {
+                                        uint16_t depth, uint32_t seq_no, const uint64_t* bitmap, uint16_t words,
+                                        const struct tt_Peer* target) {
 #ifdef tt_RELIABLE_STATS
     g_rstats.acknack_received++;
-    g_rstats.bits_requested += rstat_popcount_bitmap(bitmap);
+    g_rstats.bits_requested += rstat_popcount_bitmap(bitmap, words);
 #endif
     bool any_gone = false;
-    for (int word_idx = 0; word_idx < tt_RELIABLE_BITMAP_WORDS; word_idx++) {
+    // Phase 2 - `words` is whatever the requester actually sent (validated by the caller), and the
+    // inner loop walks set bits only, so a window widened to tt_RELIABLE_BITMAP_MAX_BITS costs
+    // nothing here unless the gaps really are that spread out: O(words + set bits), never
+    // O(window).
+    for (uint16_t word_idx = 0; word_idx < words; word_idx++) {
         uint64_t word = bitmap[word_idx];
-        if (word == 0) {
-            continue;
-        }
-        for (int bit_idx = 0; bit_idx < tt_RELIABLE_BITMAP_WORD_BITS; bit_idx++) {
-            if (!((word >> (unsigned)bit_idx) & 1)) {
-                continue;
-            }
-            uint32_t missing_seq_no = seq_no + (uint32_t)((word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + bit_idx);
+        while (word != 0) {
+            uint32_t bit_idx = (uint32_t)__builtin_ctzll(word);
+            word &= word - 1; // clear the lowest set bit
+            uint32_t missing_seq_no = seq_no + ((uint32_t)word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + bit_idx;
             any_gone |= retransmit_one_sample(node, pub, cache, depth, missing_seq_no, target);
         }
     }
@@ -4231,11 +4278,26 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
 
     uint32_t endpoint_id = rd32(header, acknack_header->endpoint_id);
     uint32_t seq_no = rd32(header, acknack_header->seq_no);
-    uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS];
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+    uint32_t entity_id = rd32(header, acknack_header->entity_id);
+    uint32_t sender_entity_id = rd32(header, acknack_header->sender_entity_id);
+
+    // Phase 2 - the bitmap is variable length now, so its own claimed word count is untrusted
+    // input: it must fit both this datagram's own remaining bytes and this receiver's own local
+    // buffer. A count that fails either is a malformed (or hostile) packet, not something to clamp
+    // and half-process - the request would name sequence numbers the sender never meant.
+    uint16_t bitmap_words = rd16(header, acknack_header->bitmap_words);
+    if (bitmap_words > tt_RELIABLE_BITMAP_MAX_WORDS) {
+        TT_LOG_ERROR("Illegal AckNack bitmap_words: %u > %d", bitmap_words, tt_RELIABLE_BITMAP_MAX_WORDS);
+        return false;
+    }
+    uint64_t bitmap[tt_RELIABLE_BITMAP_MAX_WORDS];
+    if (decode(node, buffer, &head, tail, (uint32_t)bitmap_words * sizeof(uint64_t)) == NULL) {
+        TT_LOG_ERROR("Illegal AckNack bitmap: %u words do not fit the datagram", bitmap_words);
+        return false;
+    }
+    for (uint16_t word = 0; word < bitmap_words; word++) {
         bitmap[word] = rd64(header, acknack_header->bitmap[word]);
     }
-    uint32_t entity_id = rd32(header, acknack_header->entity_id);
 
     TT_LOG_DEBUG("AckNack");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
@@ -4275,7 +4337,7 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     // legitimately solicit and track an ACKNACK reply too (tt_Publisher_request_ack()'s own
     // Heartbeat, answered regardless of pub->reliable) - only the actual byte retransmission below
     // is RELIABILITY's own exclusive contract.
-    record_peer_ack(pub, header->source, seq_no);
+    record_peer_ack(pub, header->source, sender_entity_id, seq_no);
 
     // Milestone 62 (rmw_tickle/PLAN.md) - gated on pub->reliable specifically, not merely pub->
     // reliable_cache != NULL: Milestone 24 unified RELIABILITY's and DURABILITY's own storage into
@@ -4293,7 +4355,7 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     // Publisher, so no compatible peer would ever legitimately request one here anyway; this is the
     // defensive, spec-honest half of that same contract, on the answering side.
     if (pub->reliable) {
-        retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, &target);
+        retransmit_reliable_samples(node, pub, cache, depth, seq_no, bitmap, bitmap_words, &target);
     }
 
     return true;
@@ -4334,15 +4396,15 @@ static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t firs
     uint32_t skipped = first_available_seq_no - proxy->ack_seq_no;
 #ifdef tt_RELIABLE_STATS
     {
-        uint64_t skipped_mask[tt_RELIABLE_BITMAP_WORDS];
-        uint64_t received_in_range[tt_RELIABLE_BITMAP_WORDS];
-        bitmap_low_mask(skipped_mask,
+        uint64_t skipped_mask[tt_RELIABLE_BITMAP_MAX_WORDS];
+        uint64_t received_in_range[tt_RELIABLE_BITMAP_MAX_WORDS];
+        bitmap_low_mask(skipped_mask, proxy_words(proxy),
                         skipped >= proxy_window_bits(proxy) ? (int)proxy_window_bits(proxy) - 1 : (int)skipped - 1);
-        for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        for (uint16_t word = 0; word < proxy_words(proxy); word++) {
             received_in_range[word] = proxy->received_bitmap[word] & skipped_mask[word];
         }
         g_rstats.heartbeat_advances++;
-        g_rstats.heartbeat_abandoned_seq += skipped - rstat_popcount_bitmap(received_in_range);
+        g_rstats.heartbeat_abandoned_seq += skipped - rstat_popcount_bitmap(received_in_range, proxy_words(proxy));
     }
 #endif
     if (skipped < proxy_window_bits(proxy)) {
@@ -4540,15 +4602,16 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         return true;
     default:
         // An unknown type is most likely a submessage from a newer protocol revision (see
-        // validate_packet_header()'s "accept higher version"). Its length was already validated
+        // validate_packet_header()'s own version check, exact since Phase 2). Its length was already validated
         // by the caller, so skip exactly that far and carry on instead of discarding the packet.
         TT_LOG_WARNING("Unknown submessage type %d, skipping (len %u)", submessage_header->type, body_tail - head);
         return true;
     }
 }
 
-// Accept higher version while ignoring the reserved field. But not lower version.
-static bool validate_packet_header(struct tt_Header* header) {
+// Rejects anything this node can't parse: a foreign magic value, or a different protocol version
+// (exact match since Phase 2 - see the version check's own comment below).
+static bool validate_packet_header(struct tt_Node* node, struct tt_Header* header) {
     if (!tt_is_native_endian(header) && !tt_is_reverse_endian(header)) {
         TT_LOG_ERROR("Illegal magic: 0x%04x", header->magic_value);
         return false;
@@ -4556,8 +4619,21 @@ static bool validate_packet_header(struct tt_Header* header) {
 
     TT_LOG_DEBUG("magic: 0x%04x (%c%c)", header->magic_value, header->magic[0], header->magic[1]);
 
-    if (header->version < tt_VERSION) {
-        TT_LOG_ERROR("Illegal version: %d < %d", header->version, tt_VERSION);
+    // Phase 2 (rmw_tickle/PLAN.md) - exact match, where this used to accept anything >= our own
+    // version. That was one-directional: a newer peer's packet passed this check and was then
+    // parsed with the older struct layout, silently misreading fields rather than failing. An
+    // exact match refuses cleanly in both directions.
+    //
+    // Honest limitation: this only helps from tt_VERSION 6 onward. A node built before this change
+    // still accepts a newer packet, and no change here can fix that retroactively - acceptable
+    // because nothing is deployed (Plan/user, 2026-09-23).
+    if (header->version != tt_VERSION) {
+        // Rate-limited: at max rate a mismatched peer would otherwise log per packet, which is its
+        // own denial of service. One line per source, re-armed when a different version shows up.
+        if (node->version_mismatch_logged[header->source] != header->version) {
+            node->version_mismatch_logged[header->source] = header->version;
+            TT_LOG_ERROR("Illegal version from node %d: %d != %d", header->source, header->version, tt_VERSION);
+        }
         return false;
     }
 
@@ -4609,7 +4685,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
         return false;
     }
 
-    if (!validate_packet_header(header)) {
+    if (!validate_packet_header(node, header)) {
         return false;
     }
 

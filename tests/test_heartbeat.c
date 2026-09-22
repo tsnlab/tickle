@@ -28,6 +28,7 @@
 
 #define LOCAL_NODE_ID 1
 #define REMOTE_NODE_ID 2
+#define REMOTE_SUB_ENTITY_ID 0x22220001 // Phase 2 - which remote Subscriber entity acks
 #define ENDPOINT_ID 0xaabbccdd
 #define TEST_SENDER_IP 0x0a000001
 #define TEST_SENDER_PORT 12345
@@ -202,7 +203,9 @@ static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_
     uint32_t tail = sizeof(struct tt_UpdateHeader);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
+    memset(entity, 0, sizeof(*entity)); // explicit: rx_buffer is reused across writes in these tests
     entity->endpoint_id = endpoint_id;
+    entity->entity_id = REMOTE_SUB_ENTITY_ID; // Phase 2 - which Subscriber instance
     entity->kind = tt_KIND_TOPIC_SUBSCRIBER;
     tail += sizeof(struct tt_UpdateEntity);
 
@@ -1049,14 +1052,15 @@ static void test_publisher_peer_ack_survives_announce_refresh(void) {
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id);
-    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
+    claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 7);
 
     // It re-announces (a newer last_modified) while still listing the same Subscriber.
     tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID);
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id); // re-added
-    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     EXPECT_TRUE(ack != NULL);
     EXPECT_EQ_U32(7, ack->ack_seq_no); // and its ack survived the round trip
 }
@@ -1078,15 +1082,16 @@ static void test_publisher_peer_ack_dropped_when_announce_drops_match(void) {
 
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
-    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) != NULL);
+    claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 7);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
 
     // A Subscriber for a different topic only: this Publisher is no longer matched.
     tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID + 1);
     EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
-    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
 }
 
 // Publishes one sample and returns true if a solicited Heartbeat went out alongside the DATA. With
@@ -1181,7 +1186,9 @@ static void test_ack_watermark_not_triggered_while_peer_keeps_up(void) {
 
     for (int i = 0; i < 8; i++) {
         EXPECT_TRUE(!publish_and_check_solicit(&pub));
-        record_peer_ack(&pub, REMOTE_NODE_ID, pub.seq_no + 1); // acked everything published so far
+        claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+        record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID,
+                        pub.seq_no + 1); // acked everything published so far
     }
 }
 

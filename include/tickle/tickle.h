@@ -104,6 +104,11 @@ struct tt_Node {
     // malloc'd copy of the whole variable-length announce the way earlier versions did.
     uint64_t update_last_modified[tt_MAX_ENDPOINT_COUNT];
     bool update_seen[tt_MAX_ENDPOINT_COUNT];
+    // Phase 2 (rmw_tickle/PLAN.md) - the tt_VERSION last logged as mismatched for each remote node
+    // (0 = nothing logged yet), so a peer speaking a different protocol version is reported once
+    // rather than once per packet. At max rate an unfiltered log line per rejected packet would be
+    // its own denial of service.
+    uint8_t version_mismatch_logged[tt_MAX_ENDPOINT_COUNT];
     // Per remote node (indexed the same way), the wall-clock time (tt_get_ns()) its most recent
     // UPDATE announce was received - unlike update_last_modified[] above, this moves on *every*
     // announce, including one whose content is unchanged from the last one acted on. Liveliness
@@ -590,7 +595,17 @@ struct tt_ReliableCache {
 // One matched remote node's acknowledgement state on a Publisher - see tt_Publisher.peer_acks.
 struct tt_PeerAck {
     uint8_t node_id; // tt_NODE_ID_INVALID (0, matching zero-init) = unused entry
+    // Phase 2 (rmw_tickle/PLAN.md) - which Subscriber *entity* on that node, learned from its own
+    // announce (tt_UpdateEntity.entity_id) and matched against each ACKNACK's own
+    // sender_entity_id. Keyed per entity, not per node, because two Subscribers of one topic in
+    // one process are otherwise indistinguishable and the faster one's ack would speak for both -
+    // silent loss under Phase 3's KEEP_ALL blocking.
+    uint32_t entity_id;
     uint32_t ack_seq_no;
+    // Phase 2 - the RELIABLE tracking window this Subscriber announced
+    // (tt_UpdateEntity.tracking_words), in 64-bit words; 0 = the protocol default.
+    // tt_Publisher_unacked_bound() takes the minimum across matched Subscribers.
+    uint16_t tracking_words;
 };
 
 struct tt_Publisher { // extends endpoint
@@ -641,7 +656,7 @@ struct tt_Publisher { // extends endpoint
     // faster one's ack speaks for both. Harmless for tt_Publisher_wait_for_all_acked()'s own
     // advisory use; a real gap for Phase 3's KEEP_ALL blocking, which needs per-Subscriber
     // identity on the wire - see rmw_tickle/PLAN.md's Phase 3 prerequisite (b).
-    struct tt_PeerAck peer_acks[tt_MAX_PEER_COUNT];
+    struct tt_PeerAck peer_acks[tt_MAX_ACK_ENTRIES];
 
     // false (tt_Node_create_publisher()'s own default): tt_Publisher_publish() flushes every call
     // immediately, same as RPC already does (DESIGN.md's "RPC and Publish flush immediately by
@@ -812,6 +827,18 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
 // rmw_publisher_wait_for_all_acked() is built on this): the table is keyed by node_id, not
 // index-aligned with peers[], so a caller must not pair the two arrays by index.
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no);
+
+// Phase 2 (rmw_tickle/PLAN.md) - the largest number of unacknowledged samples this Publisher may
+// safely hold: the narrowest RELIABLE tracking window across its currently-matched Subscribers
+// (each announced in tt_UpdateEntity.tracking_words), in samples. A Subscriber cannot ask about a
+// gap older than its own window, so anything beyond this is unrecoverable however deep the
+// Publisher's own cache is - which is what Phase 3's KEEP_ALL blocking bound has to be.
+//
+// tt_RELIABLE_BITMAP_BITS (the protocol default) when nothing is matched yet, or when a matched
+// Subscriber announced no window of its own. A Subscriber matching later with a *narrower* window
+// lowers this; it never shrinks what the Publisher has already retained - the cache keeps its
+// depth, only the blocking bound moves.
+uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub);
 
 // The lowest cumulative ack across every currently-matched peer - "every seq_no below this has
 // been acknowledged by all of them". 0 when no peer is matched, or when any matched peer has yet
@@ -1167,7 +1194,7 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // plan) - struct tt_AckNackHeader.bitmap grew from a single uint64_t to a tt_RELIABLE_BITMAP_WORDS-
 // word array (256 bits total, config.h), a real on-the-wire layout change; the identical "no
 // partial-compatibility case to handle" reasoning applies.
-#define tt_VERSION 5
+#define tt_VERSION 6
 
 struct tt_Header {
     union {
@@ -1222,12 +1249,22 @@ struct tt_UpdateHeader {
 
 struct tt_UpdateEntity {
     uint32_t endpoint_id; // hash(topic/service name + endpoint name)
+    // Phase 2 (rmw_tickle/PLAN.md) - this entity's own struct tt_Endpoint.entity_id, which an
+    // announce carried no identifier for before. Two Subscribers of one topic in one process share
+    // endpoint_id by construction, so without this a matched Publisher could not tell how many
+    // distinct Subscriber entities a remote node hosts - and "acked by all" would silently exclude
+    // a matched-but-still-silent one, exactly the hazard Phase 3's KEEP_ALL blocking must not have.
+    uint32_t entity_id;
     uint8_t kind;
     uint8_t qos; // tt_UPDATE_QOS_RELIABLE / _DURABLE / _LIVELINESS_MANUAL - see their own doc comment above
-    // Milestone 49 - pad 6 -> 8 so the two uint64_t fields below stay 4-aligned (TickLE's own
-    // CDR-4 convention, DESIGN.md's "Interface serialization" - 8-byte types are 4-aligned, not
-    // 8-aligned, here).
-    uint8_t reserved[2];
+    // Phase 2 - a Subscriber's own RELIABLE tracking window, in 64-bit words (struct
+    // tt_Subscriber.tracking_words; 0 = the tt_RELIABLE_BITMAP_WORDS default, which is also what a
+    // non-Subscriber entity always announces). A matched Publisher's safe KEEP_ALL bound is the
+    // minimum across its matched Subscribers' windows - it can't retain more unacked samples than
+    // the narrowest of them can still ask about. Packed into what used to be reserved[2] (Milestone
+    // 49's own padding, there to keep the two uint64_t fields below 4-aligned per TickLE's CDR-4
+    // convention), so announcing it costs no extra bytes.
+    uint16_t tracking_words;
     // QoS roadmap #2 (DEADLINE) RxO - this entity's own offered (Publisher) or requested
     // (Subscriber) deadline, in nanoseconds; 0 = no DEADLINE requested/offered ("infinite"),
     // matching every other 0-disabled duration field in this codebase. Always 0 for a service/
@@ -1262,30 +1299,41 @@ struct tt_DataHeader {
 } __attribute__((packed));
 
 struct tt_AckNackHeader {
-    uint32_t endpoint_id;                      // target Publisher - same leading-field convention as tt_DataHeader/
-                                               // tt_CallRequestHeader/tt_CallResponseHeader (one node can host many
-                                               // endpoints, so the submessage receiver alone isn't enough)
-    uint32_t seq_no;                           // cumulative ack: every seq_no below this was received
-    uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]; // bit j set: (seq_no + j) is still missing, please
-                                               // resend - same direction as RTPS's own AckNack SequenceNumberSet, now
-                                               // tt_RELIABLE_BITMAP_WORDS words wide (config.h) - see struct tt_
-                                               // WriterProxy.received_bitmap's own doc comment for the full "why widen"
-                                               // reasoning; word 0 holds bits 0-63, word 1 bits 64-127, etc., each word
-                                               // independently rd64()'d on decode like any other 8-byte wire field
+    uint32_t endpoint_id; // target Publisher - same leading-field convention as tt_DataHeader/
+                          // tt_CallRequestHeader/tt_CallResponseHeader (one node can host many
+                          // endpoints, so the submessage receiver alone isn't enough)
     // Milestone 47 - the *target* Publisher's own struct tt_Endpoint.entity_id, mirroring
-    // endpoint_id's own "target Publisher" role above rather than identifying the sending
-    // Subscriber itself (an ACKNACK's sender never needs disambiguating the way a matched
-    // Publisher does - see struct tt_Publisher.peer_acks's own doc comment, still keyed by
-    // node_id alone, unchanged by this milestone). Learned from whichever struct tt_WriterProxy
-    // this ACKNACK answers (send_acknack(), tickle.c) - lets a Publisher-side receiver pick the
+    // endpoint_id's own "target Publisher" role above. Lets a Publisher-side receiver pick the
     // exact local Publisher instance among several sharing endpoint_id (find_endpoint_by_entity(),
-    // tickle.c), closing Milestone 35's own previously-accepted "first match" ambiguity for
-    // ACKNACK routing specifically, the same way entity_id already does for DATA/HEARTBEAT
-    // dispatch. 0 is a safe "unknown/not yet learned" sentinel here (falls back to plain
-    // first-match routing) - real entity_id collides with 0 only if a launch's random
-    // entity_id_base happens to land exactly on 0, the same negligible-odds caveat struct
-    // tt_Node.entity_id_base's own doc comment already accepts.
+    // tickle.c), closing Milestone 35's own previously-accepted "first match" ambiguity for ACKNACK
+    // routing specifically, the same way entity_id already does for DATA/HEARTBEAT dispatch. 0 is a
+    // safe "unknown/not yet learned" sentinel (falls back to plain first-match routing).
     uint32_t entity_id;
+    // Phase 2 (rmw_tickle/PLAN.md) - the *sending Subscriber's* own entity_id, which this header
+    // carried no identifier for before. A Publisher's ack bookkeeping is per matched Subscriber
+    // entity (struct tt_PeerAck, tickle.h), and every Subscriber matching one Publisher shares
+    // endpoint_id by construction (it's hash(topic name, endpoint name)), so without this two
+    // Subscriptions of one topic in one remote process were indistinguishable: the faster one's
+    // ack spoke for both. Harmless while ack state was only advisory; silent loss under Phase 3's
+    // KEEP_ALL write blocking, which waits on it. 0 means "unknown sender" (a peer that predates
+    // this field can't occur - tt_VERSION gates that - but a zeroed field must not alias a real
+    // entity), and such an ACKNACK still routes and retransmits, it just isn't counted as an ack.
+    uint32_t sender_entity_id;
+    uint32_t seq_no;       // cumulative ack: every seq_no below this was received
+    uint16_t bitmap_words; // how many 64-bit words of bitmap[] follow - see below
+    uint16_t reserved;
+    // bit j set: (seq_no + j) is still missing, please resend - same direction as RTPS's own
+    // AckNack SequenceNumberSet. Word 0 holds bits 0-63, word 1 bits 64-127, and so on, each
+    // independently rd64()'d on decode like any other 8-byte wire field.
+    //
+    // Phase 2 - variable length (bitmap_words entries, 0..tt_RELIABLE_BITMAP_MAX_WORDS), where this
+    // used to be a fixed tt_RELIABLE_BITMAP_WORDS-wide field. A Subscriber sends only the words its
+    // own request actually reaches into, so the common one-gap ACKNACK is 28 bytes rather than 44,
+    // and widening the tracking window (struct tt_Subscriber.tracking_bitmaps) costs nothing on the
+    // wire until a genuinely spread-out gap needs it. A receiver must validate bitmap_words against
+    // both the datagram's own remaining length and its own capacity before indexing - see
+    // process_acknack() (tickle.c).
+    uint64_t bitmap[];
 } __attribute__((packed));
 
 // tt_HeartbeatHeader.flags's own tt_HEARTBEAT_FLAG_FINAL - same name and meaning as RTPS's own
