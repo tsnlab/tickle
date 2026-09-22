@@ -678,10 +678,10 @@ rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros
 }
 
 // How often rmw_publisher_wait_for_all_acked() below re-solicits (tt_Publisher_request_ack(),
-// tickle.h) and re-checks peer_ack_seq_no[] while waiting - reuses acknack_retry()'s own fallback
-// cadence (tickle.c: `tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL`)
-// rather than inventing a new arbitrary number: both are "how long to wait before assuming a
-// RELIABLE round trip's own UDP datagram needs retrying," the exact same question.
+// tickle.h) and re-checks peer_ack_seq_no[] while waiting - tt_CALL_RETRY_INTERVAL (5ms), the
+// cadence acknack_retry() (tickle.c) also used until Phase 1-b gave the core Subscriber its own,
+// shorter tt_RELIABLE_RETRY_INTERVAL (rmw_tickle/PLAN.md). Deliberately left at 5ms here: this is
+// an rmw-side wait loop, not loss recovery, and changing it is a separate, unmeasured decision.
 #define RMW_TICKLE_WAIT_FOR_ACKED_POLL_INTERVAL_NS tt_CALL_RETRY_INTERVAL
 
 // True once every currently-matched peer (pub->peers[]) has acked at least up through

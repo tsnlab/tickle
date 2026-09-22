@@ -368,6 +368,51 @@ static void test_reliable_new_gap_while_armed_gets_immediate_narrow_nack(void) {
     EXPECT_TRUE(acknack->bitmap[0] == (1ULL << 5)); // seq_no 9 = ack_seq_no 4 + 5; not 4 or 6
 }
 
+// When the scheduler will next run acknack_retry() for proxy, or 0 if it isn't scheduled.
+static uint64_t scheduled_acknack_retry_time(const struct tt_Node* node, const struct tt_WriterProxy* proxy) {
+    for (int32_t i = 0; i < node->scheduler_tail; i++) {
+        if (node->scheduler[i].function == acknack_retry && node->scheduler[i].param == proxy) {
+            return node->scheduler[i].time;
+        }
+    }
+    return 0;
+}
+
+// Phase 1-b (rmw_tickle/PLAN.md, H3) - the ACKNACK retry timer runs on the reliable-specific
+// tt_RELIABLE_RETRY_INTERVAL (1ms), not RPC's tt_CALL_RETRY_INTERVAL (5ms): both the first arming
+// (maybe_arm_acknack_retry()) and every re-arm (acknack_retry()) use it.
+static void test_reliable_acknack_retry_uses_reliable_retry_interval(void) {
+    test_mock_reset();
+    _Static_assert(tt_RELIABLE_DEADLINE == 0, "this test assumes no tt_RELIABLE_DEADLINE override");
+    _Static_assert(tt_RELIABLE_RETRY_INTERVAL < tt_CALL_RETRY_INTERVAL, "reliable retry must be shorter than RPC's");
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 3, 300, 3); // gap at 2 arms the retry
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + tt_RELIABLE_RETRY_INTERVAL);
+
+    test_mock_now += tt_RELIABLE_RETRY_INTERVAL; // the timer fires; the gap is still open
+    tt_Node_unschedule(&node, acknack_retry, proxy);
+    int sends_before = test_mock_send_to_call_count;
+    acknack_retry(&node, test_mock_now, proxy);
+    EXPECT_EQ_U32((uint32_t)sends_before + 1, (uint32_t)test_mock_send_to_call_count); // re-sent
+    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + tt_RELIABLE_RETRY_INTERVAL);
+}
+
 // Milestone 60 (rmw_tickle/PLAN.md) - receive-side de-duplication regression: TickLE Plan's own
 // real HIL finding (history_depth_burst_loss/lifespan_expiry scenarios, recv > sent) traced to
 // deliver_data_to_subscriber() invoking the application callback unconditionally, with no seq_no-
@@ -1218,6 +1263,7 @@ int main(void) {
     test_reliable_subscribe_in_order_no_acknack();
     test_reliable_subscribe_gap_then_close();
     test_reliable_new_gap_while_armed_gets_immediate_narrow_nack();
+    test_reliable_acknack_retry_uses_reliable_retry_interval();
     test_reliable_duplicate_delivery_is_not_re_delivered_to_callback();
     test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
