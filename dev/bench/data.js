@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790091385059,
+  "lastUpdate": 1790091388966,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -105938,6 +105938,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ac59daefdde16e4f5142653b2ddb72afa4a9b8ec"
         },
         "date": 1790088249788,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 156,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f0b7ae04a18043b0ce7dd38bcd0d846bfb730417",
+          "message": "tickle.c: Phase 1-c (B2) - eviction Heartbeat; drop the compile-time depth guess (H4)\n\nA reliable Subscriber had no way to learn that a sample it keeps requesting is\ngone at the Publisher: it re-requested it until its own retry budget gave up,\nthen skip_unrecoverable_backlog() bulk-skipped anything more than\ntt_MAX_RELIABLE_HISTORY (64) behind the highest received sample - a\ncompile-time guess at the remote depth that also threw away samples a deeper\ncache (e.g. -K 1024) still held. HIL 1-b: at depth 64 and max rate, 5.0-5.5K\nretries per run hit null_evicted.\n\nPublisher: when an ACKNACK names any sample that is gone (evicted, or aged out\nof LIFESPAN - not merely out of retry budget), retransmit_reliable_samples()\nnow sends one FINAL Heartbeat back to the requester, carrying the real\nfirst_available_seq_no (reliable_cache_first_resendable_seq_no(): direct-\nindexed like find_resendable_cache_entry(), O(1) without a lifespan) and\nlast_seq_no. Once per ACKNACK. Reuses encode_and_send_heartbeat(); no wire\nchange. The per-bit retransmit body moved to retransmit_one_sample().\n\nSubscriber: inform_subscriber_of_heartbeat() now also handles an existing\nproxy - if first_available_seq_no > ack_seq_no, advance_past_unavailable()\nmoves ack_seq_no up to it, shifts received_bitmap, absorbs any following\nreceived run and resets retry; maybe_arm_acknack_retry() then re-arms or\nunschedules. Never moves backwards (stale Heartbeat, or 0 for an empty cache).\n\nskip_unrecoverable_backlog() is removed; acknack_retry()'s give-up now only\npasses ack_seq_no itself. The tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS\nstatic_assert stays, re-justified as \"the default depth fits the tracking\nwindow\" (the Phase 3 KEEP_ALL bound). config.h's doc for the constant updated.\n\nStats: skip_backlog_* replaced by heartbeat_advances / heartbeat_abandoned_seq\n(Subscriber) and eviction_heartbeats (Publisher).\n\nTests: eviction Heartbeat contents (first_available/last/FINAL/unicast) for an\nevicted and an expired request, and exactly one Heartbeat for a mixed\nevicted+retained ACKNACK; existing-proxy advance with bitmap shift, absorb,\nretry reset and unschedule; stale Heartbeats ignored; a durable late joiner's\nbacklog delivered in full under repeated same-baseline Heartbeats, and only the\nactually-evicted part skipped otherwise; give-up no longer bulk-skips.\ntest_heartbeat.c's write_heartbeat() now sets entity_id explicitly (it\noverlapped a prior write_data()'s timestamp). Both mutations (no advance / no\neviction Heartbeat) fail the suite. 18/18 with and without\n-Dtt_RELIABLE_STATS; clang-format/clang-tidy clean; make all builds.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T00:30:08+09:00",
+          "tree_id": "10017cd2ec3516af89017b1ce54425783ce16f8e",
+          "url": "https://github.com/tsnlab/tickle/commit/f0b7ae04a18043b0ce7dd38bcd0d846bfb730417"
+        },
+        "date": 1790091387696,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
