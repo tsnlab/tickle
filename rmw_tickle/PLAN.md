@@ -830,6 +830,47 @@ mostly-inactive retry mechanism," not "RELIABLE's actual recovery capability" - 
 anything from this document that mattered on that distinction is now an open question, not yet
 decided.
 
+#### The ACKNACK-flood bug found and fixed, and real HIL re-verification (2026-09-22, TickLE Dev + TickLE Plan)
+
+With the retry path finally live (previous entry), TickLE Dev instrumented core directly on real
+HIL (same debug-counter method as this document's own earlier poll-loop investigation) and found a
+third, distinct bug: `maybe_arm_acknack_retry()` (`tickle.c:2152`) called `send_acknack(node,
+proxy)` unconditionally whenever a gap was open, *outside* the `if (!proxy->acknack_scheduled)`
+block meant to pace retries at `tt_CALL_RETRY_INTERVAL` (5ms). Since `update_reliable_ack()` calls
+this function for *every* DATA packet received while a gap is open, every one of those packets
+independently fired its own ACKNACK - measured at ~70,000 ACKNACKs/sec on real HIL (depth=64, 1%
+loss), swamping the 5ms-paced design entirely and plausibly explaining the bimodal throughput this
+document's own earlier reliable_throughput measurements kept seeing. Fixed (`b393764`) by moving
+`send_acknack()` inside the scheduling-guard block - one immediate ACKNACK on first gap detection,
+then only the existing 5ms `acknack_retry()` timer (which already calls `send_acknack()` itself) -
+independently verified against source by TickLE Plan before agreeing with the fix, not accepted on
+report alone. CI (`Check all`/`Test all`/`Performance Test`/`rmw_tickle performance`) all green.
+
+**Real HIL re-verification** (TickLE Plan, 0/1/5% tc loss, 3 reps each, depth=64 default, no
+`-T`/`-A`, matching this document's own established methodology):
+
+| loss | sent (avg±stdev) | loss% (avg±stdev) | send Mbps (avg±stdev) |
+|---|---|---|---|
+| 0% | 1,435,717±95,472 | 0.00±0.00% | 109.11±7.26 |
+| 1% | 1,364,351±155,010 | **1.00±0.00%** | 103.69±11.78 |
+| 5% | 1,591,513±2,463 | **5.00±0.00%** | 120.95±0.19 |
+
+Compare against every prior measurement of this same scenario in this document (all taken with the
+ACKNACK flood - and, earlier still, the seq_no wraparound - both active): `main`'s own 1.63%/6.03%
+avg at 1%/5%, the poll-loop-fix's 1.60%/6.80%, right up through 42.6%/48.9% immediately after the
+seq_no fix alone exposed the flood without yet fixing it. **Loss% now tracks the injected tc rate
+almost exactly (1.00% at 1%, 5.00% at 5%), with zero measured variance across reps** - a qualitative
+change from every earlier measurement's own real rep-to-rep spread, not just a lower number.
+Throughput at 5% (120.95 Mbps) is also both higher and far more stable than any earlier
+measurement at that condition. Rig cleaned up (`tc` back to default `fq_codel`, both rpis idle).
+
+**This directly answers the open question two entries above**: yes, every earlier
+`reliable_throughput` loss% number in this document needs to be read as "raw loss under a
+mechanism that wasn't really running," not RELIABLE's actual recovery capability - now measured
+for what may be the first time this session. Whether to re-measure anything else in this document
+that leaned on those old numbers (the bitmap-widening verification, the poll-loop fix's own
+loss-is-a-wash conclusion, etc.) is a decision for the user - flagged, not acted on here.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
