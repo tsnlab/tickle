@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790057571318,
+  "lastUpdate": 1790057575003,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -101790,6 +101790,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 156,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "0898045ea297d7c209e33ec683977561d23b1b5e",
+          "message": "PLAN.md: real HIL result for RELIABLE self-throttle - broken as implemented, not merged\n\nSwept -T <lag> at 64/128/200 under 5% tc loss, 3 reps each: throughput collapsed\n3-4 orders of magnitude (1.47M sent -> a few hundred) at every non-zero threshold,\nwhile loss% did not correspondingly improve. Root cause traced in tickle.c:\nACKNACK-driven peer_ack_seq_no updates are loss-reactive, not proactive (a healthy\nstream sends none at all), and paced at tt_CALL_RETRY_INTERVAL=5ms while max send\nrate is ~180-190K msg/s - so the ack-lag gap blows past any 64-200 threshold within\na fraction of one retry interval and only crawls back down in coarse 5ms increments.\n\nThe DDS-philosophy reasoning (throttle RELIABLE only, not BEST_EFFORT) still holds -\nthis is a feedback-granularity mismatch, not a philosophy error. A real fix needs a\ncore-level change to RELIABLE's own ack cadence, not a client-side threshold tweak,\nso not attempted here. -T flag left in place (harmless, opt-in, no core change) but\ndocumented as not validated to work.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T15:07:03+09:00",
+          "tree_id": "befa1ad2cda68fa43f65ff32baea08938c456716",
+          "url": "https://github.com/tsnlab/tickle/commit/0898045ea297d7c209e33ec683977561d23b1b5e"
+        },
+        "date": 1790057573807,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 155,
             "unit": "count"
           }
         ]
