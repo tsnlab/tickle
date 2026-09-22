@@ -628,7 +628,69 @@ tuning (still just the first-guess value of 8) is a legitimate follow-up but not
 effect is already large and consistent at this setting. Rig fully cleaned up afterward (both
 `~/tickle-v2final` worktrees and install prefixes removed, `tc` back to default, no lingering
 processes). Pending the user's own final go-ahead to actually merge `experiment/poll-loop-io-
-interleave-v2` into `main`.
+interleave-v2` into `main`. **Merged** (`b7d822a`, at the user's own instruction: "병합해줘").
+
+#### Self-throttle for RELIABLE Publishers (2026-09-22, TickLE Plan) - real HIL result: **broken as implemented, not merged, not recommended**
+
+Context: after the loss-matrix work above, discussed with the user that self-throttling (pausing
+a RELIABLE Publisher when its slowest-acking peer falls too far behind) trades latency/raw
+throughput for honoring RELIABLE's own "eventually delivered, not lost" contract - and that this
+belongs specifically to RELIABLE, not BEST_EFFORT (which has no such guarantee to protect). The
+user explicitly agreed and instructed: "reliable인 경우만 throttling 을 적용하는 것아 dds 철학에
+더 맞다는 말이지? 그 부분에 대해 나도 동의해. 이 부분을 진행하자."
+
+**Implementation** (`0166c1f`, `examples/perf_hil/tickle/reliable_throughput/client.c`): opt-in
+`-T <lag>` flag (0 = disabled/default). `reliable_lag()` reads the Publisher's own already-public
+`peer_ack_seq_no[]`/`peers[]` (`tickle.h`, no core change needed) to find the largest
+`seq_no - peer_ack_seq_no[i]` gap across matched peers; `send_one()` defers (re-schedules itself
+50us later) instead of publishing whenever that gap is `>= throttle_lag`. Built clean on both rpis,
+CI green, no core changes.
+
+**Real HIL result (5% `tc netem` loss, 3 reps per lag value, `-T 0/64/128/200`)**:
+
+| lag | sent (avg) | loss% (avg) |
+|---|---|---|
+| 0 (baseline, no throttle) | ~1,474,030 | 5.6% |
+| 64 | **262** | 2.7% |
+| 128 | **455** | 5.3% |
+| 200 | **313** | 5.4% |
+
+Throughput did not just drop - it **collapsed by roughly 3-4 orders of magnitude** (1.47M sent
+down to a few hundred) at every non-zero lag threshold tested, while loss% did **not**
+correspondingly improve (still 2.7-5.4%, no better than the 5.6% unthrottled baseline, and in one
+case indistinguishable from it). This is not "a trade-off with a real cost" - it is a near-total
+livelock, and it does not even deliver the loss reduction the throttle exists to buy.
+
+**Root cause, traced in `src/tickle.c`**: `pub->peer_ack_seq_no[i]` is only ever updated by a
+received ACKNACK, and ACKNACKs on this path are **loss-reactive, not proactive** -
+`maybe_arm_acknack_retry()`'s own doc comment states it directly: *"a healthy stream needs no
+ACKNACK at all."* A Subscriber with no gap sends nothing back; once a gap does open, the resulting
+ACKNACK/retry cycle runs on `tt_CALL_RETRY_INTERVAL` = 5ms (`config.h`), while this scenario's own
+max send rate is ~180-190K msg/s - roughly 900+ new sequence numbers per single 5ms retry window.
+So the instant any loss occurs, `seq_no - peer_ack_seq_no[i]` blows straight past any threshold in
+the 64-200 range within a fraction of one retry interval, and the ack watermark can only crawl
+forward in coarse, 5ms-paced increments afterward - far slower than the Publisher re-opens the gap
+by continuing to send. The result is the Publisher spending nearly all its time in the throttled
+branch, trickling out a handful of messages per retry cycle instead of streaming.
+
+**Why the DDS-philosophy reasoning was still right, but this implementation is wrong**: the
+mismatch is a **feedback-granularity** one, not a philosophy one. Self-throttling on ack lag is a
+sound pattern (it's essentially a sliding-window/credit scheme, same family as TCP's), but it
+needs feedback that arrives roughly as often as sends do. TickLE's RELIABLE model gives the
+opposite - silent when healthy, and only 5ms-paced once unhealthy - so gating a per-message send
+loop on it produces exactly this collapse. Fixing this for real would mean changing the feedback
+mechanism itself (e.g. a periodic/proactive ACKNACK cadence, or a cheaper in-band credit signal),
+which is a real core-level design change, not a client-side flag - **not attempted here**, since
+it goes beyond what the user's own instruction asked for and deserves its own explicit go-ahead.
+
+**Recommendation**: do not merge or document this `-T` flag as a working feature. Either (a) leave
+the DDS-philosophy argument as a documented rationale without a working implementation yet, or (b)
+if the user wants to pursue it further, the real next step is a core-level change to RELIABLE's
+own ack feedback cadence (own milestone, own HIL validation), not a tweak to this client-side
+threshold. Rig cleaned up (`tc` back to default `fq_codel`, no lingering processes on either rpi).
+The `-T` flag itself is harmless (opt-in, defaults to disabled, no core change) so it was left in
+place on `main` rather than reverted, but flagged here as **not validated to work** until/unless
+the feedback-cadence issue above is addressed.
 
 ## Concept mapping
 
