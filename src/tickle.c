@@ -2151,9 +2151,21 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
         return;
     }
 
-    send_acknack(node, proxy);
-
     if (!proxy->acknack_scheduled) {
+        // Real bug found via direct HIL instrumentation (2026-09-22): this function runs once per
+        // DATA arrival (update_reliable_ack()'s own unconditional call at the end of every DATA it
+        // processes), not just once per gap - send_acknack() used to sit *outside* this guard and
+        // fire unconditionally on every single call while any gap remained open, completely
+        // bypassing the tt_CALL_RETRY_INTERVAL pacing acknack_retry()'s own timer is supposed to
+        // provide. At TickLE's real max throughput this produced an ACKNACK flood (measured: ~70K
+        // ACKNACKs/sec from one WriterProxy, vs. a handful from the actual 5ms retry timer) that
+        // starved both ends' own CPU/network budget - the real root cause of reliable_throughput's
+        // own newly-severe loss regression once RELIABLE tracking became genuinely active (see
+        // PLAN.md). Send exactly once here, on first detecting a new gap - every subsequent
+        // update while this proxy already has a retry armed relies purely on acknack_retry()'s own
+        // periodic re-send (which already re-reads the current bitmap state fresh each tick, so
+        // nothing about a widened gap goes unreported, just delayed by at most one interval).
+        send_acknack(node, proxy);
         proxy->retry = 0;
         uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
         if (tt_Node_schedule(node, tt_get_ns() + interval, acknack_retry, proxy)) {
