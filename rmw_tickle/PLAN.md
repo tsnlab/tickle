@@ -937,9 +937,11 @@ Goal: at `tc` 1%/5% loss, residual loss ≤0.1% while keeping throughput above F
 (today: 0.5%/4.6% vs. DDS 0%/0%).
 
 **Hypotheses from reading source** (to confirm with 0-c counters, not yet proven):
-- **H1**: the Subscriber's 256-sample window ≈ 170µs at ~1.5M msg/s. Any gap whose retransmit
-  arrives later than that is abandoned by `jump_ack_baseline()` (`update_reliable_ack()`). This is a
-  race against the Pi-to-Pi RTT, consistent with the "half of 1% recovered" result.
+- **H1**: the Subscriber's 256-sample window is abandoned by `jump_ack_baseline()`
+  (`update_reliable_ack()`) when a gap's retransmit arrives too late. **Correction (same day)**:
+  max rate is ~1.5M msgs *per 8s run* ≈ 190K msg/s (not 1.5M msg/s), so the window is ≈1.35ms,
+  well above a Pi-to-Pi RTT. H1 alone is therefore unlikely to explain losses. It still bites
+  whenever H2/H3 delay a request by 5ms.
 - **H2**: after the flood fix, a *new* gap opened while `acknack_scheduled` is already true gets no
   immediate ACKNACK and waits up to 5ms (`maybe_arm_acknack_retry()`), about 30x the window.
   Overlapping gaps are common at 5% loss.
