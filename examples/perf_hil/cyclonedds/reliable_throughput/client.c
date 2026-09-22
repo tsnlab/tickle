@@ -29,9 +29,15 @@ static uint64_t now_ns(void) {
 
 int main(int argc, char** argv) {
     double duration_s = 10.0;
+    double interval_s = 0.0;       // -i: pause between writes, 0 = as fast as possible
+    double max_blocking_ms = 10000; // -B: RELIABILITY max_blocking_time, default unchanged (10s)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
+            interval_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
+            max_blocking_ms = atof(argv[++i]);
         }
     }
 
@@ -50,7 +56,7 @@ int main(int argc, char** argv) {
     // under sustained high-rate writes long before the network itself is the bottleneck) - not a
     // discovery/matching problem, a resource-limits tuning gap against the official example.
     dds_qos_t* qos = dds_create_qos();
-    dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(10));
+    dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, (dds_duration_t)(max_blocking_ms * 1e6));
     dds_qset_history(qos, DDS_HISTORY_KEEP_ALL, 0);
     dds_qset_resource_limits(qos, 4000, DDS_LENGTH_UNLIMITED, DDS_LENGTH_UNLIMITED);
     dds_entity_t writer = dds_create_writer(participant, topic, qos, NULL);
@@ -67,6 +73,10 @@ int main(int argc, char** argv) {
 
     uint32_t seq = 0;
     uint64_t sent = 0;
+    // Writes dds_write() refused (e.g. DDS_RETCODE_TIMEOUT once KEEP_ALL's resource_limits are full
+    // for longer than max_blocking_time). seq is still consumed, so the server counts each one as
+    // lost too; write_fail lets the two be told apart (rmw_tickle/PLAN.md Phase 3, item 5).
+    uint64_t write_fail = 0;
     uint64_t start = now_ns();
     uint64_t deadline = start + (uint64_t)(duration_s * 1e9);
 
@@ -74,14 +84,20 @@ int main(int argc, char** argv) {
         struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
         if (dds_write(writer, &msg) == DDS_RETCODE_OK) {
             sent++;
+        } else {
+            write_fail++;
+        }
+        if (interval_s > 0.0) {
+            struct timespec pace = {(time_t)interval_s, (long)((interval_s - (time_t)interval_s) * 1e9)};
+            nanosleep(&pace, NULL);
         }
     }
 
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
-    printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f\n",
-           (unsigned long)sent, elapsed_s, mbps);
+    printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f\n",
+           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms);
 
     dds_delete(participant);
     return 0;
