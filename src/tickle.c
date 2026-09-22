@@ -44,6 +44,12 @@ _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-al
 // bound).
 _Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
                "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
+// B1 - tt_RELIABLE_CACHE_ARENA_BYTES()'s callers size an arena from tt_RELIABLE_RECORD_BYTES(),
+// which spells out the framing overhead (4 + 20) rather than including tickle.h; keep the two in
+// step with what cache_reliable_sample() actually stores.
+_Static_assert(tt_RELIABLE_RECORD_BYTES(0) ==
+                   ROUNDUP(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
+               "tt_RELIABLE_RECORD_BYTES must match the real DATA submessage framing size");
 
 // RELIABLE recovery instrumentation - see include/tickle/reliable_stats.h. Everything below is
 // compiled out (RSTAT_* expand to nothing) unless built with -Dtt_RELIABLE_STATS.
@@ -1402,6 +1408,91 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) / #4 (DURABILITY/TRANSIENT_LOCAL) - snapshot the
 // just-encoded DATA submessage (header through CDR) into the ring before end_encode() below, same
+// B1 (rmw_tickle/PLAN.md) - the in-use ring size, or 0 when this cache isn't usable at all (no
+// index, no arena, or capacity 0 - struct tt_ReliableCache's own "nothing usable yet" state). The
+// single place the old `(depth > 0 && depth <= capacity) ? depth : capacity` clamp expression,
+// once repeated at every call site, now lives.
+static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache) {
+    if (cache == NULL || cache->capacity == 0 || cache->index == NULL || cache->arena == NULL ||
+        cache->arena_size == 0) {
+        return 0;
+    }
+    return (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
+}
+
+// The slot seq_no currently maps to - the direct index every lookup, eviction and backlog walk
+// shares (see struct tt_ReliableCache.depth's own doc comment on why depth may not change once
+// anything is cached).
+static struct tt_ReliableCacheIndex* reliable_cache_slot(const struct tt_ReliableCache* cache, uint16_t depth,
+                                                         uint32_t seq_no) {
+    return &cache->index[(seq_no - 1) % depth];
+}
+
+// True when this slot genuinely holds seq_no's bytes right now - not empty, not a tombstone (an
+// evicted or never-cached sample, see struct tt_ReliableCacheIndex.len), and not some other
+// sample that has since taken the slot over.
+static bool reliable_cache_slot_live(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no) {
+    const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
+    return entry->len != 0 && entry->seq_no == seq_no;
+}
+
+static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cache, uint16_t depth);
+
+// Drops the oldest retained sample: KEEP_LAST eviction, whether it was the count bound or the byte
+// bound that demanded the room. Leaves the cache with a *live* oldest entry (or empty), so
+// reliable_cache_write_offset() below can read the oldest record's own offset directly.
+static void reliable_cache_evict_oldest(struct tt_ReliableCache* cache, uint16_t depth) {
+    if (cache->oldest_seq_no == 0) {
+        return;
+    }
+    struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, cache->oldest_seq_no);
+    if (entry->seq_no == cache->oldest_seq_no) {
+        entry->len = 0; // tombstone: the bytes are gone, the slot may still be named by an ACKNACK
+    }
+    if (cache->oldest_seq_no == cache->newest_seq_no) {
+        cache->oldest_seq_no = 0; // nothing retained any more; newest_seq_no stays (it's "last
+        cache->tail = 0;          // published", what first_resendable falls back to)
+        return;
+    }
+    cache->oldest_seq_no++;
+    reliable_cache_drop_leading_tombstones(cache, depth);
+}
+
+// An oversized (never-cached) sample leaves a tombstone that may end up at the oldest end of the
+// range; drop those so "oldest retained" always names real bytes.
+static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cache, uint16_t depth) {
+    while (cache->oldest_seq_no != 0 && !reliable_cache_slot_live(cache, depth, cache->oldest_seq_no)) {
+        if (cache->oldest_seq_no == cache->newest_seq_no) {
+            cache->oldest_seq_no = 0;
+            cache->tail = 0;
+            return;
+        }
+        cache->oldest_seq_no++;
+    }
+}
+
+// Where a `length`-byte record may be written right now, or UINT32_MAX when the oldest retained
+// record has to be evicted first. Records are never split (struct tt_ReliableCache.arena's own doc
+// comment): when the space before the end of the arena is too small, the write wraps to offset 0
+// and the tail fragment is simply wasted until the ring passes it.
+static uint32_t reliable_cache_write_offset(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length) {
+    if (cache->oldest_seq_no == 0) {
+        return 0; // empty - the whole arena is free (the caller already rejected length > arena_size)
+    }
+    uint32_t head = reliable_cache_slot(cache, depth, cache->oldest_seq_no)->offset;
+    if (cache->tail == head) {
+        return UINT32_MAX; // the live records fill the arena exactly - evict before anything fits
+                           // (tail == head reads as "empty" everywhere else, hence this first)
+    }
+    if (cache->tail > head) { // live bytes are one contiguous [head, tail) run
+        if (length <= cache->arena_size - cache->tail) {
+            return cache->tail;
+        }
+        return length <= head ? 0 : UINT32_MAX; // wrap to the front if the free head fragment fits
+    }
+    return length <= head - cache->tail ? cache->tail : UINT32_MAX; // live run wraps: free is [tail, head)
+}
+
 // "cache first, then flush" order tt_Client_call() already uses for its own single-slot cache.
 // Both QoS policies share this one cache (struct tt_ReliableCache's own doc comment, tickle.h): a
 // later incoming ACKNACK (process_acknack()) resends this exact copy verbatim, and a newly-
@@ -1412,25 +1503,65 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 // complexity under clang-tidy's threshold.
 static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
                                   struct tt_ReliableCache* cache, uint32_t seq_no) {
-    if (cache->capacity == 0) {
-        return; // entries[]/capacity never set up (struct tt_ReliableCache's own doc comment) -
+    uint16_t depth = reliable_cache_depth(cache);
+    if (depth == 0) {
+        return; // index[]/capacity/arena never set up (struct tt_ReliableCache's own doc comment) -
                 // nothing to cache into, same safe no-op every other clamp site below shares
     }
-    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
-    size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
-    struct tt_ReliableCacheEntry* cache_entry = &cache->entries[cache->next % depth];
-    _tt_memcpy(cache_entry->buffer, submessage_header, length);
-    cache_entry->seq_no = seq_no;
-    cache_entry->len = (uint16_t)length;
-    cache_entry->retry = 0;
-    cache_entry->timestamp = tt_get_ns();
-    cache->next = (cache->next + 1) % depth;
+    uint32_t length = (uint32_t)ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+
+    // Index room first, regardless of whether the bytes will fit below: this sample's own slot,
+    // (seq_no - 1) % depth, is currently held by the sample exactly `depth` back, which KEEP_LAST
+    // evicts to make room - the count bound, DDS's own HISTORY.depth.
+    while (cache->oldest_seq_no != 0 && seq_no - cache->oldest_seq_no + 1 > depth) {
+        RSTAT_INC(evicted_by_count);
+        reliable_cache_evict_oldest(cache, depth);
+    }
+
+    struct tt_ReliableCacheIndex* entry = &cache->index[(seq_no - 1) % depth];
+    entry->seq_no = seq_no;
+    entry->retry = 0;
+    entry->timestamp = tt_get_ns();
+    entry->offset = 0;
+    entry->len = 0; // a tombstone until the bytes below actually land
+    cache->newest_seq_no = seq_no;
+
+    if (length > cache->arena_size) {
+        // B1 - this one sample can never fit, however much is evicted: publish it (the caller
+        // already encoded it into tx_buffer) but retain nothing, and leave the rest of the cache
+        // alone rather than evicting for room that could never exist. The slot stays a tombstone,
+        // so an ACKNACK naming it gets Phase 1-c's eviction Heartbeat and the Subscriber skips it
+        // immediately instead of retrying; DURABILITY's backlog simply doesn't contain it.
+        TT_LOG_WARNING("Reliable sample %u (%u bytes) exceeds the %u-byte cache arena - sent, not cached", seq_no,
+                       length, cache->arena_size);
+        RSTAT_INC(not_cached_oversize);
+        reliable_cache_drop_leading_tombstones(cache, depth);
+        return;
+    }
+
+    // Contiguous byte room, evicting oldest-first until this record fits (the byte bound, DDS's
+    // own RESOURCE_LIMITS). reliable_cache_write_offset() returns where it would go, or UINT32_MAX
+    // while something still has to be evicted first.
+    uint32_t offset = reliable_cache_write_offset(cache, depth, length);
+    while (offset == UINT32_MAX) {
+        RSTAT_INC(evicted_by_bytes);
+        reliable_cache_evict_oldest(cache, depth);
+        offset = reliable_cache_write_offset(cache, depth, length);
+    }
+
+    _tt_memcpy(cache->arena + offset, submessage_header, length);
+    entry->offset = offset;
+    entry->len = (uint16_t)length;
+    cache->tail = offset + length;
+    if (cache->oldest_seq_no == 0) {
+        cache->oldest_seq_no = seq_no;
+    }
 }
 
 // QoS roadmap #6 (LIFESPAN) - see tt_Publisher.lifespan_duration_ns's own doc comment (tickle.h).
 // lifespan_duration_ns == 0 means "no LIFESPAN requested" - never expired, matching every other
 // disabled-by-zero convention this struct already uses (heartbeat_period_ns, etc).
-static bool reliable_cache_entry_expired(const struct tt_ReliableCacheEntry* entry, uint64_t lifespan_duration_ns) {
+static bool reliable_cache_entry_expired(const struct tt_ReliableCacheIndex* entry, uint64_t lifespan_duration_ns) {
     return lifespan_duration_ns != 0 && (tt_get_ns() - entry->timestamp) >= lifespan_duration_ns;
 }
 
@@ -1578,18 +1709,13 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 // so it doubles as "empty" here). Shared by send_heartbeat()'s own periodic announce and send_
 // initial_heartbeat()'s own discovery-triggered one-off, below.
 static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache) {
-    if (cache->capacity == 0) {
+    if (reliable_cache_depth(cache) == 0) {
         return 0; // not set up - same "nothing retained" return this already uses for a genuinely
                   // empty cache, see this function's own doc comment
     }
-    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
-    uint32_t first_seq_no = 0;
-    for (int i = 0; i < depth; i++) {
-        if (cache->entries[i].len != 0 && (first_seq_no == 0 || cache->entries[i].seq_no < first_seq_no)) {
-            first_seq_no = cache->entries[i].seq_no;
-        }
-    }
-    return first_seq_no;
+    // B1 - a plain field read now (0 when nothing is retained), where this used to be an O(depth)
+    // scan over every slot on every periodic/initial/request_ack Heartbeat.
+    return cache->oldest_seq_no;
 }
 
 // Encodes and sends one Heartbeat submessage announcing [first_seq_no, pub->seq_no] to the given
@@ -1699,6 +1825,24 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly.
+tt_ret_t tt_ReliableCache_init(struct tt_ReliableCache* cache, struct tt_ReliableCacheIndex* index, uint16_t capacity,
+                               uint8_t* arena, uint32_t arena_size) {
+    if (cache == NULL || index == NULL || arena == NULL || capacity == 0 || arena_size == 0) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (arena_size < tt_RELIABLE_RECORD_BYTES(0)) {
+        return tt_RET_INVALID_ARGUMENT; // too small for even an empty payload's framing
+    }
+
+    memset(cache, 0, sizeof(*cache));
+    cache->index = index;
+    cache->capacity = capacity;
+    cache->depth = capacity;
+    cache->arena = arena;
+    cache->arena_size = arena_size;
+    return tt_RET_OK;
+}
+
 tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -2747,18 +2891,18 @@ static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher
         return;
     }
     struct tt_ReliableCache* cache = pub->reliable_cache;
-    if (cache->capacity == 0) {
-        return; // entries[]/capacity never set up - nothing to deliver from
+    uint16_t depth = reliable_cache_depth(cache);
+    if (depth == 0) {
+        return; // index[]/capacity/arena never set up - nothing to deliver from
     }
-    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
 
-    // entries[] is a ring buffer tt_Publisher_publish() writes round-robin via cache->next -
-    // starting the scan there and wrapping around visits oldest-to-newest in both the
-    // not-yet-wrapped case (the slots from cache->next onward are still empty, len == 0, skipped
-    // below) and the already-wrapped case (cache->next is exactly the oldest still-retained entry).
-    for (int i = 0; i < depth; i++) {
-        struct tt_ReliableCacheEntry* cache_entry = &cache->entries[(cache->next + i) % depth];
-        if (cache_entry->len == 0) {
+    // B1 - walk the retained range in sequence order, oldest first (a late joiner must receive the
+    // backlog in the order it was published). A slot that no longer holds its own seq_no is a
+    // tombstone (evicted, or never cached because the sample was larger than the whole arena) and
+    // is skipped, same as an empty slot always was.
+    for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= cache->newest_seq_no; seq_no++) {
+        struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, seq_no);
+        if (cache_entry->len == 0 || cache_entry->seq_no != seq_no) {
             continue;
         }
         // QoS roadmap #6 (LIFESPAN) - a backlog entry past its lifespan is skipped, "as if it had
@@ -2774,7 +2918,7 @@ static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher
             rollback(node, old_tx_tail);
             continue;
         }
-        _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+        _tt_memcpy(buf, cache->arena + cache_entry->offset, cache_entry->len);
         if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
             rollback(node, old_tx_tail);
         }
@@ -3692,37 +3836,30 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 // below purely to keep that function's own cognitive complexity under clang-tidy's threshold, same
 // reasoning cache_reliable_sample()/reliable_cache_oldest_seq_no() were split out for.
 //
-// Milestone 62 (rmw_tickle/PLAN.md) - direct-indexed, not a linear scan over entries[0..depth)
-// (this function's own previous shape): cache_reliable_sample()'s own write side always places
-// seq_no N at entries[(N - 1) % depth] (cache->next starts at 0, a Publisher's own first seq_no is
-// always 1 - tt_Publisher_publish()'s data_header->seq_no = pub->seq_no + 1 - and both cache->next
-// and seq_no advance exactly one slot per publish, in lockstep), so the position for any given
-// seq_no is computable directly instead of searched for. Found and fixed after TickLE Plan's own
-// real HIL re-measurement of Milestone 61 (caller-configurable depth) showed a deeper cache
-// measurably *hurting* RELIABLE recovery rather than merely not helping it (the honest limitation
-// Milestone 61 already documented) - root-caused to this exact O(depth) scan: at depth=8192,
-// entries[] is ~12MB (each entry carries a 1472-byte buffer), and process_acknack() calls this once
-// per set ACKNACK bit (up to tt_RELIABLE_BITMAP_BITS times - 64 at the time of this finding, since
-// widened to 256), so a single ACKNACK could walk that whole ~12MB region up to that many times,
-// almost entirely cache misses on real hardware. Assumes `depth`
-// stays the same between the write that placed a sample and this lookup for it - true for every
-// current caller (depth is set once at setup time, never changed mid-stream by anything in this
-// codebase today) but not structurally enforced; the write side's own `cache->next % depth`
-// indexing already silently relies on the identical assumption, so this isn't a new risk, just the
-// same one now also load-bearing on the read side.
+// Milestone 62 (rmw_tickle/PLAN.md) - direct-indexed (reliable_cache_slot(): seq_no N always lives
+// at index[(N - 1) % depth]), not a linear scan over every slot, this function's own original
+// shape. Found and fixed after TickLE Plan's own real HIL re-measurement of Milestone 61
+// (caller-configurable depth) showed a deeper cache measurably *hurting* RELIABLE recovery rather
+// than merely not helping it - root-caused to that O(depth) scan: at depth=8192 the entry array
+// was ~12MB (a 1472-byte buffer embedded per entry, since replaced by B1's byte arena), and
+// process_acknack() calls this once per set ACKNACK bit (up to tt_RELIABLE_BITMAP_BITS times), so
+// one ACKNACK could walk that whole region up to that many times, almost entirely cache misses on
+// real hardware. Relies on `depth` not changing while anything is retained - now stated as a hard
+// rule on struct tt_ReliableCache.depth itself (tickle.h), since the write side indexes the same
+// way.
 //
 // Phase 1-c (rmw_tickle/PLAN.md, B2) - *gone is set when the NULL means the sample no longer exists
 // for this Publisher at all (evicted, or aged out of LIFESPAN), as opposed to merely out of retry
 // budget - retransmit_reliable_samples() answers that with an eviction Heartbeat.
-static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
+static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
                                                                  uint32_t missing_seq_no, uint64_t lifespan_duration_ns,
                                                                  bool* gone) {
-    uint32_t slot = (missing_seq_no - 1) % depth;
-    struct tt_ReliableCacheEntry* cache_entry = &cache->entries[slot];
+    struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, missing_seq_no);
     if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
         RSTAT_INC(null_evicted);
         *gone = true;
-        return NULL; // empty slot, or overwritten by a different seq_no since (evicted)
+        return NULL; // empty slot, a tombstone (evicted, or never cached because the sample was
+                     // larger than the whole arena), or taken over by a different seq_no since
     }
     if (cache_entry->retry >= tt_RELIABLE_RETRY) {
         RSTAT_INC(null_retry_cap);
@@ -3748,16 +3885,15 @@ static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_Relia
 // nothing at all is resendable (everything published so far is gone).
 static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher* pub,
                                                        const struct tt_ReliableCache* cache, uint16_t depth) {
-    uint32_t newest = pub->seq_no;
-    uint32_t seq_no = newest >= depth ? newest - depth + 1 : 1;
-    for (; seq_no <= newest; seq_no++) {
-        const struct tt_ReliableCacheEntry* entry = &cache->entries[(seq_no - 1) % depth];
+    uint32_t newest = cache->newest_seq_no;
+    for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= newest; seq_no++) {
+        const struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
         if (entry->len != 0 && entry->seq_no == seq_no &&
             !reliable_cache_entry_expired(entry, pub->lifespan_duration_ns)) {
             return seq_no;
         }
     }
-    return newest + 1;
+    return newest + 1; // nothing resendable: everything published so far is gone
 }
 
 // retransmit_reliable_samples()'s per-bit body: resends missing_seq_no straight back to target if
@@ -3765,7 +3901,7 @@ static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher
 static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
                                   uint16_t depth, uint32_t missing_seq_no, const struct tt_Peer* target) {
     bool gone = false;
-    struct tt_ReliableCacheEntry* cache_entry =
+    struct tt_ReliableCacheIndex* cache_entry =
         find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns, &gone);
     if (cache_entry == NULL) {
         return gone;
@@ -3779,7 +3915,7 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
         rollback(node, old_tx_tail);
         return false;
     }
-    _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+    _tt_memcpy(buf, cache->arena + cache_entry->offset, cache_entry->len);
     if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
         RSTAT_INC(retransmit_tx_fail);
         rollback(node, old_tx_tail);
@@ -3879,10 +4015,10 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     }
 
     struct tt_ReliableCache* cache = pub->reliable_cache;
-    if (cache->capacity == 0) {
-        return true; // entries[]/capacity never set up - nothing cached to resend
+    uint16_t depth = reliable_cache_depth(cache);
+    if (depth == 0) {
+        return true; // index[]/capacity/arena never set up - nothing cached to resend
     }
-    uint16_t depth = (cache->depth > 0 && cache->depth <= cache->capacity) ? cache->depth : cache->capacity;
     struct tt_Peer target = {header->source, sender_ip, sender_port};
 
     // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). peer_ack_seq_no's

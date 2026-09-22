@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <tickle/config.h>
 #include <tickle/hal.h>
@@ -101,8 +102,14 @@ static struct BulkData bulk = {0}; // static: zero-initialized, reused for every
 // recovery at high throughput, or - per that same doc comment's honest answer - the Subscriber's
 // own fixed-width received_bitmap is the real bottleneck regardless.
 #define MAX_RELIABLE_DEPTH 8192
-static struct tt_ReliableCacheEntry reliable_cache_entries[MAX_RELIABLE_DEPTH];
+// B1 (rmw_tickle/PLAN.md) - index slots are fixed-size and cheap (24B each); the byte arena is
+// malloc()ed once at startup instead, sized from this run's own -s payload size. A static arena
+// would have to assume the maximum (-s fills a whole Ethernet frame), i.e. the same ~12MB this
+// file used to burn at MAX_RELIABLE_DEPTH regardless of the payload actually used. malloc() in an
+// example is fine - the no-malloc rule is TickLE core's own (DESIGN.md), not its callers'.
+static struct tt_ReliableCacheIndex reliable_cache_index[MAX_RELIABLE_DEPTH];
 static struct tt_ReliableCache reliable_cache = {0};
+static uint8_t* reliable_cache_arena = NULL;
 
 static uint64_t total_sent_msgs = 0;
 static uint64_t total_sent_bytes = 0;
@@ -306,9 +313,17 @@ int main(int argc, char** argv) {
                    depth, MAX_RELIABLE_DEPTH);
             depth = (uint32_t)MAX_RELIABLE_DEPTH;
         }
-        reliable_cache.entries = reliable_cache_entries;
+        uint32_t arena_bytes = tt_RELIABLE_CACHE_ARENA_BYTES(depth, tt_RELIABLE_RECORD_BYTES(opts.message_size));
+        reliable_cache_arena = malloc(arena_bytes);
+        if (reliable_cache_arena == NULL) {
+            printf("Cannot allocate a %u-byte reliable cache arena\n", arena_bytes);
+            return 1;
+        }
+        reliable_cache.index = reliable_cache_index;
         reliable_cache.capacity = (uint16_t)depth;
         reliable_cache.depth = (uint16_t)depth;
+        reliable_cache.arena = reliable_cache_arena;
+        reliable_cache.arena_size = arena_bytes;
         pub.reliable_cache = &reliable_cache;           // -R - see tt_Publisher.reliable_cache's own doc comment
         pub.reliable = true;                            // -R - see tt_Publisher.reliable's own doc comment
         shutdown_grace_s = RELIABLE_SHUTDOWN_GRACE_SEC; // see shutdown_grace_s's own doc comment
@@ -345,6 +360,7 @@ int main(int argc, char** argv) {
     print_summary(start_time);
 
     tt_Node_destroy(&node);
+    free(reliable_cache_arena); // NULL unless -R was passed; free(NULL) is a no-op
 
     return 0;
 }

@@ -195,11 +195,21 @@ int main(int argc, char** argv) {
     // see this file's own doc comment above). entries[]/capacity are this file's own backing
     // array now, not an embedded tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own
     // doc comment, tickle.h) - sized to MAX_RELIABLE_DEPTH so -K can actually reach past 64.
-    static struct tt_ReliableCacheEntry pub_cache_entries[MAX_RELIABLE_DEPTH];
+    // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena, both sized for MAX_RELIABLE_DEPTH
+    // samples of this scenario's own fixed BenchData shape, so -K still reaches 8192 - at ~820KB
+    // of static storage now instead of ~12MB.
+    static struct tt_ReliableCacheIndex pub_cache_index[MAX_RELIABLE_DEPTH];
+    static uint8_t pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(MAX_RELIABLE_DEPTH,
+                                                                 tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
     static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.entries = pub_cache_entries;
+    pub_cache.index = pub_cache_index;
     pub_cache.capacity = (uint16_t)reliable_depth;
     pub_cache.depth = (uint16_t)reliable_depth;
+    pub_cache.arena = pub_cache_arena;
+    // Only the part of the arena this run's own -K depth can use, so a smaller -K really is a
+    // smaller retention window in bytes too, not just in slots.
+    pub_cache.arena_size =
+        tt_RELIABLE_CACHE_ARENA_BYTES(reliable_depth, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)));
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
     g_pub = &pub;

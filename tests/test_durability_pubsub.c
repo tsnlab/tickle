@@ -187,13 +187,7 @@ static void test_durability_publish_caches_and_evicts(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.durable = true;
 
@@ -202,26 +196,21 @@ static void test_durability_publish_caches_and_evicts(void) {
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
     }
 
-    // 6 samples published (seq_no 1..6), depth 4: only seq_no 3..6 should still be cached - the
-    // ring wrapped exactly once (cache.next == 6 % 4 == 2, so entries[2]/[3] hold the oldest
-    // remaining pair, seq_no 5/6, and entries[0]/[1] hold seq_no 3/4 overwritten last).
-    int seen_seq_nos[4];
-    for (int i = 0; i < 4; i++) {
-        EXPECT_TRUE(cache.entries[i].len != 0);
-        seen_seq_nos[i] = (int)cache.entries[i].seq_no;
+    // 6 samples published (seq_no 1..6), depth 4: only seq_no 3..6 are still retained - KEEP_LAST
+    // evicted 1 and 2 to make room. B1 - the retained range is the cache's own bookkeeping now,
+    // and every seq_no in it must sit live in its own direct-indexed slot.
+    EXPECT_EQ_U32(3, cache.oldest_seq_no);
+    EXPECT_EQ_U32(6, cache.newest_seq_no);
+    for (uint32_t seq_no = 3; seq_no <= 6; seq_no++) {
+        const struct tt_ReliableCacheIndex* entry = &cache.index[(seq_no - 1) % cache.depth];
+        EXPECT_EQ_U32(seq_no, entry->seq_no);
+        EXPECT_TRUE(entry->len != 0);
     }
-    int min_seq = seen_seq_nos[0];
-    int max_seq = seen_seq_nos[0];
-    for (int i = 1; i < 4; i++) {
-        if (seen_seq_nos[i] < min_seq) {
-            min_seq = seen_seq_nos[i];
-        }
-        if (seen_seq_nos[i] > max_seq) {
-            max_seq = seen_seq_nos[i];
-        }
+    // ...and the evicted ones are gone: their slots have been taken over by 5 and 6.
+    for (uint32_t seq_no = 1; seq_no <= 2; seq_no++) {
+        const struct tt_ReliableCacheIndex* entry = &cache.index[(seq_no - 1) % cache.depth];
+        EXPECT_TRUE(entry->seq_no != seq_no);
     }
-    EXPECT_EQ_INT(3, min_seq);
-    EXPECT_EQ_INT(6, max_seq);
 }
 
 // A brand-new Subscriber (never seen before) announcing itself for a DURABLE Publisher's topic
@@ -236,13 +225,7 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.durable = true;
 
@@ -287,13 +270,7 @@ static void test_durability_skips_expired_backlog_entries(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.durable = true;
     pub.lifespan_duration_ns = 1000;
@@ -347,13 +324,7 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.durable = true;
 
@@ -394,13 +365,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.durable = true;
 
@@ -454,13 +419,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.durable = true;
 
@@ -543,13 +502,7 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry reliable_cache_entries[4];
-    memset(reliable_cache_entries, 0, sizeof(reliable_cache_entries));
-    struct tt_ReliableCache reliable_cache;
-    memset(&reliable_cache, 0, sizeof(reliable_cache));
-    reliable_cache.entries = reliable_cache_entries;
-    reliable_cache.capacity = 4;
-    reliable_cache.depth = 4;
+    TEST_RELIABLE_CACHE(reliable_cache, 4);
     pub.reliable_cache = &reliable_cache;
     pub.durable = true;
     // Milestone 62 (rmw_tickle/PLAN.md) - a real, pre-existing gap this function's own name/intent

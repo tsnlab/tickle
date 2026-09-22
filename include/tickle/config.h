@@ -90,6 +90,20 @@
 // depth (and RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no
 // independent "durability depth" concept to keep in sync with anything, only ever one cache.
 #define tt_MAX_RELIABLE_HISTORY 64
+// B1 (rmw_tickle/PLAN.md) - sizing helpers for struct tt_ReliableCache's own caller-provided byte
+// arena (tickle.h). tt_RELIABLE_RECORD_BYTES(payload) is what one cached sample actually costs on
+// the wire and in the arena: the submessage header, the DATA header, and the payload itself,
+// rounded up to the 4-byte submessage alignment tickle.c's own end_encode() applies.
+//
+// tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record) is `depth + 1` records, not `depth`: records
+// are never split across the end of the arena, so a record that doesn't fit before the end wraps
+// to offset 0 and wastes up to max_record - 1 bytes. Without that one record of slack, the byte
+// bound could evict a sample before `depth` of them are retained - i.e. silently break
+// KEEP_LAST-by-count, which is what `depth` promises.
+#define tt_RELIABLE_RECORD_BYTES(payload_bytes) \
+    ((uint32_t)((((4u + 20u + (uint32_t)(payload_bytes)) + 3u) / 4u) * 4u)) // 4 = submessage header,
+                                                                            // 20 = sizeof(struct tt_DataHeader)
+#define tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record) (((uint32_t)(depth) + 1u) * (uint32_t)(max_record))
 // Width of tt_AckNackHeader.bitmap/tt_WriterProxy.received_bitmap, both now tt_RELIABLE_BITMAP_
 // WORDS-word uint64_t arrays (256 bits total - widened from a single, bare-uint64_t 64 bits,
 // rmw_tickle/PLAN.md's "TickLE-native performance" plan, tt_VERSION bumped 4 -> 5 for the wire

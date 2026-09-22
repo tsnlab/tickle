@@ -196,13 +196,7 @@ static void test_reliable_publish_caches_and_evicts(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     for (uint32_t i = 0; i < 6; i++) { // more than depth -> the first 2 (seq_no 1, 2) get evicted
@@ -213,9 +207,9 @@ static void test_reliable_publish_caches_and_evicts(void) {
     bool saw_evicted = false;
     int live_count = 0;
     for (int i = 0; i < 4; i++) {
-        if (cache.entries[i].len != 0) {
+        if (cache.index[i].len != 0) {
             live_count++;
-            if (cache.entries[i].seq_no == 1 || cache.entries[i].seq_no == 2) {
+            if (cache.index[i].seq_no == 1 || cache.index[i].seq_no == 2) {
                 saw_evicted = true;
             }
         }
@@ -250,6 +244,238 @@ static void test_reliable_subscribe_in_order_no_acknack(void) {
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
+}
+
+// --- B1 (rmw_tickle/PLAN.md): byte-arena cache ------------------------------------------------
+//
+// These drive cache_reliable_sample() directly (whitebox, like the rest of this file) so a record
+// of any size can be written without inventing a matching topic codec: it caches
+// ROUNDUP(tx_tail - submessage_header) bytes starting at submessage_header, so writing a pattern
+// into node.tx_buffer and setting tx_tail is exactly one "publish" as far as the cache is concerned.
+
+// Writes a `payload_len`-byte record for seq_no whose bytes are all (uint8_t)seq_no, and caches it.
+static void cache_write_record(struct tt_Node* node, struct tt_ReliableCache* cache, uint32_t seq_no,
+                               uint32_t payload_len) {
+    struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)(node->tx_buffer);
+    // The cache stores ROUNDUP(len) bytes (end_encode()'s own 4-byte submessage alignment), so
+    // fill the padding too - otherwise cache_record_intact() below compares against whatever the
+    // previous record left in those one-to-three bytes.
+    memset(node->tx_buffer, (int)(seq_no & 0xFF), ROUNDUP(payload_len));
+    node->tx_tail = payload_len;
+    cache_reliable_sample(node, submessage_header, cache, seq_no);
+}
+
+// True when seq_no is retained right now *and* its arena bytes still read back as written.
+static bool cache_record_intact(const struct tt_ReliableCache* cache, uint32_t seq_no) {
+    if (cache->oldest_seq_no == 0 || seq_no < cache->oldest_seq_no || seq_no > cache->newest_seq_no) {
+        return false;
+    }
+    const struct tt_ReliableCacheIndex* entry = &cache->index[(seq_no - 1) % cache->depth];
+    if (entry->seq_no != seq_no || entry->len == 0) {
+        return false;
+    }
+    if ((uint32_t)entry->offset + entry->len > cache->arena_size) {
+        return false; // a record must never be split across the end of the arena
+    }
+    for (uint16_t i = 0; i < entry->len; i++) {
+        if (cache->arena[entry->offset + i] != (uint8_t)(seq_no & 0xFF)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int cache_retained_count(const struct tt_ReliableCache* cache) {
+    int count = 0;
+    if (cache->oldest_seq_no == 0) {
+        return 0;
+    }
+    for (uint32_t seq_no = cache->oldest_seq_no; seq_no <= cache->newest_seq_no; seq_no++) {
+        if (cache_record_intact(cache, seq_no)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+// The byte bound: with an arena far smaller than `depth` records, the oldest records are evicted to
+// make room, newest-first retention is preserved, and every survivor's bytes are untouched.
+static void test_reliable_cache_evicts_by_bytes_oldest_first(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    init_node_and_topic(&node, &topic);
+
+    const uint32_t record = 32; // ROUNDUP(32) == 32
+    TEST_RELIABLE_CACHE(cache, 8);
+    cache.arena_size = 3 * record; // room for 3 records, but depth 8
+
+    for (uint32_t seq_no = 1; seq_no <= 6; seq_no++) {
+        cache_write_record(&node, &cache, seq_no, record);
+    }
+
+    EXPECT_EQ_U32(4, cache.oldest_seq_no); // 1..3 evicted for room, not for depth
+    EXPECT_EQ_U32(6, cache.newest_seq_no);
+    EXPECT_EQ_INT(3, cache_retained_count(&cache));
+    for (uint32_t seq_no = 4; seq_no <= 6; seq_no++) {
+        EXPECT_TRUE(cache_record_intact(&cache, seq_no));
+    }
+    for (uint32_t seq_no = 1; seq_no <= 3; seq_no++) {
+        EXPECT_TRUE(!cache_record_intact(&cache, seq_no));
+    }
+}
+
+// Fix 1 (Plan's B1 review): records are never split, so a wrap wastes the tail fragment. An arena
+// sized with tt_RELIABLE_CACHE_ARENA_BYTES() carries one record of slack for exactly that, so
+// `depth` samples are always retained however the wraps land - and without the slack they aren't.
+static void test_reliable_cache_wrap_slack_keeps_depth_samples(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    init_node_and_topic(&node, &topic);
+
+    const uint32_t record = 36; // not a divisor of either arena size below - wraps land mid-arena
+    const uint16_t depth = 4;
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    cache.arena_size = (depth + 1) * record; // what tt_RELIABLE_CACHE_ARENA_BYTES() gives
+    for (uint32_t seq_no = 1; seq_no <= 40; seq_no++) {
+        cache_write_record(&node, &cache, seq_no, record);
+        int expected = (int)(seq_no < depth ? seq_no : depth);
+        EXPECT_EQ_INT(expected, cache_retained_count(&cache));
+    }
+
+    // Plan's requested case: depth-full with *maximum*-size records, across several wraps - the
+    // arena is sized in max records, so this is where a missing slack byte would show up first.
+    TEST_RELIABLE_CACHE(max_sized, 4);
+    const uint32_t max_record = 64;
+    max_sized.arena_size = tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record);
+    for (uint32_t seq_no = 1; seq_no <= 60; seq_no++) {
+        cache_write_record(&node, &max_sized, seq_no, max_record);
+        EXPECT_EQ_INT((int)(seq_no < depth ? seq_no : depth), cache_retained_count(&max_sized));
+    }
+
+    // Mixed sizes, same arena: still exactly `depth` retained however the wraps land. (With one
+    // uniform size the slack is never strictly needed - depth * record divides the arena evenly, so
+    // a wrap wastes nothing - it's varying sizes that strand a partial record's worth of bytes.)
+    const uint32_t sizes[] = {36, 20, 48, 24, 64};
+    TEST_RELIABLE_CACHE(mixed, 4);
+    mixed.arena_size = tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record);
+    for (uint32_t seq_no = 1; seq_no <= 60; seq_no++) {
+        cache_write_record(&node, &mixed, seq_no, sizes[seq_no % 5]);
+        EXPECT_EQ_INT((int)(seq_no < depth ? seq_no : depth), cache_retained_count(&mixed));
+    }
+}
+
+// Fix 2 (Plan's B1 review): a record larger than the whole arena is published but not retained -
+// no byte eviction on its behalf, its slot left a tombstone, and the retained range still tracks it
+// as the newest sample so first_resendable/direct indexing stay correct.
+static void test_reliable_cache_oversize_record_is_not_cached(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    init_node_and_topic(&node, &topic);
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    cache.arena_size = 64;
+
+    cache_write_record(&node, &cache, 1, 32);
+    cache_write_record(&node, &cache, 2, 32);
+    EXPECT_EQ_INT(2, cache_retained_count(&cache));
+
+    cache_write_record(&node, &cache, 3, 128); // larger than the whole 64-byte arena
+    EXPECT_EQ_U32(3, cache.newest_seq_no);
+    EXPECT_TRUE(!cache_record_intact(&cache, 3));
+    EXPECT_EQ_INT(2, cache_retained_count(&cache)); // 1 and 2 untouched - no eviction on its behalf
+    EXPECT_TRUE(cache_record_intact(&cache, 1));
+    EXPECT_TRUE(cache_record_intact(&cache, 2));
+
+    // An ACKNACK naming it must report it gone (Phase 1-c's eviction Heartbeat path), not resend
+    // whatever bytes happen to sit in its slot.
+    bool gone = false;
+    EXPECT_TRUE(find_resendable_cache_entry(&cache, cache.depth, 3, 0, &gone) == NULL);
+    EXPECT_TRUE(gone);
+}
+
+// An oversized record at the very front (nothing retained yet) must leave the cache empty rather
+// than "oldest = a sample whose bytes were never stored".
+static void test_reliable_cache_oversize_record_on_empty_cache(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    init_node_and_topic(&node, &topic);
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    cache.arena_size = 64;
+
+    cache_write_record(&node, &cache, 1, 128);
+    EXPECT_EQ_U32(0, cache.oldest_seq_no); // nothing retained
+    EXPECT_EQ_U32(1, cache.newest_seq_no); // but it was published
+    EXPECT_EQ_INT(0, cache_retained_count(&cache));
+
+    cache_write_record(&node, &cache, 2, 32); // the cache still works afterwards
+    EXPECT_EQ_U32(2, cache.oldest_seq_no);
+    EXPECT_TRUE(cache_record_intact(&cache, 2));
+}
+
+// Randomized property check against the invariants that matter, rather than a second copy of the
+// eviction logic: retention is always a contiguous *newest-first* suffix (KEEP_LAST), never more
+// than `depth` samples, every retained record reads back exactly as written and lies wholly inside
+// the arena, and no two retained records overlap. Fixed seed, so a failure is reproducible.
+static void test_reliable_cache_randomized_invariants(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    init_node_and_topic(&node, &topic);
+
+    const uint16_t depth = 16;
+    TEST_RELIABLE_CACHE(cache, 16);
+    cache.arena_size = 700; // deliberately far smaller than depth * max record: both bounds bite
+
+    uint32_t rng = 12345;
+    for (uint32_t seq_no = 1; seq_no <= 20000; seq_no++) {
+        rng = (rng * 1103515245U) + 12345U;
+        uint32_t payload_len = 4 + ((rng >> 16) % 160); // 4..163 bytes, ROUNDUP'd by the cache
+        cache_write_record(&node, &cache, seq_no, payload_len);
+
+        EXPECT_TRUE(cache.newest_seq_no == seq_no);
+        int retained = cache_retained_count(&cache);
+        EXPECT_TRUE(retained <= (int)depth);
+        if (cache.oldest_seq_no != 0) {
+            EXPECT_TRUE(cache.newest_seq_no - cache.oldest_seq_no + 1 <= (uint32_t)depth);
+        }
+
+        // Contiguous newest-first suffix: once a sample is retained, every newer one is too.
+        bool seen_retained = false;
+        for (uint32_t s = cache.oldest_seq_no; s != 0 && s <= cache.newest_seq_no; s++) {
+            bool intact = cache_record_intact(&cache, s);
+            if (seen_retained && !intact) {
+                EXPECT_TRUE(s == cache.newest_seq_no); // only the newest may be an uncached oversize
+                break;
+            }
+            seen_retained = seen_retained || intact;
+        }
+
+        // No two retained records overlap in the arena.
+        for (uint32_t a = cache.oldest_seq_no; a != 0 && a < cache.newest_seq_no; a++) {
+            if (!cache_record_intact(&cache, a)) {
+                continue;
+            }
+            const struct tt_ReliableCacheIndex* ea = &cache.index[(a - 1) % depth];
+            for (uint32_t b = a + 1; b <= cache.newest_seq_no; b++) {
+                if (!cache_record_intact(&cache, b)) {
+                    continue;
+                }
+                const struct tt_ReliableCacheIndex* eb = &cache.index[(b - 1) % depth];
+                EXPECT_TRUE(ea->offset + ea->len <= eb->offset || eb->offset + eb->len <= ea->offset);
+            }
+        }
+    }
 }
 
 // A gap (seq_no 2 missing between 1 and 3) must produce an immediate ACKNACK back to the sender
@@ -801,13 +1027,7 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.reliable = true; // Milestone 62 (rmw_tickle/PLAN.md) - retransmission is gated on this now,
                          // this test's own name/intent ("retransmits_cached_sample") needs it set
@@ -825,7 +1045,7 @@ static void test_process_acknack_retransmits_cached_sample(void) {
 
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
-    EXPECT_EQ_U32(1, (uint32_t)cache.entries[0].retry);
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[0].retry);
 }
 
 // Milestone 62 (rmw_tickle/PLAN.md) - find_resendable_cache_entry()'s own direct-index math
@@ -849,23 +1069,17 @@ static void test_process_acknack_direct_index_correct_after_wraparound(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.reliable = true;
 
     for (uint32_t i = 0; i < 6; i++) { // seq_no 1..6, ring wraps once past depth 4
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
     }
-    EXPECT_EQ_U32(5, cache.entries[0].seq_no); // slot 0: seq_no 1 evicted, now holds 5
-    EXPECT_EQ_U32(6, cache.entries[1].seq_no); // slot 1: seq_no 2 evicted, now holds 6
-    EXPECT_EQ_U32(3, cache.entries[2].seq_no); // slot 2: never overwritten
-    EXPECT_EQ_U32(4, cache.entries[3].seq_no); // slot 3: never overwritten
+    EXPECT_EQ_U32(5, cache.index[0].seq_no); // slot 0: seq_no 1 evicted, now holds 5
+    EXPECT_EQ_U32(6, cache.index[1].seq_no); // slot 1: seq_no 2 evicted, now holds 6
+    EXPECT_EQ_U32(3, cache.index[2].seq_no); // slot 2: never overwritten
+    EXPECT_EQ_U32(4, cache.index[3].seq_no); // slot 3: never overwritten
 
     struct tt_Header header;
     init_header(&header);
@@ -878,7 +1092,7 @@ static void test_process_acknack_direct_index_correct_after_wraparound(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
-    EXPECT_EQ_U32(0, (uint32_t)cache.entries[0].retry); // untouched - correctly not matched
+    EXPECT_EQ_U32(0, (uint32_t)cache.index[0].retry); // untouched - correctly not matched
     const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
     EXPECT_TRUE(heartbeat != NULL);
     EXPECT_EQ_U32(3, heartbeat->first_available_seq_no);
@@ -892,26 +1106,26 @@ static void test_process_acknack_direct_index_correct_after_wraparound(void) {
     tail = write_acknack(&node, ENDPOINT_ID, 1, 0x6ULL); // bits 1, 2 = seq_no 2, 3
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count);
-    EXPECT_EQ_U32(1, (uint32_t)cache.entries[2].retry); // seq_no 3 resent
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[2].retry); // seq_no 3 resent
     heartbeat = last_sent_heartbeat();
     EXPECT_TRUE(heartbeat != NULL);
     EXPECT_EQ_U32(3, heartbeat->first_available_seq_no);
-    cache.entries[2].retry = 0; // reset for the "un-wrapped slot 2" case below
+    cache.index[2].retry = 0; // reset for the "un-wrapped slot 2" case below
 
     // Wrapped-into slot 0, genuinely retained: seq_no 5.
     test_mock_send_to_call_count = 0;
     tail = write_acknack(&node, ENDPOINT_ID, 5, 1ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
-    EXPECT_EQ_U32(1, (uint32_t)cache.entries[0].retry); // found via slot 0, the right one
-    EXPECT_EQ_U32(0, (uint32_t)cache.entries[2].retry); // slot 2 untouched by this request
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[0].retry); // found via slot 0, the right one
+    EXPECT_EQ_U32(0, (uint32_t)cache.index[2].retry); // slot 2 untouched by this request
 
     // Un-wrapped slot 2, genuinely retained: seq_no 3.
     test_mock_send_to_call_count = 0;
     tail = write_acknack(&node, ENDPOINT_ID, 3, 1ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
-    EXPECT_EQ_U32(1, (uint32_t)cache.entries[2].retry); // found via slot 2, the right one
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[2].retry); // found via slot 2, the right one
 }
 
 // QoS roadmap #6 (LIFESPAN) - a cached sample past pub->lifespan_duration_ns must not be
@@ -929,13 +1143,7 @@ static void test_process_acknack_skips_expired_sample(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.reliable = true; // Milestone 62 - must be set so the "skipped" result below is genuinely
                          // caused by the lifespan-expiry check inside the retransmit loop, not by
@@ -954,7 +1162,7 @@ static void test_process_acknack_skips_expired_sample(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL); // requesting seq_no 1 (bit 0)
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(0, (uint32_t)cache.entries[0].retry); // expired - no retransmit
+    EXPECT_EQ_U32(0, (uint32_t)cache.index[0].retry); // expired - no retransmit
     // Phase 1-c: just one eviction Heartbeat - nothing resendable remains, so resendable history
     // "starts" one past the newest published seq_no.
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
@@ -1003,13 +1211,7 @@ static void test_process_acknack_ignored_for_durable_only_publisher(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.durable = true; // deliberately NOT pub.reliable = true
 
@@ -1039,13 +1241,7 @@ static void test_process_acknack_updates_peer_ack_seq_no(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.peers[0].node_id = REMOTE_NODE_ID;
     pub.peers[0].ip = TEST_SENDER_IP;
@@ -1073,13 +1269,7 @@ static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.peers[0].node_id = REMOTE_NODE_ID;
     pub.peers[0].ip = TEST_SENDER_IP;
@@ -1109,13 +1299,7 @@ static void test_process_acknack_from_unmatched_peer_updates_nothing(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache; // pub.peers[] left entirely empty
 
     struct tt_Header header;
@@ -1218,13 +1402,7 @@ static void test_reliable_stats_publisher_retransmit_accounting(void) {
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&pub;
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.reliable = true;
 
@@ -1251,6 +1429,11 @@ static void test_reliable_stats_publisher_retransmit_accounting(void) {
 
 int main(void) {
     test_reliable_publish_caches_and_evicts();
+    test_reliable_cache_evicts_by_bytes_oldest_first();
+    test_reliable_cache_wrap_slack_keeps_depth_samples();
+    test_reliable_cache_oversize_record_is_not_cached();
+    test_reliable_cache_oversize_record_on_empty_cache();
+    test_reliable_cache_randomized_invariants();
     test_reliable_subscribe_in_order_no_acknack();
     test_reliable_subscribe_gap_then_close();
     test_reliable_new_gap_while_armed_gets_immediate_narrow_nack();

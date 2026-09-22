@@ -170,14 +170,33 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
         RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
         return false;
     }
-    pub_impl->reliable_cache->entries = (struct tt_ReliableCacheEntry*)allocator->zero_allocate(
-        depth, sizeof(struct tt_ReliableCacheEntry), allocator->state);
-    if (NULL == pub_impl->reliable_cache->entries) {
-        RMW_SET_ERROR_MSG("failed to allocate reliable_cache entries");
+    pub_impl->reliable_cache->index = (struct tt_ReliableCacheIndex*)allocator->zero_allocate(
+        depth, sizeof(struct tt_ReliableCacheIndex), allocator->state);
+    if (NULL == pub_impl->reliable_cache->index) {
+        RMW_SET_ERROR_MSG("failed to allocate reliable_cache index");
         allocator->deallocate(pub_impl->reliable_cache, allocator->state);
         pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
         return false;
     }
+    // B1 (rmw_tickle/PLAN.md) - the encoded bytes now live in a separate byte arena instead of a
+    // 1472-byte buffer embedded in every index slot. Sized at the *type's* maximum, per the user's
+    // own choice (2026-09-23): rmw can't know a narrower bound today - rosidl_typesupport_tickle_c's
+    // own message_type_support.h exposes only tickle_encode_size (which needs an actual message),
+    // no per-type maximum - so the bound is TickLE's own single-datagram ceiling,
+    // tt_MAX_BUFFER_LENGTH. That keeps rmw's retention exactly what it is today (the byte bound can
+    // never bite before the count bound), at today's memory plus one record of wrap slack. A real
+    // reduction here needs a generated per-type max encoded size in the typesupport struct -
+    // flagged as a follow-up, deliberately not smuggled into B1.
+    uint32_t arena_bytes = tt_RELIABLE_CACHE_ARENA_BYTES(depth, tt_MAX_BUFFER_LENGTH);
+    pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(arena_bytes, allocator->state);
+    if (NULL == pub_impl->reliable_cache->arena) {
+        RMW_SET_ERROR_MSG("failed to allocate reliable_cache arena");
+        allocator->deallocate(pub_impl->reliable_cache->index, allocator->state);
+        allocator->deallocate(pub_impl->reliable_cache, allocator->state);
+        pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
+        return false;
+    }
+    pub_impl->reliable_cache->arena_size = arena_bytes;
     pub_impl->reliable_cache->capacity = (uint16_t)depth;
     pub_impl->reliable_cache->depth = (uint16_t)depth;
     pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
@@ -317,11 +336,11 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // smaller DURABILITY cap and the old, larger RELIABILITY cap used to reject the whole publisher
     // outright even though RELIABILITY alone would have accepted it.
     //
-    // rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - entries[]/capacity are now
+    // rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - index[]/capacity/arena are now
     // caller-owned (struct tt_ReliableCache's own doc comment, tickle.h), not a single build-wide
     // tt_MAX_RELIABLE_HISTORY=64 ceiling every rmw_tickle Publisher used to be capped by alike -
     // this caller (rmw_tickle, which already accepts dynamic allocation everywhere else, unlike
-    // TickLE core's own embedded-facing examples) allocates entries[] sized to *whatever* real
+    // TickLE core's own embedded-facing examples) allocates them sized to *whatever* real
     // depth the ROS 2 caller actually requested, no artificial rejection past 64 anymore, matching
     // real rmw_fastrtps_cpp/rmw_cyclonedds_cpp's own dynamic-depth support instead of trailing it.
     // The only remaining rejection is the hard type-width limit struct tt_ReliableCache.depth/
@@ -422,12 +441,13 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 
     rcutils_allocator_t allocator = pub_impl->allocator;
     allocator.deallocate((char*)pub_impl->rmw_publisher.topic_name, allocator.state);
-    // entries[] freed before the struct that (used to) point at it - reliable_cache is NULL when
-    // neither RELIABLE nor TRANSIENT_LOCAL was requested, in which case entries is also still NULL
-    // (both zero_allocate()'s own default and never touched) - both deallocate() calls are then
-    // no-ops, see their own doc comment.
+    // index[]/arena freed before the struct that (used to) point at them - reliable_cache is NULL
+    // when neither RELIABLE nor TRANSIENT_LOCAL was requested, in which case both are also still
+    // NULL (zero_allocate()'s own default, never touched) - every deallocate() call is then a
+    // no-op, see their own doc comment.
     if (NULL != pub_impl->reliable_cache) {
-        allocator.deallocate(pub_impl->reliable_cache->entries, allocator.state);
+        allocator.deallocate(pub_impl->reliable_cache->index, allocator.state);
+        allocator.deallocate(pub_impl->reliable_cache->arena, allocator.state);
     }
     allocator.deallocate(pub_impl->reliable_cache, allocator.state);   // NULL is a no-op, see its own doc comment
     allocator.deallocate(pub_impl->owning_node_name, allocator.state); // NULL is a no-op too (a failed strdup)

@@ -60,6 +60,9 @@ struct tt_ReliableStats {
     uint64_t null_lifespan;       // not resent: aged out of lifespan
     uint64_t retransmit_tx_fail;  // not resent: tx buffer full or end_encode() failed
     uint64_t eviction_heartbeats; // Phase 1-c: FINAL Heartbeats sent back for an ACKNACK naming a gone sample
+    uint64_t evicted_by_count;    // B1: samples evicted because the index was full (HISTORY depth)
+    uint64_t evicted_by_bytes;    // B1: samples evicted to make contiguous arena room
+    uint64_t not_cached_oversize; // B1: samples larger than the whole arena - sent, never cached
 
     // --- tx path (flush_tx()) ---
     uint64_t datagrams;           // flush_tx() calls that sent something (counted once per call, not per peer)

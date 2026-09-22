@@ -180,6 +180,21 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **Breaking API change** - `struct tt_ReliableCache` now stores a retained sample's encoded bytes
+  in a caller-provided byte arena instead of a fixed `tt_MAX_BUFFER_LENGTH` buffer per slot
+  (`rmw_tickle/PLAN.md`'s B1). `struct tt_ReliableCacheEntry` is replaced by
+  `struct tt_ReliableCacheIndex` (metadata only: seq_no, arena offset, length, retry, timestamp),
+  and the cache gains `arena`/`arena_size` next to `index`/`capacity`/`depth`. A caller sets the
+  five fields itself or calls the new `tt_ReliableCache_init()`, sizing the arena with
+  `tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record)` / `tt_RELIABLE_RECORD_BYTES(payload)`
+  (config.h). The old field names are gone rather than deprecated, so an un-migrated caller fails
+  to compile instead of silently misbehaving. Behavior is unchanged - same KEEP_LAST-by-count
+  retention, same O(1) lookup, same wire format (`tt_VERSION` untouched) - but a 76-byte sample
+  now costs ~100 bytes of cache instead of 1488: depth 1024 drops from 1.45 MB to ~124 KB per
+  Publisher, and `rmw_tickle`'s own KEEP_ALL depth (8192) from 12.2 MB to ~1 MB. Samples larger
+  than the whole arena are published but not retained (a warning, and an ACKNACK for one gets the
+  eviction Heartbeat), and `depth` may no longer change once anything is cached.
+
 - `rmw_tickle_validate_qos_profile()` now takes an `rmw_tickle_entity_kind_t` instead of a plain
   `bool is_subscription`, and accepts `RELIABLE` for services/clients specifically (backed by
   `tt_Client_call()`'s own existing bounded retry) - a real `rclcpp::Node` unconditionally creates

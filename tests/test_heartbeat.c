@@ -234,13 +234,7 @@ static void test_heartbeat_set_period_arms_and_disarms(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_heartbeat_period(&pub, 1000000));
@@ -264,13 +258,7 @@ static void test_heartbeat_send_derives_range_correctly(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     for (uint32_t i = 0; i < 6; i++) { // seq_no 1..6, depth 4 -> only 3..6 remain retained
@@ -307,13 +295,7 @@ static void test_heartbeat_send_skips_when_nothing_retained_yet(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.heartbeat_period_ns = 1000000;
 
@@ -702,13 +684,7 @@ static void test_publisher_request_ack_sends_to_matched_peers(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     uint32_t value = 7;
@@ -739,13 +715,7 @@ static void test_publisher_request_ack_noop_with_no_peers(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     uint32_t value = 7;
@@ -778,13 +748,7 @@ static void test_publisher_destroy_cancels_armed_heartbeat(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_heartbeat_period(&pub, 1000000));
@@ -817,13 +781,7 @@ static void test_ack_solicit_set_period_arms_and_disarms(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_heartbeat_period(&pub, 1000000));
@@ -849,13 +807,7 @@ static void test_ack_solicit_fires_request_ack_periodically(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     uint32_t value = 7;
@@ -894,13 +846,7 @@ static void test_ack_solicit_reschedules_with_nothing_to_solicit(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache; // no peers matched, nothing published yet either
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_ack_solicit_period(&pub, 500000));
@@ -925,13 +871,7 @@ static void test_publisher_destroy_cancels_armed_ack_solicit(void) {
     init_node_and_topic(&node, &topic);
     init_publisher(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
 
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_ack_solicit_period(&pub, 500000));
@@ -954,13 +894,7 @@ static void test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer(void)
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.reliable = true;
 
@@ -1022,13 +956,7 @@ static void test_heartbeat_discovery_no_redelivery_on_unchanged_update(void) {
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry cache_entries[4];
-    memset(cache_entries, 0, sizeof(cache_entries));
-    struct tt_ReliableCache cache;
-    memset(&cache, 0, sizeof(cache));
-    cache.entries = cache_entries;
-    cache.capacity = 4;
-    cache.depth = 4;
+    TEST_RELIABLE_CACHE(cache, 4);
     pub.reliable_cache = &cache;
     pub.reliable = true;
 
@@ -1064,13 +992,7 @@ static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat
     init_node_and_topic(&node, &topic);
     init_publisher_registered_on_node(&pub, &node, &topic);
 
-    struct tt_ReliableCacheEntry reliable_cache_entries[4];
-    memset(reliable_cache_entries, 0, sizeof(reliable_cache_entries));
-    struct tt_ReliableCache reliable_cache;
-    memset(&reliable_cache, 0, sizeof(reliable_cache));
-    reliable_cache.entries = reliable_cache_entries;
-    reliable_cache.capacity = 4;
-    reliable_cache.depth = 4;
+    TEST_RELIABLE_CACHE(reliable_cache, 4);
     pub.reliable_cache = &reliable_cache;
     pub.reliable = true;
     pub.durable = true;
