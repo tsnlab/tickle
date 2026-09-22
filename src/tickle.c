@@ -486,18 +486,113 @@ static void forget_peer(struct tt_Peer* peers, uint8_t node_id) {
     }
 }
 
+// This node's own entry in pub->peer_acks[] (keyed by node_id, see that field's own doc comment,
+// tickle.h), or NULL if it has never sent an ACKNACK to this Publisher.
+static struct tt_PeerAck* find_peer_ack(struct tt_Publisher* pub, uint8_t node_id) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peer_acks[i].node_id == node_id) {
+            return &pub->peer_acks[i];
+        }
+    }
+    return NULL;
+}
+
+// Drops this node's ack state outright - a real departure (farewell UPDATE, liveliness timeout, or
+// an announce that no longer lists a matching Subscriber), not process_update()'s own transient
+// forget-then-re-add (Phase 3 prerequisite (c): that one must preserve it).
+static void forget_peer_ack(struct tt_Publisher* pub, uint8_t node_id) {
+    struct tt_PeerAck* ack = find_peer_ack(pub, node_id);
+    if (ack != NULL) {
+        ack->node_id = tt_NODE_ID_INVALID;
+        ack->ack_seq_no = 0;
+    }
+}
+
+// Advances this node's own ack watermark, claiming an entry on first contact. Only ever advances -
+// a stale/reordered ACKNACK carrying a smaller seq_no must not regress it (UDP gives no ordering
+// guarantee between two ACKNACKs from the same node). A node that isn't currently a matched peer,
+// or a full table, records nothing: there's nothing for the ack to mean yet.
+static void record_peer_ack(struct tt_Publisher* pub, uint8_t node_id, uint32_t seq_no) {
+    bool matched = false;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id == node_id) {
+            matched = true;
+            break;
+        }
+    }
+    if (!matched) {
+        return;
+    }
+
+    struct tt_PeerAck* ack = find_peer_ack(pub, node_id);
+    if (ack == NULL) {
+        ack = find_peer_ack(pub, tt_NODE_ID_INVALID); // first unused entry
+        if (ack == NULL) {
+            return; // table full - same "nothing to record against" no-op as an unmatched node
+        }
+        ack->node_id = node_id;
+        ack->ack_seq_no = 0;
+    }
+    if (seq_no > ack->ack_seq_no) {
+        ack->ack_seq_no = seq_no;
+    }
+}
+
 // forget_peer()'s own Publisher-specific counterpart - a separate function rather than teaching
-// forget_peer() itself about peer_ack_seq_no[], since that array only exists on struct tt_
-// Publisher (tt_Client's own identically-shaped peers[] has no ack-aggregation concept to reset).
-// Clears the matching peer_ack_seq_no[] slot alongside the peer slot itself so a later, unrelated
-// node_id that happens to reclaim the same array index (upsert_peer()'s own first-empty-slot
-// reuse) never inherits a departed peer's stale ack state - see peer_ack_seq_no's own doc comment
-// (tickle.h) for why 0 is the correct "no ACKNACK seen yet" reset value, not just an arbitrary one.
-static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id) {
+// forget_peer() itself about peer_acks[], since that table only exists on struct tt_Publisher
+// (tt_Client's own identically-shaped peers[] has no ack-aggregation concept to reset).
+//
+// preserve_ack distinguishes the two callers (Phase 3 prerequisite (c), rmw_tickle/PLAN.md): a
+// fresh announce from a still-present node forgets its peer slots only so decode_update_entities()
+// can re-add whatever it still lists, and its ack state must survive that round trip untouched -
+// Phase 3's KEEP_ALL blocking waits on exactly that state, and any remote node changing any
+// unrelated endpoint re-announces. A genuine departure passes false and clears it.
+static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id, bool preserve_ack) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (pub->peers[i].node_id == node_id) {
             pub->peers[i].node_id = tt_NODE_ID_INVALID;
-            pub->peer_ack_seq_no[i] = 0;
+        }
+    }
+    if (!preserve_ack) {
+        forget_peer_ack(pub, node_id);
+    }
+}
+
+// Drops (node_id) from the peer and ack sets of every local Publisher sharing `endpoint_id` - the
+// per-entity counterpart to forget_peers_from_source(), used when one remote Subscriber is
+// presumed dead by its own liveliness lease while its node is otherwise still alive and
+// announcing (Phase 3 prerequisite (a), rmw_tickle/PLAN.md).
+static void forget_publisher_peers_for_endpoint(struct tt_Node* node, uint32_t endpoint_id, uint8_t node_id) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER || endpoint->id != endpoint_id) {
+            continue;
+        }
+        forget_publisher_peer((struct tt_Publisher*)endpoint, node_id, /*preserve_ack=*/false);
+    }
+}
+
+// Clears the ack state of every local Publisher that `node_id` is no longer a matched peer of -
+// process_update()'s own companion to forget_peers_from_source(..., preserve_ack=true), run once
+// decode_update_entities() has re-added whatever the fresh announce still lists (Phase 3
+// prerequisite (c), rmw_tickle/PLAN.md). A Publisher this node is still matched to keeps its ack
+// watermark untouched across the announce.
+static void drop_ack_state_for_unmatched_source(struct tt_Node* node, uint8_t node_id) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_PUBLISHER) {
+            continue;
+        }
+        struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
+        bool still_matched = false;
+        for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
+            if (pub->peers[j].node_id == node_id) {
+                still_matched = true;
+                break;
+            }
+        }
+        if (!still_matched) {
+            forget_peer_ack(pub, node_id);
         }
     }
 }
@@ -507,14 +602,14 @@ static void forget_publisher_peer(struct tt_Publisher* pub, uint8_t node_id) {
 // authoritative for what it still hosts, and decode_update_entities() re-adds whatever's still
 // listed. Also does the right thing for a node that has left - tt_Node_destroy() broadcasts a
 // final entity-less UPDATE, so this forgets it and nothing gets re-added.
-static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id) {
+static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id, bool preserve_ack) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL) {
             continue;
         }
         if (endpoint->kind == tt_KIND_TOPIC_PUBLISHER) {
-            forget_publisher_peer((struct tt_Publisher*)endpoint, node_id);
+            forget_publisher_peer((struct tt_Publisher*)endpoint, node_id, preserve_ack);
         } else if (endpoint->kind == tt_KIND_SERVICE_CLIENT) {
             forget_peer(((struct tt_Client*)endpoint)->peers, node_id);
         }
@@ -893,6 +988,8 @@ static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param)
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
+static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
+static uint64_t reliable_retry_interval(void);
 static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy);
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy);
@@ -1104,12 +1201,14 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
-    pub->batch = false;             // see tickle.h's own doc comment on this field for why this is the default
-    pub->reliable_cache = NULL;     // no retained-sample storage by default - see its own doc comment
-    pub->reliable = false;          // best-effort by default - see tt_Publisher.reliable's own doc comment
-    pub->durable = false;           // volatile by default - see tt_Publisher.durable's own doc comment
-    pub->heartbeat_period_ns = 0;   // no periodic Heartbeat by default - see its own doc comment
-    pub->ack_solicit_period_ns = 0; // no periodic ACK solicitation by default - see its own doc comment
+    pub->batch = false;                 // see tickle.h's own doc comment on this field for why this is the default
+    pub->reliable_cache = NULL;         // no retained-sample storage by default - see its own doc comment
+    pub->reliable = false;              // best-effort by default - see tt_Publisher.reliable's own doc comment
+    pub->durable = false;               // volatile by default - see tt_Publisher.durable's own doc comment
+    pub->heartbeat_period_ns = 0;       // no periodic Heartbeat by default - see its own doc comment
+    pub->ack_solicit_period_ns = 0;     // no periodic ACK solicitation by default - see its own doc comment
+    pub->ack_solicit_watermark_pct = 0; // no watermark-triggered solicitation either (Phase 3 (d))
+    pub->last_ack_solicit_ns = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
     }
@@ -1408,6 +1507,62 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) / #4 (DURABILITY/TRANSIENT_LOCAL) - snapshot the
 // just-encoded DATA submessage (header through CDR) into the ring before end_encode() below, same
+// Phase 3 prerequisite (d), rmw_tickle/PLAN.md - the lowest cumulative ack across every currently
+// matched peer, i.e. how far *all* of them have got. 0 when any matched peer has never sent an
+// ACKNACK (or none are matched), matching tt_PeerAck.ack_seq_no's own "unknown" convention.
+static uint32_t min_peer_ack_seq_no(struct tt_Publisher* pub) {
+    uint32_t lowest = 0;
+    bool first = true;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id == tt_NODE_ID_INVALID) {
+            continue;
+        }
+        struct tt_PeerAck* ack = find_peer_ack(pub, pub->peers[i].node_id);
+        uint32_t value = ack != NULL ? ack->ack_seq_no : 0;
+        if (first || value < lowest) {
+            lowest = value;
+            first = false;
+        }
+    }
+    return lowest;
+}
+
+// Phase 3 prerequisite (d) - asks every matched peer for an ACK once the retained cache is
+// ack_solicit_watermark_pct full of samples nobody has acknowledged yet. Off unless a caller sets
+// that field (see its own doc comment, tickle.h). Throttled to at most one solicitation per
+// max(ack_solicit_period_ns, the reliable retry interval), shared with the periodic path, so a
+// max-rate Publisher - which crosses the watermark on essentially every publish - sends at most
+// one extra Heartbeat per millisecond rather than one per sample.
+#define PERCENT_SCALE 100U // ack_solicit_watermark_pct is a percentage, not a fraction
+
+static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
+    if (pub->ack_solicit_watermark_pct == 0 || pub->reliable_cache == NULL) {
+        return;
+    }
+    uint16_t depth = reliable_cache_depth(pub->reliable_cache);
+    if (depth == 0 || count_peers(pub->peers) == 0) {
+        return; // nothing retained to ack, or nobody matched to ask (never heartbeat into the void)
+    }
+
+    uint32_t min_ack = min_peer_ack_seq_no(pub);
+    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
+    uint32_t unacked = pub->seq_no > acked_through ? pub->seq_no - acked_through : 0;
+    if ((uint64_t)unacked * PERCENT_SCALE < (uint64_t)depth * pub->ack_solicit_watermark_pct) {
+        return;
+    }
+
+    uint64_t now = tt_get_ns();
+    uint64_t min_gap =
+        pub->ack_solicit_period_ns > reliable_retry_interval() ? pub->ack_solicit_period_ns : reliable_retry_interval();
+    if (pub->last_ack_solicit_ns != 0 && now - pub->last_ack_solicit_ns < min_gap) {
+        RSTAT_INC(ack_solicit_suppressed);
+        return;
+    }
+    pub->last_ack_solicit_ns = now;
+    RSTAT_INC(ack_solicit_sent);
+    (void)tt_Publisher_request_ack(pub);
+}
+
 // B1 (rmw_tickle/PLAN.md) - the in-use ring size, or 0 when this cache isn't usable at all (no
 // index, no arena, or capacity 0 - struct tt_ReliableCache's own "nothing usable yet" state). The
 // single place the old `(depth > 0 && depth <= capacity) ? depth : capacity` clamp expression,
@@ -1701,6 +1856,10 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
 
     pub->seq_no++;
 
+    // Phase 3 prerequisite (d) - after the sample is out and counted, ask for an ACK if the cache
+    // is now watermark-full of unacknowledged samples. No-op unless a caller opted in.
+    maybe_solicit_ack_at_watermark(pub);
+
     return tt_RET_OK;
 }
 
@@ -1783,7 +1942,7 @@ static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
 
 // QoS roadmap #5 (RELIABILITY) follow-up - runs once per pub->ack_solicit_period_ns (armed by tt_
 // Publisher_set_ack_solicit_period()), periodically calling tt_Publisher_request_ack() so pub->
-// peer_ack_seq_no[] stays fresh even on a fully healthy link - the gap send_heartbeat() above
+// peer_acks[] stays fresh even on a fully healthy link - the gap send_heartbeat() above
 // can't close on its own (it always sets tt_HEARTBEAT_FLAG_FINAL, so a healthy Subscriber has no
 // reason to ever reply - see that flag's own doc comment, tickle.h, and struct tt_Publisher.
 // ack_solicit_period_ns's own doc comment for why these two periodic mechanisms are distinct, not
@@ -1793,6 +1952,7 @@ static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
 // every tick, mirroring send_heartbeat()'s own silent-skip for its analogous case above.
 static void send_ack_solicit(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_Publisher* pub = param;
+    pub->last_ack_solicit_ns = tt_get_ns(); // shared throttle - see ack_solicit_watermark_pct (tickle.h)
     (void)tt_Publisher_request_ack(pub);
 
     if (!tt_Node_schedule(node, time + pub->ack_solicit_period_ns, send_ack_solicit, pub)) {
@@ -1825,6 +1985,25 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly.
+bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (pub->peers[i].node_id == tt_NODE_ID_INVALID) {
+            continue;
+        }
+        const struct tt_PeerAck* ack = NULL;
+        for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
+            if (pub->peer_acks[j].node_id == pub->peers[i].node_id) {
+                ack = &pub->peer_acks[j];
+                break;
+            }
+        }
+        if (ack == NULL || ack->ack_seq_no <= seq_no) {
+            return false; // never acked anything, or not this far yet
+        }
+    }
+    return true;
+}
+
 tt_ret_t tt_ReliableCache_init(struct tt_ReliableCache* cache, struct tt_ReliableCacheIndex* index, uint16_t capacity,
                                uint8_t* arena, uint32_t arena_size) {
     if (cache == NULL || index == NULL || arena == NULL || capacity == 0 || arena_size == 0) {
@@ -2786,6 +2965,16 @@ static void tombstone_entities_past_own_lease(struct tt_Node* node, uint64_t tim
             continue;
         }
         entity->alive = false;
+        // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - a remote Subscriber presumed dead by its
+        // own announced lease must also leave the matching local Publishers' peer/ack sets right
+        // here. Before this, only check_liveliness()'s own node-level sweep (~3-3.6s, and only when
+        // the whole node goes quiet) did that, so a crashed Subscriber kept its ack entry for
+        // seconds after its lease expired - which under Phase 3's KEEP_ALL blocking would stall a
+        // writer that is waiting on exactly that ack. Narrow on purpose: only the Publishers whose
+        // own endpoint id this entity matched, and only this node_id, unlike the node-level sweep.
+        if (entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+            forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->node_id);
+        }
         if (node->discovery_callback != NULL) {
             node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/true,
                                      node->discovery_callback_param);
@@ -2818,7 +3007,7 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
         if (time - node->update_last_seen[i] > (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) {
             TT_LOG_WARNING("Node %d presumed dead (no UPDATE for %d consecutive intervals)", i,
                            tt_LIVELINESS_MISS_THRESHOLD);
-            forget_peers_from_source(node, (uint8_t)i);
+            forget_peers_from_source(node, (uint8_t)i, /*preserve_ack=*/false);
             tombstone_discovered_entities_from_source(node, (uint8_t)i);
             node->update_seen[i] = false;
             node->update_last_modified[i] = 0;
@@ -3118,13 +3307,19 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     // This announce supersedes anything we knew about what this source hosts (it may have dropped
     // an endpoint, or left entirely - see tt_Node_destroy()'s farewell UPDATE). Forget its old
     // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
-    forget_peers_from_source(node, source);
+    forget_peers_from_source(node, source, /*preserve_ack=*/true);
     forget_discovered_entities_from_source(node, source);
 
     if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip, sender_port,
                                 last_modified)) {
         return false;
     }
+
+    // Phase 3 prerequisite (c) - the forget above preserved this source's ack state so a re-added
+    // Subscriber keeps it; now drop it wherever this announce genuinely dropped the match (an
+    // endpoint it no longer lists, or a farewell UPDATE listing nothing at all), so a departed
+    // Subscriber can't hold a KEEP_ALL writer's ack set forever.
+    drop_ack_state_for_unmatched_source(node, source);
 
     node->update_last_modified[source] = last_modified;
     node->update_seen[source] = true;
@@ -4011,7 +4206,7 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
     if (pub->reliable_cache == NULL) {
         return true; // not a reliable/durable Publisher (or a stale ack) - nothing cached to
-                     // resend or to update peer_ack_seq_no against
+                     // resend or to update peer_acks against
     }
 
     struct tt_ReliableCache* cache = pub->reliable_cache;
@@ -4021,22 +4216,19 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     }
     struct tt_Peer target = {header->source, sender_ip, sender_port};
 
-    // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). peer_ack_seq_no's
-    // own doc comment (tickle.h): index-aligned with peers[], only ever advanced (a stale/reordered
-    // ACKNACK carrying a smaller seq_no than what's already recorded must not regress it - UDP
-    // gives no ordering guarantee between two ACKNACKs from the same peer). A sender not currently
-    // in peers[] (already forgotten, e.g. via forget_publisher_peer(), or never matched in the
-    // first place) has nothing to record against. Unconditional on pub->reliable (unlike the
+    // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). record_peer_ack()
+    // keeps peer_acks[] (keyed by node_id since Phase 3 prerequisite (c), see its own doc comment,
+    // tickle.h) only ever advancing - a stale/reordered ACKNACK carrying a smaller seq_no than
+    // what's already recorded must not regress it, since UDP gives no ordering guarantee between
+    // two ACKNACKs from the same peer. A sender not currently in peers[] (already forgotten, e.g.
+    // via forget_publisher_peer(), or never matched in the first place) has nothing to record
+    // against. Unconditional on pub->reliable (unlike the
     // retransmission loop below) - matches tt_Publisher_wait_for_all_acked()'s own gate (pub->
     // reliable_cache != NULL, not pub->reliable specifically), since a DURABLE-only Publisher can
     // legitimately solicit and track an ACKNACK reply too (tt_Publisher_request_ack()'s own
     // Heartbeat, answered regardless of pub->reliable) - only the actual byte retransmission below
     // is RELIABILITY's own exclusive contract.
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id == header->source && seq_no > pub->peer_ack_seq_no[i]) {
-            pub->peer_ack_seq_no[i] = seq_no;
-        }
-    }
+    record_peer_ack(pub, header->source, seq_no);
 
     // Milestone 62 (rmw_tickle/PLAN.md) - gated on pub->reliable specifically, not merely pub->
     // reliable_cache != NULL: Milestone 24 unified RELIABILITY's and DURABILITY's own storage into

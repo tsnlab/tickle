@@ -1228,7 +1228,7 @@ static void test_process_acknack_ignored_for_durable_only_publisher(void) {
 }
 
 // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). An ACKNACK from a
-// peer already present in pub->peers[] must advance that peer's own peer_ack_seq_no[] slot to the
+// peer already present in pub->peers[] must advance that peer's own peer_acks[] entry to the
 // ACKNACK's own cumulative seq_no - the aggregation tt_Publisher_wait_for_all_acked() is built on.
 static void test_process_acknack_updates_peer_ack_seq_no(void) {
     test_mock_reset();
@@ -1253,11 +1253,16 @@ static void test_process_acknack_updates_peer_ack_seq_no(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL); // seq_no 5, no gap requested
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(5, pub.peer_ack_seq_no[0]);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(5, ack->ack_seq_no);
+    // ...and the public aggregation agrees: 4 is acked (5 means "everything below 5"), 5 isn't.
+    EXPECT_TRUE(tt_Publisher_is_acked_by_all_peers(&pub, 4));
+    EXPECT_TRUE(!tt_Publisher_is_acked_by_all_peers(&pub, 5));
 }
 
 // A stale/reordered ACKNACK (UDP gives no ordering guarantee) carrying a seq_no lower than what's
-// already recorded must never regress peer_ack_seq_no[] - only ever advance it.
+// already recorded must never regress a peer's ack entry - only ever advance it.
 static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     test_mock_reset();
 
@@ -1274,7 +1279,7 @@ static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     pub.peers[0].node_id = REMOTE_NODE_ID;
     pub.peers[0].ip = TEST_SENDER_IP;
     pub.peers[0].port = TEST_SENDER_PORT;
-    pub.peer_ack_seq_no[0] = 10;
+    record_peer_ack(&pub, REMOTE_NODE_ID, 10);
 
     struct tt_Header header;
     init_header(&header);
@@ -1282,7 +1287,9 @@ static void test_process_acknack_does_not_regress_peer_ack_seq_no(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL); // stale - already at 10
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(10, pub.peer_ack_seq_no[0]);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(10, ack->ack_seq_no);
 }
 
 // An ACKNACK from a sender not currently in pub->peers[] at all (never matched, or already
@@ -1308,15 +1315,13 @@ static void test_process_acknack_from_unmatched_peer_updates_nothing(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        EXPECT_EQ_U32(0, pub.peer_ack_seq_no[i]);
-    }
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL); // nothing recorded for an unmatched node
 }
 
-// forget_publisher_peer() must reset the departed peer's own peer_ack_seq_no[] slot alongside its
-// peers[] slot - otherwise a later, unrelated node_id reclaiming that same array index (upsert_
-// peer()'s own first-empty-slot reuse) would inherit a stale ack value that was never actually
-// about it.
+// forget_publisher_peer() must drop a genuinely departed peer's ack state alongside its peers[]
+// slot (preserve_ack = false), so a later, unrelated node_id can never inherit an ack value that
+// was never about it. Phase 3 prerequisite (c) added the other half - see
+// test_publisher_peer_ack_survives_announce_refresh() below for the preserve_ack = true case.
 static void test_forget_publisher_peer_resets_ack_seq_no(void) {
     struct tt_Node node;
     struct tt_Topic topic;
@@ -1326,12 +1331,21 @@ static void test_forget_publisher_peer_resets_ack_seq_no(void) {
     pub.peers[0].node_id = REMOTE_NODE_ID;
     pub.peers[0].ip = TEST_SENDER_IP;
     pub.peers[0].port = TEST_SENDER_PORT;
-    pub.peer_ack_seq_no[0] = 42;
+    record_peer_ack(&pub, REMOTE_NODE_ID, 42);
 
-    forget_publisher_peer(&pub, REMOTE_NODE_ID);
+    forget_publisher_peer(&pub, REMOTE_NODE_ID, /*preserve_ack=*/false);
 
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
-    EXPECT_EQ_U32(0, pub.peer_ack_seq_no[0]);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL);
+
+    // preserve_ack = true keeps it: process_update()'s own forget-then-re-add must not throw away
+    // ack state for a Subscriber that never went anywhere (Phase 3 prerequisite (c)).
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    record_peer_ack(&pub, REMOTE_NODE_ID, 42);
+    forget_publisher_peer(&pub, REMOTE_NODE_ID, /*preserve_ack=*/true);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(42, ack->ack_seq_no);
 }
 
 #ifdef tt_RELIABLE_STATS

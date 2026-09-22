@@ -587,6 +587,12 @@ struct tt_ReliableCache {
     struct tt_DurableDeliveryRecord durable_delivered[tt_MAX_PEER_COUNT];
 };
 
+// One matched remote node's acknowledgement state on a Publisher - see tt_Publisher.peer_acks.
+struct tt_PeerAck {
+    uint8_t node_id; // tt_NODE_ID_INVALID (0, matching zero-init) = unused entry
+    uint32_t ack_seq_no;
+};
+
 struct tt_Publisher { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
@@ -614,23 +620,28 @@ struct tt_Publisher { // extends endpoint
     // tt_UNICAST_PEER_THRESHOLD.
     struct tt_Peer peers[tt_MAX_PEER_COUNT];
 
-    // QoS roadmap #5 (RELIABILITY) follow-up, tt_Publisher_wait_for_all_acked() - index-aligned
-    // with peers[] above (peer_ack_seq_no[i] is peers[i]'s own ack state; an empty peers[] slot's
-    // entry is meaningless and reset to 0 alongside it, forget_publisher_peer() in tickle.c). Each
-    // entry is that peer's own most recently seen struct tt_AckNackHeader.seq_no - "every seq_no
-    // below this has been received" (struct tt_AckNackHeader's own doc comment), the exact
-    // cumulative-ack value process_acknack() already decodes but, before this field existed, only
-    // ever used transiently to compute which single missing seq_no to retransmit, never retaining
-    // it anywhere. 0 (tt_Node_create_publisher()'s own default, matching upsert_peer()'s own zero-
-    // initialized peers[] slots) means "no ACKNACK seen yet from this peer" - seq_no 0 never occurs
-    // on the wire (tt_Publisher_publish()'s own data_header->seq_no = pub->seq_no + 1, starting
-    // from 1), so it doubles as "unknown" here the same way reliable_cache_oldest_seq_no() (tickle.
-    // c) already uses 0 for "nothing retained yet". process_acknack() only ever advances an entry
-    // (a stale/reordered ACKNACK carrying a smaller seq_no than what's already recorded must not
-    // regress it) - this is *not* the same value as pub->seq_no (the highest seq_no this Publisher
-    // has *sent*, batch/publish()-side); tt_Publisher_wait_for_all_acked() (rmw_tickle) compares
-    // this per-peer value against that target to decide whether a given peer has fully caught up.
-    uint32_t peer_ack_seq_no[tt_MAX_PEER_COUNT];
+    // QoS roadmap #5 (RELIABILITY) follow-up, tt_Publisher_wait_for_all_acked() - what each
+    // matched remote node has acknowledged, keyed by node_id rather than index-aligned with
+    // peers[] above (Phase 3 prerequisite (c), rmw_tickle/PLAN.md). Index alignment used to mean
+    // process_update()'s own forget-then-re-add cycle (a remote node changing *any* endpoint
+    // re-announces, and forget_peers_from_source() cleared the slot) threw away ack state for
+    // Subscribers that never went anywhere - harmless while nothing depended on it, but Phase 3's
+    // KEEP_ALL blocking does: a writer that has to wait for acks must not have them silently reset
+    // by an unrelated announce.
+    //
+    // ack_seq_no is that node's own most recently seen struct tt_AckNackHeader.seq_no - "every
+    // seq_no below this has been received" (that struct's own doc comment) - only ever advanced,
+    // never regressed by a stale/reordered ACKNACK. 0 means "no ACKNACK seen yet", which seq_no
+    // never is on the wire (tt_Publisher_publish() starts at 1). node_id == tt_NODE_ID_INVALID (0)
+    // marks an unused entry.
+    //
+    // Still one entry per remote *node*, not per remote Subscriber: an ACKNACK carries no
+    // identifier of the Subscriber that sent it (struct tt_AckNackHeader.entity_id names the
+    // target Publisher), so two Subscribers of one topic on one node share this entry and the
+    // faster one's ack speaks for both. Harmless for tt_Publisher_wait_for_all_acked()'s own
+    // advisory use; a real gap for Phase 3's KEEP_ALL blocking, which needs per-Subscriber
+    // identity on the wire - see rmw_tickle/PLAN.md's Phase 3 prerequisite (b).
+    struct tt_PeerAck peer_acks[tt_MAX_PEER_COUNT];
 
     // false (tt_Node_create_publisher()'s own default): tt_Publisher_publish() flushes every call
     // immediately, same as RPC already does (DESIGN.md's "RPC and Publish flush immediately by
@@ -689,7 +700,7 @@ struct tt_Publisher { // extends endpoint
     // above. Requires reliable_cache to already be set (nothing to solicit an ack against
     // otherwise). Distinct from heartbeat_period_ns above, not a duplicate of it: that periodic
     // Heartbeat always sets tt_HEARTBEAT_FLAG_FINAL (its own doc comment, tickle.h), so a
-    // Subscriber with no actual gap has no reason to ever reply - peer_ack_seq_no[] (above) can
+    // Subscriber with no actual gap has no reason to ever reply - peer_acks[] (above) can
     // stay stale indefinitely on a fully healthy, loss-free link, since it only ever advances on
     // an ACKNACK reply. This field exists specifically to keep that value fresh regardless of gap
     // state, the same clear-tt_HEARTBEAT_FLAG_FINAL mechanism tt_Publisher_wait_for_all_acked()'s
@@ -698,6 +709,22 @@ struct tt_Publisher { // extends endpoint
     // RELIABLE Publisher's own send-side flow control, deciding whether to keep publishing or
     // pause based on how far a slow peer has fallen behind).
     uint64_t ack_solicit_period_ns;
+
+    // Phase 3 prerequisite (d), rmw_tickle/PLAN.md - solicit an ACK as soon as this Publisher's own
+    // retained-sample cache is this percent full of unacknowledged samples, instead of only on a
+    // fixed timer (ack_solicit_period_ns above) or when loss is detected. 0 (the default) is off,
+    // so nothing changes for an existing caller; Phase 3's KEEP_ALL blocking turns it on, because a
+    // writer that blocks waiting for acks needs them to arrive *before* the cache is full, and a
+    // healthy stream otherwise produces no ACKNACK at all (tt_HEARTBEAT_FLAG_FINAL's own doc
+    // comment). 50 is the suggested starting point.
+    //
+    // Rate-limited by last_ack_solicit_ns below, shared with the periodic path - at max throughput
+    // the watermark is crossed continuously (a depth-64 cache turns over in well under a
+    // millisecond), so without that limit this would be one Heartbeat per publish.
+    uint8_t ack_solicit_watermark_pct;
+    // tt_get_ns() of the most recent ACK solicitation from either path (watermark or periodic
+    // timer), or 0 if none yet. Core-private bookkeeping, not a caller-set field.
+    uint64_t last_ack_solicit_ns;
 
     // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md). 0 (tt_Node_create_publisher()'s own default):
     // disabled, today's only behavior - reliable_cache entries never expire on their own (only
@@ -764,8 +791,8 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
 // based choice, since wait_for_all_acked() only ever cares about peers currently known to exist -
 // with tt_HEARTBEAT_FLAG_FINAL clear (see its own doc comment, tickle.h), forcing each one to
 // reply with an ACKNACK regardless of gap state. That reply is what actually advances this
-// Publisher's own peer_ack_seq_no[] (process_acknack(), tickle.c) - this function only solicits
-// it, asynchronously; the caller polls peer_ack_seq_no[] afterward to see the answer, same
+// Publisher's own peer_acks[] (process_acknack(), tickle.c) - this function only solicits
+// it, asynchronously; the caller polls tt_Publisher_is_acked_by_all_peers() afterward to see the answer, same
 // "encode/send now, observe the effect later via already-existing state" split every other
 // RELIABLE mechanism in this file already uses. No-op (tt_RET_OK, nothing to solicit) if peers[]
 // is currently empty. Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still NULL (best-
@@ -774,6 +801,17 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
 // already skip, but reported back here rather than silently doing nothing, since unlike those two
 // this isn't on a schedule that will just try again next period).
 tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
+
+// True once every currently-matched peer (peers[]) has acknowledged seq_no - i.e. each one's own
+// tt_PeerAck.ack_seq_no is strictly greater than it ("every seq_no below this was received", struct
+// tt_AckNackHeader's own doc comment). No matched peers at all is vacuously true, matching
+// tt_Publisher_request_ack()'s own "nothing to solicit" no-op. A peer that has never sent an
+// ACKNACK counts as not having acknowledged anything.
+//
+// The supported way to read peer_acks[] from outside core (rmw_tickle's own
+// rmw_publisher_wait_for_all_acked() is built on this): the table is keyed by node_id, not
+// index-aligned with peers[], so a caller must not pair the two arrays by index.
+bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no);
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic ACK solicitation - see
 // struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for what it's for and how
@@ -1201,7 +1239,7 @@ struct tt_AckNackHeader {
     // Milestone 47 - the *target* Publisher's own struct tt_Endpoint.entity_id, mirroring
     // endpoint_id's own "target Publisher" role above rather than identifying the sending
     // Subscriber itself (an ACKNACK's sender never needs disambiguating the way a matched
-    // Publisher does - see struct tt_Publisher.peer_ack_seq_no's own doc comment, still keyed by
+    // Publisher does - see struct tt_Publisher.peer_acks's own doc comment, still keyed by
     // node_id alone, unchanged by this milestone). Learned from whichever struct tt_WriterProxy
     // this ACKNACK answers (send_acknack(), tickle.c) - lets a Publisher-side receiver pick the
     // exact local Publisher instance among several sharing endpoint_id (find_endpoint_by_entity(),

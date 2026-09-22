@@ -382,6 +382,22 @@ static void test_heartbeat_first_contact_volatile_subscriber_skips_backlog(void)
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK for 101
 }
 
+// Decodes the most recently sent packet as a single Heartbeat - NULL if it wasn't one. Same helper
+// as tests/test_reliable_pubsub.c's own.
+static const struct tt_HeartbeatHeader* last_sent_heartbeat(void) {
+    size_t submessage_off = sizeof(struct tt_Header);
+    size_t heartbeat_off = submessage_off + sizeof(struct tt_SubmessageHeader);
+    if (test_mock_send_last_len < heartbeat_off + sizeof(struct tt_HeartbeatHeader)) {
+        return NULL;
+    }
+    const struct tt_SubmessageHeader* submessage =
+        (const struct tt_SubmessageHeader*)(test_mock_send_last_buf + submessage_off);
+    if (submessage->type != tt_SUBMESSAGE_TYPE_HEARTBEAT) {
+        return NULL;
+    }
+    return (const struct tt_HeartbeatHeader*)(test_mock_send_last_buf + heartbeat_off);
+}
+
 // Same helper as tests/test_reliable_pubsub.c's own: word 0 == low, every other word == 0.
 static bool bitmap_equals_u64(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint64_t low) {
     if (bitmap[0] != low) {
@@ -1013,7 +1029,193 @@ static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat
     EXPECT_EQ_U32(4, (uint32_t)test_mock_send_to_call_count);
 }
 
+// Phase 3 prerequisite (c), rmw_tickle/PLAN.md - a remote node re-announcing (it changed *some*
+// endpoint, which re-sends its whole entity list) makes process_update() forget and re-add its peer
+// slots. That must not throw away ack state for a Subscriber that never went anywhere: Phase 3's
+// KEEP_ALL blocking waits on exactly that state, and an unrelated announce would silently reset it.
+static void test_publisher_peer_ack_survives_announce_refresh(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // The remote Subscriber announces, becomes a peer, and acks up to 7.
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id);
+    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
+
+    // It re-announces (a newer last_modified) while still listing the same Subscriber.
+    tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id); // re-added
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(7, ack->ack_seq_no); // and its ack survived the round trip
+}
+
+// ...but an announce that genuinely drops the match (it no longer lists a Subscriber for this
+// topic, or lists nothing at all - tt_Node_destroy()'s own farewell) must clear that ack state, so
+// a departed Subscriber can't hold a KEEP_ALL writer's ack set forever.
+static void test_publisher_peer_ack_dropped_when_announce_drops_match(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) != NULL);
+
+    // A Subscriber for a different topic only: this Publisher is no longer matched.
+    tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID + 1);
+    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL);
+}
+
+// Publishes one sample and returns true if a solicited Heartbeat went out alongside the DATA. With
+// one matched peer each publish unicasts its DATA (tt_UNICAST_PEER_THRESHOLD), so the send count
+// rises by 1 for a plain publish and by 2 when the watermark also solicited an ACK.
+static bool publish_and_check_solicit(struct tt_Publisher* pub) {
+    uint32_t value = 1;
+    int before = test_mock_send_to_call_count;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(pub, (struct tt_Data*)&value));
+    int sent = test_mock_send_to_call_count - before;
+    if (sent < 2) {
+        return false;
+    }
+    const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
+    EXPECT_TRUE(heartbeat != NULL);
+    EXPECT_TRUE((heartbeat->flags & tt_HEARTBEAT_FLAG_FINAL) == 0); // FINAL clear: a reply is required
+    return true;
+}
+
+// Phase 3 prerequisite (d) - ack_solicit_watermark_pct is off by default, so an existing caller's
+// healthy stream still sends no solicited Heartbeat at all, however full its cache gets.
+static void test_ack_watermark_off_by_default_sends_nothing(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+    EXPECT_EQ_U32(0, (uint32_t)pub.ack_solicit_watermark_pct);
+
+    for (int i = 0; i < 8; i++) { // twice the depth: the cache is full of unacked samples
+        EXPECT_TRUE(!publish_and_check_solicit(&pub));
+    }
+}
+
+// With the watermark on, crossing it solicits exactly one Heartbeat, and the min-gap throttle
+// suppresses every further crossing until the gap has elapsed - the property that keeps a max-rate
+// Publisher (which crosses the watermark on essentially every publish) from heartbeat-flooding.
+static void test_ack_watermark_solicits_once_then_throttles(void) {
+    test_mock_reset();
+    test_mock_now = 1000000; // non-zero: last_ack_solicit_ns == 0 means "never solicited"
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.ack_solicit_watermark_pct = 50; // solicit once 2 of 4 slots are unacked
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+
+    EXPECT_TRUE(!publish_and_check_solicit(&pub)); // 1 unacked of 4 - below the watermark
+    EXPECT_TRUE(publish_and_check_solicit(&pub));  // 2 of 4 - one solicited Heartbeat
+
+    for (int i = 0; i < 10; i++) { // still past the watermark, but inside the min gap
+        EXPECT_TRUE(!publish_and_check_solicit(&pub));
+    }
+
+    test_mock_now += tt_RELIABLE_RETRY_INTERVAL; // the gap elapses
+    EXPECT_TRUE(publish_and_check_solicit(&pub));
+}
+
+// An acking peer keeps the cache below the watermark, so nothing is solicited: the trigger is
+// *unacknowledged* samples, not merely retained ones.
+static void test_ack_watermark_not_triggered_while_peer_keeps_up(void) {
+    test_mock_reset();
+    test_mock_now = 1000000;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.ack_solicit_watermark_pct = 50;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+
+    for (int i = 0; i < 8; i++) {
+        EXPECT_TRUE(!publish_and_check_solicit(&pub));
+        record_peer_ack(&pub, REMOTE_NODE_ID, pub.seq_no + 1); // acked everything published so far
+    }
+}
+
+// With no matched peer there is nobody to ask, so a watermark crossing must not heartbeat into the
+// void (Plan's B1-review ask).
+static void test_ack_watermark_silent_without_peers(void) {
+    test_mock_reset();
+    test_mock_now = 1000000;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.ack_solicit_watermark_pct = 50; // pub.peers[] left entirely empty
+
+    uint32_t value = 1;
+    for (uint32_t i = 0; i < 8; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // no peers: DATA broadcasts, no solicit
+    EXPECT_EQ_U32(0, (uint32_t)pub.last_ack_solicit_ns);      // not even the throttle timestamp moved
+}
+
 int main(void) {
+    test_publisher_peer_ack_survives_announce_refresh();
+    test_publisher_peer_ack_dropped_when_announce_drops_match();
+    test_ack_watermark_off_by_default_sends_nothing();
+    test_ack_watermark_solicits_once_then_throttles();
+    test_ack_watermark_not_triggered_while_peer_keeps_up();
+    test_ack_watermark_silent_without_peers();
     test_heartbeat_set_period_requires_reliable_cache();
     test_heartbeat_set_period_arms_and_disarms();
     test_heartbeat_send_derives_range_correctly();
