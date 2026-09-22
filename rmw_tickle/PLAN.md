@@ -1067,6 +1067,34 @@ not-alive Subscriber drop out of `peer_ack_seq_no` aggregation?); E3 (COMPARISON
 restructure; mark pre-fix numbers superseded). E2 (DDS rate sweep + 20/50% tc) runs on the rig
 between Dev's measurements.
 
+#### Phase 1-b result: 1ms RELIABLE retry interval (2026-09-22, Dev implemented + measured, Plan verified raw logs)
+
+`8634aaa`: `tt_RELIABLE_RETRY_INTERVAL` = 1ms (config.h), RELIABLE only, and `tt_RELIABLE_DEADLINE`
+still overrides it. RPC and `rmw_publisher_wait_for_all_acked()` polling stay at 5ms. Real HIL,
+3 reps; loss = lost/(lost+recv):
+
+| condition | after 1-a | after 1-b, K=64 | after 1-b, K=1024 |
+|---|---|---|---|
+| ~8 Mbps, tc 1% | 0.008% | **0** (0/0/0) | 0.0003% |
+| ~8 Mbps, tc 5% | 0.20% | **0** (0/0/0) | 0.0009% |
+| max, tc 1% | 0.012-0.016% | 0.010% | **0.0001-0.0002%** |
+| max, tc 5% | 0.30-0.42% | 0.30-0.41% (unchanged) | **0.030-0.037%** |
+
+- **Low rate is fully fixed at the default depth**: 0 lost, `null_evicted` 0.
+- **Max rate is now depth-limited (H4).** At ~190K msg/s, 64 samples ≈ 0.34ms < the 1ms retry, so
+  `null_evicted` rose to 5.0-5.5K at tc 5%. With a deep enough cache (K=1024, i.e. ≥ retry × rate),
+  tc 5% improves 11x over 1-a.
+- **What remains at K=1024 is H1 (the 256 window).** `request_to_recover` has a 1-2ms tail (~1.5K
+  samples): timer retries landing after ~1.35ms are already outside the window (`jump_abandoned`
+  1.1-1.6K). This is Phase 2's target.
+- `null_retry_cap` = 0 everywhere. ACKNACKs ≈ gaps + timer, ~9-10K/s at tc 5% max, so no flood.
+  Throughput is in the usual 105-119 Mbps bimodal band.
+- Plain-build outliers (tc5 K64 12138 lost; tc1 K1024 364 lost) re-ran tight (0.298%, 0.0001%),
+  so they were noise.
+- Implication for the Phase 1 order: B2 (Heartbeat-signaled eviction) matters most exactly at K=64
+  max rate, where `null_evicted` is now concentrated. B1 (byte ring) makes K ≥ retry × rate
+  affordable by default.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
