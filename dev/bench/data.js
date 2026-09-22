@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790108479421,
+  "lastUpdate": 1790108483186,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -106985,6 +106985,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/f0b7ae04a18043b0ce7dd38bcd0d846bfb730417"
         },
         "date": 1790091391568,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3e5e76927b0ab8bb6a4a0d88a608e3ccfae13245",
+          "message": "tickle: B1 - byte-arena reliable cache (caller-owned index + arena)\n\nstruct tt_ReliableCacheEntry embedded a fixed tt_MAX_BUFFER_LENGTH buffer in\nevery slot, so a 76-byte sample cost 1488 bytes of cache regardless: depth 1024\n= 1.45MB and rmw_tickle's KEEP_ALL depth 8192 = 12.2MB, per Publisher.\n\nReplaced by struct tt_ReliableCacheIndex (24B: timestamp, seq_no, arena offset,\nlen, retry) plus a caller-owned byte arena where encoded submessages are packed\nback to back. Measured: depth 64 95,232B -> 8,036B, depth 1024 1,523,712B ->\n127,076B (~12x), and reliable_throughput's own static footprint 12.2MB -> 1.08MB.\nA maximum-size (1472B) record costs +0.5%.\n\nNo behavior change: same KEEP_LAST-by-count retention, same O(1) direct-indexed\nlookup ((seq-1) % depth), same wire format (tt_VERSION untouched). Eviction now\nhas two causes - the index being full (HISTORY depth) or the arena lacking\ncontiguous room (RESOURCE_LIMITS in bytes) - both evicting oldest-first.\n\nRecords are never split: one that doesn't fit before the end of the arena wraps\nto 0 and the tail fragment is wasted, so every retransmit/backlog send stays one\nmemcpy. tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record) therefore sizes\ndepth + 1 records: without that slack a wrap could evict before `depth` samples\nare retained, i.e. silently break what `depth` promises (Plan's review, Fix 1).\nCore only memcpy()s the arena and never casts into it, so it needs no alignment.\n\nA record larger than the whole arena is sent but not cached (warning +\nnot_cached_oversize): no byte eviction on its behalf, its slot left a tombstone,\nso an ACKNACK naming it gets Phase 1-c's eviction Heartbeat and DURABILITY's\nbacklog skips it (Fix 2). reliable_cache_oldest_seq_no() is now a field read\ninstead of an O(depth) scan, which every Heartbeat pays.\n\nAPI break, no compat shim (the user's own choice, 2026-09-23): every in-repo\ncaller is migrated here and the old type is gone, so anything missed fails to\ncompile. rmw_tickle allocates index + arena, the arena sized at the type's max -\ntt_MAX_BUFFER_LENGTH, since the typesupport exposes no per-type maximum encoded\nsize today - i.e. today's memory plus one record, never fewer retained samples.\nA real rmw reduction needs a generated per-type max; flagged, not smuggled in\nhere. perf_client sizes its arena from -s at runtime. CHANGELOG updated.\n\nTests: byte eviction (oldest-first, survivors byte-intact), wrap slack at\ndepth-full with max-size records across several wraps plus a mixed-size variant,\noversize not cached (mid-stream and on an empty cache, including the gone path),\nand a randomized 20K-write property check (retention is a contiguous newest-first\nsuffix, <= depth, every record intact, inside the arena, non-overlapping; fixed\nseed). That randomized check caught a real bug in this commit's first draft: a\ncompletely full arena has tail == head, which the write path read as \"free to the\nend\" and overwrote the oldest record. 18/18 with and without\n-Dtt_RELIABLE_STATS; clang-format/clang-tidy clean; make all builds.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T05:14:45+09:00",
+          "tree_id": "6a792cfbf4be2704af1cf0597bd9a0b4c2649dad",
+          "url": "https://github.com/tsnlab/tickle/commit/3e5e76927b0ab8bb6a4a0d88a608e3ccfae13245"
+        },
+        "date": 1790108481989,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
