@@ -1008,6 +1008,37 @@ not the limit, so H1 is ruled out as the root cause). Every lost sample is exact
   (immediate NACK per new gap) targets the max-rate loss, and 1-c (depth ≥ retry-interval ×
   rate) plus 1-b (shorter retry) target the low-rate loss.
 
+#### Phase 3 design: RELIABLE+KEEP_ALL write blocking (2026-09-22, approved by the user: "계획을 승인합니다")
+
+The user's decisions, item by item:
+
+1. **Core (`tt_Publisher_publish()`), non-blocking.** Core is single-threaded per node, and ACKs are
+   processed by the same thread's `tt_Node_poll()`, so blocking inside `publish()` would deadlock.
+   - When the reliable cache is full of unacknowledged samples, `publish()` returns "cannot write
+     now" immediately (EAGAIN-like). The sample is not accepted.
+   - **Both** notification forms are provided: a query function (e.g. `tt_Publisher_writable()`) and
+     a callback fired when space frees up.
+2. **`rmw_tickle`, blocking with timeout.**
+   - It combines the two core primitives above on its own threads. The callback lets it wake the
+     waiting `rmw_publish()` (interrupt/condvar) and send the instant space frees.
+   - `max_blocking_time` defaults to **100ms** (same as FastDDS) and is **user-configurable** in
+     TickLE.
+3. **Timeout policy = DDS's.** On timeout, the write fails with an error and the sample is not
+   accepted. Accepted samples are never silently lost. No evict-oldest fallback, no infinite wait.
+4. **Prerequisites (agreed):**
+   - Healthy streams must produce ACKs too. Today a Subscriber only ACKNACKs on loss, so a cache
+     would never drain; this is what livelocked the `-T` experiment. Proposed: the Publisher
+     solicits an ACK via Heartbeat when the cache reaches a fill watermark (e.g. 50%), rather than
+     on a fixed timer.
+   - Subscribers declared not-alive (liveliness) must drop out of the ack-wait set, so one dead
+     reader can't block a Publisher forever. Check how `peer_ack_seq_no` behaves today.
+5. **Benchmarks (agreed):** all three frameworks count writes that failed or timed out and could not
+   be sent, alongside loss% and throughput. The DDS harnesses currently skip failed writes in `sent`.
+
+Sequencing: after Phase 1 (1-a/1-b/1-c) is verified. Order: ACK-solicit watermark → core
+non-blocking mode and notifications (opt-in) → `rmw_publish()` `max_blocking_time` → benchmark
+rejection counters.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
