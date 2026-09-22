@@ -221,6 +221,32 @@ static void test_rejects_old_version(void) {
     EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
 }
 
+// Phase 2 (rmw_tickle/PLAN.md) - a *newer* peer must be rejected too, where the check used to
+// accept anything at or above our own version and then parse it with the older layout, silently
+// misreading fields. tt_VERSION 6 added a field to tt_AckNackHeader and made its bitmap variable
+// length, so "accept and hope" is exactly the wrong answer.
+static void test_rejects_newer_version(void) {
+    struct tt_Node node;
+    init_node(&node);
+
+    uint8_t buf[sizeof(struct tt_Header)];
+    write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION + 1, REMOTE_NODE_ID);
+
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+
+    // Repeated mismatched packets from the same peer log once, not once each (an unfiltered log
+    // line per packet is its own denial of service at max rate) - the bookkeeping that enforces it.
+    EXPECT_EQ_U32((uint32_t)(tt_VERSION + 1), (uint32_t)node.version_mismatch_logged[REMOTE_NODE_ID]);
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_EQ_U32((uint32_t)(tt_VERSION + 1), (uint32_t)node.version_mismatch_logged[REMOTE_NODE_ID]);
+
+    // A different wrong version from the same peer re-arms it, so a peer that restarts on another
+    // version is still reported.
+    write_header(buf, NATIVE_MAGIC_VALUE, tt_VERSION - 1, REMOTE_NODE_ID);
+    EXPECT_TRUE(!process_packet(&node, buf, 0, sizeof(buf), 0, 0));
+    EXPECT_EQ_U32((uint32_t)(tt_VERSION - 1), (uint32_t)node.version_mismatch_logged[REMOTE_NODE_ID]);
+}
+
 // A node hears its own broadcast back (normal on a shared broadcast domain) and must ignore it
 // cleanly rather than treating it as an error or trying to process it as if from a peer.
 static void test_ignores_self_sent_packet(void) {
@@ -375,6 +401,7 @@ int main(void) {
     test_rejects_truncated_header();
     test_rejects_bad_magic();
     test_rejects_old_version();
+    test_rejects_newer_version();
     test_ignores_self_sent_packet();
     test_rejects_submessage_length_too_small();
     test_rejects_submessage_length_exceeds_buffer();

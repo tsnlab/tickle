@@ -319,6 +319,19 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
+    // Phase 2 - the RELIABLE tracking window (see rmw_tickle_subscriber_t.tracking_bitmaps):
+    // RMW_TICKLE_TRACKING_WORDS words per tracked writer, tt_MAX_PEER_COUNT of them.
+    sub_impl->tracking_bitmaps = (uint64_t*)allocator->zero_allocate(
+        (size_t)tt_MAX_PEER_COUNT * RMW_TICKLE_TRACKING_WORDS, sizeof(uint64_t), allocator->state);
+    if (NULL == sub_impl->tracking_bitmaps) {
+        RMW_SET_ERROR_MSG("failed to allocate subscriber tracking bitmaps");
+        allocator->deallocate(sub_impl->queue, allocator->state);
+        allocator->deallocate(sub_impl, allocator->state);
+        return NULL;
+    }
+    sub_impl->tickle_subscriber.tracking_bitmaps = sub_impl->tracking_bitmaps;
+    sub_impl->tickle_subscriber.tracking_words = RMW_TICKLE_TRACKING_WORDS;
+
     // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Sized queue_capacity, same as
     // queue[] itself - the most shells that can ever be genuinely in flight at once.
     sub_impl->shell_pool = (void**)allocator->zero_allocate(sub_impl->queue_capacity, sizeof(void*), allocator->state);
@@ -332,6 +345,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
@@ -347,6 +361,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
@@ -363,6 +378,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
@@ -474,6 +490,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     allocator.deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator.state);
     allocator.deallocate(sub_impl->queue, allocator.state);
     allocator.deallocate((void*)sub_impl->shell_pool, allocator.state); // Milestone 45
+    allocator.deallocate(sub_impl->tracking_bitmaps, allocator.state);  // Phase 2 - the tracking window
     allocator.deallocate(sub_impl->owning_node_name, allocator.state);
     allocator.deallocate(sub_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(sub_impl, allocator.state);

@@ -180,6 +180,36 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **Breaking wire change, `tt_VERSION` 5 -> 6** (`rmw_tickle/PLAN.md`'s Phase 2 + prerequisite (b),
+  one bump covering both). `tt_AckNackHeader` now carries `sender_entity_id`, the *sending*
+  Subscriber's own entity id - it previously identified only the target Publisher, and every
+  Subscriber matching one Publisher shares `endpoint_id` by construction, so two Subscriptions of
+  one topic in one process were indistinguishable and the faster one's acknowledgement spoke for
+  both. Its `bitmap` is variable length (`bitmap_words` + that many 64-bit words) instead of a
+  fixed 256-bit field: a one-gap ACKNACK is 28 bytes rather than 44, and a wider tracking window
+  costs nothing on the wire until gaps genuinely spread that far. `tt_UpdateEntity` carries the
+  announcing entity's `entity_id`, and a Subscriber's own tracking window in what used to be
+  `reserved[2]` (free - that padding already existed for CDR-4 alignment).
+
+  A version mismatch is now refused in both directions (exact match, with a per-peer rate-limited
+  log) where the check used to accept a *newer* peer's packet and parse it with the older layout.
+  This only helps from version 6 onward; nothing is deployed, so the older asymmetry is accepted.
+
+  API: `struct tt_PeerAck` is keyed by `(node_id, entity_id)` and sized by its own
+  `tt_MAX_ACK_ENTRIES` (16); entries are claimed when a Subscriber matches, so a matched-but-silent
+  one already counts as "hasn't acknowledged", and a full table refuses the match rather than
+  matching a Subscriber whose acknowledgements could never be counted. Read it through
+  `tt_Publisher_is_acked_by_all_peers()` / `tt_Publisher_min_acked_seq_no()`, never by pairing it
+  with `peers[]` by index. New `tt_Publisher_unacked_bound()` reports the narrowest tracking window
+  across matched Subscribers.
+
+  `struct tt_Subscriber` gains `tracking_bitmaps`/`tracking_words`: a caller-owned RELIABLE
+  tracking window, `tt_MAX_PEER_COUNT * tracking_words` words, clamped to
+  `tt_RELIABLE_BITMAP_MAX_BITS` (4096). NULL/0 keeps the `tt_RELIABLE_BITMAP_BITS` default, which
+  stays 256 because TickLE core is embedded-first; `rmw_tickle` asks for 1024. At TickLE's own
+  measured maximum rate a 256-sample window lasts ~1.35 ms - shorter than one retry interval plus a
+  round trip, which is what left an occasional burst unrecoverable.
+
 - **Breaking API change** - `struct tt_ReliableCache` now stores a retained sample's encoded bytes
   in a caller-provided byte arena instead of a fixed `tt_MAX_BUFFER_LENGTH` buffer per slot
   (`rmw_tickle/PLAN.md`'s B1). `struct tt_ReliableCacheEntry` is replaced by
