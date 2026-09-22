@@ -36,7 +36,7 @@ static uint64_t now_ns() {
 
 int main(int argc, char** argv) {
     double duration_s = 10.0;
-    double interval_s = 0.0; // 0 = as fast as possible
+    double interval_s = 0.0;       // 0 = as fast as possible
     double max_blocking_ms = -1.0; // -B: RELIABILITY max_blocking_time; <0 keeps FastDDS's default (100ms)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
