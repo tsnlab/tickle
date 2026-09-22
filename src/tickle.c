@@ -806,6 +806,9 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 // comment (tickle.h).
 static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param);
 static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
+// QoS roadmap #5 (RELIABILITY) follow-up - periodic ACK solicitation, see struct tt_Publisher.
+// ack_solicit_period_ns's own doc comment (tickle.h).
+static void send_ack_solicit(struct tt_Node* node, uint64_t time, void* param);
 static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                               uint32_t tail, uint32_t sender_ip, uint16_t sender_port);
 // QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
@@ -995,11 +998,12 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->node = node;
     pub->topic = topic;
     pub->seq_no = 0;
-    pub->batch = false;           // see tickle.h's own doc comment on this field for why this is the default
-    pub->reliable_cache = NULL;   // no retained-sample storage by default - see its own doc comment
-    pub->reliable = false;        // best-effort by default - see tt_Publisher.reliable's own doc comment
-    pub->durable = false;         // volatile by default - see tt_Publisher.durable's own doc comment
-    pub->heartbeat_period_ns = 0; // no periodic Heartbeat by default - see its own doc comment
+    pub->batch = false;             // see tickle.h's own doc comment on this field for why this is the default
+    pub->reliable_cache = NULL;     // no retained-sample storage by default - see its own doc comment
+    pub->reliable = false;          // best-effort by default - see tt_Publisher.reliable's own doc comment
+    pub->durable = false;           // volatile by default - see tt_Publisher.durable's own doc comment
+    pub->heartbeat_period_ns = 0;   // no periodic Heartbeat by default - see its own doc comment
+    pub->ack_solicit_period_ns = 0; // no periodic ACK solicitation by default - see its own doc comment
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
     }
@@ -1551,6 +1555,25 @@ static void send_heartbeat(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
+// QoS roadmap #5 (RELIABILITY) follow-up - runs once per pub->ack_solicit_period_ns (armed by tt_
+// Publisher_set_ack_solicit_period()), periodically calling tt_Publisher_request_ack() so pub->
+// peer_ack_seq_no[] stays fresh even on a fully healthy link - the gap send_heartbeat() above
+// can't close on its own (it always sets tt_HEARTBEAT_FLAG_FINAL, so a healthy Subscriber has no
+// reason to ever reply - see that flag's own doc comment, tickle.h, and struct tt_Publisher.
+// ack_solicit_period_ns's own doc comment for why these two periodic mechanisms are distinct, not
+// a duplicate of each other). Return value ignored, same reasoning tt_Publisher_set_ack_solicit_
+// period()'s own doc comment gives - "nothing to solicit yet" (no peers matched, or nothing
+// published) is a normal transient state during periodic operation, not an error worth logging on
+// every tick, mirroring send_heartbeat()'s own silent-skip for its analogous case above.
+static void send_ack_solicit(struct tt_Node* node, uint64_t time, void* param) {
+    struct tt_Publisher* pub = param;
+    (void)tt_Publisher_request_ack(pub);
+
+    if (!tt_Node_schedule(node, time + pub->ack_solicit_period_ns, send_ack_solicit, pub)) {
+        TT_LOG_ERROR("Cannot schedule send_ack_solicit");
+    }
+}
+
 // QoS roadmap #5 (RELIABILITY) follow-up - fires once, the instant decode_update_entities()'s own
 // upsert_peer() claims a previously-empty slot for this exact Publisher (a genuinely new - or
 // forgotten-then-rejoined - peer, not every periodic UPDATE refresh), mirroring deliver_
@@ -1595,6 +1618,32 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
     if (!tt_Node_schedule(pub->node, tt_get_ns() + period_ns, send_heartbeat, pub)) {
         pub->heartbeat_period_ns = 0;  // failed to arm - stay disabled rather than claim it's on
         return tt_RET_OUT_OF_SCHEDULE; // tt_MAX_SCHEDULER_LENGTH exhausted
+    }
+    return tt_RET_OK;
+}
+
+// See struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for why this needs an
+// explicit call rather than just setting that field directly - same reasoning as tt_Publisher_
+// set_heartbeat_period() above.
+tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t period_ns) {
+    if (pub == NULL || pub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (period_ns != 0 && pub->reliable_cache == NULL) {
+        return tt_RET_INVALID_ARGUMENT; // nothing for a solicited ACKNACK to confirm without one
+    }
+
+    if (pub->ack_solicit_period_ns != 0) {
+        tt_Node_unschedule(pub->node, send_ack_solicit, pub); // re-arming or disabling either way
+    }
+    pub->ack_solicit_period_ns = period_ns;
+    if (period_ns == 0) {
+        return tt_RET_OK; // disabled
+    }
+
+    if (!tt_Node_schedule(pub->node, tt_get_ns() + period_ns, send_ack_solicit, pub)) {
+        pub->ack_solicit_period_ns = 0; // failed to arm - stay disabled rather than claim it's on
+        return tt_RET_OUT_OF_SCHEDULE;  // tt_MAX_SCHEDULER_LENGTH exhausted
     }
     return tt_RET_OK;
 }
@@ -1669,6 +1718,10 @@ tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     // same reasoning as tt_Subscriber_destroy()'s own acknack_retry cancellation just below.
     if (pub->heartbeat_period_ns != 0) {
         tt_Node_unschedule(node, send_heartbeat, pub);
+    }
+    // Same reasoning, for a still-armed periodic ACK solicitation.
+    if (pub->ack_solicit_period_ns != 0) {
+        tt_Node_unschedule(node, send_ack_solicit, pub);
     }
 
     if (!remove_endpoint_from_node(node, endpoint)) {

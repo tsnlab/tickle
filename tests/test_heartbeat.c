@@ -633,6 +633,153 @@ static void test_publisher_destroy_cancels_armed_heartbeat(void) {
     EXPECT_EQ_INT(0, node.scheduler_tail);
 }
 
+// tt_Publisher_set_ack_solicit_period() must refuse to arm without reliable_cache set - same
+// reasoning as tt_Publisher_set_heartbeat_period()'s own identical guard.
+static void test_ack_solicit_set_period_requires_reliable_cache(void) {
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+
+    EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_Publisher_set_ack_solicit_period(&pub, 1000000));
+    EXPECT_EQ_INT(0, node.scheduler_tail);
+}
+
+// A successful tt_Publisher_set_ack_solicit_period() call arms exactly one scheduler entry,
+// distinct from any already-armed periodic Heartbeat; disabling (period_ns == 0) removes just its
+// own entry, leaving the other one untouched.
+static void test_ack_solicit_set_period_arms_and_disarms(void) {
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_heartbeat_period(&pub, 1000000));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_ack_solicit_period(&pub, 500000));
+    EXPECT_EQ_INT(2, node.scheduler_tail);
+    EXPECT_EQ_U32(500000, (uint32_t)pub.ack_solicit_period_ns);
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_ack_solicit_period(&pub, 0));
+    EXPECT_EQ_INT(1, node.scheduler_tail); // the still-armed Heartbeat entry remains
+    EXPECT_EQ_U32(0, (uint32_t)pub.ack_solicit_period_ns);
+}
+
+// send_ack_solicit() itself: each tick unicasts a flag-clear Heartbeat straight to every
+// currently-matched peer (via tt_Publisher_request_ack()), the same wire behavior tt_Publisher_
+// request_ack()'s own direct test already covers - the thing genuinely new here is that this
+// fires on a recurring timer, not just once per explicit call, and keeps rescheduling itself.
+static void test_ack_solicit_fires_request_ack_periodically(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+
+    uint32_t value = 7;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_ack_solicit_period(&pub, 500000));
+    EXPECT_EQ_INT(1, node.scheduler_tail);
+    test_mock_send_to_call_count = 0; // only count send_ack_solicit()'s own solicitation below
+
+    send_ack_solicit(&node, tt_get_ns(), &pub);
+
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    struct tt_HeartbeatHeader* sent =
+        (struct tt_HeartbeatHeader*)(node.tx_buffer + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    EXPECT_EQ_U32(0, sent->flags & tt_HEARTBEAT_FLAG_FINAL); // response required, same as a direct request_ack()
+    // Not asserting node.scheduler_tail here - calling send_ack_solicit() directly (rather than via
+    // the real scheduler dispatch, which pops the firing entry *before* invoking it) means the
+    // already-armed entry from tt_Publisher_set_ack_solicit_period() above is still present when
+    // this call's own re-arm adds a second one; same reasoning test_heartbeat_send_derives_range_
+    // correctly() above already follows for its own direct send_heartbeat() call.
+}
+
+// A best-effort Publisher's own periodic ack-solicit tick must still self-reschedule even when
+// tt_Publisher_request_ack() itself has nothing to solicit (no peers matched yet) - mirrors send_
+// heartbeat()'s own "skip the send, still reschedule" behavior for its analogous case.
+static void test_ack_solicit_reschedules_with_nothing_to_solicit(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher_registered_on_node(&pub, &node, &topic);
+
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
+    cache.depth = 4;
+    pub.reliable_cache = &cache; // no peers matched, nothing published yet either
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_ack_solicit_period(&pub, 500000));
+    test_mock_send_to_call_count = 0;
+
+    send_ack_solicit(&node, tt_get_ns(), &pub);
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    // Not asserting node.scheduler_tail here - see test_ack_solicit_fires_request_ack_periodically()'s
+    // own comment above for why a direct call double-counts against the already-armed entry.
+}
+
+// tt_Publisher_destroy() must cancel a still-armed periodic ack-solicit schedule entry too, not
+// leave it dangling against a Publisher that no longer exists - mirrors test_publisher_destroy_
+// cancels_armed_heartbeat() exactly, for the other of the two independent periodic mechanisms.
+static void test_publisher_destroy_cancels_armed_ack_solicit(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_set_ack_solicit_period(&pub, 500000));
+    EXPECT_EQ_INT(1, node.scheduler_tail);
+
+    tt_Publisher_destroy(&pub);
+    EXPECT_EQ_INT(0, node.scheduler_tail);
+}
+
 // PLAN.md's Milestone 23: a brand-new Subscriber discovered via UPDATE for a RELIABLE Publisher
 // must receive an immediate, one-off unicast Heartbeat - not wait for the periodic schedule -
 // mirroring test_durability_pubsub.c's own test_durability_delivers_backlog_to_newly_discovered_
@@ -799,6 +946,11 @@ int main(void) {
     test_publisher_request_ack_noop_with_no_peers();
     test_publisher_request_ack_requires_reliable_cache();
     test_publisher_destroy_cancels_armed_heartbeat();
+    test_ack_solicit_set_period_requires_reliable_cache();
+    test_ack_solicit_set_period_arms_and_disarms();
+    test_ack_solicit_fires_request_ack_periodically();
+    test_ack_solicit_reschedules_with_nothing_to_solicit();
+    test_publisher_destroy_cancels_armed_ack_solicit();
     test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer();
     test_heartbeat_discovery_skipped_for_besteffort_publisher();
     test_heartbeat_discovery_no_redelivery_on_unchanged_update();

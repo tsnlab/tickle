@@ -639,6 +639,24 @@ struct tt_Publisher { // extends endpoint
     // announce for a best-effort Publisher).
     uint64_t heartbeat_period_ns;
 
+    // 0 (tt_Node_create_publisher()'s own default): no periodic ACK solicitation, today's only
+    // behavior. Non-zero: tt_Publisher_request_ack() (below) fires automatically every this-many
+    // nanoseconds, instead of only when a caller happens to invoke it directly - see tt_Publisher_
+    // set_ack_solicit_period()'s own doc comment (below) for why this needs that explicit call,
+    // same "active scheduler operation, not a passive field" reasoning as heartbeat_period_ns
+    // above. Requires reliable_cache to already be set (nothing to solicit an ack against
+    // otherwise). Distinct from heartbeat_period_ns above, not a duplicate of it: that periodic
+    // Heartbeat always sets tt_HEARTBEAT_FLAG_FINAL (its own doc comment, tickle.h), so a
+    // Subscriber with no actual gap has no reason to ever reply - peer_ack_seq_no[] (above) can
+    // stay stale indefinitely on a fully healthy, loss-free link, since it only ever advances on
+    // an ACKNACK reply. This field exists specifically to keep that value fresh regardless of gap
+    // state, the same clear-tt_HEARTBEAT_FLAG_FINAL mechanism tt_Publisher_wait_for_all_acked()'s
+    // own one-shot solicitation already uses, just on a recurring timer instead of a single call -
+    // useful for anything that needs a near-real-time read of a peer's own ack position (e.g. a
+    // RELIABLE Publisher's own send-side flow control, deciding whether to keep publishing or
+    // pause based on how far a slow peer has fallen behind).
+    uint64_t ack_solicit_period_ns;
+
     // QoS roadmap #6 (LIFESPAN, rmw_tickle/PLAN.md). 0 (tt_Node_create_publisher()'s own default):
     // disabled, today's only behavior - reliable_cache entries never expire on their own (only
     // KEEP_LAST eviction removes them). Non-zero: the maximum age, in nanoseconds since tt_
@@ -701,6 +719,17 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
 // already skip, but reported back here rather than silently doing nothing, since unlike those two
 // this isn't on a schedule that will just try again next period).
 tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
+
+// Arms (or re-arms, or disables with period_ns == 0) pub's own periodic ACK solicitation - see
+// struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for what it's for and how
+// it differs from tt_Publisher_set_heartbeat_period() above. Same "active scheduler operation, no
+// passive-field equivalent" reasoning as that function - call this any time after tt_Node_create_
+// publisher() returns, once pub->reliable_cache is already set. Once armed, each tick simply calls
+// tt_Publisher_request_ack() on this Publisher's own behalf (its own return value is not
+// surfaced - a transient "nothing to solicit yet" is expected during normal periodic operation,
+// not an error). Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still NULL (period_ns
+// == 0 is always accepted regardless, since disabling never needs a cache).
+tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t period_ns);
 
 struct tt_Subscriber;
 
