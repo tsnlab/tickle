@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790073931920,
+  "lastUpdate": 1790073937380,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -103318,6 +103318,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/66b5a29935248d65b91d89a3cb6d70837fc0aa8b"
         },
         "date": 1790067055114,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "volatile recv",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b39376490c0358f5bdfdc51c8a7500707eb08568",
+          "message": "tickle.c: fix ACKNACK flood in maybe_arm_acknack_retry() - the real RELIABLE recovery bug\n\nAt the user's own explicit direction (\"재전송 재시도 메커니즘을 검토해보자\") after the seq_no widening\n(448b9c1) unmasked a severe reliable_throughput loss regression (42.6%/48.9% at 1%/5% tc loss,\nPLAN.md). Root-caused with direct HIL instrumentation (temporary counters in process_acknack()/\nretransmit_reliable_samples()/jump_ack_baseline()/acknack_retry(), not committed), independently\nverified by TickLE Plan before this fix.\n\nmaybe_arm_acknack_retry() called send_acknack() unconditionally, outside the `if (!proxy->\nacknack_scheduled)` guard that's supposed to gate the periodic tt_CALL_RETRY_INTERVAL (5ms) retry\ncadence. This function runs once per DATA arrival (update_reliable_ack()'s own unconditional call\nat the end of every DATA it processes) - so every single packet received while any gap remained\nopen fired its own independent ACKNACK, completely bypassing the intended pacing. Measured impact\nat depth=64, 1% tc loss, real HIL: ~700K ACKNACKs received by the Publisher over one 10s run\n(~70K/sec from a single WriterProxy) versus a handful (0-45) from the actual 5ms retry timer, and\nwildly inconsistent send throughput run-to-run (94-97 Mbps bimodal) from the flood competing with\nthe send loop for CPU/socket budget.\n\nFix: send_acknack() now fires exactly once per newly-detected gap (moved inside the arming guard);\nevery subsequent update while a retry is already scheduled relies purely on acknack_retry()'s own\nperiodic re-send, which already re-reads the current bitmap state fresh each tick, so a widened\ngap is still reported, just on the next tick rather than instantly.\n\nReal HIL confirmed, depth=64 (no other changes - no -K, no -T, no -A), 4 reps each: ACKNACK volume\ndropped from ~700K/10s to ~9700-9900/10s; loss_pct dropped from 41.1-42.4% to a consistent 1.0% at\n1% tc loss, and 5.0% at 5% tc loss (matching the raw injected rate closely, not the earlier\nrecovery-defeating flood); throughput also improved and stabilized (94-97 -> 116-121 Mbps,\nconsistent across every rep, no more bimodal swings); 0% tc loss sanity-checked clean (0.0% loss,\nzero ACKNACK traffic, as expected with no gaps ever opening).\n\nVerified: make test/make sanitize (ASan+UBSan)/make -C platform/freertos/clang-format --dry-run\n--Werror/clang-tidy (bare invocation, 0 warnings) all clean; rmw_tickle rebuilt clean (12/12\ntests).\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T19:39:43+09:00",
+          "tree_id": "75bf97b62b23fb13cc4d43e572ea4f5eec8779a0",
+          "url": "https://github.com/tsnlab/tickle/commit/b39376490c0358f5bdfdc51c8a7500707eb08568"
+        },
+        "date": 1790073936144,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
