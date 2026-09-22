@@ -1038,6 +1038,101 @@ static void test_forget_publisher_peer_resets_ack_seq_no(void) {
     EXPECT_EQ_U32(0, pub.peer_ack_seq_no[0]);
 }
 
+#ifdef tt_RELIABLE_STATS
+// experiment/reliable-recovery-instrumentation - pins the subscriber-side counters against a
+// hand-traced sequence: 1, 3 (gap at 2: immediate ACKNACK), 5 (gap at 4, opened while the retry
+// timer from the first gap is still armed - H2, so no ACKNACK of its own), then 2 and 4 arrive.
+static void test_reliable_stats_subscriber_gap_accounting(void) {
+    test_mock_reset();
+    tt_reliable_stats_reset();
+    test_mock_now = 1000 * tt_MICROSECOND; // non-zero: a 0 timestamp means "unset" to the stats
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    const uint32_t order[] = {1, 3, 5, 2, 4};
+    for (size_t i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+        test_mock_now += 100 * tt_MICROSECOND;
+        uint32_t tail = write_data(&node, order[i], (uint64_t)order[i] * 100, order[i]);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+
+    struct tt_ReliableStats stats;
+    tt_reliable_stats_get(&stats);
+    EXPECT_EQ_U32(2, (uint32_t)stats.gaps_opened);
+    EXPECT_EQ_U32(2, (uint32_t)stats.missing_opened);
+    EXPECT_EQ_U32(1, (uint32_t)stats.gaps_opened_while_scheduled);
+    EXPECT_EQ_U32(1, (uint32_t)stats.acknack_immediate);
+    EXPECT_EQ_U32(0, (uint32_t)stats.acknack_timer);
+    EXPECT_EQ_U32(1, (uint32_t)stats.acknack_sent);
+    EXPECT_EQ_U32(1, (uint32_t)stats.acknack_bits_sent); // only seq_no 2 was ever named
+    EXPECT_EQ_U32(2, (uint32_t)stats.recovered);
+    EXPECT_EQ_U32(1, (uint32_t)stats.recovered_after_request);
+    EXPECT_EQ_U32(0, (uint32_t)stats.jump_data);
+    EXPECT_EQ_U32(0, (uint32_t)stats.duplicates);
+
+    uint64_t detect_total = 0;
+    uint64_t request_total = 0;
+    for (int i = 0; i < tt_RELIABLE_STATS_HIST_BUCKETS; i++) {
+        detect_total += stats.detect_to_recover_hist[i];
+        request_total += stats.request_to_recover_hist[i];
+    }
+    EXPECT_EQ_U32(2, (uint32_t)detect_total);
+    EXPECT_EQ_U32(1, (uint32_t)request_total);
+    // seq_no 2: detected at 1200us, recovered at 1400us -> 200us, bucket [128, 256)us = index 8
+    EXPECT_EQ_U32(1, (uint32_t)stats.request_to_recover_hist[8]);
+}
+
+// Publisher side: one ACKNACK naming a cached seq_no (retransmitted) and one never published at
+// all (not in its slot - counted as evicted).
+static void test_reliable_stats_publisher_retransmit_accounting(void) {
+    test_mock_reset();
+    tt_reliable_stats_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_ReliableCacheEntry cache_entries[4];
+    memset(cache_entries, 0, sizeof(cache_entries));
+    struct tt_ReliableCache cache;
+    memset(&cache, 0, sizeof(cache));
+    cache.entries = cache_entries;
+    cache.capacity = 4;
+    cache.depth = 4;
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 0x3ULL); // requesting seq_no 1 and 2
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_ReliableStats stats;
+    tt_reliable_stats_get(&stats);
+    EXPECT_EQ_U32(1, (uint32_t)stats.acknack_received);
+    EXPECT_EQ_U32(2, (uint32_t)stats.bits_requested);
+    EXPECT_EQ_U32(1, (uint32_t)stats.retransmitted);
+    EXPECT_EQ_U32(1, (uint32_t)stats.null_evicted);
+    EXPECT_EQ_U32(0, (uint32_t)stats.null_retry_cap);
+    EXPECT_TRUE(stats.datagrams_with_data >= 1); // at least the retransmit itself
+    EXPECT_TRUE(stats.max_data_per_datagram >= 1);
+}
+#endif
+
 int main(void) {
     test_reliable_publish_caches_and_evicts();
     test_reliable_subscribe_in_order_no_acknack();
@@ -1059,6 +1154,10 @@ int main(void) {
     test_process_acknack_does_not_regress_peer_ack_seq_no();
     test_process_acknack_from_unmatched_peer_updates_nothing();
     test_forget_publisher_peer_resets_ack_seq_no();
+#ifdef tt_RELIABLE_STATS
+    test_reliable_stats_subscriber_gap_accounting();
+    test_reliable_stats_publisher_retransmit_accounting();
+#endif
 
     printf("test_reliable_pubsub: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();
