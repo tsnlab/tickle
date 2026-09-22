@@ -51,10 +51,11 @@ static void print_reliable_stats(const char* role) {
            U(stats.acknack_bits_sent));
     printf("RSTATS: role=%s pub acknack_received=%llu bits_requested=%llu retransmitted=%llu null_evicted=%llu "
            "null_retry_cap=%llu null_lifespan=%llu retransmit_tx_fail=%llu eviction_hb=%llu "
-           "evict_count=%llu evict_bytes=%llu oversize=%llu\n",
+           "evict_count=%llu evict_bytes=%llu oversize=%llu ack_solicit=%llu ack_solicit_suppressed=%llu\n",
            role, U(stats.acknack_received), U(stats.bits_requested), U(stats.retransmitted), U(stats.null_evicted),
            U(stats.null_retry_cap), U(stats.null_lifespan), U(stats.retransmit_tx_fail), U(stats.eviction_heartbeats),
-           U(stats.evicted_by_count), U(stats.evicted_by_bytes), U(stats.not_cached_oversize));
+           U(stats.evicted_by_count), U(stats.evicted_by_bytes), U(stats.not_cached_oversize),
+           U(stats.ack_solicit_sent), U(stats.ack_solicit_suppressed));
     printf("RSTATS: role=%s tx datagrams=%llu datagrams_with_data=%llu data_in_datagrams=%llu "
            "avg_data_per_datagram=%.2f max_data_per_datagram=%llu\n",
            role, U(stats.datagrams), U(stats.datagrams_with_data), U(stats.data_in_datagrams),

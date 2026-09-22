@@ -698,26 +698,20 @@ rmw_ret_t rmw_publish_loaned_message(const rmw_publisher_t* publisher, void* ros
 }
 
 // How often rmw_publisher_wait_for_all_acked() below re-solicits (tt_Publisher_request_ack(),
-// tickle.h) and re-checks peer_ack_seq_no[] while waiting - tt_CALL_RETRY_INTERVAL (5ms), the
+// tickle.h) and re-checks the peers' ack state while waiting - tt_CALL_RETRY_INTERVAL (5ms), the
 // cadence acknack_retry() (tickle.c) also used until Phase 1-b gave the core Subscriber its own,
 // shorter tt_RELIABLE_RETRY_INTERVAL (rmw_tickle/PLAN.md). Deliberately left at 5ms here: this is
 // an rmw-side wait loop, not loss recovery, and changing it is a separate, unmeasured decision.
 #define RMW_TICKLE_WAIT_FOR_ACKED_POLL_INTERVAL_NS tt_CALL_RETRY_INTERVAL
 
-// True once every currently-matched peer (pub->peers[]) has acked at least up through
-// target_seq_no - peer_ack_seq_no[i] is "every seq_no below this was received" (struct tt_
-// AckNackHeader's own doc comment, tickle.h), so target_seq_no itself counts as acked once that
-// value is strictly greater than it. No currently-matched peers at all is vacuously true - nothing
-// left to wait on, matching tt_Publisher_request_ack()'s own "nothing to solicit" no-op. Caller
-// must already hold context_impl->node_mutex - reads pub->peers[]/peer_ack_seq_no[] directly, the
-// same fields process_acknack() (tickle.c) updates from inside tt_Node_poll(), under that same lock.
+// True once every currently-matched peer has acked at least up through target_seq_no. Phase 3
+// prerequisite (c) (rmw_tickle/PLAN.md) moved that bookkeeping from an array index-aligned with
+// pub->peers[] to a table keyed by node_id (struct tt_PeerAck, tickle.h), so this asks core rather
+// than pairing the two arrays by index - which would now read the wrong peer's ack. Caller must
+// already hold context_impl->node_mutex: tt_Publisher_is_acked_by_all_peers() reads the same
+// fields process_acknack() (tickle.c) updates from inside tt_Node_poll(), under that same lock.
 static bool all_peers_acked_locked(const struct tt_Publisher* pub, uint32_t target_seq_no) {
-    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
-        if (pub->peers[i].node_id != tt_NODE_ID_INVALID && pub->peer_ack_seq_no[i] <= target_seq_no) {
-            return false;
-        }
-    }
-    return true;
+    return tt_Publisher_is_acked_by_all_peers(pub, target_seq_no);
 }
 
 // rmw_tickle/PLAN.md's remaining-rmw-API-surface backlog - previously missing as a symbol
@@ -725,7 +719,7 @@ static bool all_peers_acked_locked(const struct tt_Publisher* pub, uint32_t targ
 // 33 - TickLE core's own ack bookkeeping ran the other way around: each reliable_sender-tracking
 // Subscriber owned its own ack_seq_no/received_bitmap, tickle.h, but a Publisher only ever saw
 // ACKNACKs reactively via process_acknack(), with no aggregated "which peers have fully caught
-// up" view of its own). Now real: pub->peer_ack_seq_no[] (tickle.h) is that aggregation, and tt_
+// up" view of its own). Now real: pub->peer_acks[] (tickle.h) is that aggregation, and tt_
 // Publisher_request_ack() (tickle.h)'s own solicited, response-required Heartbeat (tt_HEARTBEAT_
 // FLAG_FINAL clear - real RTPS's own wait_for_acknowledgments() mechanism) is what elicits an
 // ACKNACK even from an already-healthy peer that would otherwise never send one at all (see that

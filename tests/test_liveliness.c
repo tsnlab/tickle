@@ -256,7 +256,89 @@ static void test_entity_alive_invalid_node_id_returns_false(void) {
     EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1000));
 }
 
+// Phase 3 prerequisite (a), rmw_tickle/PLAN.md - when a remote Subscriber's own announced
+// liveliness lease expires, tombstone_entities_past_own_lease() must also drop it from the matching
+// local Publisher's peer and ack sets, not just mark the discovery entry departed. Before this, a
+// crashed Subscriber kept its ack entry until check_liveliness()'s own node-level sweep (~3-3.6s,
+// and only if the whole node went quiet) - long enough to stall a Phase 3 KEEP_ALL writer waiting
+// on that exact ack.
+static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
+    struct tt_Node node;
+    struct tt_Publisher pub;
+    init_node(&node);
+    init_publisher(&pub, &node);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    struct tt_DiscoveredEntity* entities = discovery.entities;
+    node.discovery = &discovery;
+
+    // The remote Subscriber: matched as a peer, has acked up to 7, and announced a 100ns lease.
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = 0x0A000001;
+    pub.peers[0].port = 7447;
+    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 0;
+
+    entities[0].node_id = REMOTE_NODE_ID;
+    entities[0].endpoint_id = PUB_ENDPOINT_ID; // the Subscriber matching this Publisher's own id
+    entities[0].kind = tt_KIND_TOPIC_SUBSCRIBER;
+    entities[0].liveliness_lease_duration_ns = 100;
+    entities[0].alive = true;
+
+    // Well within the lease: nothing changes.
+    tombstone_entities_past_own_lease(&node, 50);
+    EXPECT_TRUE(entities[0].alive);
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) != NULL);
+
+    // Past its own lease: departed, and out of both the peer set and the ack set.
+    tombstone_entities_past_own_lease(&node, 1000);
+    EXPECT_TRUE(!entities[0].alive);
+    EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL);
+}
+
+// ...but only for the Publisher it actually matched: a lease-expired Subscriber of some *other*
+// topic must leave this Publisher's own peer/ack state alone.
+static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
+    struct tt_Node node;
+    struct tt_Publisher pub;
+    init_node(&node);
+    init_publisher(&pub, &node);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    struct tt_DiscoveredEntity* entities = discovery.entities;
+    node.discovery = &discovery;
+
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 0;
+
+    entities[0].node_id = REMOTE_NODE_ID;
+    entities[0].endpoint_id = PUB_ENDPOINT_ID + 1; // a different topic's Subscriber
+    entities[0].kind = tt_KIND_TOPIC_SUBSCRIBER;
+    entities[0].liveliness_lease_duration_ns = 100;
+    entities[0].alive = true;
+
+    tombstone_entities_past_own_lease(&node, 1000);
+    EXPECT_TRUE(!entities[0].alive);                               // still tombstoned
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id); // but this Publisher is untouched
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(7, ack->ack_seq_no);
+}
+
 int main(void) {
+    test_lease_expiry_drops_subscriber_from_publisher_ack_set();
+    test_lease_expiry_leaves_unrelated_publisher_alone();
     test_mock_reset();
     test_expires_peer_after_missed_intervals();
     test_mock_reset();
