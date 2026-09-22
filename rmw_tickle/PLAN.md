@@ -760,6 +760,34 @@ to TickLE Dev (widen `struct tt_Publisher.seq_no` to `uint32_t`). TickLE Plan wi
 re-verification once it lands, including checking whether it changes this scenario's own baseline
 loss% (the open question above).
 
+#### Widening landed, and it made RELIABLE loss recovery dramatically worse (2026-09-22, TickLE Plan) - **severe regression, not yet resolved**
+
+TickLE Dev landed the field-width-only fix (`448b9c1`, `struct tt_Publisher.seq_no` `uint16_t` ->
+`uint32_t`, no other logic touched). CI's own `Performance Test` failed - not on the recv-count
+drop the alert led with, but on what that drop actually meant. Pulled both runs' raw
+`perf-frag.json` (uploaded CI artifacts) for a direct before/after:
+
+| metric | before (`3d5bc542`, `uint16_t`) | after (`448b9c1a`, `uint32_t`) |
+|---|---|---|
+| `rel_loss_1pct` | 2.4% | **42.6%** |
+| `rel_loss_5pct` | 6.5% | **48.9%** |
+| `rel_throughput_recv_0pct` | 1,976,011 | 1,960,237 (unchanged) |
+| `be_throughput_recv` (best-effort, unaffected control) | 2,001,337 | 2,007,596 (unchanged) |
+
+0% tc loss and best-effort throughput are both unaffected (noise-level difference) - isolating the
+regression precisely to RELIABLE's own retransmission/ack-tracking path under real packet loss.
+This is not a side effect of a logic change (the diff only widens the field type); it's most likely
+some other part of the reliable-delivery code implicitly depending on `struct tt_Publisher`'s old
+16-bit-`seq_no` layout or its wraparound behavior itself - not yet identified. **Not investigated
+further or fixed here** - this is core `src/tickle.c` retransmission/ack logic, TickLE Dev's own
+domain, and finding the actual mechanism needs someone who knows that code's internals, not just
+measurement.
+
+**Current state: main is measurably worse for RELIABLE under real loss than before this fix landed**
+(loss% 7-18x higher at 1%/5% tc loss). Flagged to TickLE Dev and the user immediately given the
+severity; recommended considering a revert of `448b9c1` while the real mechanism is found, rather
+than leaving main in this state - decision left to TickLE Dev/the user, not made unilaterally here.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
