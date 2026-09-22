@@ -931,6 +931,53 @@ Confirms both the source-level review (`server.c`'s new distinct-seq bitmap logi
 the diff before agreeing) and the number are consistent, independently. Rig cleaned up (`tc` back to
 `fq_codel`, both rpis idle).
 
+#### RELIABLE recovery improvement plan (2026-09-22, Plan; approved by the user: "승인")
+
+Goal: at `tc` 1%/5% loss, residual loss ≤0.1% while keeping throughput above FastDDS/CycloneDDS
+(today: 0.5%/4.6% vs. DDS 0%/0%).
+
+**Hypotheses from reading source** (to confirm with 0-c counters, not yet proven):
+- **H1**: the Subscriber's 256-sample window ≈ 170µs at ~1.5M msg/s. Any gap whose retransmit
+  arrives later than that is abandoned by `jump_ack_baseline()` (`update_reliable_ack()`). This is a
+  race against the Pi-to-Pi RTT, consistent with the "half of 1% recovered" result.
+- **H2**: after the flood fix, a *new* gap opened while `acknack_scheduled` is already true gets no
+  immediate ACKNACK and waits up to 5ms (`maybe_arm_acknack_retry()`), about 30x the window.
+  Overlapping gaps are common at 5% loss.
+- **H3**: one lost ACKNACK or retransmit means the next try comes 5ms later
+  (`tt_CALL_RETRY_INTERVAL`), always too late.
+- **H4**: the Publisher's default depth (64) is smaller than the 256 window, and
+  `skip_unrecoverable_backlog()` uses the compile-time `tt_MAX_RELIABLE_HISTORY` (64) rather than any
+  real depth. This becomes the next limit once H1 is fixed.
+- **H5**: DDS's 0% likely comes from `KEEP_ALL`+resource-limit writer blocking (flow control), not
+  better recovery. Its throughput falls accordingly (CycloneDDS 2.7Mbps at 5%), so today's
+  comparison is between different operating points.
+- The `-T`/`-A` throttle results above were measured with both the 16-bit `seq_no` wrap and the
+  ACKNACK flood active. They are void until re-measured.
+
+**Phases**:
+- **Phase 0 (measurement, no core change)**:
+  - 0-a (Plan): loss vs. offered rate (`-i`) at `tc` 1%/5%, from DDS-level rates up to max.
+  - 0-b (Plan): `-T`/`-A` re-sweep on fixed `main`.
+  - 0-c (Dev implements, Plan measures): compile-time-gated debug counters on
+    `experiment/reliable-recovery-instrumentation` (jumps, give-ups, immediate vs. timer ACKNACKs,
+    gaps opened while armed, evicted vs. retry-cap, samples per datagram, ACKNACK-to-recovery delay).
+- **Phase 1 (small core fixes, no wire change; each HIL-verified separately; needs the user's
+  go-ahead after Phase 0)**:
+  - 1-a: immediate NACK per new gap (H2).
+  - 1-b: shorter or RTT-adaptive retry interval (H3).
+  - 1-c: `skip_unrecoverable_backlog()` keyed on the real window, and a default depth ≥ the window
+    (H4).
+- **Phase 2 (wire change, `tt_VERSION` bump; decide after Phase 0)**: decouple the Subscriber
+  tracking window from the wire bitmap width (caller-sized window, several ACKNACKs with different
+  bases, plus a "NACK-only" flag so `peer_ack_seq_no` keeps cumulative-ack meaning).
+- **Phase 3 (policy decision)**: flow control that guarantees 0% (bounded unacked samples, DDS
+  `KEEP_ALL`-style), decided from the 0-a/0-b data.
+- **Also proposed**: report `COMPARISON.MD` scenario 4 as a loss-vs-throughput curve rather than a
+  single max-rate point.
+
+Rules: 0/1/5% `tc`, 3 reps each; one change per measurement; Dev works on branches only; announce
+before rig use or any push to `main`.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
