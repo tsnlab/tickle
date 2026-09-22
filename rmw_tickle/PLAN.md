@@ -1033,6 +1033,10 @@ Real HIL, `reliable_throughput -d 8`, depth=64, 3 reps (plain build; raw logs ch
   target.
 - Throughput: 5%/max 113.9 Mbps (not worse). 1%/max averaged 105.7±10.3 vs. 117.5±0.2 before, but
   the same sweep's 0% cell also had a 106 Mbps run (known rig bimodality). Watch it in the next pass.
+- **Rig CI confirms (`a1bf2dc` Performance Test, gh-pages `dev/bench/data.js`)**:
+  `reliable_throughput` loss_pct @1% 0.5 → **0**, @5% 4.6 → **0.7**. recv @5% fell 1.889M → 1.684M
+  (-11%) in that run, but the next run (`1643d4e`) is back to 1.867M with loss_pct @5% **0.3**, so it
+  was rig variance, not a 1-a cost. All other TickLE HIL series are unchanged.
 - CI note: `Check all` failed on the branch pushes (`misc-include-cleaner`,
   `examples/perf_hil/tickle/common/reliable_stats_print.h:17`, unused `stdio.h`). The fix is
   pending with Dev.
