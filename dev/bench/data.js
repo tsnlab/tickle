@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790058798502,
+  "lastUpdate": 1790061272137,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -99609,6 +99609,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "avg RTT",
             "value": 0.208,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "86c04db42a4bb4863cf7b710d3956189fb2afbcd",
+          "message": "tickle.c/tickle.h: opt-in periodic ACK solicitation, tt_Publisher_set_ack_solicit_period()\n\nAt the user's own explicit direction, following design discussion on the RELIABLE self-throttle\n(-T) flag TickLE Plan found broken on real HIL (rmw_tickle/PLAN.md): the root cause traces to\npub->peer_ack_seq_no[] only ever advancing via a real ACKNACK reply, and a healthy Subscriber has\nno reason to ever send one (maybe_arm_acknack_retry()'s own \"a healthy stream needs no ACKNACK at\nall\" comment) - the existing periodic Heartbeat (tt_Publisher_set_heartbeat_period()) doesn't\nclose this gap either, since it always sets tt_HEARTBEAT_FLAG_FINAL, so a gap-free Subscriber\nstill has no reason to reply.\n\nThe user confirmed a two-part split: (1) a proactive-ACK *mechanism* belongs in core, since any\nRELIABLE Publisher wanting fresher ack state benefits from it, not just a throttling one; (2) the\nactual throttle *policy* (pause on lag) stays opt-in at the application/QoS level, so tt_Publisher_\npublish()'s own \"unconditional broadcast\" invariant isn't broken for every existing caller.\n\nThis commit is part (1) only. tt_HEARTBEAT_FLAG_FINAL clear, forcing an ACKNACK reply even from a\nhealthy Subscriber, already exists and is already exercised by tt_Publisher_request_ack() (one-\nshot, manually invoked) - this adds a new opt-in field, pub->ack_solicit_period_ns (0 = disabled,\ntoday's only behavior, matching every other opt-in QoS field's own convention), and tt_Publisher_\nset_ack_solicit_period() to arm/disarm a periodic timer that calls tt_Publisher_request_ack() on\nthis Publisher's own behalf automatically - no new wire behavior, just a recurring invocation of\nan already-tested one. send_ack_solicit() mirrors send_heartbeat()'s own structure (self-\nreschedule, silent skip when nothing to solicit yet, ignoring the delegate call's own return value\nthe same way); tt_Publisher_destroy() cancels a still-armed entry, mirroring the existing Heartbeat\ncleanup exactly.\n\nFive new whitebox tests (tests/test_heartbeat.c), mirroring the existing tt_Publisher_set_\nheartbeat_period()/tt_Publisher_request_ack() test patterns: reliable_cache requirement, arm/\ndisarm (independent of any already-armed Heartbeat entry), a direct send_ack_solicit() call\nunicasting a flag-clear Heartbeat to matched peers, the same call silently rescheduling with\nnothing to solicit, and tt_Publisher_destroy() cancellation.\n\nVerified: make test/make sanitize (ASan+UBSan)/make -C platform/freertos/clang-format --dry-run\n--Werror/clang-tidy (bare invocation, 0 warnings) all clean; rmw_tickle rebuilt clean (12/12\ntests) - unaffected, since nothing here changes wire layout or any function rmw_tickle calls.\n\nNot yet measured on real HIL - that's the next step, alongside reworking the -T self-throttle flag\nin examples/perf_hil/tickle/reliable_throughput/client.c to actually call the new periodic\nsolicitation instead of passively reading peer_ack_seq_no[].\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T15:35:10+09:00",
+          "tree_id": "dd1a7cb8fea0a7f72e707f4262a0ec995e548052",
+          "url": "https://github.com/tsnlab/tickle/commit/86c04db42a4bb4863cf7b710d3956189fb2afbcd"
+        },
+        "date": 1790061265101,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.211,
             "unit": "ms"
           }
         ]
