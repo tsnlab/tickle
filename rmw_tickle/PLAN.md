@@ -1158,8 +1158,28 @@ Net network loss = lost - write_fail.
   and 17 Mbps unchanged even at 50% tc. This also invalidates every earlier FastDDS under-loss
   number in `COMPARISON.MD` (scenario 4), and FastDDS's low throughput may have been WiFi-bound.
   Fix: `examples/perf_hil/fastdds/fastdds_eth0_only.xml` (UDPv4 `interfaceWhiteList`, builtin
-  transports off) via `FASTRTPS_DEFAULT_PROFILES_FILE` in `fastdds/run_scenario.sh`. Re-measure
-  pending.
+  transports off) via `FASTRTPS_DEFAULT_PROFILES_FILE` in `fastdds/run_scenario.sh` (`f9cd4c0`).
+  Verified after the fix: eth0 +43MB, wlan0 +12KB in a 4s run.
+
+**FastDDS, re-measured pinned to eth0** (KEEP_ALL, max_samples=4000, default blocking = 100ms):
+
+| tc | max rate, default blocking | max rate, `-B 1` (1ms) |
+|---|---|---|
+| 0% | 10.0-11.3 Mbps, 0 lost | 11.8-17.0 Mbps, 1.3-2.5% refused |
+| 1% | 8.8-10.8 Mbps, net 0 lost | 10.3-10.6 Mbps, 2.9% refused |
+| 5% | 5.8-8.3 Mbps, net 0 lost | 8.8-9.7 Mbps, 3.4-3.9% refused |
+| 20% | 0.9-3.1 Mbps, net 0 lost | 0.9-3.0 Mbps, 15-38% refused |
+| 50% | 0.6-0.8 Mbps, net 0 lost | 0.3-2.9 Mbps, 64-100% refused |
+
+(~8 Mbps paced: 6.3-6.4 Mbps, 0 lost and 0 refused at every tc including 50% - at that rate
+there is enough headroom for RELIABLE to recover everything.)
+
+- **Same conclusion as CycloneDDS**: net network loss (lost - write_fail) ≈ 0 in every cell. DDS
+  converts loss into blocking, and blocking into refused writes once `max_blocking_time` is short.
+- FastDDS blocks even at tc 0% at max rate (`-B 1`: 1.3-2.5% refused), i.e. its 4000-sample
+  KEEP_ALL window fills on a healthy link too.
+- Throughput without the WiFi duplicate is 10-17 Mbps at tc 0%, so the old "14.35 Mbps" figure
+  was measured over a different path than TickLE's and CycloneDDS's.
 
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
