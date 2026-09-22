@@ -1041,6 +1041,32 @@ Real HIL, `reliable_throughput -d 8`, depth=64, 3 reps (plain build; raw logs ch
   `examples/perf_hil/tickle/common/reliable_stats_print.h:17`, unused `stdio.h`). The fix is
   pending with Dev.
 
+#### Phase 1 remainder: order and design (2026-09-22, Plan; the user: "그 다음 단계 업무를 진행해줘")
+
+Order (smallest and most isolated first, each HIL-verified on its own):
+1. **1-b, retry interval.** Add a RELIABLE-specific `tt_RELIABLE_RETRY_INTERVAL` (default 1ms),
+   separate from `tt_CALL_RETRY_INTERVAL` (5ms, services), with the `tt_RELIABLE_DEADLINE` override
+   kept. Rationale: 0-c/1-a show recovery RTT < 256µs, so 1ms is a 4x margin. Watch
+   `null_retry_cap` for duplicate-request budget burn.
+2. **1-c/B2, tell the Subscriber when a sample is gone.** No wire change. The Subscriber has no idea
+   of the Publisher's depth, so `skip_unrecoverable_backlog()`'s compile-time 64 is a guess. Instead,
+   when `process_acknack()` finds requested samples evicted, the Publisher answers with a (FINAL)
+   Heartbeat carrying its real `first_available_seq_no`. The Subscriber, for an *existing* proxy
+   (today only first contact reads it), advances `ack_seq_no` past anything below
+   `first_available_seq_no` at once, the RTPS GAP semantics. It stops waiting on retries that can't
+   succeed, and the hard-coded 64 goes away.
+3. **1-c/B1, byte-ring cache.** Footprint only, since recovery tests can already use a deep `-K` on
+   the Pis. Today each entry embeds a 1472-byte buffer, so depth 1024 costs ~1.5MB per Publisher,
+   which conflicts with Project Goal 1 (embedded). Proposed: an index ring (seq_no, len, retry,
+   timestamp, offset), keeping the O(1) `(seq_no-1) % depth` lookup, plus a caller-owned byte arena.
+   The oldest entries are evicted when either the index or the arena runs out. Plan reviews the
+   design before implementation.
+
+In parallel (Plan, no core changes): E1 (DDS harnesses count failed/timed-out writes); D2 (does a
+not-alive Subscriber drop out of `peer_ack_seq_no` aggregation?); E3 (COMPARISON.MD scenario 4
+restructure; mark pre-fix numbers superseded). E2 (DDS rate sweep + 20/50% tc) runs on the rig
+between Dev's measurements.
+
 #### Phase 3 design: RELIABLE+KEEP_ALL write blocking (2026-09-22, approved by the user: "계획을 승인합니다")
 
 The user's decisions, item by item:
@@ -1067,6 +1093,16 @@ The user's decisions, item by item:
      reader can't block a Publisher forever. Check how `peer_ack_seq_no` behaves today.
 5. **Benchmarks (agreed):** all three frameworks count writes that failed or timed out and could not
    be sent, alongside loss% and throughput. The DDS harnesses currently skip failed writes in `sent`.
+
+6. **Added 2026-09-22 (approved by the user: "승인합니다")**: blocking the Publisher alone can't
+   guarantee zero loss, because the Subscriber has two give-up paths of its own. Under KEEP_ALL:
+   - **No retry caps.** Neither the Subscriber's `tt_RELIABLE_RETRY` ACKNACK give-up nor the
+     Publisher's per-sample retransmit cap applies. Only liveliness (peer declared dead) ends
+     recovery, as in DDS.
+   - **Unacked-sample bound ≤ Subscriber tracking window.** The KEEP_ALL cache depth (max unacked
+     samples) is ≤ `tt_RELIABLE_BITMAP_BITS` (256), so the Publisher blocks before the Subscriber
+     could ever need `jump_ack_baseline()`; it's the same idea as a TCP receive window. Deeper
+     KEEP_ALL caches require Phase 2 (a wider Subscriber window) first.
 
 Sequencing: after Phase 1 (1-a/1-b/1-c) is verified. Order: ACK-solicit watermark → core
 non-blocking mode and notifications (opt-in) → `rmw_publish()` `max_blocking_time` → benchmark
