@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790065732797,
+  "lastUpdate": 1790065736585,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -104389,6 +104389,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3631.19,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3d5bc5428769d44580807ac89fe18c7dc326f1cb",
+          "message": "PLAN.md: record user's decision to widen seq_no to 32bit, assigned to TickLE Dev\n\nUser's own direct instruction: \"seq no를 32bit로 수정하자\". TickLE Plan will\nre-verify on CI/real HIL once the core change lands.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T17:23:00+09:00",
+          "tree_id": "09532a5c752f3c40c8a54786cfc327978aebc48f",
+          "url": "https://github.com/tsnlab/tickle/commit/3d5bc5428769d44580807ac89fe18c7dc326f1cb"
+        },
+        "date": 1790065735297,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1625.827,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2582.702,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3203.054,
             "unit": "ms"
           }
         ]
