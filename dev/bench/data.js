@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790056405219,
+  "lastUpdate": 1790056408755,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -100967,6 +100967,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/b7d822ab3d291cd71532fb57b3cb4753577227cc"
         },
         "date": 1790048498423,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "durable recv",
+            "value": 20,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "0166c1f8e81dde1e0f6ba3e2d993f500c5fb4744",
+          "message": "reliable_throughput/client.c: add opt-in self-throttle (-T <lag>) for RELIABLE Publishers\n\nAt the user's own explicit direction: self-throttling should be documented/available\nspecifically for RELIABLE (where DDS's own philosophy values correctness over raw rate), not\nforced into core, and not applied to BEST_EFFORT (which has no delivery guarantee to protect).\n\nUses only existing public fields (tt_Publisher.peer_ack_seq_no[]/.peers[]) - no core change.\nWhen -T <lag> is set, send_one() pauses (50us retry) rather than publish once the slowest-acking\nmatched peer's own confirmed-ack position falls more than <lag> samples behind this Publisher's\nown seq_no, instead of continuing to bury an already-open gap under new samples - the mechanism\nPLAN.md's own \"Follow-up v2/v3\" scheduler research already confirmed is real. Default (-T\nunset/0) is unchanged behavior. Not yet measured on real HIL - that's the next step.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T14:47:45+09:00",
+          "tree_id": "eb16262ba259dcc4435aec6a293fdb6db845ca27",
+          "url": "https://github.com/tsnlab/tickle/commit/0166c1f8e81dde1e0f6ba3e2d993f500c5fb4744"
+        },
+        "date": 1790056407553,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
