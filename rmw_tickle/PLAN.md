@@ -755,6 +755,11 @@ a real correctness bug independent of the self-throttle work that surfaced it. R
 and TickLE Dev immediately given the severity. Rig cleaned up (`tc` back to default `fq_codel`, both
 rpis idle, no lingering processes).
 
+**Decision (2026-09-22, the user's own direct instruction): "seq no를 32bit로 수정하자"** - assigned
+to TickLE Dev (widen `struct tt_Publisher.seq_no` to `uint32_t`). TickLE Plan will handle CI/HIL
+re-verification once it lands, including checking whether it changes this scenario's own baseline
+loss% (the open question above).
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
