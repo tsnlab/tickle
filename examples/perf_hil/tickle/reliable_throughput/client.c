@@ -140,7 +140,9 @@ static void stop_draining(struct tt_Node* node, uint64_t time, void* param) {
     g_interrupted = 1;
 }
 
-int main(int argc, char** argv) {
+// Split out of main() to keep its own cognitive complexity under the project's clang-tidy
+// threshold - this branch chain was the tipping point once -A joined -i/-d/-K/-T.
+static void parse_args(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
@@ -157,6 +159,10 @@ int main(int argc, char** argv) {
     if (throttle_lag > 0 && ack_solicit_us == 0) {
         ack_solicit_us = default_ack_solicit_us;
     }
+}
+
+int main(int argc, char** argv) {
+    parse_args(argc, argv);
     if (reliable_depth == 0 || reliable_depth > MAX_RELIABLE_DEPTH) {
         printf("Requested reliable cache depth %u out of range (1..%u); clamping to %u.\n", reliable_depth,
                MAX_RELIABLE_DEPTH, (unsigned)tt_MAX_RELIABLE_HISTORY);
