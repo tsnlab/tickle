@@ -1067,6 +1067,30 @@ not-alive Subscriber drop out of `peer_ack_seq_no` aggregation?); E3 (COMPARISON
 restructure; mark pre-fix numbers superseded). E2 (DDS rate sweep + 20/50% tc) runs on the rig
 between Dev's measurements.
 
+#### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
+
+Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
+`peer_ack_seq_no[]`:
+
+1. **Detection is node-level, ~3-3.6s, independent of the entity's lease.** A peer is dropped from
+   `pub->peers[]`/`peer_ack_seq_no[]` only by `forget_peers_from_source()`: on
+   `check_liveliness()`'s node-level sweep (`tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL`)
+   or on a changed/farewell UPDATE. The per-entity lease path (`tombstone_entities_past_own_lease()`)
+   only tombstones discovery entries and never touches `peers[]`. So a Phase 3 Publisher blocked on
+   a crashed Subscriber fails writes (100ms timeouts) for up to ~3.6s. Fix: have the per-entity
+   lease path also call `forget_publisher_peer()`.
+2. **Ack state is per node, not per Subscriber.** `struct tt_Peer` is keyed by `node_id`, and
+   `process_acknack()` advances `peer_ack_seq_no[i]` from any ACKNACK sent by that node. With two
+   Subscribers of one topic on the same remote node, the faster one's ACK can advance the slot past
+   what the slower one still needs. Under KEEP_ALL, that frees samples the slow reader hasn't
+   received, which is silent loss. Fix: key ack state by (node_id, Subscriber endpoint/entity id),
+   which ACKNACK already carries (`endpoint_id`).
+3. **Any endpoint change on a remote node resets its ack state to 0.** `process_update()` calls
+   `forget_peers_from_source()` and then re-adds whatever is still listed whenever `last_modified`
+   changes, so creating an unrelated entity on that node zeroes `peer_ack_seq_no` for the Subscriber
+   that is still there. Under blocking, the Publisher momentarily sees everything as unacked and
+   stalls until the next ACK. Fix: preserve ack state for peers that are still listed.
+
 #### Phase 3 design: RELIABLE+KEEP_ALL write blocking (2026-09-22, approved by the user: "계획을 승인합니다")
 
 The user's decisions, item by item:
