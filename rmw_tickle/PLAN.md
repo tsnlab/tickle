@@ -1008,6 +1008,35 @@ not the limit, so H1 is ruled out as the root cause). Every lost sample is exact
   (immediate NACK per new gap) targets the max-rate loss, and 1-c (depth ≥ retry-interval ×
   rate) plus 1-b (shorter retry) target the low-rate loss.
 
+#### Phase 1-a result: immediate narrow NACK per new gap (2026-09-22, Dev implemented + measured, Plan verified raw logs)
+
+Commits on `main`: `55da6b6` (0-c instrumentation, compiled out by default), `b38c70c` (1-a),
+`a1bf2dc` (stats counter) - the user chose to land 1-a together with the instrumentation. The
+change: `update_reliable_ack()` sends one ACKNACK naming only a new gap's positions when that gap
+opens while a retry timer is already armed (`send_acknack_range()`). No wire change.
+
+Real HIL, `reliable_throughput -d 8`, depth=64, 3 reps (plain build; raw logs checked by Plan):
+
+| condition | before (main, 0-a) | after 1-a |
+|---|---|---|
+| tc 1%, ~8 Mbps | 0.03% (26-52 lost) | **0.008%** (7/12/7 lost) |
+| tc 1%, max | 0.5% | **0.016%** (134/156/392) |
+| tc 5%, ~8 Mbps | 1.1-1.2% | **0.20%** (209/229/203) |
+| tc 5%, max | 4.6% | **0.30%** (4680/4200/4762) |
+| tc 0%, both rates | 0 | 0 |
+
+- **H2 fixed.** `acknack_new_gap` == `gaps_opened_while_scheduled` in every run.
+- **No flood.** ~1 ACKNACK per gap (~9K/s at 5%/max vs. the old ~70K/s flood).
+  `null_retry_cap` = 0 everywhere, so narrow NACKs don't burn the Publisher's retry budget.
+- **Remainder is H3+H4.** Timer retries (5ms) find the sample evicted from the depth-64 cache
+  (`null_evicted` ≈ timer ACKNACKs at 8 Mbps; 2.0-2.8K per run at 5%/max). This is Phase 1-b/1-c's
+  target.
+- Throughput: 5%/max 113.9 Mbps (not worse). 1%/max averaged 105.7±10.3 vs. 117.5±0.2 before, but
+  the same sweep's 0% cell also had a 106 Mbps run (known rig bimodality). Watch it in the next pass.
+- CI note: `Check all` failed on the branch pushes (`misc-include-cleaner`,
+  `examples/perf_hil/tickle/common/reliable_stats_print.h:17`, unused `stdio.h`). The fix is
+  pending with Dev.
+
 #### Phase 3 design: RELIABLE+KEEP_ALL write blocking (2026-09-22, approved by the user: "계획을 승인합니다")
 
 The user's decisions, item by item:
