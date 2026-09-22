@@ -26,6 +26,7 @@
 
 #define LOCAL_NODE_ID 1
 #define REMOTE_NODE_ID 2
+#define REMOTE_SUB_ENTITY_ID 0x22220001 // Phase 2 - which remote Subscriber entity acks
 #define PUB_ENDPOINT_ID 0x11111111
 
 static struct tt_Topic test_topic = {.name = "test_topic"};
@@ -279,7 +280,8 @@ static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
     pub.peers[0].node_id = REMOTE_NODE_ID;
     pub.peers[0].ip = 0x0A000001;
     pub.peers[0].port = 7447;
-    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
+    claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 7);
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 0;
 
@@ -293,13 +295,13 @@ static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
     tombstone_entities_past_own_lease(&node, 50);
     EXPECT_TRUE(entities[0].alive);
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id);
-    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) != NULL);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
 
     // Past its own lease: departed, and out of both the peer set and the ack set.
     tombstone_entities_past_own_lease(&node, 1000);
     EXPECT_TRUE(!entities[0].alive);
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
-    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID) == NULL);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
 }
 
 // ...but only for the Publisher it actually matched: a lease-expired Subscriber of some *other*
@@ -318,7 +320,8 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
     node.discovery = &discovery;
 
     pub.peers[0].node_id = REMOTE_NODE_ID;
-    record_peer_ack(&pub, REMOTE_NODE_ID, 7);
+    claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 7);
     node.update_seen[REMOTE_NODE_ID] = true;
     node.update_last_seen[REMOTE_NODE_ID] = 0;
 
@@ -331,7 +334,7 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
     tombstone_entities_past_own_lease(&node, 1000);
     EXPECT_TRUE(!entities[0].alive);                               // still tombstoned
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id); // but this Publisher is untouched
-    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID);
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     EXPECT_TRUE(ack != NULL);
     EXPECT_EQ_U32(7, ack->ack_seq_no);
 }

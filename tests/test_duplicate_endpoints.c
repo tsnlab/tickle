@@ -273,6 +273,7 @@ static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_
     uint32_t tail = sizeof(struct tt_UpdateHeader);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
+    memset(entity, 0, sizeof(*entity)); // explicit: rx_buffer is reused across writes in these tests
     entity->endpoint_id = endpoint_id;
     entity->kind = tt_KIND_TOPIC_SUBSCRIBER;
     tail += sizeof(struct tt_UpdateEntity);

@@ -207,6 +207,12 @@
 // because a full table already implies "more than the threshold", i.e. already broadcasting,
 // which still reaches that dropped peer too.
 #define tt_MAX_PEER_COUNT 8
+// Phase 2 (rmw_tickle/PLAN.md) - how many remote Subscriber *entities* one Publisher tracks ack
+// state for (struct tt_PeerAck, tickle.h). Deliberately its own constant rather than reusing
+// tt_MAX_PEER_COUNT above, which counts remote *nodes*: one node can host several Subscriptions of
+// the same topic, and each needs its own ack watermark for Phase 3's KEEP_ALL blocking to be
+// correct. 12 bytes per entry.
+#define tt_MAX_ACK_ENTRIES 16
 
 // Liveliness: a remote node is considered gone once this many *consecutive* tt_NODE_UPDATE_
 // INTERVAL windows pass with no UPDATE announce heard from it at all - not merely no *change*

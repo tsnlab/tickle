@@ -27,6 +27,7 @@
 
 #define LOCAL_NODE_ID 1
 #define REMOTE_NODE_ID 2
+#define REMOTE_SUB_ENTITY_ID 0x22220001 // Phase 2 - which remote Subscriber entity acks
 #define ENDPOINT_ID 0xaabbccdd
 #define TEST_SENDER_IP 0x0a000001
 #define TEST_SENDER_PORT 12345
@@ -118,7 +119,9 @@ static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_
     uint32_t tail = sizeof(struct tt_UpdateHeader);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
+    memset(entity, 0, sizeof(*entity)); // explicit: rx_buffer is reused across writes in these tests
     entity->endpoint_id = endpoint_id;
+    entity->entity_id = REMOTE_SUB_ENTITY_ID; // Phase 2 - which Subscriber instance
     entity->kind = tt_KIND_TOPIC_SUBSCRIBER;
     tail += sizeof(struct tt_UpdateEntity);
 
@@ -150,13 +153,14 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
 // that), same as every other multi-byte field this helper leaves at its default.
 static uint32_t write_acknack(struct tt_Node* node, uint32_t endpoint_id, uint32_t seq_no, uint64_t bitmap) {
     struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
+    memset(acknack_header, 0, sizeof(*acknack_header));
     acknack_header->endpoint_id = endpoint_id;
+    acknack_header->sender_entity_id = REMOTE_SUB_ENTITY_ID; // Phase 2
     acknack_header->seq_no = seq_no;
+    // Phase 2 - the bitmap is variable length now: one word here, with the count on the wire.
+    acknack_header->bitmap_words = 1;
     acknack_header->bitmap[0] = bitmap;
-    for (int w = 1; w < tt_RELIABLE_BITMAP_WORDS; w++) {
-        acknack_header->bitmap[w] = 0;
-    }
-    return sizeof(struct tt_AckNackHeader);
+    return sizeof(struct tt_AckNackHeader) + sizeof(uint64_t);
 }
 
 // Compares the multi-word received_bitmap against a plain uint64_t test expectation - every test
