@@ -77,6 +77,21 @@ static uint32_t throttle_lag = 0;
 static const double throttle_retry_s = 0.00005; // 50us - short enough to resume promptly once a
                                                 // peer catches up, without spinning the CPU raw
 
+// Proactive ACK solicitation period (-A <period_us>, 0 = disabled). rmw_tickle/PLAN.md's own real
+// HIL finding: without this, peer_ack_seq_no[] only ever advances via a loss-reactive ACKNACK
+// paced at tt_CALL_RETRY_INTERVAL=5ms (config.h) - at this scenario's ~180-190K msg/s max send
+// rate that's 900+ new sequence numbers per retry window, so any -T threshold in the low hundreds
+// is blown past within a fraction of one window and the Publisher livelocks in the throttle
+// branch. tt_Publisher_set_ack_solicit_period() (tickle.c) closes that gap by having the core
+// periodically call tt_Publisher_request_ack() on this Publisher's own behalf, keeping
+// peer_ack_seq_no[] fresh even on a healthy (gap-free) stream. When -T is given without an
+// explicit -A, default_ack_solicit_us below is used instead of leaving it disabled, since a
+// throttle with no proactive solicitation is the exact configuration already shown broken.
+static uint32_t ack_solicit_us = 0;
+static const uint32_t default_ack_solicit_us = 200; // well under the time to send throttle_lag
+                                                    // messages at max rate for every -T value
+                                                    // this scenario tests (64-200)
+
 // Largest "how far ahead of its own last confirmed ack" gap across every currently-matched peer
 // that has sent at least one real ACKNACK so far (peer_ack_seq_no == 0 means "nothing confirmed
 // yet", not "confirmed everything up to 0" - skipped, not treated as an enormous lag at startup
@@ -135,7 +150,12 @@ int main(int argc, char** argv) {
             reliable_depth = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
             throttle_lag = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-A") == 0 && i + 1 < argc) {
+            ack_solicit_us = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
+    }
+    if (throttle_lag > 0 && ack_solicit_us == 0) {
+        ack_solicit_us = default_ack_solicit_us;
     }
     if (reliable_depth == 0 || reliable_depth > MAX_RELIABLE_DEPTH) {
         printf("Requested reliable cache depth %u out of range (1..%u); clamping to %u.\n", reliable_depth,
@@ -177,6 +197,14 @@ int main(int argc, char** argv) {
     pub.reliable = true;
     g_pub = &pub;
 
+    if (ack_solicit_us > 0) {
+        ret = tt_Publisher_set_ack_solicit_period(&pub, (uint64_t)ack_solicit_us * tt_MICROSECOND);
+        if (ret != tt_RET_OK) {
+            printf("Cannot arm ACK solicitation: %d\n", ret);
+            return ret;
+        }
+    }
+
     uint64_t send_start = tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
     tt_Node_schedule(&node, send_start, send_one, NULL);
@@ -197,8 +225,8 @@ int main(int argc, char** argv) {
                       ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / duration_s
                       : 0.0;
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f reliable_depth=%u throttle_lag=%u\n",
-           (unsigned long)sent, duration_s, mbps, reliable_depth, throttle_lag);
+           "send_mbps=%.3f reliable_depth=%u throttle_lag=%u ack_solicit_us=%u\n",
+           (unsigned long)sent, duration_s, mbps, reliable_depth, throttle_lag, ack_solicit_us);
 
     tt_Node_destroy(&node);
     return 0;
