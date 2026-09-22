@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790085421311,
+  "lastUpdate": 1790085425407,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -107280,6 +107280,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/17ad62a0b5997cab2dd74acaeafb6f7b0998c3c0"
         },
         "date": 1790076466132,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "a1bf2dc1d8d71c5edcfd859931ecf0a48b24e155",
+          "message": "RELIABLE stats: acknack_new_gap counter for Phase 1-a's per-gap NACK\n\nCounts the narrow ACKNACKs update_reliable_ack() sends for a gap opened while a\nretry is armed (2d36ace); printed on the RSTATS acknack_tx line. Stats-only,\ncompiled out by default. 18/18 with and without -Dtt_RELIABLE_STATS.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T22:26:09+09:00",
+          "tree_id": "2599a3b8c746a72a239000fee83bdd311099fdf6",
+          "url": "https://github.com/tsnlab/tickle/commit/a1bf2dc1d8d71c5edcfd859931ecf0a48b24e155"
+        },
+        "date": 1790085424114,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
