@@ -134,6 +134,17 @@
 // width here).
 #define tt_RELIABLE_BITMAP_WORD_BITS 64
 #define tt_RELIABLE_BITMAP_WORDS (tt_RELIABLE_BITMAP_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
+// Phase 2 (rmw_tickle/PLAN.md) - the widest tracking window a Subscriber may ask for, and the
+// upper bound every decode path validates an incoming ACKNACK's own word count against (a
+// malformed or hostile count must never index past a local buffer). tt_RELIABLE_BITMAP_BITS above
+// stays the *default* window every Subscriber gets for free: TickLE core is embedded-first
+// (PLAN.md's Project Goal 1), and 4096 bits is 512 bytes per tracked writer that a microcontroller
+// nowhere near 190K msg/s would never use. A Linux-class caller (rmw_tickle, Goal 5, and the
+// perf_hil examples via their own flag) opts into a wider one per Subscriber by handing
+// tt_Node_create_subscriber()'s own caller-owned tracking buffer - see struct tt_Subscriber's own
+// window doc comment (tickle.h).
+#define tt_RELIABLE_BITMAP_MAX_BITS 4096
+#define tt_RELIABLE_BITMAP_MAX_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
 #define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
 #define tt_CALL_RETRY_COUNT 3                          // count
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)

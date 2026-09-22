@@ -2208,8 +2208,30 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
 // library. Every one of these (except bitmap_shift_right(), which needs a genuine cross-word
 // carry) is O(word-count), not O(bit-count), by construction.
 
-static bool bitmap_is_zero(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+// Phase 2 (rmw_tickle/PLAN.md) - how wide this Subscriber's own per-writer tracking window is, in
+// 64-bit words. The caller-provided buffer's width when it gave one (clamped to
+// tt_RELIABLE_BITMAP_MAX_WORDS, config.h - core never trusts a caller's count any more than a
+// wire peer's), otherwise the embedded-first tt_RELIABLE_BITMAP_WORDS default.
+static uint16_t subscriber_tracking_words(const struct tt_Subscriber* sub) {
+    if (sub->tracking_bitmaps == NULL || sub->tracking_words == 0) {
+        return (uint16_t)tt_RELIABLE_BITMAP_WORDS;
+    }
+    return sub->tracking_words <= tt_RELIABLE_BITMAP_MAX_WORDS ? sub->tracking_words
+                                                               : (uint16_t)tt_RELIABLE_BITMAP_MAX_WORDS;
+}
+
+// The same width, for a writer proxy (which reaches its Subscriber via proxy->sub).
+static uint16_t proxy_words(const struct tt_WriterProxy* proxy) {
+    return subscriber_tracking_words(proxy->sub);
+}
+
+// ...and in bits, for the "is this gap too wide to track at all" checks.
+static uint32_t proxy_window_bits(const struct tt_WriterProxy* proxy) {
+    return (uint32_t)proxy_words(proxy) * tt_RELIABLE_BITMAP_WORD_BITS;
+}
+
+static bool bitmap_is_zero(const uint64_t* bitmap, uint16_t words) {
+    for (uint16_t word = 0; word < words; word++) {
         if (bitmap[word] != 0) {
             return false;
         }
@@ -2217,8 +2239,8 @@ static bool bitmap_is_zero(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
     return true;
 }
 
-static void bitmap_clear(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+static void bitmap_clear(uint64_t* bitmap, uint16_t words) {
+    for (uint16_t word = 0; word < words; word++) {
         bitmap[word] = 0;
     }
 }
@@ -2226,26 +2248,26 @@ static void bitmap_clear(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
 // bit 0 of the whole bitmap (word 0's own lowest bit) - the "is the position right after the
 // watermark already received" check advance_ack_seq_no()'s/advance_past_unavailable()'s own
 // absorb loops use.
-static bool bitmap_lowest_bit_set(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
+static bool bitmap_lowest_bit_set(const uint64_t* bitmap) {
     return (bitmap[0] & 1) != 0;
 }
 
-static bool bitmap_test_bit(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32_t offset) {
+static bool bitmap_test_bit(const uint64_t* bitmap, uint32_t offset) {
     return (bitmap[offset / tt_RELIABLE_BITMAP_WORD_BITS] & (1ULL << (offset % tt_RELIABLE_BITMAP_WORD_BITS))) != 0;
 }
 
-static void bitmap_set_bit(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32_t offset) {
+static void bitmap_set_bit(uint64_t* bitmap, uint32_t offset) {
     bitmap[offset / tt_RELIABLE_BITMAP_WORD_BITS] |= (1ULL << (offset % tt_RELIABLE_BITMAP_WORD_BITS));
 }
 
 // Shifts the whole multi-word bitmap right by exactly one bit, carrying word N+1's own bit 0 into
 // word N's own top bit - advance_ack_seq_no()'s own per-step realigning shift, now spanning
 // tt_RELIABLE_BITMAP_WORDS words instead of the single one this file used before the widening.
-static void bitmap_shift_right_one(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS - 1; word++) {
+static void bitmap_shift_right_one(uint64_t* bitmap, uint16_t words) {
+    for (uint16_t word = 0; word + 1 < words; word++) {
         bitmap[word] = (bitmap[word] >> 1) | (bitmap[word + 1] << (tt_RELIABLE_BITMAP_WORD_BITS - 1));
     }
-    bitmap[tt_RELIABLE_BITMAP_WORDS - 1] >>= 1;
+    bitmap[words - 1] >>= 1;
 }
 
 // Shifts the whole multi-word bitmap right by `shift_bits` bits, 0 <= shift_bits <
@@ -2256,22 +2278,19 @@ static void bitmap_shift_right_one(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
 // loop - a genuine cross-word carry at an arbitrary bit offset needs it - but shift_bits itself is
 // still bounded by the fixed, small tt_RELIABLE_BITMAP_BITS width, not by anything that scales
 // with cache depth or config the way Milestone 61's own O(depth) regression did.
-static void bitmap_shift_right(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32_t shift_bits) {
+static void bitmap_shift_right(uint64_t* bitmap, uint16_t words, uint32_t shift_bits) {
     uint32_t word_shift = shift_bits / tt_RELIABLE_BITMAP_WORD_BITS;
     uint32_t bit_shift = shift_bits % tt_RELIABLE_BITMAP_WORD_BITS;
-    uint64_t shifted[tt_RELIABLE_BITMAP_WORDS] = {0};
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+    // In place, lowest word first: every source index is >= the destination being written, and
+    // sources only ever move upward, so a word is never read after it has been overwritten. (This
+    // used to copy through a fixed-width scratch array, which a caller-sized window can't have.)
+    for (uint16_t word = 0; word < words; word++) {
         uint32_t src = (uint32_t)word + word_shift;
-        if (src >= tt_RELIABLE_BITMAP_WORDS) {
-            continue;
+        uint64_t value = src < words ? bitmap[src] >> bit_shift : 0;
+        if (bit_shift != 0 && src + 1 < words) {
+            value |= bitmap[src + 1] << (tt_RELIABLE_BITMAP_WORD_BITS - bit_shift);
         }
-        shifted[word] = bitmap[src] >> bit_shift;
-        if (bit_shift != 0 && src + 1 < tt_RELIABLE_BITMAP_WORDS) {
-            shifted[word] |= bitmap[src + 1] << (tt_RELIABLE_BITMAP_WORD_BITS - bit_shift);
-        }
-    }
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
-        bitmap[word] = shifted[word];
+        bitmap[word] = value;
     }
 }
 
@@ -2282,8 +2301,8 @@ static void bitmap_shift_right(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32
 // down before falling back to a per-bit scan within the one word that actually has something set -
 // O(word-count) in the common (few bits set, high words empty) case, only ever O(word-bits) worst
 // case within a single word, never O(tt_RELIABLE_BITMAP_BITS) as a flat scan would be.
-static int bitmap_highest_bit(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
-    for (int word = tt_RELIABLE_BITMAP_WORDS - 1; word >= 0; word--) {
+static int bitmap_highest_bit(const uint64_t* bitmap, uint16_t words) {
+    for (int word = (int)words - 1; word >= 0; word--) {
         if (bitmap[word] == 0) {
             continue;
         }
@@ -2302,17 +2321,17 @@ static int bitmap_highest_bit(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
 // highest < 0 yields an all-zero mask (nothing to ask about); highest >= tt_RELIABLE_BITMAP_BITS - 1
 // yields an all-ones mask, matching the single-word version's own `~0ULL` special case (avoiding a
 // would-be full-width undefined-shift the same way that one avoided `1ULL << 64` directly).
-static void bitmap_low_mask(uint64_t mask[tt_RELIABLE_BITMAP_WORDS], int highest) {
-    bitmap_clear(mask);
+static void bitmap_low_mask(uint64_t* mask, uint16_t words, int highest) {
+    bitmap_clear(mask, words);
     if (highest < 0) {
         return;
     }
     int full_words = (highest + 1) / tt_RELIABLE_BITMAP_WORD_BITS;
     int remaining_bits = (highest + 1) % tt_RELIABLE_BITMAP_WORD_BITS;
-    for (int word = 0; word < full_words && word < tt_RELIABLE_BITMAP_WORDS; word++) {
+    for (int word = 0; word < full_words && word < (int)words; word++) {
         mask[word] = ~0ULL;
     }
-    if (remaining_bits != 0 && full_words < tt_RELIABLE_BITMAP_WORDS) {
+    if (remaining_bits != 0 && full_words < (int)words) {
         mask[full_words] = (1ULL << remaining_bits) - 1;
     }
 }
@@ -2360,11 +2379,15 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sender_ip = 0;
             proxy->sender_port = 0;
             proxy->ack_seq_no = 1;
-            bitmap_clear(proxy->received_bitmap);
+            proxy->sub = sub; // before anything that reads the window width through the proxy
+            // Phase 2 - this slot's own window inside the Subscriber's tracking storage: the
+            // caller-provided buffer when it gave one, otherwise the builtin default.
+            uint64_t* tracking = sub->tracking_bitmaps != NULL ? sub->tracking_bitmaps : sub->builtin_tracking;
+            proxy->received_bitmap = tracking + ((size_t)i * subscriber_tracking_words(sub));
+            bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
             proxy->retry = 0;
             proxy->acknack_scheduled = false;
             proxy->heartbeat_last_seq_no = 0;
-            proxy->sub = sub;
             if (out_created != NULL) {
                 *out_created = true;
             }
@@ -2389,10 +2412,11 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
 // (whether there's anything to do at all) - both need the same widened answer, not just received_
 // bitmap's own. -1 if neither signal has anything to report.
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
-    int highest = bitmap_highest_bit(proxy->received_bitmap);
+    int highest = bitmap_highest_bit(proxy->received_bitmap, proxy_words(proxy));
     if (proxy->heartbeat_last_seq_no >= proxy->ack_seq_no) {
         uint64_t hb_offset = (uint64_t)proxy->heartbeat_last_seq_no - proxy->ack_seq_no;
-        int hb_highest = hb_offset < tt_RELIABLE_BITMAP_BITS ? (int)hb_offset : tt_RELIABLE_BITMAP_BITS - 1;
+        uint32_t window_bits = proxy_window_bits(proxy);
+        int hb_highest = hb_offset < window_bits ? (int)hb_offset : (int)window_bits - 1;
         if (hb_highest > highest) {
             highest = hb_highest;
         }
@@ -2438,12 +2462,21 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
     // recent Heartbeat's own last_seq_no - QoS roadmap #5's own follow-up, struct
     // tt_HeartbeatHeader's doc comment (tickle.h) - widening the request range to cover a gap a
     // Heartbeat revealed even when nothing has arrived out of order yet to set any bit here at all.
-    uint64_t request_mask[tt_RELIABLE_BITMAP_WORDS];
-    uint64_t below_low_mask[tt_RELIABLE_BITMAP_WORDS];
-    bitmap_low_mask(request_mask, high_bit);
-    bitmap_low_mask(below_low_mask, low_bit - 1);
-    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+    uint16_t words = proxy_words(proxy);
+    uint64_t request_mask[tt_RELIABLE_BITMAP_MAX_WORDS];
+    uint64_t below_low_mask[tt_RELIABLE_BITMAP_MAX_WORDS];
+    bitmap_low_mask(request_mask, words, high_bit);
+    bitmap_low_mask(below_low_mask, words, low_bit - 1);
+    // The wire's own bitmap is still a fixed tt_RELIABLE_BITMAP_WORDS wide at this step; a window
+    // wider than that becomes requestable once the ACKNACK carries a variable-length bitmap
+    // (Phase 2's wire change, next commit), so only the words the wire can actually carry are
+    // written here.
+    uint16_t wire_words = words < (uint16_t)tt_RELIABLE_BITMAP_WORDS ? words : (uint16_t)tt_RELIABLE_BITMAP_WORDS;
+    for (uint16_t word = 0; word < wire_words; word++) {
         acknack_header->bitmap[word] = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
+    }
+    for (uint16_t word = wire_words; word < (uint16_t)tt_RELIABLE_BITMAP_WORDS; word++) {
+        acknack_header->bitmap[word] = 0;
     }
     // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
     // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
@@ -2456,7 +2489,7 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
     // packet physically went out.
 #ifdef tt_RELIABLE_STATS
     // Copied before end_encode(): a successful flush memmoves tx_buffer, invalidating acknack_header.
-    uint64_t requested[tt_RELIABLE_BITMAP_WORDS];
+    uint64_t requested[tt_RELIABLE_BITMAP_MAX_WORDS];
     uint32_t requested_base = proxy->ack_seq_no;
     for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
         requested[word] = acknack_header->bitmap[word];
@@ -2506,7 +2539,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 
     struct tt_WriterProxy* proxy = param;
 
-    if (bitmap_is_zero(proxy->received_bitmap)) {
+    if (bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy))) {
         // A DATA arrival already closed the gap since this timer was armed.
         proxy->acknack_scheduled = false;
         return;
@@ -2564,9 +2597,9 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 // single isolated loss.
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
     proxy->ack_seq_no++;
-    bitmap_shift_right_one(proxy->received_bitmap);
+    bitmap_shift_right_one(proxy->received_bitmap, proxy_words(proxy));
     while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever out-of-order run already follows it
-        bitmap_shift_right_one(proxy->received_bitmap);
+        bitmap_shift_right_one(proxy->received_bitmap, proxy_words(proxy));
         proxy->ack_seq_no++;
     }
     proxy->retry = 0;
@@ -2631,7 +2664,7 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
     }
 #endif
     proxy->ack_seq_no = seq_no;
-    bitmap_clear(proxy->received_bitmap);
+    bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
     advance_ack_seq_no(proxy);
 }
 
@@ -2650,7 +2683,7 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
         RSTAT_INC(duplicates);
         return false; // already received this one out of order before - a duplicate
     }
-    int prev_highest = bitmap_highest_bit(proxy->received_bitmap);
+    int prev_highest = bitmap_highest_bit(proxy->received_bitmap, proxy_words(proxy));
     if ((int)offset > prev_highest + 1) {
         new_gap->low_bit = prev_highest + 1;
         new_gap->high_bit = (int)offset - 1;
@@ -2666,14 +2699,14 @@ static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t o
 // received_bitmap means "received(ack_seq_no + j)", and ack_seq_no itself is always still missing.
 static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no) {
     uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
-    int prev_highest = bitmap_highest_bit(proxy->received_bitmap);
+    int prev_highest = bitmap_highest_bit(proxy->received_bitmap, proxy_words(proxy));
     if (offset == 0) {
         if (prev_highest >= 0) {
             rstat_recovered(seq_no); // head of a tracked gap - something above it already arrived
         }
         return;
     }
-    if (offset >= tt_RELIABLE_BITMAP_BITS || bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
+    if (offset >= proxy_window_bits(proxy) || bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
         return; // jump or duplicate - counted at their own sites
     }
     if ((int)offset < prev_highest) {
@@ -2796,7 +2829,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // known to be right: the Publisher's own eviction Heartbeat (advance_past_unavailable()),
         // or acknack_retry()'s give-up after ack_seq_no's fair tt_RELIABLE_RETRY attempts.
         uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
-        if (offset < tt_RELIABLE_BITMAP_BITS) {
+        if (offset < proxy_window_bits(proxy)) {
             is_new = record_out_of_order_arrival(proxy, (uint32_t)offset, &new_gap);
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
@@ -4304,7 +4337,7 @@ static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t firs
         uint64_t skipped_mask[tt_RELIABLE_BITMAP_WORDS];
         uint64_t received_in_range[tt_RELIABLE_BITMAP_WORDS];
         bitmap_low_mask(skipped_mask,
-                        skipped >= tt_RELIABLE_BITMAP_BITS ? tt_RELIABLE_BITMAP_BITS - 1 : (int)skipped - 1);
+                        skipped >= proxy_window_bits(proxy) ? (int)proxy_window_bits(proxy) - 1 : (int)skipped - 1);
         for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
             received_in_range[word] = proxy->received_bitmap[word] & skipped_mask[word];
         }
@@ -4312,14 +4345,14 @@ static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t firs
         g_rstats.heartbeat_abandoned_seq += skipped - rstat_popcount_bitmap(received_in_range);
     }
 #endif
-    if (skipped < tt_RELIABLE_BITMAP_BITS) {
-        bitmap_shift_right(proxy->received_bitmap, skipped);
+    if (skipped < proxy_window_bits(proxy)) {
+        bitmap_shift_right(proxy->received_bitmap, proxy_words(proxy), skipped);
     } else {
-        bitmap_clear(proxy->received_bitmap);
+        bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
     }
     proxy->ack_seq_no = first_available_seq_no;
     while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever's already confirmed right after it
-        bitmap_shift_right_one(proxy->received_bitmap);
+        bitmap_shift_right_one(proxy->received_bitmap, proxy_words(proxy));
         proxy->ack_seq_no++;
     }
     proxy->retry = 0;
@@ -4376,13 +4409,13 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
         // ACKNACK-request it (highest_relevant_bit() sees heartbeat_last_seq_no == ack_seq_no as
         // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
         proxy->ack_seq_no = sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1;
-        bitmap_clear(proxy->received_bitmap);
+        bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
     } else {
         advance_past_unavailable(proxy, ctx->first_available_seq_no);
     }
     if (!first_contact && ctx->last_seq_no >= proxy->ack_seq_no) {
         uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;
-        if (offset >= tt_RELIABLE_BITMAP_BITS) {
+        if (offset >= proxy_window_bits(proxy)) {
             // Already-tracking Subscriber, but this Heartbeat reveals a gap too wide to ever
             // track - the same "provably unrecoverable, don't get stuck" case update_reliable_
             // ack()'s own oversized-DATA-gap branch handles (see jump_ack_baseline()'s own doc

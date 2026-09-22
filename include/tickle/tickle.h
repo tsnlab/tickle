@@ -883,7 +883,12 @@ struct tt_WriterProxy {
     // ~4x (64 -> 256 bits), likely closing most or all of the measured residual loss at TickLE's own
     // real ACKNACK RTT on the `tickle-hil` rig - but the real link's own RTT, not this window alone,
     // sets the actual ceiling; a slower/lossier link could still exceed even a 256-bit window.
-    uint64_t received_bitmap[tt_RELIABLE_BITMAP_WORDS];
+    // Phase 2 (rmw_tickle/PLAN.md) - points into this Subscriber's own tracking storage (its
+    // builtin_tracking[], or the caller-provided wider buffer - see tt_Subscriber.tracking_bitmaps),
+    // tracking_words() words wide. A pointer rather than an embedded array so the window can be
+    // sized per Subscriber: core stays embedded-first at tt_RELIABLE_BITMAP_BITS, a Linux-class
+    // caller opts into more. Set when this slot is claimed (find_or_create_writer_proxy()).
+    uint64_t* received_bitmap;
     // How many ACKNACK retries have been sent for the *current* outstanding gap against this
     // writer - reset to 0 when a new gap first opens, capped at tt_RELIABLE_RETRY (mirrors
     // call_retry()'s own client->service->call_retry_count check) before this Subscriber gives up
@@ -923,6 +928,24 @@ struct tt_Subscriber { // extends endpoint
     struct tt_Topic* topic;
     tt_SUBSCRIBER_CALLBACK callback;
 
+    // QoS roadmap #5 (RELIABILITY) / Phase 2 (rmw_tickle/PLAN.md) - how wide a gap this Subscriber
+    // can track per matched Publisher, i.e. how far ahead of its own oldest missing sample it may
+    // keep receiving before it has to give up on that sample (update_reliable_ack()'s own
+    // jump_ack_baseline()). At TickLE's own max rate a 256-sample window lasts ~1.35ms, shorter
+    // than one retry interval plus a round trip, which is what leaves an occasional burst
+    // unrecoverable; a wider window is what fixes that.
+    //
+    // NULL/0 (tt_Node_create_subscriber()'s own default) uses builtin_tracking[] below,
+    // tt_RELIABLE_BITMAP_BITS wide - the embedded-first default (PLAN.md's Project Goal 1): a
+    // microcontroller nowhere near that rate shouldn't pay for a window it can't use. A Linux-class
+    // caller (rmw_tickle, Goal 5; the perf_hil examples via their own flag) hands a wider
+    // caller-owned buffer instead: tt_MAX_PEER_COUNT * tracking_words words, i.e. one window per
+    // simultaneously-tracked remote Publisher, with tracking_words <= tt_RELIABLE_BITMAP_MAX_WORDS
+    // (config.h). Set both fields together, before the first sample arrives; core clamps anything
+    // out of range back to the builtin default rather than trusting it.
+    uint64_t* tracking_bitmaps;
+    uint16_t tracking_words;
+
     // transcation
     uint16_t seq_no;
 
@@ -942,6 +965,9 @@ struct tt_Subscriber { // extends endpoint
     // one per distinct (node_id, entity_id) actually heard from, via find_or_create_writer_proxy()
     // (tickle.c).
     struct tt_WriterProxy writers[tt_MAX_PEER_COUNT];
+    // The default per-writer tracking windows, used unless tracking_bitmaps above points somewhere
+    // wider - exactly the storage each writers[] entry used to embed directly.
+    uint64_t builtin_tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_WORDS];
 
     // QoS roadmap #1 (RxO matching, Milestone 31, rmw_tickle/PLAN.md) - false (tt_Node_create_
     // subscriber()'s own default): this Subscriber accepts a VOLATILE Publisher, today's only
