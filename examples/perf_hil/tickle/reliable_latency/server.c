@@ -76,11 +76,17 @@ int main(int argc, char** argv) {
     }
     // entries[]/capacity are this file's own backing array now, not an embedded
     // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
-    static struct tt_ReliableCacheEntry pub_cache_entries[8];
+    // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena sized for this scenario's own
+    // fixed sizeof(struct BenchData)-byte sample, instead of a 1472-byte buffer per slot.
+    static struct tt_ReliableCacheIndex pub_cache_index[8];
+    static uint8_t
+        pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
     static struct tt_ReliableCache pub_cache = {0};
-    pub_cache.entries = pub_cache_entries;
+    pub_cache.index = pub_cache_index;
     pub_cache.capacity = 8;
     pub_cache.depth = 8;
+    pub_cache.arena = pub_cache_arena;
+    pub_cache.arena_size = (uint32_t)sizeof(pub_cache_arena);
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
     g_pub = &pub;

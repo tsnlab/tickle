@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 // Defined in exactly one place per test binary; the test .c file does that before including
 // this header (see the DEFINE_STORAGE convention below).
@@ -52,6 +53,24 @@ extern int test_failures;
             test_failures++;                                                                                     \
         }                                                                                                        \
     } while (0)
+
+// B1 (rmw_tickle/PLAN.md) - declares and zero-initializes a depth-`n` reliable cache for a test:
+// the index array, the byte arena, and the struct pointing at both. The arena is sized for `n`
+// records of up to 64 payload bytes (plus the wrap slack tt_RELIABLE_CACHE_ARENA_BYTES() adds),
+// comfortably above the 4-byte payloads these tests publish - a test that wants a deliberately
+// tight arena sets `name.arena_size` down afterwards.
+#define TEST_RELIABLE_CACHE(name, n)                                                                \
+    struct tt_ReliableCacheIndex name##_index_storage[(n)];                                         \
+    uint8_t name##_arena_storage[tt_RELIABLE_CACHE_ARENA_BYTES((n), tt_RELIABLE_RECORD_BYTES(64))]; \
+    struct tt_ReliableCache name;                                                                   \
+    memset(name##_index_storage, 0, sizeof(name##_index_storage));                                  \
+    memset(name##_arena_storage, 0, sizeof(name##_arena_storage));                                  \
+    memset(&name, 0, sizeof(name));                                                                 \
+    name.index = name##_index_storage;                                                              \
+    name.capacity = (uint16_t)(n);                                                                  \
+    name.depth = (uint16_t)(n);                                                                     \
+    name.arena = name##_arena_storage;                                                              \
+    name.arena_size = (uint32_t)sizeof(name##_arena_storage)
 
 // Returns a process exit status make can use directly: 0 if every EXPECT_* in this binary
 // passed, 1 (with a summary line) otherwise.
