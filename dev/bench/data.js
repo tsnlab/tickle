@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790062694319,
+  "lastUpdate": 1790062698169,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -103206,6 +103206,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/6bb4eebb667a5d8aa8d38e02e9329f52ddfbbac9"
         },
         "date": 1790062001607,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "c9cbc5b939fce6f0024179fc5e91ad45b00df803",
+          "message": "reliable_throughput/client.c: fix Check all - main() cognitive complexity over threshold\n\n6bb4eeb's -A flag pushed main()'s clang-tidy cognitive complexity to 28 (threshold 25).\nSplit the -i/-d/-K/-T/-A argument-parsing loop out into its own parse_args() - no\nbehavior change. Verified clean with a direct clang-tidy invocation (matching the CI\njob's own compile flags) and a fresh build.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T16:32:26+09:00",
+          "tree_id": "afa2a6dbc80158bbd4d39d31a543b113d5bc14dd",
+          "url": "https://github.com/tsnlab/tickle/commit/c9cbc5b939fce6f0024179fc5e91ad45b00df803"
+        },
+        "date": 1790062696950,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
