@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790047938368,
+  "lastUpdate": 1790047942230,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -101239,6 +101239,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/1d89ac4e1063c89438c066a5ed0ca1a41fe050c1"
         },
         "date": 1790046329029,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2be77fe86a3cb926a9b8357e6c0f2eeaf34b5b95",
+          "message": "PLAN.md: final loss-matrix validation for the poll-loop fix - real throughput win, loss% a wash\n\nAt the user's own instruction to proceed with final validation. Full tc/netem matrix (0/1/5%,\n3 reps each), clean main vs experiment/poll-loop-io-interleave-v2, real HIL.\n\nThroughput: a real, consistent win (+14.3% to +32.4% across all three conditions, now 8 total\nruns across this and earlier experiments all landing in the 99-121 Mbps band vs main's own\n90-95 Mbps). Loss%: honestly a wash - tied at 0%, statistically indistinguishable at 1%,\nmeasurably worse at 5% (6.80% vs 6.03%) - the fix's own throughput increase is itself a\nmechanical cost at the same fixed 256-bit window, eating back the recovery-window benefit.\n\nRecommendation: a genuine throughput improvement, not a loss-recovery one - worth merging on\nthat basis, documented honestly that it doesn't additionally close the RELIABLE recovery gap.\nPending the user's own final go-ahead to merge.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T12:26:30+09:00",
+          "tree_id": "5f594349950c17d61bcbfce887f80ac16b13c0e3",
+          "url": "https://github.com/tsnlab/tickle/commit/2be77fe86a3cb926a9b8357e6c0f2eeaf34b5b95"
+        },
+        "date": 1790047940971,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
