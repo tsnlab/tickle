@@ -59,8 +59,11 @@ static void stub_data_free(struct tt_Data* data) {
     (void)data;
 }
 
+static int subscriber_callback_count = 0;
+
 static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                      struct tt_Data* data) {
+    subscriber_callback_count++;
     (void)subscriber;
     (void)time;
     (void)seq_no;
@@ -157,6 +160,8 @@ static uint32_t write_heartbeat(struct tt_Node* node, uint32_t endpoint_id, uint
     heartbeat_header->endpoint_id = endpoint_id;
     heartbeat_header->first_available_seq_no = first_available_seq_no;
     heartbeat_header->last_seq_no = last_seq_no;
+    heartbeat_header->entity_id = 0; // explicit, like write_data()'s own: offset 12 overlaps a prior
+                                     // write_data()'s timestamp, which would pick a different writer
     heartbeat_header->flags = flags;
     heartbeat_header->reserved[0] = 0;
     heartbeat_header->reserved[1] = 0;
@@ -393,6 +398,162 @@ static void test_heartbeat_first_contact_volatile_subscriber_skips_backlog(void)
     EXPECT_EQ_U32(101, proxy->ack_seq_no); // correctly still waiting on 101
     EXPECT_TRUE(proxy->acknack_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // a real ACKNACK for 101
+}
+
+// Same helper as tests/test_reliable_pubsub.c's own: word 0 == low, every other word == 0.
+static bool bitmap_equals_u64(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint64_t low) {
+    if (bitmap[0] != low) {
+        return false;
+    }
+    for (int word = 1; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        if (bitmap[word] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Feed one DATA (seq_no, value == seq_no) or one FINAL Heartbeat through the real process_* entry points.
+static void feed_data(struct tt_Node* node, struct tt_Header* header, uint32_t seq_no) {
+    uint32_t tail = write_data(node, seq_no, seq_no, seq_no);
+    EXPECT_TRUE(process_data(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+}
+
+static void feed_heartbeat(struct tt_Node* node, struct tt_Header* header, uint32_t first_available_seq_no,
+                           uint32_t last_seq_no) {
+    uint32_t tail = write_heartbeat(node, ENDPOINT_ID, first_available_seq_no, last_seq_no, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(node, header, node->rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+}
+
+// Phase 1-c (rmw_tickle/PLAN.md, B2) - an already-tracking Subscriber told by a Heartbeat (the
+// Publisher's eviction Heartbeat, or a periodic one) that history now starts at
+// first_available_seq_no advances ack_seq_no straight past everything below it: bitmap shifted to
+// the new base, any following received run absorbed, retry budget reset - and, once nothing is
+// left outstanding, the retry timer unscheduled.
+static void test_heartbeat_first_available_advances_existing_proxy(void) {
+    test_mock_reset();
+#ifdef tt_RELIABLE_STATS
+    tt_reliable_stats_reset();
+#endif
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    feed_data(&node, &header, 1); // first contact via DATA -> ack_seq_no 2
+    feed_data(&node, &header, 4);
+    feed_data(&node, &header, 5);
+    feed_data(&node, &header, 7); // missing: 2, 3, 6
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    proxy->retry = 2; // part-way through seq_no 2's own retry budget
+
+    feed_heartbeat(&node, &header, 4, 7);                           // 2, 3 are gone at the Publisher
+    EXPECT_EQ_U32(6, proxy->ack_seq_no);                            // past 2, 3; then 4, 5 absorbed
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 0x2ULL)); // bit 1 -> seq_no 7
+    EXPECT_EQ_U32(0, (uint32_t)proxy->retry);                       // seq_no 6 gets a fresh budget
+    EXPECT_TRUE(proxy->acknack_scheduled);                          // 6 still outstanding
+
+    feed_heartbeat(&node, &header, 8, 7); // everything up to 7 gone (first_available = newest + 1)
+    EXPECT_EQ_U32(8, proxy->ack_seq_no);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
+    EXPECT_TRUE(!proxy->acknack_scheduled); // nothing left to ask for
+
+#ifdef tt_RELIABLE_STATS
+    struct tt_ReliableStats stats;
+    tt_reliable_stats_get(&stats);
+    EXPECT_EQ_U32(2, (uint32_t)stats.heartbeat_advances);
+    EXPECT_EQ_U32(3, (uint32_t)stats.heartbeat_abandoned_seq); // 2, 3, then 6 (7 was received)
+#endif
+}
+
+// A stale/reordered Heartbeat whose first_available_seq_no is at or below ack_seq_no (or 0, an
+// empty cache) must never move ack_seq_no backwards or disturb the tracked gap.
+static void test_heartbeat_stale_first_available_is_ignored(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    feed_data(&node, &header, 1);
+    feed_data(&node, &header, 2);
+    feed_data(&node, &header, 4); // missing: 3
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);
+
+    feed_heartbeat(&node, &header, 2, 4);
+    feed_heartbeat(&node, &header, 3, 4);
+    feed_heartbeat(&node, &header, 0, 4);
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);
+    EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 0x2ULL)); // bit 1 -> seq_no 4
+    EXPECT_TRUE(proxy->acknack_scheduled);
+}
+
+// DURABILITY: a durable late joiner's backlog must not be skipped by this path. Its first-contact
+// baseline is the Publisher's first_available_seq_no; repeated Heartbeats with that same baseline
+// change nothing while the backlog streams in, and every backlog sample is delivered. Only a later,
+// genuinely newer first_available_seq_no (the Publisher evicted part of the backlog before it
+// arrived) skips - and only the part that's actually gone.
+static void test_heartbeat_durable_late_joiner_backlog_not_skipped(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.durable = true;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    feed_heartbeat(&node, &header, 1, 20); // first contact: backlog 1..20 wanted
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);
+
+    for (uint32_t seq_no = 1; seq_no <= 10; seq_no++) {
+        feed_data(&node, &header, seq_no);
+        feed_heartbeat(&node, &header, 1, 20); // same baseline, repeated - no skip
+    }
+    for (uint32_t seq_no = 11; seq_no <= 20; seq_no++) {
+        feed_data(&node, &header, seq_no);
+    }
+    EXPECT_EQ_U32(21, proxy->ack_seq_no);
+    EXPECT_EQ_INT(20, subscriber_callback_count); // the whole backlog delivered
+
+    // A second durable joiner whose backlog is partly evicted before it arrives: 1, 2 received,
+    // then the Publisher's history starts at 10 - only 3..9 are skipped.
+    test_mock_reset();
+    subscriber_callback_count = 0;
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.durable = true;
+    feed_heartbeat(&node, &header, 1, 20);
+    feed_data(&node, &header, 1);
+    feed_data(&node, &header, 2);
+    proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(3, proxy->ack_seq_no);
+    feed_heartbeat(&node, &header, 10, 25);
+    EXPECT_EQ_U32(10, proxy->ack_seq_no);
+    feed_data(&node, &header, 10);
+    EXPECT_EQ_U32(11, proxy->ack_seq_no);
+    EXPECT_EQ_INT(3, subscriber_callback_count); // 1, 2, 10
 }
 
 // A Heartbeat arriving at an already-tracking Subscriber, revealing a gap too wide to ever
@@ -938,6 +1099,9 @@ int main(void) {
     test_heartbeat_first_contact_sets_baseline_with_no_data_ever_received();
     test_heartbeat_first_contact_volatile_subscriber_skips_backlog();
     test_heartbeat_oversized_gap_jumps_baseline();
+    test_heartbeat_first_available_advances_existing_proxy();
+    test_heartbeat_stale_first_available_is_ignored();
+    test_heartbeat_durable_late_joiner_backlog_not_skipped();
     test_heartbeat_gap_within_window_widens_request_without_jumping();
     test_heartbeat_ignored_for_besteffort_subscriber();
     test_heartbeat_final_flag_clear_forces_acknack_without_gap();

@@ -37,8 +37,8 @@ struct tt_ReliableStats {
     uint64_t jump_heartbeat;          // jump_ack_baseline() from the Heartbeat path
     uint64_t jump_abandoned_seq;      // still-missing seq_nos abandoned by those jumps
     uint64_t retry_giveups;           // acknack_retry() give-ups (retry > tt_RELIABLE_RETRY)
-    uint64_t skip_backlog_calls;      // skip_unrecoverable_backlog() calls that actually skipped
-    uint64_t skip_backlog_seq;        // seq_nos skipped by them (includes already-received ones in range)
+    uint64_t heartbeat_advances;      // Phase 1-c: Heartbeats that moved ack_seq_no up to first_available_seq_no
+    uint64_t heartbeat_abandoned_seq; // ...still-missing seq_nos those advances skipped (gone at the Publisher)
     uint64_t acknack_immediate;       // ACKNACK send attempts from maybe_arm_acknack_retry()
     uint64_t acknack_timer;           // ACKNACK send attempts from the acknack_retry() timer
     uint64_t acknack_new_gap;         // Phase 1-a: narrow ACKNACK attempts for a gap opened while armed
@@ -52,13 +52,14 @@ struct tt_ReliableStats {
     uint64_t request_to_recover_hist[tt_RELIABLE_STATS_HIST_BUCKETS]; // first ACKNACK naming it -> recovered, us
 
     // --- Publisher side (process_acknack() / retransmit_reliable_samples()) ---
-    uint64_t acknack_received;   // ACKNACKs reaching a reliable Publisher's retransmit loop
-    uint64_t bits_requested;     // total set bits across them
-    uint64_t retransmitted;      // samples actually re-encoded and flushed
-    uint64_t null_evicted;       // not resent: slot empty or overwritten by a newer seq_no
-    uint64_t null_retry_cap;     // not resent: cache_entry->retry >= tt_RELIABLE_RETRY
-    uint64_t null_lifespan;      // not resent: aged out of lifespan
-    uint64_t retransmit_tx_fail; // not resent: tx buffer full or end_encode() failed
+    uint64_t acknack_received;    // ACKNACKs reaching a reliable Publisher's retransmit loop
+    uint64_t bits_requested;      // total set bits across them
+    uint64_t retransmitted;       // samples actually re-encoded and flushed
+    uint64_t null_evicted;        // not resent: slot empty or overwritten by a newer seq_no
+    uint64_t null_retry_cap;      // not resent: cache_entry->retry >= tt_RELIABLE_RETRY
+    uint64_t null_lifespan;       // not resent: aged out of lifespan
+    uint64_t retransmit_tx_fail;  // not resent: tx buffer full or end_encode() failed
+    uint64_t eviction_heartbeats; // Phase 1-c: FINAL Heartbeats sent back for an ACKNACK naming a gone sample
 
     // --- tx path (flush_tx()) ---
     uint64_t datagrams;           // flush_tx() calls that sent something (counted once per call, not per peer)

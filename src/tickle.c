@@ -36,9 +36,12 @@ _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallResponseHeader)) % 4 == 0,
 _Static_assert(offsetof(struct tt_Node, tx_buffer) % 4 == 0, "tx_buffer not 4-aligned in tt_Node");
 _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Node");
 #undef TT_FRAMING_HDR
-// skip_unrecoverable_backlog()'s own bulk-skip (QoS roadmap #5, acknack_retry()'s give-up path)
-// relies on a retained-sample window this narrow always fitting inside
-// struct tt_WriterProxy.received_bitmap's own tt_RELIABLE_BITMAP_BITS-wide tracking window.
+// The default Publisher cache depth must fit the Subscriber's tt_RELIABLE_BITMAP_BITS-wide
+// tracking window (struct tt_WriterProxy.received_bitmap): a gap further back than the window can
+// never be named in an ACKNACK, so retaining more than that by default buys no recovery (Phase 1-c
+// removed the other user of this constant, skip_unrecoverable_backlog()'s compile-time depth guess;
+// rmw_tickle/PLAN.md's Phase 3 KEEP_ALL rule - unacked samples <= the window - rests on the same
+// bound).
 _Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
                "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
 
@@ -886,7 +889,6 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot);
 static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
 static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy);
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
-static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy);
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy);
 static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
@@ -1885,7 +1887,7 @@ static void bitmap_clear(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
 }
 
 // bit 0 of the whole bitmap (word 0's own lowest bit) - the "is the position right after the
-// watermark already received" check advance_ack_seq_no()'s/skip_unrecoverable_backlog()'s own
+// watermark already received" check advance_ack_seq_no()'s/advance_past_unavailable()'s own
 // absorb loops use.
 static bool bitmap_lowest_bit_set(const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
     return (bitmap[0] & 1) != 0;
@@ -1910,7 +1912,7 @@ static void bitmap_shift_right_one(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS]) {
 }
 
 // Shifts the whole multi-word bitmap right by `shift_bits` bits, 0 <= shift_bits <
-// tt_RELIABLE_BITMAP_BITS - skip_unrecoverable_backlog()'s own jump-ahead shift (its own call site
+// tt_RELIABLE_BITMAP_BITS - advance_past_unavailable()'s own jump-ahead shift (its own call site
 // handles shift_bits >= tt_RELIABLE_BITMAP_BITS separately, via bitmap_clear() instead - a
 // full-width-or-wider shift has nothing left to carry and would be undefined behavior for the
 // per-word `<<`/`>>` below anyway). The only one of these helpers that isn't a plain O(word-count)
@@ -1938,7 +1940,7 @@ static void bitmap_shift_right(uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], uint32
 
 // Highest bit index set across the whole multi-word bitmap (bit j: "received(ack_seq_no + j)" -
 // see struct tt_WriterProxy's own doc comment, tickle.h), or -1 if none are set. Shared by send_
-// acknack() and skip_unrecoverable_backlog() below - both need "how far ahead does anything
+// acknack() and record_out_of_order_arrival() below - both need "how far ahead does anything
 // *confirmed* reach", not just "which bits happen to be 0". Skips whole zero words from the top
 // down before falling back to a per-bit scan within the one word that actually has something set -
 // O(word-count) in the common (few bits set, high words empty) case, only ever O(word-bits) worst
@@ -2185,12 +2187,11 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
         // actually grants that fresh budget) - and, unlike leaving it to the next DATA arrival to
         // notice, maybe_arm_acknack_retry() below starts requesting it immediately.
         advance_ack_seq_no(proxy);
-        // Now that ack_seq_no itself just had its own fair tt_RELIABLE_RETRY attempts and still
-        // didn't resolve, also bulk-skip anything *else* already provably unrecoverable for the
-        // identical reason (see skip_unrecoverable_backlog()'s own comment) - but only here, at
-        // the natural give-up point, never pre-empting an still-in-progress retry cycle the way
-        // doing this reactively on every new arrival did.
-        skip_unrecoverable_backlog(proxy);
+        // No bulk skip of the rest here any more (Phase 1-c removed skip_unrecoverable_backlog()
+        // and its compile-time tt_MAX_RELIABLE_HISTORY guess at the Publisher's depth, which threw
+        // away samples a deeper cache still held). What's genuinely gone is now signalled
+        // explicitly: every ACKNACK that names an evicted sample gets an eviction Heartbeat back,
+        // and advance_past_unavailable() skips exactly that range.
         maybe_arm_acknack_retry(node, proxy);
         return;
     }
@@ -2232,45 +2233,6 @@ static void advance_ack_seq_no(struct tt_WriterProxy* proxy) {
         proxy->ack_seq_no++;
     }
     proxy->retry = 0;
-}
-
-// Called only from acknack_retry()'s own give-up path, right after advance_ack_seq_no() - never
-// reactively on a new arrival (see update_reliable_ack()'s own comment on why that backfired).
-// ack_seq_no itself just had its fair tt_RELIABLE_RETRY attempts and still didn't resolve; this
-// additionally skips anything *else* now provably unrecoverable too, in one step: everything more
-// than tt_MAX_RELIABLE_HISTORY behind the highest sample already confirmed received (out of
-// order, still recorded in received_bitmap) is guaranteed evicted from the Publisher's own
-// KEEP_LAST reliable_cache by now, for the identical "no amount of retrying will un-evict it"
-// reason ack_seq_no itself was just given up on. Without this, once one position needed a full
-// give-up cycle, everything behind it also needed its own full cycle serially, one at a time,
-// even though most of that range was just as hopeless from the moment it first appeared.
-static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy) {
-    if (bitmap_is_zero(proxy->received_bitmap)) {
-        return; // nothing else known to be ahead - nothing to skip
-    }
-
-    int highest = bitmap_highest_bit(proxy->received_bitmap);
-    // highest's own absolute sequence number is ack_seq_no + highest (received_bitmap's own bit
-    // j means "received(ack_seq_no + j)" - see struct tt_WriterProxy's own doc comment, tickle.h).
-    uint32_t highest_seq_no = proxy->ack_seq_no + (uint32_t)highest;
-    if (highest_seq_no - proxy->ack_seq_no + 1 <= tt_MAX_RELIABLE_HISTORY) {
-        return; // still within a plausibly-recoverable window - let it resolve normally
-    }
-
-    uint32_t new_ack_seq_no = highest_seq_no - tt_MAX_RELIABLE_HISTORY + 1;
-    uint32_t skipped = new_ack_seq_no - proxy->ack_seq_no;
-    RSTAT_INC(skip_backlog_calls);
-    RSTAT_ADD(skip_backlog_seq, skipped);
-    if (skipped < tt_RELIABLE_BITMAP_BITS) {
-        bitmap_shift_right(proxy->received_bitmap, skipped);
-    } else {
-        bitmap_clear(proxy->received_bitmap);
-    }
-    proxy->ack_seq_no = new_ack_seq_no;
-    while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever's already confirmed right after the jump
-        bitmap_shift_right_one(proxy->received_bitmap);
-        proxy->ack_seq_no++;
-    }
 }
 
 // Shared by update_reliable_ack() (a new/changed gap), process_heartbeat() (a Heartbeat revealing
@@ -2493,9 +2455,9 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // the same "too far ahead" check, since ack_seq_no is dragged along exactly
         // tt_MAX_RELIABLE_HISTORY - 1 behind the latest arrival forever - which preempts the very
         // retry cycle (acknack_retry()) that might have recovered ack_seq_no itself, over and
-        // over, instead of ever letting it actually resolve. Bulk-skipping only belongs at
-        // acknack_retry()'s own give-up point (skip_unrecoverable_backlog()) - *after* ack_seq_no
-        // has had its fair tt_RELIABLE_RETRY attempts, not preempting them.
+        // over, instead of ever letting it actually resolve. Skipping only belongs where it's
+        // known to be right: the Publisher's own eviction Heartbeat (advance_past_unavailable()),
+        // or acknack_retry()'s give-up after ack_seq_no's fair tt_RELIABLE_RETRY attempts.
         uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
         if (offset < tt_RELIABLE_BITMAP_BITS) {
             is_new = record_out_of_order_arrival(proxy, (uint32_t)offset, &new_gap);
@@ -2515,9 +2477,9 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
             // equally to a RELIABLE-only stream that takes one real burst loss wider than the
             // bitmap - jump the baseline to this arrival instead,
             // the same "give up on what's provably unrecoverable, keep the stream moving" logic
-            // skip_unrecoverable_backlog() already applies once retries are exhausted, just
-            // applied here the instant it's already known un-trackable rather than after wasting
-            // a retry cycle chasing a position that could never have been named on the wire.
+            // advance_past_unavailable() applies on an eviction Heartbeat, just applied here the
+            // instant it's already known un-trackable rather than after wasting a retry cycle
+            // chasing a position that could never have been named on the wire.
             TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u) - jumping ahead instead of getting stuck",
                            seq_no - proxy->ack_seq_no, proxy->ack_seq_no);
             RSTAT_INC(jump_data);
@@ -3748,13 +3710,18 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 // codebase today) but not structurally enforced; the write side's own `cache->next % depth`
 // indexing already silently relies on the identical assumption, so this isn't a new risk, just the
 // same one now also load-bearing on the read side.
+//
+// Phase 1-c (rmw_tickle/PLAN.md, B2) - *gone is set when the NULL means the sample no longer exists
+// for this Publisher at all (evicted, or aged out of LIFESPAN), as opposed to merely out of retry
+// budget - retransmit_reliable_samples() answers that with an eviction Heartbeat.
 static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
-                                                                 uint32_t missing_seq_no,
-                                                                 uint64_t lifespan_duration_ns) {
+                                                                 uint32_t missing_seq_no, uint64_t lifespan_duration_ns,
+                                                                 bool* gone) {
     uint32_t slot = (missing_seq_no - 1) % depth;
     struct tt_ReliableCacheEntry* cache_entry = &cache->entries[slot];
     if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
         RSTAT_INC(null_evicted);
+        *gone = true;
         return NULL; // empty slot, or overwritten by a different seq_no since (evicted)
     }
     if (cache_entry->retry >= tt_RELIABLE_RETRY) {
@@ -3767,9 +3734,60 @@ static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_Relia
     // doesn't override it.
     if (reliable_cache_entry_expired(cache_entry, lifespan_duration_ns)) {
         RSTAT_INC(null_lifespan);
+        *gone = true;
         return NULL;
     }
     return cache_entry;
+}
+
+// Phase 1-c (rmw_tickle/PLAN.md, B2) - the oldest seq_no this Publisher can still resend: present in
+// its slot and not aged out of LIFESPAN. Direct-indexed like find_resendable_cache_entry() above
+// (seq_no N lives at entries[(N - 1) % depth]), so it starts at the oldest seq_no the ring can
+// still hold and only walks forward past LIFESPAN-expired entries (which expire oldest-first) -
+// O(1) without a lifespan, unlike reliable_cache_oldest_seq_no()'s full scan. pub->seq_no + 1 if
+// nothing at all is resendable (everything published so far is gone).
+static uint32_t reliable_cache_first_resendable_seq_no(const struct tt_Publisher* pub,
+                                                       const struct tt_ReliableCache* cache, uint16_t depth) {
+    uint32_t newest = pub->seq_no;
+    uint32_t seq_no = newest >= depth ? newest - depth + 1 : 1;
+    for (; seq_no <= newest; seq_no++) {
+        const struct tt_ReliableCacheEntry* entry = &cache->entries[(seq_no - 1) % depth];
+        if (entry->len != 0 && entry->seq_no == seq_no &&
+            !reliable_cache_entry_expired(entry, pub->lifespan_duration_ns)) {
+            return seq_no;
+        }
+    }
+    return newest + 1;
+}
+
+// retransmit_reliable_samples()'s per-bit body: resends missing_seq_no straight back to target if
+// it's still resendable. Returns true if it's gone for good (see find_resendable_cache_entry()).
+static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
+                                  uint16_t depth, uint32_t missing_seq_no, const struct tt_Peer* target) {
+    bool gone = false;
+    struct tt_ReliableCacheEntry* cache_entry =
+        find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns, &gone);
+    if (cache_entry == NULL) {
+        return gone;
+    }
+
+    uint32_t old_tx_tail = node->tx_tail;
+    void* buf = encode(node, cache_entry->len);
+    if (buf == NULL) {
+        TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
+        RSTAT_INC(retransmit_tx_fail);
+        rollback(node, old_tx_tail);
+        return false;
+    }
+    _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
+    if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
+        RSTAT_INC(retransmit_tx_fail);
+        rollback(node, old_tx_tail);
+    } else {
+        RSTAT_INC(retransmitted);
+        cache_entry->retry++;
+    }
+    return false;
 }
 
 // Milestone 62 (rmw_tickle/PLAN.md) - the actual per-bit retransmit loop, split out of
@@ -3789,6 +3807,7 @@ static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publishe
     g_rstats.acknack_received++;
     g_rstats.bits_requested += rstat_popcount_bitmap(bitmap);
 #endif
+    bool any_gone = false;
     for (int word_idx = 0; word_idx < tt_RELIABLE_BITMAP_WORDS; word_idx++) {
         uint64_t word = bitmap[word_idx];
         if (word == 0) {
@@ -3799,30 +3818,21 @@ static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publishe
                 continue;
             }
             uint32_t missing_seq_no = seq_no + (uint32_t)((word_idx * tt_RELIABLE_BITMAP_WORD_BITS) + bit_idx);
-
-            struct tt_ReliableCacheEntry* cache_entry =
-                find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns);
-            if (cache_entry == NULL) {
-                continue;
-            }
-
-            uint32_t old_tx_tail = node->tx_tail;
-            void* buf = encode(node, cache_entry->len);
-            if (buf == NULL) {
-                TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
-                RSTAT_INC(retransmit_tx_fail);
-                rollback(node, old_tx_tail);
-                continue;
-            }
-            _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
-            if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
-                RSTAT_INC(retransmit_tx_fail);
-                rollback(node, old_tx_tail);
-            } else {
-                RSTAT_INC(retransmitted);
-                cache_entry->retry++;
-            }
+            any_gone |= retransmit_one_sample(node, pub, cache, depth, missing_seq_no, target);
         }
+    }
+
+    // Phase 1-c (rmw_tickle/PLAN.md, B2) - at least one requested sample no longer exists here:
+    // tell the requester where this Publisher's resendable history now starts, with one FINAL
+    // Heartbeat unicast straight back (FINAL: no ACKNACK reply solicited). Its Subscriber then
+    // advances past everything below first_available_seq_no at once (inform_subscriber_of_
+    // heartbeat()) instead of re-requesting samples that can never come back until its own retry
+    // budget gives up - retries that used to double as the only eviction signal. Once per ACKNACK,
+    // not per missing bit.
+    if (any_gone) {
+        RSTAT_INC(eviction_heartbeats);
+        encode_and_send_heartbeat(node, pub, reliable_cache_first_resendable_seq_no(pub, cache, depth), target, 1,
+                                  tt_HEARTBEAT_FLAG_FINAL);
     }
 }
 
@@ -3930,6 +3940,49 @@ struct heartbeat_ctx {
     uint8_t flags; // tt_HEARTBEAT_FLAG_FINAL or 0 - see its own doc comment, tickle.h
 };
 
+// Phase 1-c (rmw_tickle/PLAN.md, B2) - an already-tracking proxy learns from a Heartbeat's
+// first_available_seq_no that everything below it no longer exists at the Publisher (evicted, or
+// aged out of LIFESPAN) - RTPS's own "irrelevant" range. Advance ack_seq_no straight past it
+// instead of re-requesting samples that can never come back: shift received_bitmap to the new
+// base, absorb any already-received run that now follows, and hand the next gap (if any) a fresh
+// retry budget, the same bookkeeping advance_ack_seq_no() does for a real receipt. Fires on any
+// Heartbeat carrying a newer baseline - most often the eviction Heartbeat process_acknack() sends
+// back when a requested sample is gone, but a periodic one says the same thing. Never moves
+// ack_seq_no backwards (a stale/reordered Heartbeat, or first_available_seq_no 0 for an empty
+// cache, is a no-op). A durable late joiner is unaffected at first contact (its baseline comes
+// from the first-contact branch of inform_subscriber_of_heartbeat() below); afterwards anything
+// the Publisher no longer holds is unrecoverable for it too.
+static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t first_available_seq_no) {
+    if (first_available_seq_no <= proxy->ack_seq_no) {
+        return;
+    }
+    uint32_t skipped = first_available_seq_no - proxy->ack_seq_no;
+#ifdef tt_RELIABLE_STATS
+    {
+        uint64_t skipped_mask[tt_RELIABLE_BITMAP_WORDS];
+        uint64_t received_in_range[tt_RELIABLE_BITMAP_WORDS];
+        bitmap_low_mask(skipped_mask,
+                        skipped >= tt_RELIABLE_BITMAP_BITS ? tt_RELIABLE_BITMAP_BITS - 1 : (int)skipped - 1);
+        for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+            received_in_range[word] = proxy->received_bitmap[word] & skipped_mask[word];
+        }
+        g_rstats.heartbeat_advances++;
+        g_rstats.heartbeat_abandoned_seq += skipped - rstat_popcount_bitmap(received_in_range);
+    }
+#endif
+    if (skipped < tt_RELIABLE_BITMAP_BITS) {
+        bitmap_shift_right(proxy->received_bitmap, skipped);
+    } else {
+        bitmap_clear(proxy->received_bitmap);
+    }
+    proxy->ack_seq_no = first_available_seq_no;
+    while (bitmap_lowest_bit_set(proxy->received_bitmap)) { // absorb whatever's already confirmed right after it
+        bitmap_shift_right_one(proxy->received_bitmap);
+        proxy->ack_seq_no++;
+    }
+    proxy->retry = 0;
+}
+
 // Milestone 35 - the actual per-Subscriber body process_heartbeat() used to run once (against
 // find_endpoint()'s single match) before more than one local Subscription on the same topic
 // became legal; now for_each_endpoint()'s own visitor, so every matching Subscriber - each with
@@ -3982,7 +4035,10 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
         // offset 0, "needs attention") - an off-by-one leak of exactly the newest pre-match sample.
         proxy->ack_seq_no = sub->durable ? ctx->first_available_seq_no : ctx->last_seq_no + 1;
         bitmap_clear(proxy->received_bitmap);
-    } else if (ctx->last_seq_no >= proxy->ack_seq_no) {
+    } else {
+        advance_past_unavailable(proxy, ctx->first_available_seq_no);
+    }
+    if (!first_contact && ctx->last_seq_no >= proxy->ack_seq_no) {
         uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;
         if (offset >= tt_RELIABLE_BITMAP_BITS) {
             // Already-tracking Subscriber, but this Heartbeat reveals a gap too wide to ever
