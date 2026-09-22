@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790061972164,
+  "lastUpdate": 1790061976286,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -100012,6 +100012,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/86c04db42a4bb4863cf7b710d3956189fb2afbcd"
         },
         "date": 1790061274879,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.226,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "6bb4eebb667a5d8aa8d38e02e9329f52ddfbbac9",
+          "message": "reliable_throughput/client.c: use tt_Publisher_set_ack_solicit_period() for -T throttle\n\nRoot cause of the livelock found in the earlier real HIL sweep (PLAN.md): peer_ack_seq_no[]\nonly ever advanced via a loss-reactive ACKNACK paced at tt_CALL_RETRY_INTERVAL=5ms, blown\npast by any -T threshold within a fraction of one retry window at max send rate. Now that\ntt_Publisher_set_ack_solicit_period() exists in core (86c04db), wire it up here: new -A\n<period_us> flag (0=disabled), auto-defaulted to 200us whenever -T > 0 and -A wasn't given\nexplicitly, since a throttle with no proactive solicitation is the exact broken configuration\nalready measured. Local build + clang-format clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T16:20:52+09:00",
+          "tree_id": "a676a6ffbcfc2d0f542fb65bfe6704453c958f46",
+          "url": "https://github.com/tsnlab/tickle/commit/6bb4eebb667a5d8aa8d38e02e9329f52ddfbbac9"
+        },
+        "date": 1790061974899,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
