@@ -46,9 +46,10 @@ static void print_reliable_stats(const char* role) {
            U(stats.jump_data), U(stats.jump_heartbeat), U(stats.jump_abandoned_seq), U(stats.retry_giveups),
            U(stats.heartbeat_advances), U(stats.heartbeat_abandoned_seq), U(stats.recovered),
            U(stats.recovered_after_request), U(stats.late_below_ack), U(stats.duplicates));
-    printf("RSTATS: role=%s acknack_tx immediate=%llu timer=%llu new_gap=%llu sent=%llu bits_sent=%llu\n", role,
-           U(stats.acknack_immediate), U(stats.acknack_timer), U(stats.acknack_new_gap), U(stats.acknack_sent),
-           U(stats.acknack_bits_sent));
+    printf(
+        "RSTATS: role=%s acknack_tx immediate=%llu timer=%llu new_gap=%llu sent=%llu bits_sent=%llu bytes_sent=%llu\n",
+        role, U(stats.acknack_immediate), U(stats.acknack_timer), U(stats.acknack_new_gap), U(stats.acknack_sent),
+        U(stats.acknack_bits_sent), U(stats.acknack_bytes_sent));
     printf("RSTATS: role=%s pub acknack_received=%llu bits_requested=%llu retransmitted=%llu null_evicted=%llu "
            "null_retry_cap=%llu null_lifespan=%llu retransmit_tx_fail=%llu eviction_hb=%llu "
            "evict_count=%llu evict_bytes=%llu oversize=%llu ack_solicit=%llu ack_solicit_suppressed=%llu\n",

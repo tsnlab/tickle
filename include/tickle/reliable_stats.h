@@ -44,6 +44,7 @@ struct tt_ReliableStats {
     uint64_t acknack_new_gap;         // Phase 1-a: narrow ACKNACK attempts for a gap opened while armed
     uint64_t acknack_sent;            // ...of which actually encoded and flushed
     uint64_t acknack_bits_sent;       // total "please resend" bits across those ACKNACKs
+    uint64_t acknack_bytes_sent;      // Phase 2: their total wire size (fixed header + words sent)
     uint64_t recovered;               // arrivals filling a tracked gap below the highest seen
     uint64_t recovered_after_request; // ...of which the seq_no had been named in an ACKNACK
     uint64_t late_below_ack;          // arrivals with seq_no < ack_seq_no (after a jump/skip/give-up)
