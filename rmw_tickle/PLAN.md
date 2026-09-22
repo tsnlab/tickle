@@ -692,6 +692,23 @@ The `-T` flag itself is harmless (opt-in, defaults to disabled, no core change) 
 place on `main` rather than reverted, but flagged here as **not validated to work** until/unless
 the feedback-cadence issue above is addressed.
 
+**Decision (2026-09-22, the user's own direct confirmation to TickLE Dev)** - split into two
+parts:
+1. **Proactive ACK feedback → core, opt-in, assigned to TickLE Dev.** Reuses `pub->
+   heartbeat_period_ns` (already exists, already 0/off by default - see `send_heartbeat()`'s own
+   scheduling above) so the core scheduler calls what `tt_Publisher_request_ack()` already does,
+   automatically and periodically, instead of only ever reacting to a loss-triggered gap. Default
+   behavior (`heartbeat_period_ns == 0`) is unchanged - existing callers see no behavior change at
+   all unless they opt in.
+2. **The throttle policy itself ("lag exceeds threshold → pause") stays at the app/example level,
+   not the core.** Deliberately kept out of `tt_Publisher_publish()` - it would break that
+   function's own "unconditional broadcast" invariant if moved into core. This scenario's own `-T`
+   flag (above) is the right layer for it; once (1) lands, re-sweep `-T` here with proactive
+   heartbeats enabled to check whether `peer_ack_seq_no[]` now tracks closely enough for the
+   throttle to actually work as intended, without the livelock found above.
+
+TickLE Dev is implementing (1); TickLE Plan will re-run the `-T` sweep on real HIL once it lands.
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
