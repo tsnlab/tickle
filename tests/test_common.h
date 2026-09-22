@@ -65,12 +65,12 @@ extern int test_failures;
     struct tt_ReliableCache name;                                                                   \
     memset(name##_index_storage, 0, sizeof(name##_index_storage));                                  \
     memset(name##_arena_storage, 0, sizeof(name##_arena_storage));                                  \
-    memset(&name, 0, sizeof(name));                                                                 \
-    name.index = name##_index_storage;                                                              \
-    name.capacity = (uint16_t)(n);                                                                  \
-    name.depth = (uint16_t)(n);                                                                     \
-    name.arena = name##_arena_storage;                                                              \
-    name.arena_size = (uint32_t)sizeof(name##_arena_storage)
+    memset(&(name), 0, sizeof(name));                                                               \
+    (name).index = name##_index_storage;                                                            \
+    (name).capacity = (uint16_t)(n);                                                                \
+    (name).depth = (uint16_t)(n);                                                                   \
+    (name).arena = name##_arena_storage;                                                            \
+    (name).arena_size = (uint32_t)sizeof(name##_arena_storage)
 
 // Returns a process exit status make can use directly: 0 if every EXPECT_* in this binary
 // passed, 1 (with a summary line) otherwise.
