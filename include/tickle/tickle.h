@@ -565,8 +565,23 @@ struct tt_Publisher { // extends endpoint
     struct tt_Node* node;
     struct tt_Topic* topic;
 
-    // transcation
-    uint16_t seq_no;
+    // This Publisher's own send-side sample counter (transcation) - wire seq_no is this + 1
+    // (tt_Publisher_publish()'s own data_header->seq_no = pub->seq_no + 1), starting from 1.
+    // uint32_t, matching every downstream 32-bit seq_no field that ultimately derives from it
+    // (tt_DataHeader.seq_no, tt_AckNackHeader.seq_no, tt_ReliableCacheEntry.seq_no, peer_ack_
+    // seq_no[] above) - a real bug found on real HIL (TickLE Plan, 2026-09-22): this field used
+    // to be uint16_t, silently wrapping to 0 every 65536 publishes regardless of the wire's own
+    // 32-bit capacity - at TickLE's own real max throughput (~150-190K msg/s), reliable_
+    // throughput's own 8-second max-rate runs wrap more than 20 times *per run*, reusing already-
+    // delivered sequence numbers mid-stream and corrupting RELIABLE ack tracking/DURABILITY
+    // backlog indexing for the rest of that run. At uint32_t width the same wraparound is still
+    // structurally possible, just past ~6.3 continuous hours at that same real max rate - not
+    // specially handled here, the same "an edge case far enough out not to need explicit handling
+    // yet" pragmatism this file already applies elsewhere (e.g. struct tt_Node.entity_id_base's
+    // own doc comment). Distinct from struct tt_Client.seq_no/struct tt_Subscriber.seq_no below -
+    // those pair with their own genuinely-16-bit wire counterparts (tt_CallRequestHeader.seq_no)
+    // or are unused, not affected by this same bug.
+    uint32_t seq_no;
 
     // Known Subscribers matching this Publisher's topic, learned via UPDATE announces - see
     // tt_UNICAST_PEER_THRESHOLD.
