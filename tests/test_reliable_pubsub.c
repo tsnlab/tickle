@@ -1148,6 +1148,7 @@ static void test_reliable_stats_subscriber_gap_accounting(void) {
     EXPECT_EQ_U32(1, (uint32_t)stats.gaps_opened_while_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)stats.acknack_immediate);
     EXPECT_EQ_U32(0, (uint32_t)stats.acknack_timer);
+    EXPECT_EQ_U32(1, (uint32_t)stats.acknack_new_gap); // Phase 1-a, for the gap at 4
     EXPECT_EQ_U32(2, (uint32_t)stats.acknack_sent);
     EXPECT_EQ_U32(2, (uint32_t)stats.acknack_bits_sent); // seq_no 2, then seq_no 4 - each named once
     EXPECT_EQ_U32(2, (uint32_t)stats.recovered);
