@@ -487,6 +487,13 @@ typedef struct rmw_tickle_publisher_t {
 // default queue size.
 #define RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH 10
 
+// Phase 2 (rmw_tickle/PLAN.md) - how wide a RELIABLE gap each subscription can track, in 64-bit
+// words: 16 words = 1024 samples, ~5.4ms at TickLE's own measured max rate, i.e. about four retry
+// intervals rather than the ~1.35ms the 256-sample core default lasts. 8KB per subscription
+// (tt_MAX_PEER_COUNT windows) - Linux-class memory, not microcontroller memory, which is exactly
+// why core keeps the narrower default (Project Goal 1) and rmw_tickle opts in here (Goal 5).
+#define RMW_TICKLE_TRACKING_WORDS 16
+
 typedef struct rmw_tickle_queued_message_t {
     void* ros_message; // callbacks->ros_struct_size bytes, allocator-owned
     uint64_t source_timestamp;
@@ -499,6 +506,13 @@ typedef struct rmw_tickle_queued_message_t {
 typedef struct rmw_tickle_subscriber_t {
     rmw_subscription_t rmw_subscription; // RMW subscription structure (must be first)
     struct tt_Subscriber tickle_subscriber;
+    // Phase 2 (rmw_tickle/PLAN.md) - the caller-owned RELIABLE tracking window
+    // tickle_subscriber points at (tt_Subscriber.tracking_bitmaps): one window per simultaneously
+    // tracked remote Publisher. TickLE core defaults to tt_RELIABLE_BITMAP_BITS because it is
+    // embedded-first (Project Goal 1); rmw_tickle is the Linux-class consumer (Goal 5) that asks
+    // for more - at TickLE's own max rate a 256-sample window lasts ~1.35ms, shorter than one
+    // retry plus a round trip, which is what leaves an occasional burst unrecoverable.
+    uint64_t* tracking_bitmaps;
     struct tt_Topic topic; // see rmw_tickle_publisher_t.topic's own comment
     rmw_tickle_node_t* node;
     // See rmw_tickle_publisher_t.owning_node_name's own doc comment - same reasoning, taken at

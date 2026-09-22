@@ -1230,6 +1230,331 @@ static void test_process_acknack_ignored_for_durable_only_publisher(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // not answered - RELIABILITY's own contract, not offered
 }
 
+// --- Phase 2: the wider tracking window itself ---
+
+// A gap wider than the default 256-sample window is normally abandoned outright
+// (jump_ack_baseline()) - that abandonment is what the intermittent max-rate loss comes from. With
+// a caller-provided wider window the same gap stays tracked and is still requestable.
+static void test_wide_gap_tracked_with_caller_sized_window(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    // 1024-sample window: 16 words per writer, one window per tracked writer.
+    static uint64_t tracking[tt_MAX_PEER_COUNT * 16];
+    memset(tracking, 0, sizeof(tracking));
+    sub.tracking_bitmaps = tracking;
+    sub.tracking_words = 16;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // seq_no 800 is 798 ahead of the still-missing 2: past the 256 default, inside 1024.
+    tail = write_data(&node, 800, 80000, 800);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no); // still waiting on 2 - not jumped past it
+    EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, 798));
+    EXPECT_TRUE(proxy->acknack_scheduled);
+
+    // The ACKNACK it sent must name the gap across several words, and say how many it carries.
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);
+    EXPECT_TRUE(acknack->bitmap_words >= 13); // bit 798 lives in word 12
+    EXPECT_TRUE(acknack->bitmap_words <= 16);
+    EXPECT_TRUE((acknack->bitmap[0] & 1ULL) != 0); // seq_no 2 requested
+
+    // ...and the very same gap is abandoned with the default window, which is what this fixes. A
+    // separate node/subscriber pair, so nothing above carries over.
+    test_mock_reset();
+    struct tt_Node narrow_node;
+    struct tt_Topic narrow_topic;
+    struct tt_Subscriber narrow;
+    init_node_and_topic(&narrow_node, &narrow_topic);
+    init_subscriber_registered_on_node(&narrow, &narrow_node, &narrow_topic);
+    struct tt_Header narrow_header;
+    init_header(&narrow_header);
+
+    tail = write_data(&narrow_node, 1, 100, 1);
+    EXPECT_TRUE(
+        process_data(&narrow_node, &narrow_header, narrow_node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&narrow_node, 800, 80000, 800);
+    EXPECT_TRUE(
+        process_data(&narrow_node, &narrow_header, narrow_node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* narrow_proxy = remote_writer_proxy(&narrow);
+    EXPECT_TRUE(narrow_proxy != NULL);
+    EXPECT_EQ_U32(801, narrow_proxy->ack_seq_no); // jumped past the gap outright
+}
+
+// A caller asking for more than the build's own maximum is clamped, not trusted - the window it
+// gets is the maximum, and nothing indexes past the buffer it actually provided.
+static void test_oversized_window_request_is_clamped(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    static uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS];
+    memset(tracking, 0, sizeof(tracking));
+    sub.tracking_bitmaps = tracking;
+    sub.tracking_words = tt_RELIABLE_BITMAP_MAX_WORDS * 4; // four times what this build allows
+
+    EXPECT_EQ_U32(tt_RELIABLE_BITMAP_MAX_WORDS, (uint32_t)subscriber_tracking_words(&sub));
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(tt_RELIABLE_BITMAP_MAX_BITS, proxy_window_bits(proxy));
+}
+
+// --- Phase 2 (rmw_tickle/PLAN.md): per-Subscriber ack identity and the variable-length bitmap ---
+
+// Writes an ACKNACK naming a specific sending Subscriber entity and `words` bitmap words.
+static uint32_t write_acknack_from(struct tt_Node* node, uint32_t endpoint_id, uint32_t sender_entity_id,
+                                   uint32_t seq_no, const uint64_t* words, uint16_t word_count) {
+    struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
+    memset(acknack_header, 0, sizeof(*acknack_header));
+    acknack_header->endpoint_id = endpoint_id;
+    acknack_header->sender_entity_id = sender_entity_id;
+    acknack_header->seq_no = seq_no;
+    acknack_header->bitmap_words = word_count;
+    for (uint16_t i = 0; i < word_count; i++) {
+        acknack_header->bitmap[i] = words[i];
+    }
+    return (uint32_t)(sizeof(struct tt_AckNackHeader) + ((size_t)word_count * sizeof(uint64_t)));
+}
+
+// The KEEP_ALL hazard prerequisite (b) exists for: two Subscribers of one topic on one remote node
+// each get their own ack entry, so the faster one's ACKNACK must not make the Publisher believe
+// both have caught up.
+static void test_two_subscriber_entities_on_one_node_ack_independently(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+
+    const uint32_t fast_entity = REMOTE_SUB_ENTITY_ID;
+    const uint32_t slow_entity = REMOTE_SUB_ENTITY_ID + 1;
+    EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, fast_entity) != NULL);
+    EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, slow_entity) != NULL);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // The fast Subscriber acks everything below 10; the slow one has said nothing yet.
+    uint32_t tail = write_acknack_from(&node, ENDPOINT_ID, fast_entity, 10, NULL, 0);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(!tt_Publisher_is_acked_by_all_peers(&pub, 5)); // the slow one still hasn't
+    EXPECT_EQ_U32(0, tt_Publisher_min_acked_seq_no(&pub));
+
+    // The slow one catches up only as far as 7.
+    tail = write_acknack_from(&node, ENDPOINT_ID, slow_entity, 7, NULL, 0);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(7, tt_Publisher_min_acked_seq_no(&pub)); // the minimum, not the fast one's 10
+    EXPECT_TRUE(tt_Publisher_is_acked_by_all_peers(&pub, 6));
+    EXPECT_TRUE(!tt_Publisher_is_acked_by_all_peers(&pub, 7)); // 7 itself isn't acked by the slow one
+}
+
+// An ACKNACK whose sender this Publisher never matched (or with no sender id at all) still routes
+// and retransmits, but must not be counted as anyone's ack - the conservative direction: counting
+// it would let a KEEP_ALL writer unblock on a Subscriber it isn't actually tracking.
+static void test_process_acknack_from_unmatched_entity_records_nothing(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID + 99, 10, NULL, 0);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_acknack_from(&node, ENDPOINT_ID, 0, 10, NULL, 0); // no sender id at all
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(0, ack->ack_seq_no); // the tracked Subscriber still hasn't acked anything
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 99) == NULL);
+}
+
+// The ack table filling up must refuse the match outright rather than matching a Subscriber whose
+// acks could never be counted (which would unblock a KEEP_ALL writer early).
+static void test_ack_table_full_refuses_further_entities(void) {
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + (uint32_t)i) != NULL);
+    }
+    EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + tt_MAX_ACK_ENTRIES) == NULL);
+
+    // Freeing one entity's entry (its own lease expiring, say) makes room again - and only that one.
+    forget_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 3, /*match_any_entity=*/false);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 3) == NULL);
+    EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 4) != NULL);
+    EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + tt_MAX_ACK_ENTRIES) != NULL);
+}
+
+// A malformed bitmap_words must be rejected, not clamped and half-processed: the request would name
+// sequence numbers the sender never meant. Both bounds are checked - this receiver's own capacity,
+// and the bytes the datagram actually carries.
+static void test_acknack_rejects_malformed_bitmap_words(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+    test_mock_send_to_call_count = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+    uint64_t one_word[1] = {1ULL};
+
+    // Absurd count, far past any window this build could have.
+    uint32_t tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID, 1, one_word, 1);
+    ((struct tt_AckNackHeader*)node.rx_buffer)->bitmap_words = 60000;
+    EXPECT_TRUE(!process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // In range for this build, but more words than the datagram actually carries.
+    tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID, 1, one_word, 1);
+    ((struct tt_AckNackHeader*)node.rx_buffer)->bitmap_words = tt_RELIABLE_BITMAP_MAX_WORDS;
+    EXPECT_TRUE(!process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // nothing retransmitted from either
+
+    // ...and a well-formed one still works, so the checks aren't simply rejecting everything.
+    tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID, 1, one_word, 1);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+}
+
+// A zero-word ACKNACK is a pure cumulative ack: nothing to retransmit, but the ack still counts.
+static void test_acknack_with_no_bitmap_words_is_a_pure_ack(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    TEST_RELIABLE_CACHE(cache, 4);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    EXPECT_TRUE(claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    test_mock_send_to_call_count = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID, 2, NULL, 0);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // nothing requested
+    const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    EXPECT_TRUE(ack != NULL);
+    EXPECT_EQ_U32(2, ack->ack_seq_no); // ...but the ack landed
+}
+
+// A request spanning several words retransmits every named sample, wherever it sits in the bitmap -
+// the whole point of letting the window grow past one word.
+static void test_acknack_multi_word_bitmap_retransmits_each_named_sample(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    TEST_RELIABLE_CACHE(cache, 200);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+    pub.peers[0].node_id = REMOTE_NODE_ID;
+    pub.peers[0].ip = TEST_SENDER_IP;
+    pub.peers[0].port = TEST_SENDER_PORT;
+
+    for (uint32_t i = 0; i < 200; i++) { // seq_no 1..200, all retained
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+    }
+    test_mock_send_to_call_count = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+    // From seq_no 1: bit 0 (seq 1), bit 64 (seq 65) and bit 130 (seq 131) - three words.
+    uint64_t words[3] = {1ULL, 1ULL, 1ULL << 2};
+    uint32_t tail = write_acknack_from(&node, ENDPOINT_ID, REMOTE_SUB_ENTITY_ID, 1, words, 3);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[0].retry);   // seq_no 1
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[64].retry);  // seq_no 65
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[130].retry); // seq_no 131
+    EXPECT_EQ_U32(0, (uint32_t)cache.index[1].retry);   // an unnamed one stays untouched
+}
+
 // QoS roadmap #5 (RELIABILITY) follow-up - tt_Publisher_wait_for_all_acked(). An ACKNACK from a
 // peer already present in pub->peers[] must advance that peer's own peer_acks[] entry to the
 // ACKNACK's own cumulative seq_no - the aggregation tt_Publisher_wait_for_all_acked() is built on.
@@ -1481,6 +1806,14 @@ int main(void) {
     test_process_acknack_updates_peer_ack_seq_no();
     test_process_acknack_does_not_regress_peer_ack_seq_no();
     test_process_acknack_from_unmatched_peer_updates_nothing();
+    test_wide_gap_tracked_with_caller_sized_window();
+    test_oversized_window_request_is_clamped();
+    test_two_subscriber_entities_on_one_node_ack_independently();
+    test_process_acknack_from_unmatched_entity_records_nothing();
+    test_ack_table_full_refuses_further_entities();
+    test_acknack_rejects_malformed_bitmap_words();
+    test_acknack_with_no_bitmap_words_is_a_pure_ack();
+    test_acknack_multi_word_bitmap_retransmits_each_named_sample();
     test_forget_publisher_peer_resets_ack_seq_no();
 #ifdef tt_RELIABLE_STATS
     test_reliable_stats_subscriber_gap_accounting();

@@ -78,6 +78,8 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
 }
 
 static const double default_safety_cap_s = 40.0;
+// Phase 2 - -w <samples>: the RELIABLE tracking window this Subscriber asks for; 0 = core default.
+static uint32_t window_samples = 0;
 static const double safety_cap_buffer_s = 15.0;
 
 int main(int argc, char** argv) {
@@ -85,6 +87,11 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
+            // Phase 2 (rmw_tickle/PLAN.md) - RELIABLE tracking window in samples (256/1024/4096),
+            // so one HIL sweep can compare them. 0/absent keeps TickLE core's own embedded-first
+            // default (tt_RELIABLE_BITMAP_BITS), i.e. exactly what earlier runs measured.
+            window_samples = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
     }
     // +15s buffer - see deadline_miss_detection/server.c's own doc comment for the real bug this
@@ -115,6 +122,19 @@ int main(int argc, char** argv) {
         return ret;
     }
     sub.reliable = true;
+    // Phase 2 - a wider caller-owned tracking window, one per simultaneously tracked Publisher.
+    // Sized for the widest this build allows; only the requested prefix is actually used.
+    static uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS];
+    if (window_samples > 0) {
+        uint32_t words = window_samples / tt_RELIABLE_BITMAP_WORD_BITS;
+        if (words > tt_RELIABLE_BITMAP_MAX_WORDS) {
+            words = tt_RELIABLE_BITMAP_MAX_WORDS;
+        }
+        if (words > 0) {
+            sub.tracking_bitmaps = tracking;
+            sub.tracking_words = (uint16_t)words;
+        }
+    }
 
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
     // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
@@ -127,8 +147,10 @@ int main(int argc, char** argv) {
     uint64_t lost = max_seq_seen > received ? (uint64_t)max_seq_seen - received : 0;
     double loss_pct = max_seq_seen > 0 ? (100.0 * (double)lost / (double)max_seq_seen) : 0.0;
 
-    printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f\n",
-           (unsigned long)received, (unsigned long)lost, loss_pct);
+    printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
+           "window_samples=%u\n",
+           (unsigned long)received, (unsigned long)lost, loss_pct,
+           window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS);
     print_reliable_stats("server");
 
     tt_Node_destroy(&node);
