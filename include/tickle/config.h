@@ -44,29 +44,24 @@
 // owned (any size the caller's own backing array happens to be - stack, static, or, for a caller
 // that already accepts dynamic allocation elsewhere like rmw_tickle, heap), so a specific
 // Publisher's own real ceiling is whatever array it was actually given, not a single build-wide
-// constant every Publisher was capped by or paid for alike. This constant now serves two much
-// narrower, purely *Subscriber*-side roles instead, both about struct tt_WriterProxy's own gap-
-// tracking, not about sizing anything on the Publisher side:
+// constant every Publisher was capped by or paid for alike. This constant is now only the reference
+// value examples/tests default a Publisher's own array size to when they have no other reason to
+// pick something different (tt_ReliableCache's own doc comment) - not a limit on what a caller
+// *may* choose, just a reasonable, historically-tuned starting point.
 //
-// (1) skip_unrecoverable_backlog()'s (tickle.c) own bulk-skip give-up heuristic - a Subscriber's
-// own assumption about how deep a *remote* Publisher's cache plausibly still reaches back, used
-// only to decide how many ACKNACK retries are worth attempting before giving up on a stuck gap.
-// The Subscriber has no way to know a specific remote Publisher's own real capacity (that's a
-// wire-level unknown, unlike this constant's old role as a hard local ceiling) - this is now an
-// educated guess, not an enforced bound; a real Publisher configured deeper than this may still
-// answer a retransmit request after this Subscriber would otherwise have given up, a safe, merely
-// suboptimal miss (an extra unnecessary give-up), never a correctness problem.
+// It used to have a second, Subscriber-side role: skip_unrecoverable_backlog()'s (tickle.c) guess at
+// how deep a *remote* Publisher's cache reaches back, used to bulk-skip on an ACKNACK give-up. Phase
+// 1-c (rmw_tickle/PLAN.md, B2) removed that guess - a Publisher now answers an ACKNACK naming an
+// evicted sample with an eviction Heartbeat carrying its real first_available_seq_no, so the
+// Subscriber skips exactly what's gone instead of assuming a depth of 64 (which threw away samples a
+// deeper cache, e.g. -K 1024, still held).
 //
-// (2) The reference value examples/tests default a Publisher's own array size to when they have
-// no other reason to pick something different (tt_ReliableCache's own doc comment) - not a limit
-// on what a caller *may* choose, just a reasonable, historically-tuned starting point.
-//
-// Whether raising *either* role's own value past tt_RELIABLE_BITMAP_BITS (below) would help
+// Whether raising this value past tt_RELIABLE_BITMAP_BITS (below) would help
 // anything: see struct tt_ReliableCache's own doc comment (tickle.h) for the fuller answer - a
 // deeper *Publisher*-side cache alone was never the fix for RELIABLE's own ACKNACK-driven recovery
 // under sustained loss (only DURABILITY's own one-shot backlog push benefits from that); the real
-// bottleneck was always the Subscriber's own received_bitmap width, which this constant's own
-// role (1) above already respects via the _Static_assert (tickle.c) keeping it at or under
+// bottleneck was always the Subscriber's own received_bitmap width, which this default already
+// respects via the _Static_assert (tickle.c) keeping it at or under
 // whatever that width currently is. That width was widened 64 -> 256 bits (rmw_tickle/PLAN.md's
 // "TickLE-native performance" plan) once real HIL confirmed it, not just the cache depth, was the
 // actual ceiling - see tt_RELIABLE_BITMAP_BITS's own doc comment for the honest "raises the

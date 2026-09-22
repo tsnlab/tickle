@@ -307,6 +307,21 @@ static const struct tt_AckNackHeader* last_sent_acknack(void) {
     return (const struct tt_AckNackHeader*)(test_mock_send_last_buf + acknack_off);
 }
 
+// Same, for a Heartbeat (Phase 1-c's eviction Heartbeat) - NULL if the last packet wasn't one.
+static const struct tt_HeartbeatHeader* last_sent_heartbeat(void) {
+    size_t submessage_off = sizeof(struct tt_Header);
+    size_t heartbeat_off = submessage_off + sizeof(struct tt_SubmessageHeader);
+    if (test_mock_send_last_len < heartbeat_off + sizeof(struct tt_HeartbeatHeader)) {
+        return NULL;
+    }
+    const struct tt_SubmessageHeader* submessage =
+        (const struct tt_SubmessageHeader*)(test_mock_send_last_buf + submessage_off);
+    if (submessage->type != tt_SUBMESSAGE_TYPE_HEARTBEAT) {
+        return NULL;
+    }
+    return (const struct tt_HeartbeatHeader*)(test_mock_send_last_buf + heartbeat_off);
+}
+
 // Phase 1-a (rmw_tickle/PLAN.md, H2) - a gap that opens while the retry timer from an earlier gap
 // is still armed gets its own immediate ACKNACK, naming only its own positions (never re-requesting
 // the earlier, still-open gap, whose retransmit may already be in flight). Arrivals that open no
@@ -555,32 +570,13 @@ static void test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery(
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap));
 }
 
-// Regression test for a third real bug found via run_perf.sh's own tc/netem loss-injection
-// scenarios: a gap wider than tt_MAX_RELIABLE_HISTORY used to only ever shrink one position per
-// tt_RELIABLE_RETRY cycle (acknack_retry()'s own give-up path) even though every position beyond
-// the Publisher's own retained-cache depth is *provably* unrecoverable by the time ack_seq_no
-// itself finally gets given up on - nothing will ever un-evict it. Left alone, real time (and the
-// Publisher's own cache) kept moving on regardless, so an initial small gap under real loss grew
-// into a many-dozen-sequence-number backlog of "requested, not found in cache" ACKNACKs instead
-// of resolving in a bounded number of retries. (An even earlier version of this fix tried
-// fast-forwarding reactively on every far-ahead arrival instead of only at give-up time - that
-// backfired by perpetually re-triggering itself and pre-empting ack_seq_no's own retry cycle
-// before it ever got a fair chance to resolve normally; skip_unrecoverable_backlog() only ever
-// runs from acknack_retry()'s own give-up path now, confirmed below.)
-//
-// PLAN.md's Milestone 24 briefly raised tt_MAX_RELIABLE_HISTORY all the way to tt_RELIABLE_BITMAP_
-// BITS (64, its own hard ceiling), which made this bulk-skip logic provably a no-op - any position
-// received_bitmap can even represent (bit 0..63) was then, by construction, always within a
-// plausibly-still-cached window, since update_reliable_ack()'s own oversized-gap check (offset >=
-// tt_RELIABLE_BITMAP_BITS) already catches anything wider before it's ever recorded in the bitmap
-// at all. Milestone 25 (the real loss_pct-floor fix, elsewhere) freed depth to be re-tuned down
-// again on its own real-HIL merits, back below the bitmap width - so this test is parametrized to
-// work correctly either way, whichever regime the current depth sits in, rather than needing its
-// own rewrite every time that tuning changes: below the bitmap width, a gap "6 past depth" is the
-// classic bulk-skip case this test was originally written for; at (or past) it, the same gap isn't
-// representable in the bitmap at all, and the correct behavior is Milestone 24's own no-op proof
-// instead.
-static void test_acknack_retry_bulk_skip_matches_depth_vs_bitmap_width(void) {
+// Phase 1-c (rmw_tickle/PLAN.md, B2) - acknack_retry()'s give-up no longer bulk-skips everything
+// more than tt_MAX_RELIABLE_HISTORY behind the highest received sample (skip_unrecoverable_backlog(),
+// removed): that was a compile-time guess at the remote Publisher's depth, and threw away samples a
+// deeper cache still held. What's genuinely gone is now signalled by the Publisher's own eviction
+// Heartbeat instead (see test_heartbeat.c). Giving up on ack_seq_no advances past it alone, and a
+// sample received far ahead - past the old 64-deep guess - stays tracked, its gap still requested.
+static void test_acknack_retry_give_up_does_not_bulk_skip(void) {
     test_mock_reset();
 
     struct tt_Node node;
@@ -589,61 +585,29 @@ static void test_acknack_retry_bulk_skip_matches_depth_vs_bitmap_width(void) {
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
 
-    // Milestone 47 - this test pre-seeds gap state directly (no real packet involved yet), so it
-    // must claim the WriterProxy entry itself first - find_or_create_writer_proxy() sets ack_seq_no
-    // to 1, matching this test's own original "freshly-initialized" assumption.
     struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(1, proxy->ack_seq_no);
 
-    // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order - either
-    // 6 past the current depth (classic bulk-skip shape) or the widest bit received_bitmap can ever
-    // represent at all, whichever is narrower.
-    const bool bulk_skip_possible = tt_MAX_RELIABLE_HISTORY + 6 < tt_RELIABLE_BITMAP_BITS;
-    const uint32_t far_seq = bulk_skip_possible ? tt_MAX_RELIABLE_HISTORY + 6 : tt_RELIABLE_BITMAP_BITS;
-    // bit (far_seq - 1): ack_seq_no(1) + (far_seq - 1) = far_seq. bitmap_set_bit() (tickle.c, not a
-    // raw `1ULL << (far_seq - 1)`) since far_seq - 1 can now exceed 63 once the bitmap is wider than
-    // one word - a bare shift by >= 64 is undefined behavior, exactly the class of bug this
-    // milestone's own production-code fix (update_reliable_ack()) already had to avoid.
+    // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order - past
+    // the old tt_MAX_RELIABLE_HISTORY-deep guess, still inside the tracking window.
+    const uint32_t far_seq = tt_MAX_RELIABLE_HISTORY + 6;
+    _Static_assert(tt_MAX_RELIABLE_HISTORY + 6 < tt_RELIABLE_BITMAP_BITS, "far_seq must fit the tracking window");
     bitmap_set_bit(proxy->received_bitmap, far_seq - 1);
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
     proxy->acknack_scheduled = true;
 
-    // ack_seq_no (seq_no 1) gets its own fair tt_RELIABLE_RETRY attempts first - untouched, not
-    // pre-empted by the far-ahead bit already sitting in the bitmap.
     for (int i = 0; i < tt_RELIABLE_RETRY; i++) {
         acknack_retry(&node, tt_get_ns(), proxy);
         EXPECT_EQ_U32(1, proxy->ack_seq_no);
     }
 
-    acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up, then (maybe) bulk-skip
+    acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up on seq_no 1 only
 
-    if (bulk_skip_possible) {
-        // advance_ack_seq_no() moves past seq_no 1 alone (bit 0 isn't set, nothing immediately
-        // following to absorb), landing at 2; skip_unrecoverable_backlog() then jumps the rest of
-        // the way in one step, since far_seq - 2 + 1 > tt_MAX_RELIABLE_HISTORY.
-        EXPECT_EQ_U32(far_seq - tt_MAX_RELIABLE_HISTORY + 1, proxy->ack_seq_no);
-        // bit (tt_MAX_RELIABLE_HISTORY - 1): ack_seq_no + (tt_MAX_RELIABLE_HISTORY - 1) = far_seq,
-        // the sample already known received - still correctly tracked, not lost in the jump.
-        EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 1ULL << (tt_MAX_RELIABLE_HISTORY - 1)));
-    } else {
-        // depth >= bitmap width: far_seq's own bit is always within the tracking window by
-        // construction, so this correctly resolves through the normal retry cycle instead - no
-        // bulk skip, same reasoning Milestone 24's own removed test proved directly.
-        EXPECT_EQ_U32(2, proxy->ack_seq_no);
-        // far_seq - 2 can also exceed 63 in principle (same reasoning as the seeding above) - not
-        // reachable with today's tt_MAX_RELIABLE_HISTORY/tt_RELIABLE_BITMAP_BITS values (this
-        // branch only runs when bulk_skip_possible is false, i.e. far_seq == tt_RELIABLE_BITMAP_
-        // BITS itself is the ceiling), but bitmap_test_bit() over bitmap_equals_u64()'s own raw
-        // shift keeps this branch correct regardless of what those constants become later.
-        EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, far_seq - 2));
-        for (uint32_t bit = 0; bit < tt_RELIABLE_BITMAP_BITS; bit++) {
-            if (bit != far_seq - 2) {
-                EXPECT_TRUE(!bitmap_test_bit(proxy->received_bitmap, bit));
-            }
-        }
-    }
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);                               // past seq_no 1 alone, no bulk skip
+    EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, far_seq - 2)); // far_seq still tracked
+    EXPECT_TRUE(proxy->acknack_scheduled); // the rest of the gap (2..far_seq-1) gets its own retries
 }
 
 // acknack_retry() must keep re-sending up to tt_RELIABLE_RETRY times, then give up: skip past
@@ -907,12 +871,32 @@ static void test_process_acknack_direct_index_correct_after_wraparound(void) {
     init_header(&header);
 
     // Evicted: seq_no 1's own slot (0) now genuinely holds seq_no 5, not seq_no 1 - must not
-    // false-match and retransmit the wrong (newer) sample.
+    // false-match and retransmit the wrong (newer) sample. Phase 1-c: the only thing sent back is
+    // one eviction Heartbeat saying resendable history now starts at 3 (the oldest seq_no the
+    // depth-4 ring still holds, 6 - 4 + 1).
     test_mock_send_to_call_count = 0;
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(0, (uint32_t)cache.entries[0].retry); // untouched - correctly not matched
+    const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
+    EXPECT_TRUE(heartbeat != NULL);
+    EXPECT_EQ_U32(3, heartbeat->first_available_seq_no);
+    EXPECT_EQ_U32(6, heartbeat->last_seq_no);
+    EXPECT_TRUE(heartbeat->flags == tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip); // unicast back to the requester
+
+    // Mixed: seq_no 2 (evicted) and 3 (retained) in one ACKNACK - 3 is retransmitted, and exactly
+    // one eviction Heartbeat follows it (once per ACKNACK, not per gone bit).
+    test_mock_send_to_call_count = 0;
+    tail = write_acknack(&node, ENDPOINT_ID, 1, 0x6ULL); // bits 1, 2 = seq_no 2, 3
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(1, (uint32_t)cache.entries[2].retry); // seq_no 3 resent
+    heartbeat = last_sent_heartbeat();
+    EXPECT_TRUE(heartbeat != NULL);
+    EXPECT_EQ_U32(3, heartbeat->first_available_seq_no);
+    cache.entries[2].retry = 0; // reset for the "un-wrapped slot 2" case below
 
     // Wrapped-into slot 0, genuinely retained: seq_no 5.
     test_mock_send_to_call_count = 0;
@@ -970,8 +954,14 @@ static void test_process_acknack_skips_expired_sample(void) {
     uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL); // requesting seq_no 1 (bit 0)
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
-    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // expired - no retransmit
-    EXPECT_EQ_U32(0, (uint32_t)cache.entries[0].retry);
+    EXPECT_EQ_U32(0, (uint32_t)cache.entries[0].retry); // expired - no retransmit
+    // Phase 1-c: just one eviction Heartbeat - nothing resendable remains, so resendable history
+    // "starts" one past the newest published seq_no.
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
+    EXPECT_TRUE(heartbeat != NULL);
+    EXPECT_EQ_U32(2, heartbeat->first_available_seq_no);
+    EXPECT_EQ_U32(1, heartbeat->last_seq_no);
 }
 
 // An ACKNACK for a best-effort Publisher (reliable_cache == NULL, today's default) must be a
@@ -1253,7 +1243,8 @@ static void test_reliable_stats_publisher_retransmit_accounting(void) {
     EXPECT_EQ_U32(1, (uint32_t)stats.retransmitted);
     EXPECT_EQ_U32(1, (uint32_t)stats.null_evicted);
     EXPECT_EQ_U32(0, (uint32_t)stats.null_retry_cap);
-    EXPECT_TRUE(stats.datagrams_with_data >= 1); // at least the retransmit itself
+    EXPECT_EQ_U32(1, (uint32_t)stats.eviction_heartbeats); // Phase 1-c, for seq_no 2
+    EXPECT_TRUE(stats.datagrams_with_data >= 1);           // at least the retransmit itself
     EXPECT_TRUE(stats.max_data_per_datagram >= 1);
 }
 #endif
@@ -1268,7 +1259,7 @@ int main(void) {
     test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
-    test_acknack_retry_bulk_skip_matches_depth_vs_bitmap_width();
+    test_acknack_retry_give_up_does_not_bulk_skip();
     test_reliable_subscribe_oversized_first_gap_jumps_baseline_instead_of_freezing();
     test_reliable_first_contact_via_data_does_not_request_pre_match_history();
     test_acknack_retry_budget_resets_for_next_gap();
