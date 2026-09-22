@@ -291,6 +291,83 @@ static void test_reliable_subscribe_gap_then_close(void) {
     EXPECT_TRUE(!proxy->acknack_scheduled);
 }
 
+// Decodes the most recently sent packet as a single ACKNACK (the only thing a Subscriber-side test
+// here ever sends) - NULL if it wasn't one.
+static const struct tt_AckNackHeader* last_sent_acknack(void) {
+    size_t submessage_off = sizeof(struct tt_Header);
+    size_t acknack_off = submessage_off + sizeof(struct tt_SubmessageHeader);
+    if (test_mock_send_last_len < acknack_off + sizeof(struct tt_AckNackHeader)) {
+        return NULL;
+    }
+    const struct tt_SubmessageHeader* submessage =
+        (const struct tt_SubmessageHeader*)(test_mock_send_last_buf + submessage_off);
+    if (submessage->type != tt_SUBMESSAGE_TYPE_ACKNACK) {
+        return NULL;
+    }
+    return (const struct tt_AckNackHeader*)(test_mock_send_last_buf + acknack_off);
+}
+
+// Phase 1-a (rmw_tickle/PLAN.md, H2) - a gap that opens while the retry timer from an earlier gap
+// is still armed gets its own immediate ACKNACK, naming only its own positions (never re-requesting
+// the earlier, still-open gap, whose retransmit may already be in flight). Arrivals that open no
+// new gap - contiguous with the highest received, or filling an existing gap - send nothing, so this
+// can't regress into the per-DATA ACKNACK flood maybe_arm_acknack_retry()'s own comment describes.
+static void test_reliable_new_gap_while_armed_gets_immediate_narrow_nack(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 3, 300, 3); // gap at 2: the usual immediate ACKNACK, arms the retry timer
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_TRUE(proxy->acknack_scheduled);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);
+    EXPECT_TRUE(acknack->bitmap[0] == 0x1ULL); // seq_no 2
+
+    tail = write_data(&node, 7, 700, 7); // new gap at 4..6 while armed
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // immediate, not left for the 5ms timer
+    EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(2, acknack->seq_no);          // base (cumulative ack) unchanged
+    EXPECT_TRUE(acknack->bitmap[0] == 0x1CULL); // bits 2..4 = seq_no 4..6 only, not seq_no 2 again
+    for (int word = 1; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        EXPECT_TRUE(acknack->bitmap[word] == 0);
+    }
+
+    tail = write_data(&node, 8, 800, 8); // contiguous with the highest received - no new gap
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 5, 500, 5); // fills part of an existing gap - no new gap
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 2, 200, 2); // fills the head gap - no new gap
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no); // 2 landed, absorbed 3; 4 still missing
+    EXPECT_TRUE(proxy->acknack_scheduled);
+
+    tail = write_data(&node, 10, 1000, 10); // another new gap (9) while still armed
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    EXPECT_EQ_U32(4, acknack->seq_no);
+    EXPECT_TRUE(acknack->bitmap[0] == (1ULL << 5)); // seq_no 9 = ack_seq_no 4 + 5; not 4 or 6
+}
+
 // Milestone 60 (rmw_tickle/PLAN.md) - receive-side de-duplication regression: TickLE Plan's own
 // real HIL finding (history_depth_burst_loss/lifespan_expiry scenarios, recv > sent) traced to
 // deliver_data_to_subscriber() invoking the application callback unconditionally, with no seq_no-
@@ -1041,7 +1118,8 @@ static void test_forget_publisher_peer_resets_ack_seq_no(void) {
 #ifdef tt_RELIABLE_STATS
 // experiment/reliable-recovery-instrumentation - pins the subscriber-side counters against a
 // hand-traced sequence: 1, 3 (gap at 2: immediate ACKNACK), 5 (gap at 4, opened while the retry
-// timer from the first gap is still armed - H2, so no ACKNACK of its own), then 2 and 4 arrive.
+// timer from the first gap is still armed - H2; Phase 1-a now NACKs it immediately too, naming only
+// seq_no 4), then 2 and 4 arrive.
 static void test_reliable_stats_subscriber_gap_accounting(void) {
     test_mock_reset();
     tt_reliable_stats_reset();
@@ -1070,10 +1148,10 @@ static void test_reliable_stats_subscriber_gap_accounting(void) {
     EXPECT_EQ_U32(1, (uint32_t)stats.gaps_opened_while_scheduled);
     EXPECT_EQ_U32(1, (uint32_t)stats.acknack_immediate);
     EXPECT_EQ_U32(0, (uint32_t)stats.acknack_timer);
-    EXPECT_EQ_U32(1, (uint32_t)stats.acknack_sent);
-    EXPECT_EQ_U32(1, (uint32_t)stats.acknack_bits_sent); // only seq_no 2 was ever named
+    EXPECT_EQ_U32(2, (uint32_t)stats.acknack_sent);
+    EXPECT_EQ_U32(2, (uint32_t)stats.acknack_bits_sent); // seq_no 2, then seq_no 4 - each named once
     EXPECT_EQ_U32(2, (uint32_t)stats.recovered);
-    EXPECT_EQ_U32(1, (uint32_t)stats.recovered_after_request);
+    EXPECT_EQ_U32(2, (uint32_t)stats.recovered_after_request);
     EXPECT_EQ_U32(0, (uint32_t)stats.jump_data);
     EXPECT_EQ_U32(0, (uint32_t)stats.duplicates);
 
@@ -1084,9 +1162,10 @@ static void test_reliable_stats_subscriber_gap_accounting(void) {
         request_total += stats.request_to_recover_hist[i];
     }
     EXPECT_EQ_U32(2, (uint32_t)detect_total);
-    EXPECT_EQ_U32(1, (uint32_t)request_total);
-    // seq_no 2: detected at 1200us, recovered at 1400us -> 200us, bucket [128, 256)us = index 8
-    EXPECT_EQ_U32(1, (uint32_t)stats.request_to_recover_hist[8]);
+    EXPECT_EQ_U32(2, (uint32_t)request_total);
+    // seq_no 2: requested at 1200us, recovered at 1400us; seq_no 4: requested at 1300us, recovered
+    // at 1500us - both 200us, bucket [128, 256)us = index 8
+    EXPECT_EQ_U32(2, (uint32_t)stats.request_to_recover_hist[8]);
 }
 
 // Publisher side: one ACKNACK naming a cached seq_no (retransmitted) and one never published at
@@ -1137,6 +1216,7 @@ int main(void) {
     test_reliable_publish_caches_and_evicts();
     test_reliable_subscribe_in_order_no_acknack();
     test_reliable_subscribe_gap_then_close();
+    test_reliable_new_gap_while_armed_gets_immediate_narrow_nack();
     test_reliable_duplicate_delivery_is_not_re_delivered_to_callback();
     test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();

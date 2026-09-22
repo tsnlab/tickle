@@ -2061,7 +2061,10 @@ static int highest_relevant_bit(const struct tt_WriterProxy* proxy) {
     return highest;
 }
 
-static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
+// Requests (ACKNACK "please resend" bits) only positions low_bit..high_bit relative to ack_seq_no,
+// further masked to what's still missing in received_bitmap. send_acknack() below is the usual
+// full-range form; update_reliable_ack() uses a narrow range for Phase 1-a's per-new-gap NACK.
+static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* proxy, int low_bit, int high_bit) {
     struct tt_Subscriber* sub = proxy->sub;
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)sub;
     struct tt_Peer target = {proxy->node_id, proxy->sender_ip, proxy->sender_port};
@@ -2091,16 +2094,17 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
     // "not found" ACKNACKs against a run of only ~500 total messages - only possible if most
     // requests were for seq_nos that were never sent, not actually lost ones.
     //
-    // highest_relevant_bit() (not the plain received_bitmap-only bitmap_highest_bit() this
-    // comment's own numbers were found against) also considers the most recent Heartbeat's own
-    // last_seq_no - QoS roadmap #5's own follow-up, struct tt_HeartbeatHeader's doc comment
-    // (tickle.h) - widening the request range to cover a gap a Heartbeat revealed even when
-    // nothing has arrived out of order yet to set any bit here at all.
-    int highest = highest_relevant_bit(proxy);
+    // highest_relevant_bit() (send_acknack()'s own high_bit - not the plain received_bitmap-only
+    // bitmap_highest_bit() this comment's own numbers were found against) also considers the most
+    // recent Heartbeat's own last_seq_no - QoS roadmap #5's own follow-up, struct
+    // tt_HeartbeatHeader's doc comment (tickle.h) - widening the request range to cover a gap a
+    // Heartbeat revealed even when nothing has arrived out of order yet to set any bit here at all.
     uint64_t request_mask[tt_RELIABLE_BITMAP_WORDS];
-    bitmap_low_mask(request_mask, highest);
+    uint64_t below_low_mask[tt_RELIABLE_BITMAP_WORDS];
+    bitmap_low_mask(request_mask, high_bit);
+    bitmap_low_mask(below_low_mask, low_bit - 1);
     for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
-        acknack_header->bitmap[word] = ~proxy->received_bitmap[word] & request_mask[word];
+        acknack_header->bitmap[word] = ~proxy->received_bitmap[word] & request_mask[word] & ~below_low_mask[word];
     }
     // Milestone 47 - the *target* Publisher's own entity_id, learned from whichever WriterProxy
     // this ACKNACK answers - see struct tt_AckNackHeader.entity_id's own doc comment (tickle.h).
@@ -2139,6 +2143,10 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
         }
     }
 #endif
+}
+
+static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
+    send_acknack_range(node, proxy, 0, highest_relevant_bit(proxy));
 }
 
 // Scheduled (tt_Node_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
@@ -2323,6 +2331,30 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
     advance_ack_seq_no(proxy);
 }
 
+// Bit positions (relative to ack_seq_no) of a gap one DATA arrival just revealed - positions above
+// the previously highest received bit and below the arrival itself. low_bit < 0 means none.
+struct new_gap_range {
+    int low_bit;
+    int high_bit;
+};
+
+// update_reliable_ack()'s in-window (0 < offset < tt_RELIABLE_BITMAP_BITS) arrival: records it in
+// received_bitmap and reports any gap it newly opened via *new_gap. Returns false for a duplicate
+// (its bit was already set), true otherwise.
+static bool record_out_of_order_arrival(struct tt_WriterProxy* proxy, uint32_t offset, struct new_gap_range* new_gap) {
+    if (bitmap_test_bit(proxy->received_bitmap, offset)) {
+        RSTAT_INC(duplicates);
+        return false; // already received this one out of order before - a duplicate
+    }
+    int prev_highest = bitmap_highest_bit(proxy->received_bitmap);
+    if ((int)offset > prev_highest + 1) {
+        new_gap->low_bit = prev_highest + 1;
+        new_gap->high_bit = (int)offset - 1;
+    }
+    bitmap_set_bit(proxy->received_bitmap, offset);
+    return true;
+}
+
 #ifdef tt_RELIABLE_STATS
 // Classifies one DATA arrival (seq_no >= proxy->ack_seq_no) before update_reliable_ack() touches
 // received_bitmap: filling an already-tracked gap (below the highest seq_no received so far) counts
@@ -2445,6 +2477,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     }
 
     RSTAT_ON_ARRIVAL(proxy, seq_no);
+    struct new_gap_range new_gap = {-1, -1};
     bool is_new = true;
     if (seq_no == proxy->ack_seq_no) {
         advance_ack_seq_no(proxy);
@@ -2460,12 +2493,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // has had its fair tt_RELIABLE_RETRY attempts, not preempting them.
         uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
         if (offset < tt_RELIABLE_BITMAP_BITS) {
-            if (bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
-                RSTAT_INC(duplicates);
-                is_new = false; // already received this one out of order before - a duplicate
-            } else {
-                bitmap_set_bit(proxy->received_bitmap, (uint32_t)offset);
-            }
+            is_new = record_out_of_order_arrival(proxy, (uint32_t)offset, &new_gap);
         } else {
             // Unlike the "far ahead but still inside the tracking window" case this function's
             // own comment above warns against fast-forwarding on, an offset this wide (>=
@@ -2492,7 +2520,21 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         }
     }
 
+    // Phase 1-a (rmw_tickle/PLAN.md, H2) - maybe_arm_acknack_retry() only sends an immediate
+    // ACKNACK when no retry timer is armed yet; a gap that opens while one already is used to wait
+    // for that timer (tt_CALL_RETRY_INTERVAL, 5ms). At max rate the 256-sample window moves on in
+    // ~1.35ms, so those gaps were always abandoned by jump_ack_baseline() before the timer fired
+    // (HIL 0-c: ~48% of gaps at 1% tc loss, ~91% at 5%, all lost). NACK the new gap immediately -
+    // and *only* its own positions: re-requesting every still-open gap here would re-send samples
+    // whose retransmit is already in flight and burn the Publisher's per-sample retry budget
+    // (find_resendable_cache_entry()'s tt_RELIABLE_RETRY cap) on duplicates. Bounded by one
+    // ACKNACK per loss event (a new gap needs at least one genuinely missing position), not one per
+    // DATA arrival - unlike the ACKNACK flood maybe_arm_acknack_retry()'s own comment describes.
+    bool retry_already_armed = proxy->acknack_scheduled;
     maybe_arm_acknack_retry(node, proxy);
+    if (retry_already_armed && new_gap.low_bit >= 0) {
+        send_acknack_range(node, proxy, new_gap.low_bit, new_gap.high_bit);
+    }
     return is_new;
 }
 
