@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790076459856,
+  "lastUpdate": 1790076463697,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -106115,6 +106115,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3602.357,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "17ad62a0b5997cab2dd74acaeafb6f7b0998c3c0",
+          "message": "PLAN.md: independent HIL re-verification of the order-independent counting fix (84ef9a6)\n\nConfirms TickLE Dev's own reported numbers: loss% 0.50±0.00% at 1% tc loss,\n4.57±0.06% at 5%, matching their report almost exactly. Verified both the\nserver.c diff (distinct-seq bitmap logic) and the resulting numbers\nindependently before recording. Rig cleaned up.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T20:21:42+09:00",
+          "tree_id": "5b4e19e62febf942fd28760c72fde1067eb65283",
+          "url": "https://github.com/tsnlab/tickle/commit/17ad62a0b5997cab2dd74acaeafb6f7b0998c3c0"
+        },
+        "date": 1790076462453,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1611.349,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2632.986,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3621.31,
             "unit": "ms"
           }
         ]
