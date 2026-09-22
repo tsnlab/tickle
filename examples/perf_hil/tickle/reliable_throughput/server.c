@@ -26,6 +26,7 @@
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
+#include "../common/reliable_stats_print.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -128,6 +129,7 @@ int main(int argc, char** argv) {
 
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f\n",
            (unsigned long)received, (unsigned long)lost, loss_pct);
+    print_reliable_stats("server");
 
     tt_Node_destroy(&node);
     return 0;

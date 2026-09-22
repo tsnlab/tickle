@@ -11,6 +11,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 INSTALL_PREFIX="$HOME/tickle_local_install"
 
+# TICKLE_RELIABLE_STATS=1: build libtickle.a *and* the example with -Dtt_RELIABLE_STATS
+# (include/tickle/reliable_stats.h - measurement-only RELIABLE recovery counters, printed as
+# "RSTATS:" lines at the end of reliable_throughput's own run). Installed to its own prefix, and
+# always rebuilt from scratch, so it can never be mistaken for (or reuse) the plain build above.
+STATS_DEFINE=""
+if [ "${TICKLE_RELIABLE_STATS:-0}" = "1" ]; then
+    INSTALL_PREFIX="$HOME/tickle_local_install_rstats"
+    STATS_DEFINE="-Dtt_RELIABLE_STATS"
+    (cd "$REPO_ROOT" && make clean && make install "PREFIX=$INSTALL_PREFIX" "CPPFLAGS=$STATS_DEFINE" && make clean)
+fi
+
 if [ ! -f "$INSTALL_PREFIX/lib/libtickle.a" ]; then
     (cd "$REPO_ROOT" && make install "PREFIX=$INSTALL_PREFIX")
 fi
@@ -25,7 +36,7 @@ CC="${CC:-gcc}"
 PKG_CONFIG_PATH="$INSTALL_PREFIX/lib/pkgconfig"
 TICKLE_CFLAGS="$(PKG_CONFIG_PATH="$PKG_CONFIG_PATH" pkg-config --cflags tickle)"
 TICKLE_LIBS="$(PKG_CONFIG_PATH="$PKG_CONFIG_PATH" pkg-config --libs tickle)"
-CFLAGS="-O2 -I$HERE/common $TICKLE_CFLAGS"
+CFLAGS="-O2 $STATS_DEFINE -I$HERE/common $TICKLE_CFLAGS"
 
 # shellcheck disable=SC2086 # TICKLE_CFLAGS/TICKLE_LIBS are deliberately word-split - see
 # cyclonedds/build.sh's own identical note.

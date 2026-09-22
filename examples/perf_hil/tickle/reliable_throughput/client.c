@@ -38,6 +38,7 @@
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
+#include "../common/reliable_stats_print.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -233,6 +234,7 @@ int main(int argc, char** argv) {
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
            "send_mbps=%.3f reliable_depth=%u throttle_lag=%u ack_solicit_us=%u\n",
            (unsigned long)sent, duration_s, mbps, reliable_depth, throttle_lag, ack_solicit_us);
+    print_reliable_stats("client");
 
     tt_Node_destroy(&node);
     return 0;

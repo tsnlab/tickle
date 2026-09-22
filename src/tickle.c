@@ -42,6 +42,79 @@ _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-al
 _Static_assert(tt_MAX_RELIABLE_HISTORY <= tt_RELIABLE_BITMAP_BITS,
                "tt_MAX_RELIABLE_HISTORY must fit within the reliable ACKNACK bitmap window");
 
+// RELIABLE recovery instrumentation - see include/tickle/reliable_stats.h. Everything below is
+// compiled out (RSTAT_* expand to nothing) unless built with -Dtt_RELIABLE_STATS.
+#ifdef tt_RELIABLE_STATS
+#include <tickle/reliable_stats.h>
+
+static struct tt_ReliableStats g_rstats;
+
+// Per-seq_no timestamps for the two latency histograms, indexed by seq_no % RSTAT_SEQ_SLOTS -
+// process-global like g_rstats, so only meaningful with a single reliable writer per process.
+// 4096 slots covers several full tt_RELIABLE_BITMAP_BITS windows, well past any seq_no still
+// trackable when it's recovered; a stale slot is overwritten on the next detection anyway.
+#define RSTAT_SEQ_SLOTS 4096
+static uint64_t g_rstats_missing_since_ns[RSTAT_SEQ_SLOTS]; // 0 = not currently missing
+static uint64_t g_rstats_requested_ns[RSTAT_SEQ_SLOTS];     // 0 = not yet named in an ACKNACK
+
+#define RSTAT_INC(field) (g_rstats.field++)
+#define RSTAT_ADD(field, n) (g_rstats.field += (uint64_t)(n))
+
+void tt_reliable_stats_get(struct tt_ReliableStats* out) {
+    *out = g_rstats;
+}
+
+void tt_reliable_stats_reset(void) {
+    memset(&g_rstats, 0, sizeof(g_rstats));
+    memset(g_rstats_missing_since_ns, 0, sizeof(g_rstats_missing_since_ns));
+    memset(g_rstats_requested_ns, 0, sizeof(g_rstats_requested_ns));
+}
+
+static void rstat_hist(uint64_t* hist, uint64_t delta_ns) {
+    uint64_t micros = delta_ns / tt_MICROSECOND;
+    int bucket = 0;
+    while (micros > 0 && bucket < tt_RELIABLE_STATS_HIST_BUCKETS - 1) {
+        micros >>= 1;
+        bucket++;
+    }
+    hist[bucket]++;
+}
+
+static void rstat_mark_missing(uint32_t first_seq_no, uint32_t count, uint64_t now) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t slot = (first_seq_no + i) % RSTAT_SEQ_SLOTS;
+        g_rstats_missing_since_ns[slot] = now;
+        g_rstats_requested_ns[slot] = 0;
+    }
+}
+
+static void rstat_recovered(uint32_t seq_no) {
+    uint32_t slot = seq_no % RSTAT_SEQ_SLOTS;
+    uint64_t now = tt_get_ns();
+    g_rstats.recovered++;
+    if (g_rstats_missing_since_ns[slot] != 0) {
+        rstat_hist(g_rstats.detect_to_recover_hist, now - g_rstats_missing_since_ns[slot]);
+    }
+    if (g_rstats_requested_ns[slot] != 0) {
+        g_rstats.recovered_after_request++;
+        rstat_hist(g_rstats.request_to_recover_hist, now - g_rstats_requested_ns[slot]);
+    }
+    g_rstats_missing_since_ns[slot] = 0;
+    g_rstats_requested_ns[slot] = 0;
+}
+
+static uint32_t rstat_popcount_bitmap(const uint64_t* bitmap) {
+    uint32_t count = 0;
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        count += (uint32_t)__builtin_popcountll(bitmap[word]);
+    }
+    return count;
+}
+#else
+#define RSTAT_INC(field) ((void)0)
+#define RSTAT_ADD(field, n) ((void)0)
+#endif
+
 static uint32_t calculate_latency(uint64_t start, uint64_t end) {
     return end > start ? (uint32_t)(end - start) : 0;
 }
@@ -122,6 +195,31 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
         TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
     }
+
+#ifdef tt_RELIABLE_STATS
+    {
+        uint64_t data_count = 0;
+        uint32_t pos = sizeof(struct tt_Header);
+        while (pos + sizeof(struct tt_SubmessageHeader) <= len) {
+            const struct tt_SubmessageHeader* submsg = (const struct tt_SubmessageHeader*)(node->tx_buffer + pos);
+            if (submsg->length == 0) {
+                break;
+            }
+            if (submsg->type == tt_SUBMESSAGE_TYPE_DATA) {
+                data_count++;
+            }
+            pos += submsg->length;
+        }
+        g_rstats.datagrams++;
+        if (data_count > 0) {
+            g_rstats.datagrams_with_data++;
+            g_rstats.data_in_datagrams += data_count;
+            if (data_count > g_rstats.max_data_per_datagram) {
+                g_rstats.max_data_per_datagram = data_count;
+            }
+        }
+    }
+#endif
 
     // Whatever was pending (including any batched UPDATE - see node_update()/node_flush()) just
     // went out in `len` bytes above, unconditionally: a deferred-flush's `base` always covers
@@ -2013,10 +2111,34 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
     // already staged is still correct here: the submessage's own receiver field (target.node_id,
     // not tt_SUBMESSAGE_ID_ALL) confines actual processing to that one node regardless of how the
     // packet physically went out.
+#ifdef tt_RELIABLE_STATS
+    // Copied before end_encode(): a successful flush memmoves tx_buffer, invalidating acknack_header.
+    uint64_t requested[tt_RELIABLE_BITMAP_WORDS];
+    uint32_t requested_base = proxy->ack_seq_no;
+    for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+        requested[word] = acknack_header->bitmap[word];
+    }
+#endif
     bool unicast = old_tx_tail == sizeof(struct tt_Header);
     if (!end_encode(node, submessage_header, true, unicast ? &target : NULL, unicast ? 1 : 0)) {
         rollback(node, old_tx_tail);
     }
+#ifdef tt_RELIABLE_STATS
+    else {
+        uint64_t now = tt_get_ns();
+        g_rstats.acknack_sent++;
+        g_rstats.acknack_bits_sent += rstat_popcount_bitmap(requested);
+        for (int word = 0; word < tt_RELIABLE_BITMAP_WORDS; word++) {
+            for (uint64_t bits = requested[word]; bits != 0; bits &= bits - 1) {
+                uint32_t seq =
+                    requested_base + (uint32_t)(word * tt_RELIABLE_BITMAP_WORD_BITS) + (uint32_t)__builtin_ctzll(bits);
+                if (g_rstats_requested_ns[seq % RSTAT_SEQ_SLOTS] == 0) {
+                    g_rstats_requested_ns[seq % RSTAT_SEQ_SLOTS] = now;
+                }
+            }
+        }
+    }
+#endif
 }
 
 // Scheduled (tt_Node_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
@@ -2038,6 +2160,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 
     if (++proxy->retry > tt_RELIABLE_RETRY) {
         TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
+        RSTAT_INC(retry_giveups);
         proxy->acknack_scheduled = false;
         // Give up on ack_seq_no itself - the same "advance past it" advance_ack_seq_no() already
         // does for a real receipt, since from here on it makes no difference *why* nothing more
@@ -2057,6 +2180,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
         return;
     }
 
+    RSTAT_INC(acknack_timer);
     send_acknack(node, proxy);
 
     uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
@@ -2121,6 +2245,8 @@ static void skip_unrecoverable_backlog(struct tt_WriterProxy* proxy) {
 
     uint32_t new_ack_seq_no = highest_seq_no - tt_MAX_RELIABLE_HISTORY + 1;
     uint32_t skipped = new_ack_seq_no - proxy->ack_seq_no;
+    RSTAT_INC(skip_backlog_calls);
+    RSTAT_ADD(skip_backlog_seq, skipped);
     if (skipped < tt_RELIABLE_BITMAP_BITS) {
         bitmap_shift_right(proxy->received_bitmap, skipped);
     } else {
@@ -2165,6 +2291,7 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
         // update while this proxy already has a retry armed relies purely on acknack_retry()'s own
         // periodic re-send (which already re-reads the current bitmap state fresh each tick, so
         // nothing about a widened gap goes unreported, just delayed by at most one interval).
+        RSTAT_INC(acknack_immediate);
         send_acknack(node, proxy);
         proxy->retry = 0;
         uint32_t interval = tt_RELIABLE_DEADLINE != 0 ? tt_RELIABLE_DEADLINE : tt_CALL_RETRY_INTERVAL;
@@ -2184,10 +2311,54 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
 // recoverable is given up on by not tracking it - see update_reliable_ack()'s own call site for
 // the full "why" comment, not repeated here.
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
+#ifdef tt_RELIABLE_STATS
+    if (seq_no > proxy->ack_seq_no) {
+        uint64_t span = (uint64_t)seq_no - proxy->ack_seq_no;
+        uint64_t received = rstat_popcount_bitmap(proxy->received_bitmap);
+        g_rstats.jump_abandoned_seq += span > received ? span - received : 0;
+    }
+#endif
     proxy->ack_seq_no = seq_no;
     bitmap_clear(proxy->received_bitmap);
     advance_ack_seq_no(proxy);
 }
+
+#ifdef tt_RELIABLE_STATS
+// Classifies one DATA arrival (seq_no >= proxy->ack_seq_no) before update_reliable_ack() touches
+// received_bitmap: filling an already-tracked gap (below the highest seq_no received so far) counts
+// as recovered; landing above it opens a gap for every position skipped in between. Bit j of
+// received_bitmap means "received(ack_seq_no + j)", and ack_seq_no itself is always still missing.
+static void rstat_on_arrival(const struct tt_WriterProxy* proxy, uint32_t seq_no) {
+    uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
+    int prev_highest = bitmap_highest_bit(proxy->received_bitmap);
+    if (offset == 0) {
+        if (prev_highest >= 0) {
+            rstat_recovered(seq_no); // head of a tracked gap - something above it already arrived
+        }
+        return;
+    }
+    if (offset >= tt_RELIABLE_BITMAP_BITS || bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
+        return; // jump or duplicate - counted at their own sites
+    }
+    if ((int)offset < prev_highest) {
+        rstat_recovered(seq_no);
+        return;
+    }
+    uint32_t newly_missing = (uint32_t)((int)offset - prev_highest - 1);
+    if (newly_missing == 0) {
+        return;
+    }
+    g_rstats.gaps_opened++;
+    g_rstats.missing_opened += newly_missing;
+    if (proxy->acknack_scheduled) {
+        g_rstats.gaps_opened_while_scheduled++;
+    }
+    rstat_mark_missing(proxy->ack_seq_no + (uint32_t)(prev_highest + 1), newly_missing, tt_get_ns());
+}
+#define RSTAT_ON_ARRIVAL(proxy, seq_no) rstat_on_arrival((proxy), (seq_no))
+#else
+#define RSTAT_ON_ARRIVAL(proxy, seq_no) ((void)0)
+#endif
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE) - called from process_data() for every DATA a reliable
 // Subscriber receives (no-op otherwise). Finds or claims sub's own WriterProxy for (sender_node_
@@ -2265,6 +2436,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     }
 
     if (seq_no < proxy->ack_seq_no) {
+        RSTAT_INC(late_below_ack);
         return true; // old relative to the ack watermark, but NOT reliable evidence of "already
                      // delivered" once jump_ack_baseline() has ever fired for this proxy - see this
                      // function's own doc comment for the real regression this specific case caused
@@ -2272,6 +2444,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
                      // for it either way (unchanged from before this milestone).
     }
 
+    RSTAT_ON_ARRIVAL(proxy, seq_no);
     bool is_new = true;
     if (seq_no == proxy->ack_seq_no) {
         advance_ack_seq_no(proxy);
@@ -2288,6 +2461,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         uint64_t offset = (uint64_t)seq_no - proxy->ack_seq_no;
         if (offset < tt_RELIABLE_BITMAP_BITS) {
             if (bitmap_test_bit(proxy->received_bitmap, (uint32_t)offset)) {
+                RSTAT_INC(duplicates);
                 is_new = false; // already received this one out of order before - a duplicate
             } else {
                 bitmap_set_bit(proxy->received_bitmap, (uint32_t)offset);
@@ -2313,6 +2487,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
             // a retry cycle chasing a position that could never have been named on the wire.
             TT_LOG_WARNING("Reliable gap too large to track (%u ahead of %u) - jumping ahead instead of getting stuck",
                            seq_no - proxy->ack_seq_no, proxy->ack_seq_no);
+            RSTAT_INC(jump_data);
             jump_ack_baseline(proxy, seq_no);
         }
     }
@@ -3531,9 +3706,11 @@ static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_Relia
     uint32_t slot = (missing_seq_no - 1) % depth;
     struct tt_ReliableCacheEntry* cache_entry = &cache->entries[slot];
     if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
+        RSTAT_INC(null_evicted);
         return NULL; // empty slot, or overwritten by a different seq_no since (evicted)
     }
     if (cache_entry->retry >= tt_RELIABLE_RETRY) {
+        RSTAT_INC(null_retry_cap);
         return NULL; // give up on this one sample - the Subscriber's own retry cap will too
     }
     // Same "as if it had never been sent" rule deliver_durability_backlog() applies, here for a
@@ -3541,6 +3718,7 @@ static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_Relia
     // LIFESPAN removes data from the Writer's history outright, RELIABLE's own retry guarantee
     // doesn't override it.
     if (reliable_cache_entry_expired(cache_entry, lifespan_duration_ns)) {
+        RSTAT_INC(null_lifespan);
         return NULL;
     }
     return cache_entry;
@@ -3559,6 +3737,10 @@ static struct tt_ReliableCacheEntry* find_resendable_cache_entry(struct tt_Relia
 static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publisher* pub, struct tt_ReliableCache* cache,
                                         uint16_t depth, uint32_t seq_no,
                                         const uint64_t bitmap[tt_RELIABLE_BITMAP_WORDS], const struct tt_Peer* target) {
+#ifdef tt_RELIABLE_STATS
+    g_rstats.acknack_received++;
+    g_rstats.bits_requested += rstat_popcount_bitmap(bitmap);
+#endif
     for (int word_idx = 0; word_idx < tt_RELIABLE_BITMAP_WORDS; word_idx++) {
         uint64_t word = bitmap[word_idx];
         if (word == 0) {
@@ -3580,13 +3762,16 @@ static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publishe
             void* buf = encode(node, cache_entry->len);
             if (buf == NULL) {
                 TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
+                RSTAT_INC(retransmit_tx_fail);
                 rollback(node, old_tx_tail);
                 continue;
             }
             _tt_memcpy(buf, cache_entry->buffer, cache_entry->len);
             if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
+                RSTAT_INC(retransmit_tx_fail);
                 rollback(node, old_tx_tail);
             } else {
+                RSTAT_INC(retransmitted);
                 cache_entry->retry++;
             }
         }
@@ -3758,6 +3943,7 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
             // comment) - jump ahead here too, rather than only ever being able to discover this
             // reactively once *some* DATA sample eventually arrives to trigger update_reliable_
             // ack() instead.
+            RSTAT_INC(jump_heartbeat);
             jump_ack_baseline(proxy, ctx->last_seq_no);
         }
         // else: within the trackable window - nothing to do here directly. highest_relevant_bit()
