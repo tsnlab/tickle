@@ -548,6 +548,47 @@ TickLE Dev's) to pick up with proper instrumentation (e.g. counting real `tt_rec
 during a saturated run) rather than only inferring the mechanism from throughput/loss numbers
 alone.
 
+#### Follow-up v3 (2026-09-22, TickLE Plan, at the user's own instruction to continue: "업무 지속해줘") - direct instrumentation, hypothesis definitively confirmed
+
+Rather than accumulate more indirect throughput/loss reps, added real counters to `tt_Node_poll()`
+itself (`scheduler_runs`, `receive_checks`, `max_consecutive_scheduler_runs` - a process-wide,
+throwaway, not-for-merge instrumentation) and built two matched HIL binaries: `experiment/poll-
+loop-instrumentation-baseline` (plain `main`, `1a23571`, + counters only, no fix) and
+`experiment/poll-loop-instrumentation-fixed` (the same counters cherry-picked onto `experiment/
+poll-loop-io-interleave-v2`, so both share the identical bitmap/harness-fix base and differ only
+in the scheduler-loop change itself). One real HIL run each, `reliable_throughput`, max rate, no
+`tc` loss (8s):
+
+| | scheduler_runs | receive_checks | max consecutive scheduler runs |
+|---|---|---|---|
+| Baseline (unfixed) | 1,232,777 | 33,226 | **1,228,027** |
+| Fixed | 1,606,219 | 188,821 (5.7x more) | **16** |
+
+**This is no longer an inference - it's a direct measurement, and it confirms the hypothesis
+unambiguously.** The unfixed Publisher really did go over a million consecutive scheduler-task
+executions at a stretch without a single `tt_receive()` call during this real 8-second run - not
+a worst-case estimate, an actual observed value. The fix cuts that to 16 (close to, though not
+exactly, the configured `tt_SCHEDULER_IO_INTERLEAVE`=8 - the small excess is unexplained but
+irrelevant to the conclusion, not chased down this pass) and drives real `tt_receive()` calls up
+5.7x. **This settles the "why" the throughput/loss experiments above could only correlate**:
+`tt_Node_poll()`'s own scheduler-favoring loop really was starving network I/O for the vast
+majority of a saturated send loop's own runtime, exactly as hypothesized - not a confound, not
+noise, a real, measured, reproduced-on-real-hardware mechanism.
+
+**What this does and doesn't settle**: it confirms the *mechanism* (starvation is real, the fix
+addresses it directly) with high confidence. It does not, on its own, re-confirm the *downstream*
+throughput/loss numbers beyond what the earlier v1/v2 experiments already measured (this run
+didn't repeat those metrics with high rep counts) - but given the mechanism is now proven, not
+just inferred, the earlier throughput increase (consistently 99-121 Mbps vs. 92-95 Mbps across 8
+runs) has a real, confirmed causal explanation behind it rather than an unexplained correlation.
+**Recommendation, still not acted on**: given the mechanism is now confirmed, `experiment/poll-
+loop-io-interleave-v2`'s own fix is a stronger merge candidate than before - the remaining open
+question is tuning `tt_SCHEDULER_IO_INTERLEAVE`'s own exact value (8 was a first guess) and a
+final round of the full `tc`/`netem` loss-recovery matrix with more reps, not whether the
+underlying mechanism is real. Still the user's call whether to proceed to that final validation
+round or merge as-is. Rig fully cleaned up afterward (`~/tickle-instr-{baseline,fixed}` worktrees
+and install prefixes removed on both Pis, no lingering processes).
+
 ## Concept mapping
 
 The single place mapping `rmw`/ROS 2 concepts onto TickLE ones - code comments explain the *why*
