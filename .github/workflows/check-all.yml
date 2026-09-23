@@ -534,6 +534,27 @@ jobs:
             test_ws/build/test_rmw_implementation/test_results >> "$GITHUB_STEP_SUMMARY"
           exit "$test_result_exit"
 
+      # Lint toolchain version, worth knowing before you debug a disagreement: tsnlab/check pins
+      # cpp-linter-action to clang-format/clang-tidy 19 (actions/cpp/action.yml, version: '19').
+      # A developer box on a current distro has 21 or newer, and the two genuinely disagree - a
+      # local sweep can pass where CI fails and vice versa. Reproduce CI's answer with 19 rather
+      # than arguing with 21: `pip install clang-format==19.1.0 clang-tidy==19.1.0` in a venv
+      # works today and is how the two lint failures on 2026-09-23 were diagnosed.
+      #
+      # The pin is deliberate and we are keeping it: bumping the linter reformats files nobody is
+      # touching, which is churn with no reader. It is also the thing that will eventually break by
+      # itself, when 19 stops being installable - at which point the bump becomes forced, and the
+      # reformat should land as its own commit rather than riding along with whatever change
+      # happened to trip it.
+      #
+      # Two more properties of this step that are easy to learn the hard way:
+      #   - cpp-linter only checks files the push CHANGED. examples/perf_hil/cyclonedds/*.c have
+      #     failed clang-format under both 19 and 21 for a long time without ever breaking CI, and
+      #     will become a gate the moment anyone edits one.
+      #   - clang-tidy only reports diagnostics for its MAIN file. Linting a .c that #includes
+      #     src/tickle.c says nothing about tickle.c or the headers; a changed .h is only really
+      #     checked when it is passed as the main file, which is what this step does and what a
+      #     local `make lint` does not.
       - name: Check all
         uses: tsnlab/check@main
         with:
