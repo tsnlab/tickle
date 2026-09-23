@@ -22,7 +22,18 @@ if [ "${TICKLE_RELIABLE_STATS:-0}" = "1" ]; then
     (cd "$REPO_ROOT" && make clean && make install "PREFIX=$INSTALL_PREFIX" "CPPFLAGS=$STATS_DEFINE" && make clean)
 fi
 
+# Reinstall when the prefix is missing *or* older than any core source, not just when it's missing
+# (2026-09-23, a real trap: a prefix left from an earlier day silently built the example against a
+# stale libtickle.a, failing on a struct member that a later commit had added - the same staleness
+# lesson run_perf.sh's own `rm -rf` of the prefix already encodes for the rpis).
+NEEDS_INSTALL=0
 if [ ! -f "$INSTALL_PREFIX/lib/libtickle.a" ]; then
+    NEEDS_INSTALL=1
+elif [ -n "$(find "$REPO_ROOT/src" "$REPO_ROOT/include" -type f -newer "$INSTALL_PREFIX/lib/libtickle.a" -print -quit)" ]; then
+    echo "libtickle.a in $INSTALL_PREFIX is older than src/ or include/ - reinstalling"
+    NEEDS_INSTALL=1
+fi
+if [ "$NEEDS_INSTALL" = "1" ]; then
     (cd "$REPO_ROOT" && make install "PREFIX=$INSTALL_PREFIX")
 fi
 
