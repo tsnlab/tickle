@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790146437143,
+  "lastUpdate": 1790146441070,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -107984,6 +107984,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/724d6ec789ef2e011fa4b031c7a8d4105750f1f3"
         },
         "date": 1790141754372,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "durable recv",
+            "value": 20,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3cbbdb84682545f6427aa65933ded6f6fceac5a5",
+          "message": "make lint: --quiet, so a passing run doesn't announce 145,317 warnings\n\nclang-tidy ends a run with \"Suppressed 145317 warnings (145279 in\nnon-user code, 38 NOLINT).\" The figure counts diagnostics from system\nheaders that nobody can act on, and it has already been read once as the\nlint having found 135,000 problems - by a careful reader, which is the\nonly kind of misleading that matters.\n\n--quiet drops exactly that line. Verified it still reports real findings:\nplanted a format-clean magic number in src/log.c and it surfaced and\nfailed the run.\n\nThe per-file \"N warnings generated.\" lines stay. They come from clang\nitself rather than clang-tidy's own reporting, so removing them would\nmean filtering the tool's stderr - and post-processing output inside a\ntarget whose selling point is trustworthiness trades the thing for its\nappearance.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T15:46:11+09:00",
+          "tree_id": "f3198bb37999ff3379e9636a3e0931996007b112",
+          "url": "https://github.com/tsnlab/tickle/commit/3cbbdb84682545f6427aa65933ded6f6fceac5a5"
+        },
+        "date": 1790146439779,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
