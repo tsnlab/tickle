@@ -187,6 +187,55 @@ So each cell reports **loss % / refused % / Mbps**. `-B` is `max_blocking_time` 
   writer, fail the write on timeout), which gives the same guarantee DDS offers, plus Phase 2 if
   KEEP_LAST at max rate must also reach zero.
 
+## 3b. The same guarantee, compared: RELIABLE + KEEP_ALL (2026-09-23, final)
+
+§3a compared TickLE's default (KEEP_LAST-equivalent, `publish()` never blocks) against the DDS
+pair's KEEP_ALL, which is not the same promise. TickLE now implements the DDS promise too
+(`rmw_tickle/PLAN.md` Phase 3): a KEEP_ALL Publisher refuses a write rather than evicting an
+unacknowledged sample, and `rmw_publish()` blocks up to `max_blocking_time` before returning
+`RMW_RET_TIMEOUT`. This section compares all three **under that same contract**, measured the same
+way: `tc netem` on the sender's own egress, 3 reps, and every writer waits for acknowledgements at
+teardown (`dds_wait_for_acks()` / `wait_for_acknowledgments()` / the TickLE harness's own
+drain-until-acked), so no framework's tail loss depends on drain luck.
+
+**Net loss** = lost - refused writes, i.e. samples the middleware accepted and then failed to
+deliver. All three are **0 in every cell**, so the only thing that differs is what it costs:
+
+| `tc` loss | TickLE (KEEP_ALL) | FastDDS | CycloneDDS |
+|---|---:|---:|---:|
+| 0% | **109.8 Mbps** | 11.5 | 47.3 |
+| 1% | **108.2** | 10.0 | 12.0 |
+| 5% | **104.8** | 6.8 | 2.4 |
+| 20% | **89.3** | 2.3 | 0.36 |
+| 50% | **56.5** | 0.35 | 0.11 |
+
+At the loss rates a real link sees, TickLE sustains **10-45x** either vendor's throughput under the
+same zero-loss guarantee; at 50% injected loss it is **160x** FastDDS and **510x** CycloneDDS. The
+shape differs too: the DDS pair degrade steeply because a blocked writer is their only back-pressure
+mechanism, while TickLE keeps ~51% of its lossless rate at 50% loss.
+
+**What it costs TickLE**: 89.3 vs. 99.8 Mbps at 20% and 56.5 vs. 84.4 at 50% against its own
+KEEP_LAST mode (-11% and -33%) - that is the price of the guarantee, paid in throughput. Paced to
+~8 Mbps the two modes are identical (4.90 vs. 4.93, 5.04 vs. 5.04): with that much headroom
+back-pressure never binds.
+
+**Two honest caveats, both measured rather than asserted:**
+
+1. **TickLE's pre-match window.** A Subscriber starts tracking at the first DATA that *arrives*, so
+   samples published before that are unknown to it rather than lost - nothing requests them and
+   every counter on both sides correctly reads zero. Measured size: **0 on a healthy link and at
+   20% injected loss (6/6 reps), 0-5 per run at 50%**. Counted from seq 1 those show up as loss;
+   counted from the Subscriber's first observed seq they do not, and this document reports both
+   rather than picking the flattering one. In every KEEP_ALL run the raw count equalled the
+   pre-match window *exactly*, rep by rep. DDS has no equivalent window because its matching is
+   symmetric and its writer waits for it; closing TickLE's would mean establishing the baseline at
+   match time, a core change the user deliberately deferred (PLAN.md).
+2. **FastDDS at 20-50% did not always drain**: `drained=timeout` in 1/3 reps at 20% and 3/3 at 50%,
+   i.e. its 3s teardown wait expired with samples still unacknowledged. Its net loss is still 0 (a
+   refused write is counted, not silently dropped), but its numbers at those levels describe a
+   writer that never caught up rather than one that finished cleanly. CycloneDDS and TickLE
+   reported `acked` in every cell.
+
 ## 4. Experiment: `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`
 
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
