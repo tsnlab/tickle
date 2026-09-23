@@ -1608,30 +1608,16 @@ static void notify_writable_if_pending(struct tt_Publisher* pub) {
     }
 }
 
-// Phase 3 prerequisite (d) - asks every matched peer for an ACK once the retained cache is
-// ack_solicit_watermark_pct full of samples nobody has acknowledged yet. Off unless a caller sets
-// that field (see its own doc comment, tickle.h). Throttled to at most one solicitation per
-// max(ack_solicit_period_ns, the reliable retry interval), shared with the periodic path, so a
-// max-rate Publisher - which crosses the watermark on essentially every publish - sends at most
-// one extra Heartbeat per millisecond rather than one per sample.
+// Phase 3 prerequisite (d) - asks every matched peer for an ACK once enough retained samples are
+// unacknowledged. Throttled to at most one solicitation per max(ack_solicit_period_ns, the reliable
+// retry interval), shared with the periodic path, so a max-rate Publisher - which crosses the
+// watermark on essentially every publish - sends at most one extra Heartbeat per millisecond rather
+// than one per sample.
 #define PERCENT_SCALE 100U // ack_solicit_watermark_pct is a percentage, not a fraction
 
-static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
-    if (pub->ack_solicit_watermark_pct == 0 || pub->reliable_cache == NULL) {
-        return;
-    }
-    uint16_t depth = reliable_cache_depth(pub->reliable_cache);
-    if (depth == 0 || count_peers(pub->peers) == 0) {
-        return; // nothing retained to ack, or nobody matched to ask (never heartbeat into the void)
-    }
-
-    uint32_t min_ack = min_peer_ack_seq_no(pub);
-    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
-    uint32_t unacked = pub->seq_no > acked_through ? pub->seq_no - acked_through : 0;
-    if ((uint64_t)unacked * PERCENT_SCALE < (uint64_t)depth * pub->ack_solicit_watermark_pct) {
-        return;
-    }
-
+// Sends one solicitation unless the shared throttle says it's too soon. Split out so the watermark
+// path below and the refusal path in tt_Publisher_publish() can't drift apart on the throttle.
+static void solicit_ack_throttled(struct tt_Publisher* pub) {
     uint64_t now = tt_get_ns();
     uint64_t min_gap =
         pub->ack_solicit_period_ns > reliable_retry_interval() ? pub->ack_solicit_period_ns : reliable_retry_interval();
@@ -1642,6 +1628,57 @@ static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
     pub->last_ack_solicit_ns = now;
     RSTAT_INC(ack_solicit_sent);
     (void)tt_Publisher_request_ack(pub);
+}
+
+// How many unacknowledged samples should trigger a solicitation, or 0 for "never".
+//
+// A KEEP_ALL Publisher is not optional about this, which is the whole point: it stops publishing
+// when unacked reaches keep_all_bound(), and a Subscriber only ACKNACKs when it sees a gap, so on a
+// clean link nothing would ever advance the acknowledgement and the Publisher would stall at the
+// window and never recover. Measured on real hardware (rmw_tickle/PLAN.md Phase 3 step 4): a
+// lossless 5-second run sent exactly its 1024-sample window and then nothing at all, 0.125 Mbps
+// against the 109 Mbps the same run reaches once acknowledgements flow. Zero loss is the worst
+// case here, not the easy one, which is why nothing caught it before KEEP_ALL made blocking depend
+// on it.
+//
+// Half the bound, deliberately, and the bound rather than the cache depth: the bound is what
+// actually stops the writes (min(depth, the narrowest announced window)), so a depth-relative
+// watermark measures the wrong quantity - at depth 2048 with a 1024 window, a 80% watermark would
+// first ask at 1638 unacked, i.e. 600 samples after the Publisher had already stopped. Half leaves
+// a full round trip's worth of headroom to answer in before anything blocks.
+static uint32_t ack_solicit_threshold(const struct tt_Publisher* pub, uint16_t depth) {
+    if (pub->keep_all) {
+        uint32_t bound = keep_all_bound(pub);
+        return bound > 1 ? bound / 2 : 1;
+    }
+    if (pub->ack_solicit_watermark_pct == 0) {
+        return 0; // opt-in for everyone else - see ack_solicit_watermark_pct's own doc comment
+    }
+    uint32_t threshold = (uint32_t)(((uint64_t)depth * pub->ack_solicit_watermark_pct) / PERCENT_SCALE);
+    return threshold > 0 ? threshold : 1; // a percentage that rounds to nothing still means "ask early"
+}
+
+static void maybe_solicit_ack_at_watermark(struct tt_Publisher* pub) {
+    if (pub->reliable_cache == NULL) {
+        return;
+    }
+    uint16_t depth = reliable_cache_depth(pub->reliable_cache);
+    if (depth == 0 || count_peers(pub->peers) == 0) {
+        return; // nothing retained to ack, or nobody matched to ask (never heartbeat into the void)
+    }
+    uint32_t threshold = ack_solicit_threshold(pub, depth);
+    if (threshold == 0) {
+        return;
+    }
+
+    uint32_t min_ack = min_peer_ack_seq_no(pub);
+    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
+    uint32_t unacked = pub->seq_no > acked_through ? pub->seq_no - acked_through : 0;
+    if (unacked < threshold) {
+        return;
+    }
+
+    solicit_ack_throttled(pub);
 }
 
 // B1 (rmw_tickle/PLAN.md) - the in-use ring size, or 0 when this cache isn't usable at all (no
@@ -1852,6 +1889,13 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     if (!keep_all_writable(pub)) {
         pub->writable_pending = true; // so the callback fires on the transition back
         RSTAT_INC(publish_refused);
+        // Ask again, every refusal (subject to the same throttle). The watermark above is the
+        // first line and normally the only one that fires, but it leaves a hole this closes: once
+        // the Publisher has actually stopped, seq_no stops moving, so nothing can cross the
+        // watermark a second time. If that one solicitation - or the ACKNACK answering it - is
+        // lost, which is exactly what a lossy link does, the stall would last until something else
+        // happened to ask. Soliciting here bounds recovery to one throttle interval in every case.
+        solicit_ack_throttled(pub);
         return tt_RET_WOULD_BLOCK;
     }
 

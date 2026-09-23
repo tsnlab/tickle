@@ -690,6 +690,16 @@ struct tt_Publisher { // extends endpoint
     //
     // Requires a reliable_cache; on a Publisher without one it is ignored, since there is nothing to
     // retain and so nothing to refuse for.
+    //
+    // Setting this also makes the Publisher solicit acknowledgements on its own - at half of its
+    // blocking bound, and again on every refusal, both under the ack_solicit_watermark_pct rate
+    // limit - without ack_solicit_watermark_pct being set. That is not a convenience: a Subscriber
+    // only sends an ACKNACK when it sees a gap, so on a link that loses nothing there is nothing to
+    // advance the acknowledgement, and a Publisher that blocks on acknowledgements would stop at
+    // its bound and never resume. Measured on real hardware before this was fixed (rmw_tickle/
+    // PLAN.md Phase 3 step 4): a lossless run published exactly its 1024-sample window and then
+    // nothing further, 0.125 Mbps where the same run reaches 109 Mbps once acknowledgements flow.
+    // Zero loss is the worst case for KEEP_ALL, not the easiest one.
     bool keep_all;
 
     // Phase 3 - fired when a KEEP_ALL Publisher that had to refuse a write becomes writable again,
@@ -763,10 +773,11 @@ struct tt_Publisher { // extends endpoint
     // Phase 3 prerequisite (d), rmw_tickle/PLAN.md - solicit an ACK as soon as this Publisher's own
     // retained-sample cache is this percent full of unacknowledged samples, instead of only on a
     // fixed timer (ack_solicit_period_ns above) or when loss is detected. 0 (the default) is off,
-    // so nothing changes for an existing caller; Phase 3's KEEP_ALL blocking turns it on, because a
-    // writer that blocks waiting for acks needs them to arrive *before* the cache is full, and a
-    // healthy stream otherwise produces no ACKNACK at all (tt_HEARTBEAT_FLAG_FINAL's own doc
-    // comment). 50 is the suggested starting point.
+    // so nothing changes for an existing caller. 50 is the suggested starting point.
+    //
+    // Not consulted at all when keep_all is set: such a Publisher solicits on its own, at half of
+    // its blocking bound, because it has no choice (see keep_all's own doc comment). This field
+    // stays purely opt-in for everyone else.
     //
     // Rate-limited by last_ack_solicit_ns below, shared with the periodic path - at max throughput
     // the watermark is crossed continuously (a depth-64 cache turns over in well under a

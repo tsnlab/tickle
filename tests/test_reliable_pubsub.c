@@ -1819,9 +1819,14 @@ static void test_keep_all_refuses_at_bound_and_unblocks_on_ack(void) {
     EXPECT_TRUE(!tt_Publisher_writable(&pub));
     int sends_before = test_mock_send_call_count + test_mock_send_to_call_count;
     EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
-    EXPECT_EQ_INT(sends_before, test_mock_send_call_count + test_mock_send_to_call_count); // nothing sent
-    EXPECT_EQ_U32(4, pub.seq_no);          // ...and seq_no didn't advance
-    EXPECT_EQ_U32(4, cache.newest_seq_no); // ...and nothing was cached
+    // Phase 3 step 4 - a refusal does send something now, but never the sample: it solicits an ACK
+    // (see solicit_ack_throttled()'s own call site), which is what bounds how long the stall can
+    // last when the watermark's own solicitation or its answer was lost. The sample itself is
+    // still neither sent nor retained, which is what these three check.
+    EXPECT_TRUE(test_mock_send_call_count + test_mock_send_to_call_count > sends_before);
+    EXPECT_EQ_U32(4, pub.seq_no);               // seq_no didn't advance
+    EXPECT_EQ_U32(4, cache.newest_seq_no);      // ...and nothing was cached
+    EXPECT_TRUE(last_sent_heartbeat() != NULL); // ...the extra traffic is a solicitation
 
     // The Subscriber acks everything below 3, freeing two slots.
     struct tt_Header header;
@@ -1920,6 +1925,122 @@ static void test_keep_all_bound_honors_wide_window(void) {
     // With nothing matched, the protocol default is still the answer.
     forget_peer_ack(&pub, REMOTE_NODE_ID, 0, /*match_any_entity=*/true);
     EXPECT_EQ_U32(tt_RELIABLE_BITMAP_BITS, tt_Publisher_unacked_bound(&pub));
+}
+
+// The regression the Phase 3 step 4 HIL smoke test found: on a *lossless* link a KEEP_ALL
+// Publisher used to publish exactly its bound and then stall forever. A Subscriber only ACKNACKs
+// when it sees a gap, so with nothing lost there was nothing to advance the acknowledgement, and
+// keep_all_writable() never became true again. Measured at 0.125 Mbps against 109 Mbps once
+// acknowledgements flowed - not slow, stopped. Zero loss is the worst case here, which is why it
+// took a clean-link smoke test to find.
+//
+// Asserted as "far past the bound" rather than any timing bound: what matters is that the stream
+// keeps going at all, and a count is stable under whatever a CI runner is doing at the time.
+static void test_keep_all_sustains_on_clean_link(void) {
+    test_mock_reset();
+    test_mock_now = 10 * tt_MILLISECOND; // see test_keep_all_solicitation_is_throttled() on why not 0
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 64);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // 1 word = 64 samples, so bound = 64
+
+    // Models a real Subscriber on a lossless link: it answers a solicitation, and does nothing
+    // otherwise. That is the whole point - acking unprompted here would test nothing, because the
+    // bug is precisely that nothing prompts it. So the only ACKNACK this loop ever sends is one in
+    // reply to a Heartbeat the Publisher itself chose to send.
+    const uint32_t bound = 64;
+    const uint32_t target = bound * 8;
+    uint32_t value = 1;
+    uint32_t published = 0;
+    struct tt_Header header;
+    init_header(&header);
+
+    for (uint32_t i = 0; i < target; i++) {
+        test_mock_send_last_len = 0; // so a Heartbeat seen below is one *this* publish sent
+        if (tt_Publisher_publish(&pub, (struct tt_Data*)&value) == tt_RET_OK) {
+            published++;
+        }
+        if (last_sent_heartbeat() == NULL) {
+            continue; // nothing asked us for anything
+        }
+        // Asked: acknowledge everything published so far, exactly as a Subscriber that has missed
+        // nothing would. Then let the loop carry on - no retry, no second chance.
+        uint32_t tail = write_acknack(&node, ENDPOINT_ID, pub.seq_no + 1, 0ULL);
+        EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        test_mock_now += tt_RELIABLE_RETRY_INTERVAL; // let the solicitation throttle reopen
+    }
+
+    // Before the fix this stopped at 64 no matter how long the loop ran.
+    EXPECT_TRUE(published > bound * 4);
+}
+
+// The watermark fires on its own, without ack_solicit_watermark_pct being set: keep_all implies it
+// (ack_solicit_threshold()), because a KEEP_ALL Publisher that never asks cannot recover.
+static void test_keep_all_solicits_before_blocking(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 64);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // bound = 64, so the watermark is 32
+    EXPECT_EQ_U32(0, pub.ack_solicit_watermark_pct);         // nothing opted in - keep_all is the whole reason
+
+    uint32_t value = 1;
+    for (int i = 0; i < 31; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_TRUE(last_sent_heartbeat() == NULL); // still below half the bound - nothing asked yet
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // 32nd
+    EXPECT_TRUE(last_sent_heartbeat() != NULL); // ...asks here, with the bound still 32 samples away
+}
+
+// ...and the throttle still bounds it. Every publish past the watermark would otherwise solicit,
+// putting an extra Heartbeat on the wire per sample - at max rate that is a real cost, which is
+// what the shared min-gap throttle exists to prevent.
+//
+// Self-calibrating rather than pinning a send count: how many sends one publish costs is an
+// implementation detail (broadcast plus per-peer unicast, batching), so this compares two stretches
+// of equal length, one below the watermark and one entirely past it. If the throttle works they
+// cost the same; if it doesn't, the second carries a solicitation per sample.
+static void test_keep_all_solicitation_is_throttled(void) {
+    test_mock_reset();
+    // A clock that isn't zero. solicit_ack_throttled() records last_ack_solicit_ns and treats 0 as
+    // "never solicited yet", so at the mock's own default t=0 that stamp reads as unset again and
+    // nothing would ever throttle - an artefact of the test clock, not of the throttle. A real
+    // tt_get_ns() is monotonic-since-boot and past this within a millisecond of starting.
+    test_mock_now = 10 * tt_MILLISECOND;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 64);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 1); // bound = 64, watermark 32
+
+    const int stretch = 16;
+    uint32_t value = 1;
+
+    int before_quiet = test_mock_send_call_count + test_mock_send_to_call_count;
+    for (int i = 0; i < stretch; i++) { // 1..16, well below the watermark - no solicitation at all
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    int quiet_sends = (test_mock_send_call_count + test_mock_send_to_call_count) - before_quiet;
+
+    for (int i = 0; i < stretch; i++) { // 17..32, crossing the watermark - one solicitation here
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_TRUE(last_sent_heartbeat() != NULL); // it really did ask
+
+    int before_throttled = test_mock_send_call_count + test_mock_send_to_call_count;
+    for (int i = 0; i < stretch; i++) { // 33..48, every one past the watermark, clock unmoved
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    int throttled_sends = (test_mock_send_call_count + test_mock_send_to_call_count) - before_throttled;
+
+    EXPECT_EQ_INT(quiet_sends, throttled_sends); // past the watermark costs exactly what below it did
 }
 
 // The writable callback fires once on the refusal-to-writable transition, on the node's own thread
@@ -2060,6 +2181,9 @@ int main(void) {
     test_keep_last_still_evicts_rather_than_refusing();
     test_keep_all_bound_follows_smallest_window();
     test_keep_all_bound_honors_wide_window();
+    test_keep_all_sustains_on_clean_link();
+    test_keep_all_solicits_before_blocking();
+    test_keep_all_solicitation_is_throttled();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
     test_keep_all_still_honours_lifespan();
