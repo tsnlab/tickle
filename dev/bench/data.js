@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790139549181,
+  "lastUpdate": 1790139552794,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -109563,6 +109563,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 155,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "bce93cc551ecac9d0194a9e9a06ea1144af183f2",
+          "message": "COMPARISON.MD: section 3b - all three under the same KEEP_ALL guarantee, measured the same way\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T13:53:16+09:00",
+          "tree_id": "cc9b03f08edc64f681d8e98b8511d473b7e65bf7",
+          "url": "https://github.com/tsnlab/tickle/commit/bce93cc551ecac9d0194a9e9a06ea1144af183f2"
+        },
+        "date": 1790139551600,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 156,
             "unit": "count"
           }
         ]
