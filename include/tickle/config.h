@@ -10,40 +10,76 @@
 
 #pragma once
 
+// Every setting below is wrapped in #ifndef so a build can override it from the command line
+// (-Dtt_UNICAST_PEER_THRESHOLD=0) or from a project's own prefix header, without patching this
+// file. That is how a tunable is normally exposed, and it is not how this file used to be: the
+// defines were unconditional, so a -D on the command line was accepted by the compiler and then
+// silently discarded when this header redefined the name. On 2026-09-23 that cost two full A/B
+// runs which appeared to refute a correct hypothesis - the flag reached the compiler, a check
+// confirmed exactly that, and the header threw it away afterwards. A guard that can be overridden
+// is also a guard whose override can be *verified*, by checking the value rather than the flag.
+//
+// Four kinds of name here are deliberately NOT overridable, because they are not settings:
+//   - tt_SECOND / tt_MILLISECOND / tt_MICROSECOND are unit definitions.
+//   - tt_NODE_ID_INVALID / tt_NODE_ID_BROADCAST are wire sentinels; changing one on a single node
+//     breaks interoperability with every other node rather than tuning anything.
+//   - tt_RELIABLE_BITMAP_WORDS / _MAX_WORDS are derived from the bit counts above them, and must
+//     stay derived.
+//   - tt_RELIABLE_RECORD_BYTES / tt_RELIABLE_CACHE_ARENA_BYTES are function-like macros.
+// Override the inputs to those, not the results.
+//
+// Overriding a size does not suspend the invariants between sizes. The _Static_asserts at the end
+// of this file fail the build on a combination that cannot work, which is the point of allowing
+// the override at all - a silently broken configuration would be worse than an unoverridable one.
+
 #include <stdint.h>
 
 #define tt_SECOND 1000000000ULL
 #define tt_MILLISECOND 1000000ULL
 #define tt_MICROSECOND 1000ULL
 
+#ifndef tt_NODE_CYCLE
 #define tt_NODE_CYCLE tt_MILLISECOND // nanosecond
+#endif
 // How often a node re-broadcasts its endpoint list (discovery announce). The first announce goes
 // out ~tt_NODE_CYCLE after tt_Node_create(), and a node that hears a peer's announce for the
 // first time replies with its own straight away (see reply_with_own_announce() in tickle.c), so
 // mutual discovery is effectively immediate on a healthy link - this interval is the recovery
 // cadence for an announce lost to packet loss, or for a node that was already up when this one
 // started. 1s keeps that recovery quick while costing one small packet per node per second.
+#ifndef tt_NODE_UPDATE_INTERVAL
 #define tt_NODE_UPDATE_INTERVAL (1 * tt_SECOND) // nanosecond
-#define tt_NODE_TX_INTERVAL tt_MILLISECOND      // nanosecond
+#endif
+#ifndef tt_NODE_TX_INTERVAL
+#define tt_NODE_TX_INTERVAL tt_MILLISECOND // nanosecond
+#endif
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - a reliable Subscriber's ACKNACK
 // re-send interval override (0 = auto, i.e. tt_RELIABLE_RETRY_INTERVAL below; same convention as
 // struct tt_Service.call_retry_interval) and the max retransmit attempts a reliable Publisher
 // makes for one cached sample before giving up on it (mirrors tt_CALL_RETRY_COUNT). A Topic's
 // deadline_duration/lifespan_duration (tickle.h) are still reserved for #2/#6, not this.
+#ifndef tt_RELIABLE_DEADLINE
 #define tt_RELIABLE_DEADLINE 0 // nanosecond, 0 is auto
-#define tt_RELIABLE_RETRY 3    // count
+#endif
+#ifndef tt_RELIABLE_RETRY
+#define tt_RELIABLE_RETRY 3 // count
+#endif
 // Phase 1-b (rmw_tickle/PLAN.md, H3) - the reliable Subscriber's own default ACKNACK retry
 // interval, separate from RPC's tt_CALL_RETRY_INTERVAL (5ms, which it used to share). Real HIL
 // (Phase 0-c/1-a counters) put every successful recovery under 256us after its ACKNACK, while a
 // retry for a lost ACKNACK/retransmit waited the full 5ms - long enough for a depth-64 Publisher
 // cache (~4.8ms at 13K msg/s, ~0.34ms at max rate) to evict the sample first. 1ms keeps a ~4x
 // margin over that RTT.
+#ifndef tt_RELIABLE_RETRY_INTERVAL
 #define tt_RELIABLE_RETRY_INTERVAL (1 * tt_MILLISECOND) // nanosecond
+#endif
 // Phase 3 (rmw_tickle/PLAN.md) - how often a Subscriber logs that a KEEP_ALL gap is still stuck.
 // KEEP_ALL switches off the tt_RELIABLE_RETRY give-up, so without this a genuinely unrecoverable
 // gap would retry silently forever; rate-limited by time, not retry count, so the cadence stays
 // readable whatever tt_RELIABLE_RETRY_INTERVAL is.
+#ifndef tt_RELIABLE_STUCK_WARN_INTERVAL
 #define tt_RELIABLE_STUCK_WARN_INTERVAL (5 * tt_SECOND) // nanosecond
+#endif
 // rmw_tickle/PLAN.md's "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache (tickle.h)
 // no longer embeds a fixed-size array sized by this constant: entries[]/capacity are now caller-
 // owned (any size the caller's own backing array happens to be - stack, static, or, for a caller
@@ -94,7 +130,9 @@
 // just gets whatever's currently sitting in the Writer's own single History Cache, which HISTORY.
 // depth (and RESOURCE_LIMITS) already govern for RELIABILITY's own retransmission - there's no
 // independent "durability depth" concept to keep in sync with anything, only ever one cache.
+#ifndef tt_MAX_RELIABLE_HISTORY
 #define tt_MAX_RELIABLE_HISTORY 64
+#endif
 // B1 (rmw_tickle/PLAN.md) - sizing helpers for struct tt_ReliableCache's own caller-provided byte
 // arena (tickle.h). tt_RELIABLE_RECORD_BYTES(payload) is what one cached sample actually costs on
 // the wire and in the arena: the submessage header, the DATA header, and the payload itself,
@@ -124,7 +162,9 @@
 // WriterProxy.received_bitmap's own doc comment (tickle.h) for the honest "this raises the
 // tolerable gap ~4x, not a guaranteed full fix - the real link's own ACKNACK RTT still sets the
 // actual limit" caveat.
+#ifndef tt_RELIABLE_BITMAP_BITS
 #define tt_RELIABLE_BITMAP_BITS 256
+#endif
 // Word count backing the tt_RELIABLE_BITMAP_BITS-wide bitmap arrays above - every bit-manipulation
 // site (highest_received_bit()/update_reliable_ack()/jump_ack_baseline()/send_acknack()/
 // process_heartbeat(), tickle.c) operates in units of this many uint64_t words, not raw bits, to
@@ -137,7 +177,9 @@
 // named so those helpers don't compare against a bare 64 (clang-tidy's own readability-magic-
 // numbers check, matching this file's own established "name it" convention for every other fixed
 // width here).
+#ifndef tt_RELIABLE_BITMAP_WORD_BITS
 #define tt_RELIABLE_BITMAP_WORD_BITS 64
+#endif
 #define tt_RELIABLE_BITMAP_WORDS (tt_RELIABLE_BITMAP_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
 // Phase 2 (rmw_tickle/PLAN.md) - the widest tracking window a Subscriber may ask for, and the
 // upper bound every decode path validates an incoming ACKNACK's own word count against (a
@@ -148,11 +190,19 @@
 // perf_hil examples via their own flag) opts into a wider one per Subscriber by handing
 // tt_Node_create_subscriber()'s own caller-owned tracking buffer - see struct tt_Subscriber's own
 // window doc comment (tickle.h).
+#ifndef tt_RELIABLE_BITMAP_MAX_BITS
 #define tt_RELIABLE_BITMAP_MAX_BITS 4096
+#endif
 #define tt_RELIABLE_BITMAP_MAX_WORDS (tt_RELIABLE_BITMAP_MAX_BITS / tt_RELIABLE_BITMAP_WORD_BITS)
-#define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND)    // Default value
-#define tt_CALL_RETRY_COUNT 3                          // count
+#ifndef tt_CALL_RETRY_INTERVAL
+#define tt_CALL_RETRY_INTERVAL (5 * tt_MILLISECOND) // Default value
+#endif
+#ifndef tt_CALL_RETRY_COUNT
+#define tt_CALL_RETRY_COUNT 3 // count
+#endif
+#ifndef tt_SERVER_CACHE_TIMEOUT
 #define tt_SERVER_CACHE_TIMEOUT (100 * tt_MILLISECOND) // (Client server latency) * (CALL_RETRY_COUNT + 1)
+#endif
 // How long a tt_SERVER_CALLBACK that returned tt_CALL_DEFERRED has to eventually call
 // tt_Server_send_response() before the slot reserved for it is reclaimed (Milestone 17,
 // rmw_tickle/PLAN.md) - deliberately much longer than tt_SERVER_CACHE_TIMEOUT above, which times
@@ -160,8 +210,12 @@
 // application to compute one in the first place. Matches rmw_tickle's own pre-existing
 // RMW_TICKLE_SERVICE_RESPONSE_TIMEOUT_NS default (rmw_tickle.h) - not a coincidence, that value
 // was standing in for this exact primitive not existing yet.
+#ifndef tt_SERVER_DEFERRED_RESPONSE_TIMEOUT
 #define tt_SERVER_DEFERRED_RESPONSE_TIMEOUT (5 * tt_SECOND)
+#endif
+#ifndef tt_RECEIVE_TIMEOUT
 #define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // Network socket default receive timeout
+#endif
 // EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
 // latency research" section) - tt_Node_poll()'s own inner loop favors an already-due scheduler
 // entry over ever calling tt_receive(), with no cap on how many may run consecutively before an
@@ -171,39 +225,59 @@
 // by real network RTT. This bounds how many scheduler entries may run back-to-back before a
 // forced, non-blocking tt_try_receive() peek is squeezed in between them - unvalidated on real HIL
 // yet, this specific value (8) is a first guess, not yet tuned.
+#ifndef tt_SCHEDULER_IO_INTERLEAVE
 #define tt_SCHEDULER_IO_INTERLEAVE 8
+#endif
 // Requested SO_SNDBUF/SO_RCVBUF size. The kernel silently clamps this to whatever
 // net.core.[rw]mem_max allows for an unprivileged process, so asking for more than that is
 // harmless - it's cheap insurance against drops under bursty send/receive on systems where the
 // ceiling is higher than the (often small, e.g. 208KB) distro default.
+#ifndef tt_SOCKET_BUFFER_SIZE
 #define tt_SOCKET_BUFFER_SIZE (1024 * 1024)
+#endif
 
+#ifndef tt_MAX_ENDPOINT_COUNT
 #define tt_MAX_ENDPOINT_COUNT 256 // Maximum number of endpoints (data or services)
+#endif
 // Size of tt_Node.endpoint_index (power of two, >= 2 * tt_MAX_ENDPOINT_COUNT so load stays
 // <= 0.5 for linear-probe lookups).
+#ifndef tt_ENDPOINT_INDEX_SIZE
 #define tt_ENDPOINT_INDEX_SIZE 512
-#define tt_MAX_NAME_LENGTH 255     // Maximum length of endpoint name
+#endif
+#ifndef tt_MAX_NAME_LENGTH
+#define tt_MAX_NAME_LENGTH 255 // Maximum length of endpoint name
+#endif
+#ifndef tt_MAX_STRING_LENGTH
 #define tt_MAX_STRING_LENGTH 65535 // Maximum length of string
+#endif
 // RX/TX buffering size to flush: the largest UDP payload a standard 1500-byte Ethernet MTU
 // can carry without IP fragmentation. 1500 (MTU) - 20 (IPv4 header) - 8 (UDP header) = 1472.
 // Previously 1480, which is 8 bytes *larger* than that limit - a packet in the 1473-1480
 // byte range would pass this check yet still fragment at the IP layer on a standard network.
+#ifndef tt_MAX_BUFFER_LENGTH
 #define tt_MAX_BUFFER_LENGTH 1472
+#endif
 
 // Node ID values are the last byte of the IPv4 address on the local network.
 // Valid node IDs are 1..254, because 0 is reserved for invalid/unassigned and
 // 255 is reserved for the broadcast address.
 #define tt_NODE_ID_INVALID 0x00
 #define tt_NODE_ID_BROADCAST 0xff
-#define tt_MAX_SCHEDULER_LENGTH 128  // Scheduling queue
+#ifndef tt_MAX_SCHEDULER_LENGTH
+#define tt_MAX_SCHEDULER_LENGTH 128 // Scheduling queue
+#endif
+#ifndef tt_MAX_SERVER_CACHE_COUNT
 #define tt_MAX_SERVER_CACHE_COUNT 64 // >= # of client
+#endif
 
 // Threshold for how many known recipient nodes a Publisher/Client sends to individually before
 // switching to one broadcast instead. <= this many known peers -> unicast (tt_send_to() once per
 // peer); more than this many -> broadcast (tt_send() once). Zero known peers (nobody has
 // announced a matching endpoint yet) always broadcasts too, regardless of this threshold -
 // there's nothing to unicast to yet, so it falls back to today's discovery-by-broadcast behavior.
+#ifndef tt_UNICAST_PEER_THRESHOLD
 #define tt_UNICAST_PEER_THRESHOLD 2
+#endif
 
 // Fixed capacity of each Publisher's/Client's peers[] table (struct tt_Peer, tickle.h) - the
 // known set of remote nodes (IP:port) hosting a matching Subscriber/Server, learned from their
@@ -211,13 +285,17 @@
 // peer is silently dropped rather than tracked (see upsert_peer() in tickle.c) - safe only
 // because a full table already implies "more than the threshold", i.e. already broadcasting,
 // which still reaches that dropped peer too.
+#ifndef tt_MAX_PEER_COUNT
 #define tt_MAX_PEER_COUNT 8
+#endif
 // Phase 2 (rmw_tickle/PLAN.md) - how many remote Subscriber *entities* one Publisher tracks ack
 // state for (struct tt_PeerAck, tickle.h). Deliberately its own constant rather than reusing
 // tt_MAX_PEER_COUNT above, which counts remote *nodes*: one node can host several Subscriptions of
 // the same topic, and each needs its own ack watermark for Phase 3's KEEP_ALL blocking to be
 // correct. 12 bytes per entry.
+#ifndef tt_MAX_ACK_ENTRIES
 #define tt_MAX_ACK_ENTRIES 16
+#endif
 
 // Liveliness: a remote node is considered gone once this many *consecutive* tt_NODE_UPDATE_
 // INTERVAL windows pass with no UPDATE announce heard from it at all - not merely no *change*
@@ -227,7 +305,9 @@
 // dead; too high a value delays noticing a real departure (a crash, a pulled cable - anything
 // that skips tt_Node_destroy()'s own farewell UPDATE). 3 matches the conventional heartbeat-miss
 // default other discovery protocols use for the same reason.
+#ifndef tt_LIVELINESS_MISS_THRESHOLD
 #define tt_LIVELINESS_MISS_THRESHOLD 3
+#endif
 
 // Fixed capacity of an opt-in struct tt_Discovery (tickle.h, tt_Node_set_discovery()) - the
 // number of distinct remote entities (across every node it's ever heard an UPDATE from) it can
@@ -238,11 +318,19 @@
 // introspection is a best-effort aid, not something correctness depends on. Each entry costs
 // roughly 2 * (tt_MAX_NAME_LENGTH + 1) bytes for its type/name strings alone, so this is
 // deliberately much smaller than tt_MAX_ENDPOINT_COUNT.
+#ifndef tt_MAX_DISCOVERED_ENTITIES
 #define tt_MAX_DISCOVERED_ENTITIES 16
+#endif
 
+#ifndef _tt_NODE_ADDRESS
 #define _tt_NODE_ADDRESS "0.0.0.0"
+#endif
+#ifndef _tt_NODE_PORT
 #define _tt_NODE_PORT 8282
+#endif
+#ifndef _tt_NODE_BROADCAST
 #define _tt_NODE_BROADCAST "255.255.255.255"
+#endif
 
 struct _tt_Config {
     char* addr;
@@ -261,3 +349,20 @@ struct _tt_Config {
 };
 
 extern struct _tt_Config _tt_CONFIG;
+
+// Invariants between the settings above. These hold for the defaults; they are asserted because
+// the defaults are now overridable and an override that breaks one would otherwise fail at
+// runtime, as a silent misbehaviour, far from the line that caused it.
+_Static_assert(tt_MAX_PEER_COUNT > tt_UNICAST_PEER_THRESHOLD,
+               "tt_MAX_PEER_COUNT must exceed tt_UNICAST_PEER_THRESHOLD - see tt_MAX_PEER_COUNT's own "
+               "comment: a full peer table is only safe because it already implies broadcasting");
+_Static_assert(tt_RELIABLE_BITMAP_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
+               "tt_RELIABLE_BITMAP_BITS must be a whole number of words");
+_Static_assert(tt_RELIABLE_BITMAP_MAX_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
+               "tt_RELIABLE_BITMAP_MAX_BITS must be a whole number of words");
+_Static_assert(tt_RELIABLE_BITMAP_MAX_BITS >= tt_RELIABLE_BITMAP_BITS,
+               "tt_RELIABLE_BITMAP_MAX_BITS is the ceiling for tt_RELIABLE_BITMAP_BITS");
+_Static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint index must have room for every endpoint");
+_Static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
+               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
+_Static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");
