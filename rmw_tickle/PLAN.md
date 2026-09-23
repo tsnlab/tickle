@@ -1247,7 +1247,9 @@ KEEP_ALL publishers, needs a typesupport generator change), the **intermittent D
 outlier** (~1 run in 3-6 at max rate), and **CI maintenance** (actions still targeting Node.js 20;
 `ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19; and a latent clang-format tripwire -
 `examples/perf_hil/cyclonedds/best_effort_latency/{client,server}.c` fail `make lint` under
-clang-format 21.1.8 but pass CI's older cpp-linter, so a CI image bump will break the build).
+clang-format 21.1.8 but pass CI's older cpp-linter, so a CI image bump will break the build; and the dev box's ROS is
+`lyrical` while CI and the rig are on `jazzy` - fine today since only long-stable API is used, but
+it means local rmw builds are not the authoritative ones).
 
 #### Phase 3 step 1 result: prerequisites (2026-09-23, Dev implemented + measured, Plan verified raw logs)
 
