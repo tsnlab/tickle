@@ -1273,6 +1273,44 @@ tc5 0.249%; K1024 tc1 0.0001%, tc5 0.0339%; 102-117 Mbps. Matches B1 within nois
 (~995/s against the 1ms min gap) with 1.06-1.44M suppressed. At depth 64 it self-limits far lower
 (111-134/run), since the watermark is only crossed when a gap actually stalls the ack.
 
+#### Phase 2 + per-Subscriber ack identity: HIL findings (2026-09-23, Dev measured, Plan verified from the raw counters)
+
+Branch `experiment/phase2-wire`. Wire: ACKNACK gains the sender's entity id and a variable-length
+bitmap (fixed part 20 B + 8 B per word sent); `tt_UpdateEntity` gains an entity id and the
+announced tracking window (in the old `reserved[2]`); `tt_VERSION` 5 → 6 with an exact (`!=`)
+version check; `tt_PeerAck` keyed by (node_id, entity_id), `tt_MAX_ACK_ENTRIES` = 16, a full table
+refuses the match; the Subscriber window is caller-sized, core default 256, max 4096.
+
+**The acceptance cell** (tc 1%, max rate, K=1024, 6 reps - where the intermittent outlier lived):
+
+| window | loss | note |
+|---|---|---|
+| 256 (today) | 0-335 lost, the outlier still appears | |
+| **1024** | **0 lost, all 6 reps** | the outlier is gone |
+| 4096 | 191-368 lost, all 6 reps | **worse, reproducibly** |
+
+**Why 4096 is worse - root-caused, not guessed**: at W=4096 the lost count equals `null_evicted`
+exactly in every rep (368/358/328/191/217/229 against lost 368/358/324/191/217/229), with
+`jump_data` = 0. Widening the window past the *Publisher's* retained depth doesn't recover
+anything extra; it converts "gap abandoned by the jump path" into "gap kept alive until the
+Publisher says it's gone" (Dev's phrasing), and those samples were already evicted. It also costs
+~35% more retransmit requests at tc 1% (19.3K vs 14.4K bits requested). **Rule: window ≤ Publisher
+cache depth.** Documented in the header, the example's `-w` help and the CHANGELOG, plus a
+one-per-matching warning when an announced window exceeds what the Publisher retains.
+
+**Reverse-traffic cost** (8s runs, DATA record 100 B on the wire):
+
+| cell | ACKNACKs | avg size | ACKNACK Mbps | DATA Mbps | reverse/forward |
+|---|---|---|---|---|---|
+| tc 1%, W=256 | 13598 | 28.4 B | 0.386 | 137.1 | 0.28% |
+| tc 1%, W=1024 | 14988 | 28.5 B | 0.427 | 150.5 | 0.28% |
+| tc 5%, W=256 | 71382 | 31.8 B | 2.269 | 145.6 | 1.56% |
+| tc 5%, W=1024 | 72077 | 36.5 B | 2.631 | 145.7 | 1.81% |
+
+The wider window is nearly free (+0.25 points at 5% loss, 0 at 1%), and the variable-length bitmap
+more than pays for itself: the average ACKNACK is 28-37 B against the old fixed 44 B, so tc 5%
+W=1024 measured 2.63 MB where a fixed 256-bit bitmap would have sent ~3.14 MB.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
