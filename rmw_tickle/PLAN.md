@@ -1540,6 +1540,36 @@ Risk to weigh: a durable Subscriber whose Heartbeat never arrives would then sit
 a real behavior change in code the user has already made one call about (the match-time baseline).
 **Put to the user as its own decision.**
 
+#### Item 2, first result: `rmw_tickle` aborts a real ROS 2 application in async mode (2026-09-23, Plan, `compare_rmw_perf.sh`)
+
+Ran the same-host comparison (`ROS_DISTRO_NAME=lyrical`, runtime 10). The latency gap itself is
+unchanged - `rmw_tickle` 0.045-0.057ms vs. FastDDS 0.031-0.037 and CycloneDDS 0.032-0.033, i.e.
+still ~1.4-1.5x - but the run surfaced something much worse than the gap it was meant to measure:
+
+**Both `rmw_tickle` async tests FAILED, and the failure is an application abort**, not a slow
+number. `perf_test` terminated with `std::runtime_error`: *"Data consistency violated. Received
+sample with not strictly higher id. Received sample id 1 Prev. sample id : 7427"* (Array1k) and
+`... : 7416` (Struct16), i.e. after ~7400 samples the subscriber was handed **sample id 1 again**.
+`Struct16` async also reported `received 464 / lost 3379`.
+
+**The correlation is exact**: each abort is immediately preceded by
+`[WARNING] Node N presumed dead (no UPDATE for 3 consecutive intervals)`. That is the liveliness
+false positive `COMPARISON.MD` §6 item 1 documented and Milestone 59 partly fixed - under load a
+*still-alive* peer misses three UPDATEs, gets forgotten, and its next announce looks like a fresh
+discovery, which re-delivers samples the subscriber already had. Seven `presumed dead` events
+occurred across the run; the two that landed in async mode produced the aborts.
+
+**Plan's standing proposal, now with evidence** (previously deferred as a latent risk when
+`peer_acks_min` showed it wasn't firing in the native HIL scenario): liveliness currently infers
+death only from periodic UPDATE announces, so a peer that is demonstrably alive - actively sending
+DATA or ACKNACKs - can still be declared dead. Refresh `update_last_seen[]` from **any** received
+traffic from that node, not just UPDATE. That removes the false positive at its source rather than
+special-casing the redelivery it triggers. **Needs the user's decision: it is core semantics.**
+
+This reframes item 2. The stated goal was closing a ~1.4x latency gap; the run says `rmw_tickle`
+can abort a ROS 2 application under same-host load, which is a correctness problem and takes
+precedence over the latency work.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
