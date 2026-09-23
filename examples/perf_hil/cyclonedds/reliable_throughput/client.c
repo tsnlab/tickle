@@ -5,15 +5,16 @@
  * just blasts samples, the *receiver* (server.c) is the authoritative side for loss/throughput,
  * since only it can see what actually arrived.
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include "Bench.h"
+#include <dds/dds.h>
+
 #include "../common.h"
+#include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
