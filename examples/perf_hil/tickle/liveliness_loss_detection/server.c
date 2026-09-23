@@ -54,6 +54,15 @@ static uint64_t received = 0;
 static uint64_t last_received_ns = 0;
 static bool departed = false;
 static uint64_t departed_detected_ns = 0;
+// Arm B of the two-clock A/B is 215e16c4, which has no traffic clock at all, so the field the
+// gap measurement reads does not exist in that build. Guarded with a -D rather than forked into a
+// second harness source: a second harness binary would be exactly the confounder the A/B exists
+// to rule out. Defaults on, so an ordinary build is unaffected.
+#ifndef HAVE_TRAFFIC_CLOCK
+#define HAVE_TRAFFIC_CLOCK 1
+#endif
+
+static int64_t gap_at_departure_ns = 0;
 
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
@@ -66,14 +75,30 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
 
 static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                                bool is_departed, void* param) {
-    (void)node;
-    (void)node_id;
     (void)endpoint_id;
     (void)kind;
     (void)param;
     if (is_departed && !departed) {
         departed = true;
         departed_detected_ns = tt_get_ns();
+        // The two-clock liveliness rule's own arithmetic predicts zero shift in detection timing
+        // while (last_traffic - last_announce) stays under the guard (lease/2 on this path). That
+        // is a prediction about a quantity nobody was measuring, so measure it: reporting the gap
+        // next to the latency turns "inside the published baseline" into "inside it for the reason
+        // the design says".
+        //
+        // Signed, because the first version of this line was unsigned on the reasoning that an
+        // UPDATE refreshes both clocks so traffic can never be older than announce. It can, by a
+        // few hundred ns: process_packet() stamps traffic_last_seen from a tt_get_ns() at the top
+        // of the function and update_last_seen from a later one further in. Every rep of the first
+        // 60-rep run reported 18446744073709.551 ms - 2^64 ns - which is what that underflow looks
+        // like once it reaches a double, and it destroys the magnitude the field exists to report.
+#if HAVE_TRAFFIC_CLOCK
+        gap_at_departure_ns = (int64_t)node->traffic_last_seen[node_id] - (int64_t)node->update_last_seen[node_id];
+#else
+        (void)node;
+        (void)node_id;
+#endif
     }
 }
 
@@ -131,8 +156,8 @@ int main(int argc, char** argv) {
         (departed && last_received_ns != 0) ? (double)(departed_detected_ns - last_received_ns) / ns_per_ms : -1.0;
 
     printf("RESULT: framework=tickle scenario=liveliness_loss_detection role=server recv=%lu departed=%d "
-           "detect_latency_ms=%.3f\n",
-           (unsigned long)received, departed, detect_latency_ms);
+           "detect_latency_ms=%.3f gap_at_departure_ms=%.3f\n",
+           (unsigned long)received, departed, detect_latency_ms, (double)gap_at_departure_ns / ns_per_ms);
 
     tt_Node_destroy(&node);
     return 0;
