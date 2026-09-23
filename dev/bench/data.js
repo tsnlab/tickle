@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790173502260,
+  "lastUpdate": 1790173506774,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -107947,6 +107947,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/0be8c33f7ad1d7340708859c88c761f36f1a5de5"
         },
         "date": 1790170286304,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "82a6a02d5a91b521398d421152f8eeb9092141fe",
+          "message": "tickle: give every node its own data port, so a unicast can reach one node and not another\n\nTwo nodes on one host could not reliably exchange data. Both bound only the well-known port with\nSO_REUSEADDR, so they shared an address, and a unicast addressed to it was delivered by the kernel\nto exactly one of the two sockets - sometimes the sender's own. Discovery was unaffected, because\na broadcast reaches every socket bound to that port, so the pair matched and the graph looked\nhealthy; only the data went nowhere. Measured directly with two sockets bound to one UDP port\nexactly as tt_bind() does it: broadcast reaches both, unicast reaches one.\n\nIn the rmw_tickle benchmark that showed as a Publisher receiving 10009 of its own 10010 datagrams\nwhile its Subscriber got 25 - and, worse, as roughly 10% of the stream going to the sender in runs\nthat passed and were recorded as clean. Every same-host figure this project has taken was measured\nthrough that.\n\nEach node now also binds a socket on a kernel-assigned port and sends everything from it. No wire\nformat change is needed: upsert_peer() already records a peer at the source port of the packet it\nwas heard on, so every peer learns this node's own port for free, and a unicast then reaches this\nnode specifically. Discovery keeps using the well-known port and broadcast, because a node has to\nbe reachable before anyone knows its data port. Receive watches both sockets; tt_try_receive()\ndrains both, since either can have a backlog. Both HAL backends get it - the hazard is not\nLinux-specific, it is what happens whenever two nodes share a host.\n\ntt_receive() now polls on every path. A negative timeout used to skip the poll and read the\nwell-known socket directly, which blocks exactly as timeout 0 does but would now see only one of\nthe two sockets. tt_Node_poll() normalises negative to tt_RECEIVE_TIMEOUT before calling, so\nnothing relied on it, and leaving that path half-blind would be a trap for the next direct caller.\n\ntest_samehost.sh is the regression test, wired into make test-samehost, make test-all and CI. It\nneeds no root and no namespaces, so it runs on every push - which the netns test does not, and\nwhich is the point. It asserts delivery and then that the publisher did not receive its own\nstream back.\n\nThe mechanism was not unknown. platform/linux/test.sh's own header records that \"a kernel\ndelivers a unicast packet aimed at one wildcard-bound socket to whichever such socket bound last\",\nand the response at the time was to give that test two network namespaces so it would stop hitting\nit. That made the test pass and left the product broken. Verified now the other way round: with\nboth nodes on one host over loopback, 5 of 5 samples delivered and the publisher self-receiving 5\nof 10 sent, which is its own broadcast announces and not its data.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T23:16:14+09:00",
+          "tree_id": "c16ccdaba5829c95724881ced0a1241a800a7369",
+          "url": "https://github.com/tsnlab/tickle/commit/82a6a02d5a91b521398d421152f8eeb9092141fe"
+        },
+        "date": 1790173505099,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
