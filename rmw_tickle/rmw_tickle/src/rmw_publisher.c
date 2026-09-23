@@ -190,6 +190,65 @@ static uint64_t resolve_max_blocking_ns(void) {
     return (uint64_t)blocking_ms * (uint64_t)tt_MILLISECOND;
 }
 
+// Bytes to reserve per retained sample in a KEEP_ALL publisher's arena.
+//
+// Why this is a knob rather than a computed number: rmw cannot derive a type's maximum encoded
+// size today. rosidl_typesupport_tickle_c exposes only tickle_encode_size(), which needs an actual
+// message, so the bound has to be TickLE's own single-datagram ceiling. Generating a per-type
+// maximum was investigated and deferred (rmw_tickle/PLAN.md): it is computable for a type whose
+// every variable-length field resolves to a capacity, but not for one carrying a plain unbounded
+// string - which includes sensor_msgs/msg/Image and std_srvs/srv/SetBool - because such a string
+// is a char* aliasing external memory with no capacity at all, and the generator deliberately does
+// not auto-derive one.
+//
+// An application does know its own types, though, and the difference is large: a KEEP_ALL DURABLE
+// publisher reserves depth 8192 x 1472 B, about 12.06 MB, where a 76-byte telemetry type needs
+// about 0.6 MB. So RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES lets a caller who knows say so, and
+// nothing changes for anyone who doesn't.
+//
+// Setting it too small is safe by construction rather than by checking: a sample that does not fit
+// the arena is sent but not retained (cache_reliable_sample()'s own oversize branch, tickle.c -
+// it logs, counts not_cached_oversize, and leaves the rest of the cache untouched). So an
+// under-sized value costs retention for the samples that overflow it, not correctness and not a
+// crash. Clamped to tt_MAX_BUFFER_LENGTH because a larger value could only reserve for a sample
+// TickLE cannot put in a datagram in the first place.
+//
+// Only consulted for KEEP_ALL, which is the only path that picks a depth large enough for the
+// per-sample figure to matter: a KEEP_LAST publisher's arena is qos->depth samples, typically ten.
+// That is also what keeps the name honest.
+// Returns the per-record arena reservation, which is not the same number the caller sets. The
+// environment variable is the largest encoded *message payload* the application publishes, because
+// that is the figure an application actually knows about its own types; a cached record also
+// carries a submessage header and a tt_DataHeader and is padded to the 4-byte submessage
+// alignment, and tt_RELIABLE_RECORD_BYTES() is what adds that. Getting this backwards would
+// under-reserve by 24 bytes a sample and quietly cost retention at exactly the sizes the knob
+// exists to serve.
+//
+// The unset default deliberately returns tt_MAX_BUFFER_LENGTH raw, without that conversion, since
+// that is literally what this code passed before the knob existed - "default behaviour unchanged"
+// has to mean byte-identical, not merely similar.
+static uint32_t resolve_keep_all_record_bytes(void) {
+    const char* env = getenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
+    if (NULL == env || '\0' == env[0]) {
+        return (uint32_t)tt_MAX_BUFFER_LENGTH;
+    }
+    char* end = NULL;
+    unsigned long long payload = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || payload == 0) {
+        // Unparseable or zero: fall back rather than fail publisher creation, same reasoning as
+        // resolve_max_blocking_ns() - a malformed tuning knob should not stop a node starting, and
+        // this one can only cost retention, never correctness.
+        return (uint32_t)tt_MAX_BUFFER_LENGTH;
+    }
+    if (payload > (unsigned long long)tt_MAX_BUFFER_LENGTH) {
+        return (uint32_t)tt_MAX_BUFFER_LENGTH; // past the datagram ceiling - nothing that large is sendable
+    }
+    uint32_t record = tt_RELIABLE_RECORD_BYTES(payload);
+    // A payload just under the ceiling grows past it once the headers are added; reserving more
+    // than a datagram per record would be reserving for a sample TickLE cannot send.
+    return record > (uint32_t)tt_MAX_BUFFER_LENGTH ? (uint32_t)tt_MAX_BUFFER_LENGTH : record;
+}
+
 // Split out of rmw_create_publisher() below purely to keep that function's own cognitive
 // complexity under clang-tidy's threshold - see rmw_tickle_publisher_t.reliable_cache's own doc
 // comment for the full "why" this exists at all. Returns false (with RMW_SET_ERROR_MSG already
@@ -246,10 +305,11 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     // own message_type_support.h exposes only tickle_encode_size (which needs an actual message),
     // no per-type maximum - so the bound is TickLE's own single-datagram ceiling,
     // tt_MAX_BUFFER_LENGTH. That keeps rmw's retention exactly what it is today (the byte bound can
-    // never bite before the count bound), at today's memory plus one record of wrap slack. A real
-    // reduction here needs a generated per-type max encoded size in the typesupport struct -
-    // flagged as a follow-up, deliberately not smuggled into B1.
-    uint32_t arena_bytes = tt_RELIABLE_CACHE_ARENA_BYTES(depth, tt_MAX_BUFFER_LENGTH);
+    // never bite before the count bound), at today's memory plus one record of wrap slack. A
+    // KEEP_ALL publisher can narrow it with RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES - see
+    // resolve_keep_all_record_bytes() above for why that is a knob and not a computed number.
+    uint32_t record_bytes = keep_all ? resolve_keep_all_record_bytes() : (uint32_t)tt_MAX_BUFFER_LENGTH;
+    uint32_t arena_bytes = tt_RELIABLE_CACHE_ARENA_BYTES(depth, record_bytes);
     pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(arena_bytes, allocator->state);
     if (NULL == pub_impl->reliable_cache->arena) {
         RMW_SET_ERROR_MSG("failed to allocate reliable_cache arena");

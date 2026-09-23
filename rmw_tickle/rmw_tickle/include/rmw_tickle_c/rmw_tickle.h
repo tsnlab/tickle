@@ -527,6 +527,24 @@ typedef struct rmw_tickle_publisher_t {
 // the default.
 #define RMW_TICKLE_MAX_BLOCKING_MS_LIMIT 3600000ULL
 
+// RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES - the largest encoded message payload a KEEP_ALL publisher
+// in this process will send, in bytes. Unset (the default) reserves TickLE's single-datagram
+// ceiling per retained sample, which is the only bound rmw can derive on its own: the typesupport
+// exposes tickle_encode_size(), which needs an actual message, and no per-type maximum. That
+// costs a KEEP_ALL DURABLE publisher depth 8192 x 1472 B, roughly 12.06 MB, whatever it publishes.
+//
+// An application knows its own types even when rmw cannot, and the difference is most of that
+// figure - a 76-byte telemetry type needs about 0.6 MB. Setting this is how it says so. Values
+// past the datagram ceiling, unparseable ones and zero all fall back to the default rather than
+// failing node startup; see resolve_keep_all_record_bytes() (rmw_publisher.c), which also adds the
+// per-record header overhead so the number here stays the one the application actually knows.
+//
+// Setting it too small costs retention, not correctness: a sample that does not fit the arena is
+// still sent, just not retained for retransmission or durability replay (tickle.c's own oversize
+// branch logs it and counts not_cached_oversize). Only KEEP_ALL consults it, because only KEEP_ALL
+// picks a depth deep enough for the per-sample figure to matter - a KEEP_LAST publisher's arena is
+// qos->depth samples, typically ten.
+
 // Phase 2 (rmw_tickle/PLAN.md) - how wide a RELIABLE gap each subscription can track, in 64-bit
 // words: 16 words = 1024 samples, ~5.4ms at TickLE's own measured max rate, i.e. about four retry
 // intervals rather than the ~1.35ms the 256-sample core default lasts. 8KB per subscription

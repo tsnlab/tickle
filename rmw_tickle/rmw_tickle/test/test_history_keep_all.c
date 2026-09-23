@@ -23,7 +23,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h> // setenv()/unsetenv() - the arena-sizing knob below
 
+#include <tickle/config.h> // tt_MAX_BUFFER_LENGTH, tt_RELIABLE_CACHE_ARENA_BYTES/_RECORD_BYTES
 #include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE
 
 #include "rcutils/allocator.h"
@@ -200,6 +202,68 @@ int main(void) {
         // KEEP_LAST is the "drop the oldest" policy by definition, so it must never refuse a write.
         assert(!pub_impl->tickle_publisher.keep_all);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+    }
+
+    // RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES (rmw_tickle/PLAN.md, the deferred per-type maximum's
+    // cheaper stand-in): an application that knows its own types can shrink the per-sample arena
+    // reservation. Three things to pin - the default is byte-identical to what it was before the
+    // knob existed, a set value really sizes the arena, and B1's count guarantee survives it.
+    {
+        rmw_qos_profile_t qos = base_qos();
+        qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
+        qos.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
+
+        // Default: unset must reserve exactly tt_MAX_BUFFER_LENGTH per record, not the
+        // header-adjusted figure a set value goes through. "Unchanged" has to mean identical.
+        unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
+        rmw_publisher_t* pub = rmw_create_publisher(node, type_support, "keep_all_arena_default", &qos, &pub_opts);
+        assert(NULL != pub);
+        rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_MAX_BUFFER_LENGTH) ==
+               pub_impl->reliable_cache->arena_size);
+        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity); // count bound intact
+        assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+
+        // Set: the value is a message payload, so the arena is sized from the *record* it implies
+        // (payload plus submessage and DATA headers, padded) - getting that wrong would
+        // under-reserve by 24 bytes a sample.
+        setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "76", 1);
+        pub = rmw_create_publisher(node, type_support, "keep_all_arena_sized", &qos, &pub_opts);
+        assert(NULL != pub);
+        pub_impl = (rmw_tickle_publisher_t*)pub->data;
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_RELIABLE_RECORD_BYTES(76)) ==
+               pub_impl->reliable_cache->arena_size);
+        // ...and it is a real reduction, not a rounding difference.
+        assert(pub_impl->reliable_cache->arena_size <
+               tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_MAX_BUFFER_LENGTH) / 10);
+        // B1's guarantee is by count, and a narrower arena must not weaken it: still `depth` slots,
+        // and still `depth + 1` records of room so the byte bound can't evict before the count one.
+        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity);
+        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
+        assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+
+        // Nonsense and out-of-range values fall back rather than failing node startup.
+        const char* rejected[] = {"0", "not-a-number", "999999"};
+        for (size_t i = 0; i < sizeof(rejected) / sizeof(rejected[0]); i++) {
+            setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", rejected[i], 1);
+            pub = rmw_create_publisher(node, type_support, "keep_all_arena_bad", &qos, &pub_opts);
+            assert(NULL != pub);
+            pub_impl = (rmw_tickle_publisher_t*)pub->data;
+            assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_MAX_BUFFER_LENGTH) ==
+                   pub_impl->reliable_cache->arena_size);
+            assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+        }
+
+        // KEEP_LAST must ignore it entirely - that is what keeps the variable's name honest.
+        setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "76", 1);
+        qos.history = RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+        qos.depth = 10;
+        pub = rmw_create_publisher(node, type_support, "keep_last_arena", &qos, &pub_opts);
+        assert(NULL != pub);
+        pub_impl = (rmw_tickle_publisher_t*)pub->data;
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(10, tt_MAX_BUFFER_LENGTH) == pub_impl->reliable_cache->arena_size);
+        assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+        unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
     }
 
     assert(RMW_RET_OK == rmw_destroy_node(node));
