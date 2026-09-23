@@ -623,7 +623,21 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
       as a core conformance item, see `PLAN.md`.
     - **`reliable_throughput` rate**: five consecutive reps at tc 0% gave 94.4 / 111.0 / 112.7 /
       94.9 / 111.5 Mbps - two clusters at ~95 and ~112, nothing between, `post_match_lost` 0 in all
-      five. §3b's TickLE Mbps column is a median of 3 per cell and therefore reports whichever
+      five. **Cause found 2026-09-23, after the CPU-governor hypothesis was measured and refuted**
+      (both modes run at the same ~2391 MHz): it is **which core the sender lands on**. Instrumented
+      with `sched_getcpu()`, 12 reps at 0% loss, nothing pinned: client on CPU0 → 94.5-94.6 Mbps
+      (n=3, `cpu_main_share` 1.00 in every one); client not on CPU0 → 110.8-112.3 Mbps (n=9). No
+      overlap. On both Pis `eth0`'s IRQ 108 is handled **entirely on CPU0** (404M/405M interrupts
+      there, zero on CPU1-3), so the sender either shares a core with the NIC interrupt handler or
+      it does not, and 3-in-12 is the 1-in-4 an unpinned four-core machine gives.
+      **This is a property of the rig, not of TickLE** - the DDS columns ran on the same hosts with
+      the same IRQ pinning and are subject to the same coin flip, so the cross-framework comparison
+      is not biased. But **every single-run throughput figure here has a ~1-in-4 chance of reading
+      ~15% low**, including TickLE's own headline numbers. Being fixed by running the benchmark
+      under `taskset -c 1-3` so the sender never lands on the interrupt core; the affected Mbps
+      cells are re-measured under that fix before this ◊ is lifted. (Measured on TickLE only so
+      far; the same instrumentation is being added to the DDS harnesses rather than asserting it
+      for them.) §3b's TickLE Mbps column is a median of 3 per cell and therefore reports whichever
       cluster that cell sampled; those cells are marked ◊ until re-measured with enough reps to
       report both modes. Loss columns are unaffected.
     Standing consequence for methodology: 3 reps is not enough for either measurement, and any
