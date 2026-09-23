@@ -1158,6 +1158,14 @@ struct tt_Subscriber { // extends endpoint
     // default) means this Subscriber accepts AUTOMATIC liveliness; true means it requires
     // MANUAL_BY_TOPIC specifically.
     bool liveliness_manual;
+    // Diagnostic counter, not protocol state: how many arriving samples this Subscriber has
+    // dropped because RxO matching found the Publisher incompatible. Exists because that drop is
+    // otherwise completely silent - deliver_data_to_subscriber() returns, no callback, no ACKNACK,
+    // no log - so a Subscriber that is discovered, matched in the graph, and receiving nothing
+    // looks identical to one nobody is publishing to. That shape (total, silent, no error) is
+    // exactly the rmw_tickle zero-delivery failure under investigation on 2026-09-23, and it was
+    // impossible to tell the two apart from outside.
+    uint32_t rxo_drops;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);

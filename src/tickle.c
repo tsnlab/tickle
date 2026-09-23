@@ -1259,6 +1259,7 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->topic = topic;
     sub->callback = callback;
     sub->reliable = false; // best-effort by default - see tickle.h's own doc comment
+    sub->rxo_drops = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - see struct tt_WriterProxy
     }
@@ -2594,6 +2595,12 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             if (out_created != NULL) {
                 *out_created = true;
             }
+            // Logged so that "this Subscriber never matched anyone" can be told apart from "it
+            // matched and then received nothing" - the two look identical from outside, and the
+            // rmw_tickle zero-delivery failure under investigation on 2026-09-23 is total and
+            // silent either way. Once per writer, so the volume is bounded by tt_MAX_PEER_COUNT.
+            TT_LOG_INFO("Writer proxy created: node %u entity %u for endpoint %u", node_id, entity_id,
+                        ((struct tt_Endpoint*)sub)->id);
             return proxy;
         }
     }
@@ -3596,6 +3603,12 @@ static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct t
 
     if (upsert_peer(pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {
         struct tt_Peer target = {ctx->header->source, ctx->sender_ip, ctx->sender_port};
+        // The Publisher's half of the same question the writer-proxy log above answers from the
+        // Subscriber's side: did the two ever actually find each other? Once per newly-claimed
+        // peer slot, so this does not fire per sample.
+        TT_LOG_INFO("Publisher peer registered: node %u at %u.%u.%u.%u:%u for endpoint %u", ctx->header->source,
+                    (ctx->sender_ip >> 24) & 0xFF, (ctx->sender_ip >> 16) & 0xFF, (ctx->sender_ip >> 8) & 0xFF,
+                    ctx->sender_ip & 0xFF, ctx->sender_port, ((struct tt_Endpoint*)pub)->id);
         // Milestone 58 - skip a redundant backlog re-delivery when this "genuinely new" peer slot
         // (check_liveliness()'s own presumed-dead cleanup, not necessarily a real departure - see
         // struct tt_DurableDeliveryRecord's own doc comment, tickle.h) already received this exact
@@ -3803,10 +3816,40 @@ static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct 
     bool offered_reliable = (publisher->qos & tt_UPDATE_QOS_RELIABLE) != 0;
     bool offered_durable = (publisher->qos & tt_UPDATE_QOS_DURABLE) != 0;
     bool offered_manual = (publisher->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
-    return (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable) ||
-           deadline_liveliness_incompatible(sub->deadline_duration_ns, publisher->deadline_duration_ns,
-                                            sub->liveliness_manual, offered_manual, sub->liveliness_lease_duration_ns,
-                                            publisher->liveliness_lease_duration_ns);
+    bool incompatible = (sub->reliable && !offered_reliable) || (sub->durable && !offered_durable) ||
+                        deadline_liveliness_incompatible(
+                            sub->deadline_duration_ns, publisher->deadline_duration_ns, sub->liveliness_manual,
+                            offered_manual, sub->liveliness_lease_duration_ns, publisher->liveliness_lease_duration_ns);
+    if (!incompatible) {
+        return false;
+    }
+
+    // Logged, because the drop itself is silent by design and that silence is indistinguishable
+    // from "nobody is publishing". Throttled to the 1st, 10th, 100th ... drop rather than rate-
+    // limited by time: the interesting fact is that it happened at all and what the mismatch was,
+    // and a stream at a thousand samples a second would otherwise bury the run's own output.
+    sub->rxo_drops++;
+    uint32_t drops = sub->rxo_drops;
+    bool power_of_ten = false;
+    for (uint32_t step = 1; step <= drops; step *= 10) {
+        if (step == drops) {
+            power_of_ten = true;
+        }
+        if (step > drops / 10) {
+            break;
+        }
+    }
+    if (power_of_ten) {
+        TT_LOG_WARNING("RxO mismatch: dropping DATA from node %u endpoint %u (drop #%u) - requested "
+                       "reliable=%d durable=%d manual=%d lease=%luns deadline=%luns, offered reliable=%d "
+                       "durable=%d manual=%d lease=%luns deadline=%luns",
+                       publisher_node_id, publisher_endpoint_id, drops, sub->reliable ? 1 : 0, sub->durable ? 1 : 0,
+                       sub->liveliness_manual ? 1 : 0, (unsigned long)sub->liveliness_lease_duration_ns,
+                       (unsigned long)sub->deadline_duration_ns, offered_reliable ? 1 : 0, offered_durable ? 1 : 0,
+                       offered_manual ? 1 : 0, (unsigned long)publisher->liveliness_lease_duration_ns,
+                       (unsigned long)publisher->deadline_duration_ns);
+    }
+    return true;
 }
 
 // Milestone 35 - for_each_endpoint()'s own visitor context for delivering one arriving DATA
