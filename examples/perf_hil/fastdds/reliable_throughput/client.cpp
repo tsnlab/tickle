@@ -123,7 +123,12 @@ int main(int argc, char** argv) {
     // same way at the end of a run - see the CycloneDDS twin's own comment for why a tail sample
     // is otherwise invisible. wait_for_acknowledgments() is FastDDS's own equivalent.
     eprosima::fastrtps::Duration_t drain {(int32_t)drain_s, 0};
-    const char* drained = writer->wait_for_acknowledgments(drain) ? "acked" : "timeout";
+    // == RETCODE_OK, not a bool test: on FastDDS 2.x (the rig's jazzy) this returns
+    // fastrtps::types::ReturnCode_t, whose operator bool() is deleted; 3.x returns the
+    // fastdds::dds enum. Comparing against the 2.x constant is what compiles where we measure.
+    const char* drained = writer->wait_for_acknowledgments(drain) == eprosima::fastrtps::types::ReturnCode_t::RETCODE_OK
+                              ? "acked"
+                              : "timeout";
 
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
