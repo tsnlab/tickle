@@ -833,7 +833,8 @@ static uint8_t endpoint_qos_bits(struct tt_Endpoint* endpoint) {
     case tt_KIND_TOPIC_PUBLISHER: {
         struct tt_Publisher* pub = (struct tt_Publisher*)endpoint;
         return (uint8_t)((pub->reliable ? tt_UPDATE_QOS_RELIABLE : 0) | (pub->durable ? tt_UPDATE_QOS_DURABLE : 0) |
-                         (pub->liveliness_manual ? tt_UPDATE_QOS_LIVELINESS_MANUAL : 0));
+                         (pub->liveliness_manual ? tt_UPDATE_QOS_LIVELINESS_MANUAL : 0) |
+                         (pub->keep_all ? tt_UPDATE_QOS_KEEP_ALL : 0)); // Phase 3 - see that bit's doc comment
     }
     case tt_KIND_TOPIC_SUBSCRIBER: {
         struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
@@ -1550,6 +1551,63 @@ static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
     return lowest;
 }
 
+// Phase 3 (rmw_tickle/PLAN.md) - how many samples this Publisher may hold unacknowledged: its own
+// retained depth, or the narrowest RELIABLE tracking window any matched Subscriber announced,
+// whichever is smaller. A Subscriber cannot ask about a gap older than its own window, so an
+// unacknowledged run deeper than that can never be recovered however much is retained here
+// (measured in Phase 2: a window wider than the Publisher's own depth recovers strictly less).
+static uint32_t keep_all_bound(const struct tt_Publisher* pub) {
+    uint32_t depth = reliable_cache_depth(pub->reliable_cache);
+    uint32_t window = tt_Publisher_unacked_bound(pub);
+    return window < depth ? window : depth;
+}
+
+// Whether a KEEP_ALL Publisher may accept one more sample: refused only when accepting it would
+// push the unacknowledged run past keep_all_bound(), i.e. would force cache_reliable_sample() to
+// evict something nobody has acknowledged yet.
+//
+// An empty ack set means writable: with no matched Subscriber left - none ever matched, or the last
+// one was declared not alive (Phase 3 (a)) - there is nobody whose acknowledgement could ever
+// arrive, so staying blocked would mean waiting forever on nothing. min_peer_ack_seq_no() returns 0
+// both for "no peers" and for "a matched peer that has never acked", so the two are told apart by
+// the ack table being empty, not by that value.
+static bool keep_all_writable(const struct tt_Publisher* pub) {
+    if (!pub->keep_all || reliable_cache_depth(pub->reliable_cache) == 0) {
+        return true; // KEEP_LAST (the default), or nothing retained at all - never refuses a write
+    }
+
+    bool any_matched = false;
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id != tt_NODE_ID_INVALID) {
+            any_matched = true;
+            break;
+        }
+    }
+    if (!any_matched) {
+        return true; // nothing left to wait for
+    }
+
+    uint32_t min_ack = min_peer_ack_seq_no(pub);
+    uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
+    uint32_t unacked_after_this = pub->seq_no + 1 - acked_through;
+    return unacked_after_this <= keep_all_bound(pub);
+}
+
+// Phase 3 - fires the writable callback exactly once per refusal-to-writable transition: a KEEP_ALL
+// Publisher that refused a write becomes writable again when an ACKNACK advances the slowest matched
+// Subscriber (or when the last of them goes away). No-op unless a publish was actually refused, so
+// an ordinary acking stream costs one boolean test per ACKNACK.
+static void notify_writable_if_pending(struct tt_Publisher* pub) {
+    if (!pub->writable_pending || !keep_all_writable(pub)) {
+        return;
+    }
+    pub->writable_pending = false;
+    RSTAT_INC(writable_callbacks);
+    if (pub->writable_callback != NULL) {
+        pub->writable_callback(pub, pub->writable_callback_param);
+    }
+}
+
 // Phase 3 prerequisite (d) - asks every matched peer for an ACK once the retained cache is
 // ack_solicit_watermark_pct full of samples nobody has acknowledged yet. Off unless a caller sets
 // that field (see its own doc comment, tickle.h). Throttled to at most one solicitation per
@@ -1787,6 +1845,16 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     struct tt_Node* node = pub->node;
     uint32_t old_tx_tail = node->tx_tail;
 
+    // Phase 3 (rmw_tickle/PLAN.md) - KEEP_ALL flow control: refuse rather than evict a sample
+    // nobody has acknowledged. Checked before anything is encoded, so a refused publish sends
+    // nothing, caches nothing and doesn't advance seq_no; the caller retries once
+    // tt_Publisher_writable() is true (or its writable_callback fires).
+    if (!keep_all_writable(pub)) {
+        pub->writable_pending = true; // so the callback fires on the transition back
+        RSTAT_INC(publish_refused);
+        return tt_RET_WOULD_BLOCK;
+    }
+
     // Zero-copy path when the topic offers it, tx_buffer is empty (nothing batched to coalesce
     // with), and the message is big enough that a second one wouldn't fit in the same packet
     // anyway - i.e. batching has nothing to gain here. Small messages fall through to the staging
@@ -2008,8 +2076,32 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly.
+uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
+    uint32_t bound = tt_RELIABLE_BITMAP_BITS;
+    if (pub == NULL) {
+        return bound;
+    }
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
+            continue;
+        }
+        uint32_t window = (uint32_t)pub->peer_acks[i].tracking_words * tt_RELIABLE_BITMAP_WORD_BITS;
+        if (window != 0 && window < bound) {
+            bound = window;
+        }
+    }
+    return bound;
+}
+
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
     return min_peer_ack_seq_no(pub);
+}
+
+bool tt_Publisher_writable(const struct tt_Publisher* pub) {
+    if (pub == NULL) {
+        return false;
+    }
+    return keep_all_writable(pub);
 }
 
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
@@ -2344,6 +2436,19 @@ static void bitmap_low_mask(uint64_t* mask, uint16_t words, int highest) {
     }
 }
 
+// Phase 3 (rmw_tickle/PLAN.md) - did this remote writer's own last announce set
+// tt_UPDATE_QOS_KEEP_ALL? Read once, when a WriterProxy is claimed; an announce arriving later
+// refreshes the cached flag directly (update_writer_proxies_keep_all()). false whenever the answer
+// isn't known - no discovery table attached, or nothing heard from that writer yet - which is the
+// KEEP_LAST side, i.e. today's bounded give-up.
+static bool writer_announced_keep_all(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id) {
+    if (node == NULL || node->discovery == NULL) {
+        return false;
+    }
+    const struct tt_DiscoveredEntity* writer = tt_Discovery_find(node->discovery, node_id, endpoint_id);
+    return writer != NULL && (writer->qos & tt_UPDATE_QOS_KEEP_ALL) != 0;
+}
+
 // Milestone 47 - finds sub's existing WriterProxy for (node_id, entity_id), or NULL if this
 // specific writer isn't currently tracked (every slot empty, or all held by other writers). Never
 // claims a new slot - see find_or_create_writer_proxy() below for the create half most call sites
@@ -2388,6 +2493,10 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sender_port = 0;
             proxy->ack_seq_no = 1;
             proxy->sub = sub; // before anything that reads the window width through the proxy
+            // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
+            // said (a later announce refreshes it via update_writer_proxies_keep_all()). Unknown
+            // writer, or no discovery table attached, reads as KEEP_LAST - the bounded, safe side.
+            proxy->keep_all = writer_announced_keep_all(sub->node, node_id, ((struct tt_Endpoint*)sub)->id);
             // Phase 2 - this slot's own window inside the Subscriber's tracking storage: the
             // caller-provided buffer when it gave one, otherwise the builtin default.
             uint64_t* tracking = sub->tracking_bitmaps != NULL ? sub->tracking_bitmaps : sub->builtin_tracking;
@@ -2557,7 +2666,10 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
         return;
     }
 
-    if (++proxy->retry > tt_RELIABLE_RETRY) {
+    // Phase 3 - a KEEP_ALL writer never gives up, and neither may this Subscriber: abandoning the
+    // gap here would advance ack_seq_no past a sample that was never received, unblocking that
+    // writer as if it had been delivered. retry keeps counting for the stuck-gap warning below.
+    if (!proxy->keep_all && ++proxy->retry > tt_RELIABLE_RETRY) {
         TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
         RSTAT_INC(retry_giveups);
         proxy->acknack_scheduled = false;
@@ -2580,6 +2692,16 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
 
     RSTAT_INC(acknack_timer);
     send_acknack(node, proxy);
+
+    // Phase 3 - with a KEEP_ALL writer there is no give-up, so a genuinely stuck gap would
+    // otherwise be silent. Rate-limited by time rather than retry count, so the cadence doesn't
+    // change with the retry interval.
+    uint64_t now = tt_get_ns();
+    if (proxy->keep_all && now - proxy->stuck_warned_ns >= tt_RELIABLE_STUCK_WARN_INTERVAL) {
+        proxy->stuck_warned_ns = now;
+        TT_LOG_WARNING("Still waiting on reliable seq_no %u from node %d after %u retries (KEEP_ALL: no give-up)",
+                       proxy->ack_seq_no, proxy->node_id, proxy->retry);
+    }
 
     if (!tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(), acknack_retry, proxy)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
@@ -3003,6 +3125,71 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
+// Phase 3 (rmw_tickle/PLAN.md) - records whether a remote writer promises KEEP_ALL on every local
+// Subscriber already tracking it, from that writer's own announce (tt_UPDATE_QOS_KEEP_ALL). A
+// proxy claimed later reads the same thing from the discovery table at first contact, so both
+// orderings converge.
+static void update_writer_proxies_keep_all(struct tt_Node* node, uint32_t endpoint_id, uint8_t node_id,
+                                           uint32_t entity_id, bool keep_all) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER || endpoint->id != endpoint_id) {
+            continue;
+        }
+        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+        for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
+            if (sub->writers[j].node_id == node_id && sub->writers[j].entity_id == entity_id) {
+                sub->writers[j].keep_all = keep_all;
+            }
+        }
+    }
+}
+
+// Phase 3 (rmw_tickle/PLAN.md) - drops one remote Publisher's WriterProxy from every local
+// Subscriber sharing `endpoint_id`: the Subscriber-side mirror of
+// forget_publisher_peers_for_endpoint() below, and the only thing that ends gap recovery for a
+// writer that died. entity_id 0 with match_any_entity drops every writer that node hosts for this
+// topic (the node itself departed); otherwise just the one entity.
+//
+// Without this, a KEEP_ALL writer (tt_UPDATE_QOS_KEEP_ALL, which switches off acknack_retry()'s own
+// tt_RELIABLE_RETRY give-up) that vanished mid-gap would leave its Subscriber re-requesting the
+// same samples every retry interval forever, unicast at an address nobody answers - and the slot
+// would never free for a restarted Publisher. A KEEP_LAST writer only leaked a bounded number of
+// retries, which is why this was survivable before.
+static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t endpoint_id, uint8_t node_id,
+                                               uint32_t entity_id, bool match_any_entity) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER || endpoint->id != endpoint_id) {
+            continue;
+        }
+        struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+        for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
+            struct tt_WriterProxy* proxy = &sub->writers[j];
+            if (proxy->node_id != node_id) {
+                continue;
+            }
+            if (!match_any_entity && proxy->entity_id != entity_id) {
+                continue;
+            }
+            if (proxy->acknack_scheduled) {
+                tt_Node_unschedule(node, acknack_retry, proxy);
+                proxy->acknack_scheduled = false;
+            }
+            proxy->node_id = tt_NODE_ID_INVALID; // frees the slot; a restart re-runs first contact
+            proxy->entity_id = 0;
+            proxy->ack_seq_no = 1;
+            proxy->heartbeat_last_seq_no = 0;
+            proxy->retry = 0;
+            proxy->keep_all = false;
+            if (proxy->received_bitmap != NULL) {
+                bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
+            }
+            RSTAT_INC(proxies_dropped_liveliness);
+        }
+    }
+}
+
 // Milestone 62 follow-up - tt_Node_entity_alive()'s own per-entity-lease freshness (tickle.h)
 // sharpens the discovery_callback(departed=true) signal for entities that requested a lease
 // shorter than the loop above's fixed ~3s node-wide wait: without this, a leased entity's
@@ -3037,6 +3224,11 @@ static void tombstone_entities_past_own_lease(struct tt_Node* node, uint64_t tim
         // own endpoint id this entity matched, and only this node_id, unlike the node-level sweep.
         if (entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
             forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->node_id);
+        } else if (entity->kind == tt_KIND_TOPIC_PUBLISHER) {
+            // Phase 3 - the mirror case: a remote *Publisher* past its own lease stops being
+            // something our Subscribers can still recover from, so its WriterProxy goes too.
+            forget_writer_proxies_for_endpoint(node, entity->endpoint_id, entity->node_id, /*entity_id=*/0,
+                                               /*match_any_entity=*/true);
         }
         if (node->discovery_callback != NULL) {
             node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/true,
@@ -3334,6 +3526,12 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
                                           .tracking_words = remote_tracking_words,
                                           .announce_last_modified = last_modified};
             for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, endpoint_id, register_subscriber_peer_on_publisher, &ctx);
+        } else if (update_entity->kind == tt_KIND_TOPIC_PUBLISHER) {
+            // Phase 3 - remember whether this writer promises KEEP_ALL, so acknack_retry() knows
+            // not to give up on its gaps. Cached on the proxy (if one exists yet; otherwise first
+            // contact picks it up from the discovery table the same way RxO matching does).
+            update_writer_proxies_keep_all(node, endpoint_id, header->source, remote_entity_id,
+                                           (update_entity->qos & tt_UPDATE_QOS_KEEP_ALL) != 0);
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
             struct update_peer_ctx ctx = {.header = header, .sender_ip = sender_ip, .sender_port = sender_port};
             for_each_endpoint(node, tt_KIND_SERVICE_CLIENT, endpoint_id, register_server_peer_on_client, &ctx);
@@ -4158,7 +4356,7 @@ static bool process_callresponse(struct tt_Node* node, struct tt_Header* header,
 // budget - retransmit_reliable_samples() answers that with an eviction Heartbeat.
 static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_ReliableCache* cache, uint16_t depth,
                                                                  uint32_t missing_seq_no, uint64_t lifespan_duration_ns,
-                                                                 bool* gone) {
+                                                                 bool pub_keep_all, bool* gone) {
     struct tt_ReliableCacheIndex* cache_entry = reliable_cache_slot(cache, depth, missing_seq_no);
     if (cache_entry->len == 0 || cache_entry->seq_no != missing_seq_no) {
         RSTAT_INC(null_evicted);
@@ -4166,7 +4364,11 @@ static struct tt_ReliableCacheIndex* find_resendable_cache_entry(struct tt_Relia
         return NULL; // empty slot, a tombstone (evicted, or never cached because the sample was
                      // larger than the whole arena), or taken over by a different seq_no since
     }
-    if (cache_entry->retry >= tt_RELIABLE_RETRY) {
+    // Phase 3 - under KEEP_ALL this Publisher blocks rather than moving on, so it must keep
+    // answering: the per-sample cap that normally stops a broken peer making us resend forever is
+    // deliberately off here, bounded instead by the Publisher being unable to outrun the stuck
+    // Subscriber (it is blocked on exactly that sample).
+    if (!pub_keep_all && cache_entry->retry >= tt_RELIABLE_RETRY) {
         RSTAT_INC(null_retry_cap);
         return NULL; // give up on this one sample - the Subscriber's own retry cap will too
     }
@@ -4207,7 +4409,7 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
                                   uint16_t depth, uint32_t missing_seq_no, const struct tt_Peer* target) {
     bool gone = false;
     struct tt_ReliableCacheIndex* cache_entry =
-        find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns, &gone);
+        find_resendable_cache_entry(cache, depth, missing_seq_no, pub->lifespan_duration_ns, pub->keep_all, &gone);
     if (cache_entry == NULL) {
         return gone;
     }
@@ -4354,6 +4556,10 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     // Heartbeat, answered regardless of pub->reliable) - only the actual byte retransmission below
     // is RELIABILITY's own exclusive contract.
     record_peer_ack(pub, header->source, sender_entity_id, seq_no);
+    // Phase 3 - this ACKNACK may have freed room a refused publish was waiting on. Fired here, from
+    // inside tt_Node_poll()'s own packet handling, so the callback runs on the node's thread like
+    // every other callback (see tt_Publisher.writable_callback's doc comment on what it may do).
+    notify_writable_if_pending(pub);
 
     // Milestone 62 (rmw_tickle/PLAN.md) - gated on pub->reliable specifically, not merely pub->
     // reliable_cache != NULL: Milestone 24 unified RELIABILITY's and DURABILITY's own storage into

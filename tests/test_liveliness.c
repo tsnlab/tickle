@@ -339,7 +339,71 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
     EXPECT_EQ_U32(7, ack->ack_seq_no);
 }
 
+// Phase 3 step 2 (rmw_tickle/PLAN.md) - the Subscriber-side mirror of the lease cleanup: a remote
+// *Publisher* past its own announced lease loses its WriterProxy, which is the only thing that ends
+// gap recovery for a writer that died. Without it, a KEEP_ALL writer (which switches off the
+// Subscriber's ACKNACK give-up) that vanished mid-gap would have its Subscriber re-requesting the
+// same samples every retry interval forever, at an address nobody answers.
+static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node(&node);
+    memset(&topic, 0, sizeof(topic));
+    memset(&sub, 0, sizeof(sub));
+    sub.endpoint.kind = tt_KIND_TOPIC_SUBSCRIBER;
+    sub.endpoint.id = PUB_ENDPOINT_ID; // the topic this remote writer publishes on
+    sub.endpoint.name = "test_subscriber";
+    sub.node = &node;
+    sub.topic = &topic;
+    sub.reliable = true;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        sub.writers[i].node_id = tt_NODE_ID_INVALID;
+    }
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&sub;
+
+    struct tt_Discovery discovery;
+    memset(&discovery, 0, sizeof(discovery));
+    struct tt_DiscoveredEntity* entities = discovery.entities;
+    node.discovery = &discovery;
+
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = true; // no give-up: only liveliness can end this
+    proxy->ack_seq_no = 7;
+    bitmap_set_bit(proxy->received_bitmap, 3); // a gap it is still chasing
+    proxy->acknack_scheduled = true;
+    EXPECT_TRUE(tt_Node_schedule(&node, 1000, acknack_retry, proxy));
+
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 0;
+    entities[0].node_id = REMOTE_NODE_ID;
+    entities[0].endpoint_id = PUB_ENDPOINT_ID;
+    entities[0].kind = tt_KIND_TOPIC_PUBLISHER;
+    entities[0].liveliness_lease_duration_ns = 100;
+    entities[0].alive = true;
+
+    tombstone_entities_past_own_lease(&node, 50); // still inside its lease
+    EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)proxy->node_id);
+
+    tombstone_entities_past_own_lease(&node, 1000);              // past it
+    EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)proxy->node_id); // slot freed
+    EXPECT_TRUE(!proxy->acknack_scheduled);                      // and its retry cancelled
+    EXPECT_TRUE(find_writer_proxy(&sub, REMOTE_NODE_ID, 0) == NULL);
+
+    // Plan's addition 2: a restarted Publisher reusing the slot must go through first contact
+    // again - its seq_no starts back at 1, so a carried-over ack_seq_no of 7 would ignore
+    // everything it sends until it caught up.
+    struct tt_WriterProxy* restarted = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(restarted != NULL);
+    EXPECT_EQ_U32(1, restarted->ack_seq_no); // not the departed writer's 7
+    EXPECT_TRUE(bitmap_is_zero(restarted->received_bitmap, proxy_words(restarted)));
+    EXPECT_TRUE(!restarted->keep_all); // re-learned from the new announce, not inherited
+}
+
 int main(void) {
+    test_lease_expiry_drops_writer_proxy_on_subscriber();
     test_lease_expiry_drops_subscriber_from_publisher_ack_set();
     test_lease_expiry_leaves_unrelated_publisher_alone();
     test_mock_reset();
