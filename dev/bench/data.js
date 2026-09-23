@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790165987136,
+  "lastUpdate": 1790165991321,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -113816,6 +113816,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/06fb272eeaf469a559c2ba2c37e9796ee41df1df"
         },
         "date": 1790165602887,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9f70d9b4dfbaeb0be53f816c16f3a47fe6933fc4",
+          "message": "perf_hil: pin every harness away from the NIC interrupt core\n\nThis is the commit where the numbers change, kept separate from the instrumentation that found\nthe reason so the point of change is identifiable rather than buried.\n\nBoth Pis handle eth0's interrupt, IRQ 108, entirely on CPU0 - 404 and 405 million interrupts\nthere against zero on CPU1 through CPU3. A sender the scheduler happens to place on CPU0 shares\nthat core with the interrupt handler, and that is the whole of reliable_throughput's bimodality.\nMeasured over 12 reps at 0% loss with nothing pinned: sender on CPU0 gave 94.5-94.6 Mbit/s (n=3),\nsender anywhere else gave 110.8-112.3 (n=9), no overlap between the ranges, cpu_main_share 1.00\nin every slow rep. 3 of 12 is the 1-in-4 a four-core machine gives when nothing pins anything, so\nevery single-run figure was a coin flip reading about 15% low a quarter of the time.\n\ntaskset -c 1-3 removes the artifact from the measurement rather than changing the machine. The\nNIC interrupt stays where the hardware puts it, so these numbers still describe the real\nplatform; spreading the interrupt instead would change the platform's behaviour and make future\nnumbers incomparable with everything already published.\n\nApplied to all three frameworks' harnesses, not only TickLE's. Pinning only ours would hand\nTickLE the fast mode on every run while leaving CycloneDDS and FastDDS on the coin flip, biasing\nthe comparison in our favour by about 15% a quarter of the time - a partial fix here is worse\nthan none. run_perf.sh's liveliness block gets its own pin because it launches the binaries\ndirectly instead of going through run_scenario.sh.\n\nVerified on the rig rather than assumed: taskset -c 1-3 runs on both Pis, and one reliable_\nthroughput rep through the patched harness reports client cpu_main=1 with cpu_main_share=1.00 at\n111.9 Mbit/s and server cpu_main=3 - the pin reaches the remote processes, and both sides stayed\noff CPU0 for the whole run.\n\nCOMPARISON.MD section 3b's Mbps column was measured before this and each cell is a sample of the\ntwo modes; the loss columns are unaffected. Re-measuring those cells under this pin is what lets\nthe table state one number instead of a range.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T21:13:19+09:00",
+          "tree_id": "2106f2d951a903d165526545a6d064c7c975a181",
+          "url": "https://github.com/tsnlab/tickle/commit/9f70d9b4dfbaeb0be53f816c16f3a47fe6933fc4"
+        },
+        "date": 1790165989736,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
