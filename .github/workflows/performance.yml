@@ -198,7 +198,12 @@ jobs:
     # Runs whether `test` passed or failed (so a broken HIL run still lands as a red row), but
     # not when the whole run was cancelled - e.g. superseded by a newer push (concurrency above).
     if: ${{ !cancelled() && github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest (2026-09-23): GitHub moves that label to Ubuntu 26 on
+    # 2026-10-19, and an image change landing by itself, mid-task, is the kind of surprise that
+    # costs a day to attribute. This pin is a scheduling decision, not a compatibility claim - we
+    # have not tested Ubuntu 26 and are not asserting anything about it either way. Move to
+    # ubuntu-26.04 deliberately, as its own change, with its own CI run to look at.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
 
