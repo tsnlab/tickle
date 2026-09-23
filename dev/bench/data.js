@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790176018161,
+  "lastUpdate": 1790176022565,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -106526,6 +106526,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1767318,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9ff38aa7ce547b1603e196c29a07deb1975d1ff2",
+          "message": "PLAN.md: confirm the rpi routing directly instead of resting on a relayed lookup\n\nBoth rpis re-checked from here: 192.168.10.255 resolves to eth0 and 255.255.255.255 to wlan0, whose\ndefault route is the lab network. That is the whole of the A2 correction, now measured on the\nmachines it is about rather than quoted.\n\nThe rig was never reachable through the ssh agent - run_perf.sh uses a dedicated key file and the ci\nuser, so the earlier note that rig access was blocked by the same restriction as the push was simply\nwrong, and is removed rather than left to mislead.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T00:00:39+09:00",
+          "tree_id": "fc70914dd25eab4578a120116bbf83dcf40f1e53",
+          "url": "https://github.com/tsnlab/tickle/commit/9ff38aa7ce547b1603e196c29a07deb1975d1ff2"
+        },
+        "date": 1790176021241,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1884151,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 1838807,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 1772063,
             "unit": "count"
           }
         ]
