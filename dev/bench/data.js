@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790124019134,
+  "lastUpdate": 1790124022902,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -108995,6 +108995,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3622.62,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d0263b493edb103f520dd209692f78a05e4e09d8",
+          "message": "tickle.c: read the ack table through a const pointer, not a uintptr_t cast\n\ncheck-all failed on main (336c200): clang-tidy performance-no-int-to-ptr, from\ntt_Publisher_min_acked_seq_no() casting const away to reach min_peer_ack_seq_no(),\nwhich took a non-const Publisher only because it called find_peer_ack().\n\nIt only ever reads, so it takes a const pointer and inlines the lookup. No\nbehavior change. 18/18 both modes, clang-tidy clean in both.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T09:34:25+09:00",
+          "tree_id": "e3797c19f6b2e09c55f16d2d71ce180abc17be24",
+          "url": "https://github.com/tsnlab/tickle/commit/d0263b493edb103f520dd209692f78a05e4e09d8"
+        },
+        "date": 1790124021744,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1627.191,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2632.464,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3586.315,
             "unit": "ms"
           }
         ]
