@@ -103,3 +103,11 @@ compile_commands.json
 # into a commit with `git add -A`, which has happened twice.
 /examples/perf_hil/*/*/client
 /examples/perf_hil/*/*/server
+
+# rmw_tickle's colcon workspace output (see rmw_tickle/PLAN.md) - `colcon build`/`colcon test` from
+# rmw_tickle/ drop these three beside the packages themselves. Untracked but not ignored, they sat
+# one `git add -A` away from being committed, which is a mistake this repo has already made twice
+# with built perf_hil binaries.
+/rmw_tickle/build/
+/rmw_tickle/install/
+/rmw_tickle/log/
