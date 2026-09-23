@@ -370,7 +370,7 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
 
     struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
     EXPECT_TRUE(proxy != NULL);
-    proxy->keep_all = true; // no give-up: only liveliness can end this
+    proxy->keep_all = tt_WRITER_KEEP_ALL_YES; // no give-up: only liveliness can end this
     proxy->ack_seq_no = 7;
     bitmap_set_bit(proxy->received_bitmap, 3); // a gap it is still chasing
     proxy->acknack_scheduled = true;
@@ -399,7 +399,7 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     EXPECT_TRUE(restarted != NULL);
     EXPECT_EQ_U32(1, restarted->ack_seq_no); // not the departed writer's 7
     EXPECT_TRUE(bitmap_is_zero(restarted->received_bitmap, proxy_words(restarted)));
-    EXPECT_TRUE(!restarted->keep_all); // re-learned from the new announce, not inherited
+    EXPECT_TRUE(restarted->keep_all != tt_WRITER_KEEP_ALL_YES); // re-learned from the new announce, not inherited
 }
 
 int main(void) {

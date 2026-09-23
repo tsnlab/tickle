@@ -33,22 +33,24 @@ struct tt_ReliableStats {
     uint64_t gaps_opened;                 // DATA arrivals that left >=1 new missing seq_no below them
     uint64_t missing_opened;              // seq_nos newly marked missing by those arrivals
     uint64_t gaps_opened_while_scheduled; // H2: ...of which acknack_scheduled was already true (no immediate ACKNACK)
-    uint64_t jump_data;               // H1: jump_ack_baseline() from the DATA path (offset >= tt_RELIABLE_BITMAP_BITS)
-    uint64_t jump_heartbeat;          // jump_ack_baseline() from the Heartbeat path
-    uint64_t jump_abandoned_seq;      // still-missing seq_nos abandoned by those jumps
-    uint64_t retry_giveups;           // acknack_retry() give-ups (retry > tt_RELIABLE_RETRY)
-    uint64_t heartbeat_advances;      // Phase 1-c: Heartbeats that moved ack_seq_no up to first_available_seq_no
-    uint64_t heartbeat_abandoned_seq; // ...still-missing seq_nos those advances skipped (gone at the Publisher)
-    uint64_t acknack_immediate;       // ACKNACK send attempts from maybe_arm_acknack_retry()
-    uint64_t acknack_timer;           // ACKNACK send attempts from the acknack_retry() timer
-    uint64_t acknack_new_gap;         // Phase 1-a: narrow ACKNACK attempts for a gap opened while armed
-    uint64_t acknack_sent;            // ...of which actually encoded and flushed
-    uint64_t acknack_bits_sent;       // total "please resend" bits across those ACKNACKs
-    uint64_t acknack_bytes_sent;      // Phase 2: their total wire size (fixed header + words sent)
-    uint64_t recovered;               // arrivals filling a tracked gap below the highest seen
-    uint64_t recovered_after_request; // ...of which the seq_no had been named in an ACKNACK
-    uint64_t late_below_ack;          // arrivals with seq_no < ack_seq_no (after a jump/skip/give-up)
-    uint64_t duplicates;              // arrivals whose bitmap bit was already set
+    uint64_t jump_data;          // H1: jump_ack_baseline() from the DATA path (offset >= tt_RELIABLE_BITMAP_BITS)
+    uint64_t jump_heartbeat;     // jump_ack_baseline() from the Heartbeat path
+    uint64_t jump_abandoned_seq; // still-missing seq_nos abandoned by those jumps
+    uint64_t retry_giveups;      // acknack_retry() give-ups (retry > tt_RELIABLE_RETRY)
+    uint64_t giveups_suppressed_unknown; // Phase 3 step 4: ...and ones not taken because the writer's
+                                         // HISTORY policy wasn't known yet (once per gap)
+    uint64_t heartbeat_advances;         // Phase 1-c: Heartbeats that moved ack_seq_no up to first_available_seq_no
+    uint64_t heartbeat_abandoned_seq;    // ...still-missing seq_nos those advances skipped (gone at the Publisher)
+    uint64_t acknack_immediate;          // ACKNACK send attempts from maybe_arm_acknack_retry()
+    uint64_t acknack_timer;              // ACKNACK send attempts from the acknack_retry() timer
+    uint64_t acknack_new_gap;            // Phase 1-a: narrow ACKNACK attempts for a gap opened while armed
+    uint64_t acknack_sent;               // ...of which actually encoded and flushed
+    uint64_t acknack_bits_sent;          // total "please resend" bits across those ACKNACKs
+    uint64_t acknack_bytes_sent;         // Phase 2: their total wire size (fixed header + words sent)
+    uint64_t recovered;                  // arrivals filling a tracked gap below the highest seen
+    uint64_t recovered_after_request;    // ...of which the seq_no had been named in an ACKNACK
+    uint64_t late_below_ack;             // arrivals with seq_no < ack_seq_no (after a jump/skip/give-up)
+    uint64_t duplicates;                 // arrivals whose bitmap bit was already set
     uint64_t detect_to_recover_hist[tt_RELIABLE_STATS_HIST_BUCKETS];  // gap detected -> recovered, us
     uint64_t request_to_recover_hist[tt_RELIABLE_STATS_HIST_BUCKETS]; // first ACKNACK naming it -> recovered, us
 

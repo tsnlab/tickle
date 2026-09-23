@@ -40,12 +40,13 @@ static void print_reliable_stats(const char* role) {
 #define U(x) ((unsigned long long)(x))
     printf("RSTATS: role=%s sub gaps_opened=%llu missing_opened=%llu gaps_opened_while_scheduled=%llu "
            "jump_data=%llu jump_heartbeat=%llu jump_abandoned_seq=%llu retry_giveups=%llu "
+           "giveups_suppressed_unknown=%llu "
            "hb_advances=%llu hb_abandoned_seq=%llu recovered=%llu recovered_after_request=%llu "
            "late_below_ack=%llu duplicates=%llu\n",
            role, U(stats.gaps_opened), U(stats.missing_opened), U(stats.gaps_opened_while_scheduled),
            U(stats.jump_data), U(stats.jump_heartbeat), U(stats.jump_abandoned_seq), U(stats.retry_giveups),
-           U(stats.heartbeat_advances), U(stats.heartbeat_abandoned_seq), U(stats.recovered),
-           U(stats.recovered_after_request), U(stats.late_below_ack), U(stats.duplicates));
+           U(stats.giveups_suppressed_unknown), U(stats.heartbeat_advances), U(stats.heartbeat_abandoned_seq),
+           U(stats.recovered), U(stats.recovered_after_request), U(stats.late_below_ack), U(stats.duplicates));
     printf(
         "RSTATS: role=%s acknack_tx immediate=%llu timer=%llu new_gap=%llu sent=%llu bits_sent=%llu bytes_sent=%llu\n",
         role, U(stats.acknack_immediate), U(stats.acknack_timer), U(stats.acknack_new_gap), U(stats.acknack_sent),

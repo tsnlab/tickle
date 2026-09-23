@@ -2493,15 +2493,20 @@ static void bitmap_low_mask(uint64_t* mask, uint16_t words, int highest) {
 
 // Phase 3 (rmw_tickle/PLAN.md) - did this remote writer's own last announce set
 // tt_UPDATE_QOS_KEEP_ALL? Read once, when a WriterProxy is claimed; an announce arriving later
-// refreshes the cached flag directly (update_writer_proxies_keep_all()). false whenever the answer
-// isn't known - no discovery table attached, or nothing heard from that writer yet - which is the
-// KEEP_LAST side, i.e. today's bounded give-up.
-static bool writer_announced_keep_all(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id) {
+// refreshes the cached answer directly (update_writer_proxies_keep_all()).
+//
+// Phase 3 step 4 - returns UNKNOWN, not NO, when there is nothing to read: no discovery table
+// attached (it's opt-in) or nothing heard from that writer yet. The distinction is the whole point;
+// see tt_WriterProxy.keep_all's own doc comment for what assuming NO here cost.
+static enum tt_WriterKeepAll writer_announced_keep_all(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id) {
     if (node == NULL || node->discovery == NULL) {
-        return false;
+        return tt_WRITER_KEEP_ALL_UNKNOWN;
     }
     const struct tt_DiscoveredEntity* writer = tt_Discovery_find(node->discovery, node_id, endpoint_id);
-    return writer != NULL && (writer->qos & tt_UPDATE_QOS_KEEP_ALL) != 0;
+    if (writer == NULL) {
+        return tt_WRITER_KEEP_ALL_UNKNOWN;
+    }
+    return (writer->qos & tt_UPDATE_QOS_KEEP_ALL) != 0 ? tt_WRITER_KEEP_ALL_YES : tt_WRITER_KEEP_ALL_NO;
 }
 
 // Milestone 47 - finds sub's existing WriterProxy for (node_id, entity_id), or NULL if this
@@ -2724,7 +2729,22 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     // Phase 3 - a KEEP_ALL writer never gives up, and neither may this Subscriber: abandoning the
     // gap here would advance ack_seq_no past a sample that was never received, unblocking that
     // writer as if it had been delivered. retry keeps counting for the stuck-gap warning below.
-    if (!proxy->keep_all && ++proxy->retry > tt_RELIABLE_RETRY) {
+    //
+    // Phase 3 step 4 - and a writer whose policy isn't known yet is treated the same way, because
+    // abandoning data is not a decision to take on an assumption. This cannot retry forever: if the
+    // writer genuinely no longer has the sample, its answer to the next ACKNACK is Phase 1-c's
+    // eviction Heartbeat, whose first_available_seq_no makes advance_past_unavailable() skip
+    // exactly the range that is really gone - so the worst case here is recovery delayed until the
+    // writer's announce arrives, not an endless retry. That safety net is what makes refusing to
+    // guess safe; without it this would need a grace period instead.
+    proxy->retry++; // unconditionally now, so the stuck-gap warning below can report a real count
+                    // in the two cases that never give up (it used to be short-circuited away)
+    if (proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN && proxy->retry == tt_RELIABLE_RETRY + 1) {
+        // Counted once per gap, at the point the bounded policy would have abandoned it, so this
+        // reads directly against retry_giveups rather than tallying every later retry too.
+        RSTAT_INC(giveups_suppressed_unknown);
+    }
+    if (proxy->keep_all == tt_WRITER_KEEP_ALL_NO && proxy->retry > tt_RELIABLE_RETRY) {
         TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
         RSTAT_INC(retry_giveups);
         proxy->acknack_scheduled = false;
@@ -2752,10 +2772,11 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     // otherwise be silent. Rate-limited by time rather than retry count, so the cadence doesn't
     // change with the retry interval.
     uint64_t now = tt_get_ns();
-    if (proxy->keep_all && now - proxy->stuck_warned_ns >= tt_RELIABLE_STUCK_WARN_INTERVAL) {
+    if (proxy->keep_all != tt_WRITER_KEEP_ALL_NO && now - proxy->stuck_warned_ns >= tt_RELIABLE_STUCK_WARN_INTERVAL) {
         proxy->stuck_warned_ns = now;
-        TT_LOG_WARNING("Still waiting on reliable seq_no %u from node %d after %u retries (KEEP_ALL: no give-up)",
-                       proxy->ack_seq_no, proxy->node_id, proxy->retry);
+        TT_LOG_WARNING("Still waiting on reliable seq_no %u from node %d after %u retries (%s: no give-up)",
+                       proxy->ack_seq_no, proxy->node_id, proxy->retry,
+                       proxy->keep_all == tt_WRITER_KEEP_ALL_YES ? "KEEP_ALL" : "policy not yet known");
     }
 
     if (!tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(), acknack_retry, proxy)) {
@@ -3185,7 +3206,7 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
 // proxy claimed later reads the same thing from the discovery table at first contact, so both
 // orderings converge.
 static void update_writer_proxies_keep_all(struct tt_Node* node, uint32_t endpoint_id, uint8_t node_id,
-                                           uint32_t entity_id, bool keep_all) {
+                                           uint32_t entity_id, enum tt_WriterKeepAll keep_all) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
         if (endpoint == NULL || endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER || endpoint->id != endpoint_id) {
@@ -3586,7 +3607,8 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
             // not to give up on its gaps. Cached on the proxy (if one exists yet; otherwise first
             // contact picks it up from the discovery table the same way RxO matching does).
             update_writer_proxies_keep_all(node, endpoint_id, header->source, remote_entity_id,
-                                           (update_entity->qos & tt_UPDATE_QOS_KEEP_ALL) != 0);
+                                           (update_entity->qos & tt_UPDATE_QOS_KEEP_ALL) != 0 ? tt_WRITER_KEEP_ALL_YES
+                                                                                              : tt_WRITER_KEEP_ALL_NO);
         } else if (update_entity->kind == tt_KIND_SERVICE_SERVER) {
             struct update_peer_ctx ctx = {.header = header, .sender_ip = sender_ip, .sender_port = sender_port};
             for_each_endpoint(node, tt_KIND_SERVICE_CLIENT, endpoint_id, register_server_peer_on_client, &ctx);

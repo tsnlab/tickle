@@ -599,6 +599,15 @@ struct tt_Publisher; // so the callback typedef below names this struct, not a p
 // field's own doc comment for what a callback may legally do (in short: signal and return).
 typedef void (*tt_PUBLISHER_WRITABLE_CALLBACK)(struct tt_Publisher* pub, void* param);
 
+// Phase 3 step 4 (rmw_tickle/PLAN.md) - what a Subscriber knows about one remote writer's own
+// HISTORY policy, which decides whether it may ever abandon a gap that writer hasn't answered.
+// UNKNOWN is 0 so a zero-initialised tt_WriterProxy starts out making no assumption.
+enum tt_WriterKeepAll {
+    tt_WRITER_KEEP_ALL_UNKNOWN = 0, // nothing heard from this writer yet - never give up (see below)
+    tt_WRITER_KEEP_ALL_NO,          // announced without tt_UPDATE_QOS_KEEP_ALL - bounded give-up applies
+    tt_WRITER_KEEP_ALL_YES,         // announced KEEP_ALL - never give up
+};
+
 // One matched remote node's acknowledgement state on a Publisher - see tt_Publisher.peer_acks.
 struct tt_PeerAck {
     uint8_t node_id; // tt_NODE_ID_INVALID (0, matching zero-init) = unused entry
@@ -999,9 +1008,17 @@ struct tt_WriterProxy {
     // gap either: acknack_retry()'s own tt_RELIABLE_RETRY budget is disabled for this writer alone.
     // Per writer, not per Subscriber - one Subscriber can be matched to a KEEP_ALL writer and a
     // KEEP_LAST one at the same time. Cached here from the writer's own announce rather than looked
-    // up in the discovery table per DATA, which is the hot path. false (the default) is KEEP_LAST,
-    // i.e. exactly today's bounded give-up.
-    bool keep_all;
+    // up in the discovery table per DATA, which is the hot path.
+    //
+    // Three states, not two, and tt_WRITER_KEEP_ALL_UNKNOWN is the zero-init default deliberately:
+    // a WriterProxy is claimed on the first DATA from a writer, which can arrive before that
+    // writer's own announce has been seen (always, if no discovery table is attached - it's
+    // opt-in). Treating "not known yet" as KEEP_LAST meant abandoning samples under a policy the
+    // writer never asked for. Measured (rmw_tickle/PLAN.md Phase 3 step 4): at 20% injected loss a
+    // KEEP_ALL stream lost exactly as many samples as the Subscriber gave up on - retry_giveups ==
+    // lost, with the Publisher's own null_evicted and publish_refused both zero - all of it inside
+    // the first announce interval, and reported as ordinary transport loss rather than a refusal.
+    enum tt_WriterKeepAll keep_all;
     // Phase 3 - tt_get_ns() of the last "still waiting" warning for this writer, so a stuck
     // KEEP_ALL gap is visible in a log at a fixed cadence rather than per retry or never.
     uint64_t stuck_warned_ns;

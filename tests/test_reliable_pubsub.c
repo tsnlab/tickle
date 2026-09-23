@@ -123,7 +123,15 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
 // any real packet call find_or_create_writer_proxy() directly instead (see e.g. test_acknack_
 // retry_exhausted_gives_up()).
 static struct tt_WriterProxy* remote_writer_proxy(struct tt_Subscriber* sub) {
-    return find_writer_proxy(sub, REMOTE_NODE_ID, 0);
+    struct tt_WriterProxy* proxy = find_writer_proxy(sub, REMOTE_NODE_ID, 0);
+    if (proxy != NULL && proxy->keep_all == tt_WRITER_KEEP_ALL_UNKNOWN) {
+        // Phase 3 step 4 - these tests model an ordinary writer whose announce has already been
+        // seen, so say so. A proxy claimed from DATA alone starts UNKNOWN and never gives up (by
+        // design - see tt_WriterProxy.keep_all), which would otherwise silently disarm every
+        // give-up assertion in this file. The tests that care about UNKNOWN set it themselves.
+        proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    }
+    return proxy;
 }
 
 static void init_header(struct tt_Header* header) {
@@ -815,6 +823,7 @@ static void test_acknack_retry_give_up_does_not_bulk_skip(void) {
 
     struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
     EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO; // an ordinary writer whose announce has been seen
     EXPECT_EQ_U32(1, proxy->ack_seq_no);
 
     // seq_no 1 (ack_seq_no itself) never arrives; seq_no far_seq already did, out of order - past
@@ -852,6 +861,7 @@ static void test_acknack_retry_exhausted_gives_up(void) {
 
     struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
     EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO; // an ordinary writer whose announce has been seen
     proxy->ack_seq_no = 5;
     bitmap_set_u64(proxy->received_bitmap,
                    2ULL); // seq_no 5 still missing, seq_no 6 already received (bit j: ack_seq_no + j)
@@ -2043,6 +2053,66 @@ static void test_keep_all_solicitation_is_throttled(void) {
     EXPECT_EQ_INT(quiet_sends, throttled_sends); // past the watermark costs exactly what below it did
 }
 
+// Lays one Heartbeat into node->rx_buffer, same shape as tests/test_heartbeat.c's own - duplicated
+// rather than shared because each of these files is a standalone whitebox translation unit.
+static uint32_t write_heartbeat(struct tt_Node* node, uint32_t endpoint_id, uint32_t first_available_seq_no,
+                                uint32_t last_seq_no, uint8_t flags) {
+    struct tt_HeartbeatHeader* heartbeat_header = (struct tt_HeartbeatHeader*)node->rx_buffer;
+    heartbeat_header->endpoint_id = endpoint_id;
+    heartbeat_header->first_available_seq_no = first_available_seq_no;
+    heartbeat_header->last_seq_no = last_seq_no;
+    heartbeat_header->entity_id = 0; // explicit: offset 12 overlaps a prior write_data()'s timestamp
+    heartbeat_header->flags = flags;
+    heartbeat_header->reserved[0] = 0;
+    heartbeat_header->reserved[1] = 0;
+    heartbeat_header->reserved[2] = 0;
+    return sizeof(struct tt_HeartbeatHeader);
+}
+
+// Phase 3 step 4 - the safety net the "unknown policy never gives up" default depends on, and the
+// reason it can't wedge: a writer whose policy this Subscriber hasn't learned yet is never
+// abandoned by the retry cap, but if that writer genuinely no longer holds the sample it says so,
+// and the Subscriber moves on. Without this, refusing to guess would trade silent data loss for an
+// endless retry, which is not obviously the better bargain - so it is asserted, not assumed.
+static void test_unknown_policy_still_terminates_on_eviction(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32((uint32_t)tt_WRITER_KEEP_ALL_UNKNOWN, (uint32_t)proxy->keep_all); // claimed from DATA alone
+    proxy->ack_seq_no = 5;
+    proxy->sender_ip = TEST_SENDER_IP;
+    proxy->sender_port = TEST_SENDER_PORT;
+    bitmap_set_bit(proxy->received_bitmap, 2); // seq_no 7 arrived; 5 and 6 are missing
+    proxy->acknack_scheduled = true;
+
+    // Retries far past the bounded budget without ever advancing - which is the intended behavior
+    // here, and on its own would be an unbounded wait.
+    for (int i = 0; i < tt_RELIABLE_RETRY * 5; i++) {
+        acknack_retry(&node, tt_get_ns(), proxy);
+    }
+    EXPECT_EQ_U32(5, proxy->ack_seq_no);   // never abandoned on a guess
+    EXPECT_TRUE(proxy->acknack_scheduled); // ...and still asking
+
+    // Now the writer answers the way a KEEP_LAST writer that has evicted those samples does: its
+    // oldest retained sample is 7 (Phase 1-c's eviction Heartbeat). 5 and 6 are genuinely gone.
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_heartbeat(&node, ENDPOINT_ID, 7, 7, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // Skipped exactly the range the writer said was unavailable, and stopped: the gap ended without
+    // the retry cap ever being what ended it.
+    EXPECT_EQ_U32(8, proxy->ack_seq_no);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
+}
+
 // The writable callback fires once on the refusal-to-writable transition, on the node's own thread
 // (here: from inside process_acknack()), and not once per ACKNACK.
 static int writable_callback_count = 0;
@@ -2156,7 +2226,7 @@ static void test_keep_all_subscriber_never_gives_up(void) {
 
     struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
     EXPECT_TRUE(proxy != NULL);
-    proxy->keep_all = true; // as its announce said
+    proxy->keep_all = tt_WRITER_KEEP_ALL_YES; // as its announce said
     proxy->sender_ip = TEST_SENDER_IP;
     proxy->sender_port = TEST_SENDER_PORT;
     bitmap_set_bit(proxy->received_bitmap, 4); // seq_no 5 arrived; 1..4 are missing
@@ -2169,7 +2239,7 @@ static void test_keep_all_subscriber_never_gives_up(void) {
     EXPECT_TRUE(proxy->acknack_scheduled); // ...and still asking
 
     // The same proxy with keep_all off gives up as before.
-    proxy->keep_all = false;
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
     for (int i = 0; i <= tt_RELIABLE_RETRY; i++) {
         acknack_retry(&node, tt_get_ns(), proxy);
     }
@@ -2184,6 +2254,7 @@ int main(void) {
     test_keep_all_sustains_on_clean_link();
     test_keep_all_solicits_before_blocking();
     test_keep_all_solicitation_is_throttled();
+    test_unknown_policy_still_terminates_on_eviction();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
     test_keep_all_still_honours_lifespan();
