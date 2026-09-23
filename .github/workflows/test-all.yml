@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # third_party/FreeRTOS-Kernel and third_party/lwip are submodules the QEMU tier needs.
           submodules: true
