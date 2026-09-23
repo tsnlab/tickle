@@ -107,7 +107,6 @@ int main(int argc, char** argv) {
 
     uint32_t seq = 0;
     uint64_t sent = 0;
-    uint64_t interval_ns = (uint64_t)(interval_s * 1e9);
     uint64_t expected_miss_boundary_ns = 0;
 
     while (!g_interrupted && seq < count) {
