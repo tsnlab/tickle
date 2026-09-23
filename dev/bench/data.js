@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790137505205,
+  "lastUpdate": 1790137508902,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -102832,6 +102832,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv msgs",
             "value": 1982901,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cdffc507e5a9d3b66f0e72881cfa52b19fa11c7a",
+          "message": "perf_hil/cyclonedds: format reliable_throughput/client.c\n\nNot optional, and not cosmetic: the commit before this one adds\ndds_wait_for_acks() to this file, which makes it a file the push CHANGED\n- and cpp-linter only checks changed files. Every .c under\nexamples/perf_hil/cyclonedds has failed clang-format for a long time\nwithout anyone noticing for exactly that reason, so the drain commit\nwould have turned Check all red on formatting alone. e7fecaa7 is the last\ntime this happened and had to be fixed the same way.\n\nDeliberately this one file and not the other ten, which have the same\nlatent problem. Reformatting a file also puts it in clang-tidy's scope\nfor the first time, and these files have a lot waiting there - magic\nnumbers, misc-include-cleaner, one main() at cognitive complexity 31.\nWhether cpp-linter actually gates on that is unresolved: it needs a\ncompile_commands.json entry, and check-all.yml builds perf_hil under\n`bear` with continue-on-error precisely because that build is best-effort\non a hosted x86_64 runner. This file is unavoidable because the drain\ntouches it, so it becomes a one-file experiment rather than an\neleven-file bet: if Check all comes back green, clang-tidy doesn't reach\nthem and the remaining ten are safe to format; if it comes back red, we\nknow, and only one file is involved.\n\nThe rest stay with Plan, whose files they are - cleaning up what\nclang-tidy has to say about them is not a mechanical reformat and not\nmine to guess at.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T13:19:23+09:00",
+          "tree_id": "9d012ebbecf196b85dee8c8f3411dcf0c45207fe",
+          "url": "https://github.com/tsnlab/tickle/commit/cdffc507e5a9d3b66f0e72881cfa52b19fa11c7a"
+        },
+        "date": 1790137507708,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv msgs",
+            "value": 1988360,
             "unit": "count"
           }
         ]
