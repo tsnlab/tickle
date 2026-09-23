@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790141763416,
+  "lastUpdate": 1790141767156,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -111849,6 +111849,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/ca1d59fefe6b18a3e664f5ab0bd6bb5463ad1f00"
         },
         "date": 1790141151630,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "724d6ec789ef2e011fa4b031c7a8d4105750f1f3",
+          "message": "make lint: select files from git, not from the working tree\n\nPlan ran ca1d59fe and it still failed - one directory over from the ones\nI'd excluded. Their tree has a repo-root build/ from building\nrosidl_typesupport_tickle_c, so the target linted CMake's own\ncompiler-probe source there. I'd excluded rmw_tickle/{build,install,log}\nand not the top-level equivalents, which is the trouble: excluding each\ngenerated tree as it turns up is whack-a-mole, and the next one\nreintroduces the problem for whoever happens to have built it.\n\nSo the rule is now \"lint what's in the repository\" - git ls-files rather\nthan find. Nothing under either build tree is tracked, so the whole class\ngoes away at once, and it stops the covered set depending on what a\nparticular developer has built. It is also what CI effectively checks.\n\nNot a blanket swap, because git ls-files also lists the trees find was\ndeliberately skipping: platform/ and examples/freertos/ are cross-compiled\nand have their own lint pass, and clang-tidy cannot parse them without\nthat target's flags. Those exclusions stay - they are scope decisions, not\nartifact filtering, and the comment now says which is which.\n\nChecked rather than assumed, both things Plan flagged: the resulting file\nset is byte-identical to the old one on a clean tree (178 files, nothing\nadded, nothing dropped), so this is robustness rather than coverage; and\ndeleted-but-still-tracked paths are filtered out before either tool sees\nthem. Also reproduced the actual failure - planted an untracked\nCMakeCCompilerId.c under build/ and confirmed lint ignores it.\n\nOne implementation note: the recipe keeps its own working directory\nrather than cd'ing to the repo root, and prefixes paths instead. CPPFLAGS\ncarries include paths relative to platform/linux, so changing directory\nsilently broke every one of them - caught because clang-tidy then failed\non files it had been parsing fine.\n\nVerified green under 21 and 19, and still exits non-zero when a binary\ncan't be resolved.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T14:24:48+09:00",
+          "tree_id": "8cade5d73082256ef5d93a096c56cf1c4c1d0c97",
+          "url": "https://github.com/tsnlab/tickle/commit/724d6ec789ef2e011fa4b031c7a8d4105750f1f3"
+        },
+        "date": 1790141765944,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
