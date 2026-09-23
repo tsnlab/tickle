@@ -33,7 +33,14 @@ SSH_KEY="$HOME/.ssh/tickle_ci_ed25519"
 RPI_CLIENT="10.1.1.214"
 RPI_SERVER="10.1.1.213"
 LIB_PATH="/opt/ros/jazzy/lib/aarch64-linux-gnu"
-CDDS_URI='<CycloneDDS><Domain><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
+# Pinned to eth0, the rig's own wired test link (2026-09-23, a measured incident): unpinned,
+# CycloneDDS picks its interface from the default route, which on both rpis is wlan0 on the shared
+# lab network - so the rig's DDS scenarios discovered over that network on the default domain 0,
+# where this project's own same-host benchmark was also running. A comparison run aborted twice
+# with "Data consistency violated ... Received sample id 100 Prev. sample id : 7146", which is a
+# second publisher on the topic, not a middleware defect. The TickLE scenarios never had this: they
+# pin _tt_CONFIG.broadcast to 192.168.10.255 in every client.c/server.c.
+CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 REMOTE_DIR="tickle/examples/perf_hil/cyclonedds/$SCENARIO"
 
 ssh_run() {

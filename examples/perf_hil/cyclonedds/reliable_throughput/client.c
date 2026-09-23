@@ -13,6 +13,7 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/CpuPlace.h" // shared with the TickLE harness - see its own header
 #include "../common.h"
 #include "Bench.h"
 
@@ -75,6 +76,12 @@ int main(int argc, char** argv) {
 
     uint32_t seq = 0;
     uint64_t sent = 0;
+    // Which core this thread ran on, sampled the same way and at the same 100ms cadence as the
+    // TickLE harness. The rig's eth0 IRQ is pinned to CPU0, and a sender sharing that core measured
+    // ~15% slower (COMPARISON.MD §6 item 14) - so "this is a rig property, not a TickLE one" needs
+    // measuring on the DDS columns too, not asserting.
+    struct BenchCpuPlace cpu_place;
+    BenchCpuPlace_init(&cpu_place);
     // Writes dds_write() refused (e.g. DDS_RETCODE_TIMEOUT once KEEP_ALL's resource_limits are full
     // for longer than max_blocking_time). seq is still consumed, so the server counts each one as
     // lost too; write_fail lets the two be told apart (rmw_tickle/PLAN.md Phase 3, item 5).
@@ -84,6 +91,7 @@ int main(int argc, char** argv) {
 
     while (!g_interrupted && now_ns() < deadline) {
         struct Bench msg = {.seq = ++seq, .send_ns = now_ns()};
+        BenchCpuPlace_sample(&cpu_place, now_ns(), 100000000ULL);
         if (dds_write(writer, &msg) == DDS_RETCODE_OK) {
             sent++;
         } else {
@@ -107,8 +115,10 @@ int main(int argc, char** argv) {
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s\n",
-           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained);
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s cpu_main=%d "
+           "cpu_main_share=%.2f cpu_migrations=%u\n",
+           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained,
+           BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations);
 
     dds_delete(participant);
     return 0;

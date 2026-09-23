@@ -18,6 +18,7 @@
 #include <fastdds/dds/topic/Topic.hpp>
 #include <fastdds/dds/topic/TypeSupport.hpp>
 
+#include "../../tickle/common/CpuPlace.h" // shared with the TickLE harness - see its own header
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
 
@@ -97,6 +98,10 @@ int main(int argc, char** argv) {
 
     uint32_t seq = 0;
     uint64_t sent = 0;
+    // Same CPU-placement sampling as the CycloneDDS and TickLE harnesses - see the CycloneDDS
+    // twin's comment for why the DDS columns need this measured rather than assumed.
+    struct BenchCpuPlace cpu_place;
+    BenchCpuPlace_init(&cpu_place);
     // Writes the DataWriter refused (e.g. a timeout once KEEP_ALL's resource_limits stay full past
     // max_blocking_time). seq is still consumed, so the server counts each one as lost too;
     // write_fail lets the two be told apart (rmw_tickle/PLAN.md Phase 3, item 5).
@@ -108,6 +113,7 @@ int main(int argc, char** argv) {
         Bench msg;
         msg.seq(++seq);
         msg.send_ns(now_ns());
+        BenchCpuPlace_sample(&cpu_place, now_ns(), 100000000ULL);
         if (writer->write(&msg)) {
             sent++;
         } else {
@@ -133,8 +139,10 @@ int main(int argc, char** argv) {
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s\n",
-           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained);
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s cpu_main=%d "
+           "cpu_main_share=%.2f cpu_migrations=%u\n",
+           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained,
+           BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations);
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);
