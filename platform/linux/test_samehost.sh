@@ -92,13 +92,22 @@ fail() {
 received=$(grep -c '^seq=' "$SUB_LOG" || true)
 [ "$received" -eq "$COUNT" ] || fail "subscriber received $received of $COUNT messages"
 
-# The counter that says the bug specifically is back. A node always receives its own broadcast
-# announces, so this is never zero; what it must not be is comparable to everything the publisher
-# sent, which is what "the kernel handed the sender its own data" looks like from inside.
+# The assertion that catches the mechanism rather than the symptom. The first version of this
+# check was `pub_self -lt pub_tx`, which the benchmark signature this test exists to catch passes
+# comfortably: 10009 self-received of 10010 sent is "less than". The delivery check above would
+# still have failed, but only on the symptom, and a test that names a mechanism should test it.
+#
+# The arithmetic, so a reader can check it rather than trust it: tx_datagrams counts one send per
+# destination, so it is COUNT data samples unicast to the one peer, plus however many broadcast
+# announces went out. A node receives its own broadcasts (that is why self_sent is never zero and
+# why process_packet() has a self_sent branch at all), but it must never receive back a data
+# sample it unicast to somebody else. So at least COUNT of what it sent must not come back.
+# Exact by construction rather than by margin: every extra announce adds one to each side, and an
+# announce that goes out as unicast once a peer is known adds to tx alone.
 pub_tx=$(sed -n 's/.*Node .* traffic: tx_datagrams=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
 pub_self=$(sed -n 's/.*Node .* traffic: .*rx_self_sent=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
 [ -n "$pub_tx" ] && [ -n "$pub_self" ] || fail "publisher printed no traffic counters"
-[ "$pub_self" -lt "$pub_tx" ] ||
-    fail "publisher received $pub_self of its own $pub_tx datagrams - unicast is landing on the sender's own socket"
+[ "$((pub_tx - pub_self))" -ge "$COUNT" ] ||
+    fail "publisher sent $pub_tx and received $pub_self of them back, leaving fewer than the $COUNT data samples unaccounted for - its own unicast is landing on its own socket"
 
 echo "same-host test: PASS ($received/$COUNT delivered, publisher self-received $pub_self of $pub_tx sent)"

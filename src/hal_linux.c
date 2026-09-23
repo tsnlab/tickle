@@ -101,6 +101,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // tt_close() below happens after sock was already created successfully).
     node->hal.wake_fd = -1;
     node->hal.data_sock = -1;
+    node->hal.rx_prefer_data = false;
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -324,10 +325,18 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
             return -3; // Interrupted
         }
         // Broadcasts arrive on the well-known socket and unicast on this node's own data socket.
-        // Preferring the well-known one when both are ready is arbitrary and safe: poll() is
-        // level-triggered, so whatever is not read here is still readable on the very next call.
-        if ((pfd[0].revents & POLLIN) == 0 && (pfd[2].revents & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
+        // Whichever is ready gets read; when both are, they alternate. A fixed preference would
+        // not merely delay the other socket - under a sustained stream on the preferred one the
+        // other is never read at all, and the path that starves would be RELIABLE recovery, whose
+        // ACKNACKs come back as unicast while a Publisher above tt_UNICAST_PEER_THRESHOLD is
+        // broadcasting its data. Alternating bounds the wait at one datagram either way.
+        bool well_known_ready = (pfd[0].revents & POLLIN) != 0; // NOLINT(misc-include-cleaner)
+        bool data_ready = (pfd[2].revents & POLLIN) != 0;       // NOLINT(misc-include-cleaner)
+        if (data_ready && (!well_known_ready || node->hal.rx_prefer_data)) {
             read_fd = node->hal.data_sock;
+        }
+        if (well_known_ready && data_ready) {
+            node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
         }
     }
 
@@ -358,11 +367,16 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     // Both sockets, because either can have something waiting: broadcasts land on the well-known
     // one and unicast on this node's own data socket. Draining only one of them would leave the
     // other's backlog to the next poll(), which is exactly the per-packet round trip drain_rx()
-    // exists to avoid.
-    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+    // exists to avoid - and a fixed order here would starve the second socket outright while the
+    // first has a sustained stream on it, so the same alternation tt_receive() uses applies.
+    int first = node->hal.rx_prefer_data ? node->hal.data_sock : node->hal.sock;
+    int second = node->hal.rx_prefer_data ? node->hal.sock : node->hal.data_sock;
+    node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
+
+    int32_t ret = (int32_t)recvfrom(first, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
     if (ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { // NOLINT(misc-include-cleaner)
         addr_len = sizeof(struct sockaddr_in);
-        ret = (int32_t)recvfrom(node->hal.data_sock, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+        ret = (int32_t)recvfrom(second, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
     }
 
     *ip = ntohl(addr.sin_addr.s_addr);

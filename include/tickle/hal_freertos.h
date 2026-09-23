@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <stdbool.h> // rx_prefer_data
+
 #include <lwip/sockets.h>
 
 // FreeRTOS+lwIP hardware abstraction layer structure - same shape as hal_linux.h's, since
@@ -30,4 +32,6 @@ struct tt_hal {
     // needing a different, FreeRTOS-specific wake mechanism.
     int wake_sock;
     struct sockaddr_in wake_addr;
+    // See hal_linux.h's own rx_prefer_data - same alternation, same reason.
+    bool rx_prefer_data;
 };

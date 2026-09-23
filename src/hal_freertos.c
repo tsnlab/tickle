@@ -66,6 +66,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // identical "only touched after it's known-good" convention.
     node->hal.wake_sock = -1;
     node->hal.data_sock = -1;
+    node->hal.rx_prefer_data = false;
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -286,11 +287,16 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
             (void)recvfrom(node->hal.wake_sock, &discard, sizeof(discard), 0, (struct sockaddr*)&from, &from_len);
             return -3; // Interrupted
         }
-        // Broadcasts land on the well-known socket, unicast on this node's own. Preferring the
-        // well-known one when both are ready is safe: select() is level-triggered, so whatever is
-        // not read here is still ready on the next call.
-        if (!FD_ISSET(node->hal.sock, &readfds) && FD_ISSET(node->hal.data_sock, &readfds)) {
+        // Broadcasts land on the well-known socket, unicast on this node's own. They alternate
+        // when both are ready - see hal_linux.c's own comment on why a fixed preference starves
+        // the other socket outright rather than merely delaying it.
+        bool well_known_ready = FD_ISSET(node->hal.sock, &readfds) != 0;
+        bool data_ready = FD_ISSET(node->hal.data_sock, &readfds) != 0;
+        if (data_ready && (!well_known_ready || node->hal.rx_prefer_data)) {
             read_fd = node->hal.data_sock;
+        }
+        if (well_known_ready && data_ready) {
+            node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
         }
     }
 
@@ -339,7 +345,15 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
         return -2; // I/O error
     }
 
-    int read_fd = FD_ISSET(node->hal.sock, &readfds) ? node->hal.sock : node->hal.data_sock;
+    bool well_known_ready = FD_ISSET(node->hal.sock, &readfds) != 0;
+    bool data_ready = FD_ISSET(node->hal.data_sock, &readfds) != 0;
+    int read_fd = node->hal.sock;
+    if (data_ready && (!well_known_ready || node->hal.rx_prefer_data)) {
+        read_fd = node->hal.data_sock;
+    }
+    if (well_known_ready && data_ready) {
+        node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
+    }
 
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);

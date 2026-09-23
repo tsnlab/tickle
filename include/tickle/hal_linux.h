@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <stdbool.h> // rx_prefer_data
+
 #include <netinet/in.h>
 
 // Linux-specific hardware abstraction layer structure
@@ -40,4 +42,11 @@ struct tt_hal {
     // EADDRNOTAVAIL. eventfd needs no address or interface at all. -1 before tt_bind() creates it
     // (or if creation fails partway through), so tt_close() knows not to close it.
     int wake_fd;
+    // Which socket gets first refusal on the next read, alternating. Without it, preferring one
+    // socket whenever both are ready is not merely a delay: under a sustained stream on the
+    // preferred socket the other is never read at all. That matters most exactly where it is
+    // least visible - a Publisher above tt_UNICAST_PEER_THRESHOLD broadcasts its data while the
+    // ACKNACKs and retransmit requests answering it arrive as unicast on the data socket, so the
+    // starved path would be RELIABLE recovery. Alternating bounds the wait at one datagram.
+    bool rx_prefer_data;
 };
