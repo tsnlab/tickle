@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790140648996,
+  "lastUpdate": 1790140652984,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -103093,6 +103093,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv msgs",
             "value": 1778074,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cc4d96495e47c27063a8b832d57f63790b4a74b2",
+          "message": "perf_hil/cyclonedds: drop the unused interval_ns in deadline_miss_detection\n\nDead since the loop switched to a per-iteration this_interval_s; it was the only\n-Wall warning left in this directory. expected_miss_boundary_ns beside it is live\n(it backs the detect-latency computation), so only the one line goes.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T14:04:01+09:00",
+          "tree_id": "c7c51f7c7d9e3c95b9c7071b208402873b7e7121",
+          "url": "https://github.com/tsnlab/tickle/commit/cc4d96495e47c27063a8b832d57f63790b4a74b2"
+        },
+        "date": 1790140651795,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv msgs",
+            "value": 1949383,
             "unit": "count"
           }
         ]
