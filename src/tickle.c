@@ -3252,7 +3252,22 @@ static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct t
         }
         // Phase 2 - remember how wide a gap this Subscriber can still ask about, so
         // tt_Publisher_unacked_bound() (Phase 3's KEEP_ALL bound) is the minimum across them.
+        bool newly_claimed = ack->tracking_words != ctx->tracking_words;
         ack->tracking_words = ctx->tracking_words;
+
+        // Real HIL finding (Phase 2, 2026-09-23): a window *wider* than this Publisher's own
+        // retained depth is not merely useless, it's worse than a narrower one. The Subscriber
+        // keeps asking for samples this Publisher has already evicted, so every one of them is
+        // answered with an eviction Heartbeat and skipped - measured with depth 1024: window 1024
+        // lost nothing across 6 runs, window 4096 lost 191-368 per run, and the lost count equalled
+        // null_evicted exactly. Warn once per matching rather than per announce.
+        uint32_t announced_bits = (uint32_t)ctx->tracking_words * tt_RELIABLE_BITMAP_WORD_BITS;
+        uint16_t depth = reliable_cache_depth(pub->reliable_cache);
+        if (newly_claimed && announced_bits > depth && depth > 0) {
+            TT_LOG_WARNING("Subscriber %08x on node %d tracks %u samples, deeper than this Publisher retains (%u) - "
+                           "the excess can only ever be skipped, not recovered",
+                           ctx->entity_id, ctx->header->source, announced_bits, depth);
+        }
     }
 
     if (upsert_peer(pub->peers, ctx->header->source, ctx->sender_ip, ctx->sender_port)) {

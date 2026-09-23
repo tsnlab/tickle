@@ -210,6 +210,13 @@ number, `tt_VERSION`, which moves independently.
   measured maximum rate a 256-sample window lasts ~1.35 ms - shorter than one retry interval plus a
   round trip, which is what left an occasional burst unrecoverable.
 
+  Size the window **at or below the matched Publisher's retained depth**; it is not a
+  bigger-is-better knob. Tracking further back than the Publisher still holds cannot recover
+  anything, and recovers strictly *less* than a narrower window: against a depth-1024 Publisher at
+  maximum rate, a 1024-sample window lost nothing across 6 runs while a 4096-sample one lost
+  191-368 per run, every loss being a sample the Publisher had already evicted. A Publisher now
+  logs a warning when a matching Subscriber announces a window deeper than it retains.
+
 - **Breaking API change** - `struct tt_ReliableCache` now stores a retained sample's encoded bytes
   in a caller-provided byte arena instead of a fixed `tt_MAX_BUFFER_LENGTH` buffer per slot
   (`rmw_tickle/PLAN.md`'s B1). `struct tt_ReliableCacheEntry` is replaced by
