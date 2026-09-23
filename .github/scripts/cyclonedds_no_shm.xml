@@ -16,5 +16,24 @@
     <SharedMemory>
       <Enable>false</Enable>
     </SharedMemory>
+    <!--
+      Keep discovery on loopback (2026-09-23, a measured incident, not a precaution). Unpinned,
+      CycloneDDS selects its interface from the default route, which on this box is the LAN - the
+      same L2 segment the rig Pis reach via wlan0, where the rig's own CycloneDDS scenarios also run
+      unpinned and on the same default domain 0. The two then discover each other, and a second
+      writer on the same topic injects its own sample ids: a run here aborted with "Data consistency
+      violated. Received sample with not strictly higher id. Received sample id 100 Prev. sample
+      id : 7146", which is a second publisher, not a middleware defect. Both processes of this
+      benchmark are on one box, so loopback is the correct scope - the same reasoning as
+      TICKLE_BROADCAST_ADDR=127.255.255.255 in compare_rmw_perf.sh and the interfaceWhiteList in
+      fastdds_udp_only.xml. compare_rmw_perf.sh also sets a distinct ROS_DOMAIN_ID as an
+      independent second barrier, because a domain collision and an interface collision fail
+      differently.
+    -->
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo" multicast="true"/>
+      </Interfaces>
+    </General>
   </Domain>
 </CycloneDDS>

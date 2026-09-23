@@ -46,6 +46,11 @@ RUNTIME="${1:-10}"
 # which are the Pis. Both processes of this benchmark run on this one box, so loopback broadcast is
 # not a workaround - it is the correct scope for a same-host benchmark.
 export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
+# Second, independent barrier for the two DDS vendors: their profiles beside this script pin them
+# to loopback, and this puts them on a domain nothing else here uses. Domain and interface fail
+# differently - a collision with someone else's ROS 2 work on domain 0 is as likely as an
+# interface one - so neither alone is enough.
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-77}"
 
 PERF_TEST_TOPICS="Array1k;Struct16"
 PERF_TEST_RMW_IMPLEMENTATIONS="rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
