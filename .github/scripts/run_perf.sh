@@ -21,6 +21,15 @@
 #   - Both Pis already have ~/tickle cloned (this script only fetches/checks out).
 set -euo pipefail
 
+# Rig mutual exclusion - see examples/perf_hil/rig_lock.sh's own header. CI's self-hosted runner
+# and every manual sweep run on the same PC and drive the same two rpis, so this job takes the
+# lock for its whole duration rather than per scenario. RIG_LOCK_WAIT bounds how long CI waits for
+# a manual sweep to finish before failing with EX_TEMPFAIL (75) instead of interleaving with it.
+if [ "${RIG_LOCK_HELD:-0}" != "1" ]; then
+    HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    exec "$HERE_DIR/../../examples/perf_hil/rig_lock.sh" "${BASH_SOURCE[0]}" "$@"
+fi
+
 RPI_CLIENT_HOST="${RPI_CLIENT_HOST:-10.1.1.214}" # rpi#1
 RPI_SERVER_HOST="${RPI_SERVER_HOST:-10.1.1.213}" # rpi#2
 SSH_USER="ci"

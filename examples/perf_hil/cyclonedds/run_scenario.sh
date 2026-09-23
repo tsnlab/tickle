@@ -18,6 +18,13 @@
 # mean waiting out the full 30s before the next one, not a code bug on either end.
 set -euo pipefail
 
+# Rig mutual exclusion (examples/perf_hil/rig_lock.sh): re-exec under the lock unless an outer
+# scope (a sweep, or CI's run_perf.sh) already holds it - see that script's own header for the
+# CI-vs-manual collision this prevents.
+if [ "${RIG_LOCK_HELD:-0}" != "1" ]; then
+    exec "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/rig_lock.sh" "${BASH_SOURCE[0]}" "$@"
+fi
+
 SCENARIO="${1:?usage: run_scenario.sh <scenario> [client_args...]}"
 shift
 CLIENT_ARGS="${*:--i 0.1 -d 10}"
