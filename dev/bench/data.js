@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790128399963,
+  "lastUpdate": 1790129524264,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -100305,6 +100305,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "avg RTT",
             "value": 0.21,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "acaa8049073585ddfee5238d50cfdad67f98f310",
+          "message": "tickle: KEEP_ALL must solicit its own acknowledgements\n\nA KEEP_ALL Publisher on a link that loses nothing published exactly its\nbound and then stopped forever. A Subscriber only sends an ACKNACK when\nit sees a gap, so with nothing lost nothing ever advanced the\nacknowledgement, and keep_all_writable() never became true again. On the\nHIL rig: a lossless 5-second run sent exactly its 1024-sample window at\n0.125 Mbps, against 109 Mbps for the same run once acknowledgements flow.\nNot slow - stopped. Zero loss is KEEP_ALL's worst case, not its easiest,\nwhich is why only a clean-link smoke test found it.\n\nThis is a defect in what shipped, not a missing feature. Before Phase 3\nstep 3 a ROS 2 app asking for HISTORY.KEEP_ALL got a clean rejection;\nafter it, it got a publisher that stalls after `window` samples and\nreturns RMW_RET_TIMEOUT from then on, which is strictly worse. rmw_tickle\nsets keep_all and never set ack_solicit_watermark_pct, and nothing in the\nAPI hinted that a second, unrelated knob was needed for the first to work\nat all.\n\nSo keep_all now implies solicitation, in core, measured against\nkeep_all_bound() rather than the cache depth. The bound is what actually\nstops the writes - min(depth, narrowest announced window) - so a\ndepth-relative watermark measures the wrong quantity: at depth 2048 with\na 1024 window, 80% would first ask at 1638 unacked, 600 samples after the\npublisher had already stopped. Half the bound leaves a round trip to\nanswer in. ack_solicit_watermark_pct keeps its opt-in meaning for\neveryone else.\n\nEvery refusal solicits too, under the same throttle. The watermark alone\nleaves a hole: once the publisher has stopped, seq_no stops moving, so\nnothing can cross the watermark a second time - if that one solicitation\nor its answer is lost, which is what a lossy link does, the stall lasts\nuntil something else happens to ask. Soliciting on refusal bounds\nrecovery to one throttle interval in every case.\n\nThree tests, each verified to fail with the fix backed out: KEEP_ALL\nsustains far past its bound on a clean link (the Subscriber here answers\nonly solicitations, never acking unprompted - acking unprompted would\ntest nothing, since the bug is that nothing prompts it); solicitation\nfires on crossing half the bound with no watermark configured; and the\nthrottle still holds, compared self-calibratingly against an equal\nstretch below the watermark rather than a pinned send count.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T11:06:40+09:00",
+          "tree_id": "18668f85b7e67adf4fee6a1c2cbcb4fdc5712dbd",
+          "url": "https://github.com/tsnlab/tickle/commit/acaa8049073585ddfee5238d50cfdad67f98f310"
+        },
+        "date": 1790129515692,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.215,
             "unit": "ms"
           }
         ]
