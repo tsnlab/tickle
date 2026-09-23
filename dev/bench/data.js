@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790136929704,
+  "lastUpdate": 1790136933473,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -102745,6 +102745,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv msgs",
             "value": 1991905,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7322783d5d678e9ebdc5bf86b8b83e6214abded9",
+          "message": "perf_hil/tickle: keep both main()s under the complexity threshold\n\nec0ce809 turned Check all red: readability-function-cognitive-complexity\nput the client's main() at 26 and the server's at 43, against a threshold\nof 25. Both were clean before that commit, so both regressions were mine.\nExtracted wait_for_matched_subscriber() and print_missing_seqs(), which\nis what parse_args() already exists for in the same file.\n\nAlso documents the limitation the step 4 measurements uncovered, at the\nuser's direction to document rather than change it (2026-09-23): a\nWriterProxy's sequence baseline is the first DATA that actually arrives,\nso samples published before that are unknown to the Subscriber rather\nthan merely lost - nothing requests them and every counter on both sides\ncorrectly reads zero. It can happen even when the Publisher already\nconsiders the peer matched, because matching is not symmetric: the\nPublisher claims ack state on hearing the Subscriber's announce and may\npublish at once, while the Subscriber starts tracking only when a packet\nsurvives the network. DDS owes a reader every sample written after it\nmatches; TickLE owes it from the first one that arrives.\n\nUnder KEEP_ALL that window is the one place the zero-loss guarantee does\nnot hold, and after Phase 3 it is the only loss left. Measured: 0 on a\nhealthy link and at 20% injected loss, 0-5 per run at 50%, always exactly\nthe pre-match samples and never a later one. Written where a reader of\nthe code meets it - struct tt_WriterProxy's doc comment and the\nfirst-contact branch that sets the baseline - with the measured size\nincluded so nobody has to re-derive it.\n\nWhy I missed the complexity regression before pushing: I format-checked\nthe changed files but only ran clang-tidy on the core sources, and CI\npins version 19 where this box has 21. Verified this time with 19 on\nevery file in the change, headers included as their own main file, plus\nshellcheck 0.11 on the shell scripts (clean).\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T13:10:10+09:00",
+          "tree_id": "f89073d679eb2fb44a18cba5bf05389cd33d8743",
+          "url": "https://github.com/tsnlab/tickle/commit/7322783d5d678e9ebdc5bf86b8b83e6214abded9"
+        },
+        "date": 1790136932249,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv msgs",
+            "value": 1982901,
             "unit": "count"
           }
         ]
