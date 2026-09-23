@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790174627855,
+  "lastUpdate": 1790174632111,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -111253,6 +111253,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/82a6a02d5a91b521398d421152f8eeb9092141fe"
         },
         "date": 1790173514728,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "volatile recv",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "2d72282c4a75bd8b20ca15c2da5d46daa9f517cf",
+          "message": "tickle: alternate between the two receive sockets, and assert the mechanism in the same-host test\n\nTwo follow-ups to 82a6a02d, both found in review rather than by a failure.\n\nThe receive path preferred the well-known socket whenever both were ready. For delivery that is\nharmless - poll() is level-triggered, so nothing is lost - but \"not lost\" and \"read\" are different\nclaims: under a sustained stream on the preferred socket the other is never read at all, which is\nstarvation rather than delay. The case where that bites is the one we cannot see yet: a Publisher\nabove tt_UNICAST_PEER_THRESHOLD broadcasts its data while the ACKNACKs and retransmit requests\nanswering it arrive as unicast on the data socket, so the path that would starve is RELIABLE\nrecovery. Nothing measured so far can show it - the rig is two nodes, so data is unicast and lands\non the data socket - which is exactly why it is worth fixing before a change makes broadcast\ncommon rather than after. The two sockets now alternate when both are ready, in tt_receive() and\nin tt_try_receive() alike, which bounds the wait at one datagram either way.\n\nThe same-host test's second assertion was weaker than its own comment claimed. `pub_self -lt\npub_tx` is satisfied by the precise benchmark signature the test exists to catch: 10009\nself-received of 10010 sent is \"less than\". The delivery assertion would still have failed, but\nthat is the symptom, and a test that names a mechanism should test it. It now requires that at\nleast COUNT of what the publisher sent did not come back, which is what \"the publisher did not\nreceive its own data samples\" means arithmetically, with the derivation written out so a reader\ncan check it rather than trust it. Verified against four cases: 10010/10009 fails, 10/10 fails,\n10/5 and 11/6 pass.\n\nRe-verified after the change: same-host 5/5 delivered, and the two-namespace integration test\npasses end to end. On its perf tier I am not claiming no regression - four runs across both\nversions gave 3414, 2660, 3140 and 3389 Mbps on a box concurrently running the HIL CI job, which\nis not separable at that n, and veth throughput here is subject to the same CPU-placement coin\nflip measured on the rig today. The alternation adds at most one extra recvfrom() on a path that\nwas already taking one.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T23:37:52+09:00",
+          "tree_id": "5df27bf603e187e4e3cc409116c00c0c452805b4",
+          "url": "https://github.com/tsnlab/tickle/commit/2d72282c4a75bd8b20ca15c2da5d46daa9f517cf"
+        },
+        "date": 1790174630838,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
