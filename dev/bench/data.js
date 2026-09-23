@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790160063998,
+  "lastUpdate": 1790160067942,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -105518,6 +105518,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1807154,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "63972d8c408b2a4ed3139a887355449374687d03",
+          "message": "perf_hil/reliable_throughput: report the CPU frequency next to the rate\n\nreliable_throughput came back bimodal at 0% injected loss - about 95 and about 112 Mbps across\nfive reps, with nothing in between. Comparing the two modes field by field, every value in the\nRESULT line is identical except sent and send_mbps: same elapsed_s, write_fail 0, throttle_lag 0,\ndrained=acked, peer_acks 1/1. The sender was never blocked and never throttled; it got through\nabout 19% fewer loop iterations in the same ten seconds, which is a slower sender rather than a\nnetwork or protocol effect, and explains why the modes are clean with nothing between them.\n\nBoth rig hosts run the ondemand governor over a 1.5-2.4 GHz range, and their frequencies differ\nfrom each other at rest, so a discrete P-state change is the obvious suspect and 2.4/2.0 is close\nto the measured 1.194 ratio. That is circumstantial. Sampling the frequency during the run and\nprinting it beside the rate is what settles it, and it explains the numbers already published\nrather than only fixing the ones taken from here on - which is why this comes before any change\nto the governor itself. The governor is shared rig configuration that CI's own benchmark history\ndepends on, and nothing here touches it.\n\nSampled on both sides: the sender's P-state is the one under suspicion, but a receiver that was\nalso throttled would change the reading, and it costs one call to know.\n\nHeader-only and plain C because every scenario's build compiles exactly one shared .c file and\nthe CycloneDDS and FastDDS harnesses are built by their own scripts - a new translation unit\nwould mean editing three build scripts to answer one question. Rate-limited to one sysfs read per\n100ms, a hundred opens against nearly two million publishes, so the instrument stays far below\nthe effect it is measuring. BENCH_CPUFREQ_PATH is overridable so the parsing and the min/max/mean\nbookkeeping can be exercised against a fixture: this development machine has no cpufreq sysfs at\nall, so without it only the absent-file branch would ever be tested here. Both branches verified\n- absent file reports samples=0 and -1, and a fixture cycling 2400/1500/2000 MHz reports\nsamples=3 mean=1966.7 min=1500.0 max=2400.0.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T19:35:10+09:00",
+          "tree_id": "da231425c6b2c21bf325878dd1918bb9af3f2b2e",
+          "url": "https://github.com/tsnlab/tickle/commit/63972d8c408b2a4ed3139a887355449374687d03"
+        },
+        "date": 1790160066561,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1908403,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 1535035,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 1814984,
             "unit": "count"
           }
         ]
