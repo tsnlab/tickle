@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790140055132,
+  "lastUpdate": 1790140058956,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -114188,6 +114188,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/bce93cc551ecac9d0194a9e9a06ea1144af183f2"
         },
         "date": 1790139562938,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b849e79bd616dcca0e65d1f1d93a8c6ced6abd42",
+          "message": "rmw_tickle: let an application size the KEEP_ALL arena it knows better than we do\n\nA KEEP_ALL publisher reserves TickLE's single-datagram ceiling per\nretained sample, because that is the only bound rmw can derive: the\ntypesupport exposes tickle_encode_size(), which needs an actual message,\nand no per-type maximum. So a DURABLE one costs depth 8192 x 1472 B,\nabout 12.06 MB, whether it publishes 76-byte telemetry or a camera frame.\n\nGenerating that per-type maximum was investigated first and deferred, and\nthe reason is worth having here rather than only in PLAN.md: it is\ncomputable for a type whose every variable-length field resolves to a\ncapacity, but not for one carrying a plain unbounded string - which\nincludes sensor_msgs/msg/Image and std_srvs/srv/SetBool - because such a\nstring is a char* aliasing external memory with no capacity at all, and\nthe generator deliberately does not auto-derive one (adapt.py). Its\nworst-case walk counts only the 2-byte length prefix for those, so the\nnumber it produces is not an upper bound. Making it one would change the\nC representation to a fixed buffer, which is DESIGN.md's Strings rule and\na much larger decision.\n\nAn application does know its own types. RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES\nis how it says so - the largest encoded payload it will publish, from\nwhich the arena is sized. For a 76-byte type that is ~0.6 MB against\n12.06 MB, with no generator change, no typesupport ABI change and no\nguessing.\n\nThe value is a message payload, not a record: a cached record also\ncarries a submessage header and a tt_DataHeader and is padded, so\ntt_RELIABLE_RECORD_BYTES() converts. Getting that backwards would\nunder-reserve by 24 bytes a sample, at exactly the sizes the knob exists\nto serve, so the test asserts the converted figure and was checked to\nfail without the conversion.\n\nUnset returns tt_MAX_BUFFER_LENGTH raw rather than going through that\nconversion, because \"default unchanged\" has to mean byte-identical to\nwhat this code passed before the knob existed. Unparseable, zero and\npast-the-ceiling values fall back rather than failing node startup, same\nreasoning as RMW_TICKLE_MAX_BLOCKING_MS - a malformed tuning knob should\nnot stop a node starting.\n\nToo small is safe by construction, not by validation: a sample that does\nnot fit the arena is still sent, just not retained (tickle.c's own\noversize branch logs it and counts not_cached_oversize). Verified in\nsource that this is what happens rather than a crash.\n\nOnly KEEP_ALL consults it, which is what keeps the name honest - a\nKEEP_LAST publisher's arena is qos->depth samples, typically ten - and a\ntest pins that KEEP_LAST ignores it. B1's count guarantee is asserted to\nsurvive a narrowed arena: still `depth` slots and `depth + 1` records of\nroom, so the byte bound still cannot evict before the count bound.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T14:01:30+09:00",
+          "tree_id": "00f8b61c8a2a9f5196624e7ca337ac3fc1f4fd03",
+          "url": "https://github.com/tsnlab/tickle/commit/b849e79bd616dcca0e65d1f1d93a8c6ced6abd42"
+        },
+        "date": 1790140057729,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
