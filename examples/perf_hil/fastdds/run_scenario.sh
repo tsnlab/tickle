@@ -39,9 +39,25 @@ ssh_run() {
 # incompatibility, not a discovery bug) and a durable match negotiation takes measurably longer
 # than a plain volatile one. Every other scenario's server.cpp only reads -d/-D and ignores
 # anything else, so this is safe to do unconditionally, not just for that one scenario.
-ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export FASTRTPS_DEFAULT_PROFILES_FILE=$PROFILE; cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/fdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
+# Pinned away from CPU0 (2026-09-23, measured). Both Pis handle eth0's interrupt, IRQ 108,
+# entirely on CPU0 - 404 and 405 million interrupts there against zero on CPU1 through CPU3 - and
+# a sender that the scheduler happens to place on CPU0 shares that core with the interrupt
+# handler. Measured over 12 reps of reliable_throughput at 0% loss, with nothing pinned: sender on
+# CPU0 gave 94.5-94.6 Mbit/s (n=3), sender anywhere else gave 110.8-112.3 (n=9), no overlap, and
+# 3 of 12 is the 1-in-4 a four-core machine gives when nothing pins anything. That made every
+# single-run figure a coin flip reading about 15% low a quarter of the time.
+#
+# This removes an artifact from the measurement rather than changing the machine: the NIC
+# interrupt stays where the hardware puts it, so these numbers still describe the real platform.
+# Applied to all three frameworks' harnesses, not just TickLE's - pinning only ours would hand
+# TickLE the fast mode every run while leaving CycloneDDS and FastDDS on the coin flip, which
+# would bias the comparison in our favour by about 15% a quarter of the time. A partial fix here
+# is worse than none.
+PIN="taskset -c 1-3"
+
+ssh_run "$RPI_SERVER" "export LD_LIBRARY_PATH=$LIB_PATH; export FASTRTPS_DEFAULT_PROFILES_FILE=$PROFILE; cd ~/$REMOTE_DIR; nohup $PIN ./server $CLIENT_ARGS > /tmp/fdds_${SCENARIO}_server.log 2>&1 < /dev/null &"
 sleep 5
-ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; export FASTRTPS_DEFAULT_PROFILES_FILE=$PROFILE; cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
+ssh_run "$RPI_CLIENT" "export LD_LIBRARY_PATH=$LIB_PATH; export FASTRTPS_DEFAULT_PROFILES_FILE=$PROFILE; cd ~/$REMOTE_DIR && $PIN ./client $CLIENT_ARGS" | grep '^RESULT:'
 # pkill first, then read the log - not just pkill (2026-09-21, real gap found the hard way): this
 # script never actually printed the server's own RESULT line at all before this fix - only the
 # client's own line ever reached stdout, silently losing every server-side recv/loss number for

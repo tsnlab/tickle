@@ -43,9 +43,25 @@ ssh_run() {
     ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=5 "ci@$host" "$@"
 }
 
-ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup ./server $CLIENT_ARGS > /tmp/tickle_${SCENARIO}_server.log 2>&1 < /dev/null &"
+# Pinned away from CPU0 (2026-09-23, measured). Both Pis handle eth0's interrupt, IRQ 108,
+# entirely on CPU0 - 404 and 405 million interrupts there against zero on CPU1 through CPU3 - and
+# a sender that the scheduler happens to place on CPU0 shares that core with the interrupt
+# handler. Measured over 12 reps of reliable_throughput at 0% loss, with nothing pinned: sender on
+# CPU0 gave 94.5-94.6 Mbit/s (n=3), sender anywhere else gave 110.8-112.3 (n=9), no overlap, and
+# 3 of 12 is the 1-in-4 a four-core machine gives when nothing pins anything. That made every
+# single-run figure a coin flip reading about 15% low a quarter of the time.
+#
+# This removes an artifact from the measurement rather than changing the machine: the NIC
+# interrupt stays where the hardware puts it, so these numbers still describe the real platform.
+# Applied to all three frameworks' harnesses, not just TickLE's - pinning only ours would hand
+# TickLE the fast mode every run while leaving CycloneDDS and FastDDS on the coin flip, which
+# would bias the comparison in our favour by about 15% a quarter of the time. A partial fix here
+# is worse than none.
+PIN="taskset -c 1-3"
+
+ssh_run "$RPI_SERVER" "cd ~/$REMOTE_DIR; nohup $PIN ./server $CLIENT_ARGS > /tmp/tickle_${SCENARIO}_server.log 2>&1 < /dev/null &"
 sleep "$PRE_CLIENT_SLEEP"
-ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && ./client $CLIENT_ARGS" | grep '^RESULT:'
+ssh_run "$RPI_CLIENT" "cd ~/$REMOTE_DIR && $PIN ./client $CLIENT_ARGS" | grep '^RESULT:'
 # SIGINT the server right after the client finishes, then read its log - not just a fixed sleep
 # (2026-09-21, real bug found the hard way): some scenarios' own server.c only prints its own
 # RESULT line once interrupted or once its own (possibly much longer than the client's) internal

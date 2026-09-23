@@ -205,13 +205,16 @@ run_scenario() {
 # again; a final SIGINT is sent regardless, as a safety net that guarantees a RESULT line lands one
 # way or another (departed=0/detect_latency_ms=-1.0 in the worst case - the same "no data, not
 # zero" sentinel durability_late_join's own backlog_delivery_ms already uses).
+# Pinned away from CPU0 for the same measured reason as the three run_scenario.sh harnesses -
+# see examples/perf_hil/tickle/run_scenario.sh's own PIN comment. This scenario launches the
+# binaries directly rather than through run_scenario.sh, so it needs the pin of its own.
 run_liveliness_scenario() {
     local label="$1" lease="$2"
     echo "== $label =="
     {
         local remote_dir="$REMOTE_DIR/$SCEN_ROOT/liveliness_loss_detection"
-        ssh_run "$RPI_SERVER_HOST" "cd ~/$remote_dir; nohup ./server -T $lease > /tmp/tickle_liveliness_server.log 2>&1 < /dev/null &"
-        ssh_run "$RPI_CLIENT_HOST" "cd ~/$remote_dir; nohup ./client -T $lease > /tmp/tickle_liveliness_client.log 2>&1 < /dev/null &"
+        ssh_run "$RPI_SERVER_HOST" "cd ~/$remote_dir; nohup taskset -c 1-3 ./server -T $lease > /tmp/tickle_liveliness_server.log 2>&1 < /dev/null &"
+        ssh_run "$RPI_CLIENT_HOST" "cd ~/$remote_dir; nohup taskset -c 1-3 ./client -T $lease > /tmp/tickle_liveliness_client.log 2>&1 < /dev/null &"
         # Discovery margin (2.0s, client.c) plus a handful of the client's own 0.5s-interval
         # publishes, so the server's own last_received_ns is a real, recent value before the kill.
         sleep 6
