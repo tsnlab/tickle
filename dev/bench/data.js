@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790177400801,
+  "lastUpdate": 1790177406225,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -119932,6 +119932,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/9ff38aa7ce547b1603e196c29a07deb1975d1ff2"
         },
         "date": 1790176062548,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e5916c98aa7339df6699574577d5de0843c66f93",
+          "message": "tickle: bind the well-known socket to the wildcard always, and say what the broadcast default reaches\n\nTwo of the three parts of the interface-scoping work. The third - changing the broadcast default\nitself - is a behaviour change for anyone relying on it and is with the user, so the default is\nuntouched here.\n\nThe premise we had been working from was wrong and worth correcting in the code, not only in a\ndocument. \"Nothing binds the socket to a link, so the configurable address leaked anyway\" is half\ntrue: nothing binds, and a *directed* broadcast is scoped by the routing table regardless, with no\nbinding involved. Measured on all three machines - `ip route get 192.168.10.255` names eth0 on both\nrpis while `ip route get 255.255.255.255` names wlan0, and run_perf.sh has always relied on exactly\nthat lookup to find the interface to apply tc to. So the perf_hil harnesses, which set a directed\nbroadcast, never leaked; it was the compiled-in 255.255.255.255 default, which has no subnet to be\nscoped by and therefore follows the default route. config.h now says that at the constant, because\n\"this default reaches further than it looks\" is not discoverable from the value.\n\nThe code change is the other half. _tt_CONFIG.addr used to bind both sockets, and a socket bound to\na unicast address receives no broadcasts at all - measured, directed and limited alike, with a\nwildcard-bound socket beside it receiving both. So setting a bind address would have stopped every\nannounce from arriving while unicast kept working: a node that hears nobody and is heard by nobody,\nwith every send reporting success. Nothing in the tree passes a real address to -a, so it was\nlatent rather than live, but it was reachable through a documented option and it got worse in\n82a6a02d when a second socket started honouring the same setting.\n\nThe well-known socket now always binds the wildcard. _tt_CONFIG.addr scopes the data socket only,\nwhich is where it is both safe and useful: that socket only ever needs to receive unicast, and\nbinding it to a local address is the unprivileged way to pin this node's sends to one link -\nSO_BINDTODEVICE is the obvious tool and needs CAP_NET_RAW. That mechanism is written but not yet\nrelied on anywhere: confirming it needs a two-interface host and a capture on the *other* interface\nshowing nothing, which is a negative only a capture can establish, since the send succeeds either\nway and the sender cannot tell.\n\nVerified: same-host 5/5 with rx_self_sent_data_unicast 0, and the netns integration test Overall\nPASS on three consecutive runs. A fourth, earlier run reported set_bool 19/20; it has not recurred,\nand with _tt_CONFIG.addr at its 0.0.0.0 default this commit changes no bind at all, so it cannot be\nthe cause - but I am recording that I saw it rather than only the three that agreed with me.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T00:23:45+09:00",
+          "tree_id": "026d11aeb9f501843bf17c1d11579043855db313",
+          "url": "https://github.com/tsnlab/tickle/commit/e5916c98aa7339df6699574577d5de0843c66f93"
+        },
+        "date": 1790177404940,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
