@@ -1464,6 +1464,40 @@ published seq 1, and DDS semantics say a sample written after a reader matches i
 would have to establish a Subscriber's baseline at match time rather than at first DATA to close
 that window. Dev deliberately did not touch core for it.
 
+#### Deferred: per-type max encoded size (crux checked 2026-09-23, Dev; deferred by Plan)
+
+The B1 follow-up (rmw sizes a KEEP_ALL arena at `tt_MAX_BUFFER_LENGTH` per sample, so depth 8192
+costs ~12.06 MB where a 76-byte type needs ~1 MB) rests on a premise that **does not hold**: not
+every supported type has a computable maximum encoded size.
+
+`layout.max_wire_size()` already walks every field, resolves a variable array to its capacity,
+recurses into nested types and raises on anything it doesn't know - no silent hole. But a **plain
+`string`** contributes only its 2-byte length prefix, because unlike an array it has no fixed C
+buffer at all (a `char*` aliasing caller memory, DESIGN.md's "Strings" rule), and `adapt.py:126`
+deliberately does not extend capacity auto-derivation to it. The runtime cap,
+`tt_MAX_STRING_LENGTH` = 65535, is 44x a datagram, so it is no substitute. This is not a corner
+case: the generator's own `BoundedString.msg` fixture carries one, and so do real ROS types the
+rmw path exists for (`sensor_msgs/msg/Image.encoding`, `std_srvs/srv/SetBool`, our own
+`examples/set_bool/SetBool.srv`).
+
+So the achievable version is a **per-type split**: emit the computed maximum for a type whose
+fields all resolve, emit an explicit "unbounded" marker otherwise, and have rmw use the number when
+there is one and `tt_MAX_BUFFER_LENGTH` when there isn't. Deterministic, no heuristics - but a full
+win only for fixed-layout telemetry/control types (19x for a `BenchData`-shaped 76-byte message)
+and **no win at all** for anything carrying a free-form string.
+
+**Deferred**, because the value is conditional on which types are published KEEP_ALL and neither
+session can size that today, while the cost spans generator + typesupport + rmw + tests. Taken
+instead: an `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` env override defaulting to today's value, so a
+caller who knows their own types gets the win immediately with no ABI or generator change.
+
+Two related observations worth keeping (Dev): the "message fits in one datagram" `_Static_assert`
+that `max_wire_size()` backs is satisfied *trivially* for string-carrying types, so its name
+promises more than it delivers - runtime oversize is really caught at encode time and by
+`not_cached_oversize`; and extending auto-derivation to plain strings would make the premise hold
+but changes the C representation from `char*` alias to `char[N+1]`, i.e. it rewrites DESIGN.md's
+Strings rule - a design decision, not a task.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
