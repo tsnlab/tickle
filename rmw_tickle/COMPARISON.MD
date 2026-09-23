@@ -86,7 +86,7 @@ replacing this document's own earlier mix of ranges/min-max/single-value styles)
 | 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | beyond depth | recv 150.0±5.2/160 msgs, 6.25% loss (**non-deterministic**, n=3 - see §6) | recv 108/160 msgs, 32.5% loss (deterministic) | recv 108/160 msgs, 32.5% loss (deterministic) |
 | 7 | `deadline_miss_detection` | - | sent 198±0 msgs, recv 198±0 msgs, 0% loss, writer_misses=3† (own math), reader_misses=30† (harmless, unexplained) | writer_misses=7†, reader_misses=19†, detect -0.90ms† | writer_misses=7†, reader_misses=14†, detect 0.05ms† |
-| 8 | `liveliness_loss_detection` | - | **provisional, see §6 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
+| 8 | `liveliness_loss_detection` | - | **provisional, and NOT comparable to the DDS columns as measured - see §6 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
 | 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | pause=1.0s: lost 28.0±1.4; pause=1.5s: lost 43.0±12.7; pause=2.0s: lost 79.0±0 (**not the same condition as the other two** - see §6 item 6; slope-verified against the expected formula, see §6 item 8) | lost 5† (pause=0.3s) | lost 10† (pause=0.3s) |
 
@@ -586,14 +586,31 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
     - **Scenario 8 (`liveliness_loss_detection`)**: at n=20 per lease the residual
       (`detect_latency - lease`) is not a spread around a mean, it is two clusters - a dominant one
       holding to about **15ms**, and a minority one (3-4 reps in 20) sitting **~460-500ms** away.
-      Lease 4.0's mode sits ~1010ms below where leases 1.0 and 2.0 sit, i.e. exactly one
-      `check_liveliness()` tick, which is the signature of a phase relationship between the 1s
-      announce period and the 1s check tick rather than of anything lease-dependent. Consequence for
-      this table: at n=3 there is roughly a 45% chance of catching at least one minority-mode
-      sample, and one such sample moves the mean ~160ms - so §3 scenario 8's own ±169/±466/±236 are
-      almost certainly mode-mixing, not measurement noise, and the dominant mode is far *tighter*
-      than any band published here. It also explains the standing "TickLE's liveliness timing is
-      imprecise vs. DDS within ~1ms of lease" reading: the DDS pair have no such phase coupling.
+      **Mechanism, found 2026-09-23 after two wrong hypotheses were killed by the same data**: it is
+      a *reference-point* artifact in our own harness, not a property of detection. Instrumenting
+      `traffic_last_seen - update_last_seen` at the moment the departure fires shows that gap is
+      itself bimodal and takes exactly two values, **0 or ~500ms**, nothing between - and every
+      minority-mode rep has gap ~500 while every majority-mode rep has gap 0. Our liveliness client
+      publishes every 0.5s while the node UPDATE goes out every 1.0s, so the last packet before the
+      kill is either the announce itself (gap 0) or a data sample 500ms later (gap 500);
+      `detect_latency_ms` is measured from the last *data* sample, so the measurement's own
+      reference point is stale by exactly that amount. The ~500ms mode separation IS that staleness.
+      Consequence for this table: at n=3 there is roughly a 45% chance of catching a minority-mode
+      sample, and one moves the mean ~160ms, so §3 scenario 8's ±169/±466/±236 measure mode-mixing,
+      not precision - the dominant mode holds to ~15ms.
+
+      **And the cross-vendor comparison in scenario 8 is apples-to-oranges, which more reps cannot
+      fix.** Both DDS harnesses also measure from the last received sample - but in DDS the sample
+      *is* what refreshes the liveliness lease, so measuring from it and detecting at
+      last_sample + lease are anchored to the same event and cancel; that is why FastDDS and
+      CycloneDDS land within ~1ms of their lease. In TickLE the lease is refreshed by the node-level
+      UPDATE while the measurement is anchored to data - two different clocks - so the phase between
+      them appears as spread the DDS figures structurally cannot have. So scenario 8's TickLE column
+      is not measuring the same quantity as its DDS columns, and the standing reading that "TickLE's
+      liveliness timing is imprecise vs. DDS" is substantially an artifact of that mismatch. Being
+      fixed by reporting `announce_age_at_detect_ms` (anchored to the UPDATE that actually governs
+      TickLE's lease, i.e. the DDS-comparable number) alongside the existing end-to-end field, and
+      by dropping our client to the DDS twins' own 0.1s interval.
     - **`reliable_throughput` rate**: five consecutive reps at tc 0% gave 94.4 / 111.0 / 112.7 /
       94.9 / 111.5 Mbps - two clusters at ~95 and ~112, nothing between, `post_match_lost` 0 in all
       five. §3b's TickLE Mbps column is a median of 3 per cell and therefore reports whichever

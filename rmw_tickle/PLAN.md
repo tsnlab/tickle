@@ -1603,10 +1603,20 @@ lease 2.0:  103 163 163 170 | 565 577 587 589 594 618 619 620 622 625 626 626 62
 lease 4.0:  -848 -835 -834 -833 | -422 -415 -414 -414 -414 -414 -413 -412 -409 -405 -383 -381 -375 -373 -371 -367
 ```
 
-The dominant mode holds to ~15ms - far tighter than any published band - and lease 4.0's mode sits
-~1010ms below leases 1.0/2.0, exactly one `check_liveliness()` tick, i.e. a phase relationship
-between the 1s announce period and the 1s check tick rather than anything lease-dependent. At n=3
-there is ~45% chance of catching a minority-mode sample, and one moves the mean ~160ms.
+The dominant mode holds to ~15ms - far tighter than any published band. At n=3 there is ~45% chance
+of catching a minority-mode sample, and one moves the mean ~160ms.
+
+**Mechanism (third hypothesis, the one the data supports)**: instrumenting
+`traffic_last_seen - update_last_seen` at departure shows that gap is itself bimodal - exactly 0 or
+~500ms, nothing between - and pairs perfectly with the latency mode. The client publishes every
+0.5s while UPDATE goes out every 1.0s, and `detect_latency_ms` is measured from the last *data*
+sample, so the measurement's reference point is stale by 0 or 500ms. Two earlier explanations
+(1s-grid quantization; announce/check-tick phase) were both killed by this same data.
+**Consequence**: scenario 8's TickLE column is not measuring the same quantity as its DDS columns -
+in DDS the sample that is measured from is also what refreshes the lease, so the two cancel (hence
+~1ms); in TickLE the lease is refreshed by UPDATE while the measurement is anchored to data. Fix:
+report `announce_age_at_detect_ms` (DDS-comparable) alongside the end-to-end field, and match the
+DDS twins' 0.1s client interval.
 
 **`reliable_throughput` is bimodal too**: 94.4 / 111.0 / 112.7 / 94.9 / 111.5 Mbps at tc 0%, two
 clusters with nothing between, `post_match_lost` 0 in all five. `COMPARISON.MD` §3b's TickLE rate
