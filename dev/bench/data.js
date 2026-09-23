@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790170283612,
+  "lastUpdate": 1790170287563,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -107787,6 +107787,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/9f70d9b4dfbaeb0be53f816c16f3a47fe6933fc4"
         },
         "date": 1790165973891,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "0be8c33f7ad1d7340708859c88c761f36f1a5de5",
+          "message": "config: make the settings overridable, and assert the invariants between them\n\nEvery setting in config.h was an unconditional #define, so -Dtt_UNICAST_PEER_THRESHOLD=0 on the\ncommand line was accepted by the compiler and then silently discarded the moment this header\nredefined the name. That is not a theoretical hazard: on 2026-09-23 it voided two full A/B runs\nthat appeared to refute a correct hypothesis about same-host unicast delivery, and the check\nguarding those runs made it worse by confirming the flag had reached the compiler - which was\ntrue, and useless, because it checked the wrong end of the pipeline.\n\nThe 33 settings are now wrapped in #ifndef, which is how a tunable is normally exposed and also\nwhat makes an override verifiable: the value can be read back from the preprocessor rather than\nthe flag being read back from the command line.\n\nFour kinds of name are deliberately left unconditional, with the reason in the header: the unit\ndefinitions (tt_SECOND and friends), the wire sentinels (tt_NODE_ID_INVALID, tt_NODE_ID_BROADCAST\n- changing one on a single node breaks interoperability rather than tuning anything), the derived\nword counts, and the function-like macros. Override their inputs, not their results.\n\nAllowing an override does not suspend the relationships between settings, so seven _Static_asserts\nnow fail the build on a combination that cannot work - the peer table larger than the unicast\nthreshold, the bitmaps a whole number of words, the endpoint index a power of two and large enough,\nand endpoint counts within what a uint8_t can index. A silently broken configuration would be\nworse than an unoverridable one.\n\nVerified rather than assumed, since this commit exists because of an unverified flag: the\npreprocessor reports 2 by default and 0 under -Dtt_UNICAST_PEER_THRESHOLD=0, and\n-Dtt_UNICAST_PEER_THRESHOLD=99 fails the build on the peer-table assertion rather than compiling\ninto something that misbehaves at runtime.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T22:20:57+09:00",
+          "tree_id": "1304fa6855d45a82c5b2843c4eb077c91bbd93d6",
+          "url": "https://github.com/tsnlab/tickle/commit/0be8c33f7ad1d7340708859c88c761f36f1a5de5"
+        },
+        "date": 1790170286304,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
