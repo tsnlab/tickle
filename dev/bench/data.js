@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790133964517,
+  "lastUpdate": 1790133968305,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -105227,6 +105227,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/acaa8049073585ddfee5238d50cfdad67f98f310"
         },
         "date": 1790129538304,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f2bf70bb55606b51375e5648a4b7e74bd68c9f26",
+          "message": ".clang-tidy: exempt tt_-prefixed enum types from EnumCase\n\nb332dc1b turned Check all red: readability-identifier-naming rejected\n`enum tt_WriterKeepAll` under EnumCase: lower_case.\n\nStructCase, FunctionCase and EnumConstantCase all already carry a\n`^_?tt_.*` exemption - names wearing this library's API prefix set their\nown case, and a public enum type is named after the struct it belongs to\n(enum tt_WriterKeepAll beside struct tt_WriterProxy). Enum was the one\ncategory without it, which reads as untested rather than decided: until\nnow the only named enum in a public header was hal.h's tt_ret_t, which\nis lower_case anyway and so never exercised the rule.\n\nAlso the reason I didn't catch this before pushing, worth writing down:\nclang-tidy only reports diagnostics for its main file, so linting the\ntest translation units - which #include src/tickle.c and tickle.h - said\nnothing about either. The finding needs the header passed as the main\nfile, which is exactly what cpp-linter does with a changed .h. And CI\npins clang-format/clang-tidy 19 (tsnlab/check -> cpp-linter-action,\nversion: '19') while this machine has 21, so a local sweep can disagree\nwith CI in both directions. Reproduced with 19 in a venv before fixing.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T12:20:32+09:00",
+          "tree_id": "497244227b8ee3f826d069026e102dff706db907",
+          "url": "https://github.com/tsnlab/tickle/commit/f2bf70bb55606b51375e5648a4b7e74bd68c9f26"
+        },
+        "date": 1790133967128,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
