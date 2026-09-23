@@ -27,11 +27,9 @@
 
 using namespace eprosima::fastdds::dds;
 
+// Never set any more: this scenario installs no SIGINT handler (see main()). Kept so the
+// send loop reads the same as its sibling scenarios; the loop ends on its own duration cap.
 static volatile sig_atomic_t g_interrupted = 0;
-static void handle_sigint(int) {
-    g_interrupted = 1;
-}
-
 static uint64_t now_ns() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -52,7 +50,24 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::signal(SIGINT, handle_sigint);
+    // A liveliness_loss_detection client must die the way a crashed process dies, so this
+    // scenario deliberately does NOT install a SIGINT handler. Measured 2026-09-23, lease 2.0s, 2
+    // reps each: under `kill -INT` TickLE was detected in 88/92ms (its own goodbye broadcast) while
+    // BOTH DDS vendors raised no liveliness event at all (clean unregister), against 1900-2332ms
+    // and ~1999-2000ms under `kill -9`. A run with the wrong signal would not merely flatter one
+    // framework - it would make the other two look broken, which is the kind of table nobody
+    // double-checks because it confirms what they wanted. Leaving SIGINT at its default
+    // disposition (terminate, no cleanup) makes the correct measurement the only obtainable one,
+    // whichever signal the orchestrator sends and whoever runs it.
+    //
+    // Verified on the rig after the change (TickLE, lease 2.0s): `kill -9` still detects normally
+    // (2325/2325ms), while `kill -INT` now leaves the client RUNNING and the run ends
+    // departed=0/detect_latency_ms=-1. That is the intended outcome and worth understanding: the
+    // orchestrator launches this client with `nohup ... &`, and a non-interactive shell sets
+    // SIGINT to ignore for a background job, which the explicit handler used to override. So a
+    // wrong-signal run now fails loudly instead of producing a plausible wrong number - and all
+    // three frameworks fail it the same way, since the DDS twins raise no liveliness event under
+    // -INT either.
 
     DomainParticipant* participant =
         DomainParticipantFactory::get_instance()->create_participant(0, PARTICIPANT_QOS_DEFAULT);
