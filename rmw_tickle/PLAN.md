@@ -1298,6 +1298,10 @@ Publisher says it's gone" (Dev's phrasing), and those samples were already evict
 cache depth.** Documented in the header, the example's `-w` help and the CHANGELOG, plus a
 one-per-matching warning when an announced window exceeds what the Publisher retains.
 
+**Landed on `main` as `1b15e15`, fully green** (check-all, test-all, Performance Test, rmw compare).
+Final measured effect: the intermittent outlier is gone (6/6 zero-loss at tc 1%/max/K1024/W1024)
+and tc 5% loss went 0.043% → 0.016%.
+
 **Reverse-traffic cost** (8s runs, DATA record 100 B on the wire):
 
 | cell | ACKNACKs | avg size | ACKNACK Mbps | DATA Mbps | reverse/forward |

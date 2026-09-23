@@ -154,8 +154,8 @@ So each cell reports **loss % / refused % / Mbps**. `-B` is `max_blocking_time` 
 | `tc` loss | TickLE, depth=64 | TickLE, depth=1024 | FastDDS (default `-B`) | FastDDS (`-B 1ms`) | CycloneDDS (default `-B`) | CycloneDDS (`-B 1ms`) |
 |---|---|---|---|---|---|---|
 | 0% | 0 / - / 107-121 | 0 / - / 107-121 | 0 / 0 / 10.0-11.3 | 0 / 1.3-2.5% / 11.8-17.0 | 0 / 0 / 47-55 | 0 / 0.01-0.1% / 72-93 |
-| 1% | 0.010% / - / 117 | 0.0002-0.014% / - / 117 | 0 / 0 / 8.8-10.8 | 0 / 2.9% / 10.3-10.6 | 0 / 0 / 11.4-11.8 | 0 / 0.73% / 18 |
-| 5% | 0.238% / - / 113 | 0.0385% / - / 113 | 0 / 0 / 5.8-8.3 | 0 / 3.4-3.9% / 8.8-9.7 | 0 / 0 / 2.3-2.7 | 0 / 17-19% / 2.2 |
+| 1% | 0.010% / - / 117 | **0% (Phase 2, 6/6)** / - / 117 | 0 / 0 / 8.8-10.8 | 0 / 2.9% / 10.3-10.6 | 0 / 0 / 11.4-11.8 | 0 / 0.73% / 18 |
+| 5% | 0.238% / - / 113 | **0.016% (Phase 2)** / - / 113 | 0 / 0 / 5.8-8.3 | 0 / 3.4-3.9% / 8.8-9.7 | 0 / 0 / 2.3-2.7 | 0 / 17-19% / 2.2 |
 | 20% | not measured | not measured | 0 / 0 / 0.9-3.1 | 0 / 15-38% / 0.9-3.0 | 0 / 0 / 0.5 | 0 / 61-66% / 0.3-0.4 |
 | 50% | not measured | not measured | 0 / 0 / 0.6-0.8 | 0 / 64-100% / 0.3-2.9 | 0 / 0 / 0.1 | 0 / 73-79% / 0.1-0.2 |
 
@@ -177,6 +177,12 @@ So each cell reports **loss % / refused % / Mbps**. `-B` is `max_blocking_time` 
 - **DDS's "0% loss" is a different guarantee, not a better recovery rate.** With a 1ms
   `max_blocking_time` the same conditions produce 3-79% refused writes, i.e. the data never
   entered the middleware at all.
+- **Updated 2026-09-23 (Phase 2, `1b15e15`)**: with the Subscriber's tracking window widened to
+  1024 samples (and per-Subscriber ack identity on the wire, `tt_VERSION` 6), TickLE's own
+  depth=1024 column above is now **0% loss at 1% injected loss (6/6 runs)** and 0.016% at 5% -
+  i.e. at ~113-117 Mbps, two orders of magnitude above either DDS vendor's rate under the same
+  injected loss. The window must stay ≤ the Publisher's cache depth; beyond that it measurably
+  hurts (PLAN.md's own Phase 2 entry).
 - Closing TickLE's remaining gap is `rmw_tickle/PLAN.md`'s Phase 3 (RELIABLE + KEEP_ALL: block the
   writer, fail the write on timeout), which gives the same guarantee DDS offers, plus Phase 2 if
   KEEP_LAST at max rate must also reach zero.
