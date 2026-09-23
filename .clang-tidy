@@ -10,6 +10,13 @@ CheckOptions:
     value: '^_?tt_.*'
   - key: readability-identifier-naming.EnumCase
     value: lower_case
+  # Same exemption Struct/Function/EnumConstant below already carry: names carrying this library's
+  # own tt_ API prefix set their own case, and a public enum type is named like the struct it
+  # belongs to (enum tt_WriterKeepAll next to struct tt_WriterProxy). Enum was the one category
+  # missing it - not a decision, just untested, since hal.h's tt_ret_t is lower_case anyway and was
+  # the only named enum in a public header until now.
+  - key: readability-identifier-naming.EnumIgnoredRegexp
+    value: '^_?tt_.*'
   - key: readability-identifier-naming.EnumConstantCase
     value: UPPER_CASE
   - key: readability-identifier-naming.EnumConstantIgnoredRegexp
