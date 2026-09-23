@@ -307,7 +307,13 @@ lint:
 	     `# on: there is no compile_commands.json for the core library, so it falls back to the` \
 	     `# --extra-arg flags below, which is the intended arrangement. Pre-existing and not a` \
 	     `# failure - the exit status is what says whether the check passed.` \
-	     | xargs $(CLANG_TIDY) --warnings-as-errors='*' \
+	     `# --quiet drops clang-tidy's own "Suppressed N warnings (N in non-user code)" summary. It` \
+	     `# is genuinely misleading on a passing run: the figure is six digits, counts diagnostics` \
+	     `# from system headers nobody can act on, and has already been read once as "the lint found` \
+	     `# 135,000 problems". The per-file "N warnings generated" lines come from clang itself and` \
+	     `# stay - filtering the tool's own stderr in a target whose job is to be trusted seemed a` \
+	     `# worse trade than a few noisy lines. Verified --quiet still reports real findings.` \
+	     | xargs $(CLANG_TIDY) --quiet --warnings-as-errors='*' \
 	         $(patsubst -I%,--extra-arg=-I%,$(CPPFLAGS)) $(LINT_TIDY_ARGS)
 
 include netns.mk
