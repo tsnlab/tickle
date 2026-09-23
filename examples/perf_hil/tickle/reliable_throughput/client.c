@@ -48,7 +48,21 @@ static void handle_sigint(int sig) {
 
 static const double default_duration_s = 10.0;
 static const double default_drain_s = 3.0;
-static const double discovery_margin_s = 2.0;
+// Phase 3 step 4 - how long to wait for a Subscriber to actually match before publishing, and the
+// interval at which that's rechecked. This used to be a blind 2-second sleep, which is what the
+// residual loss under KEEP_ALL turned out to be: at 50% injected loss the missing sequence numbers
+// were always 1 and 2, never the tail and never mid-stream. Samples published before any Subscriber
+// matched, whose loss nothing can report - a WriterProxy is claimed on the first DATA that arrives,
+// so a Subscriber that never saw seq 1 has no way to know it existed, and every counter on both
+// sides is legitimately zero while the harness counts the gap as transport loss.
+//
+// That is also ordinary DDS semantics rather than a TickLE shortfall: a VOLATILE writer owes
+// nothing to a reader that had not yet matched. The DDS harnesses this scenario is compared against
+// structurally cannot make the error - cyclonedds/reliable_throughput/client.c calls
+// wait_for_writer_match(..., 10.0) and bails if no reader appears - so the fixed sleep here was the
+// asymmetry, not the result.
+static const double match_wait_cap_s = 10.0; // matches the DDS harnesses' own match timeout
+static const double match_poll_s = 0.01;
 static const double bits_per_byte = 8.0;
 static const double bits_per_megabit = 1e6;
 
@@ -128,6 +142,16 @@ static uint64_t pending_since_ns = 0;
 // for, and the write would then never be accepted no matter how large -B is.
 static const double keep_all_retry_s = 0.00005; // 50us
 
+// Drain bookkeeping - see drain_tick(). The poll interval matches tt_RELIABLE_RETRY_INTERVAL: there
+// is no point asking again faster than the recovery it is waiting on can answer.
+static const double drain_poll_s = 0.001;
+static uint64_t g_drain_deadline_ns = 0;
+static bool g_drain_fully_acked = false;
+static uint32_t g_peer_acks_min = UINT32_MAX; // low-water mark of matched Subscriber entities
+// Defined next to drain_tick() below, where the reasoning for watching this lives; used by
+// send_one() above it as well, so declared here.
+static void sample_peer_acks(void);
+
 // Depth -Q uses when -K doesn't say otherwise: twice the 1024-sample window the Phase 3 HIL matrix
 // announces, so the Subscriber's window is what bounds blocking rather than this cache. Costs
 // nothing extra - the backing arrays below are statically sized for MAX_RELIABLE_DEPTH regardless.
@@ -172,6 +196,7 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     // on. send_ns is stamped once, at creation, so a retried sample reports the latency the
     // application actually experienced rather than the one the last attempt did - the same thing
     // dds_write() reports when it blocks internally.
+    sample_peer_acks();
     if (!have_pending) {
         pending_msg.seq = ++seq;
         pending_msg.send_ns = tt_get_ns();
@@ -201,6 +226,61 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
 
     uint64_t next = interval_s > 0.0 ? time + (uint64_t)(interval_s * (double)tt_SECOND) : time;
     tt_Node_schedule(node, next, send_one, NULL);
+}
+
+// Phase 3 step 4 - the drain is what decides whether a sample counts as delivered, so a blind
+// fixed-duration one measures the wrong thing: the Publisher exits on a timer regardless of whether
+// its peers ever confirmed the tail of the stream, and anything still in recovery at that instant
+// is reported as transport loss. At 50% injected loss that showed up as a residual 0-3 samples per
+// run with every abandonment counter at zero on both sides - not data anyone dropped, just data the
+// run stopped waiting for. The tail is the exposed part: a Subscriber notices a gap when a *higher*
+// seq_no arrives, and after the last publish no higher one ever does, so nothing reveals a lost
+// final sample unless the Publisher asks.
+//
+// So the drain now asks, and ends when every matched peer has confirmed the last accepted sample -
+// tt_Publisher_is_acked_by_all_peers(), which is what a DDS writer's own wait_for_acknowledgments()
+// does at teardown. drain_s becomes the cap rather than the plan. This file's own doc comment used
+// to say no such API existed; it does now.
+// Phase 3 step 4 diagnostic - how many matched Subscriber entities this Publisher currently has
+// acknowledgement state for. Worth watching because both tt_Publisher_is_acked_by_all_peers() and
+// core's own keep_all_writable() treat "no matched peers" as vacuously satisfied - correctly, since
+// there is then nobody left to wait for - which means losing the peer entry silently converts both
+// "everyone has confirmed the stream" and "KEEP_ALL is holding this writer back" into no-ops. Under
+// sustained injected loss a Subscriber's own periodic announce can be lost often enough to matter,
+// so this records the value at the end and the low-water mark across the run.
+static uint32_t count_peer_acks(const struct tt_Publisher* pub) {
+    uint32_t live = 0;
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id != tt_NODE_ID_INVALID) {
+            live++;
+        }
+    }
+    return live;
+}
+
+static void sample_peer_acks(void) {
+    uint32_t live = count_peer_acks(g_pub);
+    if (live < g_peer_acks_min) {
+        g_peer_acks_min = live;
+    }
+}
+
+static void drain_tick(struct tt_Node* node, uint64_t time, void* param) {
+    (void)param;
+    sample_peer_acks();
+    if (g_pub->seq_no > 0 && tt_Publisher_is_acked_by_all_peers(g_pub, g_pub->seq_no)) {
+        g_drain_fully_acked = true;
+        g_interrupted = 1; // ends main()'s own drain poll loop, same as stop_draining() below
+        return;
+    }
+    if (tt_get_ns() >= g_drain_deadline_ns) {
+        g_interrupted = 1;
+        return;
+    }
+    // Nothing else solicits here: publishing has stopped, so neither the KEEP_ALL watermark nor a
+    // refusal can fire, and a healthy Subscriber sends no ACKNACK unprompted.
+    (void)tt_Publisher_request_ack(g_pub);
+    tt_Node_schedule(node, time + (uint64_t)(drain_poll_s * (double)tt_SECOND), drain_tick, NULL);
 }
 
 static void stop_draining(struct tt_Node* node, uint64_t time, void* param) {
@@ -316,7 +396,24 @@ int main(int argc, char** argv) {
         }
     }
 
-    uint64_t send_start = tt_get_ns() + (uint64_t)(discovery_margin_s * (double)tt_SECOND);
+    // Wait for a real match rather than guessing at one - see match_wait_cap_s' own comment. Polls
+    // through tt_Node_poll() rather than sleeping, since matching happens by processing the
+    // Subscriber's own announce, which only arrives while the node is being polled.
+    uint64_t match_deadline = tt_get_ns() + (uint64_t)(match_wait_cap_s * (double)tt_SECOND);
+    ret = tt_RET_OK;
+    while (count_peer_acks(&pub) == 0 && tt_get_ns() < match_deadline && !g_interrupted &&
+           (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+        ret = tt_Node_poll(&node, (int64_t)(match_poll_s * (double)tt_SECOND));
+    }
+    if (count_peer_acks(&pub) == 0) {
+        // Same failure the DDS harnesses take here: better no numbers at all than numbers from a
+        // run that was publishing into the void.
+        fprintf(stderr, "timed out waiting for a matched subscriber after %.1fs\n", match_wait_cap_s);
+        tt_Node_destroy(&node);
+        return 1;
+    }
+
+    uint64_t send_start = tt_get_ns();
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
     tt_Node_schedule(&node, send_start, send_one, NULL);
 
@@ -324,9 +421,10 @@ int main(int argc, char** argv) {
     while (!g_interrupted && !g_sending_done && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, -1);
     }
-    // drain period - no blocking "wait for acks" API exists (this file's own doc comment above),
-    // just keep polling so any in-flight retransmit can still land before teardown.
-    tt_Node_schedule(&node, tt_get_ns() + (uint64_t)(drain_s * (double)tt_SECOND), stop_draining, NULL);
+    // Drain until every matched peer has confirmed the last accepted sample, or drain_s elapses -
+    // see drain_tick()'s own comment for why a fixed-duration drain measured the wrong thing.
+    g_drain_deadline_ns = tt_get_ns() + (uint64_t)(drain_s * (double)tt_SECOND);
+    tt_Node_schedule(&node, tt_get_ns(), drain_tick, NULL);
     ret = tt_RET_OK;
     while (!g_interrupted && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, -1);
@@ -339,9 +437,11 @@ int main(int argc, char** argv) {
     // spell them, so one parser reads all three frameworks' RESULT lines (Phase 3 step 4).
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d reliable_depth=%u "
-           "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u\n",
+           "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s peer_acks_end=%u "
+           "peer_acks_min=%u\n",
            (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
-           reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct);
+           reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct, g_drain_fully_acked ? "acked" : "timeout",
+           count_peer_acks(&pub), g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min);
     print_reliable_stats("client");
 
     tt_Node_destroy(&node);

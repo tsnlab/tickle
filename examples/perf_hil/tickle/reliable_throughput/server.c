@@ -58,6 +58,13 @@ static void handle_sigint(int sig) {
 static uint8_t received_bitmap[(MAX_TRACKED_SEQ / 8) + 1];
 static uint64_t received = 0;
 static uint32_t max_seq_seen = 0;
+// Phase 3 step 4 - the lowest sequence number this Subscriber ever saw. A WriterProxy is created by
+// the first DATA that actually arrives and takes its ack baseline from that sample, so anything
+// published before it is not merely lost but unobservable: the Subscriber cannot know a sequence
+// number it never saw was ever sent, and so never requests it. Measured at 50% injected loss, that
+// is the entire residual under KEEP_ALL - the missing seq_nos were always 1..3, never the tail and
+// never mid-stream, with every abandonment counter on both sides at zero.
+static uint32_t first_seq_seen = 0;
 
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
@@ -72,6 +79,9 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     }
     received_bitmap[idx / 8] |= (uint8_t)(1U << (idx % 8));
     received++;
+    if (first_seq_seen == 0 || data->seq < first_seq_seen) {
+        first_seq_seen = data->seq;
+    }
     if (data->seq > max_seq_seen) {
         max_seq_seen = data->seq;
     }
@@ -148,13 +158,61 @@ int main(int argc, char** argv) {
         ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
+    // Both numbers, always, never one silently standing in for the other (rmw_tickle/PLAN.md Phase
+    // 3 step 4, at Plan's direction):
+    //   lost / loss_pct       - counted from seq 1, exactly as before. The raw figure.
+    //   post_match_lost       - counted from the first sequence number this Subscriber ever saw,
+    //                           i.e. excluding the window it could not observe at all.
+    //   prematch_window       - how many samples that window swallowed, so it is visible rather
+    //                           than inferred from the difference.
+    // Reported side by side because the DDS harnesses this scenario is compared against do not have
+    // this artefact - their reader match is symmetric and the writer waits for it - so quietly
+    // switching to the post-match figure would normalise away a TickLE-specific effect and flatter
+    // the comparison. Both columns keep it honest in both directions.
     uint64_t lost = max_seq_seen > received ? (uint64_t)max_seq_seen - received : 0;
     double loss_pct = max_seq_seen > 0 ? (100.0 * (double)lost / (double)max_seq_seen) : 0.0;
+    uint32_t prematch_window = first_seq_seen > 0 ? first_seq_seen - 1 : 0;
+    uint64_t observable =
+        (max_seq_seen >= first_seq_seen && first_seq_seen > 0) ? (uint64_t)max_seq_seen - first_seq_seen + 1 : 0;
+    uint64_t post_match_lost = observable > received ? observable - received : 0;
+    double post_match_loss_pct = observable > 0 ? (100.0 * (double)post_match_lost / (double)observable) : 0.0;
+
+    // Phase 3 step 4 (rmw_tickle/PLAN.md) - which sequence numbers are missing, not just how many.
+    // With KEEP_ALL the residual is small enough that the count alone says nothing: one number in
+    // the final handful is a teardown boundary, the same number in the middle of the stream is a
+    // delivery failure, and they need completely different explanations. Prints the first and last
+    // few so both ends are visible without dumping thousands of lines at KEEP_LAST loss rates.
+    if (lost > 0) {
+        uint32_t first[8];
+        uint32_t last[8];
+        unsigned first_n = 0;
+        unsigned last_n = 0;
+        for (uint32_t missing_seq = 1; missing_seq <= max_seq_seen; missing_seq++) {
+            uint32_t idx = missing_seq - 1;
+            if ((received_bitmap[idx / 8] & (1U << (idx % 8))) != 0) {
+                continue;
+            }
+            if (first_n < 8) {
+                first[first_n++] = missing_seq;
+            }
+            last[last_n % 8] = missing_seq;
+            last_n++;
+        }
+        printf("MISSING: count=%lu max_seq_seen=%u first=", (unsigned long)lost, max_seq_seen);
+        for (unsigned i = 0; i < first_n; i++) {
+            printf("%u,", first[i]);
+        }
+        printf(" last=");
+        for (unsigned i = 0; i < (last_n < 8 ? last_n : 8); i++) {
+            printf("%u,", last[(last_n < 8 ? i : (last_n + i) % 8)]);
+        }
+        printf("\n");
+    }
 
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
-           "window_samples=%u\n",
-           (unsigned long)received, (unsigned long)lost, loss_pct,
-           window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS);
+           "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u\n",
+           (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
+           prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS);
     print_reliable_stats("server");
 
     tt_Node_destroy(&node);
