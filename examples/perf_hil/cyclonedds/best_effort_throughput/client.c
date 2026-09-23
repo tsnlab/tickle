@@ -17,15 +17,16 @@
  * already started sending, since nothing here waited for it - so restoring this matches upstream's
  * own throughput example, not just this repo's earlier design.
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include "Bench.h"
+#include <dds/dds.h>
+
 #include "../common.h"
+#include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -84,7 +85,8 @@ int main(int argc, char** argv) {
             sent++;
         }
         if (interval_s > 0.0) {
-            struct timespec pace = {.tv_sec = (time_t)interval_s, .tv_nsec = (long)((interval_s - (time_t)interval_s) * 1e9)};
+            struct timespec pace = {.tv_sec = (time_t)interval_s,
+                                    .tv_nsec = (long)((interval_s - (time_t)interval_s) * 1e9)};
             nanosleep(&pace, NULL);
         }
     }

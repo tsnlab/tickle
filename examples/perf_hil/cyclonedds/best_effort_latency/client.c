@@ -5,15 +5,16 @@
  * RESULT line shape, for direct comparison): send a sample with the current monotonic time
  * embedded, wait for the server's own echo on "pong", compute RTT from that embedded timestamp.
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#include "Bench.h"
+#include <dds/dds.h>
+
 #include "../common.h"
+#include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -116,7 +117,7 @@ int main(int argc, char** argv) {
         }
 
         struct timespec sleep_ts = {.tv_sec = (time_t)(interval_ns / 1000000000ULL),
-                                     .tv_nsec = (long)(interval_ns % 1000000000ULL)};
+                                    .tv_nsec = (long)(interval_ns % 1000000000ULL)};
         nanosleep(&sleep_ts, NULL);
     }
 

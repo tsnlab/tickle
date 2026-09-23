@@ -15,7 +15,6 @@
  *
  * -D: durable (TRANSIENT_LOCAL) instead of the default volatile - the actual variable under test.
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -23,8 +22,10 @@
 #include <string.h>
 #include <time.h>
 
-#include "Bench.h"
+#include <dds/dds.h>
+
 #include "../common.h"
+#include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {

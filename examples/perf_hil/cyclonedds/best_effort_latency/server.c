@@ -5,10 +5,11 @@
  * client-side, this side never logs per-request (matches TickLE's own examples/linux/ping_pong/
  * pong.c precedent).
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#include <dds/dds.h>
 
 #include "Bench.h"
 

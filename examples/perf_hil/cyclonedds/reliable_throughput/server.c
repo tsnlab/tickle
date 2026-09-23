@@ -5,13 +5,14 @@
  * (sent by the orchestrating run_scenario.sh once the client's own -d duration elapses) or its
  * own generous safety cap, matching run_perf.sh's own perf_server.c precedent.
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include <dds/dds.h>
 
 #include "Bench.h"
 

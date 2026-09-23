@@ -18,13 +18,14 @@
  * writer+reader on the same participant) as the next hypothesis to test, independent of the
  * match-wait fix already applied above.
  */
-#include <dds/dds.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include <dds/dds.h>
 
 #include "Bench.h"
 

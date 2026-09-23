@@ -23,9 +23,10 @@
 #ifndef PERF_HIL_CYCLONEDDS_COMMON_H
 #define PERF_HIL_CYCLONEDDS_COMMON_H
 
-#include <dds/dds.h>
 #include <stdbool.h>
 #include <stdio.h>
+
+#include <dds/dds.h>
 
 // Matches eclipse-cyclonedds/cyclonedds's own examples/throughput/publisher.c wait_for_reader()
 // exactly: enable the matched-status, attach it to a fresh waitset, block once on that waitset
