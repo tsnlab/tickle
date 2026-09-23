@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790126827114,
+  "lastUpdate": 1790126830821,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -108671,6 +108671,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/48a33ee2fa46323e5d33bc6058dd9a491c719de9"
         },
         "date": 1790126089995,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "e9b452174b98cf571d4c1cc0dfccf9b32447c9bc",
+          "message": "tests: link-check every public tt_* function\n\ntt_Publisher_unacked_bound() shipped on main declared in tickle.h and\ndescribed in the CHANGELOG, with no definition anywhere: the scripted\nedit that added it applied the header half and dropped the source half.\nNothing in the tree called it, so every build, every test and all of CI\nstayed green while the public API could not link. An external caller\nwould have been the one to find out.\n\nTake the address of each public function into a table. That needs the\ndefinition at link time, so a declaration nothing implements now fails\nthis binary's own link - there is nothing to assert at runtime, and the\ncount is printed so an emptied table is visible rather than passing\nvacuously. Verified against the real defect by deleting the\ntt_Publisher_unacked_bound() definition: the link fails as intended.\n\nThe list is hand-maintained; generating it would need a C parser to be\nright, and a stale list still covers everything already on it. HAL\nentry points are left out on purpose - they are per-platform, and here\nthey would only prove tests/test_mock.h exists.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T10:14:01+09:00",
+          "tree_id": "4d72313ade14db6fdb9f188dc110cb45436cc8c8",
+          "url": "https://github.com/tsnlab/tickle/commit/e9b452174b98cf571d4c1cc0dfccf9b32447c9bc"
+        },
+        "date": 1790126829561,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
