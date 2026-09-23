@@ -1668,6 +1668,43 @@ lease 1.0 is n=18 because two reps came back `recv=0 departed=0` (the server rec
 those runs never happened), and per-run pace was ~22s against ~10.5s in the earlier sweep, only
 partly explained by rebuild cycles - unexplained, flagged.
 
+#### Scenario 8 answered: detection = min(lease, 3s) + one check interval (2026-09-23, Dev, n=90 clean)
+
+With both the node-id filter (`-N`) and the rmw isolation in place, **90 of 90 reps are valid** -
+`departed_node=3`, `foreign_departures=0`, nothing excluded (the earlier runs needed 12 reps
+dropped as contamination; see the network-isolation entry). Per-rep data:
+`/tmp/claude-1000/ab/scenario8_perrep.txt`.
+
+| lease | detect_latency_ms | announce_age_at_detect_ms | governing deadline | main-cluster offset |
+|---|---|---|---|---|
+| 1.0 | 1214.7 ± 187.7 | **1608.6 ± 19.2** | 1000ms | +608.6 |
+| 2.0 | 2219.6 ± 178.6 | 2557.0 ± 145.7 | 2000ms | +612.6 (n=26/30) |
+| 4.0 | 3198.0 ± 197.6 | **3611.9 ± 19.8** | **3000ms** | +611.9 |
+
+**The model is `detection = min(lease, 3s) + one check interval`**, and the three offsets agree
+within 4ms - one mechanism, not a curve fit. The 3s is
+`tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL`: at lease 4.0 the node-level sweep fires
+first and tombstones the peer's entities *before* the entity's own 4s lease expires, which is why
+`announce_age` there is **below** the lease (3611.9 against 4000) - the negative residual both
+sessions kept reading as noise all day.
+
+**Two distinct gaps, and only one is a trade:**
+1. **Granularity** - the +610ms is the phase between the client's 1s announce period and the
+   server's 1s `check_liveliness()` tick. It holds to ~20ms *within* a session (hence sd 19.2/19.8,
+   far tighter than any band this project published) but it is a phase, not a constant: a different
+   startup ordering puts it anywhere in 0-1000ms. State it as "+ up to one check interval, this rig
+   near 610ms".
+2. **The 3s cap is a conformance gap, not a documented trade.** `COMPARISON.MD` §6 item 10 already
+   recorded the ceiling ("3065-3399ms ... a real behaviour, not a bug ... a known, documented
+   limit") - what is new is that it is exactly `min(lease, 3s)`, and that **nothing surfaces the
+   capping to the caller**. Accepting a 4s `liveliness_lease_duration` and silently honouring 3s is
+   a failure to deliver a requested QoS, which is different in kind from a timing characteristic.
+   **Raised to the user as a core item.**
+
+One unexplained residual, stated rather than theorised: a minority mode ~420ms below the cluster
+appeared at lease 2.0 only this time (4/30, 13%), having appeared at every lease in earlier runs.
+No mechanism; recorded as an observed tail.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on

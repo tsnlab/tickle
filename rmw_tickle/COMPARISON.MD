@@ -611,6 +611,16 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
       fixed by reporting `announce_age_at_detect_ms` (anchored to the UPDATE that actually governs
       TickLE's lease, i.e. the DDS-comparable number) alongside the existing end-to-end field, and
       by dropping our client to the DDS twins' own 0.1s interval.
+
+      **Answered (2026-09-23, n=90 clean, both fixes in place)**: with the announce-anchored field,
+      `detection = min(lease, 3s) + one check interval`, the three leases' offsets agreeing within
+      4ms. Two gaps fall out, and they are different in kind: **granularity** (+610ms on this rig, a
+      phase between the 1s announce period and the 1s check tick, anywhere in 0-1000ms on another
+      startup) is a trade anyone can reason about; the **3s cap** - `tt_LIVELINESS_MISS_THRESHOLD *
+      tt_NODE_UPDATE_INTERVAL` firing before a longer entity lease - means a requested 4s lease is
+      silently honoured as 3s, with nothing reporting that to the caller. §6 item 10 already
+      recorded the ceiling as a known limit; what is new is the exact rule and the silence. Raised
+      as a core conformance item, see `PLAN.md`.
     - **`reliable_throughput` rate**: five consecutive reps at tc 0% gave 94.4 / 111.0 / 112.7 /
       94.9 / 111.5 Mbps - two clusters at ~95 and ~112, nothing between, `post_match_lost` 0 in all
       five. §3b's TickLE Mbps column is a median of 3 per cell and therefore reports whichever
