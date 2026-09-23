@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790133206118,
+  "lastUpdate": 1790133209920,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -102484,6 +102484,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv msgs",
             "value": 1932247,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b332dc1b1d61b3b945bb8232f39bc5d887e26a43",
+          "message": "tickle: never abandon a gap on an unknown writer policy\n\nAt 20% injected loss a KEEP_ALL stream lost data, silently. The\nSubscriber's retry cap abandoned gaps the Publisher was still holding:\nretry_giveups equalled lost exactly, while the Publisher's own\nnull_evicted, null_retry_cap and publish_refused were all zero. The\napplication saw ordinary transport loss - write_fail was 0 - which is the\nworst possible shape for a delivery guarantee.\n\nA WriterProxy is claimed on the first DATA from a writer, and read that\nwriter's KEEP_ALL bit from the discovery table at that moment. DATA can\narrive before the writer's announce has been processed, and with no\ndiscovery table attached - it is opt-in - the read never succeeds at all.\n\"Not known yet\" was then indistinguishable from KEEP_LAST, so samples\nwere abandoned under a policy the writer never asked for. A duration\nsweep at 20% shows it is a startup window and not a steady-state leak:\n62 give-ups over 10s, 113 over 20s, 115 over 30s - two more across the\nlast 875,000 samples.\n\nSo tt_WriterProxy.keep_all becomes a tri-state, UNKNOWN zero-initialised,\nand UNKNOWN never gives up. Abandoning data is not a decision to take on\nan assumption.\n\nThis cannot wedge, and the reason is worth stating because it is what\nmakes the conservative default safe rather than reckless: Phase 1-c's\neviction Heartbeat still ends any gap the writer genuinely cannot serve.\nA KEEP_LAST writer that evicted the sample answers with its\nfirst_available_seq_no and advance_past_unavailable() skips exactly the\nrange that is really gone. The worst case for a not-yet-identified writer\nis therefore recovery delayed until its announce arrives, not an endless\nretry - asserted in test_unknown_policy_still_terminates_on_eviction()\nrather than assumed.\n\nThis closes the same race in rmw_tickle. Discovery is attached there, so\nthe claim-time read can succeed, but DATA outrunning the announce hits\nexactly this path - and with keep_all now wired for KEEP_ALL publishers\n(844619d), the pre-fix failure was silent loss with write_fail=0 for a\npolicy whose entire promise is that nothing is dropped.\n\nAlso adds giveups_suppressed_unknown, counted once per gap at the point\nthe bounded policy would have abandoned it, so the window closing is\nmeasurable rather than inferred; and makes retry increment unconditionally\nso the stuck-gap warning reports a real count in the two cases that never\ngive up, where short-circuiting had been leaving it at zero.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T12:08:11+09:00",
+          "tree_id": "5683bae34d2f0a0c4db96e6da2805ba29885406b",
+          "url": "https://github.com/tsnlab/tickle/commit/b332dc1b1d61b3b945bb8232f39bc5d887e26a43"
+        },
+        "date": 1790133208745,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv msgs",
+            "value": 658999,
             "unit": "count"
           }
         ]
