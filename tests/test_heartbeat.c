@@ -343,6 +343,107 @@ static void test_heartbeat_first_contact_sets_baseline_with_no_data_ever_receive
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
 }
 
+// Phase 3 step 4 follow-up - first contact via DATA rather than Heartbeat, for a DURABLE
+// Subscriber. It must NOT pin its baseline to whichever sample happened to arrive first.
+//
+// The race is real and was measured, not imagined: a durable Publisher pushes its whole retained
+// range on match (deliver_durability_backlog()), and at 50% injected loss on the HIL rig one run
+// of three had seq 1 and 2 dropped in flight, seq 3 arrive first, and the old unconditional
+// `proxy->ack_seq_no = seq_no` throw the rest away as late_below_ack. A Subscriber that asked for
+// TRANSIENT_LOCAL lost the history it asked for to the race that was delivering it.
+static void test_data_first_contact_durable_subscriber_keeps_baseline(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.durable = true;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    // seq 1 and 2 were lost in flight; 3 is the first backlog sample to survive.
+    uint32_t tail = write_data(&node, 3, 300, 30);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    // The baseline stays at its lazy default rather than jumping to 3, so 1 and 2 are still
+    // outstanding and recoverable through the ordinary ACKNACK exchange.
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);
+    EXPECT_TRUE(proxy->acknack_scheduled); // ...and it really goes and asks
+
+    // The recovery then works end to end: 1 and 2 arrive and the baseline walks past all three.
+    tail = write_data(&node, 1, 100, 10);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 2, 200, 20);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
+}
+
+// The other half of the same branch, unchanged and pinned so it stays that way: a VOLATILE
+// Subscriber still pins its baseline to the first DATA it sees. It explicitly does not want
+// pre-match history, and treating "everything before this" as a recoverable gap is the Milestone
+// 60 bug - ACKNACK-requesting a VOLATILE Publisher's own history it never agreed to keep.
+static void test_data_first_contact_volatile_subscriber_pins_baseline(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic); // sub.durable stays false
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 3, 300, 30);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(4, proxy->ack_seq_no);    // pinned past 3 - 1 and 2 are not this Subscriber's
+    EXPECT_TRUE(!proxy->acknack_scheduled); // ...so nothing is requested
+}
+
+// The termination guarantee the durable branch above depends on, asserted rather than assumed: a
+// durable Subscriber that never hears a Heartbeat sits at ack_seq_no == 1 and asks for history.
+// That is what it requested and what a durable Publisher retains - but if the Publisher genuinely
+// no longer holds that range, the request has to end. Phase 1-c's eviction Heartbeat is what ends
+// it: first_available_seq_no names the oldest sample still there and advance_past_unavailable()
+// skips exactly what is gone. Without this the fix would trade lost history for a Subscriber that
+// waits forever.
+static void test_data_first_contact_durable_terminates_on_eviction(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.durable = true;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 3, 300, 30);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(1, proxy->ack_seq_no); // still waiting on 1 and 2
+
+    // The Publisher answers that it no longer has anything below 3.
+    tail = write_heartbeat(&node, ENDPOINT_ID, 3, 3, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(4, proxy->ack_seq_no); // skipped exactly the evicted range, and stopped
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
+}
+
 // Milestone 60 (rmw_tickle/PLAN.md) - the opposite, today's-default case: a brand-new *volatile*
 // Subscriber (sub.durable left false, tt_Node_create_subscriber()'s own default) must NOT request
 // any of a matched Publisher's pre-match history, even though the Heartbeat reveals the Publisher
@@ -1250,6 +1351,9 @@ int main(void) {
     test_heartbeat_discovery_skipped_for_besteffort_publisher();
     test_heartbeat_discovery_no_redelivery_on_unchanged_update();
     test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat();
+    test_data_first_contact_durable_subscriber_keeps_baseline();
+    test_data_first_contact_volatile_subscriber_pins_baseline();
+    test_data_first_contact_durable_terminates_on_eviction();
 
     printf("test_heartbeat: %s\n", test_failures == 0 ? "all tests passed" : "FAILED");
     return test_result();

@@ -3021,7 +3021,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     proxy->sender_ip = sender_ip;
     proxy->sender_port = sender_port;
 
-    if (first_contact) {
+    if (first_contact && !sub->durable) {
         // Milestone 60 - RELIABLE+VOLATILE DDS-parity fix, mirrors inform_subscriber_of_heartbeat()'s
         // own identical first-contact branch (its own doc comment: "the actual DDS-parity fix this
         // whole follow-up is for"). DATA can legally win the race against the discovery-triggered
@@ -3031,11 +3031,32 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // default, misreading "everything before this first sample" as a recoverable in-flight gap
         // and ACKNACK-requesting a VOLATILE Publisher's own pre-match history it was never
         // obligated to keep - re-deriving the exact bug the Heartbeat-first path already fixed, any
-        // time DATA happened to win that race instead. A reordering-at-first-contact edge case (an
-        // earlier backlog sample lost in flight while a later one wins the race here) is an
-        // accepted, narrow residual, same category as Milestone 47's own honest residuals - the
-        // Heartbeat-first path (when it wins the race instead) still catches it correctly via its
-        // own first_available_seq_no, unaffected by this branch.
+        // time DATA happened to win that race instead.
+        //
+        // Phase 3 step 4 follow-up (2026-09-23) - and it applies to a VOLATILE Subscriber only,
+        // which is what `!sub->durable` above is for. This branch used to run unconditionally, and
+        // its own comment called the result an accepted residual: "an earlier backlog sample lost
+        // in flight while a later one wins the race here". It isn't accepted any more, because it
+        // was measured. On the HIL rig at 50% injected loss, a DURABLE KEEP_ALL stream started at
+        // seq 3 in one run of three - the Publisher had pushed its whole retained range on match
+        // (deliver_durability_backlog()), seq 1 and 2 were lost in flight, and this line then
+        // pinned the baseline to whichever sample happened to survive, discarding the rest as
+        // late_below_ack. A Subscriber that asked for TRANSIENT_LOCAL had the history it asked for
+        // thrown away by the race that delivered it.
+        //
+        // Same RxO reasoning inform_subscriber_of_heartbeat() already spells out: THIS Subscriber's
+        // requested durability decides the baseline, not the remote Publisher's offered one. A
+        // volatile Subscriber explicitly does not want pre-match history, so pinning the baseline
+        // to the first sample it sees is exactly right. A durable one does want it, so leaving
+        // ack_seq_no where it is - at the default 1 - is what lets the ordinary ACKNACK exchange
+        // go and fetch the range the Publisher is still holding for it.
+        //
+        // The obvious worry about that, stated rather than left implicit: a durable Subscriber
+        // whose Heartbeat never arrives then sits at ack_seq_no == 1 and requests history. That is
+        // what it asked for and what a durable Publisher is retaining anyway, so it is not a
+        // spurious request - and it cannot hang, because a Publisher that no longer holds the
+        // range answers with Phase 1-c's eviction Heartbeat and advance_past_unavailable() skips
+        // exactly what is genuinely gone. tests/test_reliable_pubsub.c pins that termination.
         proxy->ack_seq_no = seq_no;
     }
 
