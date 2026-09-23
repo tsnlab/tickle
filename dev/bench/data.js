@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790147188733,
+  "lastUpdate": 1790147192630,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -106837,6 +106837,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "loss_pct @ 5%",
             "value": 0.4,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "571ce096c232b0b7d930b709d081cf3caeca135c",
+          "message": "perf_hil/tickle reliable_throughput: -D for TRANSIENT_LOCAL on both sides\n\nItem 1 of the 2026-09-23 queue: the durable case is where a Subscriber that\nstarted tracking late is still owed what it missed, so it is the configuration\nthat tests whether the pre-match window COMPARISON.MD documents can be closed.\nPublisher sets tt_Publisher.durable, Subscriber sets sub.durable (the RxO side\nthat decides the first-contact baseline), and the client's RESULT line reports\ndurable= so a run's mode is visible in the log.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T16:01:07+09:00",
+          "tree_id": "abe3b42722a42f5835978d3cace3ef90869043f8",
+          "url": "https://github.com/tsnlab/tickle/commit/571ce096c232b0b7d930b709d081cf3caeca135c"
+        },
+        "date": 1790147191294,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 0.2,
             "unit": "%"
           }
         ]
