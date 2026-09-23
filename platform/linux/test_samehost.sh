@@ -92,22 +92,30 @@ fail() {
 received=$(grep -c '^seq=' "$SUB_LOG" || true)
 [ "$received" -eq "$COUNT" ] || fail "subscriber received $received of $COUNT messages"
 
-# The assertion that catches the mechanism rather than the symptom. The first version of this
-# check was `pub_self -lt pub_tx`, which the benchmark signature this test exists to catch passes
-# comfortably: 10009 self-received of 10010 sent is "less than". The delivery check above would
-# still have failed, but only on the symptom, and a test that names a mechanism should test it.
+# The assertion that catches the mechanism rather than the symptom, and with no margin to eat.
 #
-# The arithmetic, so a reader can check it rather than trust it: tx_datagrams counts one send per
-# destination, so it is COUNT data samples unicast to the one peer, plus however many broadcast
-# announces went out. A node receives its own broadcasts (that is why self_sent is never zero and
-# why process_packet() has a self_sent branch at all), but it must never receive back a data
-# sample it unicast to somebody else. So at least COUNT of what it sent must not come back.
-# Exact by construction rather than by margin: every extra announce adds one to each side, and an
-# announce that goes out as unicast once a peer is known adds to tx alone.
+# Two earlier versions were weaker. `pub_self -lt pub_tx` was satisfied by the precise benchmark
+# signature this test exists to catch (10009 self-received of 10010 sent is "less than"). Requiring
+# that at least COUNT of what was sent did not come back was correct but had a margin of zero in
+# three runs of five, and config.h's own zero-known-peers rule can eat it: a data sample published
+# before any peer is known goes out as a broadcast and comes back to its own sender, adding one to
+# each side. That would have failed this gate on a system behaving correctly, and a gate that can
+# fail on correct behaviour is one people learn to re-run rather than read.
+#
+# Counting self-received DATA alone was not enough either, and this run proved it rather than
+# predicted it: the publisher's first sample goes out before any peer is known, so it is a
+# broadcast, and a broadcast comes back to its own sender. rx_self_sent_data was 1 on a completely
+# healthy run.
+#
+# rx_self_sent_data_unicast is the one with no legitimate non-zero case. A node's own unicast data
+# is addressed to somebody else by construction, so receiving it back means the kernel handed the
+# sender its own stream and nothing else. No arithmetic, no margin, and no race to lose.
+pub_self_uni=$(sed -n 's/.*Node .* traffic: .*rx_self_sent_data_unicast=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
+pub_self_data=$(sed -n 's/.*rx_self_sent_data=\([0-9]*\) .*/\1/p' "$PUB_LOG" | tail -1)
 pub_tx=$(sed -n 's/.*Node .* traffic: tx_datagrams=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
 pub_self=$(sed -n 's/.*Node .* traffic: .*rx_self_sent=\([0-9]*\).*/\1/p' "$PUB_LOG" | tail -1)
-[ -n "$pub_tx" ] && [ -n "$pub_self" ] || fail "publisher printed no traffic counters"
-[ "$((pub_tx - pub_self))" -ge "$COUNT" ] ||
-    fail "publisher sent $pub_tx and received $pub_self of them back, leaving fewer than the $COUNT data samples unaccounted for - its own unicast is landing on its own socket"
+[ -n "$pub_self_uni" ] || fail "publisher printed no traffic counters"
+[ "$pub_self_uni" -eq 0 ] ||
+    fail "publisher received $pub_self_uni of its own unicast data samples back - its unicast is landing on its own socket"
 
-echo "same-host test: PASS ($received/$COUNT delivered, publisher self-received $pub_self of $pub_tx sent)"
+echo "same-host test: PASS ($received/$COUNT delivered, publisher self-received $pub_self_uni unicast data samples, $pub_self_data data samples in total, $pub_self of $pub_tx datagrams overall)"

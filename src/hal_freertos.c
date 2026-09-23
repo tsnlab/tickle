@@ -302,6 +302,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
+    node->rx_via_data_port = (read_fd == node->hal.data_sock);
     int32_t ret = (int32_t)recvfrom(read_fd, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);
@@ -357,6 +358,7 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
 
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
+    node->rx_via_data_port = (read_fd == node->hal.data_sock);
     int32_t ret = (int32_t)recvfrom(read_fd, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);

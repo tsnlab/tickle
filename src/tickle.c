@@ -1065,6 +1065,9 @@ static void reset_node_state(struct tt_Node* node) {
     node->tx_datagrams = 0;
     node->rx_datagrams = 0;
     node->rx_self_sent = 0;
+    node->rx_self_sent_data = 0;
+    node->rx_self_sent_data_unicast = 0;
+    node->rx_via_data_port = false;
 
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->tx_tail = sizeof(struct tt_Header);
@@ -5070,6 +5073,16 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
         return SUBMSG_ERROR;
     }
 
+    // Counted before the receiver filter below, deliberately: a node's own DATA is addressed to
+    // whoever it was published to, not to itself, so filtering first would hide exactly the case
+    // this counter exists to detect.
+    if (self_sent && submessage_header->type == tt_SUBMESSAGE_TYPE_DATA) {
+        node->rx_self_sent_data++;
+        if (node->rx_via_data_port) {
+            node->rx_self_sent_data_unicast++;
+        }
+    }
+
     const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
     if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
         !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port,
@@ -5397,12 +5410,17 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     // One line, at the one moment the whole run's traffic is known. Cheap enough to be
     // unconditional, and the question it answers - did anything arrive at all - is the first one
     // asked whenever a node delivered nothing.
-    TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu", node->id,
-                (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
-                (unsigned long)node->rx_self_sent);
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
+
+    // After the null check, not before it: the first version of this line dereferenced node to
+    // print the counters and only then asked whether node was NULL.
+    TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
+                "rx_self_sent_data_unicast=%lu",
+                node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
+                (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
+                (unsigned long)node->rx_self_sent_data_unicast);
     uint64_t time = tt_get_ns();
 
     for (uint32_t i = 0; i < node->endpoint_count; i++) {

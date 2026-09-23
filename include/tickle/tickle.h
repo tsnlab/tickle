@@ -184,6 +184,21 @@ struct tt_Node {
     uint64_t tx_datagrams;
     uint64_t rx_datagrams;
     uint64_t rx_self_sent;
+    // Set by the HAL on each receive: true when the datagram came in on this node's own data
+    // port, false when it came in on the shared well-known port (where broadcasts land). Lives
+    // here rather than in a tt_receive() out-parameter so the HAL contract in hal.h stays as it
+    // is; both backends set it, and nothing outside the self-sent accounting reads it.
+    bool rx_via_data_port;
+    // Of rx_self_sent, the ones carrying a DATA submessage rather than only an announce.
+    uint64_t rx_self_sent_data;
+    // Of those, the ones that arrived as unicast - addressed to this node's own data port rather
+    // than to the broadcast address. This is the counter with no legitimate non-zero case. A data
+    // sample published before any peer is known goes out as a broadcast and comes back to its own
+    // sender, which is correct and does happen (observed on the very first sample of a run), so
+    // rx_self_sent_data alone still needs a margin. A node's own *unicast* data is addressed to
+    // somebody else by construction, so receiving it back means the kernel handed a sender its own
+    // stream - the same-host failure 82a6a02d fixed - and nothing else.
+    uint64_t rx_self_sent_data_unicast;
 };
 
 struct tt_Endpoint {
