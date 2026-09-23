@@ -117,6 +117,25 @@ struct tt_Node {
     // gone once tt_LIVELINESS_MISS_THRESHOLD announce intervals pass with nothing heard.
     uint64_t update_last_seen[tt_MAX_ENDPOINT_COUNT];
 
+    // The same index, but the most recent time ANY validated packet was received from that node -
+    // DATA, ACKNACK, Heartbeat, UPDATE, anything whose header passed validate_packet_header().
+    // Refreshed at one site in process_packet() rather than per submessage type, so it cannot
+    // drift and so a type added later is covered without being remembered.
+    //
+    // It exists because one timestamp cannot answer two different questions. "Has this node
+    // announced itself lately" is what the liveliness *schedule* is calibrated against; "is this
+    // node alive at all" is what a peer streaming DATA answers plainly even when its announces are
+    // the packets being dropped. Using traffic as the single clock fixes the second and slides the
+    // first later, because detection fires at last_seen + threshold and traffic is always at least
+    // as recent as an announce; measured at about +290ms on the HIL rig. So the two are kept apart
+    // and a node is presumed dead only when BOTH have gone quiet - see check_liveliness() and
+    // tt_Node_entity_alive() for each one's own guard.
+    //
+    // A retransmit or a duplicate counts, deliberately: it carries no new data, but it is proof
+    // the peer's stack is running and transmitting, which is the only question being asked - and
+    // under loss, retransmits may be most of what arrives.
+    uint64_t traffic_last_seen[tt_MAX_ENDPOINT_COUNT];
+
     // 4-byte aligned so a decoded/encoded message payload (which sits at a fixed 4-multiple
     // offset past the framing headers) is itself 4-aligned - see "Interface serialization
     // (TickLE CDR-4)" in DESIGN.md. tt_Node already has >= 8-byte alignment (it holds uint64_t

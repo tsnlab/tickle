@@ -1053,6 +1053,7 @@ static void reset_node_state(struct tt_Node* node) {
         node->update_last_modified[i] = 0;
         node->update_seen[i] = false;
         node->update_last_seen[i] = 0;
+        node->traffic_last_seen[i] = 0;
     }
 
     node->discovery = NULL;
@@ -3381,7 +3382,15 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
         if (!node->update_seen[i]) {
             continue; // never heard from this node id at all - nothing to expire
         }
-        if (time - node->update_last_seen[i] > (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) {
+        // Both clocks must have gone quiet. The announce clock keeps the timing exactly what it
+        // always was - tt_LIVELINESS_MISS_THRESHOLD announce intervals - and the traffic clock is a
+        // veto for a node still transmitting while its announces are being lost.
+        //
+        // Guard of one announce interval against a main threshold of three: it can never be the
+        // condition that governs, so it cannot delay detection of a genuinely dead node, whose
+        // traffic stops at the same moment its announces do.
+        if (time - node->update_last_seen[i] > (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL &&
+            time - node->traffic_last_seen[i] > (uint64_t)tt_NODE_UPDATE_INTERVAL) {
             TT_LOG_WARNING("Node %d presumed dead (no UPDATE for %d consecutive intervals)", i,
                            tt_LIVELINESS_MISS_THRESHOLD);
             forget_peers_from_source(node, (uint8_t)i, /*preserve_ack=*/false);
@@ -3389,6 +3398,7 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
             node->update_seen[i] = false;
             node->update_last_modified[i] = 0;
             node->update_last_seen[i] = 0;
+            node->traffic_last_seen[i] = 0;
         }
     }
 
@@ -5041,6 +5051,44 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     bool self_sent = header->source == node->id;
     TT_LOG_DEBUG("source: %d%s", header->source, self_sent ? " (self)" : "");
 
+    // Liveliness evidence (2026-09-23, at the user's own direction): ANY validated packet from a
+    // node proves that node is alive, not only its periodic UPDATE announce. A peer that is
+    // sending DATA at full rate, or ACKNACKing every gap, is self-evidently running - declaring it
+    // dead because its announces happened to be the packets that got dropped is a false positive
+    // by construction, and injected loss attacks exactly the channel the old evidence relied on.
+    //
+    // Not hypothetical, and worse than latent: rmw_tickle's own perf comparison aborted both async
+    // runs with "Data consistency violated. Received sample with not strictly higher id. Received
+    // sample id 1 Prev. sample id : 7427", each abort immediately preceded by "Node N presumed
+    // dead (no UPDATE for 3 consecutive intervals)" - seven such events in one run. Forgetting a
+    // live peer makes its next announce read as fresh discovery, and the subscriber is handed the
+    // stream from the beginning again.
+    //
+    // Placed here rather than in each process_X(): this is one site that cannot drift, it runs
+    // after validate_packet_header() so a malformed or wrong-version packet extends nobody's
+    // lease, and it covers every submessage type including ones added later. Both consumers of
+    // this timestamp - check_liveliness()'s node-level sweep and tt_Node_entity_alive()'s
+    // per-entity lease - therefore see the same evidence, rather than one of them still believing
+    // only announces count.
+    //
+    // A retransmit or a duplicate counts, deliberately. It is not new information about the data,
+    // but it is proof the peer's stack is alive and transmitting, which is the only question being
+    // asked here - and under loss, retransmits may be most of what arrives.
+    //
+    // header->source indexes traffic_last_seen[tt_MAX_ENDPOINT_COUNT] unchecked, which is safe by
+    // construction rather than by luck: source is a uint8_t and that array has exactly 256 entries.
+    // Worth stating because a narrower array would make this an out-of-bounds write on a hostile
+    // packet, and validate_packet_header() does not range-check the field.
+    //
+    // This is evidence only - it never shortens or lengthens a timeout on its own. It acts as a
+    // veto: check_liveliness() and tt_Node_entity_alive() each still fire on their own announce-
+    // based schedule and consult this to refuse to declare dead a node that is plainly still
+    // transmitting. Keeping the schedule on the announce clock is what stops detection sliding
+    // later, which using traffic as the single clock did measure at about +290ms.
+    if (!self_sent) {
+        node->traffic_last_seen[header->source] = tt_get_ns();
+    }
+
     while (true) {
         enum submessage_walk_result result =
             process_one_submessage(node, header, buffer, &head, tail, sender_ip, sender_port, self_sent);
@@ -5273,7 +5321,23 @@ bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_Discovered
     if (!node->update_seen[entity->node_id]) {
         return false; // never heard from this node id at all
     }
-    return (now - node->update_last_seen[entity->node_id]) <= entity->liveliness_lease_duration_ns;
+    // Same two-clock rule as check_liveliness(), with the guard scaled to this entity's own lease
+    // rather than to the announce interval, because a lease can be far shorter than one.
+    //
+    //   fires at  max(last_announce + lease, last_traffic + guard)
+    //   shift vs. the announce-only behaviour = max(0, gap - guard)
+    //   where     gap = last_traffic - last_announce, bounded by one announce interval
+    //
+    // With guard = lease/2 that is zero shift for any gap under half the lease, and at worst
+    // (tt_NODE_UPDATE_INTERVAL - lease/2) otherwise. So lease/2 *bounds* the residual rather than
+    // always eliminating it - at a high data rate with a lease near the announce interval some
+    // shift remains, and claiming otherwise would be wrong. It is still the better constant: a
+    // guard equal to the lease makes the veto as slow as the detection and brings the whole shift
+    // back, and a fixed guard stops working once the lease drops below it.
+    uint64_t lease = entity->liveliness_lease_duration_ns;
+    bool announce_stale = (now - node->update_last_seen[entity->node_id]) > lease;
+    bool traffic_stale = (now - node->traffic_last_seen[entity->node_id]) > lease / 2;
+    return !(announce_stale && traffic_stale);
 }
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {

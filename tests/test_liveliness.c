@@ -86,6 +86,131 @@ static void receive_update(struct tt_Node* node, uint64_t at_time, uint64_t last
     EXPECT_TRUE(process_update(node, &header, node->rx_buffer, 0, tail, 0xc0a80a02, 8282));
 }
 
+// Phase 3 follow-up (2026-09-23) - evidence of life is ANY validated packet from a node, not only
+// its periodic UPDATE announce. These four build real packets and drive them through
+// process_packet(), because that is where the evidence is recorded: one site above the per-type
+// handlers, so it cannot drift and so a submessage type added later is covered for free.
+//
+// The bug this closes was not theoretical. rmw_tickle's perf comparison aborted both async runs
+// with "Data consistency violated... Received sample id 1 Prev. sample id : 7427", each abort
+// preceded by "Node N presumed dead" - a peer that was transmitting the whole time got forgotten
+// because its announces were the packets that happened to be dropped, and its next announce then
+// read as fresh discovery.
+static uint32_t liveliness_write_packet(uint8_t* buf, uint8_t source, uint8_t submessage_type, uint16_t body_len) {
+    struct tt_Header* header = (struct tt_Header*)buf;
+    memset(buf, 0, sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + body_len);
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = source;
+
+    struct tt_SubmessageHeader* submessage = (struct tt_SubmessageHeader*)(buf + sizeof(struct tt_Header));
+    submessage->type = submessage_type;
+    submessage->receiver = tt_SUBMESSAGE_ID_ALL;
+    // tt_SubmessageHeader.length counts the header itself (process_one_submessage() derives
+    // body_tail by subtracting it back off), so a body-sized value here would truncate the body.
+    submessage->length = (uint16_t)(sizeof(struct tt_SubmessageHeader) + body_len);
+    return (uint32_t)(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + body_len);
+}
+
+// DATA from a node is proof it is alive. A Publisher streaming at full rate whose announces are
+// the ones being dropped must not be declared dead.
+static void test_data_refreshes_node_liveliness(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+
+    receive_update(&node, 0, 100);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
+
+    // Far past the threshold, but DATA arrived just now.
+    uint64_t late = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) * 10;
+    test_mock_now = late;
+    uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
+    uint32_t len =
+        liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+
+    check_liveliness(&node, late, NULL);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]); // still alive - it is plainly transmitting
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+}
+
+// ACKNACK counts for the same reason, and matters for the opposite direction: a Subscriber that
+// is acknowledging every gap is demonstrably alive even if its own announces are being lost.
+static void test_acknack_refreshes_node_liveliness(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+
+    receive_update(&node, 0, 100);
+
+    uint64_t late = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) * 10;
+    test_mock_now = late;
+    uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_AckNackHeader)];
+    uint32_t len = liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_ACKNACK,
+                                           (uint16_t)sizeof(struct tt_AckNackHeader));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+
+    check_liveliness(&node, late, NULL);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+}
+
+// The half that must NOT change, and the reason the two clocks are kept apart: detection still
+// fires on the announce schedule, not on the traffic one. Using traffic as the single clock made
+// detection slide later by however stale the last announce was relative to the last packet -
+// measured at about +290ms on the HIL rig, enough to move a published figure. Here the node goes
+// quiet after one DATA packet and is declared dead three announce intervals after its last
+// ANNOUNCE, exactly as before any of this existed.
+static void test_traffic_does_not_move_the_detection_schedule(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+
+    receive_update(&node, 0, 100); // announce clock starts at 0
+
+    uint64_t last_packet_at = tt_NODE_UPDATE_INTERVAL; // one DATA a full interval later
+    test_mock_now = last_packet_at;
+    uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
+    uint32_t len =
+        liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+
+    // Just inside three intervals from the ANNOUNCE: alive, because the announce clock governs.
+    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) - 1, NULL);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
+
+    // Just past it: dead. The traffic veto has long since expired (its guard is one interval and
+    // the last packet was two intervals ago), so it cannot hold a genuinely silent node alive -
+    // and, being the smaller of the two windows, it can never delay this moment either.
+    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1, NULL);
+    EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+}
+
+// A node's own packets must not extend its own lease - self_sent is excluded, so a node talking to
+// itself (the co-located client/service topology rmw_tickle allows) can't keep a stale entry for
+// its own id alive.
+static void test_self_sent_packet_does_not_refresh(void) {
+    struct tt_Node node;
+    init_node(&node);
+
+    node.update_seen[LOCAL_NODE_ID] = true;
+    node.update_last_seen[LOCAL_NODE_ID] = 0;
+
+    uint64_t late = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) * 10;
+    test_mock_now = late;
+    uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
+    uint32_t len =
+        liveliness_write_packet(buf, LOCAL_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
+    EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
+
+    EXPECT_EQ_U32(0, (uint32_t)node.update_last_seen[LOCAL_NODE_ID]);
+}
+
 // A node heard from once, then never again: once tt_LIVELINESS_MISS_THRESHOLD full intervals
 // pass with no announce at all, it must be forgotten - peer-table entries dropped and update_
 // seen[] cleared so a later announce from the same id is treated as first contact again.
@@ -213,6 +338,75 @@ static void test_entity_alive_with_lease_computed_fresh_at_boundary(void) {
     EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1000));  // exactly at last_seen
     EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1500));  // exactly at the lease boundary
     EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1501)); // one ns past it
+}
+
+// The per-entity half of the two-clock rule, which is the path scenario 8 actually measures:
+// tombstone_entities_past_own_lease() decides by calling this, so this is where the HIL detection
+// figures come from - not check_liveliness()'s own node-level sweep.
+//
+// The veto: an entity whose node is plainly still transmitting is alive even though its announces
+// stopped arriving. This is the rmw_tickle case - it sets liveliness_lease_duration_ns per
+// subscription and reads this from rmw_graph.c - and the lease can be far shorter than the 3s
+// sweep, so without this the false positive would fire sooner here than at node level.
+static void test_entity_alive_traffic_vetoes_stale_announces(void) {
+    struct tt_Node node;
+    init_node(&node);
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 1000;  // announces stopped long ago
+    node.traffic_last_seen[REMOTE_NODE_ID] = 9000; // ...but DATA is still arriving
+
+    struct tt_DiscoveredEntity entity = {0};
+    entity.node_id = REMOTE_NODE_ID;
+    entity.liveliness_lease_duration_ns = 500;
+    entity.alive = true;
+
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9000)); // far past the announce lease
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9100)); // still inside the traffic guard (250)
+}
+
+// And the veto must not delay a real expiry. With both clocks stopping together - which is what a
+// killed process does - detection lands exactly on the announce boundary, unchanged from before
+// the traffic clock existed. This is the property that keeps COMPARISON.MD's scenario 8 figures
+// valid; using traffic as the single clock moved them about +290ms on real hardware.
+static void test_entity_alive_traffic_does_not_delay_expiry(void) {
+    struct tt_Node node;
+    init_node(&node);
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 1000;
+    node.traffic_last_seen[REMOTE_NODE_ID] = 1000; // both stopped at the same instant
+
+    struct tt_DiscoveredEntity entity = {0};
+    entity.node_id = REMOTE_NODE_ID;
+    entity.liveliness_lease_duration_ns = 500;
+    entity.alive = true;
+
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1500));  // at the lease boundary
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1501)); // one ns past it - not one ns later
+}
+
+// The residual, pinned deliberately rather than left to be discovered as a surprise: guard =
+// lease/2 BOUNDS the delay, it does not always eliminate it. When the last packet is more recent
+// than the last announce by more than half the lease, the traffic veto is still holding when the
+// announce lease expires, and expiry waits for it. The bound is (announce interval - lease/2).
+//
+// This is the honest claim for the constant. A guard equal to the lease would make the veto as
+// slow as the detection and bring the whole shift back; a fixed guard stops working once the lease
+// drops below it. If someone later "fixes" this test, they have changed that trade, not a bug.
+static void test_entity_alive_residual_delay_is_bounded_not_zero(void) {
+    struct tt_Node node;
+    init_node(&node);
+    node.update_seen[REMOTE_NODE_ID] = true;
+    node.update_last_seen[REMOTE_NODE_ID] = 1000;
+    node.traffic_last_seen[REMOTE_NODE_ID] = 1400; // a packet 400ns after the last announce
+
+    struct tt_DiscoveredEntity entity = {0};
+    entity.node_id = REMOTE_NODE_ID;
+    entity.liveliness_lease_duration_ns = 500; // guard = 250, and the gap (400) exceeds it
+    entity.alive = true;
+
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1501));  // announce lease expired...
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1650));  // ...but the veto still holds
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1651)); // expires at traffic + guard
 }
 
 // The real point of this milestone: a short-lease entity whose lease has genuinely expired must
@@ -407,6 +601,10 @@ int main(void) {
     test_lease_expiry_drops_subscriber_from_publisher_ack_set();
     test_lease_expiry_leaves_unrelated_publisher_alone();
     test_mock_reset();
+    test_data_refreshes_node_liveliness();
+    test_acknack_refreshes_node_liveliness();
+    test_traffic_does_not_move_the_detection_schedule();
+    test_self_sent_packet_does_not_refresh();
     test_expires_peer_after_missed_intervals();
     test_mock_reset();
     test_does_not_expire_before_threshold();
@@ -420,6 +618,9 @@ int main(void) {
     test_entity_alive_with_zero_lease_defers_to_alive_flag();
     test_mock_reset();
     test_entity_alive_with_lease_computed_fresh_at_boundary();
+    test_entity_alive_traffic_vetoes_stale_announces();
+    test_entity_alive_traffic_does_not_delay_expiry();
+    test_entity_alive_residual_delay_is_bounded_not_zero();
     test_mock_reset();
     test_entity_alive_with_lease_ignores_stale_true_alive_flag();
     test_mock_reset();
