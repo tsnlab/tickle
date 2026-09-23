@@ -2555,7 +2555,13 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sub = sub; // before anything that reads the window width through the proxy
             // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
             // said (a later announce refreshes it via update_writer_proxies_keep_all()). Unknown
-            // writer, or no discovery table attached, reads as KEEP_LAST - the bounded, safe side.
+            // writer, or no discovery table attached, reads as UNKNOWN, which never gives up -
+            // see tt_WriterProxy.keep_all's own doc comment.
+            //
+            // Note what ack_seq_no was just set from, a few lines up: this proxy is being created
+            // by the first DATA (or Heartbeat) that actually arrived, and its baseline is that
+            // sample. Anything the writer published earlier is invisible from here - see struct
+            // tt_WriterProxy's own doc comment (tickle.h) for the limitation that implies.
             proxy->keep_all = writer_announced_keep_all(sub->node, node_id, ((struct tt_Endpoint*)sub)->id);
             // Phase 2 - this slot's own window inside the Subscriber's tracking storage: the
             // caller-provided buffer when it gave one, otherwise the builtin default.

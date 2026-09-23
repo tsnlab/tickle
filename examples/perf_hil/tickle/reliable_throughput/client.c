@@ -290,6 +290,33 @@ static void stop_draining(struct tt_Node* node, uint64_t time, void* param) {
     g_interrupted = 1;
 }
 
+// Phase 3 step 4 - waits for a Subscriber to actually match before publishing, rather than the
+// fixed sleep this used to do. Returns false (having explained itself on stderr) if none appears
+// within match_wait_cap_s, which is the same failure cyclonedds/reliable_throughput/client.c takes
+// via wait_for_writer_match(): better no numbers at all than numbers from a run that was publishing
+// into the void.
+//
+// Polls through tt_Node_poll() rather than sleeping, since matching happens by processing the
+// Subscriber's own announce, which only arrives while the node is being polled. Note this narrows
+// the pre-match window but cannot close it: a peer_acks entry proves only that *we* heard the
+// Subscriber, not that it is tracking us - see the server's own first_seq_seen comment for what
+// that costs and how it is now reported.
+//
+// Split out of main() to keep its cognitive complexity under the project's clang-tidy threshold.
+static bool wait_for_matched_subscriber(struct tt_Node* node, struct tt_Publisher* pub) {
+    uint64_t match_deadline = tt_get_ns() + (uint64_t)(match_wait_cap_s * (double)tt_SECOND);
+    tt_ret_t ret = tt_RET_OK;
+    while (count_peer_acks(pub) == 0 && tt_get_ns() < match_deadline && !g_interrupted &&
+           (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+        ret = tt_Node_poll(node, (int64_t)(match_poll_s * (double)tt_SECOND));
+    }
+    if (count_peer_acks(pub) == 0) {
+        fprintf(stderr, "timed out waiting for a matched subscriber after %.1fs\n", match_wait_cap_s);
+        return false;
+    }
+    return true;
+}
+
 // Split out of main() to keep its own cognitive complexity under the project's clang-tidy
 // threshold - this branch chain was the tipping point once -A joined -i/-d/-K/-T.
 static void parse_args(int argc, char** argv) {
@@ -396,19 +423,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Wait for a real match rather than guessing at one - see match_wait_cap_s' own comment. Polls
-    // through tt_Node_poll() rather than sleeping, since matching happens by processing the
-    // Subscriber's own announce, which only arrives while the node is being polled.
-    uint64_t match_deadline = tt_get_ns() + (uint64_t)(match_wait_cap_s * (double)tt_SECOND);
-    ret = tt_RET_OK;
-    while (count_peer_acks(&pub) == 0 && tt_get_ns() < match_deadline && !g_interrupted &&
-           (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
-        ret = tt_Node_poll(&node, (int64_t)(match_poll_s * (double)tt_SECOND));
-    }
-    if (count_peer_acks(&pub) == 0) {
-        // Same failure the DDS harnesses take here: better no numbers at all than numbers from a
-        // run that was publishing into the void.
-        fprintf(stderr, "timed out waiting for a matched subscriber after %.1fs\n", match_wait_cap_s);
+    if (!wait_for_matched_subscriber(&node, &pub)) {
         tt_Node_destroy(&node);
         return 1;
     }

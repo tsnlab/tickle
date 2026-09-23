@@ -942,6 +942,30 @@ struct tt_Subscriber;
 // is sized for; find_or_create_writer_proxy() (tickle.c) silently drops a writer past that count,
 // the same "silently drop past a fixed table's capacity" convention forget_peer()/upsert_peer()
 // already use elsewhere in this file.
+// LIMITATION - where a Subscriber's sequence numbering begins, and what is unreachable before it.
+//
+// A WriterProxy is created by the first DATA (or Heartbeat) this Subscriber actually receives from
+// that writer, and its ack_seq_no baseline is that sample. A sequence number it never saw is not
+// merely lost to it: it is unknown to it. Nothing requests such a sample, no gap is ever recorded
+// for it, and every recovery counter on both sides reads zero, because from the Subscriber's point
+// of view the stream simply began where it began.
+//
+// This can bite even when the Publisher already considers the peer matched - matching is not
+// symmetric here. A Publisher claims its ack state on hearing the Subscriber's announce and may
+// start publishing immediately, while the Subscriber only begins tracking when a packet from that
+// writer survives the network. DDS differs: a sample written after a reader matches is owed to that
+// reader. Here it is owed only from the first one that arrives.
+//
+// Under KEEP_ALL this is the one window where the zero-loss guarantee does not hold, and it is the
+// only loss that remained once everything else was fixed. Measured on the HIL rig (rmw_tickle/
+// PLAN.md Phase 3 step 4, 10-second runs at ~900K samples): 0 samples on a healthy link and at 20%
+// injected loss, 0-5 per run at 50%, in every case exactly the samples published before the
+// Subscriber's first arrival and never any later one. TRANSIENT_LOCAL is the policy that closes it
+// - a durable writer replays its retained range to a late joiner (deliver_durability_backlog()) -
+// so a VOLATILE writer behaves here as DDS's own VOLATILE does about history, just with a wider
+// window for it to apply in. Documented rather than changed, at the user's own direction
+// (2026-09-23): closing it means establishing the baseline at match time via discovery rather than
+// from the first packet, which reopens Milestone 60's VOLATILE semantics for a handful of samples.
 struct tt_WriterProxy {
     uint8_t node_id;
     uint32_t entity_id;

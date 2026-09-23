@@ -87,6 +87,46 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     }
 }
 
+// Phase 3 step 4 (rmw_tickle/PLAN.md) - which sequence numbers are missing, not just how many.
+// With KEEP_ALL the residual is small enough that the count alone says nothing: one number in the
+// final handful is a teardown boundary, the same number at the very start is the pre-match window,
+// and the same number mid-stream would be a delivery failure. They need different explanations, and
+// this is what told them apart - the answer turned out to be always 1..3. Prints the first and last
+// few so both ends are visible without dumping thousands of lines at KEEP_LAST loss rates.
+//
+// Split out of main() to keep its own cognitive complexity under the project's clang-tidy
+// threshold, same reason parse_args() exists in the client.
+static void print_missing_seqs(uint64_t lost) {
+    if (lost == 0) {
+        return;
+    }
+    uint32_t first[8];
+    uint32_t last[8];
+    unsigned first_n = 0;
+    unsigned last_n = 0;
+    for (uint32_t missing_seq = 1; missing_seq <= max_seq_seen; missing_seq++) {
+        uint32_t idx = missing_seq - 1;
+        if ((received_bitmap[idx / 8] & (1U << (idx % 8))) != 0) {
+            continue;
+        }
+        if (first_n < 8) {
+            first[first_n++] = missing_seq;
+        }
+        last[last_n % 8] = missing_seq;
+        last_n++;
+    }
+    printf("MISSING: count=%lu max_seq_seen=%u first=", (unsigned long)lost, max_seq_seen);
+    for (unsigned i = 0; i < first_n; i++) {
+        printf("%u,", first[i]);
+    }
+    printf(" last=");
+    unsigned last_shown = last_n < 8 ? last_n : 8;
+    for (unsigned i = 0; i < last_shown; i++) {
+        printf("%u,", last[last_n < 8 ? i : (last_n + i) % 8]);
+    }
+    printf("\n");
+}
+
 static const double default_safety_cap_s = 40.0;
 // Phase 2 - -w <samples>: the RELIABLE tracking window this Subscriber asks for; 0 = core default.
 static uint32_t window_samples = 0;
@@ -177,37 +217,7 @@ int main(int argc, char** argv) {
     uint64_t post_match_lost = observable > received ? observable - received : 0;
     double post_match_loss_pct = observable > 0 ? (100.0 * (double)post_match_lost / (double)observable) : 0.0;
 
-    // Phase 3 step 4 (rmw_tickle/PLAN.md) - which sequence numbers are missing, not just how many.
-    // With KEEP_ALL the residual is small enough that the count alone says nothing: one number in
-    // the final handful is a teardown boundary, the same number in the middle of the stream is a
-    // delivery failure, and they need completely different explanations. Prints the first and last
-    // few so both ends are visible without dumping thousands of lines at KEEP_LAST loss rates.
-    if (lost > 0) {
-        uint32_t first[8];
-        uint32_t last[8];
-        unsigned first_n = 0;
-        unsigned last_n = 0;
-        for (uint32_t missing_seq = 1; missing_seq <= max_seq_seen; missing_seq++) {
-            uint32_t idx = missing_seq - 1;
-            if ((received_bitmap[idx / 8] & (1U << (idx % 8))) != 0) {
-                continue;
-            }
-            if (first_n < 8) {
-                first[first_n++] = missing_seq;
-            }
-            last[last_n % 8] = missing_seq;
-            last_n++;
-        }
-        printf("MISSING: count=%lu max_seq_seen=%u first=", (unsigned long)lost, max_seq_seen);
-        for (unsigned i = 0; i < first_n; i++) {
-            printf("%u,", first[i]);
-        }
-        printf(" last=");
-        for (unsigned i = 0; i < (last_n < 8 ? last_n : 8); i++) {
-            printf("%u,", last[(last_n < 8 ? i : (last_n + i) % 8)]);
-        }
-        printf("\n");
-    }
+    print_missing_seqs(lost);
 
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u\n",
