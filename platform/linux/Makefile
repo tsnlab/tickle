@@ -225,14 +225,75 @@ sanitize:
 #     platform/freertos/ itself.
 #   - hal_freertos.*: same reason again - cross-compiled code that happens to live in include/src
 #     rather than platform/ (mirroring hal_linux.* placement).
+# rmw_tickle/{build,install,log} are colcon's own output (CMake's CompilerIdC.c scaffolding and
+# friends) - generated, gitignored, and not ours to format. Without these three the target fails on
+# files nobody wrote the moment anyone has built rmw_tickle locally, which is how it ends up being
+# routed around rather than fixed.
 LINT_EXCLUDES = -not -path '$(REPO_ROOT)/third_party/*' -not -path '$(REPO_ROOT)/platform/*' \
-                -not -path '$(REPO_ROOT)/examples/freertos/*' -not -name 'hal_freertos.*'
+                -not -path '$(REPO_ROOT)/examples/freertos/*' -not -name 'hal_freertos.*' \
+                -not -path '$(REPO_ROOT)/rmw_tickle/build/*' -not -path '$(REPO_ROOT)/rmw_tickle/install/*' \
+                -not -path '$(REPO_ROOT)/rmw_tickle/log/*'
 # --extra-arg=-Ixxx per CPPFLAGS entry (not just -I$(INCLUDE)/-I$(SRC) - a driver #include"s its
 # protocol's generated codec header by bare name, resolved via CPPFLAGS' own -I list for each
 # examples/<proto>/ directory, same as the real compile rule above).
+# clang-tidy additionally skips the DDS comparison harnesses. They are ours in the sense that we
+# wrote them, but they are vendor-API code written to match each vendor's own official examples
+# (examples/perf_hil/cyclonedds/common.h's header comment is explicit that following the upstream
+# example exactly is the point), and they don't build here at all without that vendor's headers -
+# clang-tidy reports 'dds/dds.h' file not found before it gets to anything real. CI doesn't tidy
+# them either: cpp-linter only checks files a push changed, and these change rarely. clang-format
+# still covers them, because that half IS gated the moment one of them is touched.
+#
+# rmw_tickle/'s ROS 2 packages are skipped for a different reason: they don't compile without a
+# sourced ROS 2 environment, so clang-tidy stops at 'rosidl_runtime_c/... file not found'. CI lints
+# them from their own compile database - check-all.yml builds one with colcon in a separate step
+# precisely because this Makefile's flags can't describe them. Same thing locally:
+#
+#     source /opt/ros/<distro>/setup.bash
+#     cd rmw_tickle && colcon build --packages-select rmw_tickle --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+#     clang-tidy -p build/rmw_tickle rmw_tickle/src/*.c
+#
+# clang-format still covers everything here - that half needs no include paths, and it is the half
+# CI gates on any changed file.
+LINT_TIDY_EXCLUDES = -not -path '$(REPO_ROOT)/examples/perf_hil/cyclonedds/*' \
+                     -not -path '$(REPO_ROOT)/examples/perf_hil/fastdds/*' \
+                     -not -path '$(REPO_ROOT)/rmw_tickle/*'
+
+# tools/typesupport/tests/fixtures_ros2_adapter/'s hand-written rosidl_runtime_c stand-ins
+# cross-include each other by ROS 2's own relative-path convention ("rosidl_runtime_c/string.h"),
+# so they only resolve with their own directory on the include path. check-all.yml synthesises
+# exactly this as a compile_commands.json entry for the same reason; without it clang-tidy stops at
+# 'file not found' before reaching anything worth reporting.
+LINT_TIDY_ARGS = --extra-arg=-I$(REPO_ROOT)/tools/typesupport/tests/fixtures_ros2_adapter
+
+# Which binaries this actually used, printed rather than assumed. The whole class of bug this
+# target exists to catch is "I ran the check and it passed" - so a run that silently used a
+# different clang-tidy than CI's, or found no clang-tidy at all and checked nothing, has to be
+# visible in the output. CI pins version 19 (tsnlab/check -> cpp-linter-action); a developer box on
+# a current distro has 21 or newer and the two disagree in both directions. To reproduce the gate
+# exactly:
+#
+#     python3 -m venv /tmp/lintenv && /tmp/lintenv/bin/pip install clang-format==19.1.0 clang-tidy==19.1.0
+#     make lint CLANG_FORMAT=/tmp/lintenv/bin/clang-format CLANG_TIDY=/tmp/lintenv/bin/clang-tidy
+#
+# --warnings-as-errors below, because CI's cpp-linter fails on any finding at all: without it a
+# green `make lint` that printed warnings would still be a red CI, which is the exact gap this
+# target exists to close. The tree is clean as of 2026-09-23, so anything new here is new.
+CLANG_FORMAT ?= clang-format
+CLANG_TIDY ?= clang-tidy
+
 lint:
-	find $(REPO_ROOT) $(LINT_EXCLUDES) -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
-	find $(REPO_ROOT) $(LINT_EXCLUDES) -name '*.[ch]' -exec clang-tidy $(patsubst -I%,--extra-arg=-I%,$(CPPFLAGS)) {} +
+	@cf=$$(command -v $(CLANG_FORMAT) || true); ct=$$(command -v $(CLANG_TIDY) || true); \
+	 if [ -z "$$cf" ] || [ -z "$$ct" ]; then \
+	     echo "lint: cannot resolve $(CLANG_FORMAT) and/or $(CLANG_TIDY) - refusing to report a pass" >&2; \
+	     exit 1; \
+	 fi; \
+	 echo "lint: $$cf ($$($(CLANG_FORMAT) --version))"; \
+	 echo "lint: $$ct ($$($(CLANG_TIDY) --version | grep -i 'LLVM version' | tr -s ' '))"
+	find $(REPO_ROOT) $(LINT_EXCLUDES) -name '*.[ch]' -exec $(CLANG_FORMAT) --dry-run --Werror {} +
+	find $(REPO_ROOT) $(LINT_EXCLUDES) $(LINT_TIDY_EXCLUDES) -name '*.[ch]' \
+	    -exec $(CLANG_TIDY) --warnings-as-errors='*' $(patsubst -I%,--extra-arg=-I%,$(CPPFLAGS)) \
+	        $(LINT_TIDY_ARGS) {} +
 
 include netns.mk
 

@@ -79,6 +79,24 @@ so a hand-edited generated file or a `.msg`/`.srv` edited without regenerating b
   [.clang-tidy](.clang-tidy)) are both enforced by `make lint` / CI
   ([check-all.yml](.github/workflows/check-all.yml)). Run `clang-format -i` on files you touch
   rather than hand-formatting.
+- **`make lint` is the pre-push check, and it must be green.** It exits non-zero on a warning, not
+  only on an error, because CI fails on any finding at all. It also prints which `clang-format` and
+  `clang-tidy` it used, with versions - read that line. CI pins **19**; a current distro ships 21 or
+  newer and the two disagree in both directions, so a pass under 21 does not predict CI. To
+  reproduce the gate exactly:
+
+  ```console
+  $ python3 -m venv /tmp/lintenv
+  $ /tmp/lintenv/bin/pip install clang-format==19.1.0 clang-tidy==19.1.0
+  $ make lint CLANG_FORMAT=/tmp/lintenv/bin/clang-format CLANG_TIDY=/tmp/lintenv/bin/clang-tidy
+  ```
+
+  Two things `make lint` deliberately does not cover, both because they need include paths this
+  Makefile cannot describe - see `LINT_TIDY_EXCLUDES` in `platform/linux/Makefile` for how to lint
+  each locally: `rmw_tickle/`'s ROS 2 packages (CI builds them a separate compile database with
+  colcon) and the CycloneDDS/FastDDS comparison harnesses under `examples/perf_hil/` (vendor-API
+  code that needs each vendor's headers). `clang-format` still covers both, which is the half CI
+  gates on any changed file.
 - Naming: `tt_`-prefixed `CamelCase` for public struct/type names (`tt_Node`, `tt_Client`),
   `lower_case` for functions/variables/struct field names, `UPPER_CASE` for macros and enum
   constants - see `.clang-tidy`'s `readability-identifier-naming.*` options for the exact rules.
