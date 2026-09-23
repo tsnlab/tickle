@@ -201,13 +201,20 @@ drain-until-acked), so no framework's tail loss depends on drain luck.
 **Net loss** = lost - refused writes, i.e. samples the middleware accepted and then failed to
 deliver. All three are **0 in every cell**, so the only thing that differs is what it costs:
 
-| `tc` loss | TickLE (KEEP_ALL) | FastDDS | CycloneDDS |
+| `tc` loss | TickLE (KEEP_ALL) ‡ | FastDDS | CycloneDDS |
 |---|---:|---:|---:|
 | 0% | **109.8 Mbps** | 11.5 | 47.3 |
 | 1% | **108.2** | 10.0 | 12.0 |
 | 5% | **104.8** | 6.8 | 2.4 |
-| 20% | **89.3** | 2.3 | 0.36 |
-| 50% | **56.5** | 0.35 | 0.11 |
+| 20% | **89.3** | 2.3 † | 0.36 |
+| 50% | **56.5** | 0.35 † | 0.11 |
+
+**†** FastDDS did not finish draining here (`drained=timeout` in 1/3 reps at 20%, 3/3 at 50%): its
+net loss is 0 because refused writes are *counted*, not because everything was delivered - samples
+were still unacknowledged when the 3s teardown wait expired. That is a different end state from
+CycloneDDS's and TickLE's `acked`, so these two cells are not the same claim as the others in their
+column. **‡** TickLE's 0 is post-match loss; 0-5 samples per run at 50% (0 at 0-20%) were never
+observable to the Subscriber at all - see caveat 1 below.
 
 At the loss rates a real link sees, TickLE sustains **10-45x** either vendor's throughput under the
 same zero-loss guarantee; at 50% injected loss it is **160x** FastDDS and **510x** CycloneDDS. The
@@ -230,6 +237,13 @@ back-pressure never binds.
    pre-match window *exactly*, rep by rep. DDS has no equivalent window because its matching is
    symmetric and its writer waits for it; closing TickLE's would mean establishing the baseline at
    match time, a core change the user deliberately deferred (PLAN.md).
+   *(This is what the `‡` on the TickLE column marks: post-match loss is 0; the pre-match window is
+   reported separately rather than folded into it.)*
+   Note for anyone re-running this: FastDDS has **no local compile path on the dev box** (no
+   fastcdr headers), unlike CycloneDDS - its harness first compiles on the Pis, which is how a
+   `ReturnCode_t` API difference in FastDDS 2.x got past a clean local check once. A clean local
+   build says nothing about the FastDDS side.
+
 2. **FastDDS at 20-50% did not always drain**: `drained=timeout` in 1/3 reps at 20% and 3/3 at 50%,
    i.e. its 3s teardown wait expired with samples still unacknowledged. Its net loss is still 0 (a
    refused write is counted, not silently dropped), but its numbers at those levels describe a
