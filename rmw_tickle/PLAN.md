@@ -1315,6 +1315,19 @@ The wider window is nearly free (+0.25 points at 5% loss, 0 at 1%), and the vari
 more than pays for itself: the average ACKNACK is 28-37 B against the old fixed 44 B, so tc 5%
 W=1024 measured 2.63 MB where a fixed 256-bit bitmap would have sent ~3.14 MB.
 
+#### Correctness note: a public API shipped declared-but-undefined (found 2026-09-23, Dev; verified by Plan)
+
+Phase 2 (`1b15e15`) declared `tt_Publisher_unacked_bound()` in `tickle.h` (line 841) and described
+it in the CHANGELOG, but never defined it - verified directly on `origin/main`: `src/tickle.c`
+mentions the name only in a comment (line 3254). Cause: one of Dev's scripted edits aborted
+mid-way, so the header half landed and the `.c` half didn't. **CI could not catch it**: nothing in
+the repo called the function, so there was no link error, and a header declaration alone compiles
+fine. Any external caller of that API would have failed to link.
+
+Fixed in Phase 3 step 2, which defines it and calls it from the KEEP_ALL bound. Follow-up agreed:
+a test that takes the address of every public `tt_*` function into a table and links it, so a
+missing definition becomes a CI link error - its own small commit after step 2 lands.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
