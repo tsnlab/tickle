@@ -38,6 +38,7 @@
 #include <tickle/tickle.h>
 
 #include "../common/Bench.h"
+#include "../common/CpuFreq.h"
 #include "../common/reliable_stats_print.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
@@ -77,6 +78,8 @@ static double drain_s = default_drain_s;
 static uint32_t reliable_depth = tt_MAX_RELIABLE_HISTORY; // -K overrides; 0 stays the historical default
 static bool depth_explicit = false; // ...and whether -K actually said so - see -Q's own default below
 static uint64_t sent = 0;
+static struct BenchCpuFreq g_cpu_freq;
+static const uint64_t cpu_freq_period_ns = 100ULL * 1000 * 1000;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
 static uint64_t g_deadline_ns;
@@ -203,6 +206,7 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     // application actually experienced rather than the one the last attempt did - the same thing
     // dds_write() reports when it blocks internally.
     sample_peer_acks();
+    BenchCpuFreq_sample(&g_cpu_freq, time, cpu_freq_period_ns);
     if (!have_pending) {
         pending_msg.seq = ++seq;
         pending_msg.send_ns = tt_get_ns();
@@ -437,6 +441,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    BenchCpuFreq_init(&g_cpu_freq);
     uint64_t send_start = tt_get_ns();
     g_deadline_ns = send_start + (uint64_t)(duration_s * (double)tt_SECOND);
     tt_Node_schedule(&node, send_start, send_one, NULL);
@@ -462,11 +467,12 @@ int main(int argc, char** argv) {
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s peer_acks_end=%u "
-           "peer_acks_min=%u\n",
+           "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u\n",
            (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
            durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
            g_drain_fully_acked ? "acked" : "timeout", count_peer_acks(&pub),
-           g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min);
+           g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min, BenchCpuFreq_mean_mhz(&g_cpu_freq),
+           BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples);
     print_reliable_stats("client");
 
     tt_Node_destroy(&node);
