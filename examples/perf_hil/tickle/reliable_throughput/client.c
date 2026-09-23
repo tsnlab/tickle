@@ -61,6 +61,7 @@ static double interval_s = 0.0; // 0 = as fast as possible, matching best_effort
 static double duration_s = default_duration_s;
 static double drain_s = default_drain_s;
 static uint32_t reliable_depth = tt_MAX_RELIABLE_HISTORY; // -K overrides; 0 stays the historical default
+static bool depth_explicit = false; // ...and whether -K actually said so - see -Q's own default below
 static uint64_t sent = 0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
@@ -93,6 +94,44 @@ static uint32_t ack_solicit_us = 0;
 // pct, i.e. solicit an ACK once this percent of the retained cache is unacknowledged. 0 (the
 // default, matching core's own) leaves it off, so a plain run measures exactly what Phase 1 did.
 static uint32_t ack_watermark_pct = 0;
+
+// Phase 3 step 4 (rmw_tickle/PLAN.md) - -Q turns on HISTORY.KEEP_ALL, i.e. core refuses a write
+// (tt_RET_WOULD_BLOCK) rather than evicting a sample no matched Subscriber has acknowledged.
+// Default off, so every number measured before this flag existed is still reproducible by running
+// the same command line.
+static bool keep_all = false;
+
+// -B <ms>: how long to keep retrying a refused write before counting it as failed, emulating DDS's
+// own RELIABILITY max_blocking_time. Default 100ms to match FastDDS's own default, which is what
+// examples/perf_hil/fastdds/reliable_throughput/client.cpp measures against - the whole point of
+// the flag is that the three harnesses' write_fail columns mean the same thing.
+static double max_blocking_ms = 100.0;
+
+// Writes core refused for longer than -B. The sequence number is still consumed, exactly as in the
+// DDS harnesses ("seq is still consumed, so the server counts each one as lost too; write_fail lets
+// the two be told apart" - cyclonedds/reliable_throughput/client.c), so the comparable figure is
+// net loss = lost - write_fail: samples the transport lost, as opposed to ones the application was
+// told up front were never sent.
+static uint64_t write_fail = 0;
+
+// The sample currently being retried, if any. Held across send_one() invocations so a refused write
+// retries the *same* sequence number rather than skipping ahead - a skip would be indistinguishable
+// from transport loss at the Subscriber, which is exactly the distinction this scenario measures.
+static struct BenchData pending_msg;
+static bool have_pending = false;
+static uint64_t pending_since_ns = 0;
+
+// How long to wait before retrying a refused write. Matches throttle_retry_s below - the governing
+// constraint is the same one: this client is single-threaded and driven entirely by the scheduler
+// inside tt_Node_poll(), so a retry must go back through tt_Node_schedule() rather than loop in
+// place. Spinning here would starve the poll that receives the very ACKNACKs the retry is waiting
+// for, and the write would then never be accepted no matter how large -B is.
+static const double keep_all_retry_s = 0.00005; // 50us
+
+// Depth -Q uses when -K doesn't say otherwise: twice the 1024-sample window the Phase 3 HIL matrix
+// announces, so the Subscriber's window is what bounds blocking rather than this cache. Costs
+// nothing extra - the backing arrays below are statically sized for MAX_RELIABLE_DEPTH regardless.
+static const uint32_t keep_all_default_depth = 2048;
 static const uint32_t default_ack_solicit_us = 200; // well under the time to send throttle_lag
                                                     // messages at max rate for every -T value
                                                     // this scenario tests (64-200)
@@ -110,6 +149,10 @@ static uint32_t reliable_lag(const struct tt_Publisher* pub) {
     return pub->seq_no - (min_ack - 1);
 }
 
+static uint64_t max_blocking_ns_value(void) {
+    return (uint64_t)(max_blocking_ms * (double)tt_MILLISECOND);
+}
+
 static void send_one(struct tt_Node* node, uint64_t time, void* param) {
     (void)param;
     if (g_interrupted || tt_get_ns() >= g_deadline_ns) {
@@ -124,11 +167,38 @@ static void send_one(struct tt_Node* node, uint64_t time, void* param) {
         tt_Node_schedule(node, time + (uint64_t)(throttle_retry_s * (double)tt_SECOND), send_one, NULL);
         return;
     }
-    struct BenchData msg = {.seq = ++seq, .send_ns = tt_get_ns()};
-    tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&msg);
+    // A refused write (-Q only) leaves the sample pending and comes back to this same one; a fresh
+    // sequence number is taken only once the previous sample has been either accepted or given up
+    // on. send_ns is stamped once, at creation, so a retried sample reports the latency the
+    // application actually experienced rather than the one the last attempt did - the same thing
+    // dds_write() reports when it blocks internally.
+    if (!have_pending) {
+        pending_msg.seq = ++seq;
+        pending_msg.send_ns = tt_get_ns();
+        have_pending = true;
+        pending_since_ns = pending_msg.send_ns;
+    }
+
+    tt_ret_t ret = tt_Publisher_publish(g_pub, (struct tt_Data*)&pending_msg);
     if (ret == tt_RET_OK) {
         sent++;
+        have_pending = false;
+    } else if (ret == tt_RET_WOULD_BLOCK && tt_get_ns() - pending_since_ns < max_blocking_ns_value()) {
+        // Still inside the budget: come back to this same sample through the scheduler, which is
+        // what lets tt_Node_poll() run (and ACKNACKs arrive) between attempts. See
+        // keep_all_retry_s' own comment for why this can't be a loop.
+        tt_Node_schedule(node, time + (uint64_t)(keep_all_retry_s * (double)tt_SECOND), send_one, NULL);
+        return;
+    } else if (ret == tt_RET_WOULD_BLOCK) {
+        // Budget expired. Drop the sample and move on, counting it - the Subscriber will see this
+        // sequence number missing and count it lost, and write_fail is what lets the two be
+        // separated afterwards.
+        write_fail++;
+        have_pending = false;
+    } else {
+        have_pending = false; // a real failure, not back-pressure - nothing to retry
     }
+
     uint64_t next = interval_s > 0.0 ? time + (uint64_t)(interval_s * (double)tt_SECOND) : time;
     tt_Node_schedule(node, next, send_one, NULL);
 }
@@ -150,12 +220,17 @@ static void parse_args(int argc, char** argv) {
             duration_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
             reliable_depth = (uint32_t)strtoul(argv[++i], NULL, 10);
+            depth_explicit = true;
         } else if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
             throttle_lag = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-A") == 0 && i + 1 < argc) {
             ack_solicit_us = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
             ack_watermark_pct = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-Q") == 0) {
+            keep_all = true;
+        } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
+            max_blocking_ms = atof(argv[++i]);
         }
     }
     if (throttle_lag > 0 && ack_solicit_us == 0) {
@@ -165,6 +240,13 @@ static void parse_args(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     parse_args(argc, argv);
+    // -Q without an explicit -K: the historical default of 64 is far below any window this scenario
+    // announces (-w 1024 in the Phase 3 matrix), and KEEP_ALL blocks at min(depth, window), so
+    // leaving it at 64 would measure a 64-deep cache rather than KEEP_ALL. -K still wins if given,
+    // including deliberately pairing a shallow depth with a wide window.
+    if (keep_all && !depth_explicit) {
+        reliable_depth = keep_all_default_depth;
+    }
     if (reliable_depth == 0 || reliable_depth > MAX_RELIABLE_DEPTH) {
         printf("Requested reliable cache depth %u out of range (1..%u); clamping to %u.\n", reliable_depth,
                MAX_RELIABLE_DEPTH, (unsigned)tt_MAX_RELIABLE_HISTORY);
@@ -213,6 +295,11 @@ int main(int argc, char** argv) {
         tt_RELIABLE_CACHE_ARENA_BYTES(reliable_depth, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)));
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
+    // Phase 3 step 4 - KEEP_ALL's back-pressure. Blocking is bounded by min(cache depth, the
+    // narrowest window any matched Subscriber announced), so a depth below that window would make
+    // this side the binding limit and quietly measure something narrower than the run asked for -
+    // hence keep_all_default_depth above.
+    pub.keep_all = keep_all;
     // Phase 3 prerequisite (d) - off unless -W asked for it, so the default run is byte-for-byte
     // the Phase 1 experiment.
     if (ack_watermark_pct > 0) {
@@ -248,9 +335,13 @@ int main(int argc, char** argv) {
     double mbps = duration_s > 0.0
                       ? ((double)sent * sizeof(struct BenchData) * bits_per_byte) / bits_per_megabit / duration_s
                       : 0.0;
-    printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f reliable_depth=%u throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u\n",
-           (unsigned long)sent, duration_s, mbps, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct);
+    // write_fail= and max_blocking_ms= are spelled exactly as the cyclonedds/fastdds harnesses
+    // spell them, so one parser reads all three frameworks' RESULT lines (Phase 3 step 4).
+    printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d reliable_depth=%u "
+           "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u\n",
+           (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
+           reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct);
     print_reliable_stats("client");
 
     tt_Node_destroy(&node);
