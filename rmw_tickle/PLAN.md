@@ -1591,6 +1591,40 @@ This reframes item 2. The stated goal was closing a ~1.4x latency gap; the run s
 can abort a ROS 2 application under same-host load, which is a correctness problem and takes
 precedence over the latency work.
 
+#### Bimodal measurements: the n=20 liveliness residuals, as data (2026-09-23, Dev measured, recorded by Plan)
+
+Kept as raw data, not only as a conclusion, because every band this project has published for
+scenario 8 was taken at an unrecorded n on a distribution nobody knew was bimodal.
+`detect_latency_ms - lease`, sorted, n=20 per lease, `|` marking the gap between the two modes:
+
+```
+lease 1.0:  87 124 138 | 574 583 587 589 589 591 596 615 619 620 622 622 623 624 625 625 627
+lease 2.0:  103 163 163 170 | 565 577 587 589 594 618 619 620 622 625 626 626 626 628 630 633
+lease 4.0:  -848 -835 -834 -833 | -422 -415 -414 -414 -414 -414 -413 -412 -409 -405 -383 -381 -375 -373 -371 -367
+```
+
+The dominant mode holds to ~15ms - far tighter than any published band - and lease 4.0's mode sits
+~1010ms below leases 1.0/2.0, exactly one `check_liveliness()` tick, i.e. a phase relationship
+between the 1s announce period and the 1s check tick rather than anything lease-dependent. At n=3
+there is ~45% chance of catching a minority-mode sample, and one moves the mean ~160ms.
+
+**`reliable_throughput` is bimodal too**: 94.4 / 111.0 / 112.7 / 94.9 / 111.5 Mbps at tc 0%, two
+clusters with nothing between, `post_match_lost` 0 in all five. `COMPARISON.MD` §3b's TickLE rate
+column is marked ◊ until re-measured. **Queued immediately after the liveliness question and ahead
+of the rmw latency work** - it affects the headline table this whole exercise produces.
+
+**Also queued, from the user's own question**: a DDS killed by an interrupt might announce its
+departure, making liveliness detection look artificially fast. Checked from source: the published
+DDS numbers land within ~1ms of their lease (full timeout, not an announced departure), and
+`run_perf.sh` kills the TickLE client with `pkill -9`, which cannot run its SIGINT handler, so
+`broadcast_goodbye()` never fires in any published scenario-8 number. The mirror risk is ours and
+real: the handler *is* installed, so running this scenario with `-INT` would measure TickLE
+announcing its own death and read as fast detection. Plan to (a) run all three with `-INT`
+deliberately to characterise what each does, and (b) guard it in the client - a
+`liveliness_loss_detection` client should refuse to install the goodbye path at all, so the wrong
+measurement is impossible regardless of signal or script (Dev's suggestion, better than guarding
+the orchestrator).
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
