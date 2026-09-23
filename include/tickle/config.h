@@ -39,6 +39,11 @@
 // cache (~4.8ms at 13K msg/s, ~0.34ms at max rate) to evict the sample first. 1ms keeps a ~4x
 // margin over that RTT.
 #define tt_RELIABLE_RETRY_INTERVAL (1 * tt_MILLISECOND) // nanosecond
+// Phase 3 (rmw_tickle/PLAN.md) - how often a Subscriber logs that a KEEP_ALL gap is still stuck.
+// KEEP_ALL switches off the tt_RELIABLE_RETRY give-up, so without this a genuinely unrecoverable
+// gap would retry silently forever; rate-limited by time, not retry count, so the cadence stays
+// readable whatever tt_RELIABLE_RETRY_INTERVAL is.
+#define tt_RELIABLE_STUCK_WARN_INTERVAL (5 * tt_SECOND) // nanosecond
 // rmw_tickle/PLAN.md's "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache (tickle.h)
 // no longer embeds a fixed-size array sized by this constant: entries[]/capacity are now caller-
 // owned (any size the caller's own backing array happens to be - stack, static, or, for a caller

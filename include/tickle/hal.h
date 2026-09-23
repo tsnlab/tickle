@@ -67,6 +67,14 @@ typedef enum tt_ret_t {
                                    // request still waiting on a response - already answered, timed
                                    // out, or never deferred in the first place. See tickle.h's own
                                    // tt_Server_send_response() doc comment.
+    tt_RET_WOULD_BLOCK = -13,      // Phase 3 (rmw_tickle/PLAN.md) - tt_Publisher_publish() on a
+                                   // KEEP_ALL Publisher whose next write would have to evict a
+                                   // sample no matched Subscriber has acknowledged yet. Nothing was
+                                   // sent and nothing was cached; the caller decides whether to
+                                   // wait, drop or retry. Deliberately its own code rather than a
+                                   // generic error: it is the normal, expected outcome of flow
+                                   // control, not a failure. See tt_Publisher.keep_all and
+                                   // tt_Publisher_writable() (tickle.h).
 } tt_ret_t;
 
 struct tt_Node;

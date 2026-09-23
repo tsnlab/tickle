@@ -398,7 +398,7 @@ static void test_reliable_cache_oversize_record_is_not_cached(void) {
     // An ACKNACK naming it must report it gone (Phase 1-c's eviction Heartbeat path), not resend
     // whatever bytes happen to sit in its slot.
     bool gone = false;
-    EXPECT_TRUE(find_resendable_cache_entry(&cache, cache.depth, 3, 0, &gone) == NULL);
+    EXPECT_TRUE(find_resendable_cache_entry(&cache, cache.depth, 3, 0, false, &gone) == NULL);
     EXPECT_TRUE(gone);
 }
 
@@ -1779,7 +1779,249 @@ static void test_reliable_stats_publisher_retransmit_accounting(void) {
 }
 #endif
 
+// --- Phase 3 step 2 (rmw_tickle/PLAN.md): KEEP_ALL write blocking ------------------------------
+
+// Sets up a KEEP_ALL Publisher with one matched Subscriber entity that has acked nothing yet.
+static void init_keep_all_publisher(struct tt_Node* node, struct tt_Topic* topic, struct tt_Publisher* pub,
+                                    struct tt_ReliableCache* cache, uint16_t window_words) {
+    init_node_and_topic(node, topic);
+    init_publisher(pub, node, topic);
+    node->endpoint_count = 1;
+    node->endpoints[0] = (struct tt_Endpoint*)pub;
+    pub->reliable_cache = cache;
+    pub->reliable = true;
+    pub->keep_all = true;
+    pub->peers[0].node_id = REMOTE_NODE_ID;
+    pub->peers[0].ip = TEST_SENDER_IP;
+    pub->peers[0].port = TEST_SENDER_PORT;
+    struct tt_PeerAck* ack = claim_peer_ack(pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
+    EXPECT_TRUE(ack != NULL);
+    ack->tracking_words = window_words; // what that Subscriber announced it can track
+}
+
+// A KEEP_ALL Publisher accepts exactly `bound` unacknowledged samples and then refuses, without
+// sending or caching the refused one - and an ACK unblocks it again.
+static void test_keep_all_refuses_at_bound_and_unblocks_on_ack(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 4);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // window 1024 >> depth 4, so depth binds
+
+    uint32_t value = 1;
+    for (int i = 0; i < 4; i++) { // fills the depth-4 cache with unacknowledged samples
+        EXPECT_TRUE(tt_Publisher_writable(&pub));
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+
+    EXPECT_TRUE(!tt_Publisher_writable(&pub));
+    int sends_before = test_mock_send_call_count + test_mock_send_to_call_count;
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_INT(sends_before, test_mock_send_call_count + test_mock_send_to_call_count); // nothing sent
+    EXPECT_EQ_U32(4, pub.seq_no);          // ...and seq_no didn't advance
+    EXPECT_EQ_U32(4, cache.newest_seq_no); // ...and nothing was cached
+
+    // The Subscriber acks everything below 3, freeing two slots.
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_TRUE(tt_Publisher_writable(&pub));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(5, pub.seq_no);
+}
+
+// KEEP_LAST (the default) never refuses: it evicts, exactly as before this feature existed.
+static void test_keep_last_still_evicts_rather_than_refusing(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 4);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    pub.keep_all = false;
+
+    uint32_t value = 1;
+    for (int i = 0; i < 10; i++) { // well past the depth, nothing acked
+        EXPECT_TRUE(tt_Publisher_writable(&pub));
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_EQ_U32(10, pub.seq_no);
+    EXPECT_EQ_U32(7, cache.oldest_seq_no); // the oldest 6 were evicted, as KEEP_LAST does
+}
+
+// The bound is the SMALLER of the Publisher's depth and the narrowest announced Subscriber window:
+// a Subscriber that can only track 128 samples makes a deeper unacknowledged run pointless.
+static void test_keep_all_bound_follows_smallest_window(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 200);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 2); // 2 words = 128 samples, below depth 200
+
+    EXPECT_EQ_U32(128, tt_Publisher_unacked_bound(&pub));
+
+    uint32_t value = 1;
+    for (int i = 0; i < 128; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_TRUE(!tt_Publisher_writable(&pub)); // blocked by the window, not the depth
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    // A second Subscriber with an even narrower window lowers the bound further.
+    struct tt_PeerAck* second = claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 1);
+    EXPECT_TRUE(second != NULL);
+    second->tracking_words = 1; // 64 samples
+    EXPECT_EQ_U32(64, tt_Publisher_unacked_bound(&pub));
+}
+
+// The writable callback fires once on the refusal-to-writable transition, on the node's own thread
+// (here: from inside process_acknack()), and not once per ACKNACK.
+static int writable_callback_count = 0;
+static struct tt_Publisher* writable_callback_pub = NULL;
+static void count_writable(struct tt_Publisher* pub, void* param) {
+    writable_callback_count++;
+    writable_callback_pub = pub;
+    *(int*)param += 1;
+}
+
+static void test_keep_all_writable_callback_fires_once(void) {
+    test_mock_reset();
+    writable_callback_count = 0;
+    writable_callback_pub = NULL;
+    int param_hits = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 4);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    pub.writable_callback = count_writable;
+    pub.writable_callback_param = &param_hits;
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t value = 1;
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_INT(0, writable_callback_count); // nothing has freed space yet
+
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 3, 0ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(1, writable_callback_count);
+    EXPECT_EQ_INT(1, param_hits);
+    EXPECT_TRUE(writable_callback_pub == &pub);
+
+    // A second ACKNACK while already writable must not fire it again.
+    tail = write_acknack(&node, ENDPOINT_ID, 4, 0ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_INT(1, writable_callback_count);
+}
+
+// Plan's addition 4: when every matched Subscriber is gone, a blocked KEEP_ALL Publisher unblocks -
+// there is nobody whose acknowledgement could ever arrive, so waiting would be waiting on nothing.
+static void test_keep_all_unblocks_when_last_subscriber_leaves(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 4);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+
+    uint32_t value = 1;
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    // The Subscriber is declared not alive: its ack entry goes (Phase 3 (a)).
+    forget_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, /*match_any_entity=*/false);
+
+    EXPECT_TRUE(tt_Publisher_writable(&pub));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+}
+
+// Plan's addition 1: LIFESPAN still ends a gap under KEEP_ALL - an expired sample is "as if never
+// sent", so the Publisher reports it gone (1-c's eviction Heartbeat) rather than retransmitting it
+// forever.
+static void test_keep_all_still_honours_lifespan(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 4);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    pub.lifespan_duration_ns = 1000;
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1 at t=0
+
+    test_mock_now = 1000; // exactly at the lifespan boundary - expired
+    test_mock_send_to_call_count = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL); // asking for seq_no 1
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(0, (uint32_t)cache.index[0].retry);         // not retransmitted
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // one eviction Heartbeat instead
+    const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
+    EXPECT_TRUE(heartbeat != NULL);
+    EXPECT_EQ_U32(2, heartbeat->first_available_seq_no); // nothing resendable remains
+}
+
+// A KEEP_ALL writer switches off the Subscriber's own ACKNACK give-up: the gap stays tracked past
+// the point a KEEP_LAST writer's gap would have been abandoned.
+static void test_keep_all_subscriber_never_gives_up(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = true; // as its announce said
+    proxy->sender_ip = TEST_SENDER_IP;
+    proxy->sender_port = TEST_SENDER_PORT;
+    bitmap_set_bit(proxy->received_bitmap, 4); // seq_no 5 arrived; 1..4 are missing
+    proxy->acknack_scheduled = true;
+
+    for (int i = 0; i < tt_RELIABLE_RETRY * 5; i++) { // far past the give-up budget
+        acknack_retry(&node, tt_get_ns(), proxy);
+    }
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);   // still waiting on seq_no 1, never abandoned it
+    EXPECT_TRUE(proxy->acknack_scheduled); // ...and still asking
+
+    // The same proxy with keep_all off gives up as before.
+    proxy->keep_all = false;
+    for (int i = 0; i <= tt_RELIABLE_RETRY; i++) {
+        acknack_retry(&node, tt_get_ns(), proxy);
+    }
+    EXPECT_TRUE(proxy->ack_seq_no > 1);
+}
+
 int main(void) {
+    test_keep_all_refuses_at_bound_and_unblocks_on_ack();
+    test_keep_last_still_evicts_rather_than_refusing();
+    test_keep_all_bound_follows_smallest_window();
+    test_keep_all_writable_callback_fires_once();
+    test_keep_all_unblocks_when_last_subscriber_leaves();
+    test_keep_all_still_honours_lifespan();
+    test_keep_all_subscriber_never_gives_up();
     test_reliable_publish_caches_and_evicts();
     test_reliable_cache_evicts_by_bytes_oldest_first();
     test_reliable_cache_wrap_slack_keeps_depth_samples();

@@ -592,6 +592,13 @@ struct tt_ReliableCache {
     struct tt_DurableDeliveryRecord durable_delivered[tt_MAX_PEER_COUNT];
 };
 
+struct tt_Publisher; // so the callback typedef below names this struct, not a prototype-scoped one
+
+// Phase 3 (rmw_tickle/PLAN.md) - tt_Publisher.writable_callback's own type: `pub` is the Publisher
+// that just became writable again, `param` is whatever writable_callback_param held. See that
+// field's own doc comment for what a callback may legally do (in short: signal and return).
+typedef void (*tt_PUBLISHER_WRITABLE_CALLBACK)(struct tt_Publisher* pub, void* param);
+
 // One matched remote node's acknowledgement state on a Publisher - see tt_Publisher.peer_acks.
 struct tt_PeerAck {
     uint8_t node_id; // tt_NODE_ID_INVALID (0, matching zero-init) = unused entry
@@ -669,6 +676,34 @@ struct tt_Publisher { // extends endpoint
     // latency. Set directly on the struct any time after tt_Node_create_publisher() returns it -
     // same "caller-owned, plain field access" convention as peers[]/seq_no above.
     bool batch;
+
+    // QoS roadmap #5 / Phase 3 (rmw_tickle/PLAN.md) - DDS HISTORY KEEP_ALL: never evict a sample no
+    // matched Subscriber has acknowledged yet; refuse the write instead (tt_Publisher_publish()
+    // returns tt_RET_WOULD_BLOCK, having sent and cached nothing). false (the default) is KEEP_LAST,
+    // today's behaviour, where the oldest unacknowledged sample is simply overwritten.
+    //
+    // The bound is min(this Publisher's own cache depth, tt_Publisher_unacked_bound()) - the
+    // narrowest RELIABLE tracking window any matched Subscriber announced. A Subscriber cannot ask
+    // about a gap older than its own window, so an unacknowledged run deeper than that is
+    // unrecoverable however much this Publisher retains (measured, Phase 2: a window wider than the
+    // Publisher's depth recovers strictly less, not more).
+    //
+    // Requires a reliable_cache; on a Publisher without one it is ignored, since there is nothing to
+    // retain and so nothing to refuse for.
+    bool keep_all;
+
+    // Phase 3 - fired when a KEEP_ALL Publisher that had to refuse a write becomes writable again,
+    // i.e. when an incoming ACKNACK advances the slowest matched Subscriber far enough. NULL (the
+    // default) means "poll tt_Publisher_writable() instead"; both are offered deliberately.
+    //
+    // Runs on the node's own thread, from inside tt_Node_poll(), so TickLE's single-threaded-per-node
+    // discipline holds. It must not publish, create or destroy endpoints, or otherwise re-enter
+    // TickLE - signal and return (rmw_tickle wakes a condvar and lets its blocked rmw_publish() do
+    // the work). Fired once per refusal-to-writable transition, not once per ACKNACK.
+    tt_PUBLISHER_WRITABLE_CALLBACK writable_callback;
+    void* writable_callback_param;
+    // Core-private: set when a publish was refused, cleared when the callback fires.
+    bool writable_pending;
 
     // NULL (tt_Node_create_publisher()'s own default): no retained-sample storage at all - both
     // reliable/durable below must stay false, nothing for either policy to work from. Non-NULL:
@@ -840,6 +875,16 @@ bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t
 // depth, only the blocking bound moves.
 uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub);
 
+// Phase 3 (rmw_tickle/PLAN.md) - whether the next tt_Publisher_publish() would be accepted rather
+// than refused with tt_RET_WOULD_BLOCK. Always true for a Publisher that isn't in KEEP_ALL mode (or
+// has no reliable_cache), which is the default - KEEP_LAST never refuses a write.
+//
+// The polling half of the pair tt_Publisher.writable_callback is the notification half of; a caller
+// may use either or both. Reads the same state publish() itself checks, so "writable now" is only a
+// snapshot: on a single-threaded node nothing can change it between this call and the publish, but
+// nothing stops a *later* Subscriber matching and lowering the bound.
+bool tt_Publisher_writable(const struct tt_Publisher* pub);
+
 // The lowest cumulative ack across every currently-matched peer - "every seq_no below this has
 // been acknowledged by all of them". 0 when no peer is matched, or when any matched peer has yet
 // to send its first ACKNACK (tt_PeerAck.ack_seq_no's own "unknown" value), so a caller measuring
@@ -938,6 +983,17 @@ struct tt_WriterProxy {
     // own highest *confirmed* bit alone, since a Heartbeat can reveal the Subscriber is behind
     // even with zero out-of-order DATA arrivals yet (received_bitmap is blind to that on its own).
     uint32_t heartbeat_last_seq_no;
+    // Phase 3 (rmw_tickle/PLAN.md) - this writer announced tt_UPDATE_QOS_KEEP_ALL, i.e. it will
+    // block rather than evict an unacknowledged sample, so this Subscriber must not give up on a
+    // gap either: acknack_retry()'s own tt_RELIABLE_RETRY budget is disabled for this writer alone.
+    // Per writer, not per Subscriber - one Subscriber can be matched to a KEEP_ALL writer and a
+    // KEEP_LAST one at the same time. Cached here from the writer's own announce rather than looked
+    // up in the discovery table per DATA, which is the hot path. false (the default) is KEEP_LAST,
+    // i.e. exactly today's bounded give-up.
+    bool keep_all;
+    // Phase 3 - tt_get_ns() of the last "still waiting" warning for this writer, so a stuck
+    // KEEP_ALL gap is visible in a log at a fixed cadence rather than per retry or never.
+    uint64_t stuck_warned_ns;
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
     // itself) is what acknack_retry() is scheduled against (tt_Node_schedule(..., acknack_retry,
@@ -1256,6 +1312,20 @@ struct tt_UpdateHeader {
 // real numeric field (tt_UpdateEntity.liveliness_lease_duration_ns below) - unlike RELIABLE/
 // DURABLE, a single bit can't carry "how long", only "which kind".
 #define tt_UPDATE_QOS_LIVELINESS_MANUAL (1U << 2)
+// Phase 3 (rmw_tickle/PLAN.md) - set by a Publisher announcing DDS HISTORY KEEP_ALL
+// (tt_Publisher.keep_all): it will refuse a write rather than evict an unacknowledged sample, so a
+// matched Subscriber must not give up on a gap either - acknack_retry()'s own tt_RELIABLE_RETRY
+// budget is disabled for that writer (struct tt_WriterProxy.keep_all). Absent means KEEP_LAST, i.e.
+// today's bounded give-up on both sides; a Subscriber never sets it (KEEP_ALL is a Publisher-side
+// retention policy, and the Subscriber's matching obligation is what this bit conveys).
+//
+// Neither side may give up under KEEP_ALL, or the Subscriber would abandon a gap, advance its ack,
+// and unblock the Publisher having silently dropped a sample - the same hole per-Subscriber ack
+// identity closed on the other side. Only two things still end recovery: LIFESPAN expiry (an
+// expired sample is "as if never sent", so 1-c's eviction Heartbeat still fires and the Subscriber
+// still advances past it) and liveliness (a writer declared not alive loses its WriterProxy, a
+// Subscriber declared not alive leaves the Publisher's ack set).
+#define tt_UPDATE_QOS_KEEP_ALL (1U << 3)
 
 struct tt_UpdateEntity {
     uint32_t endpoint_id; // hash(topic/service name + endpoint name)
