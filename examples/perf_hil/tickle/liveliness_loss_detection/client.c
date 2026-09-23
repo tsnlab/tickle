@@ -36,7 +36,11 @@ static void handle_sigint(int sig) {
     g_interrupted = 1;
 }
 
-static const double default_interval_s = 0.5;
+// 0.1s, matching cyclonedds/ and fastdds/ liveliness_loss_detection/client.c. The server's
+// detect_latency_ms is measured from the last received sample, so the publish interval sets how
+// stale that reference point can be; at the previous 0.5s this harness sampled five times coarser
+// than the DDS twins it is compared against, and the difference was invisible in the table.
+static const double default_interval_s = 0.1;
 static const double default_lease_s = 2.0;
 static const double discovery_margin_s = 2.0;
 

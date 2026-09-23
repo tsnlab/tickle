@@ -54,6 +54,7 @@ static uint64_t received = 0;
 static uint64_t last_received_ns = 0;
 static bool departed = false;
 static uint64_t departed_detected_ns = 0;
+static int64_t announce_age_at_detect_ns = -1;
 // Arm B of the two-clock A/B is 215e16c4, which has no traffic clock at all, so the field the
 // gap measurement reads does not exist in that build. Guarded with a -D rather than forked into a
 // second harness source: a second harness binary would be exactly the confounder the A/B exists
@@ -93,11 +94,20 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
         // of the function and update_last_seen from a later one further in. Every rep of the first
         // 60-rep run reported 18446744073709.551 ms - 2^64 ns - which is what that underflow looks
         // like once it reaches a double, and it destroys the magnitude the field exists to report.
+        // Anchored to the node UPDATE, which is the event that actually governs TickLE's lease.
+        // This is the field to quote against the CycloneDDS/FastDDS numbers: their harnesses
+        // measure from the last received sample, and in DDS a sample is itself what refreshes the
+        // lease, so their reference point and their expiry point are the same event and cancel -
+        // which is why those figures land within ~1ms of the lease. TickLE refreshes the lease
+        // from the node-level UPDATE instead, so measuring from data (detect_latency_ms below)
+        // leaves the phase between the two clocks in the number. Both fields are reported because
+        // they answer different questions: detect_latency_ms is the honest end-to-end figure for
+        // an application that only ever sees data, and this one is the cross-framework-comparable
+        // figure for the lease mechanism itself.
+        announce_age_at_detect_ns = (int64_t)departed_detected_ns - (int64_t)node->update_last_seen[node_id];
+
 #if HAVE_TRAFFIC_CLOCK
         gap_at_departure_ns = (int64_t)node->traffic_last_seen[node_id] - (int64_t)node->update_last_seen[node_id];
-#else
-        (void)node;
-        (void)node_id;
 #endif
     }
 }
@@ -152,12 +162,19 @@ int main(int argc, char** argv) {
         ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
+    // Measured from the last received *data* sample, so its reference point is stale by however
+    // long ago that sample was - up to one client publish interval. That staleness is what put a
+    // ~500ms second mode in the first 60-rep run: at the old 0.5s interval the last packet before
+    // the kill was either the UPDATE itself or a sample 500ms after it, and nothing in between.
+    // The client now paces at 0.1s, matching the CycloneDDS and FastDDS twins, which narrows the
+    // artifact to 100ms; announce_age_at_detect_ms above is the field that does not carry it.
     double detect_latency_ms =
         (departed && last_received_ns != 0) ? (double)(departed_detected_ns - last_received_ns) / ns_per_ms : -1.0;
 
     printf("RESULT: framework=tickle scenario=liveliness_loss_detection role=server recv=%lu departed=%d "
-           "detect_latency_ms=%.3f gap_at_departure_ms=%.3f\n",
-           (unsigned long)received, departed, detect_latency_ms, (double)gap_at_departure_ns / ns_per_ms);
+           "detect_latency_ms=%.3f announce_age_at_detect_ms=%.3f gap_at_departure_ms=%.3f\n",
+           (unsigned long)received, departed, detect_latency_ms,
+           departed ? (double)announce_age_at_detect_ns / ns_per_ms : -1.0, (double)gap_at_departure_ns / ns_per_ms);
 
     tt_Node_destroy(&node);
     return 0;
