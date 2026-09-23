@@ -1245,7 +1245,9 @@ migration and tests) before implementation.
 Still queued, not dropped: the **rmw per-type max encoded size** follow-up from B1 (12.2 MB → ~1 MB for rmw
 KEEP_ALL publishers, needs a typesupport generator change), the **intermittent DATA-path jump
 outlier** (~1 run in 3-6 at max rate), and **CI maintenance** (actions still targeting Node.js 20;
-`ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19).
+`ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19; and a latent clang-format tripwire -
+`examples/perf_hil/cyclonedds/best_effort_latency/{client,server}.c` fail `make lint` under
+clang-format 21.1.8 but pass CI's older cpp-linter, so a CI image bump will break the build).
 
 #### Phase 3 step 1 result: prerequisites (2026-09-23, Dev implemented + measured, Plan verified raw logs)
 
@@ -1327,6 +1329,30 @@ fine. Any external caller of that API would have failed to link.
 Fixed in Phase 3 step 2, which defines it and calls it from the KEEP_ALL bound. Follow-up agreed:
 a test that takes the address of every public `tt_*` function into a table and links it, so a
 missing definition becomes a CI link error - its own small commit after step 2 lands.
+
+#### Phase 3 step 2 landed (2026-09-23, `48a33ee`, CI green)
+
+Core-side KEEP_ALL, all opt-in: `keep_all` flag (default off); `tt_Publisher_publish()` returns
+`tt_RET_WOULD_BLOCK` before any encoding when the next write would evict a sample not yet acked by
+all matched Subscribers (nothing sent, nothing cached, `seq_no` not advanced); bound =
+min(cache depth, `tt_Publisher_unacked_bound()`); both notification forms
+(`tt_Publisher_writable()` and a writable callback fired inside `tt_Node_poll()` on the node's own
+thread, once per refusal→writable transition). `tt_UPDATE_QOS_KEEP_ALL` (bit 3 of the existing qos
+byte, no layout change) announces the mode; a Subscriber caches it per WriterProxy and disables its
+ACKNACK give-up only for that writer, while the Publisher drops its per-sample retransmit cap.
+Absence of the bit means KEEP_LAST, i.e. today's behavior.
+
+Dev's own find during design, folded in: **nothing dropped a `tt_WriterProxy` when its Publisher
+died** (`sub->writers[]` was only touched at create/destroy - verified by Plan against source).
+Harmless while the retry cap bounded it; without the cap it would have meant a 1ms ACKNACK stream
+to a dead address forever. Subscriber-side liveliness cleanup now cancels the retry and frees the
+slot. LIFESPAN still ends a gap legitimately (1-c's eviction Heartbeat path is untouched and
+tested under KEEP_ALL), a restarted Publisher re-learns state rather than inheriting it, the
+stuck-gap warning is time-rate-limited, and an empty ack set unblocks rather than blocking forever.
+RSTATS gains `publish_refused`, `writable_callbacks`, `proxies_dropped_liveliness`.
+
+Follow-up landed separately (`e9b4521`): `tests/test_public_api.c` links the address of every
+public `tt_*` function, so a declared-but-undefined API becomes a CI link error.
 
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
