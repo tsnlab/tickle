@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790175380975,
+  "lastUpdate": 1790175385609,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -119214,6 +119214,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/2d72282c4a75bd8b20ca15c2da5d46daa9f517cf"
         },
         "date": 1790174647536,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "fa3265f07e044c59041a476807864292854180c1",
+          "message": "tickle: count self-received unicast data, and fix a null check the counters had jumped ahead of\n\nThe same-host test's assertion still had a margin correct behaviour could eat, and this run proved\nit rather than predicted it: the publisher's first sample goes out before any peer is known, so it\nis a broadcast, and a broadcast comes back to its own sender. rx_self_sent_data read 1 on a\ncompletely healthy run, so an assertion of zero on that counter would have failed a gate that runs\non every push - and a gate that can fail on correct behaviour is one people learn to re-run rather\nthan read.\n\nrx_self_sent_data_unicast has no legitimate non-zero case. A node's own unicast data is addressed\nto somebody else by construction, so receiving it back means the kernel handed a sender its own\nstream, which is the same-host failure 82a6a02d fixed and nothing else. The HAL records which of\nthe two sockets a datagram arrived on (tt_Node.rx_via_data_port, set by both backends) and the\nself-sent accounting reads it. No arithmetic, no margin, and no race to lose.\n\nAlso fixes a defect I introduced in 97657c0a and did not notice until reading the surrounding\nlines: the traffic log in tt_Node_destroy() dereferenced node to print the counters and only then\nchecked whether node was NULL. Moved after the check.\n\nBoth were found by review rather than by a failure - the margin by Plan reading the shell\ncondition, the null check by me while repairing a replace that had silently matched nothing\nbecause clang-format had reflowed the line since. Two instances in one change of the same thing\ntoday keeps teaching: a check that cannot fail is not a check, whether it is an assertion, a guard\nor a text substitution.\n\nVerified: same-host 5/5 delivered with rx_self_sent_data_unicast 0 and rx_self_sent_data 1, the\nnetns two-namespace test green end to end, make test and make lint clean.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T23:49:57+09:00",
+          "tree_id": "125e1331fbe64d3a9c107c484bb64235612ff537",
+          "url": "https://github.com/tsnlab/tickle/commit/fa3265f07e044c59041a476807864292854180c1"
+        },
+        "date": 1790175384323,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
