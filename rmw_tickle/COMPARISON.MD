@@ -236,7 +236,11 @@ back-pressure never binds.
    rather than picking the flattering one. In every KEEP_ALL run the raw count equalled the
    pre-match window *exactly*, rep by rep. DDS has no equivalent window because its matching is
    symmetric and its writer waits for it; closing TickLE's would mean establishing the baseline at
-   match time, a core change the user deliberately deferred (PLAN.md).
+   match time, a core change the user deliberately deferred (PLAN.md). **Update 2026-09-23**: this
+   applies to a VOLATILE Subscriber, which is not owed pre-match history. With **TRANSIENT_LOCAL**
+   the window is gone entirely - measured 15/15 reps at tc 0/1/5/20/50%, `first_seq=1` every time,
+   after `215e16c4` taught the DATA-first contact path to respect requested durability the same way
+   the Heartbeat path already did.
    *(This is what the `‡` on the TickLE column marks: post-match loss is 0; the pre-match window is
    reported separately rather than folded into it.)*
    Note for anyone re-running this: FastDDS has **no local compile path on the dev box** (no

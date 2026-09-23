@@ -1540,6 +1540,27 @@ Risk to weigh: a durable Subscriber whose Heartbeat never arrives would then sit
 a real behavior change in code the user has already made one call about (the match-time baseline).
 **Put to the user as its own decision.**
 
+**Decided (the user: "고치기") and fixed (`215e16c4`, Dev)**: `process_data()`'s first-contact branch
+is now `if (first_contact && !sub->durable)` - volatile keeps the Milestone 60 pin (with its own
+test), a durable Subscriber leaves `ack_seq_no` at 1 so the retained range is recoverable through
+the ordinary ACKNACK exchange, and the "durable Subscriber that never hears a Heartbeat" case
+terminates via 1-c's eviction Heartbeat (a test, not a comment). **Re-measured, 30/30**: durable is
+now **[0,0,0] at every tc level with first_seq=1 in all 15 reps** - the pre-match window is *gone*
+for a durable Subscriber, not merely narrowed (it was [2,0,0] at 50% before). Volatile is unchanged
+in character, which is correct rather than a regression: a VOLATILE Subscriber is not owed
+pre-match history, and that path is byte-identical.
+
+This also settles the mechanism: the residual was the first-contact race discarding a backlog that
+*had* arrived, not the backlog push itself losing samples. Dev's own prediction distinguished the
+two - had it been the push, 50% would have improved without reaching zero.
+
+One volatile rep at 50% showed `prematch_window=1034` (sent 831921, recv 830897,
+`post_match_lost=0`, `drained=acked`). At that run's ~83k samples/s that is ~12ms of matching
+window, not a stall - recorded rather than averaged away. Methodology note: `net = lost -
+write_fail` is the right column for the KEEP_ALL matrix (where refused writes are the confounder)
+but **wrong here** - quote `post_match_lost` as the server reports it, unsubtracted, or a 0 becomes
+a nonsensical -10.
+
 #### Item 2, first result: `rmw_tickle` aborts a real ROS 2 application in async mode (2026-09-23, Plan, `compare_rmw_perf.sh`)
 
 Ran the same-host comparison (`ROS_DISTRO_NAME=lyrical`, runtime 10). The latency gap itself is
