@@ -1247,7 +1247,13 @@ KEEP_ALL publishers, needs a typesupport generator change), the **intermittent D
 outlier** (~1 run in 3-6 at max rate), and **CI maintenance** (actions still targeting Node.js 20;
 `ubuntu-latest` migrates to Ubuntu 26 on 2026-10-19; and a latent clang-format tripwire -
 `examples/perf_hil/cyclonedds/best_effort_latency/{client,server}.c` fail `make lint` under
-clang-format 21.1.8 but pass CI's older cpp-linter, so a CI image bump will break the build; and the dev box's ROS is
+clang-format 21.1.8 but pass CI's older cpp-linter, so a CI image bump will break the build - note cpp-linter only checks
+*changed* files, which is why those files fail locally yet never break CI until someone touches
+them; CI pins clang-format/clang-tidy **19** while the dev box has 21, so local sweeps disagree in
+both directions and a lint fix should be reproduced under 19 (a venv install) before pushing;
+clang-tidy only diagnoses its **main** file, so linting a test that `#include`s `src/tickle.c`
+says nothing about core or the headers - a changed `.h` is only really checked when passed as the
+main file, which is what cpp-linter does and a local sweep usually does not; and the dev box's ROS is
 `lyrical` while CI and the rig are on `jazzy` - fine today since only long-stable API is used, but
 it means local rmw builds are not the authoritative ones).
 
