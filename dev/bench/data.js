@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790141128929,
+  "lastUpdate": 1790141132799,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -104888,6 +104888,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1804018,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ca1d59fefe6b18a3e664f5ab0bd6bb5463ad1f00",
+          "message": "make lint: make it runnable, then make it mean something\n\nTwo red mains in one day, and neither was carelessness about linting. The\ncause was that `make lint` could not be run clean, so I routed around it\nand hand-rolled a substitute - and the substitute was incomplete in a\ndifferent place each time. First it left headers out, which is how\n`enum tt_WriterKeepAll` reached main; then it left the changed harness\nfiles out, which is how two main()s went over the complexity threshold. A\nlint target that cannot pass is worse than none, because it trains people\nto replace it with something ad hoc.\n\nThe target already did the thing I thought was missing - it passes .h\nfiles to clang-tidy as their own main files, which is exactly the gap\nthat produced the first failure. It didn't need replacing. It needed to\nbe runnable.\n\nFour reasons it wasn't, all fixed here:\n- It linted rmw_tickle/{build,install,log}, colcon's own generated CMake\n  scaffolding, for anyone who had built rmw_tickle locally.\n- It ran clang-tidy over rmw_tickle/'s ROS 2 packages and the\n  CycloneDDS/FastDDS comparison harnesses, neither of which compiles\n  without include paths this Makefile cannot describe. CI lints the\n  former from a separate colcon-built compile database and never tidies\n  the latter at all. clang-format still covers both, since that is the\n  half CI gates on any changed file.\n- tools/typesupport/tests/fixtures_ros2_adapter/ needs its own directory\n  on the include path - check-all.yml synthesises exactly that entry for\n  the same reason.\n- examples/perf_hil/tickle/common/ was the one directory with\n  generator-shaped code and no .clang-tidy, so Bench.h produced every\n  remaining warning in the tree. Added one, same reasoning and same two\n  disabled checks as examples/uint64/.clang-tidy.\n\nThen the parts that make a pass mean something:\n- CLANG_FORMAT/CLANG_TIDY variables, so `make lint CLANG_FORMAT=...` can\n  reproduce CI's pinned 19 rather than whatever the box has. The venv\n  recipe is in the Makefile and in CONTRIBUTING.md.\n- The target prints which binaries it used, with versions. The bug class\n  here is \"I ran the check and it passed\", so a run that used 21 instead\n  of 19 has to be visible.\n- It refuses to run at all if either binary can't be resolved. \"not\n  found, skipped, exit 0\" is the same bug wearing a different hat.\n- --warnings-as-errors, because cpp-linter fails on any finding: without\n  it a green `make lint` that printed warnings would still be a red CI.\n  The tree is clean now, so anything that appears is new.\n\nVerified green under both 21 and 19, and verified it exits non-zero when\na binary can't be resolved. CONTRIBUTING.md now says `make lint` is the\npre-push check and must be green - which is only an honest instruction\nnow that it can be.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T14:19:56+09:00",
+          "tree_id": "5d379fbb4fa054dbae7a000b5a9bc33cd92797f2",
+          "url": "https://github.com/tsnlab/tickle/commit/ca1d59fefe6b18a3e664f5ab0bd6bb5463ad1f00"
+        },
+        "date": 1790141131557,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1900449,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 1548957,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 1814661,
             "unit": "count"
           }
         ]
