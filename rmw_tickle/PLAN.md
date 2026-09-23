@@ -1389,6 +1389,34 @@ announced-nothing and the no-peers cases. **Phase 2's HIL numbers are unaffected
 core's own defaults, not rmw), but nothing should claim rmw's 1024 window was in effect end to end
 before this fix.
 
+#### Phase 3 step 4, part 1: KEEP_ALL stalled on a *lossless* link (found and fixed 2026-09-23, Dev; Plan approved the fix)
+
+Found by the step-4 smoke test before any matrix was run, and it was a real defect in what step 3
+had already landed on `main`. On a clean link a KEEP_ALL Publisher sent exactly `window` samples
+and then stopped forever: 5s at 0% tc gave **sent=1024, 0.125 Mbps**, with the write_fails being
+just the remaining seconds divided by the 100ms budget.
+
+Cause: a Subscriber only ACKNACKs **reactively**, when it sees a gap. With no loss there are no
+gaps, so `peer_acks[].ack_seq_no` never advances and `keep_all_writable()` never becomes true
+again. **Zero loss is the worst case**, which is why nothing caught it earlier - and it reached
+`rmw_tickle` too, so a ROS 2 app asking for KEEP_ALL would have published `window` samples and then
+returned `RMW_RET_TIMEOUT` forever, strictly worse than the clean rejection it got before step 3.
+A second mismatch behind it: the watermark was measured against cache *depth* while KEEP_ALL blocks
+at min(depth, window), so with depth 2048/window 1024 a watermark above 50% would only have
+solicited after the Publisher was already blocked.
+
+Fix (`a437859`): `keep_all` now implies solicitation in core, measured against `keep_all_bound()`
+(half of it), reusing the existing min-gap throttle; `ack_solicit_watermark_pct` keeps its old
+meaning for everyone else. Plus, at Plan's request, **every refusal also solicits**: once the
+Publisher has stopped, `seq_no` stops moving, so nothing can cross the watermark a second time and
+a single lost solicitation (or lost answer) would otherwise leave the stall open indefinitely -
+the case that matters at the 20%/50% tc cells about to be measured.
+
+After the fix, 5s at 0% tc: plain `-Q` **sent=899,886 at 109.4 Mbps, 0 lost**, matching the
+`-W`/`-A` variants within noise - i.e. KEEP_ALL is self-sufficient and costs no throughput on a
+healthy link. Dev also verified each new test fails with the fix backed out; the first version of
+the clean-link test acked unprompted and passed without the fix, which tested nothing.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
