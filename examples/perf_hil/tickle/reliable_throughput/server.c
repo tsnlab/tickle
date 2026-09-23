@@ -27,6 +27,7 @@
 
 #include "../common/Bench.h"
 #include "../common/CpuFreq.h"
+#include "../common/CpuPlace.h"
 #include "../common/reliable_stats_print.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
@@ -68,6 +69,7 @@ static uint32_t max_seq_seen = 0;
 static uint32_t first_seq_seen = 0;
 
 static struct BenchCpuFreq g_cpu_freq;
+static struct BenchCpuPlace g_cpu_place;
 static const uint64_t cpu_freq_period_ns = 100ULL * 1000 * 1000;
 
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
@@ -75,6 +77,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     (void)timestamp;
     (void)seq_no;
     BenchCpuFreq_sample(&g_cpu_freq, tt_get_ns(), cpu_freq_period_ns);
+    BenchCpuPlace_sample(&g_cpu_place, tt_get_ns(), cpu_freq_period_ns);
     if (data->seq == 0 || data->seq > MAX_TRACKED_SEQ) {
         return; // out of this scenario's own realistic tracked range - never expected in practice
     }
@@ -204,6 +207,7 @@ int main(int argc, char** argv) {
     }
 
     BenchCpuFreq_init(&g_cpu_freq);
+    BenchCpuPlace_init(&g_cpu_place);
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
     // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
@@ -235,11 +239,13 @@ int main(int argc, char** argv) {
 
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
-           "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u\n",
+           "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
+           "cpu_migrations=%u\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
            BenchCpuFreq_mean_mhz(&g_cpu_freq), BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq),
-           g_cpu_freq.samples);
+           g_cpu_freq.samples, BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place),
+           g_cpu_place.migrations);
     print_reliable_stats("server");
 
     tt_Node_destroy(&node);
