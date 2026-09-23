@@ -1498,6 +1498,48 @@ promises more than it delivers - runtime oversize is really caught at encode tim
 but changes the C representation from `char*` alias to `char[N+1]`, i.e. it rewrites DESIGN.md's
 Strings rule - a design decision, not a task.
 
+#### Item 1: does TRANSIENT_LOCAL close the pre-match window? (2026-09-23, Plan, real HIL) - it narrows it, and does not close it
+
+Added `-D` to `examples/perf_hil/tickle/reliable_throughput` (Publisher `durable`, Subscriber
+`sub.durable`) and ran KEEP_ALL at max rate, tc 0/1/5/20/50%, durable vs. volatile, 3 reps
+(30 runs). Raw lost / pre-match window / first observed seq, per rep:
+
+| tc | durable | volatile |
+|---|---|---|
+| 0-5% | [0,0,0] / first_seq [1,1,1] | [0,0,0] / [1,1,1] |
+| 20% | **[0,0,0]** / [1,1,1] | [1,0,0] / [2,1,1] |
+| 50% | [2,0,0] / [3,1,1] | [1,3,1] / [2,4,2] |
+
+Post-match loss is 0 in **all 30 runs**, both modes. Durable is clean through 20% (9/9, where
+volatile already shows a window), but at 50% one rep of three still began at seq 3.
+
+**Plan initially reported this as "closes the window" from 27 of 30 runs and was wrong** - the
+correction is recorded here rather than the first claim.
+
+**Why it narrows rather than closes, and this is not a new hypothesis**: core already documents it,
+in `process_data()`'s own first-contact branch (Milestone 60): *"A reordering-at-first-contact edge
+case (an earlier backlog sample lost in flight while a later one wins the race here) is an
+accepted, narrow residual ... The Heartbeat-first path (when it wins the race instead) still
+catches it correctly via its own first_available_seq_no."* The 50% data is the first observation of
+that documented residual actually firing. `inform_subscriber_of_heartbeat()` does branch on
+requested durability (`proxy->ack_seq_no = sub->durable ? ctx->first_available_seq_no :
+ctx->last_seq_no + 1`), so a durable Subscriber that gets the Heartbeat first captures the whole
+retained range; whether it does is a race.
+
+**An asymmetry found while checking it (Dev, reading the code; nothing acted on)**: the DATA-first
+path does **not** branch on durability at all - `if (first_contact) { proxy->ack_seq_no = seq_no; }`.
+For a volatile Subscriber that is the Milestone 60 fix and correct. For a **durable** one it
+silently discards backlog the Subscriber explicitly requested: once `ack_seq_no` is whichever DATA
+happened to arrive first, anything earlier is below the watermark and drops as `late_below_ack`. So
+the two first-contact paths disagree about whether requested durability matters, and a race decides
+which applies. The candidate fix mirrors the Heartbeat path's own RxO reasoning rather than
+inventing anything: on DATA-first contact, a volatile Subscriber keeps today's behavior and a
+durable one does not jump its baseline, leaving the retained range recoverable by ordinary ACKNACK.
+Risk to weigh: a durable Subscriber whose Heartbeat never arrives would then sit at `ack_seq_no`
+= 1 and request history - which is what it asked for and what the Publisher is retaining, but it is
+a real behavior change in code the user has already made one call about (the match-time baseline).
+**Put to the user as its own decision.**
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
