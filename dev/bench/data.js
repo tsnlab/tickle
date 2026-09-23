@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790164989282,
+  "lastUpdate": 1790164993212,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -117060,6 +117060,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/63972d8c408b2a4ed3139a887355449374687d03"
         },
         "date": 1790160100794,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "9345aae42569bbddb3d45e36710c3e4ab66f6b35",
+          "message": "perf_hil/liveliness: measure the node under test, not whichever one left first\n\nThe server took the first departure any node reported and called it the result. At n=30 that\nturned out to mean 12 of 90 reps were measuring something else: they reported\nannounce_age_at_detect_ms = 0.000, a departure detected in the same microsecond as an UPDATE,\nwhich is the signature of an announced goodbye and not of the SIGKILL the client is given.\n\nThe discriminator settles it. Every contaminated rep reports departed_node=101; every clean one\nreports departed_node=3. Node 3 is the client Pi, whose eth0 is 192.168.10.3 and whose id\ntt_get_node_id() takes from the last octet on the broadcast subnet. Nothing answers at\n192.168.10.101 and it has no ARP entry, because node 101 is not on that link at all: it is the\nTICKLE_NODE_ID the rmw perf benchmark gives its publisher side, running on the development box,\nwhose broadcasts reach both Pis' wlan0 because TickLE's compiled-in default is 255.255.255.255\nand that box shares a layer-2 segment with them. Converted to wall clock, node 101's last UPDATE\nbefore each contaminated departure lands in bursts of three or four seconds apart separated by\nquiet minutes - a benchmark creating and tearing down node pairs, matching exactly when that\nbenchmark was running.\n\nThe foreign traffic exposed this; it did not cause it. A measurement that answers about whichever\nnode happened to leave first is not a measurement, and it would have been wrong the first time\nanything else appeared on the network. -N names the node to watch, and anything else is counted\nand named in the RESULT line - foreign_departures and foreign_nodes - rather than silently\nskipped, so a contaminated network shows up as a line instead of as a clean-looking result.\n\nVerified: lease 1.0 at n=30 with -N 3 reports announce_age sd 19.2 over a 56.0ms spread,\ndeparted_node=3 in every rep and foreign_departures=0, with nothing excluded. The previous run\nneeded two reps dropped to reach a comparable sd.\n\nAlso documents the delivery assertion as README-rmw-perf.md provisioning patch (e): launch_test's\ngate checks exit codes only, so a run that exchanged zero messages passed in 16.01 seconds while\nreporting received 0 / lost 7902. That hole is what let (d)'s own silent-zero failure mode go\nunnoticed, and it is independent of whatever is currently producing the zeros.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T20:56:26+09:00",
+          "tree_id": "1404d56ea700531f41608da309560388e908261b",
+          "url": "https://github.com/tsnlab/tickle/commit/9345aae42569bbddb3d45e36710c3e4ab66f6b35"
+        },
+        "date": 1790164991911,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
