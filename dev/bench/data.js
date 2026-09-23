@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790128392448,
+  "lastUpdate": 1790128396273,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -110275,6 +110275,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3613.642,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3731a6f5d758e4a862a4a1c031994f8fa5cfb3a4",
+          "message": ".gitignore: ignore rmw_tickle's colcon build output\n\n`colcon build`/`colcon test` from rmw_tickle/ leave build/, install/ and\nlog/ beside the packages. They were untracked but not ignored, so they\nshowed up in every `git status` and sat one `git add -A` away from being\ncommitted - the same mistake this repo already made twice with built\nperf_hil binaries.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T10:46:52+09:00",
+          "tree_id": "f5d34f06b7c7bc23cd2f54190fc23f9073840345",
+          "url": "https://github.com/tsnlab/tickle/commit/3731a6f5d758e4a862a4a1c031994f8fa5cfb3a4"
+        },
+        "date": 1790128395098,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1624.721,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2640.918,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3623.073,
             "unit": "ms"
           }
         ]
