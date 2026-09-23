@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790124545640,
+  "lastUpdate": 1790124549414,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -102049,6 +102049,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv msgs",
             "value": 2023912,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1b15e157a9cd18c8568200d731dc41e6353a2ea6",
+          "message": "tickle: document the window <= publisher depth rule, and warn when it's broken\n\nReal HIL finding (Phase 2, 2026-09-23): a Subscriber window wider than the\nmatched Publisher's retained depth is not merely wasted, it recovers strictly\nless. Against a depth-1024 Publisher at maximum rate, a 1024-sample window lost\nnothing across 6 runs while a 4096-sample one lost 191-368 per run - and in\nevery rep the loss equalled the Publisher's own null_evicted count exactly, with\njump_data 0, so this is not the old window-jump path: the Subscriber simply\nkeeps asking for samples that no longer exist and each is answered with an\neviction Heartbeat and skipped.\n\nSo the window is useful only up to the Publisher's depth. Stated in\ntt_Subscriber.tracking_bitmaps' doc comment, the example's -w help, the\nCHANGELOG entry and RMW_TICKLE_TRACKING_WORDS' own comment (which keeps 1024,\npaired with the depth a Publisher is expected to retain rather than maximised).\nregister_subscriber_peer_on_publisher() logs one warning per matching when an\nannounced window exceeds what this Publisher retains - the announced window is\nalready on the wire, so the check is free.\n\n18/18 both modes; clang-tidy clean.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T09:43:11+09:00",
+          "tree_id": "1a2bd7162c69546c7e5a7a55b0e6f3a2a770a5a5",
+          "url": "https://github.com/tsnlab/tickle/commit/1b15e157a9cd18c8568200d731dc41e6353a2ea6"
+        },
+        "date": 1790124548205,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv msgs",
+            "value": 2014863,
             "unit": "count"
           }
         ]
