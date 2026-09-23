@@ -1423,6 +1423,47 @@ After the fix, 5s at 0% tc: plain `-Q` **sent=899,886 at 109.4 Mbps, 0 lost**, m
 healthy link. Dev also verified each new test fails with the fix backed out; the first version of
 the clean-link test acked unprompted and passed without the fix, which tested nothing.
 
+#### Phase 3 step 4 result: the KEEP_ALL guarantee holds (2026-09-23, Dev measured, dual-column methodology)
+
+The residual 0-3 samples at 20%/50% turned out to be neither the vacuous-ack path (Plan's guess:
+`peer_acks_min` was 1 in 24/24 runs, so the peer entry never disappears) nor the tail (Dev's
+earlier guess). **It is always seq 1-3, never mid-stream, never the tail**: a Subscriber's
+WriterProxy is created by the first DATA that actually *arrives*, and its baseline is that sample's
+seq_no, so at 50% loss a dropped seq 1-2 is never known to have existed. Both sides were telling
+the truth - `drained=acked` was honest - and only the harness, counting from seq 1, called it loss.
+
+Methodology decision (Plan): **report both numbers, never redefine silently**. Raw net loss counted
+from seq 1, post-match loss counted from the Subscriber's first observed seq_no, and the size of
+the pre-match window. Switching to a first-observed baseline alone would have normalised away a
+TickLE-specific effect the DDS rows don't have (a DDS reader's match is symmetric and its writer
+waits for it), quietly improving our own headline.
+
+**Final matrix** (medians of 3 reps, 10s runs; per-rep in brackets):
+
+| tc | mode | rate | raw net | post-match | prematch | Mbps |
+|---|---|---|---|---|---|---|
+| 20% | KEEP_ALL | max | [0,0,0] | **[0,0,0]** | [0,0,0] | 89.3 |
+| 20% | KEEP_ALL | ~8Mbps | [0,0,0] | **[0,0,0]** | [0,0,0] | 4.90 |
+| 20% | KEEP_LAST | max | [4497,18837,20387] | same | [0,2,0] | 99.8 |
+| 50% | KEEP_ALL | max | [2,0,0] | **[0,0,0]** | [2,0,0] | 56.5 |
+| 50% | KEEP_ALL | ~8Mbps | [3,5,1] | **[0,0,0]** | [3,5,1] | 5.04 |
+| 50% | KEEP_LAST | max | [336381,115882,81584] | same | [0,1,0] | 84.4 |
+
+**raw net equals prematch exactly, cell by cell and rep by rep, in every KEEP_ALL row** - not
+"approximately accounted for". Every sample KEEP_ALL failed to deliver was one the Subscriber had
+not yet begun tracking; once tracking, nothing was lost at 20% or 50%. KEEP_LAST's pre-match
+windows are the same size (0-4), so its 81K-336K losses are real delivery loss, which is what makes
+the dual columns worth having.
+
+**Cost of the guarantee**: 89.3 vs 99.8 Mbps at 20% (-11%), 56.5 vs 84.4 at 50% (-33%). At ~8 Mbps
+the two are identical (4.90 vs 4.93, 5.04 vs 5.04) - back-pressure never binds with that much
+headroom.
+
+**Open architecture question, for the user**: the Publisher counted the peer as matched *before* it
+published seq 1, and DDS semantics say a sample written after a reader matches is owed to it. Core
+would have to establish a Subscriber's baseline at match time rather than at first DATA to close
+that window. Dev deliberately did not touch core for it.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
