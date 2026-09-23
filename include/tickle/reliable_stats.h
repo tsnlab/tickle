@@ -70,6 +70,9 @@ struct tt_ReliableStats {
     uint64_t ack_solicit_suppressed;     // Phase 3 (d): ...and ones the min-gap throttle dropped
     uint64_t publish_refused;            // Phase 3: publishes refused with tt_RET_WOULD_BLOCK (KEEP_ALL)
     uint64_t writable_callbacks;         // Phase 3: refusal-to-writable transitions (callback fires)
+    uint64_t writable_no_peers;          // ...of which because the last matched Subscriber went away, not
+                                         // because acks arrived - i.e. KEEP_ALL ceasing to apply rather
+                                         // than working (see notify_writable_if_pending(), tickle.c)
     uint64_t proxies_dropped_liveliness; // Phase 3: WriterProxies dropped because the writer died
 
     // --- tx path (flush_tx()) ---

@@ -54,12 +54,12 @@ static void print_reliable_stats(const char* role) {
     printf("RSTATS: role=%s pub acknack_received=%llu bits_requested=%llu retransmitted=%llu null_evicted=%llu "
            "null_retry_cap=%llu null_lifespan=%llu retransmit_tx_fail=%llu eviction_hb=%llu "
            "evict_count=%llu evict_bytes=%llu oversize=%llu ack_solicit=%llu ack_solicit_suppressed=%llu "
-           "publish_refused=%llu writable_cb=%llu proxies_dropped=%llu\n",
+           "publish_refused=%llu writable_cb=%llu writable_no_peers=%llu proxies_dropped=%llu\n",
            role, U(stats.acknack_received), U(stats.bits_requested), U(stats.retransmitted), U(stats.null_evicted),
            U(stats.null_retry_cap), U(stats.null_lifespan), U(stats.retransmit_tx_fail), U(stats.eviction_heartbeats),
            U(stats.evicted_by_count), U(stats.evicted_by_bytes), U(stats.not_cached_oversize),
            U(stats.ack_solicit_sent), U(stats.ack_solicit_suppressed), U(stats.publish_refused),
-           U(stats.writable_callbacks), U(stats.proxies_dropped_liveliness));
+           U(stats.writable_callbacks), U(stats.writable_no_peers), U(stats.proxies_dropped_liveliness));
     printf("RSTATS: role=%s tx datagrams=%llu datagrams_with_data=%llu data_in_datagrams=%llu "
            "avg_data_per_datagram=%.2f max_data_per_datagram=%llu\n",
            role, U(stats.datagrams), U(stats.datagrams_with_data), U(stats.data_in_datagrams),

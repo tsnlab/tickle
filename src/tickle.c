@@ -1571,19 +1571,24 @@ static uint32_t keep_all_bound(const struct tt_Publisher* pub) {
 // arrive, so staying blocked would mean waiting forever on nothing. min_peer_ack_seq_no() returns 0
 // both for "no peers" and for "a matched peer that has never acked", so the two are told apart by
 // the ack table being empty, not by that value.
+// Does this Publisher still have acknowledgement state for any matched Subscriber entity? Shared
+// by keep_all_writable()'s "nothing left to wait for" case and the counter that records when that
+// case is what made a Publisher writable - one definition so the two can't drift apart.
+static bool any_peer_ack_matched(const struct tt_Publisher* pub) {
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        if (pub->peer_acks[i].node_id != tt_NODE_ID_INVALID) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool keep_all_writable(const struct tt_Publisher* pub) {
     if (!pub->keep_all || reliable_cache_depth(pub->reliable_cache) == 0) {
         return true; // KEEP_LAST (the default), or nothing retained at all - never refuses a write
     }
 
-    bool any_matched = false;
-    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
-        if (pub->peer_acks[i].node_id != tt_NODE_ID_INVALID) {
-            any_matched = true;
-            break;
-        }
-    }
-    if (!any_matched) {
+    if (!any_peer_ack_matched(pub)) {
         return true; // nothing left to wait for
     }
 
@@ -1603,6 +1608,20 @@ static void notify_writable_if_pending(struct tt_Publisher* pub) {
     }
     pub->writable_pending = false;
     RSTAT_INC(writable_callbacks);
+    // Phase 3 step 4 follow-up - two very different events reach this line. Either the slowest
+    // matched Subscriber acknowledged enough, which is KEEP_ALL working, or the last matched
+    // Subscriber went away and keep_all_writable()'s "nothing left to wait for" made the Publisher
+    // writable by default, which is KEEP_ALL silently ceasing to apply. Both are correct - there
+    // genuinely is nobody to hold a sample for - but they are not the same thing to anyone reading
+    // a measurement, and only the counter tells them apart.
+    //
+    // Not observed in practice: across 24 HIL runs at 20% and 50% injected loss the matched-peer
+    // count never once fell to zero (rmw_tickle/PLAN.md Phase 3 step 4). This exists so that if it
+    // ever does - a real partition, a liveliness timeout under sustained loss - it shows up in a
+    // measurement already being taken rather than as an unexplained absence of back-pressure.
+    if (!any_peer_ack_matched(pub)) {
+        RSTAT_INC(writable_no_peers);
+    }
     if (pub->writable_callback != NULL) {
         pub->writable_callback(pub, pub->writable_callback_param);
     }

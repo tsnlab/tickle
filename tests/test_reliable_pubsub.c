@@ -2113,6 +2113,64 @@ static void test_unknown_policy_still_terminates_on_eviction(void) {
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
 }
 
+#ifdef tt_RELIABLE_STATS
+// Phase 3 step 4 follow-up - a KEEP_ALL Publisher becomes writable again for two very different
+// reasons, and writable_no_peers is what tells them apart. Acks arriving is KEEP_ALL working; the
+// last matched Subscriber disappearing is KEEP_ALL ceasing to apply, since there is then nobody to
+// hold a sample for. Both are correct and both look identical from outside without this counter.
+static void test_keep_all_writable_cause_is_distinguished(void) {
+    // (1) Writable because the Subscriber acknowledged - the counter must NOT move.
+    test_mock_reset();
+    tt_reliable_stats_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 4);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // window 1024 >> depth 4, so depth binds
+
+    uint32_t value = 1;
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 5, 0ULL); // everything below 5 received
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    struct tt_ReliableStats stats;
+    tt_reliable_stats_get(&stats);
+    EXPECT_EQ_U32(1, (uint32_t)stats.writable_callbacks);
+    EXPECT_EQ_U32(0, (uint32_t)stats.writable_no_peers); // acks arrived - the guarantee held
+
+    // (2) Writable because the last matched Subscriber went away - the counter must move, and
+    // publishing must resume, because there is genuinely nobody left to retain anything for.
+    test_mock_reset();
+    tt_reliable_stats_reset();
+
+    struct tt_Node node2;
+    struct tt_Topic topic2;
+    struct tt_Publisher pub2;
+    TEST_RELIABLE_CACHE(cache2, 4);
+    init_keep_all_publisher(&node2, &topic2, &pub2, &cache2, 16);
+
+    for (int i = 0; i < 4; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub2, (struct tt_Data*)&value));
+    }
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub2, (struct tt_Data*)&value));
+
+    forget_peer_ack(&pub2, REMOTE_NODE_ID, 0, /*match_any_entity=*/true);
+    notify_writable_if_pending(&pub2);
+
+    tt_reliable_stats_get(&stats);
+    EXPECT_EQ_U32(1, (uint32_t)stats.writable_callbacks);
+    EXPECT_EQ_U32(1, (uint32_t)stats.writable_no_peers); // ...this is the one worth noticing
+    EXPECT_TRUE(tt_Publisher_writable(&pub2));
+}
+#endif
+
 // The writable callback fires once on the refusal-to-writable transition, on the node's own thread
 // (here: from inside process_acknack()), and not once per ACKNACK.
 static int writable_callback_count = 0;
@@ -2295,6 +2353,7 @@ int main(void) {
     test_acknack_multi_word_bitmap_retransmits_each_named_sample();
     test_forget_publisher_peer_resets_ack_seq_no();
 #ifdef tt_RELIABLE_STATS
+    test_keep_all_writable_cause_is_distinguished();
     test_reliable_stats_subscriber_gap_accounting();
     test_reliable_stats_publisher_retransmit_accounting();
 #endif
