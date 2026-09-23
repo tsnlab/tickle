@@ -329,10 +329,33 @@
 #define _tt_NODE_PORT 8282
 #endif
 #ifndef _tt_NODE_BROADCAST
+// The destination every announce and every broadcast-mode send is addressed to.
+//
+// This default reaches further than it looks, and on 2026-09-23 that put benchmark traffic onto a
+// shared lab network for a day. 255.255.255.255 is the *limited* broadcast: it has no subnet to be
+// scoped by, so the kernel sends it out whatever the default route points at. On the HIL rig that
+// is the management Wi-Fi, not the wired test link. A *directed* broadcast - 192.168.10.255 for a
+// node on 192.168.10.0/24 - is scoped by the routing table with no socket binding involved
+// (`ip route get 192.168.10.255` naming eth0 is what run_perf.sh has always relied on to find the
+// interface to apply tc to), which is why the perf_hil harnesses, which set one, never leaked.
+//
+// So: set this to the directed broadcast of the link you mean. Leaving it at the default does not
+// mean "this machine's network", it means "wherever this machine's default route goes", and those
+// are the same thing only by accident.
 #define _tt_NODE_BROADCAST "255.255.255.255"
 #endif
 
 struct _tt_Config {
+    // The address the data socket binds to. 0.0.0.0 (the default) means "any local address",
+    // which is almost always what is wanted; setting a specific local address scopes this node's
+    // *sends* to the link that owns it, which is the unprivileged way to pin a limited broadcast
+    // to one interface (SO_BINDTODEVICE would be the obvious tool and needs CAP_NET_RAW).
+    //
+    // It binds the data socket only, never the well-known one, and that is not an implementation
+    // detail to tidy up later: measured on Linux, a socket bound to a unicast address receives no
+    // broadcasts at all, directed or limited. Binding the well-known socket to a specific address
+    // would therefore stop discovery dead while leaving unicast working - a node that hears
+    // nobody and is heard by nobody, with every send succeeding. See tt_bind().
     char* addr;
     int port;
     char* broadcast;

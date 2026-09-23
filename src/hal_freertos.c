@@ -92,16 +92,20 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // SO_SNDBUF at all (UDP send never queues), and SO_RCVBUF support is compiled out by default
     // (LWIP_SO_RCVBUF, off in platform/freertos/lwipopts.h) - its rx buffering is sized instead by
     // lwipopts.h's own compile-time knobs (e.g. the UDP recvmbox size). Not an oversight.
+    // The well-known socket always binds the wildcard, never _tt_CONFIG.addr - see hal_linux.c's
+    // own comment on this same bind for the measured reason: a socket bound to a unicast address
+    // receives no broadcasts, so binding this one would stop every announce arriving while unicast
+    // kept working. _tt_CONFIG.addr scopes the data socket instead, below.
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     // inet_addr()/htons() come from lwip/sockets.h's LWIP_COMPAT_SOCKETS aliasing.
-    addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(_tt_CONFIG.port);
     addr.sin_len = sizeof(addr);
 
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot bind socket to %s:%d: %s", _tt_CONFIG.addr, _tt_CONFIG.port, strerror(errno));
+        TT_LOG_ERROR("Cannot bind socket to 0.0.0.0:%d: %s", _tt_CONFIG.port, strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
@@ -133,6 +137,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
         return tt_RET_IO_ERROR;
     }
 
+    // This one does honour _tt_CONFIG.addr - see hal_linux.c's own comment on the same bind.
     struct sockaddr_in data_addr;
     data_addr.sin_family = AF_INET;
     data_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);

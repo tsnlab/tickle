@@ -139,13 +139,18 @@ tt_ret_t tt_bind(struct tt_Node* node) {
         TT_LOG_WARNING("Cannot set socket receive buffer size: %s", strerror(errno));
     }
 
+    // The well-known socket always binds the wildcard, never _tt_CONFIG.addr. Measured on Linux:
+    // a socket bound to a unicast address receives no broadcasts at all, directed or limited - so
+    // binding this one to a specific address would stop every announce from arriving while unicast
+    // kept working, which is a node that hears nobody and is heard by nobody with every send
+    // reporting success. _tt_CONFIG.addr scopes the data socket instead, below.
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(_tt_CONFIG.port);
 
     if (bind(node->hal.sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_in)) < 0) {
-        TT_LOG_ERROR("Cannot bind socket to %s:%d: %s", _tt_CONFIG.addr, _tt_CONFIG.port, strerror(errno));
+        TT_LOG_ERROR("Cannot bind socket to 0.0.0.0:%d: %s", _tt_CONFIG.port, strerror(errno));
         tt_close(node);
         return tt_RET_IO_ERROR;
     }
@@ -187,6 +192,11 @@ tt_ret_t tt_bind(struct tt_Node* node) {
         TT_LOG_WARNING("Cannot set data socket receive buffer size: %s", strerror(errno));
     }
 
+    // This one does honour _tt_CONFIG.addr. Left at 0.0.0.0 it behaves as before; set to a local
+    // address it scopes this node's sends to the link that owns that address, which is the
+    // unprivileged way to pin a limited broadcast to one interface - SO_BINDTODEVICE is the
+    // obvious tool and needs CAP_NET_RAW. Safe here and not on the socket above because this one
+    // only ever needs to receive unicast.
     struct sockaddr_in data_addr;
     data_addr.sin_family = AF_INET;
     data_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
