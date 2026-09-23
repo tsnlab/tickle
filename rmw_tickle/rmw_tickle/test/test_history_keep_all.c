@@ -40,10 +40,16 @@
 #include "rosidl_typesupport_tickle_c/identifier.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
-// Must match RMW_TICKLE_KEEP_ALL_DEPTH (rmw_publisher.c) - not exported via any header (a purely
-// internal sizing constant, not part of this rmw's own public API/ABI), so this test pins the
-// value it expects directly rather than referencing the macro.
-#define EXPECTED_KEEP_ALL_DEPTH 8192
+// Must match RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE / _VOLATILE (rmw_publisher.c) - not exported via any
+// header (purely internal sizing constants, not part of this rmw's own public API/ABI), so this
+// test pins the values it expects directly rather than referencing the macros.
+//
+// Phase 3 step 3 split these apart: a TRANSIENT_LOCAL Publisher replays its whole retained range to
+// each late joiner, so every extra slot is observable history; a VOLATILE one can never accumulate
+// more unacknowledged samples than the announced tracking window (1024), so depth past that window
+// is unreachable memory. See RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE's own comment for the coupling.
+#define EXPECTED_KEEP_ALL_DEPTH_DURABLE 8192
+#define EXPECTED_KEEP_ALL_DEPTH_VOLATILE 2048
 
 struct fake_ros_msg {
     uint8_t value;
@@ -138,9 +144,11 @@ int main(void) {
     const rosidl_message_type_support_t* type_support = fake_type_support();
     rmw_publisher_options_t pub_opts = rmw_get_default_publisher_options();
 
-    // The real point: RELIABLE + KEEP_ALL must size reliable_cache to EXPECTED_KEEP_ALL_DEPTH,
-    // not tt_MAX_RELIABLE_HISTORY=64 (the old silent-downgrade behavior) and not ->depth (10 here,
-    // deliberately left small/irrelevant to prove it's ignored once KEEP_ALL is set).
+    // The real point: RELIABLE + KEEP_ALL must size reliable_cache to the KEEP_ALL depth, not
+    // tt_MAX_RELIABLE_HISTORY=64 (the old silent-downgrade behavior) and not ->depth (10 here,
+    // deliberately left small/irrelevant to prove it's ignored once KEEP_ALL is set). Phase 3
+    // step 3 also wires the core-side back-pressure flag and its writable callback here, which is
+    // what makes KEEP_ALL a retention promise rather than just a bigger ring buffer.
     {
         rmw_qos_profile_t qos = base_qos();
         qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
@@ -149,13 +157,21 @@ int main(void) {
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(NULL != pub_impl->reliable_cache);
-        assert(EXPECTED_KEEP_ALL_DEPTH == pub_impl->reliable_cache->capacity);
-        assert(EXPECTED_KEEP_ALL_DEPTH == pub_impl->reliable_cache->depth);
+        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity);
+        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
+        assert(pub_impl->tickle_publisher.keep_all);
+        assert(NULL != pub_impl->tickle_publisher.writable_callback);
+        assert(pub_impl == pub_impl->tickle_publisher.writable_callback_param);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     }
 
     // Same for TRANSIENT_LOCAL (the other setup_reliable_cache()-triggering policy, Milestone 24's
-    // shared cache) - KEEP_ALL must be honored there too, not just for RELIABLE.
+    // shared cache) - KEEP_ALL must be honored there too, not just for RELIABLE - and this is the
+    // case that keeps the deep cache, because a late joiner is replayed the whole retained range.
+    //
+    // BEST_EFFORT, though, so keep_all must stay *off*: back-pressure waits for acknowledgements,
+    // and a BEST_EFFORT Subscriber never sends any, so blocking here could only ever deadlock a
+    // publisher against a peer that is behaving exactly as asked.
     {
         rmw_qos_profile_t qos = base_qos();
         qos.durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
@@ -164,7 +180,8 @@ int main(void) {
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(NULL != pub_impl->reliable_cache);
-        assert(EXPECTED_KEEP_ALL_DEPTH == pub_impl->reliable_cache->capacity);
+        assert(EXPECTED_KEEP_ALL_DEPTH_DURABLE == pub_impl->reliable_cache->capacity);
+        assert(!pub_impl->tickle_publisher.keep_all);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     }
 
@@ -180,6 +197,8 @@ int main(void) {
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(NULL != pub_impl->reliable_cache);
         assert(10 == pub_impl->reliable_cache->capacity);
+        // KEEP_LAST is the "drop the oldest" policy by definition, so it must never refuse a write.
+        assert(!pub_impl->tickle_publisher.keep_all);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     }
 

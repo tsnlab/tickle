@@ -476,6 +476,28 @@ typedef struct rmw_tickle_publisher_t {
     // to_tickle() conversion that happens before node_mutex is ever taken.
     void* publish_scratch_buf;
     pthread_mutex_t publish_mutex;
+
+    // Phase 3 step 3 (rmw_tickle/PLAN.md) - HISTORY.KEEP_ALL's own back-pressure. A KEEP_ALL
+    // Publisher refuses a write (tt_RET_WOULD_BLOCK) rather than evicting an unacknowledged sample,
+    // so rmw_publish() has to wait for the slowest matched Subscriber to catch up instead of
+    // returning an error the instant the cache fills. These two back that wait.
+    //
+    // Bumped by publisher_writable_callback() (rmw_publisher.c) every time core reports this
+    // Publisher writable again, and read by rmw_publish()'s own wait loop to tell a real wakeup
+    // from a spurious one. Guarded by context_impl->wait_mutex, *not* node_mutex: the callback
+    // already runs with node_mutex held (it fires from inside tt_Node_poll()), and the waiter must
+    // be able to sleep with node_mutex released, so wait_mutex is the only lock both sides can
+    // share. A counter rather than a flag because the transition can happen and be consumed more
+    // than once across a single wait.
+    uint64_t writable_generation;
+
+    // How long rmw_publish() may block on the above before giving up with RMW_RET_TIMEOUT, resolved
+    // once at rmw_create_publisher() time from RMW_TICKLE_MAX_BLOCKING_MS (see
+    // resolve_max_blocking_ns(), rmw_publisher.c) and RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT otherwise.
+    // Zero means "never block": refuse immediately, which is what a real-time caller that would
+    // rather drop than stall should set. Only consulted for a KEEP_ALL Publisher - no other kind
+    // can be refused in the first place.
+    uint64_t max_blocking_ns;
 } rmw_tickle_publisher_t;
 
 // rmw_tickle/PLAN.md's Milestone 3: rmw_take()'s own bounded queue, holding already-from_tickle()-
@@ -486,6 +508,24 @@ typedef struct rmw_tickle_publisher_t {
 // when depth is RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT (0, "unset"), matching ROS 2's own common
 // default queue size.
 #define RMW_TICKLE_SUBSCRIPTION_QUEUE_DEFAULT_DEPTH 10
+
+// Phase 3 step 3 (rmw_tickle/PLAN.md) - how long rmw_publish() blocks, by default, when a KEEP_ALL
+// Publisher refuses a write because the slowest matched Subscriber hasn't acknowledged enough for a
+// new sample to be retained without dropping an old one. Overridable per process by setting
+// RMW_TICKLE_MAX_BLOCKING_MS (see resolve_max_blocking_ns(), rmw_publisher.c); "0" is a meaningful
+// setting, not "unset", and means never block - refuse immediately, for a caller that would rather
+// drop a sample than stall. On expiry rmw_publish() returns RMW_RET_TIMEOUT, matching rmw_
+// publisher_wait_for_all_acked()'s own existing use of it in this package.
+//
+// 100ms is DDS's own conventional max_blocking_time default, and is long enough to ride out a
+// recovery round trip (tt_RELIABLE_RETRY_INTERVAL is 1ms) without a stalled Subscriber being able
+// to wedge a publishing thread indefinitely.
+#define RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT 100
+
+// Sanity ceiling on the environment override above (about 1 hour), so a typo like a pasted
+// nanosecond figure can't turn into an effectively infinite block. Anything larger falls back to
+// the default.
+#define RMW_TICKLE_MAX_BLOCKING_MS_LIMIT 3600000ULL
 
 // Phase 2 (rmw_tickle/PLAN.md) - how wide a RELIABLE gap each subscription can track, in 64-bit
 // words: 16 words = 1024 samples, ~5.4ms at TickLE's own measured max rate, i.e. about four retry

@@ -10,6 +10,19 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- `rmw_tickle`: `rmw_publish()` now applies real back-pressure for `HISTORY.KEEP_ALL` publishers
+  instead of letting the promise quietly lapse. A `RELIABLE` + `KEEP_ALL` publisher sets core's
+  `tt_Publisher.keep_all`, so core refuses a write (`tt_RET_WOULD_BLOCK`) rather than evicting a
+  sample no matched subscriber has acknowledged; `rmw_publish()` turns that refusal into a bounded
+  wait on the publisher's writable callback and returns `RMW_RET_TIMEOUT` if it expires, matching
+  `rmw_publisher_wait_for_all_acked()`'s own existing use of that code. The wait is configurable
+  per process through `RMW_TICKLE_MAX_BLOCKING_MS` (default 100; `0` means never block, refuse
+  immediately), and the timeout's `rcutils` message names the topic and says what to do about it,
+  because `rclcpp` flattens every non-`OK` rmw return into one generic exception type - the text is
+  all an application author gets. Waiting never holds the per-node mutex: the poll thread needs it
+  to process the very acknowledgements that end the wait. `rmw_tickle/PLAN.md`'s Phase 3 step 3.
+
+
 - `tt_Node_interrupt()`: wakes a blocking `tt_Node_poll()` call from another thread, returning
   `tt_RET_INTERRUPTED` promptly instead of waiting out the rest of its timeout - the one
   exception to a `tt_Node`'s otherwise-single-threaded rule (DESIGN.md's "Concurrency"). Built for
@@ -262,6 +275,17 @@ number, `tt_VERSION`, which moves independently.
   coalescing the same flood into far fewer, larger packets.
 
 ### Fixed
+
+- `tt_Publisher_unacked_bound()` no longer clamps a matched subscriber's announced RELIABLE
+  tracking window to `tt_RELIABLE_BITMAP_BITS` (256). It is documented as the narrowest window
+  across matched subscribers, but was implemented as "start at the protocol default and let peers
+  lower it", so a subscriber announcing a *wider* window was silently ignored. `rmw_tickle`
+  announces 1024 samples on every subscription, so in the configuration that actually ships, a
+  `KEEP_ALL` publisher blocked after 256 unacknowledged samples rather than the 1024 its peers
+  could genuinely recover from - a quarter of the intended in-flight depth. Every existing core
+  test used windows narrower than the default, which is exactly why none of them caught it; found
+  by `rmw_tickle`'s new `test_keep_all_blocking.c` counting the writes it got before the refusal.
+
 
 - `rmw_tickle`'s own `poll_thread_main()` no longer starves `rmw_publish()` (and every other
   entry point sharing the same per-node mutex) for tens to hundreds of milliseconds at a time

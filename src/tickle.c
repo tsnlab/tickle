@@ -2077,20 +2077,31 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly.
 uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
-    uint32_t bound = tt_RELIABLE_BITMAP_BITS;
     if (pub == NULL) {
-        return bound;
+        return tt_RELIABLE_BITMAP_BITS;
     }
+    // The narrowest *announced* window, which is not the same as "start at the protocol default and
+    // let peers lower it": a Subscriber announcing a window wider than tt_RELIABLE_BITMAP_BITS (as
+    // rmw_tickle's own RMW_TICKLE_TRACKING_WORDS=16, i.e. 1024 samples, does on every subscription)
+    // can genuinely ask about a gap that far back, so capping the bound at the default would block
+    // a KEEP_ALL Publisher four times earlier than its peers can actually recover from - throughput
+    // given away for nothing. The default is the answer only when nobody has announced anything.
+    uint32_t bound = 0;
+    bool announced = false;
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
         if (pub->peer_acks[i].node_id == tt_NODE_ID_INVALID) {
             continue;
         }
         uint32_t window = (uint32_t)pub->peer_acks[i].tracking_words * tt_RELIABLE_BITMAP_WORD_BITS;
-        if (window != 0 && window < bound) {
+        if (window == 0) {
+            continue; // matched, but announced no window of its own - see this function's own doc comment
+        }
+        if (!announced || window < bound) {
             bound = window;
+            announced = true;
         }
     }
-    return bound;
+    return announced ? bound : tt_RELIABLE_BITMAP_BITS;
 }
 
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {

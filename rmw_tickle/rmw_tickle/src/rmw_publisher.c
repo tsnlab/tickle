@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h> // getenv()/strtoull() - resolve_max_blocking_ns()
 #include <string.h>
 #include <time.h> // clock_gettime()/struct timespec/nanosleep() - rmw_publisher_wait_for_all_acked()
 
@@ -122,13 +123,72 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
 }
 
 // DDS QoS policy coverage inventory (rmw_tickle/PLAN.md, 2026-09-21) gap 2 - KEEP_ALL conceptually
-// asks for "retain everything," which a fixed-capacity cache can't literally do; matches the same
-// "far past the old 64 ceiling" order of magnitude already established for -K 8192 in examples/
-// perf_hil/tickle/reliable_throughput/client.c's own MAX_RELIABLE_DEPTH (and COMPARISON.MD §6 item
-// 9/10's own already-measured ~12.2MB cost for that same figure - not a new cost, the same
-// already-understood one applied here). A large-but-still-bounded cache, not literally unbounded,
-// is the honest approximation the user chose over rejecting KEEP_ALL outright for Publishers.
-#define RMW_TICKLE_KEEP_ALL_DEPTH 8192
+// asks for "retain everything," which a fixed-capacity cache can't literally do. A large-but-still-
+// bounded cache, not literally unbounded, is the honest approximation the user chose over rejecting
+// KEEP_ALL outright for Publishers.
+//
+// Phase 3 step 3 - "how large" turns out to depend on which policy is actually consuming the depth,
+// so the single 8192 this used to be is now two constants:
+//
+//   DURABLE: a TRANSIENT_LOCAL Publisher replays its whole retained range to each late joiner
+//   (deliver_durability_backlog(), tickle.c walks oldest_seq_no..newest_seq_no), so here depth is
+//   literally "how much history a late joiner gets" and KEEP_ALL's "retain everything" cashes out
+//   as a real, observable difference for every extra slot. This keeps the original 8192 - the same
+//   order of magnitude as MAX_RELIABLE_DEPTH in examples/perf_hil/tickle/reliable_throughput/
+//   client.c, at COMPARISON.MD §6 item 9/10's own already-measured ~12.2MB.
+//
+//   VOLATILE: depth past the ack window is memory that can never change behavior. KEEP_ALL's
+//   back-pressure blocks at keep_all_bound() = min(cache depth, smallest announced tracking
+//   window) (tickle.c), and rmw announces RMW_TICKLE_TRACKING_WORDS * 64 = 1024 samples, so a
+//   reliable-but-volatile Publisher can never accumulate more than 1024 unacknowledged samples no
+//   matter how deep its cache is. Retransmits are bounded by the same window. 8192 slots therefore
+//   bought 7168 slots of arena (~10.5MB) that nothing could ever reach.
+//
+// These two and RMW_TICKLE_TRACKING_WORDS (rmw_tickle.h) are coupled in one direction: raising the
+// tracking window above _VOLATILE's 2x headroom makes this the binding limit instead of the window,
+// which silently lowers the blocking bound - so raise both together. Lowering the window is safe,
+// it just leaves more unreachable headroom here.
+#define RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE 8192
+#define RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE (2 * RMW_TICKLE_TRACKING_WORDS * tt_RELIABLE_BITMAP_WORD_BITS)
+
+// Phase 3 step 3 - core calls this from inside tt_Node_poll() (so context_impl->node_mutex is
+// already held, same as check_publisher_deadline() above) the moment a KEEP_ALL Publisher that had
+// refused a write becomes writable again. tt_Publisher.writable_callback's own doc comment limits a
+// callback to "signal and return" - it must not re-enter TickLE - which is exactly all this does:
+// bump the generation rmw_publish()'s wait loop watches, and broadcast.
+//
+// Taking wait_mutex here while holding node_mutex is the established producer order in this package
+// (rmw_tickle_context_impl_t's own doc comment: update entity-local state under the fine-grained
+// lock, *then* take wait_mutex just to broadcast). rmw_publish()'s waiter below is written to match
+// it, which is what keeps the two from deadlocking - see its own comment.
+static void publisher_writable_callback(struct tt_Publisher* pub, void* param) {
+    (void)pub;
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)param;
+    rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    pub_impl->writable_generation++;
+    pthread_cond_broadcast(&context_impl->wait_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+}
+
+// How long rmw_publish() may block when a KEEP_ALL Publisher refuses a write, in nanoseconds.
+// RMW_TICKLE_MAX_BLOCKING_MS overrides RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT; "0" is meaningful (never
+// block, fail immediately with RMW_RET_TIMEOUT), which is why this can't use a 0-as-unset sentinel
+// and checks the string itself instead. Anything unparseable or out of range falls back to the
+// default rather than failing publisher creation: a malformed tuning knob shouldn't stop a node
+// from starting, and the value only ever costs latency, never correctness.
+static uint64_t resolve_max_blocking_ns(void) {
+    const char* env = getenv("RMW_TICKLE_MAX_BLOCKING_MS");
+    if (NULL == env || '\0' == env[0]) {
+        return (uint64_t)RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT * (uint64_t)tt_MILLISECOND;
+    }
+    char* end = NULL;
+    unsigned long long blocking_ms = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || blocking_ms > RMW_TICKLE_MAX_BLOCKING_MS_LIMIT) {
+        return (uint64_t)RMW_TICKLE_MAX_BLOCKING_MS_DEFAULT * (uint64_t)tt_MILLISECOND;
+    }
+    return (uint64_t)blocking_ms * (uint64_t)tt_MILLISECOND;
+}
 
 // Split out of rmw_create_publisher() below purely to keep that function's own cognitive
 // complexity under clang-tidy's threshold - see rmw_tickle_publisher_t.reliable_cache's own doc
@@ -150,9 +210,11 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     // below (defaulting to tt_MAX_RELIABLE_HISTORY=64 if ->depth was also unset) - a real "reject
     // explicitly, never silently downgrade" violation (this file's own design philosophy, rmw_
     // qos.c's header comment). Honored here instead of rejected, at the user's own explicit choice.
+    bool keep_all = RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history;
+    bool durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
     size_t depth;
-    if (RMW_QOS_POLICY_HISTORY_KEEP_ALL == qos_profile->history) {
-        depth = RMW_TICKLE_KEEP_ALL_DEPTH;
+    if (keep_all) {
+        depth = durable ? (size_t)RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE : (size_t)RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE;
     } else {
         depth = qos_profile->depth != RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT ? qos_profile->depth
                                                                           : (size_t)tt_MAX_RELIABLE_HISTORY;
@@ -201,7 +263,20 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     pub_impl->reliable_cache->depth = (uint16_t)depth;
     pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
     pub_impl->tickle_publisher.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
-    pub_impl->tickle_publisher.durable = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL == qos_profile->durability;
+    pub_impl->tickle_publisher.durable = durable;
+
+    // Phase 3 step 3 - the half of HISTORY.KEEP_ALL that sizing the cache above can't express: with
+    // this set, core refuses a write (tt_RET_WOULD_BLOCK) rather than evicting a sample no matched
+    // Subscriber has acknowledged yet, which is what makes "keep all" a promise instead of a larger
+    // ring buffer. rmw_publish() below turns that refusal into a bounded wait. Only meaningful for a
+    // RELIABLE Publisher - a Subscriber that never acknowledges can't hold anything back - so a
+    // DURABLE-but-BEST_EFFORT KEEP_ALL Publisher keeps its deep cache and its non-blocking writes,
+    // which is the only behavior it could have.
+    pub_impl->tickle_publisher.keep_all = keep_all && pub_impl->tickle_publisher.reliable;
+    if (pub_impl->tickle_publisher.keep_all) {
+        pub_impl->tickle_publisher.writable_callback = publisher_writable_callback;
+        pub_impl->tickle_publisher.writable_callback_param = pub_impl;
+    }
     return true;
 }
 
@@ -287,6 +362,11 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     pub_impl->rmw_publisher.topic_name = rcutils_strdup(topic_name, *allocator);
     pub_impl->rmw_publisher.options = *publisher_options;
     pub_impl->rmw_publisher.can_loan_messages = false;
+    // Phase 3 step 3 - resolved once here rather than per publish: getenv() on the hot path would
+    // be both wasteful and a lie (the value can't change meaningfully mid-run anyway). Set for every
+    // Publisher, not just KEEP_ALL ones, so publish_blocking()'s own diagnostics can quote it
+    // without first having to ask which kind it is.
+    pub_impl->max_blocking_ns = resolve_max_blocking_ns();
     if (NULL == pub_impl->rmw_publisher.topic_name) {
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         allocator->deallocate(pub_impl, allocator->state);
@@ -457,6 +537,137 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     return RMW_RET_OK;
 }
 
+// Phase 3 step 3 - the one place that reports "a KEEP_ALL publish gave up". Split out so the two
+// call sites in publish_blocking() below word it identically.
+//
+// The message matters more than the code here, and not for the usual reasons. rclcpp turns any
+// non-OK rmw return into a generic exception (publisher.hpp's own `if (RCL_RET_OK != status)
+// throw_from_rcl_error(...)`), and only BAD_ALLOC/INVALID_ARGUMENT/INVALID_ROS_ARGS get their own
+// exception types - RMW_RET_TIMEOUT lands in the catch-all rclcpp::exceptions::RCLError. Worse,
+// throw_from_rcl_error() throws a bare std::runtime_error with *no* text at all if the rcutils error
+// state happens to be unset. So for an application author this string is the entire diagnosis, and
+// it says what was actually wrong (a Subscriber isn't keeping up), not just which call failed.
+static rmw_ret_t publish_timed_out(const rmw_tickle_publisher_t* pub_impl, uint64_t waited_ns) {
+    RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+        "rmw_tickle: HISTORY.KEEP_ALL publisher on topic '%s' blocked %ums waiting for subscriber "
+        "acknowledgements and gave up - every retained sample is still unacknowledged, which means a "
+        "matched subscriber is too slow or has stalled. Publish faster than a subscriber can take and "
+        "KEEP_ALL has nothing left to do but wait. Raise RMW_TICKLE_MAX_BLOCKING_MS (currently %ums, 0 "
+        "means never block), use HISTORY.KEEP_LAST to drop old samples instead, or fix the subscriber.",
+        pub_impl->rmw_publisher.topic_name, (unsigned)(waited_ns / (uint64_t)tt_MILLISECOND),
+        (unsigned)(pub_impl->max_blocking_ns / (uint64_t)tt_MILLISECOND));
+    return RMW_RET_TIMEOUT;
+}
+
+// Phase 3 step 3 - one write attempt under node_mutex, split out of publish_blocking() below so
+// that function stays a plain loop. Returns tt_Publisher_publish()'s own code.
+//
+// Unusual contract, and the reason it's worth reading before publish_blocking(): on
+// tt_RET_WOULD_BLOCK this returns with context_impl->wait_mutex STILL HELD, and *generation set to
+// the writable_generation observed under it. That is not tidiness lost - it is the whole
+// correctness argument. The refusal is cleared by an ACKNACK that poll_thread processes under
+// node_mutex, so node_mutex cannot be held while waiting (the wait could only end via work that
+// can't start until the wait ends). But merely dropping it opens a window where the wakeup lands
+// between the refusal and the sleep and is lost, stalling a publisher for the full timeout instead
+// of microseconds. Taking wait_mutex *before* releasing node_mutex closes it: the producer
+// (publisher_writable_callback()) runs under node_mutex and then takes wait_mutex to bump the
+// generation and broadcast, so it is either already counted in *generation, or still blocked on
+// wait_mutex until pthread_cond_timedwait() releases it. node_mutex -> wait_mutex is also the
+// package-wide producer order (rmw_tickle_context_impl_t's own doc comment), so this cannot
+// deadlock against it; the reverse order is what would.
+static tt_ret_t publish_attempt(rmw_tickle_publisher_t* pub_impl, void* tickle_buf, uint64_t* generation) {
+    rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
+
+    tt_Node_interrupt(&context_impl->tickle_node);
+    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_ret_t ret = tt_Publisher_publish(&pub_impl->tickle_publisher, (struct tt_Data*)tickle_buf);
+    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.last_activity_time's own doc comment.
+    // Under the same lock check_publisher_deadline() reads it under, harmless to set even when
+    // deadline_period_ns is 0 (unused in that case).
+    if (tt_RET_OK == ret) {
+        pub_impl->last_activity_time = tt_get_ns();
+    }
+    if (tt_RET_WOULD_BLOCK == ret) {
+        pthread_mutex_lock(&context_impl->wait_mutex);
+        *generation = pub_impl->writable_generation;
+    }
+    pthread_mutex_unlock(&context_impl->node_mutex);
+    return ret;
+}
+
+// Sleeps until this Publisher is reported writable again or `deadline` passes, and returns true if
+// it was woken rather than timed out. Called with wait_mutex held (see publish_attempt() above) and
+// always returns having released it.
+//
+// Loops on the generation rather than trusting a single wake: pthread_cond_timedwait() may return
+// spuriously, and wait_cond is broadcast for every waitable thing in this context (subscriber
+// queues, guard conditions, events - rmw_tickle_context_impl_t's own doc comment), so the
+// overwhelming majority of wakeups here belong to somebody else.
+static bool wait_for_writable(rmw_tickle_publisher_t* pub_impl, uint64_t generation, const struct timespec* deadline) {
+    rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
+
+    int wait_ret = 0;
+    while (generation == pub_impl->writable_generation && 0 == wait_ret) {
+        wait_ret = pthread_cond_timedwait(&context_impl->wait_cond, &context_impl->wait_mutex, deadline);
+    }
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+
+    // ETIMEDOUT is the expected failure. Any other (there is no legitimate one here - EINVAL would
+    // mean the condvar or the deadline is malformed) is treated the same way, so a broken wait
+    // degrades to "give up once more attempt has been made" rather than an unbounded spin.
+    return 0 == wait_ret;
+}
+
+// Fills in `deadline` - CLOCK_REALTIME, not CLOCK_MONOTONIC. wait_cond is initialised with a NULL
+// attr (rmw_init.c), so pthread_cond_timedwait() measures against CLOCK_REALTIME, and every other
+// timed waiter in this package computes its deadline the same way. A monotonic clock would be the
+// better default, but switching it has to change the condvar and all of those waiters at once to
+// stay coherent - it is not something this path can do unilaterally.
+static void writable_deadline(uint64_t max_blocking_ns, struct timespec* deadline) {
+    clock_gettime(CLOCK_REALTIME, deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
+    deadline->tv_sec += (time_t)(max_blocking_ns / (uint64_t)tt_SECOND);
+    deadline->tv_nsec += (long)(max_blocking_ns % (uint64_t)tt_SECOND);
+    deadline->tv_sec += deadline->tv_nsec / (long)tt_SECOND;
+    deadline->tv_nsec %= (long)tt_SECOND;
+}
+
+// Phase 3 step 3 - the publish attempt plus the bounded retry HISTORY.KEEP_ALL needs, split out of
+// rmw_publish() below so that function keeps to argument checking and message conversion. Called
+// with pub_impl->publish_mutex held (it reads the shared scratch buffer) and neither node_mutex nor
+// wait_mutex held. Returns an rmw code directly, with RMW_SET_ERROR_MSG() already called on every
+// failure path. See publish_attempt() for the locking, which is the subtle part.
+static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle_buf) {
+    bool deadline_set = false;
+    bool expired = false;
+    struct timespec deadline;
+
+    while (true) {
+        uint64_t generation = 0;
+        tt_ret_t ret = publish_attempt(pub_impl, tickle_buf, &generation); // holds wait_mutex iff WOULD_BLOCK
+        if (tt_RET_OK == ret) {
+            return RMW_RET_OK;
+        }
+        if (tt_RET_WOULD_BLOCK != ret) {
+            RMW_SET_ERROR_MSG("tt_Publisher_publish() failed");
+            return RMW_RET_ERROR;
+        }
+
+        // Refused: every retained sample is still unacknowledged by some matched Subscriber. Note
+        // that `expired` gives the deadline one attempt past its own expiry rather than reporting a
+        // timeout straight out of the wait - a sample that became publishable in the same instant
+        // should go out, not be reported as a failure.
+        if (expired || 0 == pub_impl->max_blocking_ns) {
+            pthread_mutex_unlock(&pub_impl->node->context_impl->wait_mutex);
+            return publish_timed_out(pub_impl, pub_impl->max_blocking_ns);
+        }
+        if (!deadline_set) {
+            writable_deadline(pub_impl->max_blocking_ns, &deadline);
+            deadline_set = true;
+        }
+        expired = !wait_for_writable(pub_impl, generation, &deadline); // releases wait_mutex
+    }
+}
+
 rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
                       rmw_publisher_allocation_t* allocation) {
     (void)allocation; // pre-allocated-message optimization, not implemented
@@ -489,23 +700,9 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         return RMW_RET_ERROR;
     }
 
-    tt_Node_interrupt(&pub_impl->node->context_impl->tickle_node);
-    pthread_mutex_lock(&pub_impl->node->context_impl->node_mutex);
-    tt_ret_t ret = tt_Publisher_publish(&pub_impl->tickle_publisher, (struct tt_Data*)tickle_buf);
-    // QoS roadmap #2 (DEADLINE) - see rmw_tickle_publisher_t.last_activity_time's own doc comment.
-    // Under the same lock check_publisher_deadline() reads it under, harmless to set even when
-    // deadline_period_ns is 0 (unused in that case).
-    if (ret == tt_RET_OK) {
-        pub_impl->last_activity_time = tt_get_ns();
-    }
-    pthread_mutex_unlock(&pub_impl->node->context_impl->node_mutex);
+    rmw_ret_t ret = publish_blocking(pub_impl, tickle_buf);
     pthread_mutex_unlock(&pub_impl->publish_mutex);
-
-    if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Publisher_publish() failed");
-        return RMW_RET_ERROR;
-    }
-    return RMW_RET_OK;
+    return ret;
 }
 
 // A real rclcpp::Publisher construction (rcl_publisher_init()) calls this unconditionally, not

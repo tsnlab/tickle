@@ -1881,6 +1881,47 @@ static void test_keep_all_bound_follows_smallest_window(void) {
     EXPECT_EQ_U32(64, tt_Publisher_unacked_bound(&pub));
 }
 
+// The other direction, which every case above misses by only ever using windows *narrower* than
+// tt_RELIABLE_BITMAP_BITS: a Subscriber announcing a window wider than the protocol default must
+// raise the bound, not be silently clamped to it.
+//
+// Regression - this was wrong (the bound started at tt_RELIABLE_BITMAP_BITS and could only be
+// lowered), and no core test caught it because they all used narrow windows. rmw_tickle announces
+// RMW_TICKLE_TRACKING_WORDS = 16 words = 1024 samples on every subscription, so in the one
+// configuration that actually ships, a KEEP_ALL Publisher blocked after 256 unacknowledged samples
+// instead of 1024 - a quarter of the in-flight depth its peers could really recover from. Found by
+// rmw_tickle's own test_keep_all_blocking.c counting the writes it got before the refusal.
+static void test_keep_all_bound_honors_wide_window(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 2048);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // 16 words = 1024, above the 256 default
+
+    EXPECT_EQ_U32(1024, tt_Publisher_unacked_bound(&pub));
+
+    // ...and the wider bound is what publishing actually gets: 1024 accepted, the 1025th refused.
+    uint32_t value = 1;
+    for (int i = 0; i < 1024; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    }
+    EXPECT_TRUE(!tt_Publisher_writable(&pub));
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    // A matched Subscriber that announced no window at all doesn't drag the bound down to zero -
+    // it just doesn't participate, leaving the wide one standing.
+    struct tt_PeerAck* silent = claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID + 1);
+    EXPECT_TRUE(silent != NULL);
+    silent->tracking_words = 0;
+    EXPECT_EQ_U32(1024, tt_Publisher_unacked_bound(&pub));
+
+    // With nothing matched, the protocol default is still the answer.
+    forget_peer_ack(&pub, REMOTE_NODE_ID, 0, /*match_any_entity=*/true);
+    EXPECT_EQ_U32(tt_RELIABLE_BITMAP_BITS, tt_Publisher_unacked_bound(&pub));
+}
+
 // The writable callback fires once on the refusal-to-writable transition, on the node's own thread
 // (here: from inside process_acknack()), and not once per ACKNACK.
 static int writable_callback_count = 0;
@@ -2018,6 +2059,7 @@ int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
     test_keep_all_bound_follows_smallest_window();
+    test_keep_all_bound_honors_wide_window();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
     test_keep_all_still_honours_lifespan();
