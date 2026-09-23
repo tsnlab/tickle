@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790123996515,
+  "lastUpdate": 1790124000208,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -103163,6 +103163,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1825679,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d0263b493edb103f520dd209692f78a05e4e09d8",
+          "message": "tickle.c: read the ack table through a const pointer, not a uintptr_t cast\n\ncheck-all failed on main (336c200): clang-tidy performance-no-int-to-ptr, from\ntt_Publisher_min_acked_seq_no() casting const away to reach min_peer_ack_seq_no(),\nwhich took a non-const Publisher only because it called find_peer_ack().\n\nIt only ever reads, so it takes a const pointer and inlines the lookup. No\nbehavior change. 18/18 both modes, clang-tidy clean in both.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T09:34:25+09:00",
+          "tree_id": "e3797c19f6b2e09c55f16d2d71ce180abc17be24",
+          "url": "https://github.com/tsnlab/tickle/commit/d0263b493edb103f520dd209692f78a05e4e09d8"
+        },
+        "date": 1790123999038,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1945599,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 1892118,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 1819608,
             "unit": "count"
           }
         ]
