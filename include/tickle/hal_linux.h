@@ -14,7 +14,23 @@
 
 // Linux-specific hardware abstraction layer structure
 struct tt_hal {
+    // The well-known port (_tt_CONFIG.port), shared with every other node on this host via
+    // SO_REUSEADDR. Broadcasts are addressed here, so this is how a node is reached before anyone
+    // knows anything about it. Receive-only in practice: nothing is ever sent from it.
     int sock;
+    // This node's own data port, bound to whatever the kernel hands out. Everything is sent from
+    // here, which is what makes a peer addressable: upsert_peer() records a peer at the source
+    // port of the packet it was heard on, so every peer learns this node's own port for free and
+    // a unicast can then reach this node specifically.
+    //
+    // Why it has to exist (2026-09-23, measured, not reasoned): with every node bound only to the
+    // shared port, two nodes on one host share an address, and a unicast to it is delivered by the
+    // kernel to exactly one of the two sockets - which may be the sender's own. Measured directly
+    // with two sockets bound to one UDP port with SO_REUSEADDR: a broadcast reaches both, a
+    // unicast reaches one. In the rmw_tickle benchmark that showed up as a Publisher receiving
+    // 10009 of its own 10010 datagrams while its Subscriber got 25, and - far worse - as roughly
+    // 10% of the stream going to the sender in runs that passed and were recorded as clean.
+    int data_sock;
     struct sockaddr_in broadcast_addr; // Precomputed once in tt_bind(), reused by every tt_send()
     // eventfd(2): tt_receive()'s poll() watches this alongside sock, and tt_wake_signal() writes
     // to it to interrupt a blocked receive. Deliberately not a loopback UDP socket the way

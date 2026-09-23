@@ -65,6 +65,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     // See hal_linux.c's own tt_bind() comment on this same line - node->hal.sock relies on the
     // identical "only touched after it's known-good" convention.
     node->hal.wake_sock = -1;
+    node->hal.data_sock = -1;
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -110,6 +111,36 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.broadcast_addr.sin_family = AF_INET;
     node->hal.broadcast_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.broadcast);
     node->hal.broadcast_addr.sin_port = htons(_tt_CONFIG.port);
+
+    // This node's own data port - mirrors hal_linux.c's own data_sock, for the same measured
+    // reason (see struct tt_hal.data_sock, hal_linux.h): everything is sent from here so a peer
+    // records this node at a port that belongs to it alone, which is what lets a unicast reach
+    // this node rather than whichever node on the host the stack happens to pick. Port 0 lets the
+    // stack choose, and no SO_REUSEADDR, because a second node sharing this port is exactly the
+    // failure being prevented.
+    node->hal.data_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (node->hal.data_sock < 0) {
+        TT_LOG_ERROR("Cannot create UDP data socket: %d", errno);
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
+    optval = 1;
+    if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_BROADCAST, (const void*)&optval, sizeof(int)) < 0) {
+        TT_LOG_ERROR("Cannot set data socket broadcast: %d", errno);
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
+
+    struct sockaddr_in data_addr;
+    data_addr.sin_family = AF_INET;
+    data_addr.sin_addr.s_addr = inet_addr(_tt_CONFIG.addr);
+    data_addr.sin_port = 0; // stack-assigned
+    if (bind(node->hal.data_sock, (struct sockaddr*)&data_addr, sizeof(struct sockaddr_in)) < 0) {
+        TT_LOG_ERROR("Cannot bind data socket to %s:0: %d", _tt_CONFIG.addr, errno);
+        tt_close(node);
+        return tt_RET_IO_ERROR;
+    }
     node->hal.broadcast_addr.sin_len = sizeof(node->hal.broadcast_addr);
 
     // See hal_linux.c's own tt_bind() comment - a private loopback socket purely so
@@ -146,6 +177,11 @@ tt_ret_t tt_bind(struct tt_Node* node) {
 }
 
 void tt_close(struct tt_Node* node) {
+    if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
+        TT_LOG_WARNING("Cannot close data socket: %d", errno);
+    }
+    node->hal.data_sock = -1;
+
     if (close(node->hal.sock) < 0) {
         TT_LOG_ERROR("Cannot close socket: %s", strerror(errno));
     }
@@ -155,7 +191,7 @@ void tt_close(struct tt_Node* node) {
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
-    return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
+    return (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
                            sizeof(struct sockaddr_in));
 }
 
@@ -167,7 +203,7 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     addr.sin_port = htons(port);
     addr.sin_len = sizeof(addr);
 
-    return (int32_t)sendto(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+    return (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
 }
 
 int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
@@ -199,10 +235,13 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
         msg.msg_namelen = sizeof(node->hal.broadcast_addr);
     }
 
-    return (int32_t)sendmsg(node->hal.sock, &msg, 0);
+    return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
 }
 
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+    // Which socket this call will read from - see the select() below. Defaults to the well-known
+    // one so the non-polling path behaves exactly as it did before data_sock existed.
+    int read_fd = node->hal.sock;
     // Same "0 for no timeout" (block until data arrives) contract fix as hal_linux.c's poll()
     // rewrite, using lwIP's select() (LWIP_COMPAT_SOCKETS aliases it the same as the real thing)
     // since lwIP doesn't provide poll().
@@ -221,7 +260,11 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         FD_ZERO(&readfds);
         FD_SET(node->hal.sock, &readfds);
         FD_SET(node->hal.wake_sock, &readfds);
+        FD_SET(node->hal.data_sock, &readfds);
         int maxfd = node->hal.sock > node->hal.wake_sock ? node->hal.sock : node->hal.wake_sock;
+        if (node->hal.data_sock > maxfd) {
+            maxfd = node->hal.data_sock;
+        }
 
         int select_ret = select(maxfd + 1, &readfds, NULL, NULL, wait_time_ptr);
         if (select_ret == 0) {
@@ -243,11 +286,17 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
             (void)recvfrom(node->hal.wake_sock, &discard, sizeof(discard), 0, (struct sockaddr*)&from, &from_len);
             return -3; // Interrupted
         }
+        // Broadcasts land on the well-known socket, unicast on this node's own. Preferring the
+        // well-known one when both are ready is safe: select() is level-triggered, so whatever is
+        // not read here is still ready on the next call.
+        if (!FD_ISSET(node->hal.sock, &readfds) && FD_ISSET(node->hal.data_sock, &readfds)) {
+            read_fd = node->hal.data_sock;
+        }
     }
 
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
-    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
+    int32_t ret = (int32_t)recvfrom(read_fd, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
@@ -269,12 +318,17 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     // until nothing's left" loop forever. So gate the read on a zero-timeout select() (the same
     // lwIP primitive tt_receive() uses, just non-blocking): only recvfrom() when it reports the
     // socket readable, otherwise report "nothing waiting" immediately.
+    // Both sockets, because either can have something waiting: broadcasts land on the well-known
+    // one and unicast on this node's own data socket. Draining only one leaves the other's backlog
+    // to the next select(), which is the per-packet round trip drain_rx() exists to avoid.
     struct timeval no_wait = {0, 0};
     fd_set readfds;
     FD_ZERO(&readfds);
     FD_SET(node->hal.sock, &readfds);
+    FD_SET(node->hal.data_sock, &readfds);
+    int maxfd = node->hal.sock > node->hal.data_sock ? node->hal.sock : node->hal.data_sock;
 
-    int select_ret = select(node->hal.sock + 1, &readfds, NULL, NULL, &no_wait);
+    int select_ret = select(maxfd + 1, &readfds, NULL, NULL, &no_wait);
     if (select_ret == 0) {
         return -1; // Nothing waiting
     }
@@ -285,9 +339,11 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
         return -2; // I/O error
     }
 
+    int read_fd = FD_ISSET(node->hal.sock, &readfds) ? node->hal.sock : node->hal.data_sock;
+
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
-    int32_t ret = (int32_t)recvfrom(node->hal.sock, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
+    int32_t ret = (int32_t)recvfrom(read_fd, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
 
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);

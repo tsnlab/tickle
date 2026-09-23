@@ -67,6 +67,14 @@ jobs:
         continue-on-error: true
         run: make fuzz FUZZ_ARGS='-max_total_time=45 -error_exitcode=1'
 
+      # Real sockets, two nodes, one host - the case the unit suite cannot reach because it mocks
+      # the HAL away, and the case a bug lived in until a benchmark found it. No root needed, so
+      # unlike the netns tier below it is not a privilege question whether this runs.
+      - name: Integration - two nodes on one host
+        id: itest_samehost
+        continue-on-error: true
+        run: make test-samehost
+
       - name: Integration - Linux HAL over netns
         id: itest_linux
         continue-on-error: true
@@ -130,6 +138,7 @@ jobs:
             'Unit tests=${{ steps.unit.outcome }}' \
             'Sanitizers=${{ steps.sanitize.outcome }}' \
             'Fuzz smoke=${{ steps.fuzz.outcome }}' \
+            'Same-host=${{ steps.itest_samehost.outcome }}' \
             'Integration Linux=${{ steps.itest_linux.outcome }}' \
             'Integration FreeRTOS=${{ steps.itest_freertos.outcome }}'; do
             name="${s%%=*}"; outcome="${s#*=}"

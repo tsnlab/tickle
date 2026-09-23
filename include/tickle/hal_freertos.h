@@ -17,7 +17,12 @@
 // option aliases socket()/bind()/sendto()/... straight onto lwip_socket()/lwip_bind()/... with
 // the same signatures as the real POSIX calls).
 struct tt_hal {
+    // Mirrors hal_linux.h's own sock/data_sock split - see its comments for the measured reason
+    // the second socket exists. The hazard is not Linux-specific: it is what happens whenever two
+    // nodes share a host and therefore an address, so this target gets the same treatment rather
+    // than an exemption it would have to be remembered.
     int sock;
+    int data_sock;
     struct sockaddr_in broadcast_addr; // Precomputed once in tt_bind(), reused by every tt_send()
     // Mirrors hal_linux.h's own wake_sock/wake_addr - see its comment. lwIP has
     // LWIP_NETIF_LOOPBACK enabled (platform/freertos/lwipopts.h), so the same loopback-UDP-socket

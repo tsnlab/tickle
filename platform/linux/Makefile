@@ -125,7 +125,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost lint clean fuzz sanitize
 
 all:
 	$(MAKE) library
@@ -179,6 +179,12 @@ ALL_OBJS = $(OBJS) $(ALL_EXAMPLE_OBJS)
 # Pull in the auto-generated per-object dependency files (headers each .o actually used),
 # so changing a header rebuilds everything that includes it. Silently ignored on a clean tree.
 -include $(ALL_OBJS:.o=.d)
+
+# Two nodes on one host, over loopback. Needs no root and no namespaces, unlike test.sh, so this
+# one can run on every push - see test_samehost.sh's own header for the bug it exists to catch and
+# why a test that avoided the problem is what let that bug reach a benchmark.
+test-samehost: examples
+	./test_samehost.sh
 
 test: $(TEST_BINS)
 	@for bin in $(TEST_BINS); do \
