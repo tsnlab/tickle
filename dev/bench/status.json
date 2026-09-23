@@ -1,6 +1,30 @@
 {
   "history": [
     {
+      "commit": "571ce096c232b0b7d930b709d081cf3caeca135c",
+      "commit_short": "571ce096c23",
+      "date": "2026-09-23T07:06Z",
+      "perf": {
+        "be_latency_ms": 0.211,
+        "be_throughput_recv": 1925567,
+        "build": "pass",
+        "commit": "571ce096c232b0b7d930b709d081cf3caeca135c",
+        "commit_short": "571ce096c23",
+        "date": "2026-09-23T07:06Z",
+        "durability_durable_recv": 20,
+        "durability_volatile_recv": 0,
+        "history_beyond_depth_recv": 155,
+        "integration": "pass",
+        "lifespan_lost_1_5s": 0,
+        "liveliness_detect_2s_ms": 2586.365,
+        "rel_latency_ms": 0.234,
+        "rel_loss_1pct": 0.0,
+        "rel_loss_5pct": 0.2,
+        "rel_throughput_recv_0pct": 1710294,
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35829538303"
+      }
+    },
+    {
       "buildtest": {
         "branch": "main",
         "commit": "3cbbdb84682545f6427aa65933ded6f6fceac5a5",
@@ -3395,5 +3419,5 @@
       }
     }
   ],
-  "updated": "2026-09-23 06:57 UTC"
+  "updated": "2026-09-23 07:07 UTC"
 }
