@@ -88,9 +88,13 @@ int main(int argc, char** argv) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
-            // Phase 2 (rmw_tickle/PLAN.md) - RELIABLE tracking window in samples (256/1024/4096),
-            // so one HIL sweep can compare them. 0/absent keeps TickLE core's own embedded-first
-            // default (tt_RELIABLE_BITMAP_BITS), i.e. exactly what earlier runs measured.
+            // Phase 2 (rmw_tickle/PLAN.md) - RELIABLE tracking window in samples, so one HIL
+            // sweep can compare them. 0/absent keeps TickLE core's own embedded-first default
+            // (tt_RELIABLE_BITMAP_BITS), i.e. exactly what earlier runs measured.
+            //
+            // Keep it at or below the *client's* own -K depth: tracking further back than the
+            // Publisher retains can only ever be skipped, never recovered. Measured at -K 1024:
+            // -w 1024 lost nothing over 6 runs, -w 4096 lost 191-368 per run.
             window_samples = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
     }

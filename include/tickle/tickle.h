@@ -962,6 +962,16 @@ struct tt_Subscriber { // extends endpoint
     // than one retry interval plus a round trip, which is what leaves an occasional burst
     // unrecoverable; a wider window is what fixes that.
     //
+    // Sizing rule, measured on real HIL (Phase 2, 2026-09-23) and not a bigger-is-better knob:
+    // **keep the window at or below the matched Publisher's own retained depth**
+    // (struct tt_ReliableCache.depth). Tracking further back than the Publisher still holds cannot
+    // recover anything - those samples are already evicted, so each one is answered with an
+    // eviction Heartbeat and skipped - while a Subscriber that keeps waiting on them recovers
+    // *less* than a narrower window would. Measured against a depth-1024 Publisher at maximum
+    // rate: a 1024-sample window lost nothing across 6 runs, a 4096-sample one lost 191-368 per
+    // run, and the loss equalled the Publisher's own evicted-request count exactly. A Publisher
+    // logs a warning when a matching Subscriber announces a window deeper than it retains.
+    //
     // NULL/0 (tt_Node_create_subscriber()'s own default) uses builtin_tracking[] below,
     // tt_RELIABLE_BITMAP_BITS wide - the embedded-first default (PLAN.md's Project Goal 1): a
     // microcontroller nowhere near that rate shouldn't pay for a window it can't use. A Linux-class

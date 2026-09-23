@@ -492,6 +492,12 @@ typedef struct rmw_tickle_publisher_t {
 // intervals rather than the ~1.35ms the 256-sample core default lasts. 8KB per subscription
 // (tt_MAX_PEER_COUNT windows) - Linux-class memory, not microcontroller memory, which is exactly
 // why core keeps the narrower default (Project Goal 1) and rmw_tickle opts in here (Goal 5).
+//
+// Paired with the depth a matched Publisher is expected to retain, not maximised: tracking further
+// back than the Publisher still holds recovers nothing and measurably *less* than a narrower
+// window (struct tt_Subscriber.tracking_bitmaps' own sizing rule, tickle.h). A remote Publisher
+// keeping a shallower history than this - a small ROS HISTORY depth, say - makes the excess
+// unusable rather than harmful to it, and that Publisher logs a warning saying so.
 #define RMW_TICKLE_TRACKING_WORDS 16
 
 typedef struct rmw_tickle_queued_message_t {
