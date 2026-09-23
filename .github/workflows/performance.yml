@@ -185,7 +185,7 @@ jobs:
       # numbers) even when it aborts early; hand it to the publish job below.
       - name: Upload dashboard fragment
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: perf-frag
           path: perf-frag.json
@@ -207,7 +207,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download dashboard fragment
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: perf-frag
 
