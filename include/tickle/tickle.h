@@ -171,6 +171,19 @@ struct tt_Node {
     struct tt_Discovery* discovery;
     tt_DISCOVERY_CALLBACK discovery_callback;
     void* discovery_callback_param;
+
+    // Diagnostic counters, not protocol state, printed once by tt_Node_destroy(). They exist to
+    // split one specific question that nothing else can answer from outside: when a Subscriber
+    // delivers nothing, did its socket receive the datagrams at all? If tx_datagrams on the
+    // sending node is large while rx_datagrams on the receiving one is ~0, the datagrams never
+    // arrived and the problem is below TickLE. If they arrived and nothing was delivered, it is
+    // above the socket. rx_self_sent separates a third case that same-host deployments can hit:
+    // every node binds the same well-known port, so a unicast addressed to a host with two nodes
+    // on it can be handed by the kernel to the sender's own socket, which shows up here as a
+    // sender receiving its own traffic back.
+    uint64_t tx_datagrams;
+    uint64_t rx_datagrams;
+    uint64_t rx_self_sent;
 };
 
 struct tt_Endpoint {

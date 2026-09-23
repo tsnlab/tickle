@@ -191,9 +191,11 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
 
     bool sent_ok = true;
     if (peer_count == 0) {
+        node->tx_datagrams++;
         sent_ok = tt_send(node, node->tx_buffer, len) >= 0;
     } else {
         for (uint8_t i = 0; i < peer_count; i++) {
+            node->tx_datagrams++;
             if (tt_send_to(node, node->tx_buffer, len, peers[i].ip, peers[i].port) < 0) {
                 sent_ok = false;
                 break;
@@ -1059,6 +1061,10 @@ static void reset_node_state(struct tt_Node* node) {
     node->discovery = NULL;
     node->discovery_callback = NULL;
     node->discovery_callback_param = NULL;
+
+    node->tx_datagrams = 0;
+    node->rx_datagrams = 0;
+    node->rx_self_sent = 0;
 
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->tx_tail = sizeof(struct tt_Header);
@@ -5092,6 +5098,9 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     // CALLRESPONSE, and so has to be threaded down per-submessage rather than dropping the whole
     // packet up front.
     bool self_sent = header->source == node->id;
+    if (self_sent) {
+        node->rx_self_sent++;
+    }
     TT_LOG_DEBUG("source: %d%s", header->source, self_sent ? " (self)" : "");
 
     // Liveliness evidence (2026-09-23, at the user's own direction): ANY validated packet from a
@@ -5152,6 +5161,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
 // Decodes and dispatches one just-received datagram of `len` bytes now sitting in node->rx_buffer.
 static tt_ret_t process_datagram(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port) {
     node->rx_tail = (uint32_t)len;
+    node->rx_datagrams++;
 
     TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                  (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
@@ -5384,6 +5394,12 @@ bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_Discovered
 }
 
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {
+    // One line, at the one moment the whole run's traffic is known. Cheap enough to be
+    // unconditional, and the question it answers - did anything arrive at all - is the first one
+    // asked whenever a node delivered nothing.
+    TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu", node->id,
+                (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
+                (unsigned long)node->rx_self_sent);
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
