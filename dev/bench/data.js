@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790136200869,
+  "lastUpdate": 1790136204723,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -111322,6 +111322,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3622.714,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ec0ce809824498d0714f6a274337187af33b4366",
+          "message": "perf_hil/tickle: measure what the Subscriber could observe, not just what was sent\n\nUnder KEEP_ALL at 20-50% injected loss the scenario kept reporting a\nresidual 1-3 lost samples per run while every abandonment counter on both\nsides read zero - nothing evicted, nothing given up on, nothing refused.\nDumping which sequence numbers were missing settled it: always 1..3,\nnever the tail, never mid-stream.\n\nA Subscriber's WriterProxy is created by the first DATA that arrives and\ntakes its ack baseline from that sample, so it cannot know a sequence\nnumber it never saw was published. At 50% loss, seq 1 and 2 dropping\nmeans tracking starts at 3 with nothing to recover and nothing to report.\nBoth sides were telling the truth; only the harness, counting from seq 1,\ncalled it loss.\n\nSo the server reports both figures, every run, rather than one standing\nin for the other: lost/loss_pct as before, plus post_match_lost counted\nfrom the Subscriber's first observed sequence number, plus\nprematch_window so the gap between them is visible rather than inferred.\nReporting both is deliberate - the DDS harnesses have no such artefact,\nsince their reader match is symmetric and the writer waits for it, so\nswitching to the post-match figure alone would normalise away a\nTickLE-specific effect and flatter the comparison against implementations\nthat never had it.\n\nMeasured with this, 3 reps per cell: post-match loss is 0 in every\nKEEP_ALL cell at 20% and 50%, both rates, and raw loss equals the\npre-match window exactly. KEEP_LAST in the same cells loses 81,584-336,381\nsamples, which is real delivery loss - its own pre-match window is 0-4.\n\nTwo related harness fixes, both measurement parity rather than tuning:\n- The client waits for a matched Subscriber before publishing instead of\n  sleeping a fixed 2s, which is what cyclonedds' own client does via\n  wait_for_writer_match(). It narrows the window but does not close it:\n  a peer_acks entry proves only that we heard the Subscriber's announce,\n  not that it is tracking us. Measured, not assumed.\n- The drain ends when every matched peer has confirmed the last accepted\n  sample rather than after a fixed 3s, which is what a DDS writer's\n  wait_for_acknowledgments() does at teardown, and RESULT carries\n  drained=acked|timeout so a run that gave up is visible rather than\n  averaged in. The DDS harnesses don't do this yet, so until they do a\n  tail comparison across frameworks is asymmetric; Plan is adding the\n  equivalent before the final COMPARISON table.\n\nAlso adds peer_acks_end/peer_acks_min, which is what ruled out the\nhypothesis that the ack set was going empty mid-run and making\ntt_Publisher_is_acked_by_all_peers() vacuously true: it was 1 in 24 of 24\nruns.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T12:57:17+09:00",
+          "tree_id": "ae36908d72693d9fafdc1f6f25f14384de87efe2",
+          "url": "https://github.com/tsnlab/tickle/commit/ec0ce809824498d0714f6a274337187af33b4366"
+        },
+        "date": 1790136203490,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 1618.784,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2628.735,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3627.861,
             "unit": "ms"
           }
         ]
