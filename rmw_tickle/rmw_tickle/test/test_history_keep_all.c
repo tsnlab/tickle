@@ -53,6 +53,11 @@
 #define EXPECTED_KEEP_ALL_DEPTH_DURABLE 8192
 #define EXPECTED_KEEP_ALL_DEPTH_VOLATILE 2048
 
+// What a generated typesupport reports for a type the generator can bound. 76 is BenchData's own
+// figure (examples/perf_hil/tickle/common/Bench.h), i.e. a realistic fixed-layout telemetry type
+// rather than a round number.
+#define BOUNDED_TYPE_MAX_ENCODED 76
+
 struct fake_ros_msg {
     uint8_t value;
 };
@@ -99,6 +104,29 @@ static rosidl_typesupport_tickle_c_message_callbacks_t fake_callbacks = {
     .tickle_decode = (tt_DATA_DECODE)&fake_decode,
     .tickle_free = (tt_DATA_FREE)&fake_free,
 };
+
+// The same fake type, but reporting a real per-type maximum the way a generated typesupport does
+// for any type whose variable-length fields all resolve to a capacity. The one above leaves
+// tickle_max_encoded_size at its zero-initialised default, which IS the "no bound" marker - so
+// between them these two cover both sides of the decision without needing a second message shape.
+static rosidl_typesupport_tickle_c_message_callbacks_t fake_bounded_callbacks;
+
+static rosidl_message_type_support_t fake_bounded_handle = {
+    .data = &fake_bounded_callbacks,
+    .func = get_message_typesupport_handle_function,
+    .get_type_hash_func = NULL,
+    .get_type_description_func = NULL,
+    .get_type_description_sources_func = NULL,
+};
+
+static const rosidl_message_type_support_t* fake_bounded_type_support(void) {
+    fake_bounded_callbacks = fake_callbacks;
+    fake_bounded_callbacks.tickle_max_encoded_size = BOUNDED_TYPE_MAX_ENCODED;
+    if (NULL == fake_bounded_handle.typesupport_identifier) {
+        fake_bounded_handle.typesupport_identifier = rosidl_typesupport_tickle_c__identifier;
+    }
+    return &fake_bounded_handle;
+}
 
 static rosidl_message_type_support_t fake_handle = {
     .data = &fake_callbacks,
@@ -253,6 +281,32 @@ int main(void) {
                    pub_impl->reliable_cache->arena_size);
             assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         }
+
+        // A type the generator CAN bound uses that number, and does not consult the environment -
+        // there is nothing a human knows about a bounded type that beats a computed bound on it,
+        // and honouring a smaller hand-set value would cost retention in the one case we had the
+        // right answer for. Set the variable to something different from the generated figure so a
+        // pass can't come from the two agreeing by accident.
+        unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
+        const rosidl_message_type_support_t* bounded_ts = fake_bounded_type_support();
+        pub = rmw_create_publisher(node, bounded_ts, "keep_all_generated_bound", &qos, &pub_opts);
+        assert(NULL != pub);
+        pub_impl = (rmw_tickle_publisher_t*)pub->data;
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE,
+                                             tt_RELIABLE_RECORD_BYTES(BOUNDED_TYPE_MAX_ENCODED)) ==
+               pub_impl->reliable_cache->arena_size);
+        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity); // B1 intact
+        assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
+        assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+
+        setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "512", 1);
+        pub = rmw_create_publisher(node, bounded_ts, "keep_all_generated_wins", &qos, &pub_opts);
+        assert(NULL != pub);
+        pub_impl = (rmw_tickle_publisher_t*)pub->data;
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE,
+                                             tt_RELIABLE_RECORD_BYTES(BOUNDED_TYPE_MAX_ENCODED)) ==
+               pub_impl->reliable_cache->arena_size); // the generated 76, not the environment's 512
+        assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
         // KEEP_LAST must ignore it entirely - that is what keeps the variable's name honest.
         setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "76", 1);

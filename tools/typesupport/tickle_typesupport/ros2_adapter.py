@@ -69,6 +69,8 @@ point registration this depends on.
 
 import re
 
+from . import layout
+
 # A nested field's own ROS 2 struct name ("msg" is the only subfolder that can appear nested -
 # ROS 2 doesn't nest .srv types). Reads the nested WireStruct's own ros_pkg_name/ros_type_name
 # (resolve.py sets these on every struct it ever resolves as a nested field, regardless of which
@@ -101,6 +103,31 @@ def _ros2_sequence_scalar_type(scalar_type):
 
 def ros2_nested_struct_name(nested_struct):
     return f"{nested_struct.ros_pkg_name}__msg__{nested_struct.ros_type_name}"
+
+
+# The .tickle_max_encoded_size initialiser: either a real upper bound on this type's encoded
+# payload, or the "no such bound" marker.
+#
+# rmw_tickle reserves storage per retained sample and has, until now, had to assume TickLE's whole
+# single-datagram ceiling for every type, because nothing told it any better - tickle_encode_size()
+# needs an actual message. That costs a KEEP_ALL DURABLE publisher about 12 MB whether it carries a
+# 76-byte telemetry struct or a camera frame.
+#
+# layout.max_encoded_size() returns None for a type carrying a plain unbounded string, a
+# string-element array, or a nested type that hits either - see its own docstring. Marker rather
+# than a number for those, deliberately: a plain string has no capacity to reserve for, and the
+# runtime cap is 65535, forty-four times a datagram. Note this is NOT layout.max_wire_size(), which
+# counts such a string as its 2-byte prefix and so underestimates - sensor_msgs/msg/Image comes out
+# at 1430 there while having no real bound at all, and reserving 1430 for it would silently lose
+# retention on every longer message.
+def _max_encoded_size_literal(struct):
+    bound = layout.max_encoded_size(struct)
+    if bound is None or bound == 0:
+        # 0 IS the marker (see its own definition in message_type_support.h), so a genuinely empty
+        # message emits it too and reserves the ceiling it doesn't need. Named rather than written
+        # as a bare 0, so the emitted code says which of the two it means.
+        return "ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED"
+    return str(bound)
 
 
 def ros2_struct_name(ros_pkg, ros_subfolder, ros_type_name):
@@ -483,6 +510,7 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             f"    .tickle_encode = (tt_DATA_ENCODE)&{struct.c_name}_encode,",
             f"    .tickle_decode = (tt_DATA_DECODE)&{struct.c_name}_decode,",
             f"    .tickle_free = (tt_DATA_FREE)&{struct.c_name}_free,",
+            f"    .tickle_max_encoded_size = {_max_encoded_size_literal(struct)},",
             "};",
             "",
             "// .typesupport_identifier is set on first access below, not here - a plain (non-",

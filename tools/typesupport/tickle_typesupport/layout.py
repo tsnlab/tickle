@@ -152,6 +152,74 @@ def max_wire_size(struct):
     return offset
 
 
+def max_encoded_size(struct):
+    """Worst-case encoded payload in bytes, or None when the type has no such bound.
+
+    Distinct from max_wire_size() above, and the difference is the whole point of this function.
+    max_wire_size() answers "how large can the parts with a fixed C buffer get", which is what the
+    generated "fits in one datagram" _Static_assert needs; it counts a plain string as just its
+    2-byte length prefix, because a plain string has no fixed buffer - it's a char* aliasing
+    external memory (DESIGN.md's "Strings" rule) and its real length is whatever the caller passes
+    to _encode at runtime. That makes max_wire_size() an underestimate for such a type, which is
+    fine for its own purpose and wrong for this one.
+
+    This function refuses to guess instead. It returns a real upper bound when every variable-length
+    field resolves to a capacity - annotation, ROS 2 upper bound, or auto-derived, in adapt.py's
+    own priority order - and None when any of them doesn't. The three shapes that don't resolve:
+
+      * a plain `string` with no capacity. adapt.py deliberately doesn't auto-derive one (see its
+        own comment), and the runtime cap is tt_MAX_STRING_LENGTH = 65535, forty-four times a
+        datagram, so it is no substitute for a bound.
+      * an array whose elements are strings. Those elements are always plain and unbounded -
+        adapt.py rejects `string<=8[]` rather than truncating or over-allocating - so the same
+        applies per element.
+      * a nested type that hits either of the above, at any depth.
+
+    Callers use this to size storage per retained sample (rmw_tickle's KEEP_ALL arena), where
+    under-reserving costs retention and guessing would cost it silently. None means "no bound
+    exists below the datagram ceiling, use that ceiling" - not "unknown, pick something".
+
+    Real types land on both sides: a fixed-layout telemetry message resolves to tens of bytes,
+    while sensor_msgs/msg/Image and std_srvs/srv/SetBool carry a plain string and do not.
+    """
+    total = 0
+    for wire_field in struct.fields:
+        total = align_up(total, wire_field.wire_align)
+        if wire_field.kind == "string":
+            if wire_field.capacity is None:
+                return None  # plain unbounded string - see this function's own docstring
+            total += model.STRING_LEN_SIZE + wire_field.capacity + 1
+            total = align_up(total, 4)
+        elif wire_field.kind == "nested":
+            nested_max = max_encoded_size(wire_field.nested)
+            if nested_max is None:
+                return None
+            total += nested_max
+        elif wire_field.kind == "array" and wire_field.array_element_kind == "string":
+            return None  # string elements are always plain and unbounded (model.WireField)
+        elif wire_field.kind == "array" and wire_field.array_element_kind == "nested":
+            nested_max = max_encoded_size(wire_field.nested)
+            if nested_max is None:
+                return None
+            # Same conservative per-element padding max_wire_size() uses: the exact stride depends
+            # on where the element lands, and over-reserving here is safe where under-reserving
+            # never is.
+            per_element = nested_max + (wire_field.element_align - 1)
+            if wire_field.array_mode == "fixed":
+                total += wire_field.array_size * per_element
+            else:
+                total += model.ARRAY_COUNT_SIZE + wire_field.capacity * per_element
+        elif wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
+            total += wire_field.wire_size
+        elif wire_field.kind == "array":  # variable, scalar elements
+            total += model.ARRAY_COUNT_SIZE
+            total = align_up(total, wire_field.element_align)
+            total += wire_field.capacity * wire_field.element_size
+        else:
+            raise NotImplementedError(wire_field.kind)
+    return total
+
+
 def prefix_array_field(struct):
     """The struct's own trailing field, IF it's a variable byte array (1-byte elements) that
     every other field precedes with a fixed size - the one common "fixed header + one trailing

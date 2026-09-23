@@ -10,6 +10,23 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- `rosidl_typesupport_tickle_c_message_callbacks_t` gains `tickle_max_encoded_size`: an upper bound
+  on the type's encoded payload, generated per type, or
+  `ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED` (0) when the type has none. **Adding a field
+  changes the struct's layout**, so generated typesupport and `rmw_tickle` must be rebuilt
+  together; a hand-written callbacks struct that omits it reads as "no bound" and behaves exactly
+  as before, which is why the marker is 0 rather than a distinctive sentinel.
+  `rmw_tickle` uses it to size a `KEEP_ALL` publisher's retained-sample arena, which previously had
+  to assume TickLE's whole single-datagram ceiling for every type: a depth-8192 `TRANSIENT_LOCAL`
+  publisher of a 76-byte type reserved about 12.06 MB and now reserves about 0.6 MB.
+  A bound exists for any type whose variable-length fields all resolve to a capacity. It does not
+  for one carrying a plain unbounded `string`, an array of strings, or a nested type containing
+  either - such a string is a `char*` aliasing external memory with no capacity, and the generator
+  deliberately doesn't auto-derive one, so there is nothing to bound it below
+  `tt_MAX_STRING_LENGTH` (65535). `sensor_msgs/msg/Image` and `std_srvs/srv/SetBool` are both in
+  that category and keep the ceiling. `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` now applies only to
+  those types: it fills the gap the generator leaves rather than overriding a computed bound.
+
 - `rmw_tickle`: `rmw_publish()` now applies real back-pressure for `HISTORY.KEEP_ALL` publishers
   instead of letting the promise quietly lapse. A `RELIABLE` + `KEEP_ALL` publisher sets core's
   `tt_Publisher.keep_all`, so core refuses a write (`tt_RET_WOULD_BLOCK`) rather than evicting a
