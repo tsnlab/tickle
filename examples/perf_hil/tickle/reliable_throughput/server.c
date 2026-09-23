@@ -133,10 +133,13 @@ static uint32_t window_samples = 0;
 static const double safety_cap_buffer_s = 15.0;
 
 int main(int argc, char** argv) {
+    bool durable = false; // -D, see sub.durable below
     double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-D") == 0) {
+            durable = true;
         } else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
             // Phase 2 (rmw_tickle/PLAN.md) - RELIABLE tracking window in samples, so one HIL
             // sweep can compare them. 0/absent keeps TickLE core's own embedded-first default
@@ -176,6 +179,11 @@ int main(int argc, char** argv) {
         return ret;
     }
     sub.reliable = true;
+    // -D: request TRANSIENT_LOCAL, matching the client's own -D. The RxO fix (PLAN.md Milestone 60)
+    // keys the first-contact baseline on sub->durable: a durable Subscriber syncs to the
+    // Publisher's first_available_seq_no rather than to "whatever arrives next", which is exactly
+    // the pre-match window COMPARISON.MD §3b documents for the volatile case.
+    sub.durable = durable;
     // Phase 2 - a wider caller-owned tracking window, one per simultaneously tracked Publisher.
     // Sized for the widest this build allows; only the requested prefix is actually used.
     static uint64_t tracking[tt_MAX_PEER_COUNT * tt_RELIABLE_BITMAP_MAX_WORDS];

@@ -114,6 +114,12 @@ static uint32_t ack_watermark_pct = 0;
 // Default off, so every number measured before this flag existed is still reproducible by running
 // the same command line.
 static bool keep_all = false;
+// -D: TRANSIENT_LOCAL (tt_Publisher.durable). Item 1 of the 2026-09-23 queue - it is the one
+// configuration where a Subscriber that started tracking late is still *owed* the samples it
+// missed, since deliver_durability_backlog() replays the retained range on match. The prediction
+// under test: raw loss (counted from seq 1) converges with post-match loss, i.e. the pre-match
+// window COMPARISON.MD §3b documents closes here.
+static bool durable = false;
 
 // -B <ms>: how long to keep retrying a refused write before counting it as failed, emulating DDS's
 // own RELIABILITY max_blocking_time. Default 100ms to match FastDDS's own default, which is what
@@ -334,6 +340,8 @@ static void parse_args(int argc, char** argv) {
             ack_solicit_us = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
             ack_watermark_pct = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-D") == 0) {
+            durable = true;
         } else if (strcmp(argv[i], "-Q") == 0) {
             keep_all = true;
         } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
@@ -407,6 +415,7 @@ int main(int argc, char** argv) {
     // this side the binding limit and quietly measure something narrower than the run asked for -
     // hence keep_all_default_depth above.
     pub.keep_all = keep_all;
+    pub.durable = durable;
     // Phase 3 prerequisite (d) - off unless -W asked for it, so the default run is byte-for-byte
     // the Phase 1 experiment.
     if (ack_watermark_pct > 0) {
@@ -451,12 +460,13 @@ int main(int argc, char** argv) {
     // write_fail= and max_blocking_ms= are spelled exactly as the cyclonedds/fastdds harnesses
     // spell them, so one parser reads all three frameworks' RESULT lines (Phase 3 step 4).
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d reliable_depth=%u "
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s peer_acks_end=%u "
            "peer_acks_min=%u\n",
            (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
-           reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct, g_drain_fully_acked ? "acked" : "timeout",
-           count_peer_acks(&pub), g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min);
+           durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
+           g_drain_fully_acked ? "acked" : "timeout", count_peer_acks(&pub),
+           g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min);
     print_reliable_stats("client");
 
     tt_Node_destroy(&node);
