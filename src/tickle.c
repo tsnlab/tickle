@@ -1510,14 +1510,24 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 // Phase 3 prerequisite (d), rmw_tickle/PLAN.md - the lowest cumulative ack across every currently
 // matched peer, i.e. how far *all* of them have got. 0 when any matched peer has never sent an
 // ACKNACK (or none are matched), matching tt_PeerAck.ack_seq_no's own "unknown" convention.
-static uint32_t min_peer_ack_seq_no(struct tt_Publisher* pub) {
+static uint32_t min_peer_ack_seq_no(const struct tt_Publisher* pub) {
     uint32_t lowest = 0;
     bool first = true;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (pub->peers[i].node_id == tt_NODE_ID_INVALID) {
             continue;
         }
-        struct tt_PeerAck* ack = find_peer_ack(pub, pub->peers[i].node_id);
+        // Inline rather than find_peer_ack(), which takes a non-const Publisher: this function only
+        // reads, and tt_Publisher_min_acked_seq_no() below takes a const pointer, which used to be
+        // laundered through a uintptr_t cast (clang-tidy performance-no-int-to-ptr, and a real CI
+        // failure on main).
+        const struct tt_PeerAck* ack = NULL;
+        for (int j = 0; j < tt_MAX_PEER_COUNT; j++) {
+            if (pub->peer_acks[j].node_id == pub->peers[i].node_id) {
+                ack = &pub->peer_acks[j];
+                break;
+            }
+        }
         uint32_t value = ack != NULL ? ack->ack_seq_no : 0;
         if (first || value < lowest) {
             lowest = value;
@@ -1986,7 +1996,7 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly.
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
-    return min_peer_ack_seq_no((struct tt_Publisher*)(uintptr_t)pub);
+    return min_peer_ack_seq_no(pub);
 }
 
 bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
