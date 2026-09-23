@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790126079834,
+  "lastUpdate": 1790126083487,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -106370,6 +106370,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/1b15e157a9cd18c8568200d731dc41e6353a2ea6"
         },
         "date": 1790124563115,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "volatile recv",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "48a33ee2fa46323e5d33bc6058dd9a491c719de9",
+          "message": "tickle: Phase 3 step 2 - KEEP_ALL write blocking (core, opt-in)\n\nA Publisher may now refuse a write rather than evict a sample nobody has\nacknowledged. Off by default (tt_Publisher.keep_all), so KEEP_LAST behaviour is\nuntouched; no rmw work here, that's step 3.\n\ntt_Publisher_publish() returns the new tt_RET_WOULD_BLOCK when accepting the\nsample would push the unacknowledged run past min(cache depth,\ntt_Publisher_unacked_bound()) - the narrowest RELIABLE tracking window any\nmatched Subscriber announced, which Phase 2 measured to be the real ceiling.\nChecked before anything is encoded: a refused publish sends nothing, caches\nnothing and doesn't advance seq_no. Both notification forms the design asked\nfor: tt_Publisher_writable() to poll, and writable_callback fired from inside\ntt_Node_poll() on the node's own thread, once per refusal-to-writable\ntransition (its doc comment says what a callback may do: signal and return).\n\nNeither side may give up while KEEP_ALL is on, or the Subscriber abandons a gap,\nadvances its ack and unblocks the Publisher having silently lost a sample. A\nPublisher announces the promise in a spare tt_UpdateEntity.qos bit\n(tt_UPDATE_QOS_KEEP_ALL, bit 3 - no layout change, no second version bump); a\nSubscriber caches it per WriterProxy, since one Subscriber can face a KEEP_ALL\nwriter and a KEEP_LAST one at once. It disables acknack_retry()'s give-up on\nthat writer and find_resendable_cache_entry()'s per-sample cap on the Publisher.\nAbsence means KEEP_LAST, i.e. today's bounded behaviour.\n\nTwo things still end recovery, both deliberate: LIFESPAN (an expired sample is\n\"as if never sent\" - 1-c's eviction Heartbeat still fires and the Subscriber\nstill advances past it) and liveliness. The latter needed the Subscriber-side\nmirror of step 1's (a), which did not exist: sub->writers[] was only ever\ncleared at create/destroy, so a KEEP_ALL writer that vanished mid-gap would have\nleft its Subscriber re-requesting the same samples every millisecond forever, at\nan address nobody answers, with the slot never freeing for a restart. A remote\nPublisher past its own lease now loses its WriterProxy, its retry cancelled and\nthe slot reset so a restarted writer re-runs first contact. proxy->retry keeps\ncounting purely for a time-rate-limited stuck-gap warning.\n\nAlso fixes a real defect on main: tt_Publisher_unacked_bound() was declared in\ntickle.h and documented in the CHANGELOG but never defined - an editing slip in\nPhase 2 that CI couldn't catch because nothing called it. It is implemented here\nand now exercised by tests, so a repeat would fail to link.\n\nStats: publish_refused, writable_callbacks, proxies_dropped_liveliness.\n\nTests: refuse-at-bound and unblock-on-ack; KEEP_LAST still evicts; the bound\nfollows the smallest announced window (and a second, narrower Subscriber lowers\nit); the callback fires once, not per ACKNACK; an empty ack set unblocks rather\nthan waiting forever; LIFESPAN still ends a gap under KEEP_ALL; the Subscriber\nnever gives up on a KEEP_ALL writer but does on a KEEP_LAST one; and a\nlease-expired writer's proxy is dropped, cancelled and reusable by a restart.\nMutation-checked: never refusing, ignoring the window in the bound, dropping the\nSubscriber-side cleanup, keeping the give-up, and staying blocked on an empty\nack set each fail the suite. 18/18 both modes; clang-format/clang-tidy clean;\nmake all builds. No HIL for this step on its own - step 4's benchmark mode is\nwhat exercises it end to end.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T10:08:49+09:00",
+          "tree_id": "bc9a9a8cd5ce44287eb5c16729b6da40d49da6a1",
+          "url": "https://github.com/tsnlab/tickle/commit/48a33ee2fa46323e5d33bc6058dd9a491c719de9"
+        },
+        "date": 1790126082314,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
