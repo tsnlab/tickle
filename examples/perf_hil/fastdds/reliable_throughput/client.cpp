@@ -37,6 +37,7 @@ static uint64_t now_ns() {
 int main(int argc, char** argv) {
     double duration_s = 10.0;
     double interval_s = 0.0;       // 0 = as fast as possible
+    double drain_s = 3.0;          // cap on the teardown wait-for-acknowledgements below
     double max_blocking_ms = -1.0; // -B: RELIABILITY max_blocking_time; <0 keeps FastDDS's default (100ms)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -118,11 +119,17 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Teardown drain, matching the TickLE and CycloneDDS harnesses so all three are measured the
+    // same way at the end of a run - see the CycloneDDS twin's own comment for why a tail sample
+    // is otherwise invisible. wait_for_acknowledgments() is FastDDS's own equivalent.
+    eprosima::fastrtps::Duration_t drain {(int32_t)drain_s, 0};
+    const char* drained = writer->wait_for_acknowledgments(drain) ? "acked" : "timeout";
+
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f\n",
-           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms);
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s\n",
+           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained);
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

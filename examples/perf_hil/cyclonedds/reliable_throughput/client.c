@@ -31,6 +31,7 @@ int main(int argc, char** argv) {
     double duration_s = 10.0;
     double interval_s = 0.0;        // -i: pause between writes, 0 = as fast as possible
     double max_blocking_ms = 10000; // -B: RELIABILITY max_blocking_time, default unchanged (10s)
+    double drain_s = 3.0;           // cap on the teardown wait-for-acknowledgements below
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
@@ -93,11 +94,20 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Teardown drain, matching what the TickLE harness does (examples/perf_hil/tickle/
+    // reliable_throughput/client.c) so all three frameworks are measured the same way at the end
+    // of a run: a Subscriber only notices a gap when a higher seq_no arrives, and after the last
+    // write none ever does, so a lost final sample is invisible unless the writer waits for
+    // acknowledgements. Without this, a framework's tail loss depends on drain luck rather than
+    // on its own reliability. dds_wait_for_acks() is CycloneDDS's own equivalent.
+    dds_return_t acked = dds_wait_for_acks(writer, (dds_duration_t)(drain_s * 1e9));
+    const char* drained = acked == DDS_RETCODE_OK ? "acked" : "timeout";
+
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f\n",
-           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms);
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s\n",
+           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained);
 
     dds_delete(participant);
     return 0;
