@@ -33,7 +33,7 @@ jobs:
           required-ros-distributions: jazzy
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -439,7 +439,7 @@ jobs:
             test_ws/src/rcl_interfaces/rcl_interfaces \
             --ignore-src -y --rosdistro jazzy
           # test_msgs' own ament_cmake_python step builds a setuptools egg for its (unused here)
-          # Python bindings - the earlier "Set up Python" step's actions/setup-python@v5 puts a
+          # Python bindings - the earlier "Set up Python" step's actions/setup-python@v7 puts a
           # hosted-tool CPython first on PATH (pythonLocation env var), and unlike jazzy's own
           # apt-packaged system Python, that one doesn't ship setuptools preinstalled - found via a
           # real CI failure ("No module named 'setuptools'").
