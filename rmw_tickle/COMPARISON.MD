@@ -86,7 +86,7 @@ replacing this document's own earlier mix of ranges/min-max/single-value styles)
 | 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | beyond depth | recv 150.0±5.2/160 msgs, 6.25% loss (**non-deterministic**, n=3 - see §6) | recv 108/160 msgs, 32.5% loss (deterministic) | recv 108/160 msgs, 32.5% loss (deterministic) |
 | 7 | `deadline_miss_detection` | - | sent 198±0 msgs, recv 198±0 msgs, 0% loss, writer_misses=3† (own math), reader_misses=30† (harmless, unexplained) | writer_misses=7†, reader_misses=19†, detect -0.90ms† | writer_misses=7†, reader_misses=14†, detect 0.05ms† |
-| 8 | `liveliness_loss_detection` | - | lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10) | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
+| 8 | `liveliness_loss_detection` | - | **provisional, see §6 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
 | 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | pause=1.0s: lost 28.0±1.4; pause=1.5s: lost 43.0±12.7; pause=2.0s: lost 79.0±0 (**not the same condition as the other two** - see §6 item 6; slope-verified against the expected formula, see §6 item 8) | lost 5† (pause=0.3s) | lost 10† (pause=0.3s) |
 
@@ -203,11 +203,17 @@ deliver. All three are **0 in every cell**, so the only thing that differs is wh
 
 | `tc` loss | TickLE (KEEP_ALL) ‡ | FastDDS | CycloneDDS |
 |---|---:|---:|---:|
-| 0% | **109.8 Mbps** | 11.5 | 47.3 |
-| 1% | **108.2** | 10.0 | 12.0 |
-| 5% | **104.8** | 6.8 | 2.4 |
-| 20% | **89.3** | 2.3 † | 0.36 |
-| 50% | **56.5** | 0.35 † | 0.11 |
+| 0% | **109.8 Mbps** ◊ | 11.5 | 47.3 |
+| 1% | **108.2** ◊ | 10.0 | 12.0 |
+| 5% | **104.8** ◊ | 6.8 | 2.4 |
+| 20% | **89.3** ◊ | 2.3 † | 0.36 |
+| 50% | **56.5** ◊ | 0.35 † | 0.11 |
+
+**◊** TickLE's throughput figures are **provisional**: five consecutive `reliable_throughput` reps
+at tc 0% came back 94.4 / 111.0 / 112.7 / 94.9 / 111.5 Mbps - two clean clusters at ~95 and ~112
+with nothing between them (`post_match_lost` 0 in all five). Each cell above is a median of 3, so
+it reports whichever cluster that cell happened to sample. The loss columns are unaffected; only
+the rates are. Being re-measured with enough reps to report both modes - see `PLAN.md`.
 
 **†** FastDDS did not finish draining here (`drained=timeout` in 1/3 reps at 20%, 3/3 at 50%): its
 net loss is 0 because refused writes are *counted*, not because everything was delivered - samples
@@ -573,3 +579,25 @@ gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself
     Heartbeat carrying `first_available_seq_no`, replacing a compile-time depth guess). Net effect at
     max rate, 5% injected loss: **4.6% -> 0.24% at depth=64, 0.04% at depth=1024**; at ~8 Mbps, loss
     is now 0. Full per-phase numbers in `rmw_tickle/PLAN.md`.
+
+14. **[Methodology, found 2026-09-23 - two measured distributions are bimodal, so several published
+    bands measure mode-mixing rather than precision]** Found by Dev while A/B-ing an unrelated
+    liveliness change, and it lands on this document rather than on the code.
+    - **Scenario 8 (`liveliness_loss_detection`)**: at n=20 per lease the residual
+      (`detect_latency - lease`) is not a spread around a mean, it is two clusters - a dominant one
+      holding to about **15ms**, and a minority one (3-4 reps in 20) sitting **~460-500ms** away.
+      Lease 4.0's mode sits ~1010ms below where leases 1.0 and 2.0 sit, i.e. exactly one
+      `check_liveliness()` tick, which is the signature of a phase relationship between the 1s
+      announce period and the 1s check tick rather than of anything lease-dependent. Consequence for
+      this table: at n=3 there is roughly a 45% chance of catching at least one minority-mode
+      sample, and one such sample moves the mean ~160ms - so §3 scenario 8's own ±169/±466/±236 are
+      almost certainly mode-mixing, not measurement noise, and the dominant mode is far *tighter*
+      than any band published here. It also explains the standing "TickLE's liveliness timing is
+      imprecise vs. DDS within ~1ms of lease" reading: the DDS pair have no such phase coupling.
+    - **`reliable_throughput` rate**: five consecutive reps at tc 0% gave 94.4 / 111.0 / 112.7 /
+      94.9 / 111.5 Mbps - two clusters at ~95 and ~112, nothing between, `post_match_lost` 0 in all
+      five. §3b's TickLE Mbps column is a median of 3 per cell and therefore reports whichever
+      cluster that cell sampled; those cells are marked ◊ until re-measured with enough reps to
+      report both modes. Loss columns are unaffected.
+    Standing consequence for methodology: 3 reps is not enough for either measurement, and any
+    future band quoted from them should say its n.
