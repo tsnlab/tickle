@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790158335878,
+  "lastUpdate": 1790158339744,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -105392,6 +105392,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1808583,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "173d5fd7cbef561db9d4d2ed7b040f66c1230f90",
+          "message": "perf_hil/liveliness: report the age of the announce, not just of the last sample\n\nScenario 8's ~500ms second mode is not a property of detection. detect_latency_ms is measured\nfrom last_received_ns, which stream_callback stamps on data only, so its reference point is\nstale by however long ago the last sample was. At the client's 0.5s publish interval against a\n1.0s node UPDATE, the last packet before the kill was either the UPDATE itself or a sample\n500ms after it and nothing in between, which is exactly the two modes - and the newly-signed\ngap field pairs with them one for one, 0ms against the majority mode and ~499.5ms against the\nminority one, across 30 reps and three leases.\n\nThat also makes the published scenario-8 comparison apples-to-oranges rather than merely noisy.\nThe cyclonedds and fastdds twins build detect_latency_ms the same way, from the last received\nsample, but in DDS a sample is itself what refreshes the liveliness lease: their reference point\nand their expiry point are the same event and cancel, which is why those figures land within\n~1ms of the lease. TickLE refreshes the lease from the node-level UPDATE, so measuring from data\nleaves the phase between two different clocks in the number. More reps cannot fix that.\n\nannounce_age_at_detect_ms is anchored to the UPDATE, so it measures the lease mechanism itself\nand is the field to quote against the DDS columns. detect_latency_ms stays, because it is the\nhonest end-to-end figure for an application that only ever sees data; dropping it would trade\none partial truth for another. The comments say which field answers which question, at both\ndefinitions, so the next person does not quote whichever one they find first.\n\nThe client now paces at 0.1s, matching both DDS twins. It narrows the residual artifact to\n100ms rather than removing it, and it retires \"we sampled five times coarser than they did\" as\na difference nobody could see in the table.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T19:05:42+09:00",
+          "tree_id": "aa0b77424d6b9248ef3bcb3fa9908c75ec451251",
+          "url": "https://github.com/tsnlab/tickle/commit/173d5fd7cbef561db9d4d2ed7b040f66c1230f90"
+        },
+        "date": 1790158338500,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1908521,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 1535511,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 1807154,
             "unit": "count"
           }
         ]
