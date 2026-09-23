@@ -1356,6 +1356,39 @@ RSTATS gains `publish_refused`, `writable_callbacks`, `proxies_dropped_livelines
 Follow-up landed separately (`e9b4521`): `tests/test_public_api.c` links the address of every
 public `tt_*` function, so a declared-but-undefined API becomes a CI link error.
 
+#### Phase 3 step 3 landed (2026-09-23, `844619d`): KEEP_ALL back-pressure in `rmw_publish()`
+
+`rmw_publish()` now waits on core's writable callback up to `max_blocking_time` (default 100ms,
+`RMW_TICKLE_MAX_BLOCKING_MS`) and returns `RMW_RET_TIMEOUT` with an actionable `RMW_SET_ERROR_MSG`
+(matching `rmw_publisher_wait_for_all_acked()`'s existing precedent in the same file). Items 1-2 of
+the brief were already on `main` from `3e7a928`; the real gap was that rmw never set core's
+`keep_all` flag, so step 2's mechanism was dead from rmw's side.
+
+**Lock order** (the failure mode I was most worried about - a hang in a real ROS app): the waiter
+takes `wait_mutex` *before* releasing `node_mutex`, then `pthread_cond_timedwait()`, which keeps the
+established `node_mutex → wait_mutex` order (the writable callback fires from inside
+`tt_Node_poll()` with `node_mutex` held) and closes the lost-wakeup window, while never holding
+`node_mutex` across the wait. Verified by a test whose helper thread fires the callback while
+`rmw_publish()` waits - it fails on elapsed time if the wait ever went back under `node_mutex` -
+run 12/12 standalone and once under ThreadSanitizer (no race, no lock-order inversion).
+`CLOCK_REALTIME` throughout, matching `wait_cond`'s default clock and every existing waiter.
+
+**Depth constants split** after Plan's review: `RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE` stays 8192
+(`deliver_durability_backlog()` walks the whole ring, so for TRANSIENT_LOCAL every slot is real
+history a late joiner receives), `RMW_TICKLE_KEEP_ALL_DEPTH_VOLATILE` drops to 2048 - the ~10.5 MB
+above the 1024-sample window was unreachable for KEEP_ALL. KEEP_ALL stays off for BEST_EFFORT.
+
+**Real bug found by writing the test** (Dev's own, from Phase 2): `tt_Publisher_unacked_bound()` was
+implemented as "start at `tt_RELIABLE_BITMAP_BITS` and let peers lower it", so a Subscriber
+announcing a window *wider* than 256 was ignored. Since rmw announces 1024 on every subscription,
+a KEEP_ALL publisher blocked after 256 unacked samples instead of 1024 - a quarter of the intended
+in-flight depth, in the only configuration that ships. Every core test used narrower windows (128,
+64), which is why none caught it; the rmw test caught it by asserting the write count before
+refusal (got 256, expected 1024). Fixed with a core regression test covering the wide, the
+announced-nothing and the no-peers cases. **Phase 2's HIL numbers are unaffected** (they used
+core's own defaults, not rmw), but nothing should claim rmw's 1024 window was in effect end to end
+before this fix.
+
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
 Answer: yes, but only coarsely. There are three issues Phase 3 must handle before blocking relies on
