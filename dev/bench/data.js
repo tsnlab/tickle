@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790165596102,
+  "lastUpdate": 1790165599992,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -112083,6 +112083,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 147,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "06fb272eeaf469a559c2ba2c37e9796ee41df1df",
+          "message": "perf_hil/reliable_throughput: the bimodality is the sender sharing a core with the NIC interrupt\n\nreliable_throughput has been bimodal at 0% loss all along - about 95 and about 112 Mbit/s with\nnothing in between - with every other field of the RESULT line identical between the modes. The\nsender was never blocked and never throttled; it simply completed about 15% fewer iterations.\n\nThe first explanation was CPU frequency, and CpuFreq.h killed it: both modes report cpu_mhz_mean\n2391.0, 99.6% of the 2400 MHz maximum, over 12 reps on both hosts. Two discrete states at\nidentical frequency fit placement rather than speed, which is a different quantity and needed a\ndifferent instrument rather than a re-reading of the old one.\n\nOn both Pis, eth0's interrupt is IRQ 108 and it is handled entirely on CPU0 - 404 and 405 million\ninterrupts on CPU0, zero on CPU1 through CPU3. So the prediction was that a slow rep would show\nthe sender on CPU0. Measured, 12 reps, observational only with nothing pinned:\n\n  client on CPU0      n=3  mean  94.6 Mbit/s  range  94.5 - 94.6\n  client not on CPU0  n=9  mean 111.8 Mbit/s  range 110.8 - 112.3\n\nPerfect separation, no overlap between the ranges, and 3 of 12 is the 1-in-4 a four-core machine\npredicts when nothing pins anything. cpu_main_share is 1.00 in every slow rep, so those threads\nspent the whole run on CPU0 rather than drifting onto it. The receiver sat on CPU1 in 11 of 12\nreps, so the effect here is sender-side.\n\nThis is a property of the rig, not of TickLE, and it applies equally to the CycloneDDS and\nFastDDS columns measured on the same hosts - but it means any single-run throughput number is a\ncoin flip that reads about 15% low a quarter of the time. Fixing the measurement is a methodology\nchange (pin away from CPU0, or spread the NIC interrupt) and belongs with whoever owns\nCOMPARISON.MD's numbers, so this commit adds the instrument and the evidence and changes no\naffinity.\n\nCpuPlace.h reports cpu_main, cpu_main_share and cpu_migrations rather than just a core number: a\nthread pinned to one core and a thread bouncing between two are different situations and a single\nmain cpu hides that. It uses the getcpu syscall rather than sched_getcpu(), which needs\n_GNU_SOURCE before any libc header - not something a header included partway down a translation\nunit can arrange for itself.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T21:06:16+09:00",
+          "tree_id": "8e9ce474fbcf6188e7d934045aea06fefd14ec8e",
+          "url": "https://github.com/tsnlab/tickle/commit/06fb272eeaf469a559c2ba2c37e9796ee41df1df"
+        },
+        "date": 1790165598809,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 155,
             "unit": "count"
           }
         ]
