@@ -181,6 +181,42 @@ packages against the workspace this doc sets up ahead of time.
       only that the two nodes get different ones. (The single-process case needs nothing here -
       one process, one node, no id to collide with.)
 
+   e. **The test must assert that messages were actually delivered.** `launch_test`'s own gate is
+      `assert_wait_for_successful_exit()`, which checks exit codes and nothing else, so a run that
+      exchanges *zero* messages for its whole duration passes - observed for real on 2026-09-23,
+      an `Array1k`/async cell reporting `received 0 / lost 7902`, throughput 0.0008 Mbit/s, and
+      `launch_test` calling it Passed in 16.01 seconds. Nobody would have noticed it from the test
+      result; it was found by reading the summary table. This is the same class of hole as (d)'s
+      own silent-zero failure mode, and it is what let (d) go unnoticed for as long as it did. In
+      `test_performance.py.in`'s own `test_results_@TEST_NAME@`, replace the
+      `results_base_path`-guarded block with one that reads the log unconditionally and asserts on
+      it first:
+      ```python
+      performance_logs = glob(performance_log_prefix + '*')
+      assert len(performance_logs) == 1, f'expected one performance log, got {performance_logs}'
+      performance_data = read_performance_test_csv(performance_logs[0])
+
+      # Exit codes alone pass a run that delivered nothing - see README-rmw-perf.md patch (e).
+      total_received = performance_data['received'].sum()
+      assert total_received > 0, (
+          f'run exited cleanly but delivered no messages at all '
+          f'({total_received} received over @PERF_TEST_RUNTIME@s)')
+
+      results_base_path = os.environ.get('PERF_TEST_RESULTS_BASE_PATH')
+      if results_base_path:
+          _raw_to_jenkins(performance_data, results_base_path + '.csv')
+          _raw_to_png(performance_data, results_base_path + '.png')
+      else:
+          print(
+              'No results reports written - set PERF_TEST_RESULTS_BASE_PATH to write reports',
+              file=sys.stderr)
+      ```
+      The threshold is deliberately `> 0` rather than a fraction of what was sent. A zero is
+      unambiguous and is the failure actually observed; a fractional bar would need a defensible
+      number for every payload and rate combination, and would trade one silent failure for a
+      flaky gate. Tightening it later is easy once there is a characterised baseline to tighten
+      against.
+
    Re-running `colcon build` for `performance_test`/`buildfarm_perf_tests` (step 2's own command)
    after any of these picks the patches up - `rmw-perf.yml`'s own "Rebuild buildfarm_perf_tests
    with rmw_tickle now visible" step forces a reconfigure every run regardless (`--cmake-force-

@@ -65,6 +65,36 @@ static int64_t announce_age_at_detect_ns = -1;
 
 static int64_t gap_at_departure_ns = 0;
 
+// Which node's departure was reported, and whether this run had ever seen a non-departure
+// discovery event from it first. The discriminator for a contamination found at n=30: 12 of 90
+// reps reported announce_age_at_detect_ms = 0.000, meaning the departure was detected in the same
+// microsecond as the last UPDATE from that node - the signature of an announced goodbye rather
+// than a timeout, although the client is killed with SIGKILL and cannot announce anything. The
+// suspicion is the *previous* rep's server, shut down with SIGINT one second earlier, whose
+// goodbye lands in this rep's socket. If so the node id will be one this run only just met and
+// never received a plain discovery event from, which settles it either way without relying on the
+// sweep's sequencing fix to work.
+// The node whose departure this run is measuring, from -N. Everything else is ignored, loudly.
+//
+// Why this is not optional (2026-09-23, a real contamination, measured): 12 of 90 reps at n=30
+// reported a departure that was not the client's. The rmw_tickle perf benchmark runs on the
+// development box with TICKLE_NODE_ID 101, TickLE's compiled-in broadcast default is
+// 255.255.255.255, and that box shares a layer-2 segment with both Pis' wlan0 - so node 101's
+// clean shutdowns were arriving here and being recorded as this scenario's result. Taking the
+// first departure of any node was the bug; the foreign traffic merely exposed it. A measurement
+// that answers about whichever node happened to leave first is not a measurement.
+static int watch_node_id = -1;
+static uint64_t foreign_departures = 0;
+static uint8_t foreign_node_ids[8];
+static uint8_t foreign_node_count = 0;
+static uint8_t departed_node_id = 0;
+static bool departed_node_seen_before = false;
+static uint64_t update_last_seen_at_detect_ns = 0;
+// 256 entries because node_id is a uint8_t and tt_Node indexes its own per-node arrays the same
+// way (tt_MAX_ENDPOINT_COUNT), so this is sized by the type rather than by a guess.
+#define NODE_ID_COUNT 256
+static bool node_seen[NODE_ID_COUNT];
+
 static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
     (void)timestamp;
@@ -79,9 +109,31 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
     (void)endpoint_id;
     (void)kind;
     (void)param;
-    if (is_departed && !departed) {
+    if (!is_departed) {
+        node_seen[node_id] = true;
+        return;
+    }
+    if (watch_node_id >= 0 && node_id != (uint8_t)watch_node_id) {
+        // Counted and named rather than silently skipped: if this scenario is ever run on a
+        // contaminated network again, the RESULT line says so instead of looking clean.
+        foreign_departures++;
+        bool already = false;
+        for (uint8_t i = 0; i < foreign_node_count; i++) {
+            if (foreign_node_ids[i] == node_id) {
+                already = true;
+            }
+        }
+        if (!already && foreign_node_count < (uint8_t)(sizeof(foreign_node_ids) / sizeof(foreign_node_ids[0]))) {
+            foreign_node_ids[foreign_node_count++] = node_id;
+        }
+        return;
+    }
+    if (!departed) {
         departed = true;
         departed_detected_ns = tt_get_ns();
+        departed_node_id = node_id;
+        departed_node_seen_before = node_seen[node_id];
+        update_last_seen_at_detect_ns = node->update_last_seen[node_id];
         // The two-clock liveliness rule's own arithmetic predicts zero shift in detection timing
         // while (last_traffic - last_announce) stays under the guard (lease/2 on this path). That
         // is a prediction about a quantity nobody was measuring, so measure it: reporting the gap
@@ -120,6 +172,8 @@ int main(int argc, char** argv) {
             lease_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
+            watch_node_id = atoi(argv[++i]);
         }
     }
     // +15s buffer - see deadline_miss_detection/server.c's own doc comment for the real bug this
@@ -171,10 +225,25 @@ int main(int argc, char** argv) {
     double detect_latency_ms =
         (departed && last_received_ns != 0) ? (double)(departed_detected_ns - last_received_ns) / ns_per_ms : -1.0;
 
+// Eight ids at three digits plus separators, with room for the "none" case and a terminator.
+#define FOREIGN_LIST_LEN 64
+    char foreign_list[FOREIGN_LIST_LEN] = "none";
+    if (foreign_node_count > 0) {
+        int off = 0;
+        for (uint8_t i = 0; i < foreign_node_count && off < (int)sizeof(foreign_list) - 8; i++) {
+            off += snprintf(foreign_list + off, sizeof(foreign_list) - (size_t)off, i == 0 ? "%u" : ",%u",
+                            (unsigned)foreign_node_ids[i]);
+        }
+    }
+
     printf("RESULT: framework=tickle scenario=liveliness_loss_detection role=server recv=%lu departed=%d "
-           "detect_latency_ms=%.3f announce_age_at_detect_ms=%.3f gap_at_departure_ms=%.3f\n",
+           "detect_latency_ms=%.3f announce_age_at_detect_ms=%.3f gap_at_departure_ms=%.3f "
+           "departed_node=%u node_seen_before=%d update_last_seen_ns=%lu detected_ns=%lu "
+           "watch_node=%d foreign_departures=%lu foreign_nodes=%s\n",
            (unsigned long)received, departed, detect_latency_ms,
-           departed ? (double)announce_age_at_detect_ns / ns_per_ms : -1.0, (double)gap_at_departure_ns / ns_per_ms);
+           departed ? (double)announce_age_at_detect_ns / ns_per_ms : -1.0, (double)gap_at_departure_ns / ns_per_ms,
+           (unsigned)departed_node_id, departed_node_seen_before ? 1 : 0, (unsigned long)update_last_seen_at_detect_ns,
+           (unsigned long)departed_detected_ns, watch_node_id, (unsigned long)foreign_departures, foreign_list);
 
     tt_Node_destroy(&node);
     return 0;
