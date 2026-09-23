@@ -1545,8 +1545,12 @@ is now `if (first_contact && !sub->durable)` - volatile keeps the Milestone 60 p
 test), a durable Subscriber leaves `ack_seq_no` at 1 so the retained range is recoverable through
 the ordinary ACKNACK exchange, and the "durable Subscriber that never hears a Heartbeat" case
 terminates via 1-c's eviction Heartbeat (a test, not a comment). **Re-measured, 30/30**: durable is
-now **[0,0,0] at every tc level with first_seq=1 in all 15 reps** - the pre-match window is *gone*
-for a durable Subscriber, not merely narrowed (it was [2,0,0] at 50% before). Volatile is unchanged
+now **[0,0,0] at every tc level with first_seq=1 in all 15 reps** (it was [2,0,0] at 50% before).
+**Hedged 2026-09-23 after the bimodality finding, at Dev's flag**: 15 clean reps is consistent with
+the window being gone but does not establish it - a minority mode at the rate scenario 8 turned out
+to have would appear in roughly 1 run in 5, so a rarer one could hide at this n. The honest claim
+is "not observed in 15/15 reps at tc 0-50%", and commit `261f39b8`'s own message says "narrows the
+pre-match window without closing it" for the same reason. Volatile is unchanged
 in character, which is correct rather than a regression: a VOLATILE Subscriber is not owed
 pre-match history, and that path is byte-identical.
 
@@ -1634,6 +1638,35 @@ deliberately to characterise what each does, and (b) guard it in the client - a
 `liveliness_loss_detection` client should refuse to install the goodbye path at all, so the wrong
 measurement is impossible regardless of signal or script (Dev's suggestion, better than guarding
 the orchestrator).
+
+#### Scenario 8, restated: TickLE's liveliness detection is quantized to 1s (2026-09-23, Dev, new `announce_age_at_detect_ms`)
+
+With the DDS-comparable field in place (validated on the rig, 6 reps/lease; the identity
+`announce_age - (detect_latency + gap)` holds to 0.001ms in all 18 reps), the reference-point
+artifact is separated out and what remains is a **real TickLE property, not an artifact**:
+
+| | `detect_latency_ms` (end-to-end) | `announce_age_at_detect_ms` (DDS-comparable) |
+|---|---|---|
+| lease 1.0 | sd 213.6, spread 536 | **sd 13.9, spread 36** |
+
+The majority cluster sits at **lease + ~620ms at all three leases**, holding to ~15ms, with roughly
+one rep in six ~410ms lower. That offset is `check_liveliness()`'s own 1s schedule: expiry is only
+*noticed* on the next tick, so detection carries **0-1000ms of poll granularity on top of the
+lease**, and in this harness the phase happens to land near 620ms.
+
+So the right statement for scenario 8 is **lease + poll granularity**, not a precision comparison:
+DDS's ~1ms comes from both a matching reference point *and* a finer-grained check. TickLE's
+quantization is a real limitation and a plausible future item (scheduling the per-entity check at
+its own deadline rather than borrowing the node tick), but it is a different claim from the one the
+old column implied. n=6 is not enough to characterise the minority mode - **a proper run is needed
+before this goes into COMPARISON.MD's table**.
+
+**A/B result (equal n, same rig, same day)**: the two-clock change is cleared - A-B is +39.7±64,
+-8.6±78, +20.2±66 ms for leases 1/2/4, all inside one SE of zero, and the minority mode appears in
+both arms at the same offsets and rates. Two caveats Dev flagged rather than smoothed: arm B
+lease 1.0 is n=18 because two reps came back `recv=0 departed=0` (the server received nothing, so
+those runs never happened), and per-run pace was ~22s against ~10.5s in the earlier sweep, only
+partly explained by rebuild cycles - unexplained, flagged.
 
 #### D2: does a dead Subscriber leave the Publisher's ack-wait set? (2026-09-22, Plan, source analysis)
 
