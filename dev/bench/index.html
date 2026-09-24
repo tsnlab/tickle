@@ -97,6 +97,31 @@
         <a id="repository-link" rel="noopener"></a>
       </div>
     </header>
+    <!-- Deliberately OUTSIDE the TICKLE-STATUS markers: dashboard.py's `inject` replaces only the
+         region between them, so this notice survives every later dashboard publish. -->
+    <section style="margin:12px 0;padding:12px 14px;border-left:4px solid #b60205;background:#fff5f5;color:#4a4a4a;">
+      <strong>Two of the charts below have a known-bad history before 2026-09-23.</strong>
+      <p style="margin:8px 0 0;">
+        <em>rmw_tickle latency (buildfarm_perf_tests)</em> and
+        <em>rmw_tickle throughput (buildfarm_perf_tests)</em> run both processes on one host. Until
+        commit <code>82a6a02d</code> every TickLE node on a host bound only the well-known port, so a
+        unicast addressed to it was delivered by the kernel to whichever socket bound last &mdash;
+        sometimes the sender's own. In runs that <em>passed and were recorded as clean</em>, roughly
+        10% of the stream went to the sender instead of the subscriber. Points on those two charts
+        dated before 2026-09-23 therefore measure a transport that was quietly misdelivering, not the
+        one that exists now, and they are not comparable with later points on the same chart.
+      </p>
+      <p style="margin:8px 0 0;">
+        They are kept rather than deleted so the discontinuity stays visible and this note keeps
+        explaining it. See <code>rmw_tickle/PLAN.md</code> milestone 67 and
+        <code>rmw_tickle/COMPARISON.MD</code> &sect;5 for the defect, the re-measurement, and why the
+        two measurement passes cannot be compared in absolute terms at all.
+      </p>
+      <p style="margin:8px 0 0;">
+        <strong>Every other chart on this page is unaffected.</strong> They are measured across two
+        physically separate Raspberry Pis, which never shared a port.
+      </p>
+    </section>
 <!-- TICKLE-STATUS:BEGIN -->
 <style>
   #tickle-status { margin: 8px 0 16px; overflow-x: auto; }
