@@ -30,6 +30,10 @@
 #include "../common/CpuPlace.h"
 #include "../common/reliable_stats_print.h"
 
+// Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
+#define BENCH_REORDER_SLOTS 512
+#define BENCH_REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + sizeof(struct BenchData) + 16)
+
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
     (void)sig;
@@ -187,6 +191,21 @@ int main(int argc, char** argv) {
         return ret;
     }
     sub.reliable = true;
+    // Ordered delivery (2026-09-24) - somewhere to hold a sample that arrives ahead of a gap.
+    //
+    // Not optional for a benchmark. A RELIABLE Subscriber with no reorder buffer is still correct
+    // - it declines to record an out-of-order sample as received, so the ACKNACK exchange fetches
+    // it again once the gap has filled - but under real tc loss that turns one lost datagram into
+    // a re-request for everything behind it. On the HIL rig that more than halved reliable receive
+    // throughput and tripped the regression gate, which is how this was found.
+    //
+    // Sized to hold a full tracking window of samples: the window is exactly how far ahead of its
+    // oldest missing sample this Subscriber is allowed to get, so it is also the most it can ever
+    // need to hold at once.
+    static uint64_t reorder[BENCH_REORDER_SLOTS * BENCH_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+    sub.reorder_storage = reorder;
+    sub.reorder_slots = BENCH_REORDER_SLOTS;
+    sub.reorder_slot_bytes = BENCH_REORDER_SLOT_BYTES;
     // -D: request TRANSIENT_LOCAL, matching the client's own -D. The RxO fix (PLAN.md Milestone 60)
     // keys the first-contact baseline on sub->durable: a durable Subscriber syncs to the
     // Publisher's first_available_seq_no rather than to "whatever arrives next", which is exactly

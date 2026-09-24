@@ -2554,11 +2554,14 @@ static void report_delivery_counters(const struct tt_Subscriber* sub, uint32_t e
     // undercount by design. These are the complete numbers, and a run's conclusion should be read
     // from them rather than from how many log lines appeared.
     TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
-                "writer_switches=%lu via_socket_flips=%lu out_of_order_discarded=%lu rxo_drops=%lu",
+                "writer_switches=%lu via_socket_flips=%lu out_of_order_discarded=%lu rxo_drops=%lu "
+                "reorder_held_peak=%lu reorder_delivered=%lu reorder_overflow=%lu reorder_abandoned=%lu",
                 endpoint_id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
                 (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
                 (unsigned long)sub->via_socket_flips, (unsigned long)sub->out_of_order_discarded,
-                (unsigned long)sub->rxo_drops);
+                (unsigned long)sub->rxo_drops, (unsigned long)sub->reorder_held_peak,
+                (unsigned long)sub->reorder_delivered, (unsigned long)sub->reorder_overflow,
+                (unsigned long)sub->reorder_abandoned);
 }
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
@@ -4273,7 +4276,27 @@ static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, st
 
     // No room, or no buffer at all. Un-receive it: clear the bit so the gap logic still counts
     // this sample as missing and asks for it again once the hole in front of it has filled.
+    //
+    // Said out loud the first time, and on every power of ten after, because the cost is not
+    // small and it is otherwise invisible: on the HIL rig this fallback more than halved reliable
+    // receive throughput under tc loss the moment ordered delivery landed, and the only symptom
+    // was the number. A configuration problem that presents as a performance cliff is one people
+    // debug for a day; the same problem with a line of log attached is one they fix in a minute.
     sub->reorder_overflow++;
+    if (is_power_of_ten(sub->reorder_overflow)) {
+        if (reorder_payload_capacity(sub) == 0) {
+            TT_LOG_WARNING("Subscriber %u is RELIABLE with no reorder buffer: sample %u arrived ahead of the gap at "
+                           "%u and will be requested again rather than held (occurrence #%u). Ordering is still "
+                           "correct; set reorder_storage/reorder_slots/reorder_slot_bytes to stop paying for it in "
+                           "retransmissions.",
+                           sub->endpoint.id, ctx->seq_no, proxy->ack_seq_no, sub->reorder_overflow);
+        } else {
+            TT_LOG_WARNING("Subscriber %u reorder buffer full or too narrow for a %u-byte payload (%u slots of %u "
+                           "bytes): sample %u will be requested again rather than held (occurrence #%u).",
+                           sub->endpoint.id, length, sub->reorder_slots, sub->reorder_slot_bytes, ctx->seq_no,
+                           sub->reorder_overflow);
+        }
+    }
     uint64_t offset = (uint64_t)ctx->seq_no - proxy->ack_seq_no;
     if (offset < proxy_window_bits(proxy)) {
         bitmap_clear_bit(proxy->received_bitmap, (uint32_t)offset);
