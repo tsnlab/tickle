@@ -26,6 +26,12 @@ jobs:
         with:
           # third_party/FreeRTOS-Kernel and third_party/lwip are submodules the QEMU tier needs.
           submodules: true
+          # Full history, for the "Documented commit ids resolve" step below. actions/checkout
+          # defaults to depth 1, and against a shallow clone `git cat-file -e` fails for every
+          # historical sha - so that step would report all 83 citations as missing and be a gate
+          # that fails on a correct tree. Set from the documented default rather than discovered
+          # from a red run.
+          fetch-depth: 0
 
       - name: Install RISC-V toolchain and QEMU
         run: |
@@ -56,6 +62,16 @@ jobs:
       # so a C-only construct in one breaks it - and nothing else in this workflow can see that,
       # because every other tier is C. _Static_assert in config.h took the Check-all workflow red
       # for eight commits before anyone looked, which is what this step exists to prevent.
+      # Every commit sha the documents cite must exist and be reachable. Six did not, and none of
+      # them was careless: each was recorded from the sha in front of whoever did the work, and a
+      # rebase before the push changed it. "Record the sha with every figure" cannot catch that,
+      # because the person recording it cannot tell at the time - only something that looks
+      # afterwards can, which is what this is.
+      - name: Documented commit ids resolve
+        id: doc_shas
+        continue-on-error: true
+        run: make check-doc-shas
+
       - name: Public headers compile as C and C++
         id: headers
         continue-on-error: true
@@ -144,6 +160,7 @@ jobs:
             'Build Linux=${{ steps.build_linux.outcome }}' \
             'Build FreeRTOS=${{ steps.build_freertos.outcome }}' \
             'Lint FreeRTOS=${{ steps.lint_freertos.outcome }}' \
+            'Doc commit ids=${{ steps.doc_shas.outcome }}' \
             'Headers C/C++=${{ steps.headers.outcome }}' \
             'Unit tests=${{ steps.unit.outcome }}' \
             'Sanitizers=${{ steps.sanitize.outcome }}' \
