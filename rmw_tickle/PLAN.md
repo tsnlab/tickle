@@ -1995,14 +1995,20 @@ rmw_tickle itself did not change.
   - A core generator bug: a struct nesting an *empty* message asserted `sizeof` equal to the wire
     size, off by the filler byte, and could take the in-place codec (`3402d345`, tested).
 
-Open:
-- (a) goal cancel is created but not yet tested.
-- (b) service-introspection `_Event` types return no handle, which is harmless unless introspection
-  is enabled.
-- (c) rclcpp_action drops feedback that arrives before the goal response. That is ordinary rclcpp
+Closed in `312bb700`:
+- **Action-specific control arm.** example_interfaces is rebuilt with only ROS 2 visible and
+  overlaid on the full workspace. The default nodes then start, and both action ends are refused
+  with "no rmw_tickle typesupport". The first build of this control was itself invalid, because a
+  chained setup gave the "no TickLE" overlay TickLE typesupport anyway. CI now first checks that
+  the overlay has no TickLE library.
+- **Goal cancel** is tested: the goal ends CANCELED with a prefix of the sequence.
+- **Enabling service introspection** fails cleanly (rclcpp throws), with no crash.
+
+Still open:
+- rclcpp_action drops feedback that arrives before the goal response. That is ordinary rclcpp
   behaviour.
-- (d) `-A` still needs an action-specific control arm: the full workspace minus example_interfaces'
-  TickLE typesupport, where creating the action must fail.
+- A user package configured before the interface workspace existed keeps `/opt/ros`'s interface
+  packages in its CMake cache, so it must be reconfigured. This is a README note.
 
 The original design reading follows. **Actions, as first planned** (user decision 4). A first design reading by
 TickLE Plan (2026-09-24), from the jazzy sources of rosidl and rosidl_typesupport, not yet checked
