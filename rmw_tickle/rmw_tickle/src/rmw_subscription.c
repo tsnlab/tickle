@@ -225,7 +225,13 @@ static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, v
 // slots are the window or budget / stride, whichever is fewer - Plan's review of the design, since
 // a stride cap alone still leaves window x 2 KiB per subscription. Fewer slots than the window just
 // means an earlier overflow, which is the same safe path.
-#define RMW_TICKLE_REORDER_BYTES_DEFAULT (1024ULL * 1024ULL)
+//
+// The default is exactly what an unbounded type reserved before any budget existed: a full window
+// of slots sized for the standard 1472-byte datagram (~1.5 MiB). So at today's
+// tt_MAX_BUFFER_LENGTH nothing changes - a first cut used 1 MiB, which quietly cut an unbounded
+// type's window from 1024 to ~700 slots (Plan's review) - and at 65507 the same ~1.5 MiB caps it.
+#define RMW_TICKLE_REORDER_BYTES_DEFAULT \
+    ((unsigned long long)RMW_TICKLE_REORDER_SLOTS * (sizeof(struct tt_ReorderSlot) + tt_ETHERNET_UDP_PAYLOAD))
 
 // An environment knob of this file: `fallback` when unset, empty, unparseable, zero or above
 // `max` - a malformed tuning value must not stop a node starting (the rule every knob here uses).

@@ -43,6 +43,10 @@
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
 #define MIB (1024ULL * 1024ULL)
+// Must match RMW_TICKLE_REORDER_BYTES_DEFAULT (rmw_subscription.c): a full window of slots sized
+// for the standard 1472-byte datagram, i.e. what an unbounded type reserved before any budget.
+#define REORDER_BUDGET \
+    ((unsigned long long)RMW_TICKLE_REORDER_SLOTS * (sizeof(struct tt_ReorderSlot) + tt_ETHERNET_UDP_PAYLOAD))
 #define BOUNDED_PAYLOAD 76
 #define SMALL_BUDGET 5000 // bytes: below /rosout-sized arenas, above one 1472-byte record
 
@@ -182,15 +186,18 @@ int main(void) {
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
     assert(has_storage);
     assert(slot_bytes == header + BOUNDED_PAYLOAD);
-    assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, MIB / slot_bytes));
+    assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
 
     // Unbounded: the slot payload is capped at 2 KiB (or the datagram, if smaller), and the budget
-    // decides how many.
+    // decides how many - at N=1472 the whole window, exactly as before there was a budget.
     callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
     assert(slot_bytes == header + min_ull(buf_len, 2048));
-    assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, MIB / slot_bytes));
-    assert((unsigned long long)slots * slot_bytes <= MIB);
+    assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
+    assert((unsigned long long)slots * slot_bytes <= REORDER_BUDGET);
+    if (tt_MAX_BUFFER_LENGTH <= tt_ETHERNET_UDP_PAYLOAD) {
+        assert(slots == RMW_TICKLE_REORDER_SLOTS); // today's configuration: unchanged
+    }
 
     setenv("RMW_TICKLE_REORDER_SLOT_PAYLOAD", "512", 1);
     setenv("RMW_TICKLE_REORDER_BYTES", "65536", 1);
