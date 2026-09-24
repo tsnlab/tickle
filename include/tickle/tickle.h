@@ -1240,6 +1240,22 @@ struct tt_Subscriber { // extends endpoint
     uint32_t writer_switches;
     uint32_t out_of_order;
     uint32_t timestamp_not_newer;
+    // How many times the delivered stream changed socket - the covariate that actually matters,
+    // and not the same thing as how much of the stream was broadcast (2026-09-24).
+    //
+    // The objection this answers: the broadcast path is a minority everywhere (the most
+    // broadcast-heavy run measured still sent ~72% of its samples as unicast), so how could it
+    // produce a failure in a third of runs? Because the abort needs ONE comparison to go
+    // backwards, not a majority of them. A reader that interleaves two sockets can only misorder
+    // samples at a transition between them, so the number of chances a run gets is the number of
+    // transitions - not the volume on either side. A run that is 10% broadcast finely interleaved
+    // has far more of them than a run that is 100% broadcast in one contiguous block, and by
+    // volume those two are ranked the wrong way round.
+    //
+    // So this is the quantity to correlate a failure against. If failures track flips and not
+    // broadcast volume, that is the interleaving hypothesis surviving a test that volume alone
+    // would have failed it on.
+    uint32_t via_socket_flips;
     uint32_t last_seq_no;
     uint32_t last_source;
     uint32_t last_entity_id;

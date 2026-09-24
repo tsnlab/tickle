@@ -704,6 +704,32 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(2, sub.timestamp_not_newer);
     EXPECT_EQ_U32(2, sub.writer_switches);
+
+    // Everything so far arrived on the well-known socket, so nothing has flipped yet - and the
+    // first sample of all cannot flip, having nothing before it.
+    EXPECT_EQ_U32(0, sub.via_socket_flips);
+
+    // Two on the data socket then one back on the well-known: two transitions, not three arrivals
+    // on a different socket. What is being counted is the boundary, because that is where an
+    // interleaving reader can misorder, and a run of samples on one socket offers no such chance
+    // however long it is.
+    node.rx_via_data_port = true;
+    tail = write_data_from(&node, 13, 4000, 6, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(1, sub.via_socket_flips);
+    tail = write_data_from(&node, 14, 5000, 7, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(1, sub.via_socket_flips); // same socket again: not a transition
+    node.rx_via_data_port = false;
+    tail = write_data_from(&node, 15, 6000, 8, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(2, sub.via_socket_flips);
+
+    // And the flips did not disturb the other three, which count different things entirely.
+    EXPECT_EQ_U32(8, sub.delivered);
+    EXPECT_EQ_U32(1, sub.out_of_order);
+    EXPECT_EQ_U32(2, sub.timestamp_not_newer);
+    EXPECT_EQ_U32(2, sub.writer_switches);
 }
 
 int main(void) {

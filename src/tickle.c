@@ -1426,6 +1426,7 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->writer_switches = 0;
     sub->out_of_order = 0;
     sub->timestamp_not_newer = 0;
+    sub->via_socket_flips = 0;
     sub->last_seq_no = 0;
     sub->last_source = 0;
     sub->last_entity_id = 0;
@@ -4077,6 +4078,9 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
     if (!first && !same_writer) {
         sub->writer_switches++;
     }
+    if (!first && node->rx_via_data_port != sub->last_via_data_port) {
+        sub->via_socket_flips++;
+    }
     if (seq_back) {
         sub->out_of_order++;
     }
@@ -5663,10 +5667,10 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
         if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
             struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
             TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
-                        "writer_switches=%lu rxo_drops=%lu",
+                        "writer_switches=%lu via_socket_flips=%lu rxo_drops=%lu",
                         endpoint->id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
                         (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
-                        (unsigned long)sub->rxo_drops);
+                        (unsigned long)sub->via_socket_flips, (unsigned long)sub->rxo_drops);
         }
         node->endpoints[i] = NULL;
 
