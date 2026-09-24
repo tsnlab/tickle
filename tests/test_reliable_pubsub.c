@@ -729,22 +729,37 @@ static void test_reliable_duplicate_delivery_is_not_re_delivered_to_callback(voi
     EXPECT_EQ_U32(3, sub.last_seq_no);
     EXPECT_EQ_U32(0, sub.out_of_order);
 
-    // seq_no 1 again, well below the watermark (4) now - deliberately NOT deduplicated (accepted
-    // trade-off, see this test's own doc comment): still delivered, count advances.
+    // seq_no 1 again, well below the watermark (4). Before strict order this was delivered a second
+    // time - the "accepted trade-off" in this test's doc comment, which was about ACK tracking and
+    // still is. Delivery is now strictly ordered, so it is discarded as a step backwards, counted
+    // rather than silent, and the watermark below shows ACK tracking was not touched by it.
     tail = write_data(&node, 1, 100, 1);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(4, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(1, sub.out_of_order_discarded);
 
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(4, proxy->ack_seq_no);
 }
 
-// Milestone 60 - the exact real-CI regression this milestone's own first attempt caused, pinned as
-// its own permanent test: a gap wide enough to trigger jump_ack_baseline() must not cause every
-// subsequently-arriving, merely-reordered (never actually lost) sample from the abandoned range to
-// be silently dropped from delivery - each one is still genuinely new to this Subscriber.
-static void test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered(void) {
+// Milestone 60, re-specified 2026-09-24 when RELIABLE became strictly ordered.
+//
+// Originally: samples from a range abandoned by jump_ack_baseline() must still be DELIVERED when
+// they turn up late. That was the right contract while delivery was unordered, and it was pinned
+// after a first attempt that broke ACK tracking and cost a 12.38x reliable throughput regression.
+//
+// The user has since ruled that RELIABLE is strictly ordered, and these are exactly the samples
+// that ruling excludes: by the time they arrive, the application has been handed far_seq, and
+// delivering 2 after it would be a step backwards. So they are now discarded - but two things from
+// the original test still hold, and they are what this pins:
+//
+//   - not SILENTLY: every one is counted in out_of_order_discarded, so a reader seeing a gap can
+//     tell a discarded late sample from one that never arrived;
+//   - ACK tracking is untouched: the watermark stays where the jump put it. The 12.38x regression
+//     came from treating below-watermark arrivals as already-received for ACK purposes, and
+//     strict order is a delivery decision only - it must not bring that back.
+static void test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_silently(void) {
     test_mock_reset();
     subscriber_callback_count = 0;
 
@@ -761,8 +776,7 @@ static void test_reliable_reordered_arrivals_after_baseline_jump_are_still_deliv
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
 
-    // A far-ahead arrival (offset >= tt_RELIABLE_BITMAP_BITS) triggers jump_ack_baseline() -
-    // abandons tracking for 2..(far_seq - 1), none of which have actually been delivered yet.
+    // A far-ahead arrival triggers jump_ack_baseline() - abandons 2..(far_seq - 1).
     uint32_t far_seq = 2 + tt_RELIABLE_BITMAP_BITS;
     tail = write_data(&node, far_seq, far_seq * 100ULL, far_seq);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
@@ -772,13 +786,54 @@ static void test_reliable_reordered_arrivals_after_baseline_jump_are_still_deliv
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(far_seq + 1, proxy->ack_seq_no);
 
-    // Several samples from the abandoned range now arrive, merely reordered (never actually lost) -
-    // every one of them is genuinely new to this Subscriber and must still be delivered.
+    uint32_t late = 0;
     for (uint32_t seq = 2; seq < far_seq; seq += 7) {
         tail = write_data(&node, seq, seq * 100ULL, seq);
         EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+        late++;
     }
-    EXPECT_TRUE((uint32_t)subscriber_callback_count > 2); // not silently dropped
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // none handed up after far_seq
+    EXPECT_EQ_U32(late, sub.out_of_order_discarded);       // every one counted, none silent
+    EXPECT_EQ_U32(0, sub.out_of_order);                    // the application never saw a step back
+    EXPECT_EQ_U32(far_seq + 1, proxy->ack_seq_no);         // ACK tracking untouched
+}
+
+// A sample held behind a gap that is then ABANDONED must be delivered BEFORE the sample that caused
+// the jump, not after it. The jump sample is far above everything held, so strict order puts it
+// last. Delivering it first - which the code did until 2026-09-24 - would have made every held
+// sample a step backwards, and strict order would then have discarded good data because of a
+// sequencing bug rather than because it was late.
+static void test_reliable_held_samples_precede_the_jump_that_releases_them(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    // 5 and 6 are held behind the gap at 2.
+    tail = write_data(&node, 5, 500, 5);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 6, 600, 6);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    // Far ahead: abandons the gap. 5, 6 and the jump sample must all be delivered, in that order.
+    uint32_t far_seq = 2 + tt_RELIABLE_BITMAP_BITS;
+    tail = write_data(&node, far_seq, far_seq * 100ULL, far_seq);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(4, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(far_seq, sub.last_seq_no);      // the jump sample went last
+    EXPECT_EQ_U32(0, sub.out_of_order);           // and nothing went backwards
+    EXPECT_EQ_U32(0, sub.out_of_order_discarded); // nor was anything good discarded
+    EXPECT_EQ_U32(2, sub.reorder_delivered);
 }
 
 // Regression test for a real bug found via run_perf.sh's own tc/netem loss-injection scenarios:
@@ -2526,7 +2581,8 @@ int main(void) {
     test_reliable_delivers_in_order_without_buffer();
     test_reliable_releases_held_samples_when_gap_is_abandoned();
     test_reorder_stays_inside_an_odd_sized_buffer();
-    test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered();
+    test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_silently();
+    test_reliable_held_samples_precede_the_jump_that_releases_them();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
     test_acknack_retry_give_up_does_not_bulk_skip();

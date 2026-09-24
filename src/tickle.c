@@ -2799,6 +2799,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sender_port = 0;
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
+            proxy->highest_delivered = 0;
             proxy->sub = sub; // before anything that reads the window width through the proxy
             // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
             // said (a later announce refreshes it via update_writer_proxies_keep_all()). Unknown
@@ -3537,6 +3538,7 @@ static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t en
             proxy->entity_id = 0;
             proxy->ack_seq_no = 1;
             proxy->reorder_cursor = 1;
+            proxy->highest_delivered = 0;
             proxy->heartbeat_last_seq_no = 0;
             proxy->retry = 0;
             proxy->keep_all = false;
@@ -4368,38 +4370,79 @@ static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t 
 // up on by jump_ack_baseline()/advance_past_unavailable(). Giving up is a delivery event too: the
 // samples behind an abandoned gap have been waiting for something that is never coming, and DDS
 // hands over what it has rather than holding it forever.
-static void drain_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
-    uint32_t ack = proxy->ack_seq_no;
-    // Nothing held anywhere: nothing to release, and the cursor can simply catch up. This is the
-    // common case - on a link with no loss it is every call - and it is O(1).
-    if (sub->reorder_held == 0 || reorder_payload_capacity(sub) == 0) {
-        proxy->reorder_cursor = ack;
+// Hand one sample to the application if - and only if - it keeps this writer's delivery strictly
+// ordered. The single place RELIABLE ordering is enforced for delivery, so the rule cannot differ
+// between a sample that arrived in order and one released from the buffer.
+static void deliver_in_order(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                             uint32_t seq_no, uint64_t timestamp, const uint8_t* payload, uint32_t length,
+                             bool is_native, bool* out_decode_failed) {
+    if (proxy->highest_delivered != 0 && seq_no <= proxy->highest_delivered) {
+        // A step backwards: the application already has something later from this writer. Only
+        // reachable after a gap was abandoned and a sample from it turned up anyway.
+        sub->out_of_order_discarded++;
         return;
     }
-    // Walk this writer's sequence numbers from the cursor up to the watermark, once each, lowest
-    // first - which is delivery order by construction, with no sort and no rescan.
-    //
-    // Capped at one tracking window past the cursor: a held sample was stored while the cursor
-    // equalled the watermark, and a sample further than a window ahead of that triggers
-    // jump_ack_baseline() instead of a hold, so nothing held can lie beyond it. The cap is what
-    // keeps a jump across a long outage from walking millions of sequence numbers that cannot be
-    // in the buffer.
-    uint32_t cursor = proxy->reorder_cursor;
-    uint32_t window = proxy_window_bits(proxy);
-    uint32_t end = (ack - cursor > window) ? cursor + window : ack;
-    for (uint32_t seq = cursor; seq != end; seq++) {
-        struct tt_ReorderSlot* slot = reorder_slot_at(sub, (uint16_t)(seq % sub->reorder_slots));
-        if (!slot->occupied || slot->seq_no != seq || slot->node_id != proxy->node_id ||
-            slot->entity_id != proxy->entity_id) {
-            continue;
+    proxy->highest_delivered = seq_no;
+    deliver_payload(node, sub, seq_no, timestamp, proxy->node_id, proxy->entity_id, payload, length, is_native,
+                    out_decode_failed);
+}
+
+// Release, in sequence order, every held sample the watermark has passed - merged with the sample
+// that just arrived, when there is one.
+//
+// The merge is the point. Which of the two must go first depends on which side of the held samples
+// the new one lies, and it can be either:
+//
+//   - a gap FILLS: the new sample is below everything held behind it (2 arrives, 3 4 5 were held),
+//     so it goes first;
+//   - a gap is ABANDONED: jump_ack_baseline() fired, and the new sample is far above everything
+//     held (5 6 were held, 1000 arrives), so it goes last.
+//
+// Delivering it first unconditionally - which is what this did - handed 1000 to the application
+// before 5 and 6, and with strict order then in force, 5 and 6 would have been discarded as steps
+// backwards: correct data lost to a sequencing bug. Walking one ascending range and delivering each
+// number from wherever it lives - the slot, or the packet in hand - gets both cases right.
+//
+// Walks [cursor, ack) once, capped at one window (nothing held lies beyond it); a new sample past
+// the cap is larger than everything walked, so it goes after. O(1) when nothing is held.
+static void drain_reorder_with(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                               struct data_delivery_ctx* arriving, bool is_native) {
+    uint32_t ack = proxy->ack_seq_no;
+    bool arriving_done = (arriving == NULL);
+
+    if (sub->reorder_held != 0 && reorder_payload_capacity(sub) != 0) {
+        uint32_t cursor = proxy->reorder_cursor;
+        uint32_t window = proxy_window_bits(proxy);
+        uint32_t end = (ack - cursor > window) ? cursor + window : ack;
+        for (uint32_t seq = cursor; seq != end; seq++) {
+            if (!arriving_done && seq == arriving->seq_no) {
+                deliver_in_order(node, sub, proxy, arriving->seq_no, arriving->timestamp,
+                                 arriving->buffer + arriving->head, arriving->tail - arriving->head, is_native,
+                                 &arriving->decode_failed);
+                arriving_done = true;
+                continue;
+            }
+            struct tt_ReorderSlot* slot = reorder_slot_at(sub, (uint16_t)(seq % sub->reorder_slots));
+            if (!slot->occupied || slot->seq_no != seq || slot->node_id != proxy->node_id ||
+                slot->entity_id != proxy->entity_id) {
+                continue;
+            }
+            slot->occupied = false;
+            sub->reorder_held--;
+            sub->reorder_delivered++;
+            deliver_in_order(node, sub, proxy, slot->seq_no, slot->timestamp, reorder_slot_payload(slot), slot->length,
+                             slot->is_native, NULL);
         }
-        slot->occupied = false;
-        sub->reorder_held--;
-        sub->reorder_delivered++;
-        deliver_payload(node, sub, slot->seq_no, slot->timestamp, slot->node_id, slot->entity_id,
-                        reorder_slot_payload(slot), slot->length, slot->is_native, NULL);
+    }
+    if (!arriving_done) {
+        deliver_in_order(node, sub, proxy, arriving->seq_no, arriving->timestamp, arriving->buffer + arriving->head,
+                         arriving->tail - arriving->head, is_native, &arriving->decode_failed);
     }
     proxy->reorder_cursor = ack;
+}
+
+static void drain_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
+    drain_reorder_with(node, sub, proxy, NULL, false);
 }
 
 static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -4485,11 +4528,14 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
             hold_for_reorder(node, sub, proxy, ctx, is_native);
             return;
         }
+        if (proxy != NULL) {
+            drain_reorder_with(node, sub, proxy, ctx, is_native);
+            return;
+        }
+        // No WriterProxy slot free, so no ordering state to honour: deliver as it came, which is
+        // what this path did before ordering existed.
         deliver_payload(node, sub, ctx->seq_no, ctx->timestamp, ctx->header->source, ctx->entity_id,
                         ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native, &ctx->decode_failed);
-        if (proxy != NULL) {
-            drain_reorder(node, sub, proxy);
-        }
         return;
     }
 

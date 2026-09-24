@@ -1113,6 +1113,13 @@ struct tt_WriterProxy {
     // buffer per sample. Kept equal to ack_seq_no at every point a sample can be held, so a held
     // sample always lies in [reorder_cursor, reorder_cursor + window) - the range drain walks.
     uint32_t reorder_cursor;
+    // RELIABLE strict order - the highest sequence number from this writer handed to the
+    // application, 0 before the first. Distinct from ack_seq_no on purpose: the watermark moves
+    // past an abandoned range WITHOUT delivering it (jump_ack_baseline()), so after a jump the two
+    // diverge by exactly the samples that must not be delivered late. Anything at or below this is
+    // discarded rather than handed up - the user's ruling (2026-09-24) that RELIABLE is strictly
+    // ordered, matching DDS once a gap has been declared lost.
+    uint32_t highest_delivered;
     // Phase 3 - tt_get_ns() of the last "still waiting" warning for this writer, so a stuck
     // KEEP_ALL gap is visible in a log at a fixed cadence rather than per retry or never.
     uint64_t stuck_warned_ns;
