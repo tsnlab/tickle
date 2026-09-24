@@ -1166,6 +1166,9 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no);
 // has gone away, so its slots do not stay occupied for a stream that will never resume.
 static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id,
                                              bool match_any_entity);
+// Releases held samples the watermark has passed. Declared up here because acknack_retry()'s
+// give-up moves the watermark too, and it is defined long before the delivery code.
+static void drain_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy);
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy);
 // Milestone 47 - WriterProxy table lookup/creation - see struct tt_WriterProxy's own doc comment
 // (tickle.h) and each definition. find_endpoint_by_entity() (the entity_id-aware ACKNACK routing
@@ -3016,6 +3019,13 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
         // actually grants that fresh budget) - and, unlike leaving it to the next DATA arrival to
         // notice, maybe_arm_acknack_retry() below starts requesting it immediately.
         advance_ack_seq_no(proxy);
+        // advance_ack_seq_no() does not only step past the abandoned sample - it absorbs every
+        // received sample contiguous behind it, which with ordered delivery are samples still
+        // HELD in the reorder buffer. The watermark is now past them and they have not been
+        // handed up. This path never drained, so they waited for the next in-order arrival, and
+        // on a stream that had stopped they waited forever - while their slots stayed occupied
+        // and a sample arriving a window later collided with one and was re-requested.
+        drain_reorder(node, proxy->sub, proxy);
         // No bulk skip of the rest here any more (Phase 1-c removed skip_unrecoverable_backlog()
         // and its compile-time tt_MAX_RELIABLE_HISTORY guess at the Publisher's depth, which threw
         // away samples a deeper cache still held). What's genuinely gone is now signalled
@@ -5484,11 +5494,6 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
     } else {
         advance_past_unavailable(proxy, ctx->first_available_seq_no);
     }
-    // Giving up on a gap is a delivery event: whatever was held behind it has been waiting for
-    // something the Publisher has just said is never coming, so it is released now, in order.
-    // Without this a held sample would sit until the next in-order arrival happened to drain it -
-    // and on a stream that has stopped, that is forever.
-    drain_reorder(node, sub, proxy);
     if (!first_contact && ctx->last_seq_no >= proxy->ack_seq_no) {
         uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;
         if (offset >= proxy_window_bits(proxy)) {
@@ -5508,6 +5513,16 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
     // last_seq_no < proxy->ack_seq_no: a stale/reordered Heartbeat (e.g. arrived after DATA
     // already caught this Subscriber up further) - nothing to do, same "duplicate/old" no-op
     // update_reliable_ack()'s own seq_no < ack_seq_no branch already has.
+
+    // Giving up on a gap is a delivery event: whatever was held behind it has been waiting for
+    // something the Publisher has just said is never coming, so it is released now, in order.
+    //
+    // AFTER both watermark moves in this function, not between them. It used to sit after
+    // advance_past_unavailable() and before the oversized-gap jump_ack_baseline() above, so that
+    // jump moved the watermark past held samples after they had last been checked - and nothing
+    // released them until the next in-order arrival happened to drain, which on a stream that
+    // has stopped is never. Every path that moves a watermark has to drain after its last move.
+    drain_reorder(node, sub, proxy);
 
     proxy->sender_ip = ctx->sender_ip;
     proxy->sender_port = ctx->sender_port;

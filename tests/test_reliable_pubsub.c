@@ -2553,6 +2553,89 @@ static void test_reorder_stays_inside_an_odd_sized_buffer(void) {
     EXPECT_EQ_U32(ODD_SLOTS, sub.reorder_delivered);
 }
 
+// Every path that moves a writer's watermark must release what the watermark passed. These two
+// did not, and neither had a test - which is the only reason they survived.
+//
+// The retry give-up calls advance_ack_seq_no(), which steps past the abandoned sample AND absorbs
+// every received sample contiguous behind it. With ordered delivery those are samples still held.
+// The watermark was past them, nothing released them, and on a stream that then stopped they were
+// never delivered at all.
+static void test_retry_giveup_releases_the_samples_it_absorbs(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    // Only 2 is missing; 3, 4, 5 are held contiguously behind it.
+    for (uint32_t seq = 3; seq <= 5; seq++) {
+        tail = write_data(&node, seq, seq * 100ULL, seq);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    // The writer does not promise KEEP_ALL and 2 has used its whole retry budget: give up on it.
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    proxy->retry = tt_RELIABLE_RETRY + 1;
+    acknack_retry(&node, tt_get_ns(), proxy);
+
+    // No further DATA arrives. 3, 4, 5 must be delivered anyway, in order, by the give-up itself.
+    EXPECT_EQ_U32(6, proxy->ack_seq_no);
+    EXPECT_EQ_U32(4, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(5, sub.last_seq_no);
+    EXPECT_EQ_U32(0, sub.out_of_order);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+}
+
+// A Heartbeat revealing a gap wider than the window jumps the watermark past it. The drain in that
+// handler used to sit between its two watermark moves - after advance_past_unavailable() and before
+// this jump - so the jump passed held samples after they had last been checked.
+static void test_heartbeat_jump_releases_what_it_passes(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 5, 500, 5);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 6, 600, 6);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    // Nothing evicted (first_available is the current watermark), but the Publisher is now so far
+    // ahead that the gap can never be tracked: the handler jumps.
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    uint32_t far = proxy->ack_seq_no + proxy_window_bits(proxy) + 10;
+    tail = write_heartbeat(&node, ENDPOINT_ID, proxy->ack_seq_no, far, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_TRUE(proxy->ack_seq_no > 6);                    // the jump happened
+    EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count); // and 5, 6 were released by it
+    EXPECT_EQ_U32(6, sub.last_seq_no);
+    EXPECT_EQ_U32(0, sub.out_of_order);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -2581,6 +2664,8 @@ int main(void) {
     test_reliable_delivers_in_order_without_buffer();
     test_reliable_releases_held_samples_when_gap_is_abandoned();
     test_reorder_stays_inside_an_odd_sized_buffer();
+    test_retry_giveup_releases_the_samples_it_absorbs();
+    test_heartbeat_jump_releases_what_it_passes();
     test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_silently();
     test_reliable_held_samples_precede_the_jump_that_releases_them();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
