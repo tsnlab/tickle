@@ -13,7 +13,7 @@ by Open Source Robotics Foundation, Inc. (per each source package's own `package
 |---|---|
 | `std_msgs/msg/Header.msg` | `ros2/common_interfaces/std_msgs` |
 | `sensor_msgs/msg/Image.msg` | `ros2/common_interfaces/sensor_msgs` |
-| `geometry_msgs/msg/{Twist,Vector3}.msg` | `ros2/common_interfaces/geometry_msgs` |
+| `geometry_msgs/msg/{Twist,Vector3,Point32,Polygon}.msg` | `ros2/common_interfaces/geometry_msgs` |
 | `std_srvs/srv/SetBool.srv` | `ros2/common_interfaces/std_srvs` |
 | `builtin_interfaces/msg/Time.msg` | `ros2/rcl_interfaces/builtin_interfaces` |
 | `diagnostic_msgs/msg/DiagnosticStatus.msg` | `ros2/common_interfaces/diagnostic_msgs` |

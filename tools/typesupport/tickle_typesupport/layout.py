@@ -94,6 +94,34 @@ def padded_wire_size(struct):
     return align_up(struct.wire_size, model.struct_self_align(struct))
 
 
+def _nested_array_end(wire_field, element_max, offset):
+    """Where an array of nested elements ends in the worst case, given the (already field-aligned)
+    offset it starts at - shared by max_wire_size() and max_encoded_size(), which differ only in
+    element_max.
+
+    Each element is `align_up(element_max, element_align)`: the encoder pads to element_align
+    after the count and before every element but the first (emit.py's per-element helper), so an
+    element starts aligned and the next one starts at the next aligned offset after it. That is
+    also the stride _resolve_auto_capacities() divides the budget by, from the same absolute
+    offset, and the two have to agree. This used to charge `element_max + (element_align - 1)` per
+    element instead, which for geometry_msgs/Polygon's Point32 (12 bytes, align 4) is 15 against a
+    real stride of 12 - so an auto-derived capacity of 120, which fills the datagram exactly, was
+    reported as 1802 bytes: a type the generator had sized itself, declared too large for a
+    datagram. Tighter, but never an underestimate: the last element needs no trailing gap, so this
+    is over by at most element_align - 1.
+
+    The offset has to be the real one, not a count measured from the array's own start: a
+    variable array's count is only 2-aligned, so the gap after it depends on where it sits, and
+    charging the largest possible gap would put an exactly-filled trailing array over budget
+    whenever it sits better than worst-aligned."""
+    per_element = align_up(element_max, wire_field.element_align)
+    if wire_field.array_mode == "fixed":
+        # The field's own wire_align is element_align, so the caller already aligned the start.
+        return offset + wire_field.array_size * per_element
+    offset = align_up(offset + model.ARRAY_COUNT_SIZE, wire_field.element_align)
+    return offset + wire_field.capacity * per_element
+
+
 def max_wire_size(struct):
     """Worst-case wire size in bytes, from what's actually knowable at generate time - backs the
     "message fits in one datagram" _Static_assert every generated struct.h.em carries (PLAN.md /
@@ -121,15 +149,7 @@ def max_wire_size(struct):
             else:
                 offset += model.ARRAY_COUNT_SIZE + wire_field.capacity * model.STRING_LEN_SIZE
         elif wire_field.kind == "array" and wire_field.array_element_kind == "nested":
-            # Recurse for one element's own worst case, then add the most padding a gap *before*
-            # it could ever need (element_align - 1) - conservative, not the exact stride math
-            # WireField.wire_size uses for the fixed-size case below, but this only backs a safety
-            # _Static_assert, where overestimating is fine and underestimating never is.
-            per_element = max_wire_size(wire_field.nested) + (wire_field.element_align - 1)
-            if wire_field.array_mode == "fixed":
-                offset += wire_field.array_size * per_element
-            else:
-                offset += model.ARRAY_COUNT_SIZE + wire_field.capacity * per_element
+            offset = _nested_array_end(wire_field, max_wire_size(wire_field.nested), offset)
         elif wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
             offset += wire_field.wire_size
         elif wire_field.kind == "string" and wire_field.capacity is not None:
@@ -201,14 +221,7 @@ def max_encoded_size(struct):
             nested_max = max_encoded_size(wire_field.nested)
             if nested_max is None:
                 return None
-            # Same conservative per-element padding max_wire_size() uses: the exact stride depends
-            # on where the element lands, and over-reserving here is safe where under-reserving
-            # never is.
-            per_element = nested_max + (wire_field.element_align - 1)
-            if wire_field.array_mode == "fixed":
-                total += wire_field.array_size * per_element
-            else:
-                total += model.ARRAY_COUNT_SIZE + wire_field.capacity * per_element
+            total = _nested_array_end(wire_field, nested_max, total)
         elif wire_field.kind == "scalar" or (wire_field.kind == "array" and wire_field.array_mode == "fixed"):
             total += wire_field.wire_size
         elif wire_field.kind == "array":  # variable, scalar elements

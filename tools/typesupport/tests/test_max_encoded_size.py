@@ -27,7 +27,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from tickle_typesupport import _rosidl_parser as rosidl  # noqa: E402
-from tickle_typesupport import adapt, layout, resolve  # noqa: E402
+from tickle_typesupport import adapt, layout, model, resolve  # noqa: E402
 
 FIXTURES_OWN = pathlib.Path(__file__).parent / "fixtures_own"
 FIXTURES_ROS2 = pathlib.Path(__file__).parent / "fixtures_ros2"
@@ -111,3 +111,20 @@ def test_bound_never_understates_the_fixed_size_walk():
     ):
         struct = _struct(path, pkg, name)
         assert layout.max_encoded_size(struct) == layout.max_wire_size(struct), name
+
+
+def test_auto_derived_nested_capacity_is_reported_as_fitting():
+    # A capacity the generator derived itself must come out as fitting the datagram it was derived
+    # from. geometry_msgs/Polygon is the real shape that showed it did not: Point32 is 12 bytes with
+    # alignment 4, auto-derivation divides the budget by that 12-byte stride and gets 120, and the
+    # bound used to charge 15 per element (12 + element_align - 1), reporting 1802 bytes. Plan's
+    # inventory of every jazzy interface (2026-09-24) turned up seven types declared too large this
+    # way, all of them this shape. Exact equality, not <=: 4 + 120 * 12 is the whole budget, so a
+    # bound that drifts up by even one element's padding fails here.
+    struct = _struct(FIXTURES_ROS2 / "geometry_msgs" / "msg" / "Polygon.msg", "geometry_msgs", "Polygon")
+    points = struct.fields[0]
+    budget = model.TT_MAX_BUFFER_LENGTH - model.FRAMING_OVERHEAD
+    assert points.capacity_source == "auto"
+    assert points.capacity == (budget - 4) // 12 == 120
+    assert layout.max_wire_size(struct) == budget
+    assert layout.max_encoded_size(struct) == budget

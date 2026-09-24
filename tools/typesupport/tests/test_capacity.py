@@ -16,6 +16,7 @@ priorities in PLAN.md gets exercised.
 """
 
 import ctypes
+import pathlib
 import sys
 
 from test_roundtrip import (
@@ -209,3 +210,35 @@ def test_odd_align_ctypes_sizeof_matches_generated_padding():
     # ctypes.sizeof() must independently agree with the generator's own computed sizeof (16, via
     # layout.padded_wire_size()) or every offset in this whole test file would be silently wrong.
     assert ctypes.sizeof(NestedArraysPkgOddAlign) == 16
+
+
+def test_nested_array_bound_is_never_below_a_full_encode(generated_lib):
+    # layout.max_wire_size() charges each nested element its real stride (element size rounded up
+    # to element_align) rather than size + element_align - 1, which is tighter for an element
+    # whose size is already aligned (geometry_msgs/Point32 - test_max_encoded_size.py). Tighter is
+    # only right if it is never below what the encoder actually writes, so this fills every array
+    # of NestedArrays to capacity and compares the encoder's own count against the bound. OddAlign
+    # (13 bytes, align 4) is the element to do it with: its size is not a multiple of its
+    # alignment, so every inter-element gap is real.
+    sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+    from tickle_typesupport import _rosidl_parser as rosidl
+    from tickle_typesupport import adapt, layout, resolve
+
+    own = pathlib.Path(__file__).parent / "fixtures_own"
+    spec = rosidl.parse_message_string(
+        "nested_arrays_pkg", "NestedArrays", (own / "nested_arrays_pkg" / "msg" / "NestedArrays.msg").read_text()
+    )
+    struct = adapt.adapt_message("NestedArrays", spec, resolve.Resolver([str(own)])).data
+    bound = layout.max_wire_size(struct)
+
+    encode_size, encode, _decode, _free = _bind(generated_lib, "NestedArraysData", NestedArraysData)
+    data = NestedArraysData()
+    data.bounded_items_count = 3
+    data.tagged_items_count = 4
+    full = encode_size(ctypes.byref(data))
+    buf = ctypes.create_string_buffer(TT_MAX_BUFFER_LENGTH)
+    assert encode(ctypes.byref(data), buf, TT_MAX_BUFFER_LENGTH) == full
+    assert 0 < full <= bound
+    # Sanity on the other side: over by a few alignment steps (each array's last element has no
+    # trailing gap), not by anything that grows with the element count.
+    assert bound - full < 3 * 2 * 4
