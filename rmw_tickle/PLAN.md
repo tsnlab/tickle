@@ -1853,6 +1853,21 @@ Two fixes:
   older firmware logs "Unknown submessage type 7, skipping" once per part per announce interval for
   every large node on its segment. It is harmless, but noisy on an MCU console.
 
+**Stage (i), the audit at N = 65507** (TickLE Dev). The whole unit suite was built at N = 65507
+and run plain and under ASan/UBSan. No uint16 truncation surfaced in core. Three findings:
+- The stack overflow at the default ulimit is the expected 192N-per-server cost, which stage (iv)
+  removes.
+- The discovery split point was N, so at 65507, 120 endpoints went out as one ~11 KB UPDATE.
+  This confirms Plan's control-MTU point, and the control MTU becomes its own setting in stage (ii).
+- **A real bug independent of N** (`718eaacf`, found by UBSan): `tt_Node_create_publisher()` and
+  `tt_Node_create_subscriber()` left several fields uninitialised, although `tickle.h` documents
+  NULL/0 as create's default. Among them was `tracking_bitmaps`, a pointer the reliable path
+  writes through. Only stack or reused allocations were exposed, since rmw zero-allocates and the
+  examples are static.
+
+The fuzz harness got a seed corpus from the real encoder (`86df2eb5`) so the 45 s CI smoke actually
+reaches the new UPDATE_PART parser. CI's `setup-ros` 404 recurred, and now retries once (`a4c9d7e1`).
+
 **Next assignment after this one: ROS 2 actions** (user decision 4). `rosidl_typesupport_tickle_c`
 generates no `.action` today (jazzy has 3 among the scanned packages: example_interfaces Fibonacci,
 tf2_msgs LookupTransform and test_msgs NestedMessage). An action is goal, result and feedback
