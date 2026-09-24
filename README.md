@@ -92,10 +92,49 @@ copy `libtickle.a` + `include/tickle/` into your project directly, if you'd rath
   string literals are fine, a freed buffer is not.
 - **One `tt_Node` is single-threaded**: drive all of its calls from one thread (see
   [DESIGN.md](DESIGN.md), "Concurrency").
-- Delivery is **best-effort** in this release. `tt_Topic`'s `history_depth` /
-  `deadline_duration` / `lifespan_duration` and the `tt_RELIABLE_*` knobs in
-  [`config.h`](include/tickle/config.h) are reserved for a later reliable-QoS release and are
-  ignored for now.
+- Delivery is BEST_EFFORT unless a publisher is given a reliable cache. What each mode promises
+  is under "Delivery guarantees" below.
+
+## Delivery guarantees
+
+Both modes make promises **per writer**. Samples from two different publishers have no order
+relative to each other.
+
+**BEST_EFFORT** - a reader may miss samples, but it never receives a sample it has already
+moved past. A sample whose sequence number is not newer than the last one delivered from the
+same writer is discarded. This is the DDS behaviour applications (and `performance_test`) rely on:
+gaps are possible, and duplicates or reordering are not. A publisher that restarts starts a fresh
+sequence and is accepted again.
+
+**RELIABLE** - samples are delivered in **strictly increasing order** per writer. The reader
+**waits** for a missing sample while it can still be recovered and asks for it again (ACKNACK). It
+holds the samples that arrived after the gap until the gap is filled. How long "can still be
+recovered" lasts depends on the writer's history:
+
+- **KEEP_LAST(depth)**: the writer keeps its last `depth` samples. If the missing one has already
+  been evicted, the writer says so (a Heartbeat carrying the oldest sequence it still has), and
+  the reader skips the gap instead of waiting forever. If a sample arrives after its gap was
+  given up, the reader discards it and counts it in `out_of_order_discarded`; it is never
+  delivered out of order.
+- **KEEP_ALL**: nothing is evicted before every matched reader has acknowledged it. When the
+  cache is full, the writer blocks and then refuses the write (it reports a timeout) rather than
+  drop data it accepted, which is the DDS contract for KEEP_ALL.
+
+**Why a RELIABLE writer also sends Heartbeats.** The "already evicted" answer above travels in
+reply to the reader's ACKNACK, and on a lossy link that ACKNACK or its reply can itself be lost.
+At a high sample rate the reader's buffer fills before the retry succeeds, and the stream stalls.
+A Heartbeat carrying the oldest retained sequence number, sent without waiting to be asked, closes
+that hole. Two ways to send it:
+
+| | how | cost | default |
+|---|---|---|---|
+| piggybacked | appended to every Nth DATA, in the same datagram | ~24 B per N samples, no extra packet | `rmw_tickle`: on, N = 64. Native API: off (`tt_Publisher.heartbeat_piggyback_every`) |
+| periodic | its own datagram every period | one packet per period, whatever the data rate | off everywhere (`tt_Publisher_set_heartbeat_period()`) |
+
+The piggybacked form scales with the data rate, which is exactly when the stall can happen. On a
+quiet publisher it sends almost nothing, and there the reader's own retries are enough. Measured
+through ROS 2 with 8% injected loss at maximum rate: window stalls went from 505-1151 per 15 s run
+to 0-1 at N = 64 (`rmw_tickle/PLAN.md`, "RELIABLE under the default ROS 2 profile").
 
 ## Tests
 
@@ -206,6 +245,30 @@ Under ROS 2 there is no argv to pass, so `rmw_tickle` reads the same two setting
 environment at `rmw_init()`: `TICKLE_BROADCAST_ADDR` for `-b` and `TICKLE_NODE_ID` for `-I`. A ROS
 deployment that leaves `TICKLE_BROADCAST_ADDR` unset gets the limited broadcast and the default
 route with it, which is exactly the case that leaked above. Set it.
+
+The other `rmw_tickle` environment variables are tuning knobs. An unparseable value falls back to
+the default rather than stopping the node:
+
+| variable | effect | default |
+|---|---|---|
+| `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | piggyback a Heartbeat on every Nth RELIABLE sample (see "Delivery guarantees"); `0` turns it off | `64` |
+| `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a periodic Heartbeat at this period | unset (off) |
+| `RMW_TICKLE_MAX_BLOCKING_MS` | how long a KEEP_ALL publish may block before it fails; `0` fails at once | `100` |
+| `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | storage reserved per retained KEEP_ALL sample, for types whose size the generator cannot bound | the datagram size |
+| `RMW_TICKLE_REORDER_SLOTS` | how many out-of-order RELIABLE samples a subscription may hold; fewer saves memory and costs retransmissions | the tracking window |
+
+**Current limits under ROS 2** (being worked on - `rmw_tickle/PLAN.md`, "Standard ROS 2 message
+packages over rmw_tickle"):
+
+- A message type only works if its interface package was built with TickLE's typesupport. The
+  apt-installed standard packages (`std_msgs`, `geometry_msgs`, `sensor_msgs`, ...) were not, so
+  today they fail at publisher/subscription creation with "no rmw_tickle typesupport for this
+  message type". A build script that rebuilds them with TickLE's typesupport is in progress.
+- For the same reason, an ordinary `rclcpp::Node` currently needs
+  `--ros-args -p start_type_description_service:=false`, or it aborts creating its
+  `~/get_type_description` service.
+- A message must fit one datagram (1472 B as a TickLE struct). Support for larger messages through
+  the OS's IP fragmentation, under `rmw_tickle` only, is in progress.
 
 Senders (`ping`, `client`, `publisher`, `perf_client`) additionally take:
 
@@ -352,7 +415,7 @@ paced accurately since it's comfortably larger than that ceiling.
 **<https://tsnlab.github.io/tickle/dev/bench/>** carries a single per-platform status table -
 did it compile, did each test tier pass, and (for the hardware-in-the-loop row) the latest
 measured throughput / latency / small-message rate / RELIABLE throughput under 1%/5%/10% packet
-loss - refreshed on every push to `main`:
+loss - refreshed whenever the hardware workflow is dispatched:
 
 | Platform | Build | Unit tests | Integration test | Throughput | Latency RTT | Small-msg rate | Reliable Tput@1%/5%/10% loss |
 |---|---|---|---|---|---|---|---|
@@ -366,13 +429,15 @@ numbers come from [`performance.yml`](.github/workflows/performance.yml). Both f
 [`.github/scripts/publish_dashboard.sh`](.github/scripts/publish_dashboard.sh), which folds its
 section into `dev/bench/status.json` and re-renders the table above the benchmark charts.
 
-Every push to `main` runs a hardware-in-the-loop latency and throughput test on two real
-Raspberry Pi boards connected by an Ethernet link (`rpi#1` as client/sender, `rpi#2` as
-server/receiver), via a self-hosted GitHub Actions runner:
+The hardware-in-the-loop latency and throughput test runs on two real Raspberry Pi boards
+connected by an Ethernet link (`rpi#1` as client/sender, `rpi#2` as server/receiver), via a
+self-hosted GitHub Actions runner. **It runs on manual dispatch only.** Until 2026-09-24 it ran on
+every push to `main`, but in practice most runs were cancelled by the next push while holding the
+rig, and the published performance figures (`rmw_tickle/COMPARISON.MD`) are taken by hand anyway.
+A push now runs only the hosted `Check all` and `Test all` workflows.
 
-- [`.github/workflows/performance.yml`](.github/workflows/performance.yml) - triggers on push
-  to `main` (immediately - no debounce) or manually via `workflow_dispatch`; a newer push
-  cancels an in-progress run for an older one instead of queuing both
+- [`.github/workflows/performance.yml`](.github/workflows/performance.yml) - `workflow_dispatch`
+  only
 - [`.github/scripts/run_perf.sh`](.github/scripts/run_perf.sh) - checks out the exact commit
   being tested on both Pis, builds, runs `ping`/`pong` for latency and
   `perf_client`/`perf_server` for throughput (using the `-c`/`-d` flags above so a run can never
@@ -390,7 +455,7 @@ one-way delivery latency (`avg_latency_ms`) for each combination, both in the jo
 comparison table and as further `github-action-benchmark` history. Paced at
 `LOSS_TEST_INTERVAL_SEC` (20ms by default, not the clean-link runs' own firehose "as fast as
 `poll()` allows") specifically so a NACKed sample is still likely to be in the reliable
-Publisher's own retained-sample cache (`tt_MAX_RELIABLE_HISTORY`, 8 by default) by the time a
+Publisher's own retained-sample cache (`tt_MAX_RELIABLE_HISTORY`, 64 by default) by the time a
 retry actually asks for it - at firehose rates that cache gets overwritten many times over before
 one ACKNACK round trip can complete, so RELIABLE's own retransmission never gets a real chance to
 recover anything (confirmed the hard way: an earlier version of this scenario ran at firehose
