@@ -1793,6 +1793,39 @@ RELIABLE retransmitting the entire datagram. The kernel also bounds reassembly (
 receive buffers (`SO_RCVBUF`). Publishes flush per call unless `pub->batch` is set, so small
 samples are not coalesced into large datagrams by default.
 
+**Per-entity storage at N = 65507: the design** (TickLE Dev's proposal plus two changes from
+TickLE Plan's review, approved by the user: "진행해."). No per-entity store may be sized as a count
+times N. Each store is sized by its entity's own type bound, or, for types with no small bound
+(anything carrying a plain string), by a byte budget independent of N, holding variable-length
+records. N caps only a single sample.
+- `tt_Node` tx/rx buffers stay at 4N, about 262 KB per context.
+- The publisher reliable cache is min((depth+1) x type record, budget), with a default budget of
+  1 MiB. Without this, /rosout at TRANSIENT_LOCAL depth 1000 would alone cost ~65 MB.
+- The subscription reorder buffer gets a stride of min(type bound, 2 KiB) *and* a byte budget:
+  slots = min(window, budget / stride). A sample that does not fit is re-requested rather than
+  held, and the existing overflow path already does that.
+- Servers and clients get `tt_*_set_storage()`, which attaches caller storage sized from the
+  service's own request and response types. Core examples keep their inline arrays through new
+  macros that default to today's values.
+- One CMake variable, `TICKLE_MAX_BUFFER_LENGTH` (default 65507, user-overridable), feeds rmw's
+  `-Dtt_MAX_BUFFER_LENGTH`, the generator's `--max-buffer-length` and the capacity files. rmw
+  warns when it loads a type generated for a different N.
+- `SO_RCVBUF`: request 4 MiB and log what was actually granted. It is clamped to
+  `net.core.rmem_max`, about 208 KB by default, and the log must name that sysctl.
+- **Control traffic stays at or below 1472 B whatever N is** (Plan's first change). Discovery
+  UPDATEs, ACKNACKs, heartbeats and batched sends keep the MTU-sized flush threshold, and only a
+  single oversized sample may exceed it. Otherwise a TickLE node on core defaults, such as an MCU,
+  could not even discover an rmw node with many endpoints.
+- Accepted costs, to be documented rather than engineered around:
+  - A byte-budgeted cache keeps fewer than `depth` large samples, as DDS
+    RESOURCE_LIMITS.max_samples does. Under RELIABLE, a sample evicted before its NACK arrives is
+    lost to the reader.
+  - Losing one IP fragment loses the whole datagram.
+- The three defaults are reasoned initial values with env overrides, not measurements. They are to
+  be tuned once the rig can run ROS 2.
+- Build order: uint16 audit, then N plumbing, then publisher/reorder sizing, then server/client
+  storage, and the rmw default flipped last.
+
 **Next assignment after this one: ROS 2 actions** (user decision 4). `rosidl_typesupport_tickle_c`
 generates no `.action` today (jazzy has 3 among the scanned packages: example_interfaces Fibonacci,
 tf2_msgs LookupTransform and test_msgs NestedMessage). An action is goal, result and feedback
