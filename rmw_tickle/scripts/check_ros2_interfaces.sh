@@ -109,11 +109,19 @@ export RMW_IMPLEMENTATION=rmw_tickle
 export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
 
 log="$(mktemp -d)"
+# CHECK_ROS2_KEEP_LOGS=DIR keeps every process's output (copied there on exit) - for chasing a
+# failure that does not reproduce on demand.
+keep_logs() {
+    if [ -n "${CHECK_ROS2_KEEP_LOGS:-}" ]; then
+        mkdir -p "$CHECK_ROS2_KEEP_LOGS"
+        cp -r "$log"/. "$CHECK_ROS2_KEEP_LOGS"/ 2>/dev/null || true
+    fi
+}
 
 if [ "$ACTION" = 1 ]; then
     action_check="$(dirname "$check")/action_check"
     [ -x "$action_check" ] || fail "no $action_check - example_interfaces or rclcpp_action was not found when building it"
-    trap 'kill "${server_pid:-}" 2>/dev/null || true; rm -rf "$log"' EXIT
+    trap 'kill "${server_pid:-}" 2>/dev/null || true; keep_logs; rm -rf "$log"' EXIT
     TICKLE_NODE_ID=124 "$action_check" server 25 >"$log/server.txt" 2>&1 &
     server_pid=$!
     sleep 1
@@ -147,7 +155,7 @@ if [ "$ACTION" = 1 ]; then
     echo "check_ros2_interfaces: PASS"
     exit 0
 fi
-trap 'kill "${sub_pid:-}" "${cpp_sub_pid:-}" 2>/dev/null || true; rm -rf "$log"' EXIT
+trap 'kill "${sub_pid:-}" "${cpp_sub_pid:-}" 2>/dev/null || true; keep_logs; rm -rf "$log"' EXIT
 TICKLE_NODE_ID=121 "$check" sub 15 >"$log/sub.txt" 2>&1 &
 sub_pid=$!
 if [ "$RCLCPP" = 1 ]; then
@@ -217,6 +225,11 @@ if [ "$RCLCPP" = 1 ]; then
     wait "$cpp_sub_pid" || cpp_sub_status=$?
     grep -v '\[INFO\]' "$log/cpp_sub.txt" | tail -6
     [ "$cpp_sub_status" = 0 ] || fail "the default rclcpp::Node subscriber did not receive all four intact (exit $cpp_sub_status)"
+    # Every rmw entry point exists: rmw_implementation logs "failed to resolve symbol" for any it
+    # cannot find in librmw_tickle.so, at every node start (20 on jazzy until rmw_unsupported.c).
+    missing=$(grep -ho "failed to resolve symbol '[a-z_]*'" "$log/pub.txt" "$log/cpp_sub.txt" | sort -u || true)
+    [ -z "$missing" ] || fail "rmw_implementation could not find rmw functions in librmw_tickle.so: $missing"
+    echo "rmw entry points: all resolved"
 fi
 [ "$sub_status" = 0 ] || {
     echo "--- publisher ---" >&2
