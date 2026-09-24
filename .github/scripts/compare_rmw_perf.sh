@@ -55,6 +55,16 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-77}"
 PERF_TEST_TOPICS="Array1k;Struct16"
 PERF_TEST_RMW_IMPLEMENTATIONS="rmw_tickle;rmw_fastrtps_cpp;rmw_cyclonedds_cpp"
 
+# Box-scoped mutual exclusion (examples/perf_hil/rig_lock.sh). This script benchmarks on THIS
+# machine, not on the rpis - and so does CI's own rmw-perf job, on the self-hosted runner that
+# lives here. Until 2026-09-24 nothing stood between the two but one session remembering to ask
+# another, which is the arrangement the rpi lock exists because it failed. Scope "box", not the
+# default "hil": taking the rpi lock for a job that never touches an rpi blocks the rig for no
+# reason, which this script did for most of an afternoon.
+if [ "${RIG_LOCK_HELD_BOX:-0}" != "1" ]; then
+    RIG_LOCK_SCOPE=box exec "$REPO_ROOT/examples/perf_hil/rig_lock.sh" "$0" "$@"
+fi
+
 echo "=== Building rmw_tickle against the pre-provisioned ROS 2 + DDS-vendor underlay ==="
 # shellcheck disable=SC1090,SC1091 # both paths depend on this box's own ROS_DISTRO_NAME/RMW_PERF_WS
 source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"

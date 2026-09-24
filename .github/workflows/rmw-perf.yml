@@ -130,6 +130,12 @@ jobs:
             --cmake-force-configure
 
       - name: Run the benchmark
+        # Under the box-scoped lock (examples/perf_hil/rig_lock.sh): this job benchmarks on the
+        # self-hosted runner's own machine, and .github/scripts/compare_rmw_perf.sh benchmarks on
+        # that same machine when run by hand. concurrency above serialises this workflow against
+        # itself and cannot see a manual run at all. Waits rather than fails - a manual sweep is
+        # minutes, and a job that waited is better than one that raced and produced a number nobody
+        # can trust.
         run: |
           source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
@@ -160,6 +166,8 @@ jobs:
           # real environment hiccup) never blocks every future push's table from showing up.
           # colcon test-result's own per-test breakdown still prints either way, for whoever
           # reads this step's log.
+          RIG_LOCK_SCOPE=box RIG_LOCK_OWNER="rmw-perf.yml run ${GITHUB_RUN_ID:-?} $(date -Is)" \
+          ./examples/perf_hil/rig_lock.sh \
           colcon test \
             --base-paths "$RMW_PERF_WS" \
             --build-base "$RMW_PERF_WS/build" \
