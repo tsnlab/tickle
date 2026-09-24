@@ -2517,6 +2517,37 @@ tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     return tt_RET_OK;
 }
 
+// The complete delivery-order numbers for one Subscriber, emitted exactly once, whichever way it
+// goes away.
+//
+// Why it is called from two places (2026-09-24): this used to be emitted only from the loop in
+// tt_Node_destroy() that walks node->endpoints, and under rmw_tickle it therefore never fired at
+// all. rmw_destroy_subscription() calls tt_Subscriber_destroy() before the node is destroyed, so
+// by the time that loop runs the Subscriber has already been removed from the table and its
+// counters go with it. The counters were being computed correctly for an entire benchmark and
+// then discarded in silence.
+//
+// The two paths are mutually exclusive rather than merely usually-not-both:
+// tt_Subscriber_destroy() removes the endpoint from node->endpoints before it returns, so a
+// Subscriber reported here cannot still be in the table the node teardown walks. Nothing needs a
+// "already reported" flag.
+//
+// What this cost is worth recording, because the verification looked sound: these counters were
+// checked on a real two-node loopback run and reported real numbers. That run destroys its node
+// with endpoints still attached, which is not the shape rmw uses - so the test exercised the one
+// path that worked. A number that appears on the bench and never in production is not a weaker
+// version of a working instrument, it is a missing one.
+static void report_delivery_counters(const struct tt_Subscriber* sub, uint32_t endpoint_id) {
+    // The throttled WARNINGs during a run fire on the 1st, 10th, 100th ... occurrence and
+    // undercount by design. These are the complete numbers, and a run's conclusion should be read
+    // from them rather than from how many log lines appeared.
+    TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
+                "writer_switches=%lu via_socket_flips=%lu rxo_drops=%lu",
+                endpoint_id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
+                (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
+                (unsigned long)sub->via_socket_flips, (unsigned long)sub->rxo_drops);
+}
+
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     if (sub == NULL || sub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -2537,6 +2568,7 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     }
 
     if (remove_endpoint_from_node(node, endpoint)) {
+        report_delivery_counters(sub, endpoint->id);
         node->last_modified = tt_get_ns();
         broadcast_goodbye(node);
         return tt_RET_OK;
@@ -5660,17 +5692,11 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
 
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
-        // Reported per Subscriber alongside the node's own traffic line, because the throttled
-        // WARNINGs during the run undercount by design - they fire on the 1st, 10th, 100th ...
-        // occurrence. These are the complete numbers, and a run's conclusion should be read from
-        // them rather than from how many log lines appeared.
+        // A Subscriber still attached at node teardown is reported here; one destroyed earlier
+        // reported itself in tt_Subscriber_destroy(). The two are mutually exclusive, because
+        // that function removes the endpoint from this table before returning.
         if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
-            TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
-                        "writer_switches=%lu via_socket_flips=%lu rxo_drops=%lu",
-                        endpoint->id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
-                        (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
-                        (unsigned long)sub->via_socket_flips, (unsigned long)sub->rxo_drops);
+            report_delivery_counters((struct tt_Subscriber*)endpoint, endpoint->id);
         }
         node->endpoints[i] = NULL;
 

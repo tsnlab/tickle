@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <tickle/tickle.h>
@@ -732,6 +733,73 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     EXPECT_EQ_U32(2, sub.writer_switches);
 }
 
+// The delivery counters must reach a log line whichever way the Subscriber goes away, and this
+// test exists because they did not.
+//
+// They were emitted only from tt_Node_destroy()'s walk of node->endpoints, which meant they never
+// appeared under rmw_tickle at all: rmw_destroy_subscription() destroys the subscription before
+// the node, so the walk found nothing. An entire benchmark computed them correctly and discarded
+// them in silence. The earlier verification was a real two-node run - which destroys its node with
+// endpoints still attached, and so exercised the one path that worked.
+//
+// Captures the log rather than eyeballing it, because "I saw the line on a run" is exactly the
+// check that passed while the product path was broken.
+static void expect_delivery_line(bool destroy_subscriber_first) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+    decode_should_fail = false;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+
+    uint32_t tail = write_data_from(&node, 1, 1000, 1, 5);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+
+    char* buffer = NULL;
+    size_t buffer_len = 0;
+    FILE* captured = open_memstream(&buffer, &buffer_len);
+    EXPECT_TRUE(captured != NULL);
+    tt_log_set_output(captured);
+    tt_log_set_level(TT_LOG_INFO);
+
+    if (destroy_subscriber_first) {
+        tt_Subscriber_destroy(&sub); // the rmw order
+        tt_Node_destroy(&node);
+    } else {
+        tt_Node_destroy(&node); // the plain two-node-example order
+    }
+
+    fflush(captured);
+    tt_log_set_output(stderr);
+
+    EXPECT_TRUE(buffer != NULL);
+    if (buffer != NULL) {
+        // Present at all, and exactly once - reporting from both paths must not double-count a
+        // Subscriber that took the first one.
+        const char* first = strstr(buffer, "delivery: delivered=1");
+        EXPECT_TRUE(first != NULL);
+        if (first != NULL) {
+            EXPECT_TRUE(strstr(first + 1, "delivery: delivered=1") == NULL);
+        }
+    }
+    fclose(captured);
+    free(buffer);
+}
+
+static void test_delivery_counters_are_reported_on_both_teardown_orders(void) {
+    expect_delivery_line(/*destroy_subscriber_first=*/true);  // rmw: subscription, then node
+    expect_delivery_line(/*destroy_subscriber_first=*/false); // examples: node with endpoints attached
+}
+
 int main(void) {
     test_publish_flushes_immediately_by_default();
     test_publish_batches_when_opted_in();
@@ -752,6 +820,7 @@ int main(void) {
     test_process_data_decode_failure_is_reported();
     test_process_data_fans_out_to_every_matching_subscriber();
     test_delivery_order_diagnostic_counts_disorder();
+    test_delivery_counters_are_reported_on_both_teardown_orders();
 
     if (test_result() != 0) {
         return 1;
