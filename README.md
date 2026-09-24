@@ -271,27 +271,31 @@ rmw_tickle/scripts/build_ros2_interfaces.sh -w ~/tickle_ifaces_ws -a   # every s
 source ~/tickle_ifaces_ws/install/setup.bash
 ```
 
-`-a` builds all 23 jazzy interface packages that TickLE ships capacities for, in about 7 minutes. To
+`-a` builds all 23 jazzy interface packages that TickLE ships capacities for (about 7 minutes on a
+CI runner). To
 build only some, name them instead, and the packages they depend on are added. After that, a
 default `rclcpp::Node` starts and runs with no extra parameters. The one type that is declined is
 `example_interfaces/msg/WString`, since TickLE has no `wstring`.
 
 - **Unbounded arrays get a fixed capacity.** TickLE stores a sequence in a fixed buffer, so every
   unbounded array has a default capacity, chosen per message: a `LaserScan` holds 4096 beams, an
-  `Image` 64000 bytes of pixels, a `JointState` 24 joints. Your own values take precedence through
-  `TICKLE_CAPACITIES_PATH`. Publishing a sequence longer than its capacity fails with an error that
-  names the type.
+  `Image` 64000 bytes of pixels, a `JointState` 24 joints. Your own values take precedence: put a
+  `<package>.capacities` file (rows like `sensor_msgs/msg/LaserScan ranges 8192`) in a directory on
+  `TICKLE_CAPACITIES_PATH` when running the build script. Capacities are compiled in, so changing
+  them means rebuilding that package. Publishing a sequence longer than its capacity fails with an
+  error that names the type.
 - **Messages up to 64 KB.** `rmw_tickle` builds with a 65507-byte maximum datagram (the UDP limit)
   and lets the OS fragment larger datagrams at the IP layer. One lost fragment loses the whole
-  message, and a RELIABLE writer then resends all of it. To lower the maximum, set
-  `TICKLE_MAX_BUFFER_LENGTH` when building `rmw_tickle`, and rebuild the interface packages, because
-  `rmw_tickle` refuses a type generated for a different value. Discovery and other control traffic
+  message, and a RELIABLE writer then resends all of it. To lower the maximum, build `rmw_tickle`'s
+  packages with `--cmake-args -DTICKLE_MAX_BUFFER_LENGTH=<N>` (a CMake cache variable, so it stays
+  until you set it again or build afresh), and rebuild the interface packages, because `rmw_tickle`
+  refuses a type generated for a different value. Discovery and other control traffic
   always stays within 1472 bytes, so TickLE nodes built with the core default still see an
   `rmw_tickle` node.
 - **Socket buffers.** `rmw_tickle` asks for 4 MiB receive buffers, which hold enough full-size
   datagrams. A stock kernel caps the request at `net.core.rmem_max` (about 208 KB), and
-  `rmw_tickle` logs a warning naming that sysctl when it receives less. Raise the limit if you send
-  large messages.
+  `rmw_tickle` logs a warning naming that sysctl when the buffer it gets holds fewer than 16
+  full-size datagrams (about 1 MiB). Raise the limit if you send large messages.
 
 Senders (`ping`, `client`, `publisher`, `perf_client`) additionally take:
 
