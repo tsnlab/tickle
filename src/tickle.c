@@ -325,9 +325,19 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
         return true; // Nothing to flush
     }
 
-    // Not possible
+    // Not sendable, ever: no datagram can carry `len` bytes. Drop the whole pending buffer rather
+    // than leave it. This used to return false and keep tx_tail where it was, and since every
+    // later send appends behind the same unsendable bytes and flushes them first, one oversized
+    // flush silenced the node for good - found 2026-09-24 as a node whose discovery UPDATE grew
+    // past one datagram (16 ROS-sized endpoints) and then failed every publish after it.
+    // end_encode() now refuses a submessage that could never fit, so this should be unreachable;
+    // it stays as the guarantee that nothing can wedge the buffer.
     if (len > tt_MAX_BUFFER_LENGTH) {
-        TT_LOG_ERROR("Flush length %u exceeds tt_MAX_BUFFER_LENGTH %d", len, tt_MAX_BUFFER_LENGTH);
+        TT_LOG_ERROR("Flush length %u exceeds tt_MAX_BUFFER_LENGTH %d - dropping %u pending bytes", len,
+                     tt_MAX_BUFFER_LENGTH, node->tx_tail - (uint32_t)sizeof(struct tt_Header));
+        node->tx_dropped_oversize++;
+        node->tx_tail = sizeof(struct tt_Header);
+        node->tx_has_pending_update = false;
         return false;
     }
 
@@ -388,6 +398,21 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
     return true;
 }
 
+// Whether the submessage being encoded at submessage_header (everything from it to tx_tail, padded)
+// could fit one datagram on its own. False means it never can, however the buffer around it is
+// flushed: the protocol does not fragment. Counts and logs the refusal, so each caller only has to
+// roll back.
+static bool submessage_fits_datagram(struct tt_Node* node, const struct tt_SubmessageHeader* submessage_header) {
+    size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
+    if (sizeof(struct tt_Header) + ROUNDUP(length) <= tt_MAX_BUFFER_LENGTH) {
+        return true;
+    }
+    TT_LOG_ERROR("Submessage type %u of %u bytes can never fit a %d-byte datagram - not sent", submessage_header->type,
+                 (unsigned)ROUNDUP(length), tt_MAX_BUFFER_LENGTH);
+    node->tx_dropped_oversize++;
+    return false;
+}
+
 static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
                        const struct tt_Peer* peers, uint8_t peer_count) {
     // Set submessage header length
@@ -396,6 +421,16 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     // tx_tail before this submessage was appended - what to flush when it doesn't fit and
     // has to be deferred to the next buffer instead of going out in this one.
     uint32_t base = (uint32_t)(node->tx_tail - length);
+
+    // A submessage that cannot fit a datagram even on its own is refused here, before it can sit
+    // in tx_buffer. Deferring it (the branches below) only moves it to the front of the next
+    // buffer, where flush_tx() would refuse it again - and before that check dropped instead of
+    // returning, it stayed there and blocked every later send. The protocol does not fragment, so
+    // there is nothing else to do with it; the caller learns from `false` and rolls back.
+    if (!submessage_fits_datagram(node, submessage_header)) {
+        node->tx_tail = base;
+        return false;
+    }
 
     // What to flush if is_flush ends up true below: the whole (padded) buffer including this
     // submessage by default, unless a branch below decides this submessage doesn't fit and
@@ -1214,6 +1249,7 @@ static void reset_node_state(struct tt_Node* node) {
     node->discovery_callback_param = NULL;
 
     node->tx_datagrams = 0;
+    node->tx_dropped_oversize = 0;
     node->rx_datagrams = 0;
     node->rx_self_sent = 0;
     node->rx_self_sent_data = 0;
@@ -2090,6 +2126,25 @@ static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher*
 // Whether this publish should carry a piggybacked Heartbeat (tt_Publisher.heartbeat_piggyback_every).
 // Only when it flushes anyway: a batching publisher leaves the send to node_flush(), and a
 // Heartbeat buried in a batch arrives no sooner than the batch does.
+// The encoded DATA submessage at submessage_header, checked and then retained. False (logged and
+// counted by submessage_fits_datagram()) when no datagram could ever carry it - checked before
+// caching, not only at end_encode(): a sample that can never be sent must not be retained either,
+// or the cache would hold, and later offer to retransmit, a sample no reader was ever sent, under a
+// sequence number the next publish then reuses. Split out of tt_Publisher_publish() to keep its
+// cognitive complexity under clang-tidy's threshold.
+static bool check_and_cache_sample(struct tt_Node* node, struct tt_Publisher* pub,
+                                   struct tt_SubmessageHeader* submessage_header) {
+    if (!submessage_fits_datagram(node, submessage_header)) {
+        return false;
+    }
+    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
+    // comment above; one shared write serves both, whichever (or both) this Publisher opted into.
+    if (pub->reliable_cache != NULL) {
+        cache_reliable_sample(node, submessage_header, pub->reliable_cache, pub->seq_no + 1);
+    }
+    return true;
+}
+
 static bool piggyback_due(struct tt_Publisher* pub, bool is_flush) {
     if (!is_flush || pub->reliable_cache == NULL || pub->heartbeat_piggyback_every == 0) {
         return false;
@@ -2202,10 +2257,9 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
-    // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
-    // comment above; one shared write serves both, whichever (or both) this Publisher opted into.
-    if (pub->reliable_cache != NULL) {
-        cache_reliable_sample(node, submessage_header, pub->reliable_cache, pub->seq_no + 1);
+    if (!check_and_cache_sample(node, pub, submessage_header)) {
+        rollback(node, old_tx_tail);
+        return tt_RET_PROTOCOL_ERROR;
     }
 
     // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
@@ -6092,11 +6146,11 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     // After the null check, not before it: the first version of this line dereferenced node to
     // print the counters and only then asked whether node was NULL.
     TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
-                "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu",
+                "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu tx_dropped_oversize=%lu",
                 node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
                 (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
                 (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
-                (unsigned long)node->rx_via_well_known_datagrams);
+                (unsigned long)node->rx_via_well_known_datagrams, (unsigned long)node->tx_dropped_oversize);
     // Said out loud rather than left for a reader to derive, because the derivation is exactly the
     // one nobody performs: a run that received on only one socket never interleaved them, so it
     // cannot be read as evidence either way about interleaving reordering delivery. It reads

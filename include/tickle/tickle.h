@@ -184,6 +184,11 @@ struct tt_Node {
     uint64_t tx_datagrams;
     uint64_t rx_datagrams;
     uint64_t rx_self_sent;
+    // Submessages refused because no datagram could ever carry them (larger than
+    // tt_MAX_BUFFER_LENGTH once framed - see end_encode()), plus any whole buffer flush_tx() had to
+    // drop for the same reason. Nonzero means something was not sent: most likely this node's own
+    // discovery UPDATE, whose endpoint list outgrew one datagram, so peers cannot see it.
+    uint64_t tx_dropped_oversize;
     // Set by the HAL on each receive: true when the datagram came in on this node's own data
     // port, false when it came in on the shared well-known port (where broadcasts land). Lives
     // here rather than in a tt_receive() out-parameter so the HAL contract in hal.h stays as it
