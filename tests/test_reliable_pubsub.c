@@ -2448,6 +2448,56 @@ static void test_reliable_releases_held_samples_when_gap_is_abandoned(void) {
     EXPECT_EQ_U32(0, sub.out_of_order);
 }
 
+// Core must never address past slots * reorder_slot_bytes, whatever slot size the caller picks.
+//
+// The reorder stride has to be a multiple of 8 for its uint64_t header, and it first rounded UP -
+// so a caller with a slot size that is not a multiple of 8 had core read and write past the end
+// of its buffer. The perf_hil examples used 116-byte slots; core addressed 120, and on the rig
+// that overran the reorder array into the adjacent globals in every RELIABLE scenario.
+// AddressSanitizer: global-buffer-overflow in drain_reorder().
+//
+// Every other test in this file uses a slot size that is already a multiple of 8, which is the
+// only reason none of them noticed. This one deliberately does not, sizes its storage to exactly
+// what the contract promises and not a byte more, and fills every slot - so `make sanitize`
+// fails if core ever steps past the end again.
+#define ODD_SLOTS 4
+#define ODD_SLOT_BYTES ((uint16_t)(sizeof(struct tt_ReorderSlot) + 12 + 5)) // deliberately not a multiple of 8
+static uint64_t odd_storage[(ODD_SLOTS * ODD_SLOT_BYTES) / sizeof(uint64_t)];
+
+static void test_reorder_stays_inside_an_odd_sized_buffer(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    memset(odd_storage, 0, sizeof(odd_storage));
+    sub.reorder_storage = odd_storage;
+    sub.reorder_slots = ODD_SLOTS;
+    sub.reorder_slot_bytes = ODD_SLOT_BYTES;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // Fill every slot: 3..6 all arrive ahead of the gap at 2.
+    for (uint32_t seq = 3; seq < 3 + ODD_SLOTS; seq++) {
+        tail = write_data(&node, seq, seq * 100ULL, seq);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+    // The gap fills and every held sample drains - which walks every slot.
+    tail = write_data(&node, 2, 200, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    EXPECT_EQ_U32(2 + ODD_SLOTS, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(0, sub.out_of_order);
+    EXPECT_EQ_U32(ODD_SLOTS, sub.reorder_delivered);
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -2475,6 +2525,7 @@ int main(void) {
     test_reliable_delivers_in_order_with_buffer();
     test_reliable_delivers_in_order_without_buffer();
     test_reliable_releases_held_samples_when_gap_is_abandoned();
+    test_reorder_stays_inside_an_odd_sized_buffer();
     test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();

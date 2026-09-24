@@ -39,8 +39,18 @@
 #include "../common/Bench.h"
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
-#define BENCH_REORDER_SLOTS 512
-#define BENCH_REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + sizeof(struct BenchData) + 16)
+//
+// Sized to the widest tracking window this build allows, not to a round number. A Subscriber can
+// hold at most as many samples as it can track ahead of its oldest gap, so a buffer that covers
+// the widest window makes overflow impossible by construction rather than unlikely - the same
+// argument rmw_tickle's RMW_TICKLE_REORDER_SLOTS rests on. This was 512 at first, which is
+// narrower than the -w a reliable_throughput run is allowed to request (up to 4096), so any run
+// that asked for a wide window would have overflowed into the re-request fallback and measured
+// that instead of the protocol.
+#define BENCH_REORDER_SLOTS tt_RELIABLE_BITMAP_MAX_BITS
+// tt_REORDER_SLOT_SIZE rounds up to a multiple of 8. This was a bare sizeof(...) + 16 = 116, which
+// core then addressed with a 120-byte stride - so the last slots of the array were past its end.
+#define BENCH_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(sizeof(struct BenchData) + 16)
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {

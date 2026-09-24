@@ -4216,12 +4216,29 @@ static void deliver_payload(struct tt_Node* node, struct tt_Subscriber* sub, uin
     topic->data_free((struct tt_Data*)data);
 }
 
-// Stride rounded up to 8 so every slot after the first is still aligned for its uint64_t header,
-// whatever the caller passed.
+// The stride is the caller's slot size rounded DOWN to 8, and it must round down.
+//
+// Every slot after the first has to stay aligned for its uint64_t header, so the stride has to be
+// a multiple of 8. This first rounded UP - and that walked off the end of the caller's buffer.
+// A caller sizes its storage as slots * reorder_slot_bytes; with a stride larger than
+// reorder_slot_bytes, the last slots start past that end, and core both read them (treating
+// whatever bytes it found as "occupied" held samples) and wrote held samples into them. The
+// perf_hil examples used 116-byte slots, so core addressed 120, and 4096 slots overran their
+// array by ~16KB into the adjacent globals. AddressSanitizer: global-buffer-overflow in
+// drain_reorder(), located just before g_cpu_place.
+//
+// It surfaced as a "leak" first: a diagnostic found slots belonging to a writer with node 255,
+// entity 0xffffffff and seq 0xffffffff - every byte 0xFF - which is not a writer, it is the
+// neighbouring memory's own contents read as if it were a slot. rmw_tickle escaped by luck: its
+// 1496-byte slots are already a multiple of 8, so rounding changed nothing.
+//
+// Rounding down keeps every access inside slots * reorder_slot_bytes by construction. It costs at
+// most 7 bytes of payload capacity per slot, which reorder_payload_capacity() reports, so a
+// payload that no longer fits is treated as a full buffer rather than overrunning.
 #define REORDER_SLOT_ALIGN ((uint16_t)sizeof(uint64_t))
 
 static uint16_t reorder_stride(const struct tt_Subscriber* sub) {
-    return (uint16_t)((sub->reorder_slot_bytes + REORDER_SLOT_ALIGN - 1U) & ~(uint16_t)(REORDER_SLOT_ALIGN - 1U));
+    return (uint16_t)(sub->reorder_slot_bytes & ~(uint16_t)(REORDER_SLOT_ALIGN - 1U));
 }
 
 static struct tt_ReorderSlot* reorder_slot_at(struct tt_Subscriber* sub, uint16_t index) {

@@ -1141,9 +1141,16 @@ struct tt_ReorderSlot {
     bool is_native;
 };
 
-// Bytes one reorder slot needs for a payload of `payload_bytes`. Callers size their storage as
-// tt_REORDER_SLOT_SIZE(largest payload) * slots.
-#define tt_REORDER_SLOT_SIZE(payload_bytes) (sizeof(struct tt_ReorderSlot) + (payload_bytes))
+// Bytes one reorder slot needs for a payload of `payload_bytes`, rounded UP to a multiple of 8.
+// Callers size their storage as tt_REORDER_SLOT_SIZE(largest payload) * slots and pass the same
+// value as reorder_slot_bytes.
+//
+// The rounding is here, on the caller's side, so that it only ever makes the allocation larger.
+// Core rounds the stride DOWN (see reorder_stride(), tickle.c) so that it can never address past
+// what the caller allocated - a caller who uses this macro loses nothing to that, and one who does
+// not loses at most 7 bytes of payload per slot rather than getting memory corruption.
+#define tt_REORDER_SLOT_SIZE(payload_bytes) \
+    ((sizeof(struct tt_ReorderSlot) + (payload_bytes) + sizeof(uint64_t) - 1U) & ~(sizeof(uint64_t) - 1U))
 
 struct tt_Subscriber { // extends endpoint
     struct tt_Endpoint endpoint;
