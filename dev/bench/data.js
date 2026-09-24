@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790235889885,
+  "lastUpdate": 1790235893916,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -125661,6 +125661,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/a18add6619ef1169e0be7591d839e5a7e1a4061a"
         },
         "date": 1790234992879,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "7f4b23affa627da29cfd429da0a7e176c123b4e5",
+          "message": "PLAN.md: the abort is closed, and it was two different things the whole time\n\n36 matrix runs, 144 cells, zero occurrences at cfeb234a. The pre-fix rate was 2 aborting cells in\n48, so P(zero across 144 | unchanged) = 0.2%, sized before the runs rather than after.\n\nThe correction that matters more than the closure: perf_test raises two nearly identically worded\nerrors from two different files, and this project treated them as one for four days. Counted over\n554 archived ctest logs, the \"higher id\" variant fires for rmw_fastrtps_cpp in 2.82% of cells and\nrmw_cyclonedds_cpp in 2.11% against rmw_tickle's 1.31% - both reference implementations more often\nthan us, because the benchmark asserts ordering its own BEST_EFFORT configuration never promises.\n\nBut an earlier draft of this said the id variant was \"not ours\", and that was wrong. TickLE had its\nown additional mechanism for producing it, already documented directly above with exact evidence: a\nliveliness false positive forgot a live peer and the subscriber was handed sample id 1 again after\n~7400. Two causes, one message. That entry diagnosed one correctly and could not have known there\nwas another.\n\nThe timestamp variant is the one the investigation was about, was plausibly ours on a 57x rate jump\nafter the socket split, and is closed by the BEST_EFFORT discard.\n\nRecords what is not established as well: the mechanism was never caught in the act, because by the\ntime the counters existed the fix did too. And patch (f)'s replacement log line has still never\nbeen emitted by any binary - 144 cells of silence is as consistent with dead code as with correct\nbehaviour, and only a deliberately broken control arm can tell those apart.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T16:39:44+09:00",
+          "tree_id": "21b2cad592b7e1fe4bbaf1f56d3a0ad4f4fe6895",
+          "url": "https://github.com/tsnlab/tickle/commit/7f4b23affa627da29cfd429da0a7e176c123b4e5"
+        },
+        "date": 1790235892530,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
