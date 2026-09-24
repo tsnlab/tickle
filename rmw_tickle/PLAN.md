@@ -1837,7 +1837,10 @@ about 91 B:
 
 Two fixes:
 - **A (robustness, done first):** an unsendable flush is dropped, logged and counted, and the
-  buffer is reset.
+  buffer is reset. Landed in `477293da`, with `tt_Node.tx_dropped_oversize` on the traffic line
+  and `tests/test_oversize_tx.c`. That test's control, the old code restored, reproduces the
+  wedge. It also showed the old code returned `tt_RET_OK` for the unsendable DATA sample before
+  wedging, so the caller had no way to see the failure either.
 - **B (multi-part discovery)** is a wire-protocol change. The user chose "(나)": keep the existing
   single UPDATE whenever it fits, and only otherwise send a *new* submessage type split into
   MTU-sized parts. Old receivers skip the unknown type (`tickle.c`, "Unknown submessage type"), so
