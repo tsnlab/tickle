@@ -1435,6 +1435,7 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->reorder_storage = NULL;
     sub->reorder_slots = 0;
     sub->reorder_slot_bytes = 0;
+    sub->reorder_held = 0;
     sub->reorder_held_peak = 0;
     sub->reorder_delivered = 0;
     sub->reorder_overflow = 0;
@@ -2797,6 +2798,7 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->sender_ip = 0;
             proxy->sender_port = 0;
             proxy->ack_seq_no = 1;
+            proxy->reorder_cursor = 1;
             proxy->sub = sub; // before anything that reads the window width through the proxy
             // Phase 3 - whether this writer promises KEEP_ALL, from whatever its last announce
             // said (a later announce refreshes it via update_writer_proxies_keep_all()). Unknown
@@ -3290,6 +3292,7 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
         // range answers with Phase 1-c's eviction Heartbeat and advance_past_unavailable() skips
         // exactly what is genuinely gone. tests/test_reliable_pubsub.c pins that termination.
         proxy->ack_seq_no = seq_no;
+        proxy->reorder_cursor = seq_no;
     }
 
     if (seq_no < proxy->ack_seq_no) {
@@ -3533,6 +3536,7 @@ static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t en
             proxy->node_id = tt_NODE_ID_INVALID; // frees the slot; a restart re-runs first contact
             proxy->entity_id = 0;
             proxy->ack_seq_no = 1;
+            proxy->reorder_cursor = 1;
             proxy->heartbeat_last_seq_no = 0;
             proxy->retry = 0;
             proxy->keep_all = false;
@@ -4272,35 +4276,37 @@ static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, st
     uint32_t length = ctx->tail - ctx->head;
     uint32_t capacity = reorder_payload_capacity(sub);
 
+    // Direct index, O(1): a sample goes in slot seq % slots. Every other version of this walked
+    // every slot for every out-of-order arrival, which made the cost of a received sample scale
+    // with the buffer's CAPACITY rather than with what it held - so sizing the buffer to the widest
+    // window, the one thing that makes overflow impossible, cut reliable throughput by 88% on the
+    // HIL rig (84.6 -> 10.0 Mbps at 0% loss) while holding ~255 samples in 4096 slots.
+    //
+    // A writer's held samples all lie within one tracking window of reorder_cursor, so when the
+    // buffer is at least a window wide no two of them share a slot. A slot already taken by a
+    // different sample - another writer's, or this writer's when the buffer is narrower than the
+    // window - is treated exactly like a full buffer: re-requested, never overwritten.
     if (capacity >= length) {
-        uint16_t held = 0;
-        struct tt_ReorderSlot* free_slot = NULL;
-        for (uint16_t i = 0; i < sub->reorder_slots; i++) {
-            struct tt_ReorderSlot* slot = reorder_slot_at(sub, i);
-            if (slot->occupied) {
-                held++;
-                // Already holding this exact sample: a retransmit racing the original. Keep the
-                // copy already held rather than rewriting it - they are the same bytes, and a
-                // second copy in a second slot would be delivered twice on the drain.
-                if (slot->seq_no == ctx->seq_no && slot->node_id == ctx->header->source &&
-                    slot->entity_id == ctx->entity_id) {
-                    return;
-                }
-            } else if (free_slot == NULL) {
-                free_slot = slot;
+        struct tt_ReorderSlot* slot = reorder_slot_at(sub, (uint16_t)(ctx->seq_no % sub->reorder_slots));
+        if (slot->occupied) {
+            // Already holding this exact sample: a retransmit racing the original. Keep the copy
+            // already held - same bytes, and a second copy would be delivered twice.
+            if (slot->seq_no == ctx->seq_no && slot->node_id == ctx->header->source &&
+                slot->entity_id == ctx->entity_id) {
+                return;
             }
-        }
-        if (free_slot != NULL) {
-            free_slot->seq_no = ctx->seq_no;
-            free_slot->timestamp = ctx->timestamp;
-            free_slot->entity_id = ctx->entity_id;
-            free_slot->node_id = ctx->header->source;
-            free_slot->length = (uint16_t)length;
-            free_slot->is_native = is_native;
-            free_slot->occupied = true;
-            memcpy(reorder_slot_payload(free_slot), ctx->buffer + ctx->head, length);
-            if ((uint32_t)(held + 1) > sub->reorder_held_peak) {
-                sub->reorder_held_peak = held + 1;
+        } else {
+            slot->seq_no = ctx->seq_no;
+            slot->timestamp = ctx->timestamp;
+            slot->entity_id = ctx->entity_id;
+            slot->node_id = ctx->header->source;
+            slot->length = (uint16_t)length;
+            slot->is_native = is_native;
+            slot->occupied = true;
+            memcpy(reorder_slot_payload(slot), ctx->buffer + ctx->head, length);
+            sub->reorder_held++;
+            if (sub->reorder_held > sub->reorder_held_peak) {
+                sub->reorder_held_peak = sub->reorder_held;
             }
             return;
         }
@@ -4351,6 +4357,7 @@ static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t 
             continue;
         }
         slot->occupied = false;
+        sub->reorder_held--;
         sub->reorder_abandoned++;
     }
 }
@@ -4362,33 +4369,37 @@ static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t 
 // samples behind an abandoned gap have been waiting for something that is never coming, and DDS
 // hands over what it has rather than holding it forever.
 static void drain_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
-    if (reorder_payload_capacity(sub) == 0) {
+    uint32_t ack = proxy->ack_seq_no;
+    // Nothing held anywhere: nothing to release, and the cursor can simply catch up. This is the
+    // common case - on a link with no loss it is every call - and it is O(1).
+    if (sub->reorder_held == 0 || reorder_payload_capacity(sub) == 0) {
+        proxy->reorder_cursor = ack;
         return;
     }
-    // Lowest-first, re-scanning after each delivery: the table is tt_MAX_PEER_COUNT-scale and a
-    // sort would need storage this codebase does not allocate.
-    for (;;) {
-        struct tt_ReorderSlot* next = NULL;
-        for (uint16_t i = 0; i < sub->reorder_slots; i++) {
-            struct tt_ReorderSlot* slot = reorder_slot_at(sub, i);
-            if (!slot->occupied || slot->node_id != proxy->node_id || slot->entity_id != proxy->entity_id) {
-                continue;
-            }
-            if (slot->seq_no >= proxy->ack_seq_no) {
-                continue; // still ahead of the watermark - its turn has not come
-            }
-            if (next == NULL || slot->seq_no < next->seq_no) {
-                next = slot;
-            }
+    // Walk this writer's sequence numbers from the cursor up to the watermark, once each, lowest
+    // first - which is delivery order by construction, with no sort and no rescan.
+    //
+    // Capped at one tracking window past the cursor: a held sample was stored while the cursor
+    // equalled the watermark, and a sample further than a window ahead of that triggers
+    // jump_ack_baseline() instead of a hold, so nothing held can lie beyond it. The cap is what
+    // keeps a jump across a long outage from walking millions of sequence numbers that cannot be
+    // in the buffer.
+    uint32_t cursor = proxy->reorder_cursor;
+    uint32_t window = proxy_window_bits(proxy);
+    uint32_t end = (ack - cursor > window) ? cursor + window : ack;
+    for (uint32_t seq = cursor; seq != end; seq++) {
+        struct tt_ReorderSlot* slot = reorder_slot_at(sub, (uint16_t)(seq % sub->reorder_slots));
+        if (!slot->occupied || slot->seq_no != seq || slot->node_id != proxy->node_id ||
+            slot->entity_id != proxy->entity_id) {
+            continue;
         }
-        if (next == NULL) {
-            return;
-        }
-        next->occupied = false;
+        slot->occupied = false;
+        sub->reorder_held--;
         sub->reorder_delivered++;
-        deliver_payload(node, sub, next->seq_no, next->timestamp, next->node_id, next->entity_id,
-                        reorder_slot_payload(next), next->length, next->is_native, NULL);
+        deliver_payload(node, sub, slot->seq_no, slot->timestamp, slot->node_id, slot->entity_id,
+                        reorder_slot_payload(slot), slot->length, slot->is_native, NULL);
     }
+    proxy->reorder_cursor = ack;
 }
 
 static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {

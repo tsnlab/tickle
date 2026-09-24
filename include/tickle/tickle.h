@@ -1107,6 +1107,12 @@ struct tt_WriterProxy {
     // lost, with the Publisher's own null_evicted and publish_refused both zero - all of it inside
     // the first announce interval, and reported as ordinary transport loss rather than a refusal.
     enum tt_WriterKeepAll keep_all;
+    // RELIABLE in-order delivery - the next sequence number this writer's samples may be released
+    // from the reorder buffer at. Only ever moves forward, and drain_reorder() visits each value
+    // once, which is what makes draining O(released) overall rather than a scan of the whole
+    // buffer per sample. Kept equal to ack_seq_no at every point a sample can be held, so a held
+    // sample always lies in [reorder_cursor, reorder_cursor + window) - the range drain walks.
+    uint32_t reorder_cursor;
     // Phase 3 - tt_get_ns() of the last "still waiting" warning for this writer, so a stuck
     // KEEP_ALL gap is visible in a log at a fixed cadence rather than per retry or never.
     uint64_t stuck_warned_ns;
@@ -1327,6 +1333,10 @@ struct tt_Subscriber { // extends endpoint
     // this stream's loss pattern and the Subscriber is paying for it in retransmissions - the one
     // number that says "make this bigger". reorder_abandoned counts samples given up on because
     // the gap in front of them was declared unrecoverable, which is loss, not disorder.
+    // How many samples are held right now, maintained on store and release rather than counted by
+    // walking the buffer. Counting by walking was both O(capacity) per sample and wrong: past the
+    // end of a mis-sized buffer it counted neighbouring memory as held (see a3a1bea1).
+    uint32_t reorder_held;
     uint32_t reorder_held_peak;
     uint32_t reorder_delivered;
     uint32_t reorder_overflow;
