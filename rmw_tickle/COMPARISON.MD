@@ -237,15 +237,51 @@ not even the commit was pinned down. The conclusion recorded here is that the ca
 not that it was ruled out; the table above supersedes those cells because it was taken under a
 controlled, internally comparable method, which they were not.
 
-At the loss rates a real link sees, TickLE sustains **10-45x** either vendor's throughput under the
-same zero-loss guarantee; at 50% injected loss it is **160x** FastDDS and **510x** CycloneDDS. The
-shape differs too: the DDS pair degrade steeply because a blocked writer is their only back-pressure
-mechanism, while TickLE keeps ~51% of its lossless rate at 50% loss.
+**Reading, recomputed from the table above rather than carried over.** On a clean link TickLE's
+advantage is modest - 3.8x FastDDS and only **1.2x** CycloneDDS at 0% - and the whole story is what
+happens under loss. At 1/5/20% TickLE sustains **9.9-45.6x** FastDDS and **8.9-140x** CycloneDDS; at
+50% it is **56x** FastDDS and **146x** CycloneDDS. The shape differs as much as the magnitude: the
+DDS pair degrade steeply because a blocked writer is their only back-pressure mechanism, while
+TickLE keeps **20%** of its lossless rate at 50% injected loss. Every one of those figures comes
+from the single interleaved session above; none of them is a ratio between measurement days.
 
-**What it costs TickLE**: 89.3 vs. 99.8 Mbps at 20% and 56.5 vs. 84.4 at 50% against its own
-KEEP_LAST mode (-11% and -33%) - that is the price of the guarantee, paid in throughput. Paced to
-~8 Mbps the two modes are identical (4.90 vs. 4.93, 5.04 vs. 5.04): with that much headroom
-back-pressure never binds.
+*(The previous version of this paragraph said 10-45x, 160x, 510x and "~51% of its lossless rate".
+Those were arithmetic on the superseded rows and were carried over when the table was replaced,
+because a derived number does not look stale the way a citation does - the doc-sha gate checks that
+every commit id resolves and nothing checks that a ratio still follows from the table above it.
+Found on review, not by any tool.)*
+
+**What it costs TickLE**, re-measured against its own KEEP_LAST mode in one interleaved session
+(2026-09-24, `5816aab3`, 3 reps per cell, modes alternated within each loss level):
+
+| `tc` loss | KEEP_ALL | KEEP_LAST | cost of the guarantee |
+|---|---:|---:|---:|
+| 0% | 108.6 | 115.1 | **-5.7%** |
+| 1% | 103.8 | 110.9 | **-6.3%** |
+| 5% | 97.0 | 106.6 | **-9.0%** |
+| 20% | 55.0 | 96.4 | **-43.0%** |
+| 50% | 21.8 | 92.6 | **-76.4%** |
+
+**This paragraph previously read -11% at 20% and -33% at 50%, and those figures were not merely
+stale - they were a comparison between measurement days.** The KEEP_ALL side came from the
+2026-09-24 re-measurement and the KEEP_LAST side (99.8 and 84.4) from the earlier session, in the
+one paragraph that quantifies the headline trade-off, and in a document whose §5 exists to say that
+cross-day absolutes cannot be compared. Recomputing the percentages from the new KEEP_ALL numbers
+alone would have left that intact while making it look corrected, so KEEP_LAST was re-measured
+instead. **The guarantee costs several times what this document used to claim**: two to three times
+more at 20% and 50% loss.
+
+**`write_fail` was 0 in all 15 KEEP_ALL runs**, so none of that cost is refused writes - every
+sample was accepted and the loss of throughput is back-pressure alone, the Publisher waiting for
+acknowledgements rather than turning work away. And as a check on reproducibility rather than an
+extra claim: this session's KEEP_ALL column (108.6 / 103.8 / 97.0 / 55.0 / 21.8) reproduces the
+three-way session's (108.5 / 104.1 / 97.5 / 54.7 / 21.9) to within 0.6% at every level, measured
+hours apart on the same rig.
+
+Paced to ~8 Mbps the two modes are identical (4.90 vs. 4.93, 5.04 vs. 5.04): with that much
+headroom back-pressure never binds. *(Those two pairs are from the earlier session and are a
+within-session comparison there, so they stand; they are marked here rather than silently mixed
+with the table above.)*
 
 **Two honest caveats, both measured rather than asserted:**
 
