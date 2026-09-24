@@ -167,6 +167,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     svc->request_callbacks = callbacks.request;
     svc->response_callbacks = callbacks.response;
     svc->allocator = *allocator;
+    svc->qos = *qos_policies;
 
     svc->service.name = callbacks.service->ros_type_name; // see rmw_tickle_client_t.service's own doc comment
     svc->service.request_size = (uint32_t)callbacks.request->tickle_struct_size;
@@ -392,4 +393,27 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
         return RMW_RET_ERROR;
     }
     return RMW_RET_OK;
+}
+
+// rcl_service_init() asks for both on every service (rcl service.c), so a service could not be
+// created through rcl at all without them - every default rclcpp::Node starts several. TickLE
+// has no request reader or response writer of its own to report on: both answer with the profile
+// the service was created with (rmw_tickle_service_t.qos).
+static rmw_ret_t service_actual_qos(const rmw_service_t* service, rmw_qos_profile_t* qos) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(service, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(service->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    *qos = ((const rmw_tickle_service_t*)service->data)->qos;
+    return RMW_RET_OK;
+}
+
+rmw_ret_t rmw_service_request_subscription_get_actual_qos(const rmw_service_t* service, rmw_qos_profile_t* qos) {
+    return service_actual_qos(service, qos);
+}
+
+rmw_ret_t rmw_service_response_publisher_get_actual_qos(const rmw_service_t* service, rmw_qos_profile_t* qos) {
+    return service_actual_qos(service, qos);
 }

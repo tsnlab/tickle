@@ -734,6 +734,10 @@ typedef struct rmw_tickle_subscriber_t {
 typedef struct rmw_tickle_client_t {
     rmw_client_t rmw_client; // RMW client structure (must be first)
     struct tt_Client tickle_client;
+    // The profile rmw_create_client() was given. TickLE has no separate request writer and response
+    // reader for it to differ from, so it is what rmw_client_request_publisher_get_actual_qos()/
+    // rmw_client_response_subscription_get_actual_qos() report - rcl asks both on every client.
+    rmw_qos_profile_t qos;
     // .name is service_callbacks->ros_type_name (a generated-code string literal - see
     // rmw_tickle_publisher_t.topic's own doc comment for the identical reasoning applied there).
     struct tt_Service service;
@@ -773,6 +777,7 @@ typedef struct rmw_tickle_client_t {
 typedef struct rmw_tickle_service_t {
     rmw_service_t rmw_service; // RMW service structure (must be first)
     struct tt_Server tickle_server;
+    rmw_qos_profile_t qos;     // as rmw_tickle_client_t.qos, for the service's two actual-QoS queries
     struct tt_Service service; // see rmw_tickle_client_t.service's own doc comment
     rmw_tickle_node_t* node;
     // See rmw_tickle_publisher_t.owning_node_name's own doc comment - same reasoning, taken at

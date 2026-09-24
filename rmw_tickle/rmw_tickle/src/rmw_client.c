@@ -128,6 +128,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     client_impl->request_callbacks = callbacks.request;
     client_impl->response_callbacks = callbacks.response;
     client_impl->allocator = *allocator;
+    client_impl->qos = *qos_policies;
 
     client_impl->service.name = callbacks.service->ros_type_name; // see rmw_tickle_client_t.service's own doc comment
     client_impl->service.request_size = (uint32_t)callbacks.request->tickle_struct_size;
@@ -364,4 +365,24 @@ rmw_ret_t rmw_get_gid_for_client(const rmw_client_t* client, rmw_gid_t* gid) {
     gid->data[0] = node_id;
     memcpy(&gid->data[1], &entity_id, sizeof(entity_id));
     return RMW_RET_OK;
+}
+
+// The client-side pair rcl_client_init() asks for - see rmw_service.c's service_actual_qos().
+static rmw_ret_t client_actual_qos(const rmw_client_t* client, rmw_qos_profile_t* qos) {
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(client, RMW_RET_INVALID_ARGUMENT);
+    RCUTILS_CHECK_ARGUMENT_FOR_NULL(qos, RMW_RET_INVALID_ARGUMENT);
+    if (!rmw_tickle_identifier_matches(client->implementation_identifier)) {
+        RMW_SET_ERROR_MSG("Expected implementation identifier to be " RMW_TICKLE_IDENTIFIER);
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+    *qos = ((const rmw_tickle_client_t*)client->data)->qos;
+    return RMW_RET_OK;
+}
+
+rmw_ret_t rmw_client_request_publisher_get_actual_qos(const rmw_client_t* client, rmw_qos_profile_t* qos) {
+    return client_actual_qos(client, qos);
+}
+
+rmw_ret_t rmw_client_response_subscription_get_actual_qos(const rmw_client_t* client, rmw_qos_profile_t* qos) {
+    return client_actual_qos(client, qos);
 }
