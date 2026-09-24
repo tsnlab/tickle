@@ -589,6 +589,30 @@ jobs:
           # rosidl_typesupport_tickle_c generates for a .action, the TRANSIENT_LOCAL status topic,
           # and a GetResult answered only once the goal finishes.
           rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -A
+          # Its control: example_interfaces again, built with only ROS 2 visible - so without TickLE
+          # typesupport - and overlaid on the full workspace. The default nodes then start, and
+          # creating the action must fail, for exactly that reason. The control proves it is one
+          # first: built with rmw_tickle's install visible, it silently got TickLE typesupport too,
+          # and "passed" as a control by failing for a different reason.
+          AMENT_PREFIX_PATH=/opt/ros/jazzy CMAKE_PREFIX_PATH=/opt/ros/jazzy colcon build \
+            --base-paths "$RUNNER_TEMP/tickle_ros2_interfaces/src" --build-base "$RUNNER_TEMP/no_tickle/build" \
+            --install-base "$RUNNER_TEMP/no_tickle/install" --packages-select example_interfaces \
+            --allow-overriding example_interfaces --cmake-args -DBUILD_SHARED_LIBS=ON
+          if find "$RUNNER_TEMP/no_tickle/install/example_interfaces" -name '*rosidl_typesupport_tickle*' | grep .; then
+            echo "control: the example_interfaces meant to lack TickLE typesupport has it"
+            exit 1
+          fi
+          if rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -A \
+              -o "$RUNNER_TEMP/no_tickle/install" > "$RUNNER_TEMP/action_control.log" 2>&1; then
+            cat "$RUNNER_TEMP/action_control.log"
+            echo "control: the action worked without TickLE typesupport for example_interfaces"
+            exit 1
+          fi
+          grep "rclcpp refused to start: .*no rmw_tickle typesupport" "$RUNNER_TEMP/action_control.log" || {
+            cat "$RUNNER_TEMP/action_control.log"
+            echo "control: failed, but not because the action had no TickLE typesupport"
+            exit 1
+          }
           # Its control: the same node over a workspace with only std_msgs built for TickLE must not
           # start - and must fail for that reason (rclcpp refusing, for want of rcl_interfaces), not
           # some other one, or the pass above is not showing what it seems to.

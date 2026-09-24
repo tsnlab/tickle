@@ -20,7 +20,12 @@
 # -A: a ROS 2 action instead - example_interfaces/action/Fibonacci between an rclcpp_action server
 # and client, both default nodes (action_check.cpp). Needs the workspace built with -a. Passes only
 # when the client gets every feedback as a prefix of the true sequence and the exact result, AND its
-# maps show rmw_tickle and the workspace's example_interfaces TickLE typesupport.
+# maps show rmw_tickle and the workspace's example_interfaces TickLE typesupport. It also sends a
+# second goal and cancels it partway: the cancel must be accepted and the goal end CANCELED.
+#
+# -o OVERLAY: an install to source after the workspace, for controls - e.g. an example_interfaces
+# built without rmw_tickle sourced, which has no TickLE typesupport, so that -A must then fail at
+# creating the action, with every other package still in place.
 #
 # Loopback by default (TICKLE_BROADCAST_ADDR=127.255.255.255); set TICKLE_BROADCAST_ADDR yourself to
 # check over a real link. Exit 0 only when both types round-tripped AND both libraries were proved.
@@ -29,11 +34,13 @@ set -euo pipefail
 WORKSPACE="${HOME}/tickle_ros2_interfaces"
 RCLCPP=0
 ACTION=0
-while getopts "w:rA" opt; do
+OVERLAY=""
+while getopts "w:rAo:" opt; do
     case "$opt" in
     w) WORKSPACE="$OPTARG" ;;
     r) RCLCPP=1 ;;
     A) ACTION=1 ;;
+    o) OVERLAY="$OPTARG" ;;
     *) exit 2 ;;
     esac
 done
@@ -72,6 +79,14 @@ set +u
 . "$WORKSPACE/install/setup.bash"
 set -u
 check="$WORKSPACE/install/rmw_tickle_interfaces_check/lib/rmw_tickle_interfaces_check/interfaces_check"
+if [ -n "$OVERLAY" ]; then
+    [ -f "$OVERLAY/setup.bash" ] || fail "no $OVERLAY/setup.bash"
+    set +u
+    # shellcheck disable=SC1091
+    . "$OVERLAY/setup.bash"
+    set -u
+    echo "overlay: $OVERLAY"
+fi
 publisher=("$check" pub 10)
 [ "$RCLCPP" = 0 ] || publisher=("$(dirname "$check")/default_node" pub 10)
 # The datagram size everything here was generated for (rmw_tickle refuses a type generated for

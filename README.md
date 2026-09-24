@@ -276,7 +276,9 @@ CI runner). To build only some, name them instead, and the packages they depend 
 that, a default `rclcpp::Node` starts and runs with no extra parameters, and actions work through
 `rclcpp_action` (`example_interfaces/action/Fibonacci` is checked in CI). The one type that is
 declined is `example_interfaces/msg/WString`, since TickLE has no `wstring`. Your own interface
-packages get TickLE typesupport the same way, by building them with `rmw_tickle`'s install sourced.
+packages get TickLE typesupport the same way, by building them with `rmw_tickle`'s install sourced. A package of
+yours that was configured before the workspace existed has the installed interface packages cached
+in its CMake cache and keeps linking them; build it afresh once, with the workspace sourced.
 
 - **Unbounded arrays get a fixed capacity.** TickLE stores a sequence in a fixed buffer, so every
   unbounded array has a default capacity, chosen per message: a `LaserScan` holds 4096 beams, an

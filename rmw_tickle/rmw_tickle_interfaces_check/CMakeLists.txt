@@ -38,9 +38,11 @@ install(TARGETS interfaces_check default_node DESTINATION lib/${PROJECT_NAME})
 # not part of every ROS 2 install, and a workspace built without it must still build the rest.
 find_package(rclcpp_action QUIET)
 find_package(example_interfaces QUIET)
-if(rclcpp_action_FOUND AND example_interfaces_FOUND)
+find_package(action_msgs QUIET)
+if(rclcpp_action_FOUND AND example_interfaces_FOUND AND action_msgs_FOUND)
   add_executable(action_check src/action_check.cpp)
-  target_link_libraries(action_check rclcpp::rclcpp rclcpp_action::rclcpp_action ${example_interfaces_TARGETS})
+  target_link_libraries(action_check
+    rclcpp::rclcpp rclcpp_action::rclcpp_action ${example_interfaces_TARGETS} ${action_msgs_TARGETS})
   install(TARGETS action_check DESTINATION lib/${PROJECT_NAME})
 endif()
 
