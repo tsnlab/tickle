@@ -560,26 +560,29 @@ typedef struct rmw_tickle_publisher_t {
 
 // How many samples a RELIABLE subscription can hold while it waits for a gap.
 //
-// Sized to the tracking window, because the window is how far ahead of its oldest missing sample
-// a Subscriber may get, and so it bounds how much can be waiting at once. That bound is close
-// rather than exact, and an earlier version of this comment claimed more than was true.
+// Sized to the tracking window, because the window bounds it. A held sample's sequence number lies
+// in [ack_seq_no, ack_seq_no + window): anything further ahead triggers jump_ack_baseline() rather
+// than a hold, and held samples are distinct. So at most `window` can be waiting at once, and a
+// buffer that size never overflows.
 //
-// What was claimed: "overflow impossible by construction". What was measured: held samples exceed
-// the window by a small margin - held_peak 270-272 against a 256-sample window, on loopback and on
-// the HIL rig in every one of twelve reps. The likeliest reason is a transient between the
-// watermark advancing and the drain that follows it, but that is not yet shown, and until it is
-// the bound is "approximately the window", not "the window".
+// That argument was doubted twice on 2026-09-24, both times wrongly, and both doubts came from
+// the same bug - worth recording because each looked like independent evidence:
 //
-// A second claim went the other way and was wrong in a way that mattered more. A wide window once
-// appeared to overflow this buffer 469,081 times, which looked like the construction failing
-// badly. It was memory corruption: core rounded the slot stride up and addressed past the end of
-// the caller's storage, reading neighbouring memory as held slots. With that fixed (a3a1bea1) the
-// same run held 4095 of 4096 and overflowed zero times. So the construction is nearly right, and
-// the dramatic failure was a different bug.
+//   - A wide window appeared to overflow the buffer 469,081 times.
+//   - At the default 256-sample window, held_peak read 270-272 in every run, on loopback and on
+//     the HIL rig, apparently exceeding the window.
 //
-// Exceeding the buffer is safe either way: an overflowing sample is re-requested rather than held,
-// which costs throughput, is counted in reorder_overflow, and is logged. RMW_TICKLE_REORDER_SLOTS
-// trades memory back for retransmissions.
+// Both were a3a1bea1's overrun. Core rounded the slot stride up and addressed past the end of the
+// caller's storage; the scan that counts held slots then read the neighbouring memory, found bytes
+// that looked occupied, and counted them. With the overrun fixed:
+//
+//     default window (256):  held_peak 253, 254, 255 over three runs   overflow 0
+//     widest window (4096):  held_peak 4095                            overflow 0
+//
+// So the bound is the window, measured at both ends of the range rather than argued. An overflow is
+// still safe if some future change makes one possible: the sample is re-requested rather than held,
+// counted in reorder_overflow, and logged. RMW_TICKLE_REORDER_SLOTS trades memory back for
+// retransmissions.
 #define RMW_TICKLE_REORDER_SLOTS ((uint16_t)(RMW_TICKLE_TRACKING_WORDS * 64))
 
 typedef struct rmw_tickle_queued_message_t {
