@@ -558,6 +558,22 @@ typedef struct rmw_tickle_publisher_t {
 // unusable rather than harmful to it, and that Publisher logs a warning saying so.
 #define RMW_TICKLE_TRACKING_WORDS 16
 
+// How many samples a RELIABLE subscription can hold while it waits for a gap, and why it is not a
+// number anybody chose.
+//
+// The tracking window above is exactly how far ahead of its oldest missing sample a Subscriber is
+// allowed to get, so it is also the most it can ever have waiting at once. Sizing the reorder
+// buffer to the window therefore makes overflow impossible by construction rather than unlikely -
+// there is no tuning to get wrong and no figure anyone had to guess, which matters because nobody
+// has measured what a good smaller figure would be and a guessed constant that looks measured is
+// worse than an honest bound.
+//
+// The memory is real: this many slots, each holding one whole payload. RMW_TICKLE_REORDER_SLOTS
+// trades it back for retransmissions, and the trade is visible rather than silent - core counts
+// reorder_overflow and logs when a buffer proves too small, so capping this and then wondering
+// why throughput dropped is a question the logs answer.
+#define RMW_TICKLE_REORDER_SLOTS ((uint16_t)(RMW_TICKLE_TRACKING_WORDS * 64))
+
 typedef struct rmw_tickle_queued_message_t {
     void* ros_message; // callbacks->ros_struct_size bytes, allocator-owned
     uint64_t source_timestamp;
@@ -577,6 +593,16 @@ typedef struct rmw_tickle_subscriber_t {
     // for more - at TickLE's own max rate a 256-sample window lasts ~1.35ms, shorter than one
     // retry plus a round trip, which is what leaves an occasional burst unrecoverable.
     uint64_t* tracking_bitmaps;
+    // Phase 2 follow-up (2026-09-24) - the RELIABLE reorder buffer core holds out-of-order samples
+    // in until the gap in front of them fills (struct tt_Subscriber.reorder_storage, tickle.h).
+    //
+    // Not optional for rmw_tickle even though core defaults it to NULL. Without it a RELIABLE
+    // Subscriber still delivers in order - it declines to record an out-of-order sample as
+    // received, so the ACKNACK exchange fetches it again - but under real loss that turns one lost
+    // datagram into a re-request for everything behind it. Measured: reliable receive throughput
+    // more than halved on the HIL rig the moment ordered delivery landed, which is a cost core can
+    // reasonably ask a microcontroller to pay and rmw_tickle cannot.
+    uint64_t* reorder_storage;
     struct tt_Topic topic; // see rmw_tickle_publisher_t.topic's own comment
     rmw_tickle_node_t* node;
     // See rmw_tickle_publisher_t.owning_node_name's own doc comment - same reasoning, taken at

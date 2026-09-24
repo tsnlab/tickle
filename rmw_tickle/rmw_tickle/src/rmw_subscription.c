@@ -201,6 +201,46 @@ static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, v
 // same convention RMW_TICKLE_POLL_TIMEOUT_NS/RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS already use).
 #define RMW_TICKLE_QOS_INCOMPATIBLE_CHECK_PERIOD_NS tt_NODE_UPDATE_INTERVAL
 
+// Bytes one reorder slot needs, for a subscription on this type.
+//
+// Same two sources, same precedence, and for the same reason as the publisher's own
+// resolve_keep_all_record_bytes() (rmw_publisher.c, which spells the reasoning out in full): the
+// generated per-type maximum when the generator could compute one, tt_MAX_BUFFER_LENGTH when it
+// could not. There is nothing a human knows about a bounded type that beats a computed bound on
+// it.
+//
+// Under-sizing is safe rather than merely tolerable: a payload too large for the stride is
+// treated exactly like a full buffer, so the sample is re-requested instead of held. That costs
+// retransmissions and is counted (reorder_overflow), never correctness.
+static uint16_t resolve_reorder_slot_bytes(const rmw_tickle_subscriber_t* sub_impl) {
+    unsigned long long payload = (unsigned long long)tt_MAX_BUFFER_LENGTH;
+    if (NULL != sub_impl->callbacks &&
+        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != sub_impl->callbacks->tickle_max_encoded_size) {
+        payload = (unsigned long long)sub_impl->callbacks->tickle_max_encoded_size;
+    }
+    if (payload > (unsigned long long)tt_MAX_BUFFER_LENGTH) {
+        payload = (unsigned long long)tt_MAX_BUFFER_LENGTH;
+    }
+    return (uint16_t)(sizeof(struct tt_ReorderSlot) + payload);
+}
+
+// How many slots, defaulting to the window bound above. RMW_TICKLE_REORDER_SLOTS trades memory
+// back for retransmissions; 0 or unparseable falls back rather than failing subscription
+// creation, the same reasoning the publisher's own knobs use - a malformed tuning value should not
+// stop a node starting, and this one can only cost throughput.
+static uint16_t resolve_reorder_slots(void) {
+    const char* env = getenv("RMW_TICKLE_REORDER_SLOTS");
+    if (NULL == env || '\0' == env[0]) {
+        return RMW_TICKLE_REORDER_SLOTS;
+    }
+    char* end = NULL;
+    unsigned long long slots = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || slots == 0 || slots > RMW_TICKLE_REORDER_SLOTS) {
+        return RMW_TICKLE_REORDER_SLOTS;
+    }
+    return (uint16_t)slots;
+}
+
 // Milestone 31/28(a) observability follow-on - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE's own
 // periodic check, the Subscription-side counterpart to rmw_publisher.c's own check_publisher_qos_
 // incompatible() - see its own doc comment for the full reasoning (no wire-level trigger exists,
@@ -332,6 +372,26 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->tickle_subscriber.tracking_bitmaps = sub_impl->tracking_bitmaps;
     sub_impl->tickle_subscriber.tracking_words = RMW_TICKLE_TRACKING_WORDS;
 
+    // The RELIABLE reorder buffer (see rmw_tickle_subscription_t.reorder_storage). Allocated for
+    // every subscription rather than only the RELIABLE ones: `reliable` is set from the QoS
+    // further down, and a buffer a BEST_EFFORT Subscriber never reads costs memory and nothing
+    // else, where getting the order of those two wrong would cost the buffer exactly when it is
+    // needed.
+    uint16_t reorder_slot_bytes = resolve_reorder_slot_bytes(sub_impl);
+    uint16_t reorder_slots = resolve_reorder_slots();
+    size_t reorder_words = ((size_t)reorder_slots * reorder_slot_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
+    sub_impl->reorder_storage = (uint64_t*)allocator->zero_allocate(reorder_words, sizeof(uint64_t), allocator->state);
+    if (NULL == sub_impl->reorder_storage) {
+        RMW_SET_ERROR_MSG("failed to allocate subscriber reorder buffer");
+        allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state);
+        allocator->deallocate(sub_impl->queue, allocator->state);
+        allocator->deallocate(sub_impl, allocator->state);
+        return NULL;
+    }
+    sub_impl->tickle_subscriber.reorder_storage = sub_impl->reorder_storage;
+    sub_impl->tickle_subscriber.reorder_slots = reorder_slots;
+    sub_impl->tickle_subscriber.reorder_slot_bytes = reorder_slot_bytes;
+
     // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Sized queue_capacity, same as
     // queue[] itself - the most shells that can ever be genuinely in flight at once.
     sub_impl->shell_pool = (void**)allocator->zero_allocate(sub_impl->queue_capacity, sizeof(void*), allocator->state);
@@ -345,6 +405,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->reorder_storage, allocator->state);
         allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
@@ -361,6 +422,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->reorder_storage, allocator->state);
         allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
@@ -378,6 +440,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->reorder_storage, allocator->state);
         allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);

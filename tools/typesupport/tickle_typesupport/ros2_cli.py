@@ -172,11 +172,16 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
         except resolve.UnsupportedNestedPackage as unsupported:
             return _decline(
                 package, subfolder, name, outdir, source_label, fmt_dir,
-                f"It nests {unsupported.pkg_name}/{unsupported.msg_name}, and {unsupported.pkg_name} does not build "
-                f"rosidl_typesupport_tickle_c. This is NOT a size limit - see <Name>_FITS_ONE_DATAGRAM for that, "
-                f"which is a different problem with a different fix. The remedy here is to build "
-                f"{unsupported.pkg_name} from source in this workspace with the TickLE typesupport extension "
-                f"applied, the way std_msgs ships FastDDS typesupport of its own.",
+                f"It nests {unsupported.pkg_name}/{unsupported.msg_name}, and {unsupported.pkg_name} does not "
+                f"build rosidl_typesupport_tickle_c. This applies even to a type TickLE bundles a definition "
+                f"for, such as std_msgs/Header: having the struct is not the same as being able to adapt it, "
+                f"because the generated ROS adapter needs {unsupported.pkg_name}'s own "
+                f"...__rosidl_typesupport_tickle_c.h to convert the ROS C struct into the TickLE one, and that "
+                f"header exists only if {unsupported.pkg_name} builds this typesupport itself. "
+                f"This is NOT a size limit - see <Name>_FITS_ONE_DATAGRAM for that, which is a different problem "
+                f"with a different fix. The remedy here is to build {unsupported.pkg_name} from source in this "
+                f"workspace with the TickLE typesupport extension applied, the way std_msgs ships FastDDS "
+                f"typesupport of its own.",
             )
         header, source = render.render_topic(ir)
         written = list(cli._write_generated(name, header, source, source_label, outdir, fmt_dir))
