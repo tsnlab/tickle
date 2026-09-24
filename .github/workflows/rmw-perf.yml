@@ -197,9 +197,21 @@ jobs:
           # the figure being measured. The rpis are where performance is measured. This box
           # verifies that things work.
           #
-          # So the test call fails the job now. `colcon test-result` keeps its `|| true` because it
-          # only reports; the stale-xunit problem that partly motivated the original blanket
-          # version is handled by the `rm -rf` of test_results just above.
+          # Both calls are needed to make that true, and dropping `|| true` from the first one
+          # alone did not - which is what 3f211673 did. `colcon test` returns whatever
+          # execute_jobs() returned and only turns a test failure into exit 1 behind
+          # --return-code-on-test-failure (colcon_core/verb/test.py: `if
+          # context.args.return_code_on_test_failure: if not rc and any_test_failures: return 1`).
+          # Without that flag a failing test leaves the exit code untouched. `colcon test-result`
+          # is the call that does return non-zero - `return 1 if summary.error_count or
+          # summary.failure_count else 0` - and it was the one still carrying `|| true`. The two
+          # halves were exactly inverted.
+          #
+          # So: the flag on the first call, and no `|| true` on the second. Demonstrated rather
+          # than read - a fabricated xunit with failures="1" under the result base makes
+          # `colcon test-result` exit 1, and the same file with failures="0" exits 0. The
+          # stale-xunit problem the blanket `|| true` originally protected against is handled by
+          # the `rm -rf` of test_results just above.
           RIG_LOCK_SCOPE=box RIG_LOCK_OWNER="rmw-perf.yml run ${GITHUB_RUN_ID:-?} $(date -Is)" \
           ./examples/perf_hil/rig_lock.sh \
           colcon test \
@@ -208,8 +220,9 @@ jobs:
             --install-base "$RMW_PERF_WS/install" \
             --packages-select buildfarm_perf_tests \
             --event-handlers console_direct+ \
+            --return-code-on-test-failure \
             --ctest-args -R two_process_rmw_
-          colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose || true
+          colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
 
       - name: Publish diagnostic table
         if: always()
