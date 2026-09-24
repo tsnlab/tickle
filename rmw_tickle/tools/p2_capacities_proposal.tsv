@@ -1,0 +1,155 @@
+# Proposed default capacities for jazzy interface packages over rmw_tickle (TickLE Plan, 2026-09-24).
+# Research seed for the shipped per-package capacity files (rmw_tickle/PLAN.md, standard-message
+# milestone). Validated by p2_apply_capacities.py, which annotates copies of the .msg/.srv files
+# and runs the real generator front end over them.
+#
+# Budget: 1444 B per message (tt_MAX_BUFFER_LENGTH 1472 - 28 framing). A plain string counts as its
+# 2-byte prefix only; rules below reserve ~24-40 B per string in practice, by choosing counts with
+# that much slack.
+#
+# Rules, in the order they were applied:
+#   parallel   - arrays ROS defines to be the same length share one count (JointState, LaserScan,
+#                JointTrajectoryPoint, ...)
+#   structural - descriptor arrays that are small by nature (MultiArrayLayout.dim, PointCloud2.fields,
+#                CameraInfo.d)
+#   payload    - the message's main data array takes what is left, rounded down
+#   element    - a type used as an array element elsewhere keeps its own arrays small, because a
+#                capacity is global per type and every container pays for it
+#   rcl        - rcl_interfaces keeps the values already in rcl_interfaces_rmw_tickle.patch (CI-proven)
+#
+# type	field	capacity	rule	note
+std_msgs/msg/MultiArrayLayout	dim	4	structural	up to 4-D
+std_msgs/msg/ByteMultiArray	data	1280	payload
+std_msgs/msg/Int8MultiArray	data	1280	payload
+std_msgs/msg/UInt8MultiArray	data	1280	payload
+std_msgs/msg/Int16MultiArray	data	640	payload
+std_msgs/msg/UInt16MultiArray	data	640	payload
+std_msgs/msg/Int32MultiArray	data	320	payload
+std_msgs/msg/UInt32MultiArray	data	320	payload
+std_msgs/msg/Float32MultiArray	data	320	payload
+std_msgs/msg/Int64MultiArray	data	160	payload
+std_msgs/msg/UInt64MultiArray	data	160	payload
+std_msgs/msg/Float64MultiArray	data	160	payload
+example_interfaces/msg/MultiArrayLayout	dim	4	structural	mirrors std_msgs
+example_interfaces/msg/ByteMultiArray	data	1280	payload
+example_interfaces/msg/Int8MultiArray	data	1280	payload
+example_interfaces/msg/UInt8MultiArray	data	1280	payload
+example_interfaces/msg/Int16MultiArray	data	640	payload
+example_interfaces/msg/UInt16MultiArray	data	640	payload
+example_interfaces/msg/Int32MultiArray	data	320	payload
+example_interfaces/msg/UInt32MultiArray	data	320	payload
+example_interfaces/msg/Float32MultiArray	data	320	payload
+example_interfaces/msg/Int64MultiArray	data	160	payload
+example_interfaces/msg/UInt64MultiArray	data	160	payload
+example_interfaces/msg/Float64MultiArray	data	160	payload
+geometry_msgs/msg/PoseArray	poses	24	payload	Pose is 56 B
+nav_msgs/msg/Goals	goals	16	payload
+nav_msgs/msg/GridCells	cells	44	payload	Point is 24 B; 44 under max_wire_size's conservative per-element padding
+nav_msgs/msg/OccupancyGrid	data	1280	payload	about 36x35 cells - PRACTICALLY TOO SMALL
+nav_msgs/msg/Path	poses	16	payload
+nav_msgs/msg/Trajectory	points	4	payload	TrajectoryPoint is ~260 B
+actionlib_msgs/msg/GoalStatusArray	status_list	16	payload
+composition_interfaces/srv/ListNodes	full_node_names	16	parallel
+composition_interfaces/srv/ListNodes	unique_ids	16	parallel
+composition_interfaces/srv/LoadNode	remap_rules	8	structural
+composition_interfaces/srv/LoadNode	parameters	4	element
+composition_interfaces/srv/LoadNode	extra_arguments	4	element
+diagnostic_msgs/msg/DiagnosticStatus	values	8	element	KeyValue is two strings
+diagnostic_msgs/msg/DiagnosticArray	status	4	payload
+diagnostic_msgs/srv/SelfTest	status	4	payload
+lifecycle_msgs/srv/GetAvailableStates	available_states	16	payload
+lifecycle_msgs/srv/GetAvailableTransitions	available_transitions	16	payload
+rcl_interfaces/msg/ListParametersResult	names	8	rcl
+rcl_interfaces/msg/ListParametersResult	prefixes	8	rcl
+rcl_interfaces/msg/ParameterEvent	new_parameters	1	rcl
+rcl_interfaces/msg/ParameterEvent	changed_parameters	1	rcl
+rcl_interfaces/msg/ParameterEvent	deleted_parameters	1	rcl
+rcl_interfaces/msg/ParameterEventDescriptors	new_parameters	4	rcl
+rcl_interfaces/msg/ParameterEventDescriptors	changed_parameters	4	rcl
+rcl_interfaces/msg/ParameterEventDescriptors	deleted_parameters	4	rcl
+rcl_interfaces/msg/ParameterValue	byte_array_value	1	rcl
+rcl_interfaces/msg/ParameterValue	bool_array_value	1	rcl
+rcl_interfaces/msg/ParameterValue	integer_array_value	1	rcl
+rcl_interfaces/msg/ParameterValue	double_array_value	1	rcl
+rcl_interfaces/msg/ParameterValue	string_array_value	1	rcl
+rcl_interfaces/srv/DescribeParameters	names	8	rcl
+rcl_interfaces/srv/DescribeParameters	descriptors	8	rcl
+rcl_interfaces/srv/GetLoggerLevels	names	8	rcl
+rcl_interfaces/srv/GetLoggerLevels	levels	8	rcl
+rcl_interfaces/srv/GetParameterTypes	names	8	rcl
+rcl_interfaces/srv/GetParameters	names	8	rcl
+rcl_interfaces/srv/GetParameters	values	8	rcl
+rcl_interfaces/srv/ListParameters	prefixes	8	rcl
+rcl_interfaces/srv/SetLoggerLevels	levels	8	rcl
+rcl_interfaces/srv/SetLoggerLevels	results	8	rcl
+rcl_interfaces/srv/SetParameters	parameters	8	rcl
+rcl_interfaces/srv/SetParameters	results	8	rcl
+rcl_interfaces/srv/SetParametersAtomically	parameters	8	rcl
+rosgraph_msgs/msg/Node	parameters	2	element	graph tooling - PRACTICALLY TOO SMALL
+rosgraph_msgs/msg/Node	parameter_values	2	element
+rosgraph_msgs/msg/Node	publishers	4	element
+rosgraph_msgs/msg/Node	subscriptions	4	element
+rosgraph_msgs/msg/Node	service_clients	2	element
+rosgraph_msgs/msg/Node	service_servers	2	element
+rosgraph_msgs/msg/Node	action_clients	1	element
+rosgraph_msgs/msg/Node	action_servers	1	element
+rosgraph_msgs/msg/Graph	nodes	1	payload	graph tooling - PRACTICALLY TOO SMALL
+sensor_msgs/msg/BatteryState	cell_voltage	64	parallel
+sensor_msgs/msg/BatteryState	cell_temperature	64	parallel
+sensor_msgs/msg/CameraInfo	d	8	structural	plumb_bob 5, rational_polynomial 8
+sensor_msgs/msg/ChannelFloat32	values	64	parallel	one per PointCloud point
+sensor_msgs/msg/CompressedImage	data	1344	payload	PRACTICALLY TOO SMALL
+sensor_msgs/msg/Image	data	1344	payload	PRACTICALLY TOO SMALL
+sensor_msgs/msg/JointState	name	24	parallel
+sensor_msgs/msg/JointState	position	24	parallel
+sensor_msgs/msg/JointState	velocity	24	parallel
+sensor_msgs/msg/JointState	effort	24	parallel
+sensor_msgs/msg/Joy	axes	32	parallel
+sensor_msgs/msg/Joy	buttons	32	parallel
+sensor_msgs/msg/LaserScan	ranges	160	parallel	typical scanners 360-1440 beams - PRACTICALLY TOO SMALL
+sensor_msgs/msg/LaserScan	intensities	160	parallel
+sensor_msgs/msg/LaserEcho	echoes	4	element
+sensor_msgs/msg/MultiDOFJointState	joint_names	8	parallel
+sensor_msgs/msg/MultiDOFJointState	transforms	8	parallel
+sensor_msgs/msg/MultiDOFJointState	twist	8	parallel
+sensor_msgs/msg/MultiDOFJointState	wrench	8	parallel
+sensor_msgs/msg/MultiEchoLaserScan	ranges	32	parallel	PRACTICALLY TOO SMALL
+sensor_msgs/msg/MultiEchoLaserScan	intensities	32	parallel
+sensor_msgs/msg/PointCloud	points	60	parallel	PRACTICALLY TOO SMALL
+sensor_msgs/msg/PointCloud	channels	2	structural
+sensor_msgs/msg/PointCloud2	fields	8	structural
+sensor_msgs/msg/PointCloud2	data	1024	payload	PRACTICALLY TOO SMALL
+shape_msgs/msg/Mesh	triangles	32	parallel	PRACTICALLY TOO SMALL
+shape_msgs/msg/Mesh	vertices	32	parallel
+statistics_msgs/msg/MetricsMessage	statistics	32	payload
+tf2_msgs/msg/TFMessage	transforms	10	payload
+trajectory_msgs/msg/JointTrajectoryPoint	positions	16	parallel
+trajectory_msgs/msg/JointTrajectoryPoint	velocities	16	parallel
+trajectory_msgs/msg/JointTrajectoryPoint	accelerations	16	parallel
+trajectory_msgs/msg/JointTrajectoryPoint	effort	16	parallel
+trajectory_msgs/msg/JointTrajectory	joint_names	16	parallel
+trajectory_msgs/msg/JointTrajectory	points	2	payload	PRACTICALLY TOO SMALL for real trajectories
+trajectory_msgs/msg/MultiDOFJointTrajectoryPoint	transforms	4	parallel
+trajectory_msgs/msg/MultiDOFJointTrajectoryPoint	velocities	4	parallel
+trajectory_msgs/msg/MultiDOFJointTrajectoryPoint	accelerations	4	parallel
+trajectory_msgs/msg/MultiDOFJointTrajectory	joint_names	4	parallel
+trajectory_msgs/msg/MultiDOFJointTrajectory	points	2	payload	PRACTICALLY TOO SMALL
+type_description_interfaces/msg/IndividualTypeDescription	fields	16	element
+type_description_interfaces/msg/TypeDescription	referenced_type_descriptions	1	payload
+type_description_interfaces/srv/GetTypeDescription	type_sources	1	payload
+type_description_interfaces/srv/GetTypeDescription	extra_information	2	payload
+visualization_msgs/msg/ImageMarker	points	24	parallel
+visualization_msgs/msg/ImageMarker	outline_colors	24	parallel
+visualization_msgs/msg/MeshFile	data	1280	payload	PRACTICALLY TOO SMALL
+visualization_msgs/msg/Marker	points	8	parallel	nests CompressedImage + MeshFile - see note in PLAN.md
+visualization_msgs/msg/Marker	colors	8	parallel
+visualization_msgs/msg/Marker	uv_coordinates	8	parallel
+visualization_msgs/msg/MarkerArray	markers	1	payload
+visualization_msgs/msg/InteractiveMarkerControl	markers	1	element
+visualization_msgs/msg/InteractiveMarker	menu_entries	4	element
+visualization_msgs/msg/InteractiveMarker	controls	1	element
+visualization_msgs/msg/InteractiveMarkerInit	markers	1	payload
+visualization_msgs/msg/InteractiveMarkerUpdate	markers	1	payload
+visualization_msgs/msg/InteractiveMarkerUpdate	poses	4	payload
+visualization_msgs/msg/InteractiveMarkerUpdate	erases	4	payload
+visualization_msgs/srv/GetInteractiveMarkers	markers	1	payload

@@ -1,0 +1,246 @@
+action_msgs/msg/GoalInfo	OK	max 24 B
+action_msgs/msg/GoalStatus	OK	max 25 B
+action_msgs/msg/GoalStatusArray	OK	max 1430 B
+action_msgs/srv/CancelGoal_Request	OK	max 24 B
+action_msgs/srv/CancelGoal_Response	TOO_BIG	fixed part 1624 B > 1444
+actionlib_msgs/msg/GoalID	OK_STRINGS	fixed part 10 B, strings bounded at runtime
+actionlib_msgs/msg/GoalStatus	OK_STRINGS	fixed part 14 B, strings bounded at runtime
+actionlib_msgs/msg/GoalStatusArray	NEEDS_CAP	field 'status_list': its capacity can't be auto-derived - its own nested type ('GoalStatusData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+builtin_interfaces/msg/Duration	OK	max 8 B
+builtin_interfaces/msg/Time	OK	max 8 B
+composition_interfaces/srv/ListNodes	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+composition_interfaces/srv/LoadNode	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+composition_interfaces/srv/UnloadNode_Request	OK	max 8 B
+composition_interfaces/srv/UnloadNode_Response	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+diagnostic_msgs/msg/DiagnosticArray	NEEDS_CAP	field 'values': its capacity can't be auto-derived - its own nested type ('KeyValueData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+diagnostic_msgs/msg/DiagnosticStatus	NEEDS_CAP	field 'values': its capacity can't be auto-derived - its own nested type ('KeyValueData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+diagnostic_msgs/msg/KeyValue	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+diagnostic_msgs/srv/AddDiagnostics_Request	OK_STRINGS	fixed part 2 B, strings bounded at runtime
+diagnostic_msgs/srv/AddDiagnostics_Response	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+diagnostic_msgs/srv/SelfTest	NEEDS_CAP	field 'values': its capacity can't be auto-derived - its own nested type ('KeyValueData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+example_interfaces/msg/Bool	OK	max 1 B
+example_interfaces/msg/Byte	OK	max 1 B
+example_interfaces/msg/ByteMultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/Char	OK	max 1 B
+example_interfaces/msg/Empty	OK	max 0 B
+example_interfaces/msg/Float32	OK	max 4 B
+example_interfaces/msg/Float32MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/Float64	OK	max 8 B
+example_interfaces/msg/Float64MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/Int16	OK	max 2 B
+example_interfaces/msg/Int16MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/Int32	OK	max 4 B
+example_interfaces/msg/Int32MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/Int64	OK	max 8 B
+example_interfaces/msg/Int64MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/Int8	OK	max 1 B
+example_interfaces/msg/Int8MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/MultiArrayDimension	OK_STRINGS	fixed part 12 B, strings bounded at runtime
+example_interfaces/msg/MultiArrayLayout	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/String	OK_STRINGS	fixed part 2 B, strings bounded at runtime
+example_interfaces/msg/UInt16	OK	max 2 B
+example_interfaces/msg/UInt16MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/UInt32	OK	max 4 B
+example_interfaces/msg/UInt32MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/UInt64	OK	max 8 B
+example_interfaces/msg/UInt64MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/UInt8	OK	max 1 B
+example_interfaces/msg/UInt8MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+example_interfaces/msg/WString	NEEDS_CAP	field 'data': wstring is out of scope
+example_interfaces/srv/AddTwoInts_Request	OK	max 16 B
+example_interfaces/srv/AddTwoInts_Response	OK	max 8 B
+example_interfaces/srv/SetBool_Request	OK	max 1 B
+example_interfaces/srv/SetBool_Response	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+example_interfaces/srv/Trigger_Request	OK	max 0 B
+example_interfaces/srv/Trigger_Response	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+example_interfaces/action/Fibonacci	ACTION	actions are not generated by rosidl_typesupport_tickle_c
+geometry_msgs/msg/Accel	OK	max 48 B
+geometry_msgs/msg/AccelStamped	OK_STRINGS	fixed part 60 B, strings bounded at runtime
+geometry_msgs/msg/AccelWithCovariance	OK	max 336 B
+geometry_msgs/msg/AccelWithCovarianceStamped	OK_STRINGS	fixed part 348 B, strings bounded at runtime
+geometry_msgs/msg/Inertia	OK	max 80 B
+geometry_msgs/msg/InertiaStamped	OK_STRINGS	fixed part 92 B, strings bounded at runtime
+geometry_msgs/msg/Point	OK	max 24 B
+geometry_msgs/msg/Point32	OK	max 12 B
+geometry_msgs/msg/PointStamped	OK_STRINGS	fixed part 36 B, strings bounded at runtime
+geometry_msgs/msg/Polygon	TOO_BIG	fixed part 1802 B > 1444
+geometry_msgs/msg/PolygonInstance	TOO_BIG	fixed part 1812 B > 1444
+geometry_msgs/msg/PolygonInstanceStamped	TOO_BIG	fixed part 1824 B > 1444
+geometry_msgs/msg/PolygonStamped	TOO_BIG	fixed part 1812 B > 1444
+geometry_msgs/msg/Pose	OK	max 56 B
+geometry_msgs/msg/Pose2D	OK	max 24 B
+geometry_msgs/msg/PoseArray	NEEDS_CAP	field 'poses': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+geometry_msgs/msg/PoseStamped	OK_STRINGS	fixed part 68 B, strings bounded at runtime
+geometry_msgs/msg/PoseWithCovariance	OK	max 344 B
+geometry_msgs/msg/PoseWithCovarianceStamped	OK_STRINGS	fixed part 356 B, strings bounded at runtime
+geometry_msgs/msg/Quaternion	OK	max 32 B
+geometry_msgs/msg/QuaternionStamped	OK_STRINGS	fixed part 44 B, strings bounded at runtime
+geometry_msgs/msg/Transform	OK	max 56 B
+geometry_msgs/msg/TransformStamped	OK_STRINGS	fixed part 68 B, strings bounded at runtime
+geometry_msgs/msg/Twist	OK	max 48 B
+geometry_msgs/msg/TwistStamped	OK_STRINGS	fixed part 60 B, strings bounded at runtime
+geometry_msgs/msg/TwistWithCovariance	OK	max 336 B
+geometry_msgs/msg/TwistWithCovarianceStamped	OK_STRINGS	fixed part 348 B, strings bounded at runtime
+geometry_msgs/msg/Vector3	OK	max 24 B
+geometry_msgs/msg/Vector3Stamped	OK_STRINGS	fixed part 36 B, strings bounded at runtime
+geometry_msgs/msg/VelocityStamped	OK_STRINGS	fixed part 64 B, strings bounded at runtime
+geometry_msgs/msg/VelocityWithCovarianceStamped	OK_STRINGS	fixed part 352 B, strings bounded at runtime
+geometry_msgs/msg/Wrench	OK	max 48 B
+geometry_msgs/msg/WrenchStamped	OK_STRINGS	fixed part 60 B, strings bounded at runtime
+lifecycle_msgs/msg/State	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+lifecycle_msgs/msg/Transition	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+lifecycle_msgs/msg/TransitionDescription	OK_STRINGS	fixed part 12 B, strings bounded at runtime
+lifecycle_msgs/msg/TransitionEvent	OK_STRINGS	fixed part 20 B, strings bounded at runtime
+lifecycle_msgs/srv/ChangeState_Request	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+lifecycle_msgs/srv/ChangeState_Response	OK	max 1 B
+lifecycle_msgs/srv/GetAvailableStates	NEEDS_CAP	field 'available_states': its capacity can't be auto-derived - its own nested type ('StateData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+lifecycle_msgs/srv/GetAvailableTransitions	NEEDS_CAP	field 'available_transitions': its capacity can't be auto-derived - its own nested type ('TransitionDescriptionData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+lifecycle_msgs/srv/GetState_Request	OK	max 0 B
+lifecycle_msgs/srv/GetState_Response	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+nav_msgs/msg/Goals	NEEDS_CAP	field 'goals': its capacity can't be auto-derived - its own nested type ('PoseStampedData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/msg/GridCells	NEEDS_CAP	field 'cells': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/msg/MapMetaData	OK	max 76 B
+nav_msgs/msg/OccupancyGrid	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/msg/Odometry	OK_STRINGS	fixed part 692 B, strings bounded at runtime
+nav_msgs/msg/Path	NEEDS_CAP	field 'poses': its capacity can't be auto-derived - its own nested type ('PoseStampedData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/msg/Trajectory	NEEDS_CAP	field 'points': its capacity can't be auto-derived - its own nested type ('TrajectoryPointData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/msg/TrajectoryPoint	OK_STRINGS	fixed part 212 B, strings bounded at runtime
+nav_msgs/srv/GetMap	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/srv/GetPlan	NEEDS_CAP	field 'poses': its capacity can't be auto-derived - its own nested type ('PoseStampedData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/srv/LoadMap	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+nav_msgs/srv/SetMap	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+rcl_interfaces/msg/FloatingPointRange	OK	max 24 B
+rcl_interfaces/msg/IntegerRange	OK	max 24 B
+rcl_interfaces/msg/ListParametersResult	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rcl_interfaces/msg/Log	OK_STRINGS	fixed part 24 B, strings bounded at runtime
+rcl_interfaces/msg/LoggerLevel	OK_STRINGS	fixed part 8 B, strings bounded at runtime
+rcl_interfaces/msg/Parameter	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rcl_interfaces/msg/ParameterDescriptor	OK_STRINGS	fixed part 69 B, strings bounded at runtime
+rcl_interfaces/msg/ParameterEvent	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rcl_interfaces/msg/ParameterEventDescriptors	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rcl_interfaces/msg/ParameterType	OK	max 0 B
+rcl_interfaces/msg/ParameterValue	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rcl_interfaces/msg/SetLoggerLevelsResult	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+rcl_interfaces/msg/SetParametersResult	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+rcl_interfaces/srv/DescribeParameters	NEEDS_CAP	field 'names': its capacity can't be auto-derived - a string array element has no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+rcl_interfaces/srv/GetLoggerLevels	NEEDS_CAP	field 'names': its capacity can't be auto-derived - a string array element has no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+rcl_interfaces/srv/GetParameterTypes	NEEDS_CAP	field 'names': its capacity can't be auto-derived - a string array element has no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+rcl_interfaces/srv/GetParameters	NEEDS_CAP	field 'names': its capacity can't be auto-derived - a string array element has no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+rcl_interfaces/srv/ListParameters	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rcl_interfaces/srv/SetLoggerLevels	NEEDS_CAP	field 'levels': its capacity can't be auto-derived - its own nested type ('LoggerLevelData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+rcl_interfaces/srv/SetParameters	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rcl_interfaces/srv/SetParametersAtomically	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rosgraph_msgs/msg/Action	OK_STRINGS	fixed part 568 B, strings bounded at runtime
+rosgraph_msgs/msg/Clock	OK	max 8 B
+rosgraph_msgs/msg/Graph	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rosgraph_msgs/msg/InterfaceType	OK_STRINGS	fixed part 35 B, strings bounded at runtime
+rosgraph_msgs/msg/Node	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+rosgraph_msgs/msg/QoSProfile	OK	max 32 B
+rosgraph_msgs/msg/Service	OK_STRINGS	fixed part 140 B, strings bounded at runtime
+rosgraph_msgs/msg/Topic	OK_STRINGS	fixed part 72 B, strings bounded at runtime
+rosgraph_msgs/msg/TypeHash	OK	max 33 B
+sensor_msgs/msg/BatteryState	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/CameraInfo	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/ChannelFloat32	NEEDS_CAP	field 'values': its capacity can't be auto-derived because a preceding field ('name') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+sensor_msgs/msg/CompressedImage	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+sensor_msgs/msg/FluidPressure	OK_STRINGS	fixed part 28 B, strings bounded at runtime
+sensor_msgs/msg/Illuminance	OK_STRINGS	fixed part 28 B, strings bounded at runtime
+sensor_msgs/msg/Image	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+sensor_msgs/msg/Imu	OK_STRINGS	fixed part 308 B, strings bounded at runtime
+sensor_msgs/msg/JointState	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/Joy	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/JoyFeedback	OK	max 8 B
+sensor_msgs/msg/JoyFeedbackArray	TOO_BIG	fixed part 1982 B > 1444
+sensor_msgs/msg/LaserEcho	OK	max 1444 B
+sensor_msgs/msg/LaserScan	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/MagneticField	OK_STRINGS	fixed part 108 B, strings bounded at runtime
+sensor_msgs/msg/MultiDOFJointState	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/MultiEchoLaserScan	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/NavSatFix	OK_STRINGS	fixed part 113 B, strings bounded at runtime
+sensor_msgs/msg/NavSatStatus	OK	max 4 B
+sensor_msgs/msg/PointCloud	NEEDS_CAP	field 'values': its capacity can't be auto-derived because a preceding field ('name') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+sensor_msgs/msg/PointCloud2	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+sensor_msgs/msg/PointField	OK_STRINGS	fixed part 16 B, strings bounded at runtime
+sensor_msgs/msg/Range	OK_STRINGS	fixed part 32 B, strings bounded at runtime
+sensor_msgs/msg/RegionOfInterest	OK	max 17 B
+sensor_msgs/msg/RelativeHumidity	OK_STRINGS	fixed part 28 B, strings bounded at runtime
+sensor_msgs/msg/Temperature	OK_STRINGS	fixed part 28 B, strings bounded at runtime
+sensor_msgs/msg/TimeReference	OK_STRINGS	fixed part 22 B, strings bounded at runtime
+sensor_msgs/srv/SetCameraInfo	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+service_msgs/msg/ServiceEventInfo	OK	max 36 B
+shape_msgs/msg/Mesh	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+shape_msgs/msg/MeshTriangle	OK	max 12 B
+shape_msgs/msg/Plane	OK	max 32 B
+shape_msgs/msg/SolidPrimitive	TOO_BIG	fixed part 1830 B > 1444
+statistics_msgs/msg/MetricsMessage	NEEDS_CAP	field 'statistics': its capacity can't be auto-derived because a preceding field ('measurement_source_name') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+statistics_msgs/msg/StatisticDataPoint	OK	max 12 B
+statistics_msgs/msg/StatisticDataType	OK	max 0 B
+std_msgs/msg/Bool	OK	max 1 B
+std_msgs/msg/Byte	OK	max 1 B
+std_msgs/msg/ByteMultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/Char	OK	max 1 B
+std_msgs/msg/ColorRGBA	OK	max 16 B
+std_msgs/msg/Empty	OK	max 0 B
+std_msgs/msg/Float32	OK	max 4 B
+std_msgs/msg/Float32MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/Float64	OK	max 8 B
+std_msgs/msg/Float64MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/Header	OK_STRINGS	fixed part 10 B, strings bounded at runtime
+std_msgs/msg/Int16	OK	max 2 B
+std_msgs/msg/Int16MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/Int32	OK	max 4 B
+std_msgs/msg/Int32MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/Int64	OK	max 8 B
+std_msgs/msg/Int64MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/Int8	OK	max 1 B
+std_msgs/msg/Int8MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/MultiArrayDimension	OK_STRINGS	fixed part 12 B, strings bounded at runtime
+std_msgs/msg/MultiArrayLayout	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/String	OK_STRINGS	fixed part 2 B, strings bounded at runtime
+std_msgs/msg/UInt16	OK	max 2 B
+std_msgs/msg/UInt16MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/UInt32	OK	max 4 B
+std_msgs/msg/UInt32MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/UInt64	OK	max 8 B
+std_msgs/msg/UInt64MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_msgs/msg/UInt8	OK	max 1 B
+std_msgs/msg/UInt8MultiArray	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+std_srvs/srv/Empty_Request	OK	max 0 B
+std_srvs/srv/Empty_Response	OK	max 0 B
+std_srvs/srv/SetBool_Request	OK	max 1 B
+std_srvs/srv/SetBool_Response	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+std_srvs/srv/Trigger_Request	OK	max 0 B
+std_srvs/srv/Trigger_Response	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+stereo_msgs/msg/DisparityImage	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+test_msgs/msg/Builtins	OK	max 16 B
+test_msgs/action/NestedMessage	ACTION	actions are not generated by rosidl_typesupport_tickle_c
+tf2_msgs/msg/TF2Error	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+tf2_msgs/msg/TFMessage	NEEDS_CAP	field 'transforms': its capacity can't be auto-derived - its own nested type ('TransformStampedData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+tf2_msgs/srv/FrameGraph_Request	OK	max 0 B
+tf2_msgs/srv/FrameGraph_Response	OK_STRINGS	fixed part 2 B, strings bounded at runtime
+tf2_msgs/action/LookupTransform	ACTION	actions are not generated by rosidl_typesupport_tickle_c
+trajectory_msgs/msg/JointTrajectory	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+trajectory_msgs/msg/JointTrajectoryPoint	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+trajectory_msgs/msg/MultiDOFJointTrajectory	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+trajectory_msgs/msg/MultiDOFJointTrajectoryPoint	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+type_description_interfaces/msg/Field	OK_STRINGS	fixed part 286 B, strings bounded at runtime
+type_description_interfaces/msg/FieldType	OK	max 280 B
+type_description_interfaces/msg/IndividualTypeDescription	NEEDS_CAP	field 'fields': its capacity can't be auto-derived - its own nested type ('FieldData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+type_description_interfaces/msg/KeyValue	OK_STRINGS	fixed part 4 B, strings bounded at runtime
+type_description_interfaces/msg/TypeDescription	NEEDS_CAP	field 'fields': its capacity can't be auto-derived - its own nested type ('FieldData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+type_description_interfaces/msg/TypeSource	OK_STRINGS	fixed part 6 B, strings bounded at runtime
+type_description_interfaces/srv/GetTypeDescription	NEEDS_CAP	field 'fields': its capacity can't be auto-derived - its own nested type ('FieldData') isn't fixed-size, so there's no fixed per-element wire size to divide the remaining budget by - add an explicit '# @capacity <N>' annotation instead
+unique_identifier_msgs/msg/UUID	OK	max 16 B
+visualization_msgs/msg/ImageMarker	NEEDS_CAP	auto-derived capacity only supports a single trailing variable array with no ROS 2 upper bound - add a '# @capacity <N>' annotation to the others
+visualization_msgs/msg/InteractiveMarker	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+visualization_msgs/msg/InteractiveMarkerControl	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+visualization_msgs/msg/InteractiveMarkerFeedback	OK_STRINGS	fixed part 105 B, strings bounded at runtime
+visualization_msgs/msg/InteractiveMarkerInit	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+visualization_msgs/msg/InteractiveMarkerPose	OK_STRINGS	fixed part 70 B, strings bounded at runtime
+visualization_msgs/msg/InteractiveMarkerUpdate	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+visualization_msgs/msg/Marker	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+visualization_msgs/msg/MarkerArray	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+visualization_msgs/msg/MenuEntry	OK_STRINGS	fixed part 13 B, strings bounded at runtime
+visualization_msgs/msg/MeshFile	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('filename') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
+visualization_msgs/msg/UVCoordinate	OK	max 8 B
+visualization_msgs/srv/GetInteractiveMarkers	NEEDS_CAP	field 'data': its capacity can't be auto-derived because a preceding field ('header') isn't fixed-size (a string, or a nested type containing one) - add an explicit '# @capacity <N>' annotation instead
