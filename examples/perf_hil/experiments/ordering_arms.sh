@@ -45,6 +45,8 @@ exec > >(tee -a "$OUT/run.log") 2>&1
 echo "=== ordering arms, drop=${DROP}%, $(date -Is) ==="
 
 # shellcheck source=examples/perf_hil/experiments/assert_loaded_rmw_tickle.sh
+# shellcheck source=examples/perf_hil/experiments/assert_loaded_rmw_tickle.sh
+# shellcheck disable=SC1091 # resolved at runtime from BASH_SOURCE; shellcheck cannot follow it
 . "$(dirname "${BASH_SOURCE[0]}")/assert_loaded_rmw_tickle.sh"
 
 # shellcheck disable=SC1090,SC1091 # ROS setup scripts are generated at install time.
