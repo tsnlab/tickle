@@ -220,8 +220,9 @@ under KEEP_ALL (§3b) it loses nothing.
 
 **Reading**:
 
-- **At a rate all three sustain (~8 Mbps), TickLE now loses nothing either** - the same result the
-  DDS pair gives, at a comparable or higher rate.
+- **At a rate all three sustain (4-5 Mbps paced), TickLE loses nothing through 5% injected loss**,
+  the same as FastDDS and at a slightly higher rate. At 20% it loses 0.14-0.17% on its KEEP_LAST
+  default.
 - **At max rate TickLE is 10-100x faster than either DDS** (113-121 Mbps vs. 0.1-17 Mbps under
   loss) and pays for it with a small residual loss (0.04% at depth=1024, 5% injected). That is the
   real trade-off today: TickLE keeps sending, DDS slows down or refuses.
