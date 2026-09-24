@@ -32,6 +32,6 @@ struct UInt64Data* UInt64Data_decode_inplace(const uint8_t* payload, uint32_t le
 void UInt64Data_free(struct UInt64Data* data);
 
 _Static_assert(sizeof(struct UInt64Data) == 8, "UInt64Data must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(8 <= tt_MAX_BUFFER_LENGTH, "UInt64Data's worst-case wire size exceeds a single datagram");
+#define UInt64Data_FITS_ONE_DATAGRAM (8 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic UInt64Topic;

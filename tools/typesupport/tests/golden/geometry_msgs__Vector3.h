@@ -36,4 +36,4 @@ void geometry_msgs__Vector3_free(struct geometry_msgs__Vector3* data);
 
 _Static_assert(sizeof(struct geometry_msgs__Vector3) == 24,
                "geometry_msgs__Vector3 must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(24 <= tt_MAX_BUFFER_LENGTH, "geometry_msgs__Vector3's worst-case wire size exceeds a single datagram");
+#define geometry_msgs__Vector3_FITS_ONE_DATAGRAM (24 <= tt_MAX_BUFFER_LENGTH)

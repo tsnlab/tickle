@@ -32,6 +32,6 @@ int32_t StampedData_encode(struct StampedData* data, uint8_t* payload, uint32_t 
 int32_t StampedData_decode(struct StampedData* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
 void StampedData_free(struct StampedData* data);
 
-_Static_assert(16 <= tt_MAX_BUFFER_LENGTH, "StampedData's worst-case wire size exceeds a single datagram");
+#define StampedData_FITS_ONE_DATAGRAM (16 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic StampedTopic;

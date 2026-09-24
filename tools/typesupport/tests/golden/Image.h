@@ -40,6 +40,6 @@ int32_t ImageData_encode(struct ImageData* data, uint8_t* payload, uint32_t len)
 int32_t ImageData_decode(struct ImageData* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
 void ImageData_free(struct ImageData* data);
 
-_Static_assert(1430 <= tt_MAX_BUFFER_LENGTH, "ImageData's worst-case wire size exceeds a single datagram");
+#define ImageData_FITS_ONE_DATAGRAM (1430 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic ImageTopic;

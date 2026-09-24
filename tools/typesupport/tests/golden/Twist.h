@@ -35,6 +35,6 @@ struct TwistData* TwistData_decode_inplace(const uint8_t* payload, uint32_t len,
 void TwistData_free(struct TwistData* data);
 
 _Static_assert(sizeof(struct TwistData) == 48, "TwistData must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(48 <= tt_MAX_BUFFER_LENGTH, "TwistData's worst-case wire size exceeds a single datagram");
+#define TwistData_FITS_ONE_DATAGRAM (48 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic TwistTopic;

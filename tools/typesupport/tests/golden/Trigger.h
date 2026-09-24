@@ -29,7 +29,7 @@ int32_t TriggerRequest_encode(struct TriggerRequest* data, uint8_t* payload, uin
 int32_t TriggerRequest_decode(struct TriggerRequest* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
 void TriggerRequest_free(struct TriggerRequest* data);
 
-_Static_assert(0 <= tt_MAX_BUFFER_LENGTH, "TriggerRequest's worst-case wire size exceeds a single datagram");
+#define TriggerRequest_FITS_ONE_DATAGRAM (0 <= tt_MAX_BUFFER_LENGTH)
 
 #pragma pack(push, 4)
 struct TriggerResponse {
@@ -44,6 +44,6 @@ int32_t TriggerResponse_decode(struct TriggerResponse* data, const uint8_t* payl
                                bool is_native_endian);
 void TriggerResponse_free(struct TriggerResponse* data);
 
-_Static_assert(4 <= tt_MAX_BUFFER_LENGTH, "TriggerResponse's worst-case wire size exceeds a single datagram");
+#define TriggerResponse_FITS_ONE_DATAGRAM (4 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Service TriggerService;

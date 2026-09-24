@@ -32,4 +32,22 @@ void @(name)_free(struct @(name)* data);
 @[if is_fixed_size]@
 _Static_assert(sizeof(struct @(name)) == @(padded_wire_size), "@(name) must match its CDR-4 wire size - ABI mismatch");
 @[end if]@
-_Static_assert(@(max_wire_size) <= tt_MAX_BUFFER_LENGTH, "@(name)'s worst-case wire size exceeds a single datagram");
+@# A flag the compiler evaluates, not an assertion that fails the build (2026-09-24).
+@#
+@# It was _Static_assert until a real package could no longer be generated at all.
+@# performance_test declares Array4k, Array32k and PointCloud1m alongside the small types anyone
+@# actually benchmarks, and rosidl_generate_interfaces() hands the generator every type in the
+@# list. One type too large for a datagram therefore failed the whole package - including for
+@# consumers that never touch it - and rosidl_typesupport_tickle_c could not build
+@# performance_test at all. That went unnoticed for nine days because nothing rebuilt it.
+@#
+@# The assertion was never the safety net it looked like. tt_Publisher_publish() already refuses a
+@# message whose data_encode_size() exceeds tt_MAX_BUFFER_LENGTH, with an error naming the size,
+@# so an oversized type cannot be put on the wire whether or not this header objects at compile
+@# time. What the assertion added was failing early - and it failed early for types the consumer
+@# had not asked for, which is the wrong trade.
+@#
+@# Left to the compiler rather than decided here because the generator does not know
+@# tt_MAX_BUFFER_LENGTH: it is a C constant the consumer configures (config.h), which is exactly
+@# why this was written as an assertion in the first place.
+#define @(name)_FITS_ONE_DATAGRAM (@(max_wire_size) <= tt_MAX_BUFFER_LENGTH)

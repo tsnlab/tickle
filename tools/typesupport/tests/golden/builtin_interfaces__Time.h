@@ -35,4 +35,4 @@ void builtin_interfaces__Time_free(struct builtin_interfaces__Time* data);
 
 _Static_assert(sizeof(struct builtin_interfaces__Time) == 8,
                "builtin_interfaces__Time must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(8 <= tt_MAX_BUFFER_LENGTH, "builtin_interfaces__Time's worst-case wire size exceeds a single datagram");
+#define builtin_interfaces__Time_FITS_ONE_DATAGRAM (8 <= tt_MAX_BUFFER_LENGTH)

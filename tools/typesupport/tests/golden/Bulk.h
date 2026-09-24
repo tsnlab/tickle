@@ -35,6 +35,6 @@ int32_t BulkData_encode_inplace(struct BulkData* data, const uint8_t** payload_o
 struct BulkData* BulkData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);
 void BulkData_free(struct BulkData* data);
 
-_Static_assert(1444 <= tt_MAX_BUFFER_LENGTH, "BulkData's worst-case wire size exceeds a single datagram");
+#define BulkData_FITS_ONE_DATAGRAM (1444 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic BulkTopic;

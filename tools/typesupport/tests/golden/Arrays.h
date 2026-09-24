@@ -37,6 +37,6 @@ int32_t ArraysData_encode(struct ArraysData* data, uint8_t* payload, uint32_t le
 int32_t ArraysData_decode(struct ArraysData* data, const uint8_t* payload, uint32_t len, bool is_native_endian);
 void ArraysData_free(struct ArraysData* data);
 
-_Static_assert(100 <= tt_MAX_BUFFER_LENGTH, "ArraysData's worst-case wire size exceeds a single datagram");
+#define ArraysData_FITS_ONE_DATAGRAM (100 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic ArraysTopic;

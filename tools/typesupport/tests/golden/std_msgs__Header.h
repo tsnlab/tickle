@@ -32,4 +32,4 @@ int32_t std_msgs__Header_decode(struct std_msgs__Header* data, const uint8_t* pa
                                 bool is_native_endian);
 void std_msgs__Header_free(struct std_msgs__Header* data);
 
-_Static_assert(10 <= tt_MAX_BUFFER_LENGTH, "std_msgs__Header's worst-case wire size exceeds a single datagram");
+#define std_msgs__Header_FITS_ONE_DATAGRAM (10 <= tt_MAX_BUFFER_LENGTH)

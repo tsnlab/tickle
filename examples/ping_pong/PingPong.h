@@ -34,7 +34,7 @@ struct PingPongRequest* PingPongRequest_decode_inplace(const uint8_t* payload, u
 void PingPongRequest_free(struct PingPongRequest* data);
 
 _Static_assert(sizeof(struct PingPongRequest) == 12, "PingPongRequest must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(12 <= tt_MAX_BUFFER_LENGTH, "PingPongRequest's worst-case wire size exceeds a single datagram");
+#define PingPongRequest_FITS_ONE_DATAGRAM (12 <= tt_MAX_BUFFER_LENGTH)
 
 #pragma pack(push, 4)
 struct PingPongResponse {
@@ -52,6 +52,6 @@ struct PingPongResponse* PingPongResponse_decode_inplace(const uint8_t* payload,
 void PingPongResponse_free(struct PingPongResponse* data);
 
 _Static_assert(sizeof(struct PingPongResponse) == 12, "PingPongResponse must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(12 <= tt_MAX_BUFFER_LENGTH, "PingPongResponse's worst-case wire size exceeds a single datagram");
+#define PingPongResponse_FITS_ONE_DATAGRAM (12 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Service PingPongService;

@@ -36,6 +36,6 @@ int32_t BoundedStringData_decode(struct BoundedStringData* data, const uint8_t* 
                                  bool is_native_endian);
 void BoundedStringData_free(struct BoundedStringData* data);
 
-_Static_assert(22 <= tt_MAX_BUFFER_LENGTH, "BoundedStringData's worst-case wire size exceeds a single datagram");
+#define BoundedStringData_FITS_ONE_DATAGRAM (22 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic BoundedStringTopic;

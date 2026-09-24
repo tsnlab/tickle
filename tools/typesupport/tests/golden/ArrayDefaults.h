@@ -35,6 +35,6 @@ int32_t ArrayDefaultsData_decode(struct ArrayDefaultsData* data, const uint8_t* 
                                  bool is_native_endian);
 void ArrayDefaultsData_free(struct ArrayDefaultsData* data);
 
-_Static_assert(14 <= tt_MAX_BUFFER_LENGTH, "ArrayDefaultsData's worst-case wire size exceeds a single datagram");
+#define ArrayDefaultsData_FITS_ONE_DATAGRAM (14 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic ArrayDefaultsTopic;

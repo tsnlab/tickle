@@ -32,7 +32,7 @@ struct SetBoolRequest* SetBoolRequest_decode_inplace(const uint8_t* payload, uin
 void SetBoolRequest_free(struct SetBoolRequest* data);
 
 _Static_assert(sizeof(struct SetBoolRequest) == 1, "SetBoolRequest must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(1 <= tt_MAX_BUFFER_LENGTH, "SetBoolRequest's worst-case wire size exceeds a single datagram");
+#define SetBoolRequest_FITS_ONE_DATAGRAM (1 <= tt_MAX_BUFFER_LENGTH)
 
 #pragma pack(push, 4)
 struct SetBoolResponse {
@@ -47,6 +47,6 @@ int32_t SetBoolResponse_decode(struct SetBoolResponse* data, const uint8_t* payl
                                bool is_native_endian);
 void SetBoolResponse_free(struct SetBoolResponse* data);
 
-_Static_assert(4 <= tt_MAX_BUFFER_LENGTH, "SetBoolResponse's worst-case wire size exceeds a single datagram");
+#define SetBoolResponse_FITS_ONE_DATAGRAM (4 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Service SetBoolService;

@@ -37,5 +37,4 @@ void nested_arrays_pkg__OddAlign_free(struct nested_arrays_pkg__OddAlign* data);
 
 _Static_assert(sizeof(struct nested_arrays_pkg__OddAlign) == 16,
                "nested_arrays_pkg__OddAlign must match its CDR-4 wire size - ABI mismatch");
-_Static_assert(13 <= tt_MAX_BUFFER_LENGTH,
-               "nested_arrays_pkg__OddAlign's worst-case wire size exceeds a single datagram");
+#define nested_arrays_pkg__OddAlign_FITS_ONE_DATAGRAM (13 <= tt_MAX_BUFFER_LENGTH)

@@ -39,6 +39,6 @@ int32_t NestedArraysData_decode(struct NestedArraysData* data, const uint8_t* pa
                                 bool is_native_endian);
 void NestedArraysData_free(struct NestedArraysData* data);
 
-_Static_assert(148 <= tt_MAX_BUFFER_LENGTH, "NestedArraysData's worst-case wire size exceeds a single datagram");
+#define NestedArraysData_FITS_ONE_DATAGRAM (148 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic NestedArraysTopic;

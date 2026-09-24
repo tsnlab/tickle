@@ -35,6 +35,6 @@ int32_t StringArrayDefaultsData_decode(struct StringArrayDefaultsData* data, con
                                        bool is_native_endian);
 void StringArrayDefaultsData_free(struct StringArrayDefaultsData* data);
 
-_Static_assert(14 <= tt_MAX_BUFFER_LENGTH, "StringArrayDefaultsData's worst-case wire size exceeds a single datagram");
+#define StringArrayDefaultsData_FITS_ONE_DATAGRAM (14 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic StringArrayDefaultsTopic;
