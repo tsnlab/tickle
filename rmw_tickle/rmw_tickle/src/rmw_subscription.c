@@ -214,6 +214,34 @@ static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, v
 // Under-sizing is safe rather than merely tolerable: a payload too large for the stride is
 // treated exactly like a full buffer, so the sample is re-requested instead of held. That costs
 // retransmissions and is counted (reorder_overflow), never correctness.
+//
+// Capped at RMW_TICKLE_REORDER_SLOT_PAYLOAD (default 2 KiB) whatever the type (the storage design
+// the user approved on 2026-09-24): with tt_MAX_BUFFER_LENGTH at 65507 an unbounded type would
+// otherwise reserve a 64 KiB slot, times a window of up to 4096. A sample larger than the stride
+// takes the overflow path above - re-requested rather than held - which costs a retransmission
+// only when a large sample arrives out of order.
+#define RMW_TICKLE_REORDER_SLOT_PAYLOAD_DEFAULT 2048ULL
+// Total bytes of reorder buffer one RELIABLE subscription may reserve (RMW_TICKLE_REORDER_BYTES):
+// slots are the window or budget / stride, whichever is fewer - Plan's review of the design, since
+// a stride cap alone still leaves window x 2 KiB per subscription. Fewer slots than the window just
+// means an earlier overflow, which is the same safe path.
+#define RMW_TICKLE_REORDER_BYTES_DEFAULT (1024ULL * 1024ULL)
+
+// An environment knob of this file: `fallback` when unset, empty, unparseable, zero or above
+// `max` - a malformed tuning value must not stop a node starting (the rule every knob here uses).
+static unsigned long long resolve_env_bytes(const char* name, unsigned long long fallback, unsigned long long max) {
+    const char* env = getenv(name);
+    if (NULL == env || '\0' == env[0]) {
+        return fallback;
+    }
+    char* end = NULL;
+    unsigned long long value = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || value == 0 || value > max) {
+        return fallback;
+    }
+    return value;
+}
+
 static uint16_t resolve_reorder_slot_bytes(const rmw_tickle_subscriber_t* sub_impl) {
     unsigned long long payload = (unsigned long long)tt_MAX_BUFFER_LENGTH;
     if (NULL != sub_impl->callbacks &&
@@ -223,6 +251,13 @@ static uint16_t resolve_reorder_slot_bytes(const rmw_tickle_subscriber_t* sub_im
     if (payload > (unsigned long long)tt_MAX_BUFFER_LENGTH) {
         payload = (unsigned long long)tt_MAX_BUFFER_LENGTH;
     }
+    // tt_Subscriber.reorder_slot_bytes is 16 bits: the cap keeps a slot, header included, within it.
+    unsigned long long cap =
+        resolve_env_bytes("RMW_TICKLE_REORDER_SLOT_PAYLOAD", RMW_TICKLE_REORDER_SLOT_PAYLOAD_DEFAULT,
+                          UINT16_MAX - sizeof(struct tt_ReorderSlot));
+    if (payload > cap) {
+        payload = cap;
+    }
     return (uint16_t)(sizeof(struct tt_ReorderSlot) + payload);
 }
 
@@ -230,15 +265,14 @@ static uint16_t resolve_reorder_slot_bytes(const rmw_tickle_subscriber_t* sub_im
 // back for retransmissions; 0 or unparseable falls back rather than failing subscription
 // creation, the same reasoning the publisher's own knobs use - a malformed tuning value should not
 // stop a node starting, and this one can only cost throughput.
-static uint16_t resolve_reorder_slots(void) {
-    const char* env = getenv("RMW_TICKLE_REORDER_SLOTS");
-    if (NULL == env || '\0' == env[0]) {
-        return RMW_TICKLE_REORDER_SLOTS;
-    }
-    char* end = NULL;
-    unsigned long long slots = strtoull(env, &end, 10);
-    if (end == env || (end != NULL && '\0' != *end) || slots == 0 || slots > RMW_TICKLE_REORDER_SLOTS) {
-        return RMW_TICKLE_REORDER_SLOTS;
+static uint16_t resolve_reorder_slots(uint16_t slot_bytes) {
+    unsigned long long slots =
+        resolve_env_bytes("RMW_TICKLE_REORDER_SLOTS", RMW_TICKLE_REORDER_SLOTS, RMW_TICKLE_REORDER_SLOTS);
+    unsigned long long budget =
+        resolve_env_bytes("RMW_TICKLE_REORDER_BYTES", RMW_TICKLE_REORDER_BYTES_DEFAULT, UINT32_MAX);
+    unsigned long long affordable = budget / slot_bytes;
+    if (affordable < slots) {
+        slots = affordable > 0 ? affordable : 1;
     }
     return (uint16_t)slots;
 }
@@ -372,16 +406,18 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         return NULL;
     }
 
-    // The RELIABLE reorder buffer (see rmw_tickle_subscription_t.reorder_storage). Allocated for
-    // every subscription rather than only the RELIABLE ones: `reliable` is set from the QoS
-    // further down, and a buffer a BEST_EFFORT Subscriber never reads costs memory and nothing
-    // else, where getting the order of those two wrong would cost the buffer exactly when it is
-    // needed.
-    uint16_t reorder_slot_bytes = resolve_reorder_slot_bytes(sub_impl);
-    uint16_t reorder_slots = resolve_reorder_slots();
+    // The RELIABLE reorder buffer (see rmw_tickle_subscription_t.reorder_storage) - for a RELIABLE
+    // subscription only. It used to be allocated for every one, on the grounds that a buffer a
+    // BEST_EFFORT Subscriber never reads costs memory and nothing else; once each buffer is up to a
+    // megabyte (the byte budget above), that memory is the point. The decision reads the same
+    // resolved QoS `tickle_subscriber.reliable` is set from below, so the two cannot disagree.
+    bool reorder_wanted = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
+    uint16_t reorder_slot_bytes = reorder_wanted ? resolve_reorder_slot_bytes(sub_impl) : 0;
+    uint16_t reorder_slots = reorder_wanted ? resolve_reorder_slots(reorder_slot_bytes) : 0;
     size_t reorder_words = ((size_t)reorder_slots * reorder_slot_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
-    sub_impl->reorder_storage = (uint64_t*)allocator->zero_allocate(reorder_words, sizeof(uint64_t), allocator->state);
-    if (NULL == sub_impl->reorder_storage) {
+    sub_impl->reorder_storage =
+        reorder_wanted ? (uint64_t*)allocator->zero_allocate(reorder_words, sizeof(uint64_t), allocator->state) : NULL;
+    if (reorder_wanted && NULL == sub_impl->reorder_storage) {
         RMW_SET_ERROR_MSG("failed to allocate subscriber reorder buffer");
         allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state);
         allocator->deallocate(sub_impl->queue, allocator->state);

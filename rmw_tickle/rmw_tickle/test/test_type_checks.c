@@ -48,8 +48,8 @@ struct fake_msg {
     uint8_t value;
 };
 
-static bool fake_convert(const void* from, void* to) {
-    ((struct fake_msg*)to)->value = ((const struct fake_msg*)from)->value;
+static bool fake_convert(const void* source, void* dest) {
+    ((struct fake_msg*)dest)->value = ((const struct fake_msg*)source)->value;
     return true;
 }
 static int32_t fake_encode_size(struct tt_Data* data) {

@@ -284,6 +284,49 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
     return clamp_record_bytes(payload);
 }
 
+// Byte budget for a KEEP_LAST publisher's retained samples (RMW_TICKLE_CACHE_BYTES, default 1 MiB -
+// the storage design the user approved on 2026-09-24). The arena used to be (depth + 1) x
+// tt_MAX_BUFFER_LENGTH whatever the type: 1.5 MB for /rosout's depth of 1000 at 1472, and 65 MB at
+// the 65507 rmw_tickle is moving to. Now it is (depth + 1) records of the type's own bound, capped
+// at the budget, and never below one record - so any single legal sample can still be retained.
+//
+// What the cap costs, stated where it is decided: core evicts oldest-first by bytes as well as by
+// count (cache_reliable_sample(), tickle.c), so a publisher whose samples are large keeps fewer
+// than `depth` of them - DDS's RESOURCE_LIMITS.max_samples by another name. That also narrows
+// RELIABLE, not only a late joiner's history: a sample evicted by bytes before its NACK arrives is
+// answered with an eviction Heartbeat, i.e. lost to that reader. With 64 KiB samples 1 MiB holds
+// 16, fine at camera rates and tight at max rate (Plan's review).
+//
+// KEEP_ALL is not budgeted. Its promise is that nothing unacknowledged is ever dropped, and byte
+// eviction would drop exactly that; its arena stays sized to its depth (resolve_keep_all_record_
+// bytes() above), and keep_all_bound() is a separate, open decision.
+#define RMW_TICKLE_CACHE_BYTES_DEFAULT (1024ULL * 1024ULL)
+
+static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth) {
+    // The largest record one sample of this type can need: its generated bound when it has one, the
+    // datagram otherwise (a submessage can be no larger).
+    unsigned long long record = (unsigned long long)tt_MAX_BUFFER_LENGTH;
+    if (NULL != pub_impl->callbacks &&
+        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != pub_impl->callbacks->tickle_max_encoded_size) {
+        record = clamp_record_bytes((unsigned long long)pub_impl->callbacks->tickle_max_encoded_size);
+    }
+    unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
+
+    unsigned long long budget = RMW_TICKLE_CACHE_BYTES_DEFAULT;
+    const char* env = getenv("RMW_TICKLE_CACHE_BYTES");
+    if (NULL != env && '\0' != env[0]) {
+        char* end = NULL;
+        unsigned long long value = strtoull(env, &end, 10);
+        if (end != env && (end == NULL || '\0' == *end) && value > 0 && value <= UINT32_MAX) {
+            budget = value; // anything else falls back - a malformed knob must not stop a node starting
+        }
+    }
+    if (budget < record) {
+        budget = record;
+    }
+    return (uint32_t)(full < budget ? full : budget);
+}
+
 // Periodic Heartbeat for a RELIABLE publisher, off unless RMW_TICKLE_HEARTBEAT_PERIOD_NS is set.
 //
 // An EXPERIMENT switch, not yet a tuned default, and it exists to answer one question. A reader
@@ -434,8 +477,8 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     //
     // (depth + 1) records either way - the wrap slack B1 added, so the byte bound still cannot
     // evict before the count bound, which is what `depth` promises.
-    uint32_t record_bytes = keep_all ? resolve_keep_all_record_bytes(pub_impl) : (uint32_t)tt_MAX_BUFFER_LENGTH;
-    uint32_t arena_bytes = tt_RELIABLE_CACHE_ARENA_BYTES(depth, record_bytes);
+    uint32_t arena_bytes = keep_all ? tt_RELIABLE_CACHE_ARENA_BYTES(depth, resolve_keep_all_record_bytes(pub_impl))
+                                    : resolve_keep_last_arena_bytes(pub_impl, depth);
     pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(arena_bytes, allocator->state);
     if (NULL == pub_impl->reliable_cache->arena) {
         RMW_SET_ERROR_MSG("failed to allocate reliable_cache arena");
