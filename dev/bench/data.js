@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790227348121,
+  "lastUpdate": 1790227352190,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -116081,6 +116081,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 156,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "d369e3b36235ed1e9f4d0932cc352a331ef29124",
+          "message": "The delivery counters never printed under rmw at all\n\nThey were emitted only from tt_Node_destroy()'s walk of node->endpoints.\nrmw_destroy_subscription() calls tt_Subscriber_destroy() before the node is\ndestroyed, so by the time that walk runs the Subscriber has been removed from\nthe table and its counters go with it. Across a full four-cell benchmark the\nline appeared zero times: the numbers the arms were going to be compared on\nwere computed correctly and then discarded in silence.\n\nThe verification that missed it was a real two-node loopback run reporting real\nnumbers - and that run destroys its node with endpoints still attached, which is\nnot the shape rmw uses. It exercised the one path that worked. A number that\nappears on the bench and never in production is not a weaker instrument, it is a\nmissing one, and \"I saw the line on a run\" is exactly the check that passed\nwhile the product path was broken.\n\nSo the emission moves into one function called from both teardowns. They are\nmutually exclusive rather than usually-not-both: tt_Subscriber_destroy() removes\nthe endpoint from node->endpoints before returning, so a Subscriber reported\nthere cannot still be in the table the node walks. No \"already reported\" flag.\n\nThe test captures the log through tt_log_set_output() and asserts the line\nappears exactly once, in both orders - subscription-then-node and node-with-\nendpoints-attached. Eyeballing a run is what failed here, so the test does not\ndo that. Controlled by reintroducing the bug and confirming it fails on the rmw\norder, then restoring: without the control, a passing test is equally consistent\nwith a test that asserts nothing.\n\nFound by Plan, whose rebuild verification checked that the line appears at all\nrather than trusting that a counter which increments is a counter anyone can\nread.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T14:15:29+09:00",
+          "tree_id": "d2cf0c9c70298b67d1734766d5675db8c6ef7fe0",
+          "url": "https://github.com/tsnlab/tickle/commit/d369e3b36235ed1e9f4d0932cc352a331ef29124"
+        },
+        "date": 1790227350948,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 147,
             "unit": "count"
           }
         ]
