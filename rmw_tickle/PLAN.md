@@ -1868,6 +1868,40 @@ and run plain and under ASan/UBSan. No uint16 truncation surfaced in core. Three
 The fuzz harness got a seed corpus from the real encoder (`86df2eb5`) so the 45 s CI smoke actually
 reaches the new UPDATE_PART parser. CI's `setup-ros` 404 recurred, and now retries once (`a4c9d7e1`).
 
+**Stages (ii)-(iv) landed overnight** (TickLE Dev, 2026-09-24/25):
+- `49733ae8` adds `tt_CONTROL_MAX_LENGTH`.
+- `5bba76df` makes one N flow from `TICKLE_MAX_BUFFER_LENGTH` to the generator, the interface
+  libraries and rmw, which refuses a type generated for another N or larger than a datagram and
+  names both numbers.
+- `bcc78f6e` and `7c80225c` size the KEEP_LAST cache and the reorder buffer by byte budget. The
+  reorder default reproduces the N = 1472 allocation exactly. The cache default of 1 MiB is the
+  user-approved value and is parked for their review, because at N = 1472 it retains fewer
+  max-size samples than before.
+- `30471403` adds `tt_Server_set_storage()` / `tt_Client_set_storage()`, taking rmw's `tt_Server`
+  from 12.6 MB at N = 65507 (286 KB at 1472) down to 4.5 KB.
+- One behaviour change: a response too large for its cache entry is now sent without being
+  cached, where before it was rolled back and never sent.
+- The capacity proposal for N = 65507 is `rmw_tickle/tools/p2_capacities_proposal_65507.tsv`
+  (262 structs create). Auto-derived capacities scale with N, so the four present in the scanned
+  packages are pinned.
+
+**Found on the way: rmw_tickle service replies were lost whenever the server took longer than
+~7.5 ms** (`31cf7484`). Nothing before this had made a real service call through rmw.
+- In core, `call_retry_count = 0` is documented as "use `tt_CALL_RETRY_COUNT`" but was compared
+  raw, so every client, the examples included, gave up at its first retry.
+- rmw services always answer deferred, as slowly as the ROS callback runs, and ROS has no
+  rmw-level timeout. rmw clients now retry every 100 ms until `tt_SERVER_DEFERRED_RESPONSE_TIMEOUT`
+  (5 s), and retries do not re-run the callback.
+
+Before the fix, an `rclcpp` client of any service slower than ~7.5 ms waited forever.
+**Release-notes item.** COMPARISON.MD's figures are pub/sub only, so none of them is affected.
+
+**Found on the way, in the harness: the latency scenarios' "53% loss"** (`0f536579`). The two TickLE
+latency servers treated the forwarded `-d` as their own lifetime without the +15 s buffer every
+other server has. So they exited halfway through the client's pings. It was not a TickLE
+regression: the rpi log shows the server alive exactly 10 s, and TickLE Dev's loopback repro got
+100/100.
+
 **Next assignment after this one: ROS 2 actions** (user decision 4). A first design reading by
 TickLE Plan (2026-09-24), from the jazzy sources of rosidl and rosidl_typesupport, not yet checked
 by building:
