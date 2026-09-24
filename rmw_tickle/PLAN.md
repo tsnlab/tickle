@@ -1980,7 +1980,31 @@ lifespan has passed. TickLE enforces lifespan only at the writer (backlog and NA
 unit-tested). A reader-side check needs the writer's lifespan at the reader and comparable clocks
 across nodes.
 
-**Next assignment after this one: ROS 2 actions** (user decision 4). A first design reading by
+**ROS 2 actions work through rmw_tickle** (TickLE Dev, `3402d345` and `e8b388ee`, 2026-09-25).
+`example_interfaces/action/Fibonacci` runs between an `rclcpp_action` server and client on default
+nodes at N = 65507: the goal is accepted, 10 feedbacks each carry a correct prefix, and the result
+is exact. It runs in CI as `check_ros2_interfaces.sh -A`. As the design reading below predicted,
+rmw_tickle itself did not change.
+- The generator emits the four implicit messages and two implicit services of a `.action`, in C
+  and C++. An action is declined whole if any part cannot be represented.
+- `WireStruct.origin` gained the subfolder.
+- Auto-sized arrays in Goal/Result/Feedback leave room for the goal-id or status wrapper.
+- Two findings:
+  - `example_interfaces` declares no interface dependencies, so the build script now builds
+    rosidl's implicit dependencies in a first pass.
+  - A core generator bug: a struct nesting an *empty* message asserted `sizeof` equal to the wire
+    size, off by the filler byte, and could take the in-place codec (`3402d345`, tested).
+
+Open:
+- (a) goal cancel is created but not yet tested.
+- (b) service-introspection `_Event` types return no handle, which is harmless unless introspection
+  is enabled.
+- (c) rclcpp_action drops feedback that arrives before the goal response. That is ordinary rclcpp
+  behaviour.
+- (d) `-A` still needs an action-specific control arm: the full workspace minus example_interfaces'
+  TickLE typesupport, where creating the action must fail.
+
+The original design reading follows. **Actions, as first planned** (user decision 4). A first design reading by
 TickLE Plan (2026-09-24), from the jazzy sources of rosidl and rosidl_typesupport, not yet checked
 by building:
 - **rmw needs no new entry point.** There is no action API in rmw. `rcl_action` composes each
