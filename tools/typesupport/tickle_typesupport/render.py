@@ -48,8 +48,7 @@ def _nested_includes(struct):
     way any C header dependency does). Templates splice this straight into `#include "@(x).h"` -
     normally the same as the nested struct's own c_name, but not always any more: rmw_tickle's
     Ros2Resolver's own nested structs reuse an already-independently-generated file whose name
-    doesn't match its own "<Name>Data" c_name (see model.WireStruct.header_name's own doc
-    comment), so this strips the ".h" back off header_name when one's set, rather than assuming
+    doesn't match its own c_name (see model.WireStruct.header_name), so this strips the ".h" back off header_name when one's set, rather than assuming
     c_name always doubles as the file name."""
     names = set()
     for f in struct.fields:

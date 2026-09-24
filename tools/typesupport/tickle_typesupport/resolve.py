@@ -82,11 +82,7 @@ class Resolver:
             return self.resolved_structs[key]
         spec = self.resolve_spec(pkg_name, msg_name)
         struct = adapt_struct_fn(f"{pkg_name}__{msg_name}", spec, self)
-        # rmw_tickle's ros2_adapter.py's nested-field conversion needs the *real* ROS 2 (pkg, type) this
-        # struct came from - independent of c_name's own "pkg__Name" convention here (see model.
-        # WireStruct.ros_pkg_name's own doc comment for why c_name alone isn't enough any more).
-        struct.ros_pkg_name = pkg_name
-        struct.ros_type_name = msg_name
+        struct.origin = key
         self.resolved_structs[key] = struct
         self._resolve_order.append(key)
         return struct

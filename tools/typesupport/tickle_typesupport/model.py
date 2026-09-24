@@ -254,24 +254,17 @@ class WireStruct:
     c_name: str  # e.g. "UInt64Data"
     fields: list[WireField] = field(default_factory=list)
     constants: list[Constant] = field(default_factory=list)
-    # Only set for a struct resolve.py resolved as someone else's nested field (never for a
-    # struct adapt_message()/adapt_service() built directly as a top-level interface). header_name
-    # is the file a `#include` for it should name - None means "the same as c_name.h", true for
-    # every nested dependency resolve.Resolver itself writes out (render_nested(), c_name IS the
-    # file name) but not for one rmw_tickle's Ros2Resolver (rosidl_typesupport_tickle_c/
-    # ros2_resolve.py) resolves to an *already independently
-    # generated* real ROS 2 sibling message (c_name there is that message's own "<Name>Data",
-    # adapt_message()'s own convention, but the file is still just "<Name>.h" - see Ros2Resolver's
-    # own doc comment for why reusing that file, not writing a second one, is the whole point).
+    # The two below are set only on a struct a resolver produced for someone else's nested field,
+    # never on a top-level interface adapt_message()/adapt_service() built.
+    #
+    # origin: the (package, type) the nested field's `.msg` reference named - `std_msgs/Header`
+    # gives ("std_msgs", "Header"). It is the type's identity in TickLE's own IDL, kept because
+    # c_name does not always encode it: a resolver chooses its own naming convention.
+    origin: tuple[str, str] | None = None
+    # header_name: the file an `#include` for this struct names. None means "<c_name>.h", which is
+    # what resolve.Resolver writes (render_nested()); a resolver that reuses a struct generated
+    # under another file name (rmw_tickle's Ros2Resolver) sets it.
     header_name: str | None = None
-    # ros_pkg_name/ros_type_name: the *original* ROS 2 (package, message) this struct was resolved
-    # from, when known - independent of whatever naming convention c_name itself follows (see
-    # header_name's own comment - c_name alone is no longer enough to recover this, now that two
-    # different conventions exist). rmw_tickle's ros2_adapter.py's nested-field conversion code needs this
-    # to find the *other* message's own already-generated __to_tickle/__from_tickle functions,
-    # which are always named from the real ROS 2 (pkg, type), never from c_name.
-    ros_pkg_name: str | None = None
-    ros_type_name: str | None = None
     # Filled in by layout.compute(): None until then, then True/False. A struct is fixed-size
     # when every field's wire_size is known at generate time (no strings/variable arrays/
     # variable-size nested messages) - see layout.py.

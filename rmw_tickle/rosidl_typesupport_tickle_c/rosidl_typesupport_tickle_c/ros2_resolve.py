@@ -131,8 +131,7 @@ class Ros2Resolver:
         spec = rosidl.parse_message_string(pkg_name, msg_name, text)
         struct = adapt_struct_fn(f"{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name))
         struct.header_name = f"{msg_name}.h"
-        struct.ros_pkg_name = pkg_name
-        struct.ros_type_name = msg_name
+        struct.origin = key
         self.resolved_structs[key] = struct
         return struct
 

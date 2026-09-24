@@ -71,14 +71,7 @@ import re
 
 from tickle_typesupport import layout, model
 
-# A nested field's own ROS 2 struct name ("msg" is the only subfolder that can appear nested -
-# ROS 2 doesn't nest .srv types). Reads the nested WireStruct's own ros_pkg_name/ros_type_name
-# (resolve.py sets these on every struct it ever resolves as a nested field, regardless of which
-# resolver or c_name convention produced it) rather than deriving it from c_name itself - c_name
-# alone stopped being enough once resolve.Ros2Resolver's own "<Name>Data" convention (reusing an
-# already-independently-generated ROS 2 sibling message) started coexisting with resolve.
-# Resolver's original "pkg__Name" one (model.WireStruct.header_name's own doc comment has the
-# full story).
+
 def _ros2_sequence_scalar_type(scalar_type):
     """Maps a WireField's own `scalar_type` to the name `rosidl_runtime_c`'s primitive Sequence
     types actually use on the ROS 2 side - not always identical, found the hard way (Milestone 55,
@@ -102,7 +95,12 @@ def _ros2_sequence_scalar_type(scalar_type):
 
 
 def ros2_nested_struct_name(nested_struct):
-    return f"{nested_struct.ros_pkg_name}__msg__{nested_struct.ros_type_name}"
+    """A nested field's ROS 2 C struct name, `<pkg>__msg__<Type>` ("msg" is the only subfolder that
+    can appear nested - ROS 2 does not nest .srv types). Built from the struct's `origin`, which
+    every resolver sets, not from c_name: Ros2Resolver's "<Name>Data" and Resolver's "pkg__Name"
+    conventions coexist, and neither is the ROS name."""
+    pkg_name, type_name = nested_struct.origin
+    return f"{pkg_name}__msg__{type_name}"
 
 
 # The .tickle_max_encoded_size initialiser: either a real upper bound on this type's encoded
