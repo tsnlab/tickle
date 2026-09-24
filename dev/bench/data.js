@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790230279043,
+  "lastUpdate": 1790231171948,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -101291,6 +101291,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "avg RTT",
             "value": 0.239,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "8dc81912ec815be49b2bda8a270f6c21fc7c54f6",
+          "message": "RELIABLE waits for a gap and delivers in order\n\nThe second half of the user's decision. BEST_EFFORT discards what it has moved\npast (7cc9fd45); RELIABLE does the opposite - it waits. A sample that arrives\nahead of an unfilled gap is held, and everything behind it waits with it. That\nis head-of-line blocking by construction, which is what RELIABLE means, and it\nis a real change to what TickLE guarantees: delivery order is now the reader's\njob rather than the application's.\n\nWhether a sample was in order is read off the watermark rather than tracked\nseparately: update_reliable_ack() advances ack_seq_no past a sample if and only\nif it was the one expected next, so ack_seq_no > seq_no means in-order and\nanything else means ahead of a gap. That also makes jump_ack_baseline() work\nunchanged - it leaves the watermark at seq_no + 1, so a sample that triggered a\njump is delivered rather than held against the gap it just abandoned.\n\nStorage is caller-owned, with NO builtin default, and that is a deliberate\ndeparture from tracking_bitmaps' own builtin_tracking[]. A useful builtin would\nhave to hold whole payloads - 8 slots at tt_MAX_BUFFER_LENGTH is ~11.8KB against\na 920-byte tt_Subscriber - and an embedded-first library cannot put that in every\nSubscriber for a case a microcontroller stream may never hit.\n\nSo NULL does not mean \"deliver out of order\". It means wait without holding: the\nsample is not delivered AND not recorded as received, so the ordinary ACKNACK\nexchange fetches it again once the gap has filled. Ordering is correct in both\nconfigurations; the buffer buys not having to re-request everything that arrived\nbehind a single lost sample, which is the common case under loss and the one\nCOMPARISON.MD section 3b measures. Clearing the bit is the load-bearing part:\nleaving it set and dropping the payload would lose the sample forever, which is\nthe one outcome RELIABLE must never produce.\n\nTwo ways a held sample could have waited forever, both closed:\n\n  - A gap the Publisher says is unrecoverable. Giving up is a delivery event -\n    what was waiting behind it was waiting for something that is never coming -\n    so the heartbeat path drains too. Without that, a held sample waits for the\n    next in-order arrival to drain it, and on a stream that has stopped, that is\n    forever.\n  - A writer that dies. Its held samples are released when its proxy is dropped;\n    otherwise they occupy the buffer for the lifetime of the Subscriber and the\n    only symptom would be reorder_overflow rising on writers that are still\n    alive.\n\nreorder_storage is uint64_t*, not uint8_t*, for the same reason tracking_bitmaps\nis: a slot header starts with a uint64_t, and a uint8_t array guarantees no\nalignment - undefined behaviour everywhere and a fault on the Arm targets this\nlibrary is for. clang-tidy objected to the cast, which turned out to be the\nuseful half of the complaint.\n\nExisting RELIABLE tests needed a reorder buffer to keep asserting what they were\nwritten to assert. They test gap tracking - which bits are set, where the\nwatermark is - and without a buffer a RELIABLE Subscriber un-receives the very\nsample whose bit they check, turning each into a test of the no-buffer fallback.\nOne test changed meaning rather than configuration: the de-duplication test\nasserted a sample ahead of a gap reaches the callback immediately. It no longer\ndoes, which is the feature; what that test exists for - a retransmit is not\ndelivered twice - is unchanged and still asserted.\n\nEach new behaviour was controlled by breaking it and confirming the test fails:\ndrain removed from the give-up path, held samples released in arrival order\ninstead of sequence order, and the no-buffer fallback leaving the bit set.\n\nNot verified here: `make fuzz` cannot link on this box (no -lstdc++), which I\nconfirmed on a clean tree rather than assuming. CI covers it.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T15:20:57+09:00",
+          "tree_id": "9e5b0bf8aaf05b8cbe9c2288af36146133e3b92f",
+          "url": "https://github.com/tsnlab/tickle/commit/8dc81912ec815be49b2bda8a270f6c21fc7c54f6"
+        },
+        "date": 1790231162448,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.24,
             "unit": "ms"
           }
         ]
