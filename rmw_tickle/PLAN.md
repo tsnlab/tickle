@@ -1885,6 +1885,19 @@ reaches the new UPDATE_PART parser. CI's `setup-ros` 404 recurred, and now retri
   (262 structs create). Auto-derived capacities scale with N, so the four present in the scanned
   packages are pinned.
 
+**Stage (v), the default flip** (`fddad207`): rmw's `TICKLE_MAX_BUFFER_LENGTH` is now 65507, and
+rmw requests a 4 MiB `SO_RCVBUF`. Checked through ROS 2 with `rmw_check_at_new_n.sh`, after
+regenerating performance_test's typesupport, because 5bba76df appended a field to the callbacks
+struct and older libraries read past it. Part 1 was 4/4. Part 2 (RELIABLE, 8% loss) had 5 window
+jumps, overflow 0 and out_of_order 0. One behaviour difference turned up:
+`out_of_order_discarded` roughly doubled. A pre-registered A/B (`rmw_sockbuf_ab.sh`, 3 reps per arm)
+put it on the socket buffer, not on N. With the 4 MiB request against 1 MiB, RELIABLE discarded
+6810-11001 against 105-651, and BEST_EFFORT 8785-19074 against 2592-7364, with no overlap and
+delivered unchanged. Deeper queues let more late duplicates reach the reader, where they are
+discarded instead of never arriving. No correctness counter moved, and nothing was changed. On a
+stock kernel, `net.core.rmem_max` clamps the request to ~416 KB anyway. This box's limit had been
+raised to 4 MiB, so there the request was granted in full.
+
 **Found on the way: rmw_tickle service replies were lost whenever the server took longer than
 ~7.5 ms** (`31cf7484`). Nothing before this had made a real service call through rmw.
 - In core, `call_retry_count = 0` is documented as "use `tt_CALL_RETRY_COUNT`" but was compared
