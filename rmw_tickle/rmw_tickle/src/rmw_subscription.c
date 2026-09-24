@@ -26,6 +26,7 @@
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
+#include "rcutils/logging_macros.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
@@ -369,8 +370,6 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
     }
-    sub_impl->tickle_subscriber.tracking_bitmaps = sub_impl->tracking_bitmaps;
-    sub_impl->tickle_subscriber.tracking_words = RMW_TICKLE_TRACKING_WORDS;
 
     // The RELIABLE reorder buffer (see rmw_tickle_subscription_t.reorder_storage). Allocated for
     // every subscription rather than only the RELIABLE ones: `reliable` is set from the QoS
@@ -388,9 +387,6 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
     }
-    sub_impl->tickle_subscriber.reorder_storage = sub_impl->reorder_storage;
-    sub_impl->tickle_subscriber.reorder_slots = reorder_slots;
-    sub_impl->tickle_subscriber.reorder_slot_bytes = reorder_slot_bytes;
 
     // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Sized queue_capacity, same as
     // queue[] itself - the most shells that can ever be genuinely in flight at once.
@@ -446,6 +442,31 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
     }
+
+    // Caller-owned storage is attached AFTER tt_Node_create_subscriber(), never before.
+    //
+    // That function initialises the fields it owns, which includes setting reorder_storage back to
+    // NULL - so a buffer attached beforehand is silently discarded, and the Subscriber runs the
+    // no-buffer fallback while every pointer here still looks correct. Found by measurement rather
+    // than by reading: under 8% injected loss a RELIABLE subscription reported
+    // reorder_overflow=47195 with reorder_held_peak=0 - forty-seven thousand samples re-requested
+    // by a buffer that never held one - and receive throughput collapsed to a quarter.
+    //
+    // tracking_bitmaps moved with it. It happened to work where it was, because
+    // tt_Node_create_subscriber() does not zero that pair, but that is a property of core's
+    // current init list rather than a contract - and relying on which caller-owned fields core
+    // does and does not reset is exactly how this bug happened.
+    sub_impl->tickle_subscriber.tracking_bitmaps = sub_impl->tracking_bitmaps;
+    sub_impl->tickle_subscriber.tracking_words = RMW_TICKLE_TRACKING_WORDS;
+    sub_impl->tickle_subscriber.reorder_storage = sub_impl->reorder_storage;
+    sub_impl->tickle_subscriber.reorder_slots = reorder_slots;
+    sub_impl->tickle_subscriber.reorder_slot_bytes = reorder_slot_bytes;
+    // Stated once per subscription rather than left to be inferred from a counter that reads 0 for
+    // two different reasons. "reorder_held_peak=0" means either "nothing needed holding" or "this
+    // subscription has no buffer", and telling those apart from outside cost an experiment.
+    RCUTILS_LOG_DEBUG_NAMED("rmw_tickle", "subscription %s: reorder buffer %p, %u slots of %u bytes",
+                            sub_impl->rmw_subscription.topic_name, (void*)sub_impl->reorder_storage,
+                            (unsigned)reorder_slots, (unsigned)reorder_slot_bytes);
 
     // QoS roadmap #5 (RELIABILITY) - see tt_Subscriber.reliable's own doc comment (tickle.h).
     // Plain field access, no allocation needed (unlike the Publisher side's reliable_cache) -

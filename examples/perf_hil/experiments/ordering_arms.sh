@@ -38,7 +38,7 @@
 set -o pipefail
 
 WS="$HOME/rmw_perf_ws"; REPO=/home/semih/tickle-dev
-OUT="${OUT:-/tmp/ordering_arms}"     # outside any session scratchpad on purpose
+OUT="${OUT:-/tmp/ordering_final}"     # outside any session scratchpad on purpose
 DROP="${DROP:-8}"
 mkdir -p "$OUT"
 exec > >(tee -a "$OUT/run.log") 2>&1
@@ -53,14 +53,26 @@ run_arm() {
     local arm="$1" extra="$2" reliable="$3"
     echo "--- building arm $arm (CMAKE_C_FLAGS=$extra) ---"
     cd "$REPO" || return 1
+    # The build directory goes first, every arm. colcon did NOT recompile tickle.c when only its
+    # contents changed, so an arm can silently measure the previous arm's code.
+    rm -rf "$REPO/build/rmw_tickle" "$REPO/install/rmw_tickle"
     colcon build --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp \
         --cmake-args -DBUILD_SHARED_LIBS=ON "-DCMAKE_C_FLAGS=$extra" > "$OUT/build_$arm.log" 2>&1 \
         || { echo "arm $arm BUILD FAILED"; return 1; }
     # shellcheck disable=SC1091
     . "$REPO/install/setup.bash"
+    # Pin THIS checkout's rmw_tickle to the front, because sourcing it last is not enough.
+    # $RMW_PERF_WS/install/setup.bash carries baked-in prefixes from whoever built that workspace -
+    # here that is the CI runner at ~/actions-runner-perf/_work/tickle/tickle - and those land
+    # AHEAD of anything sourced afterwards. Four runs of this experiment measured a binary from
+    # 2026-09-23 while reporting on code written today, and the only clue was a log line whose
+    # wording was subtly the old one. Anyone running by hand out of this workspace has the same
+    # problem and no reason to suspect it.
+    export AMENT_PREFIX_PATH="$REPO/install/rmw_tickle:$AMENT_PREFIX_PATH"
+    export LD_LIBRARY_PATH="$REPO/install/rmw_tickle/lib:${LD_LIBRARY_PATH:-}"
     export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=127.255.255.255
     local pt="$WS/install/performance_test/lib/performance_test/perf_test"
-    local common=(-c ROS2 -t Array1k --max_runtime 15 --keep_last --history_depth 10)
+    local common=(-c ROS2 -t Array1k --max_runtime 15 --rate 0 --keep_last --history_depth 10)
     [ "$reliable" = "reliable" ] && common+=(--reliable)
     # -p/-s BEFORE --ros-args: perf_test flags after a bare --ros-args are parsed as ROS parameter
     # overrides and the node dies on "Couldn't parse parameter override rule".

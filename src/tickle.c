@@ -4300,11 +4300,13 @@ static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, st
     sub->reorder_overflow++;
     if (is_power_of_ten(sub->reorder_overflow)) {
         if (reorder_payload_capacity(sub) == 0) {
-            TT_LOG_WARNING("Subscriber %u is RELIABLE with no reorder buffer: sample %u arrived ahead of the gap at "
-                           "%u and will be requested again rather than held (occurrence #%u). Ordering is still "
-                           "correct; set reorder_storage/reorder_slots/reorder_slot_bytes to stop paying for it in "
+            TT_LOG_WARNING("Subscriber %u is RELIABLE with no usable reorder buffer (storage=%p slots=%u "
+                           "slot_bytes=%u): sample %u arrived ahead of the gap at %u and will be requested again "
+                           "rather than held (occurrence #%u). Ordering is still correct; set "
+                           "reorder_storage/reorder_slots/reorder_slot_bytes to stop paying for it in "
                            "retransmissions.",
-                           sub->endpoint.id, ctx->seq_no, proxy->ack_seq_no, sub->reorder_overflow);
+                           sub->endpoint.id, (const void*)sub->reorder_storage, (unsigned)sub->reorder_slots,
+                           (unsigned)sub->reorder_slot_bytes, ctx->seq_no, proxy->ack_seq_no, sub->reorder_overflow);
         } else {
             TT_LOG_WARNING("Subscriber %u reorder buffer full or too narrow for a %u-byte payload (%u slots of %u "
                            "bytes): sample %u will be requested again rather than held (occurrence #%u).",
@@ -4432,6 +4434,19 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // RELIABLE in-order delivery (2026-09-24). Ordering is now the reader's job, not the
     // application's: a sample ahead of an unfilled gap waits, and everything behind it waits with
     // it. That is head-of-line blocking by construction, which is what RELIABLE means.
+    //
+    // KNOWN GAP, measured rather than suspected: this does not make delivery totally ordered. A
+    // sample arriving BELOW the watermark is still delivered, and after a give-up path has moved
+    // the watermark past an abandoned gap that is a step backwards the application can see. Under
+    // 8% injected loss at maximum rate it happened 2493 times in 1.28M samples - with the reorder
+    // buffer working perfectly, 686192 samples held and released in order and zero overflows.
+    //
+    // It is not fixed by discarding below-watermark samples, which was tried and is wrong: after
+    // jump_ack_baseline() abandons a range, samples from that range are genuinely NEW - the
+    // watermark moved past them without delivering them - so discarding loses data the reader
+    // could have had, and tests/test_reliable_pubsub.c pins exactly that. Closing it properly
+    // needs a per-writer "highest actually delivered" separate from the ack watermark, because
+    // the two diverge precisely when a gap is abandoned.
     //
     // Whether this sample was in order is read off the watermark rather than tracked separately:
     // update_reliable_ack() advances ack_seq_no past this sample if and only if it was the next
