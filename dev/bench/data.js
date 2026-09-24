@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790238324496,
+  "lastUpdate": 1790238328877,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -109046,6 +109046,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 742250,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "e461e7f3bd5040b29489f864a24d2121898d4042",
+          "message": "Declining every cross-package nested type broke a supported case\n\ncfeb234a made the generator decline any nested type from another package. That\nwas too broad, and it has had check-all red since - `test_dispatch_nested` fails,\nbecause cross-package nested resolution is a real, tested, supported feature and\nthat commit removed it. Ten commits, mine and Plan's, went on top of a red gate\nneither of us looked at.\n\nI documented the over-breadth as a \"known limitation\" in cfeb234a, which was the\nwrong call twice over: it was not a limitation, it was a regression of something\nwith a test; and writing it down made it feel handled. A limitation nobody can\nhit is a footnote. One with a failing test is a bug.\n\nThe discriminator is available, just not where I was looking. A nested type from\nanother package is usable only if that package generated its own TickLE struct\nAND its own ROS adapter - the adapter is the half that gets forgotten, because\nhaving the struct is not the same as being able to convert the ROS C struct into\nit. From inside the generator std_msgs/Header and a sibling package's Leaf are\nindistinguishable: both are a .msg on the -I search path. CMake can tell them\napart, because a package that ran this extension exports a\n<pkg>::<pkg>__rosidl_typesupport_tickle_c target.\n\nSo CMake computes it and passes --typesupport-package, and the generator\ndeclines only what is not on that list. std_msgs still declines, with the same\nmessage; the sibling package resolves, as it did before cfeb234a.\n\nVerified at both ends rather than at one: the flag tested in both directions on\na synthetic package, and all five dispatch tests run against a real build -\ntest_dispatch_nested among them, which is the one that has been failing.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T17:14:48+09:00",
+          "tree_id": "6d1791609df58c51abe9f937e8428ff1799311a7",
+          "url": "https://github.com/tsnlab/tickle/commit/e461e7f3bd5040b29489f864a24d2121898d4042"
+        },
+        "date": 1790238327482,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 813566,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 774872,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 742839,
             "unit": "count"
           }
         ]
