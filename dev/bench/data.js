@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790234557774,
+  "lastUpdate": 1790234562003,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -119499,6 +119499,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/cfeb234a0d4a94c1d415186c962dc9ce84281874"
         },
         "date": 1790233859457,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "9747c1eab3dde93c5e2a619a08e69f48e7edf36a",
+          "message": "rmw_tickle gets a reorder buffer, sized by the bound rather than by a guess\n\nCore defaults reorder_storage to NULL because 11.8KB in every tt_Subscriber is\nnot a cost an embedded-first library can impose. rmw_tickle is the other case.\nWithout a buffer a RELIABLE Subscriber still delivers in order - it declines to\nrecord an out-of-order sample as received, so the ACKNACK exchange fetches it\nagain - but under real loss that turns one lost datagram into a re-request for\neverything behind it, and reliable receive throughput more than halved on the\nHIL rig the moment ordered delivery landed.\n\nThe size is derived, not chosen. The tracking window is exactly how far ahead of\nits oldest missing sample a Subscriber may get, so it is also the most it can\never have waiting at once: sizing to the window makes overflow impossible by\nconstruction rather than unlikely. That matters because nobody has measured what\na good smaller number would be, and a guessed constant that looks measured is\nworse than an honest bound - this project already carries\ntt_UNICAST_PEER_THRESHOLD = 2 as exactly that.\n\nPer-slot bytes come from the same two sources and in the same precedence as the\npublisher's own resolve_keep_all_record_bytes(): the generated per-type maximum\nwhen the generator could compute one, tt_MAX_BUFFER_LENGTH when it could not.\nThere is nothing a human knows about a bounded type that beats a computed bound\non it. Under-sizing is safe rather than merely tolerable - a payload too large\nfor the stride is treated exactly like a full buffer, so the sample is\nre-requested rather than lost, which costs throughput and is counted.\n\nRMW_TICKLE_REORDER_SLOTS trades that memory back for retransmissions, capped at\nthe bound because a larger value cannot help. Zero or unparseable falls back\nrather than failing subscription creation, the same reasoning the publisher's\nknobs use: a malformed tuning value should not stop a node starting. The trade\nis visible rather than silent - core counts reorder_overflow and logs when a\nbuffer proves too small, so capping this and then wondering why throughput fell\nis a question the logs answer.\n\nAllocated for every subscription rather than only RELIABLE ones: `reliable` is\nset from the QoS further down, and a buffer a BEST_EFFORT Subscriber never reads\ncosts memory and nothing else, where getting that order wrong would cost the\nbuffer exactly when it is needed.\n\nAlso in here: the generated decline reason now carries the argument that took\ntwo attempts to find - having the struct is not the same as being able to adapt\nit, because the ROS adapter needs the nested package's own typesupport header to\nconvert the ROS C struct. Without that sentence, someone will reasonably ask why\nTickLE declines a type it demonstrably has a definition for.\n\nNot yet verified behaviourally: the benchmark matrix runs BEST_EFFORT, so its\ncounters cannot show this path. A RELIABLE cell is queued behind the box lock.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T16:17:41+09:00",
+          "tree_id": "19953b15f135208a9fdaa00b9cb96d7f037a12b9",
+          "url": "https://github.com/tsnlab/tickle/commit/9747c1eab3dde93c5e2a619a08e69f48e7edf36a"
+        },
+        "date": 1790234560583,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
