@@ -2010,6 +2010,22 @@ Still open:
 - A user package configured before the interface workspace existed keeps `/opt/ros`'s interface
   packages in its CMake cache, so it must be reconfigured. This is a README note.
 
+**rmw entry points** (`f85f7e99`, TickLE Dev). A default node on jazzy logged 78 "failed to resolve
+symbol" lines for rmw functions rmw_tickle did not export, and now logs 0. CI's `-r` check fails on
+any such line. Most of these features are unsupported upstream as well: loans, content filters,
+network flow endpoints, dynamic messages, `get_serialized_message_size`. `rmw_set_log_severity` is
+implemented. **Real gaps, now stubbed with `RMW_RET_UNSUPPORTED`, that are for the user to
+scope:**
+- serialized messages, which rosbag2 and `ros2 topic echo --raw` need
+- the events executor's `set_on_new_*_callback` / `event_set_callback`
+- lyrical's `get_{clients,servers}_info_by_service`
+
+**Open:**
+- A C++ subscriber segfaulted once in the four-process `-r` shape: 1 in about 70 new-build runs.
+  A 50-run A/B against the previous build gave 0 in 25 on each side, so it is bounded but the cause
+  is unknown, and it may predate the change.
+- `check_ros2_interfaces.sh`'s own colcon build rewrites the caller's workspace underlay chain.
+
 The original design reading follows. **Actions, as first planned** (user decision 4). A first design reading by
 TickLE Plan (2026-09-24), from the jazzy sources of rosidl and rosidl_typesupport, not yet checked
 by building:
