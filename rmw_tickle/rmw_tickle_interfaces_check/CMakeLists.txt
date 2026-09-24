@@ -1,0 +1,27 @@
+cmake_minimum_required(VERSION 3.12)
+project(rmw_tickle_interfaces_check C)
+
+if(NOT CMAKE_C_STANDARD)
+  set(CMAKE_C_STANDARD 11)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(rmw REQUIRED)
+find_package(rmw_implementation REQUIRED)
+find_package(rcutils REQUIRED)
+find_package(rosidl_runtime_c REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
+
+# Talks to the rmw API directly rather than through rclcpp: an rclcpp node also starts services
+# (type description, parameters) whose interface packages would have to be built for TickLE too,
+# which is not what this checks. Links rmw_implementation, which loads whichever rmw RMW_IMPLEMENTATION
+# names at run time - check_ros2_interfaces.sh sets rmw_tickle and proves which library was loaded.
+add_executable(interfaces_check src/interfaces_check.c)
+target_link_libraries(interfaces_check
+  rmw::rmw rmw_implementation::rmw_implementation rcutils::rcutils rosidl_runtime_c::rosidl_runtime_c
+  ${std_msgs_TARGETS} ${builtin_interfaces_TARGETS})
+
+install(TARGETS interfaces_check DESTINATION lib/${PROJECT_NAME})
+
+ament_package()

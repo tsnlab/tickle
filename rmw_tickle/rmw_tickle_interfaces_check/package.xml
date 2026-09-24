@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rmw_tickle_interfaces_check</name>
+  <version>0.1.0</version>
+  <description>
+    Sends std_msgs/String and std_msgs/Header between two processes through rmw_tickle, using
+    interface packages built with rosidl_typesupport_tickle_c (rmw_tickle/scripts/
+    build_ros2_interfaces.sh). Run by rmw_tickle/scripts/check_ros2_interfaces.sh.
+  </description>
+  <maintainer email="semih@tsnlab.com">TSN Lab</maintainer>
+  <license>GPL-3.0-or-later</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rmw</depend>
+  <depend>rmw_implementation</depend>
+  <depend>rcutils</depend>
+  <depend>rosidl_runtime_c</depend>
+  <depend>std_msgs</depend>
+  <depend>builtin_interfaces</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

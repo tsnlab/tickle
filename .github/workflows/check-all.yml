@@ -255,8 +255,10 @@ jobs:
           # compile_commands.json entry too - before this, cpp-linter's own clang-tidy sub-check
           # had none for them at all and failed outright ('rclcpp/rclcpp.hpp' file not found), the
           # same class of gap examples/perf_hil's own files hit before commit 8a7e93b's fix.
+          # rmw_tickle_interfaces_check (P2's std_msgs round trip, run in its own step below) is here
+          # for the same reason: it links the installed std_msgs, so it builds without TickLE's.
           colcon build \
-            --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_perf_pingpong \
+            --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_perf_pingpong rmw_tickle_interfaces_check \
             --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=ON
           source install/setup.bash
           # rosidl_typesupport_tickle_c_tests_dep first (well, colcon topologically sorts this
@@ -289,6 +291,7 @@ jobs:
             build/rosidl_typesupport_tickle_c_tests_dep/compile_commands.json \
             build/rosidl_typesupport_tickle_c_tests/compile_commands.json \
             build/rmw_perf_pingpong/compile_commands.json \
+            build/rmw_tickle_interfaces_check/compile_commands.json \
             examples/perf_hil/cyclonedds/compile_commands.json \
             examples/perf_hil/fastdds/compile_commands.json > compile_commands.tmp
           mv compile_commands.tmp compile_commands.json
@@ -556,6 +559,22 @@ jobs:
           python3 .github/scripts/rmw_conformance_summary.py \
             test_ws/build/test_rmw_implementation/test_results >> "$GITHUB_STEP_SUMMARY"
           exit "$test_result_exit"
+
+      # P2 (rmw_tickle/PLAN.md, the user's decisions of 2026-09-24): standard ROS 2 message packages
+      # over rmw_tickle, built the way a user builds them - rmw_tickle/scripts/build_ros2_interfaces.sh
+      # clones builtin_interfaces and std_msgs at the versions this runner has installed and builds
+      # them with TickLE's typesupport and shipped capacity profile - then check_ros2_interfaces.sh
+      # sends std_msgs/String and std_msgs/Header between two processes and proves from
+      # /proc/PID/maps that rmw_tickle and that workspace's std_msgs typesupport are what loaded.
+      # This is the jazzy proof; the same scripts pass on the dev box's lyrical.
+      - name: Standard ROS 2 messages through rmw_tickle (std_msgs String and Header)
+        run: |
+          set +u
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          set -u
+          rmw_tickle/scripts/build_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" builtin_interfaces std_msgs
+          rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces"
 
       # Lint toolchain version, worth knowing before you debug a disagreement: tsnlab/check pins
       # cpp-linter-action to clang-format/clang-tidy 19 (actions/cpp/action.yml, version: '19').
