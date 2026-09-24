@@ -32,7 +32,25 @@ jobs:
           # instead (installed by "Set up ROS 2" below), nothing extra needed for it here.
           sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf fastddsgen
 
+      # Tried twice. setup-ros looks up the ros-apt-source release with an unauthenticated
+      # api.github.com call; when that call is rate-limited the version comes back empty and the
+      # .deb URL 404s. That failed the whole job on 2026-09-24 twice (d1f2fc04, 82089b2f) - both
+      # times before any of our own checks had run, so nothing was checked at all. The step is
+      # not ours to fix, so it is retried once after a pause instead; a second failure still
+      # fails the job.
       - name: Set up ROS 2 (for rmw_tickle)
+        id: setup_ros
+        continue-on-error: true
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: jazzy
+
+      - name: Wait before retrying ROS 2 setup
+        if: steps.setup_ros.outcome == 'failure'
+        run: sleep 60
+
+      - name: Set up ROS 2 (for rmw_tickle), retry
+        if: steps.setup_ros.outcome == 'failure'
         uses: ros-tooling/setup-ros@v0.7
         with:
           required-ros-distributions: jazzy
