@@ -1212,6 +1212,8 @@ static void reset_node_state(struct tt_Node* node) {
     node->rx_self_sent_data = 0;
     node->rx_self_sent_data_unicast = 0;
     node->rx_via_data_port = false;
+    node->rx_via_data_datagrams = 0;
+    node->rx_via_well_known_datagrams = 0;
 
     memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->tx_tail = sizeof(struct tt_Header);
@@ -5389,6 +5391,11 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
 static tt_ret_t process_datagram(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port) {
     node->rx_tail = (uint32_t)len;
     node->rx_datagrams++;
+    if (node->rx_via_data_port) {
+        node->rx_via_data_datagrams++;
+    } else {
+        node->rx_via_well_known_datagrams++;
+    }
 
     TT_LOG_DEBUG("Process packet from addr: %d.%d.%d.%d:%d len: %d", (ip >> 24) & 0xff, (ip >> 16) & 0xff,
                  (ip >> BITS_IN_1BYTE) & MASK_8BIT, (ip >> 0) & MASK_8BIT, port, len);
@@ -5631,14 +5638,36 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     // After the null check, not before it: the first version of this line dereferenced node to
     // print the counters and only then asked whether node was NULL.
     TT_LOG_INFO("Node %u traffic: tx_datagrams=%lu rx_datagrams=%lu rx_self_sent=%lu rx_self_sent_data=%lu "
-                "rx_self_sent_data_unicast=%lu",
+                "rx_self_sent_data_unicast=%lu rx_via_data=%lu rx_via_well_known=%lu",
                 node->id, (unsigned long)node->tx_datagrams, (unsigned long)node->rx_datagrams,
                 (unsigned long)node->rx_self_sent, (unsigned long)node->rx_self_sent_data,
-                (unsigned long)node->rx_self_sent_data_unicast);
+                (unsigned long)node->rx_self_sent_data_unicast, (unsigned long)node->rx_via_data_datagrams,
+                (unsigned long)node->rx_via_well_known_datagrams);
+    // Said out loud rather than left for a reader to derive, because the derivation is exactly the
+    // one nobody performs: a run that received on only one socket never interleaved them, so it
+    // cannot be read as evidence either way about interleaving reordering delivery. It reads
+    // identically to a run that interleaved and stayed in order.
+    if (node->rx_datagrams > 0 && (node->rx_via_data_datagrams == 0 || node->rx_via_well_known_datagrams == 0)) {
+        TT_LOG_WARNING("Node %u received on only one socket (%s) - this run did not interleave them, so its "
+                       "delivery-order counters are void for that question, not negative",
+                       node->id, node->rx_via_data_datagrams == 0 ? "well-known only" : "data only");
+    }
     uint64_t time = tt_get_ns();
 
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
+        // Reported per Subscriber alongside the node's own traffic line, because the throttled
+        // WARNINGs during the run undercount by design - they fire on the 1st, 10th, 100th ...
+        // occurrence. These are the complete numbers, and a run's conclusion should be read from
+        // them rather than from how many log lines appeared.
+        if (endpoint != NULL && endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+            struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
+            TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
+                        "writer_switches=%lu rxo_drops=%lu",
+                        endpoint->id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
+                        (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
+                        (unsigned long)sub->rxo_drops);
+        }
         node->endpoints[i] = NULL;
 
         if (endpoint == NULL) {

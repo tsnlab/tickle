@@ -199,6 +199,23 @@ struct tt_Node {
     // somebody else by construction, so receiving it back means the kernel handed a sender its own
     // stream - the same-host failure 82a6a02d fixed - and nothing else.
     uint64_t rx_self_sent_data_unicast;
+    // Of rx_datagrams, how many arrived on each of this node's two sockets. Not a refinement of
+    // the counters above - a precondition for reading them, and for reading the delivery-order
+    // counters on tt_Subscriber.
+    //
+    // Why (2026-09-24): the question those exist to answer is whether interleaving two sockets
+    // reorders delivery. A run in which one of these two is zero did not interleave anything, so
+    // it does not test that at all - and it reads exactly like a run that interleaved and stayed
+    // in order. Two arms of such runs would compare zero against zero and look like a fix. The
+    // same shape cost a packet capture on the same day: it was taken on an interface the broadcast
+    // half of the stream never touched, and contained zero broadcast datagrams, so "the wire was
+    // ordered" would have been concluded from a recording of half the wire.
+    //
+    // So these are the run's own statement about whether the experiment was live. A run with
+    // either at zero is void rather than negative, and must be said to be void rather than
+    // reported as evidence of anything.
+    uint64_t rx_via_data_datagrams;
+    uint64_t rx_via_well_known_datagrams;
 };
 
 struct tt_Endpoint {
