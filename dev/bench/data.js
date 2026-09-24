@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790216053867,
+  "lastUpdate": 1790216057812,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -116064,6 +116064,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/1e26797161833a1afe4ec49bec6bb75e68aa8103"
         },
         "date": 1790215054819,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "15d73793d1729998a807b917e4e8924506f8482e",
+          "message": "PLAN.md: state the limit, so four gates do not read as a solution\n\nNone of the gates added over these two days would have caught the pre-registration failure. A false\npremise written into a script before the run still looks like rigour afterwards: the script is\ninternally consistent and its output is exactly what its own stated rule predicts, so there is\nnothing for a gate to compare against.\n\nEvery one of the eight items was caught by the other session, and in each case the person who made\nit could not have seen it at the time - the thing that was wrong was the premise they were reasoning\nfrom. So these are the four things the review happened to find, made durable. The review is what\nfinds the next four.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T11:08:00+09:00",
+          "tree_id": "cbd47d8f85b4af0f150b0dfdd64c6d00d877f588",
+          "url": "https://github.com/tsnlab/tickle/commit/15d73793d1729998a807b917e4e8924506f8482e"
+        },
+        "date": 1790216056582,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
