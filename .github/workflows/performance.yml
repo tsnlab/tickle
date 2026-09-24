@@ -1,12 +1,27 @@
 name: Performance Test
 
+# Manual only (workflow_dispatch), by the user's decision of 2026-09-24: "HIL을 사용해서 성능 지표를
+# 뽑는 것은 어차피 comparison.md 문서를 만들 때도 수행하니 CI에서는 생략하도록 하자."
+#
+# Why it came off every push, measured rather than felt: in the ~6.5 hours after the self-hosted
+# runners were restarted that day, CI held the rig for 155 minutes across 34 jobs and the dev box
+# for 70 minutes across 36 - and 17 of the 34 rig jobs were cancelled by a newer push before they
+# finished, so half the rig time produced nothing at all while manual measurements queued behind
+# it. Performance figures are taken by hand on the rig for rmw_tickle/COMPARISON.MD anyway, and
+# the dev box is not used for performance at all (COMPARISON.MD section 5).
+#
+# What per-push CI no longer does, recorded so nobody discovers it the hard way:
+#   - HIL throughput/latency/QoS scenarios on the two rpis. These caught a 12x RELIABLE throughput
+#     regression within minutes on 2026-09-24; the equivalent evidence now comes from a manual
+#     rig sweep (examples/perf_hil/) before a result is written into COMPARISON.MD.
+#   - the gh-pages "TickLE HIL - ..." dashboard series, which now update only when this is run.
+# Hosted check-all/test-all still run on every push and cover correctness over real sockets
+# (netns two-node integration, same-host two-node, unit, sanitizers, header/lint/doc gates).
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
-# If a newer push lands on main while a run is still going, cancel the older one so
-# only the latest commit's run ever occupies the hardware.
+# If a second dispatch lands while a run is still going, cancel the older one so only one run
+# ever occupies the hardware.
 concurrency:
   group: perf-main
   cancel-in-progress: true

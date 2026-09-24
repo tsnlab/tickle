@@ -1,7 +1,9 @@
 # HIL (hardware-in-the-loop) runner setup
 
-[`run_perf.sh`](run_perf.sh) is what [`performance.yml`](../workflows/performance.yml) runs on
-every push to `main`: it builds and runs a real `ping`/`pong` (latency) and
+[`run_perf.sh`](run_perf.sh) is what [`performance.yml`](../workflows/performance.yml) runs **when
+dispatched by hand** - it no longer runs on every push to `main` (2026-09-24; half its runs were
+being cancelled by the next push while holding the rig, and performance figures are taken by hand
+for `rmw_tickle/COMPARISON.MD` anyway - see the note at the top of `performance.yml`). It builds and runs a real `ping`/`pong` (latency) and
 `perf_client`/`perf_server` (throughput) round trip across two dedicated Raspberry Pi boards
 connected by an Ethernet link, then hands the numbers to
 [`github-action-benchmark`](https://github.com/benchmark-action/github-action-benchmark) and

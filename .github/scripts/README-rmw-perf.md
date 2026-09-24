@@ -18,8 +18,9 @@ CycloneDDS both auto-negotiate one) over `rmw_tickle`, which only ever has real 
 regressions over time (still genuinely useful - it already caught two real wire-level bugs, see
 `rmw_tickle/PLAN.md`'s Milestone 12), not to produce an absolute "faster/slower than FastDDS/
 CycloneDDS" number - and it's *not* a real-target-network-medium measurement the way `tickle-hil`'s
-own numbers are either (see `rmw_tickle/PLAN.md`'s benchmark plan for the full reasoning). Runs on
-every push to `main` (plus `workflow_dispatch` for an on-demand run) - each run's own Actions
+own numbers are either (see `rmw_tickle/PLAN.md`'s benchmark plan for the full reasoning). Runs **only
+when dispatched by hand** (`workflow_dispatch`) since 2026-09-24 - not on push; see the note at the
+top of `rmw-perf.yml` for why, and for what per-push CI no longer covers as a result. Each run's own Actions
 summary page shows a Markdown table (`.github/scripts/rmw_perf_summary.py`, parsing
 `buildfarm_perf_tests`' own per-test `.benchmark.json` output), and the full raw CSV/PNG/JSON
 results are uploaded as a build artifact regardless.
@@ -35,8 +36,7 @@ packages against the workspace this doc sets up ahead of time.
   [Adding self-hosted runners](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/adding-self-hosted-runners)
   guide. Per `DESIGN.md`'s own "Security: no `pull_request` trigger, ever" rule (written for
   `tickle-hil` but stated as applying to *any* workflow using a self-hosted label on this public
-  repo) - `rmw-perf.yml` triggers on `push` (to `main` only) and `workflow_dispatch`, never
-  `pull_request`.
+  repo) - `rmw-perf.yml` triggers on `workflow_dispatch` only, never `pull_request`.
 - **A machine running Ubuntu**, with whichever ROS 2 distro packages.ros.org actually ships for
   *that exact* Ubuntu release - these are tied together (each ROS 2 distro officially targets one
   specific Ubuntu release; there's no single distro name that's "the" answer across every Ubuntu
