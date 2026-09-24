@@ -22,7 +22,10 @@ if [ -z "$TIDY" ]; then
     exit 1
 fi
 
-ROS_SETUP=$(ls /opt/ros/*/setup.bash 2>/dev/null | head -1)
+ROS_SETUP=""
+for candidate in /opt/ros/*/setup.bash; do
+    [ -f "$candidate" ] && ROS_SETUP="$candidate" && break
+done
 if [ -z "$ROS_SETUP" ]; then
     echo "lint-rmw: no ROS installation to build rmw_tickle's compile database - refusing to report a pass" >&2
     exit 1

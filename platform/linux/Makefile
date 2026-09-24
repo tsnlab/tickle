@@ -324,11 +324,11 @@ lint-shell:
 	 fi; \
 	 echo "lint-shell: $$sc ($$($$sc --version | sed -n 's/^version: //p'))"; \
 	 fail=0; \
-	 for f in $$(cd $(REPO_ROOT) && git ls-files '*.sh'); do \
+	 for f in $$(cd $(REPO_ROOT) && { git ls-files '*.sh'; git ls-files --others --exclude-standard '*.sh'; } | sort -u); do \
 	     case $$f in third_party/*|build/*|install/*) continue;; esac; \
 	     $$sc $(REPO_ROOT)/$$f || fail=1; \
 	 done; \
-	 [ $$fail = 0 ] && echo "lint-shell: every tracked shell script is clean"; \
+	 [ $$fail = 0 ] && echo "lint-shell: every shell script in the tree is clean (tracked and new)"; \
 	 exit $$fail
 
 lint:
