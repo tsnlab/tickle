@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790230266822,
+  "lastUpdate": 1790230270977,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -118249,6 +118249,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/d369e3b36235ed1e9f4d0932cc352a331ef29124"
         },
         "date": 1790227354888,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "7cc9fd4575e4bddddf6067e33124f6e7f0cdfbc2",
+          "message": "BEST_EFFORT discards a sample no newer than the last delivered\n\nTickLE delivered every sample in arrival order, which is a weaker guarantee\nthan any DDS implementation offers. A DDS BEST_EFFORT reader gives up on\nmissing samples but never hands the application one it has already moved past:\nthe application may see gaps, and may never see a sample twice or out of order.\nApplications written against DDS assert on that, and performance_test is one -\n\"Received sample with not strictly older timestamp\" is the assertion this\ninvestigation has been chasing for two days.\n\nThe user's decision is to follow the DDS policy rather than the assertion:\nBEST_EFFORT discards, RELIABLE waits and delivers in order. This is the first\nhalf. The second needs a bounded reorder buffer in a malloc-free codebase, a\ngive-up policy, and it introduces head-of-line blocking by construction, so it\nis a separate commit with a different risk profile.\n\nPer writer, not globally. seq_no counts per writer, so one watermark across all\nof them would discard a perfectly good sample because a different Publisher\nhappened to be further along. The WriterProxy table already holds exactly this\nidentity and is bounded by tt_MAX_PEER_COUNT, so this needs no new storage - it\njust stops being reliable-only.\n\nA Publisher that restarts resets its seq_no to 1 and would otherwise be\ndiscarded forever against a high watermark. It is not: a restarted Publisher\ncarries a new entity_id (Milestone 47) and claims a different proxy. That\nmilestone was written for cross-instance data mixing and turns out to be what\nmakes this safe.\n\nTwo behaviour changes worth stating rather than discovering later. A\nTRANSIENT_LOCAL backlog sample that loses a race against live data from the\nsame writer is now dropped instead of delivered late - the backlog goes out on\npeer discovery, before any live data from that writer, so the watermark starts\nclean and only a genuine race is affected. And out-of-order arrivals no longer\nreach record_delivery_order() by this path at all, so those counters now\nmeasure what ESCAPES the policy: zero in normal operation, and a defect rather\nthan a statistic when not.\n\nThe discard is counted, not silent. An application seeing a gap deserves to\ntell a discarded reorder from a sample that never arrived - the same reason\nCOMPARISON.MD reports raw and post-match loss as two columns.\n\nThe diagnostic test now calls record_delivery_order() directly instead of\ndriving it through process_data(). That is not convenience: the new policy\nstopped out-of-order samples reaching the recorder by that route, so the old\ntest silently stopped testing the recorder the moment the discard landed. It\nfailed loudly here only because it asserted exact counts.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T15:05:26+09:00",
+          "tree_id": "bb939eff0cca24aa9553e56269f351dee5bcfd3d",
+          "url": "https://github.com/tsnlab/tickle/commit/7cc9fd4575e4bddddf6067e33124f6e7f0cdfbc2"
+        },
+        "date": 1790230269714,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
