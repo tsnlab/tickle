@@ -198,13 +198,25 @@ little. depth=1024 at 1% is 0-0.00014% (was 0%), and at 5% it is 0.028-0.044% (w
 keeps its rate (88-96 Mbps) and pays in loss (2.7-24%). The DDS pair keeps 0 net loss by slowing to
 0.08-3 Mbps. §3b is the like-for-like comparison under KEEP_ALL.
 
-**Paced to ~8 Mbps** (the rate where all three can keep up) - not re-measured in the 2026-09-25 pass; from 2026-09-23:
+**Paced** - re-measured 2026-09-25 in one session at `9235ee21` (`paced_resweep.sh`, 3 reps per cell,
+interleaved). All three clients get `-i 0.000075`, which was meant as ~8 Mbps. The rig's timers
+deliver about 7-8k msg/s, so the actual rate is 4.0-4.7 Mbps at 0% for all three. That is lower
+than the label, but the same for everyone, which is what makes the table comparable. Cells read
+**net loss / refused / Mbps**, with TickLE at its default (KEEP_LAST, depth 64) and the DDS pair at
+their default `max_blocking_time`:
 
 | `tc` loss | TickLE (depth=64) | FastDDS | CycloneDDS |
 |---|---|---|---|
-| 1% | 0 / - / 8.1 | 0 / 0 / 6.3 | 0 / 0 / 7.1 (0.44% refused at `-B 1ms`) |
-| 5% | 0 / - / 8.1 | 0 / 0 / 6.4 | 0 / 0 / 1.7-2.1 (16-18% refused at `-B 1ms`) |
-| 20%/50% | not measured | 0 / 0 / 6.4 | 0 / 0 / 0.2 / 0.1 |
+| 0% | 0% / - / 4.72 | 0% / 0% / 4.06 | 0% / 0% / 4.41 |
+| 1% | 0% / - / 4.73 | 0% / 0% / 4.04 | 0% / 0% / 4.09-4.32 |
+| 5% | 0% / - / 4.73 | 0% / 0% / 4.03 | 0% / 0% / 1.55-1.89 |
+| 20% | 0.14-0.17% / - / 4.93 | 0% / 0% / 4.07 | 0% / 0% / 0.21-0.25 |
+| 50% | 6.2% / - / 5.07 (one rep timed out draining) | 0% / 0.32-0.54% / 0.62-0.93 (timeout) | 0% / 0% / 0.08-0.27 |
+
+At a rate all three can sustain, TickLE and FastDDS lose nothing through 5% and keep their rate.
+CycloneDDS already slows to about 40% of its rate at 5% injected loss. At 20% only FastDDS holds
+both zero loss and its rate. TickLE keeps its rate and loses 0.14-0.17%, because it is on KEEP_LAST;
+under KEEP_ALL (§3b) it loses nothing.
 
 **Reading**:
 
