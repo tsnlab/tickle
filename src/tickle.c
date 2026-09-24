@@ -4142,7 +4142,8 @@ struct data_delivery_ctx {
 // by RxO matching or by de-duplication was never seen by the application and cannot be what it
 // compared against.
 static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
-                                  uint8_t source, uint32_t entity_id) {
+                                  uint8_t source, uint32_t entity_id, bool via_data_port) {
+    (void)node; // the arrival socket is passed in, not read off the node - see tt_ReorderSlot.via_data_port
     bool first = (sub->delivered == 0);
     bool same_writer = !first && sub->last_source == source && sub->last_entity_id == entity_id;
     // seq_no counts per writer, so it means nothing across a switch of speaker.
@@ -4152,7 +4153,7 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
     if (!first && !same_writer) {
         sub->writer_switches++;
     }
-    if (!first && node->rx_via_data_port != sub->last_via_data_port) {
+    if (!first && via_data_port != sub->last_via_data_port) {
         sub->via_socket_flips++;
     }
     if (seq_back) {
@@ -4167,17 +4168,16 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
                        "%u from node %u entity %u ts %lu via %s (delivered #%u, out_of_order %u, "
                        "timestamp_not_newer %u, writer_switches %u)",
                        seq_no, sub->endpoint.id, source, entity_id, (unsigned long)timestamp,
-                       node->rx_via_data_port ? "data" : "well-known", sub->last_seq_no, sub->last_source,
-                       sub->last_entity_id, (unsigned long)sub->last_timestamp,
-                       sub->last_via_data_port ? "data" : "well-known", sub->delivered + 1, sub->out_of_order,
-                       sub->timestamp_not_newer, sub->writer_switches);
+                       via_data_port ? "data" : "well-known", sub->last_seq_no, sub->last_source, sub->last_entity_id,
+                       (unsigned long)sub->last_timestamp, sub->last_via_data_port ? "data" : "well-known",
+                       sub->delivered + 1, sub->out_of_order, sub->timestamp_not_newer, sub->writer_switches);
     }
 
     sub->last_seq_no = seq_no;
     sub->last_source = source;
     sub->last_entity_id = entity_id;
     sub->last_timestamp = timestamp;
-    sub->last_via_data_port = node->rx_via_data_port;
+    sub->last_via_data_port = via_data_port;
     sub->delivered++;
 }
 
@@ -4202,7 +4202,7 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
 // which a held sample is still eligible for because its bytes were copied verbatim.
 static void deliver_payload(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
                             uint8_t source, uint32_t entity_id, const uint8_t* payload, uint32_t length, bool is_native,
-                            bool* out_decode_failed) {
+                            bool via_data_port, bool* out_decode_failed) {
     struct tt_Topic* topic = sub->topic;
 
     // Zero-copy path: hand the callback a tt_Data* aliasing the payload directly, skipping the
@@ -4211,7 +4211,7 @@ static void deliver_payload(struct tt_Node* node, struct tt_Subscriber* sub, uin
     if (topic->data_decode_inplace != NULL) {
         struct tt_Data* inplace = topic->data_decode_inplace(payload, length, is_native);
         if (inplace != NULL) {
-            record_delivery_order(node, sub, seq_no, timestamp, source, entity_id);
+            record_delivery_order(node, sub, seq_no, timestamp, source, entity_id, via_data_port);
             sub->callback(sub, timestamp, (uint16_t)seq_no, inplace);
             return;
         }
@@ -4227,7 +4227,7 @@ static void deliver_payload(struct tt_Node* node, struct tt_Subscriber* sub, uin
         return;
     }
 
-    record_delivery_order(node, sub, seq_no, timestamp, source, entity_id);
+    record_delivery_order(node, sub, seq_no, timestamp, source, entity_id, via_data_port);
     sub->callback(sub, timestamp, (uint16_t)seq_no, (struct tt_Data*)data);
     topic->data_free((struct tt_Data*)data);
 }
@@ -4284,7 +4284,6 @@ static uint32_t reorder_payload_capacity(const struct tt_Subscriber* sub) {
 // is the one outcome a RELIABLE reader must never produce.
 static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              struct data_delivery_ctx* ctx, bool is_native) {
-    (void)node;
     uint32_t length = ctx->tail - ctx->head;
     uint32_t capacity = reorder_payload_capacity(sub);
 
@@ -4314,6 +4313,7 @@ static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, st
             slot->node_id = ctx->header->source;
             slot->length = (uint16_t)length;
             slot->is_native = is_native;
+            slot->via_data_port = node->rx_via_data_port;
             slot->occupied = true;
             memcpy(reorder_slot_payload(slot), ctx->buffer + ctx->head, length);
             sub->reorder_held++;
@@ -4385,7 +4385,7 @@ static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t 
 // between a sample that arrived in order and one released from the buffer.
 static void deliver_in_order(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
                              uint32_t seq_no, uint64_t timestamp, const uint8_t* payload, uint32_t length,
-                             bool is_native, bool* out_decode_failed) {
+                             bool is_native, bool via_data_port, bool* out_decode_failed) {
     if (proxy->highest_delivered != 0 && seq_no <= proxy->highest_delivered) {
         // A step backwards: the application already has something later from this writer. Only
         // reachable after a gap was abandoned and a sample from it turned up anyway.
@@ -4394,7 +4394,7 @@ static void deliver_in_order(struct tt_Node* node, struct tt_Subscriber* sub, st
     }
     proxy->highest_delivered = seq_no;
     deliver_payload(node, sub, seq_no, timestamp, proxy->node_id, proxy->entity_id, payload, length, is_native,
-                    out_decode_failed);
+                    via_data_port, out_decode_failed);
 }
 
 // Release, in sequence order, every held sample the watermark has passed - merged with the sample
@@ -4428,7 +4428,7 @@ static void drain_reorder_with(struct tt_Node* node, struct tt_Subscriber* sub, 
             if (!arriving_done && seq == arriving->seq_no) {
                 deliver_in_order(node, sub, proxy, arriving->seq_no, arriving->timestamp,
                                  arriving->buffer + arriving->head, arriving->tail - arriving->head, is_native,
-                                 &arriving->decode_failed);
+                                 node->rx_via_data_port, &arriving->decode_failed);
                 arriving_done = true;
                 continue;
             }
@@ -4441,12 +4441,12 @@ static void drain_reorder_with(struct tt_Node* node, struct tt_Subscriber* sub, 
             sub->reorder_held--;
             sub->reorder_delivered++;
             deliver_in_order(node, sub, proxy, slot->seq_no, slot->timestamp, reorder_slot_payload(slot), slot->length,
-                             slot->is_native, NULL);
+                             slot->is_native, slot->via_data_port, NULL);
         }
     }
     if (!arriving_done) {
         deliver_in_order(node, sub, proxy, arriving->seq_no, arriving->timestamp, arriving->buffer + arriving->head,
-                         arriving->tail - arriving->head, is_native, &arriving->decode_failed);
+                         arriving->tail - arriving->head, is_native, node->rx_via_data_port, &arriving->decode_failed);
     }
     proxy->reorder_cursor = ack;
 }
@@ -4545,12 +4545,14 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
         // No WriterProxy slot free, so no ordering state to honour: deliver as it came, which is
         // what this path did before ordering existed.
         deliver_payload(node, sub, ctx->seq_no, ctx->timestamp, ctx->header->source, ctx->entity_id,
-                        ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native, &ctx->decode_failed);
+                        ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native, node->rx_via_data_port,
+                        &ctx->decode_failed);
         return;
     }
 
     deliver_payload(node, sub, ctx->seq_no, ctx->timestamp, ctx->header->source, ctx->entity_id,
-                    ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native, &ctx->decode_failed);
+                    ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native, node->rx_via_data_port,
+                    &ctx->decode_failed);
 }
 
 static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,

@@ -1152,6 +1152,11 @@ struct tt_ReorderSlot {
     uint8_t node_id;
     bool occupied;
     bool is_native;
+    // Which socket the sample arrived on. Recorded here because by the time it is released the
+    // packet being processed is a different one - a later DATA, a Heartbeat, or none at all when
+    // the retry timer releases it - and attributing it to that trigger's socket made
+    // via_socket_flips count the trigger, not the stream.
+    bool via_data_port;
 };
 
 // Bytes one reorder slot needs for a payload of `payload_bytes`, rounded UP to a multiple of 8.

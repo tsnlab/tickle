@@ -2636,6 +2636,48 @@ static void test_heartbeat_jump_releases_what_it_passes(void) {
     EXPECT_EQ_U32(0, sub.reorder_held);
 }
 
+// A sample released from the reorder buffer is recorded against the socket it ARRIVED on, not the
+// socket of whatever packet happened to release it.
+//
+// via_socket_flips counts socket changes in the delivered stream, and it read the socket off the
+// node - which is the packet being processed right now. For a held sample that is a later DATA, a
+// Heartbeat, or nothing at all when the retry timer releases it. Once drains were added to the
+// heartbeat and give-up paths, a benchmark's flips jumped from 5 to 1462 with no change in the
+// traffic: the metric was counting its triggers. This pins the attribution to the arrival.
+static void test_released_sample_keeps_its_arrival_socket(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    node.rx_via_data_port = false; // 1 arrives on the well-known socket
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    node.rx_via_data_port = true; // 3 and 4 arrive on the data socket, ahead of the gap at 2
+    tail = write_data(&node, 3, 300, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 4, 400, 4);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    node.rx_via_data_port = false; // 2 fills the gap on the well-known socket, releasing 3 and 4
+    tail = write_data(&node, 2, 200, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // Delivered: 1 well-known, 2 well-known, 3 data, 4 data - one change of socket, between 2 and 3.
+    // Attributing 3 and 4 to the releasing packet's socket instead would read zero.
+    EXPECT_EQ_U32(4, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(1, sub.via_socket_flips);
+    EXPECT_TRUE(sub.last_via_data_port);
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -2666,6 +2708,7 @@ int main(void) {
     test_reorder_stays_inside_an_odd_sized_buffer();
     test_retry_giveup_releases_the_samples_it_absorbs();
     test_heartbeat_jump_releases_what_it_passes();
+    test_released_sample_keeps_its_arrival_socket();
     test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_silently();
     test_reliable_held_samples_precede_the_jump_that_releases_them();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
