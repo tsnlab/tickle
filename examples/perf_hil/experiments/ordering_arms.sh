@@ -82,6 +82,25 @@ run_arm() {
     local pub=$!
     TICKLE_NODE_ID=102 "$pt" "${common[@]}" -p 0 -s 1 "${rosargs[@]}" > "$OUT/${arm}_sub.log" 2>&1 &
     local sub=$!
+
+    # Assert which librmw_tickle.so the subscriber actually MAPPED, while it is still running.
+    #
+    # Pinning AMENT_PREFIX_PATH above is a request, not a guarantee, and this experiment has
+    # already produced four confident results from a library built the previous day. Sourcing
+    # order is an environment fact nobody here controls; what a process mapped is observable, and
+    # a run that measured the wrong binary has to say so rather than produce a number - the same
+    # rule as a run that received on only one socket being void rather than negative.
+    sleep 2
+    local mapped
+    mapped=$(grep -m1 -o '/[^ ]*librmw_tickle\.so' "/proc/$sub/maps" 2>/dev/null)
+    if [ -z "$mapped" ]; then
+        echo "  LIBRARY CHECK: could not read /proc/$sub/maps - treat this arm as VOID"
+    elif [ "$mapped" != "$REPO/install/rmw_tickle/lib/librmw_tickle.so" ]; then
+        echo "  ARM $arm IS VOID: mapped $mapped, expected $REPO/install/rmw_tickle/lib/librmw_tickle.so"
+    else
+        echo "  library check: $mapped"
+    fi
+
     wait $pub 2>/dev/null; wait $sub 2>/dev/null
     echo "=== ARM $arm ($reliable) ==="
     grep -E 'delivery:' "$OUT/${arm}_sub.log" | tail -1
