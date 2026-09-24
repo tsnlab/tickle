@@ -125,7 +125,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint clean fuzz sanitize
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint lint-shell clean fuzz sanitize
 
 all:
 	$(MAKE) library
@@ -309,6 +309,26 @@ headers-cpp:
 	     rm -f /tmp/tt_hdr_$$$$.c /tmp/tt_hdr_$$$$.cpp; \
 	 done; \
 	 [ $$fail = 0 ] && echo "headers-cpp: every public header compiles as C and as C++"; \
+	 exit $$fail
+
+# Shell scripts, the way CI checks them. Separate from `lint` because shellcheck may not be
+# installed - and refusing loudly is the point: a lint target that quietly skips a whole language
+# reports a pass for something it never asked about. That is how a shellcheck finding in a script
+# added today reached CI - `make lint` was clean, and `make lint` does not read shell.
+SHELLCHECK ?= shellcheck
+lint-shell:
+	@sc=$$(command -v $(SHELLCHECK) || true); \
+	 if [ -z "$$sc" ]; then \
+	     echo "lint-shell: cannot resolve $(SHELLCHECK) - refusing to report a pass" >&2; \
+	     exit 1; \
+	 fi; \
+	 echo "lint-shell: $$sc ($$($$sc --version | sed -n 's/^version: //p'))"; \
+	 fail=0; \
+	 for f in $$(cd $(REPO_ROOT) && git ls-files '*.sh'); do \
+	     case $$f in third_party/*|build/*|install/*) continue;; esac; \
+	     $$sc $(REPO_ROOT)/$$f || fail=1; \
+	 done; \
+	 [ $$fail = 0 ] && echo "lint-shell: every tracked shell script is clean"; \
 	 exit $$fail
 
 lint:

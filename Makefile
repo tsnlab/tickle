@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas lint clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas lint lint-shell clean test-linux test-freertos test-all \
         install uninstall fuzz sanitize regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize:
@@ -43,6 +43,9 @@ uninstall:
 # see platform/linux/test.sh's own comment). Needs passwordless sudo for `ip`; the no-privilege
 # tier is `make test` (unit tests). Named for the platform under test, not the mechanism -
 # `test-<platform>` always runs platform/<platform>/test.sh.
+lint-shell:
+	$(MAKE) -C platform/linux lint-shell
+
 check-doc-shas:
 	./.github/scripts/check_doc_shas.sh
 

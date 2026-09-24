@@ -39,6 +39,8 @@ for doc in "${DOCS[@]}"; do
     #     and a check that fails on the record of what it found is not much of a check. A line
     #     carrying the marker below opts out, which is explicit and greppable, unlike inferring it
     #     from the prose around it.
+    # shellcheck disable=SC2016 # the backtick in the pattern below is a literal character being
+    # matched by grep, not a command substitution - single quotes are what keeps it literal.
     while IFS= read -r candidate; do
         sha="${candidate//\`/}"
         if grep -n -- "$sha" "$doc" | grep -q 'doc-shas-ignore'; then
