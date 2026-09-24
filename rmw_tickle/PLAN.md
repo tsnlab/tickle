@@ -1928,8 +1928,10 @@ on `261f39b8`. TickLE Dev showed that both were the harness:
   `PRE_CLIENT_SLEEP=0`. Both callers passed 3 s, which is longer than every pause, so the
   Subscriber existed before the first sample.
 - On loopback at stagger 0, every commit loses what the pause should cost.
-- Fixed in `a5f41b46`. The 2026-09-20 TickLE lifespan figures were probably taken under the same
-  stagger, so COMPARISON.MD no longer keeps them.
+- Fixed in `a5f41b46`. Re-measured at stagger 0: lost 21 / 54 / 77 at pause 1.0 / 1.5 / 2.0. The
+  slope matches the publish rate, and the ~18-sample offset from CycloneDDS is the TickLE client's
+  ~0.36 s SSH launch gap. The 2026-09-20 figures (28 / 43 / 79) agree with this, so they were
+  valid: taken before `432b854e` introduced the 3 s stagger on 2026-09-22.
 
 This was the second harness timing artifact of the night read as a core result, after the latency
 servers' missing +15 s. **Method change:** before trusting a scenario's number, check from the
