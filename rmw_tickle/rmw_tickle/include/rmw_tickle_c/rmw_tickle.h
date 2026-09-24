@@ -309,6 +309,10 @@ struct rmw_tickle_node_t {
 // scoped), never actually filtered by which logical node a caller happened to reach it through.
 size_t rmw_tickle_count_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t kind);
 
+// rmw_context_fini()'s guard against nodes nobody destroyed (rmw_node.c): stops the shared TickLE
+// node if any are still registered, and returns how many were.
+int rmw_tickle_stop_leaked_nodes(rmw_tickle_context_impl_t* context_impl);
+
 // count_matching_locked()'s own tombstone counterpart (rmw_graph.c) - how many Publishers/
 // Subscriptions on this topic are currently known but presumed dead (struct tt_DiscoveredEntity.
 // alive's own doc comment, tickle.h), not the "currently active" count rmw_tickle_count_matching_

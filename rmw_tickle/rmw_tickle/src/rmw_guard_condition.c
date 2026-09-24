@@ -19,6 +19,7 @@
 #include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"

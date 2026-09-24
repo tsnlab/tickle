@@ -382,6 +382,24 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     pthread_mutex_destroy(&context_impl->node_mutex);
 }
 
+// For rmw_context_fini(): stops the shared TickLE node if nodes are still registered on this
+// context, and returns how many were. rmw requires every node to be destroyed before its context is
+// finalized, and rclcpp does not always manage it - a Node constructor that throws after
+// rcl_node_init() succeeded (a default Node over a missing typesupport fails creating /rosout
+// exactly there) never finalizes its rcl node. The context was then freed with poll_thread still
+// running inside it, which crashed the process on its way out. The leaked nodes' own memory stays
+// with whoever leaked them; what stops here is everything that would otherwise keep running.
+int rmw_tickle_stop_leaked_nodes(rmw_tickle_context_impl_t* context_impl) {
+    pthread_mutex_lock(&context_impl->registry_mutex);
+    int leaked = atomic_load(&context_impl->node_count);
+    if (leaked > 0) {
+        stop_shared_tickle_node(context_impl);
+        atomic_store(&context_impl->node_count, 0);
+    }
+    pthread_mutex_unlock(&context_impl->registry_mutex);
+    return leaked;
+}
+
 // Milestone 34 - registry_mutex must already be held. Appends node_impl to context_impl->nodes[],
 // growing the allocator-owned array (doubling, starting from a small initial capacity) if needed.
 // Returns false (RMW_SET_ERROR_MSG already set) only on allocation failure.

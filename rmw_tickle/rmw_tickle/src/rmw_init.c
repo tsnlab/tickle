@@ -17,6 +17,7 @@
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
+#include "rcutils/logging_macros.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/init.h"             // rmw_context_t, rmw_context_impl_t
@@ -317,6 +318,13 @@ rmw_ret_t rmw_context_fini(rmw_context_t* const context) {
     // on - so this just frees whatever allocation nodes[] itself still holds (the array, not its
     // now-empty contents), not a defensive walk-and-destroy of anything still registered.
     rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)context->impl;
+    int leaked = rmw_tickle_stop_leaked_nodes(impl);
+    if (leaked > 0) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "context finalized with %d node(s) never destroyed; stopped the TickLE node they "
+                               "shared so nothing runs on a freed context",
+                               leaked);
+    }
     if (impl->nodes != NULL) {
         impl->allocator.deallocate((void*)impl->nodes, impl->allocator.state);
     }
