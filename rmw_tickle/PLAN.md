@@ -1846,7 +1846,12 @@ Two fixes:
   MTU-sized parts. Old receivers skip the unknown type (`tickle.c`, "Unknown submessage type"), so
   they see a large node exactly as they do today and never as a silently partial entity list. The
   rejected options were a `tt_VERSION` bump and part fields inside UPDATE; with the latter, old
-  receivers would take part 1 as the complete list.
+  receivers would take part 1 as the complete list. Landed in `82089b2f` as submessage type 7, UPDATE_PART (spec in DESIGN.md,
+  "Discovery announce in parts"), with `tests/test_update_parts.c` covering 120 endpoints, every
+  datagram ≤ 1472 and matching only on the last part. Its control removes type-7 dispatch, as old
+  firmware lacks it, and shows the receiver skipping the parts. **Release-notes item:** a node on
+  older firmware logs "Unknown submessage type 7, skipping" once per part per announce interval for
+  every large node on its segment. It is harmless, but noisy on an MCU console.
 
 **Next assignment after this one: ROS 2 actions** (user decision 4). `rosidl_typesupport_tickle_c`
 generates no `.action` today (jazzy has 3 among the scanned packages: example_interfaces Fibonacci,
