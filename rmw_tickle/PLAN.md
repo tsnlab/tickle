@@ -1826,6 +1826,25 @@ records. N caps only a single sample.
 - Build order: uint16 audit, then N plumbing, then publisher/reorder sizing, then server/client
   storage, and the rmw default flipped last.
 
+**Found on the way: a node with many endpoints went permanently silent, at today's N = 1472**
+(TickLE Dev, whitebox experiment on core, 2026-09-24). With ROS-sized names an UPDATE entity is
+about 91 B:
+- At 16 endpoints the discovery UPDATE is 1476 B. `flush_tx()` refused it without clearing
+  `tx_buffer`, so every later send, DATA included, failed forever.
+- At 40 endpoints the node never announced at all.
+- rmw shares one `tt_Node` per context, and a default `rclcpp::Node` has about 9 endpoints, so two
+  default nodes in one process were enough.
+
+Two fixes:
+- **A (robustness, done first):** an unsendable flush is dropped, logged and counted, and the
+  buffer is reset.
+- **B (multi-part discovery)** is a wire-protocol change. The user chose "(나)": keep the existing
+  single UPDATE whenever it fits, and only otherwise send a *new* submessage type split into
+  MTU-sized parts. Old receivers skip the unknown type (`tickle.c`, "Unknown submessage type"), so
+  they see a large node exactly as they do today and never as a silently partial entity list. The
+  rejected options were a `tt_VERSION` bump and part fields inside UPDATE; with the latter, old
+  receivers would take part 1 as the complete list.
+
 **Next assignment after this one: ROS 2 actions** (user decision 4). `rosidl_typesupport_tickle_c`
 generates no `.action` today (jazzy has 3 among the scanned packages: example_interfaces Fibonacci,
 tf2_msgs LookupTransform and test_msgs NestedMessage). An action is goal, result and feedback
