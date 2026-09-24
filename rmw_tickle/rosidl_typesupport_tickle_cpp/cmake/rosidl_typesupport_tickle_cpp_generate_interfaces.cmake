@@ -58,12 +58,11 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   get_filename_component(_parent_folder "${_parent_folder}" NAME)
   get_filename_component(_idl_name "${_abs_idl_file}" NAME_WE)
 
-  if("${_parent_folder}" STREQUAL "msg")
-    set(_src_relpath "msg/${_idl_name}.msg")
-  elseif("${_parent_folder}" STREQUAL "srv")
-    set(_src_relpath "srv/${_idl_name}.srv")
+  if("${_parent_folder}" STREQUAL "msg" OR "${_parent_folder}" STREQUAL "srv" OR
+     "${_parent_folder}" STREQUAL "action")
+    set(_src_relpath "${_parent_folder}/${_idl_name}.${_parent_folder}")
   else()
-    continue() # .action - never supported (see rmw_client.c/rmw_service.c)
+    continue()
   endif()
   set(_src_file "")
   foreach(_non_idl_tuple ${_non_idl_tuples})
@@ -91,29 +90,42 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   set(SUBFOLDER "${_parent_folder}")
   set(_msg_output_dir "${_output_path}/${_parent_folder}")
 
+  # The same interfaces rosidl_typesupport_tickle_c generated for this file (ros2_cli.py's
+  # _interfaces_of()): a .msg is one message; a .srv one service, whose Request and Response are
+  # ordinary messages to rosidl_generator_c; a .action four messages and two services, the
+  # implicit interfaces rosidl derives from it - all of them under the action's one header.
   if("${_parent_folder}" STREQUAL "msg")
-    set(IDL_NAME "${_idl_name}")
-    set(_out_cpp "${_msg_output_dir}/${HEADER_NAME}__type_support.cpp")
+    set(_tickle_messages "${_idl_name}")
+    set(_tickle_services "")
+  elseif("${_parent_folder}" STREQUAL "srv")
+    set(_tickle_messages "")
+    set(_tickle_services "${_idl_name}")
+  else()
+    set(_tickle_messages
+      "${_idl_name}_Goal" "${_idl_name}_Result" "${_idl_name}_Feedback" "${_idl_name}_FeedbackMessage")
+    set(_tickle_services "${_idl_name}_SendGoal" "${_idl_name}_GetResult")
+  endif()
+  set(_tickle_message_type_names ${_tickle_messages})
+  foreach(_tickle_service ${_tickle_services})
+    list(APPEND _tickle_message_type_names "${_tickle_service}_Request" "${_tickle_service}_Response")
+  endforeach()
+
+  # A message-level shim (resource/msg__type_support.cpp.in) and the C++ converters for every
+  # message, a service's halves included.
+  foreach(_tickle_message ${_tickle_message_type_names})
+    set(IDL_NAME "${_tickle_message}")
+    set(_out_cpp "${_msg_output_dir}/${_tickle_message}__type_support.cpp")
     configure_file("${_msg_template_file}" "${_out_cpp}" @ONLY)
     list(APPEND _generated_sources "${_out_cpp}"
-      "${_tickle_c_output_path}/msg/${PROJECT_NAME}__msg__${_idl_name}__rosidl_typesupport_tickle_cpp.cpp")
-  else() # srv - one message-level shim each for _Request/_Response (rosidl_generator_c emits an
-         # ordinary message struct for each - see rosidl_typesupport_tickle_c's own analogous
-         # comment), reusing the exact same msg template, plus one service-level shim tying them
-         # together (resource/srv__type_support.cpp.in).
-    foreach(_part "Request" "Response")
-      set(IDL_NAME "${_idl_name}_${_part}")
-      set(_out_cpp "${_msg_output_dir}/${HEADER_NAME}_${_part}__type_support.cpp")
-      configure_file("${_msg_template_file}" "${_out_cpp}" @ONLY)
-      list(APPEND _generated_sources "${_out_cpp}"
-        "${_tickle_c_output_path}/srv/${PROJECT_NAME}__srv__${_idl_name}_${_part}__rosidl_typesupport_tickle_cpp.cpp")
-    endforeach()
-
-    set(IDL_NAME "${_idl_name}")
-    set(_out_cpp "${_msg_output_dir}/${HEADER_NAME}__type_support.cpp")
+      "${_tickle_c_output_path}/${_parent_folder}/${PROJECT_NAME}__${_parent_folder}__${_tickle_message}__rosidl_typesupport_tickle_cpp.cpp")
+  endforeach()
+  # A service-level shim tying each service's halves together (resource/srv__type_support.cpp.in).
+  foreach(_tickle_service ${_tickle_services})
+    set(IDL_NAME "${_tickle_service}")
+    set(_out_cpp "${_msg_output_dir}/${_tickle_service}__srv_type_support.cpp")
     configure_file("${_srv_template_file}" "${_out_cpp}" @ONLY)
     list(APPEND _generated_sources "${_out_cpp}")
-  endif()
+  endforeach()
 endforeach()
 
 # See rosidl_typesupport_tickle_c_generate_interfaces.cmake's own comment on why this is an if()
@@ -152,7 +164,10 @@ if(_generated_sources)
     rosidl_runtime_c::rosidl_runtime_c
     rosidl_typesupport_interface::rosidl_typesupport_interface)
   # A nested field from another package is converted by that package's own C++ converters.
-  foreach(_dep_pkg_name ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
+  # _tickle_dependency_packages: rosidl_typesupport_tickle_c's extension, which ran just before in
+  # this scope, computed it - the declared dependencies plus what an action's implicit interfaces
+  # nest (unique_identifier_msgs, builtin_interfaces).
+  foreach(_dep_pkg_name ${_tickle_dependency_packages})
     if(${_dep_pkg_name}_TARGETS${_target_suffix})
       target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
         ${${_dep_pkg_name}_TARGETS${_target_suffix}})

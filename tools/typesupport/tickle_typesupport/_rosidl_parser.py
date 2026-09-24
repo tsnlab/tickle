@@ -152,6 +152,12 @@ def is_valid_message_name(name):
             ACTION_GOAL_SERVICE_SUFFIX,
             ACTION_RESULT_SERVICE_SUFFIX,
             ACTION_FEEDBACK_MESSAGE_SUFFIX,
+            # TickLE addition: the wrappers rosidl derives from an action (its IDL path, which this
+            # .msg parser does not have) - rosidl_typesupport_tickle_c parses them as .msg/.srv
+            # text, and "<A>_SendGoal_Request" must validate like "<A>_Request" does.
+            '_SendGoal',
+            '_GetResult',
+            '_FeedbackMessage',
         ]
         for suffix in suffixes:
             if name.endswith(suffix):

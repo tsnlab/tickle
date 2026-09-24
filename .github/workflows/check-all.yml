@@ -584,6 +584,11 @@ jobs:
           # std_msgs/UInt8MultiArray and sensor_msgs/JointState as C++ messages intact alongside
           # String and Header (rclcpp's messages go through the C++ converters, ros2_cpp_adapter.py).
           rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -r
+          # A ROS 2 action (user decision 4): example_interfaces/action/Fibonacci between an
+          # rclcpp_action server and client, default nodes - the implicit interfaces
+          # rosidl_typesupport_tickle_c generates for a .action, the TRANSIENT_LOCAL status topic,
+          # and a GetResult answered only once the goal finishes.
+          rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -A
           # Its control: the same node over a workspace with only std_msgs built for TickLE must not
           # start - and must fail for that reason (rclcpp refusing, for want of rcl_interfaces), not
           # some other one, or the pass above is not showing what it seems to.

@@ -31,6 +31,7 @@ set(_generated_sources "")
 # would always be false even on a package that only ever generates one of the two.
 set(_tickle_has_msg FALSE)
 set(_tickle_has_srv FALSE)
+set(_tickle_has_action FALSE)
 
 # Cross-package nested message resolution (rmw_tickle/PLAN.md's own Milestone for this): for
 # ros2_cli.py's own -I search convention (DIR/<pkg>/msg/<Name>.msg - resolve.py's
@@ -43,7 +44,33 @@ set(_tickle_has_srv FALSE)
 # <pkg>/msg/Something in the first place). Deliberately package-by-package, not one shared
 # workspace-wide root: two dependencies can come from two different install prefixes.
 set(_tickle_dep_include_dirs "")
-foreach(_dep_pkg_name ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
+# The interface packages this one's types may nest: its declared dependencies, and - when it has an
+# action - unique_identifier_msgs and builtin_interfaces, which an action's implicit interfaces nest
+# (the goal id is a unique_identifier_msgs/UUID, SendGoal's stamp a builtin_interfaces/Time) but
+# which rosidl reaches only through action_msgs, not as a dependency of this package. Without them
+# every action was declined as nesting a package without TickLE typesupport.
+# rosidl_typesupport_tickle_cpp's extension, which runs next in this same scope, uses this list too.
+set(_tickle_dependency_packages ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
+set(_tickle_package_has_action FALSE)
+foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
+  get_filename_component(_tickle_idl_dir "${_abs_idl_file}" DIRECTORY)
+  get_filename_component(_tickle_idl_dir "${_tickle_idl_dir}" NAME)
+  if("${_tickle_idl_dir}" STREQUAL "action")
+    set(_tickle_package_has_action TRUE)
+  endif()
+endforeach()
+if(_tickle_package_has_action)
+  foreach(_tickle_action_dep "unique_identifier_msgs" "builtin_interfaces")
+    if(NOT "${_tickle_action_dep}" IN_LIST _tickle_dependency_packages)
+      find_package(${_tickle_action_dep} QUIET)
+      if(${_tickle_action_dep}_FOUND)
+        list(APPEND _tickle_dependency_packages "${_tickle_action_dep}")
+      endif()
+    endif()
+  endforeach()
+endif()
+
+foreach(_dep_pkg_name ${_tickle_dependency_packages})
   if(DEFINED ${_dep_pkg_name}_DIR)
     get_filename_component(_tickle_dep_share_root "${${_dep_pkg_name}_DIR}/../.." ABSOLUTE)
     list(APPEND _tickle_dep_include_dirs "${_tickle_dep_share_root}")
@@ -71,7 +98,7 @@ endforeach()
 # the safe-looking direction is what broke `test_dispatch_nested`: declining every cross-package
 # nested type made a supported, tested case fail for ten commits.
 set(_tickle_generated_pkg_args "")
-foreach(_dep_pkg_name ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
+foreach(_dep_pkg_name ${_tickle_dependency_packages})
   if(TARGET ${_dep_pkg_name}::${_dep_pkg_name}__rosidl_typesupport_tickle_c)
     list(APPEND _tickle_generated_pkg_args "--typesupport-package" "${_dep_pkg_name}")
   endif()
@@ -129,7 +156,8 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   # regardless of which package it actually lives in.
   set(_src_relpath "${_parent_folder}/${_idl_name}.${_parent_folder}")
   set(_src_file "")
-  if("${_parent_folder}" STREQUAL "msg" OR "${_parent_folder}" STREQUAL "srv")
+  if("${_parent_folder}" STREQUAL "msg" OR "${_parent_folder}" STREQUAL "srv" OR
+     "${_parent_folder}" STREQUAL "action")
     foreach(_non_idl_tuple ${_non_idl_tuples})
       string(REGEX REPLACE "^.*:" "" _non_idl_relpath "${_non_idl_tuple}")
       if("${_non_idl_relpath}" STREQUAL "${_src_relpath}")
@@ -141,34 +169,40 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
 
   if("${_src_file}" STREQUAL "" OR NOT EXISTS "${_src_file}")
     message(WARNING
-      "rosidl_typesupport_tickle_c: skipping '${_abs_idl_file}' - only .msg/.srv are supported "
+      "rosidl_typesupport_tickle_c: skipping '${_abs_idl_file}' - only .msg/.srv/.action are supported "
       "(rmw_tickle/PLAN.md's Milestone 1)")
     continue()
   endif()
 
   set(_msg_output_dir "${_output_path}/${_parent_folder}")
-  set(_ros_name "${PROJECT_NAME}__${_parent_folder}__${_idl_name}")
-  # Milestone 56 (rmw_tickle/PLAN.md): a same-package .msg and .srv can share one base name (real,
-  # found via test_msgs' own BasicTypes.msg + BasicTypes.srv) - ros2_cli.py's own generate() writes
-  # a .srv's own TickLE-side file as "<name>_srv.h/.c", not the bare "<name>.h/.c" a .msg gets,
-  # specifically so the two can never collide under a real compile unit's own same-directory-first
-  # quoted-include search (both msg/ and srv/ sit on one target's -I list at once). This OUTPUT
-  # declaration has to name the exact same file ros2_cli.py actually writes, or `add_custom_command`
-  # itself fails outright ("No such file or directory") - not just a lint/style mismatch.
-  if("${_parent_folder}" STREQUAL "srv")
-    set(_tickle_file_stem "${_idl_name}_srv")
-  else()
-    set(_tickle_file_stem "${_idl_name}")
-  endif()
-  set(_out_h "${_msg_output_dir}/${_tickle_file_stem}.h")
-  set(_out_c "${_msg_output_dir}/${_tickle_file_stem}.c")
 
-  set(_outputs "${_out_h}" "${_out_c}")
-  set(_sources "${_out_c}")
-
+  # What the generator writes for this interface - ros2_cli.py's _interface_files(), which this
+  # must match file for file (a declared output the generator does not write fails the build).
+  # A .msg is one message, a .srv one service, and a .action four messages and two services:
+  # the implicit interfaces rosidl derives from it, which its action type support dispatch asks
+  # every typesupport for.
   if("${_parent_folder}" STREQUAL "msg")
     set(_tickle_has_msg TRUE)
+    set(_tickle_messages "${_idl_name}")
+    set(_tickle_services "")
+  elseif("${_parent_folder}" STREQUAL "srv")
+    set(_tickle_has_srv TRUE)
+    set(_tickle_messages "")
+    set(_tickle_services "${_idl_name}")
+  else()
+    set(_tickle_has_action TRUE)
+    set(_tickle_messages
+      "${_idl_name}_Goal" "${_idl_name}_Result" "${_idl_name}_Feedback" "${_idl_name}_FeedbackMessage")
+    set(_tickle_services "${_idl_name}_SendGoal" "${_idl_name}_GetResult")
+  endif()
+
+  set(_outputs "")
+  set(_sources "")
+  foreach(_tickle_message ${_tickle_messages})
+    set(_ros_name "${PROJECT_NAME}__${_parent_folder}__${_tickle_message}")
     list(APPEND _outputs
+      "${_msg_output_dir}/${_tickle_message}.h"
+      "${_msg_output_dir}/${_tickle_message}.c"
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.h"
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.c"
       "${_msg_output_dir}/${_ros_name}__type_support.c"
@@ -177,12 +211,23 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_cpp.hpp"
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_cpp.cpp")
     list(APPEND _sources
+      "${_msg_output_dir}/${_tickle_message}.c"
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.c"
       "${_msg_output_dir}/${_ros_name}__type_support.c")
-  else() # srv - one adapter+type_support pair each for _Request and _Response, plus one more
-         # type_support.c tying them together into the rosidl_service_type_support_t itself -
-         # see ros2_cli.py's own module docstring for the full per-.srv output list.
-    set(_tickle_has_srv TRUE)
+  endforeach()
+  foreach(_tickle_service ${_tickle_services})
+    # "<name>_srv" for TickLE's own codec - not a bare "<name>", which a same-package .msg of the
+    # same name (test_msgs' BasicTypes.msg and .srv) would collide with on one target's include
+    # path (Milestone 56) - an adapter, type support and C++ converters per side, and the
+    # service-level type support.
+    set(_ros_name "${PROJECT_NAME}__${_parent_folder}__${_tickle_service}")
+    list(APPEND _outputs
+      "${_msg_output_dir}/${_tickle_service}_srv.h"
+      "${_msg_output_dir}/${_tickle_service}_srv.c"
+      "${_msg_output_dir}/${_ros_name}__type_support.c")
+    list(APPEND _sources
+      "${_msg_output_dir}/${_tickle_service}_srv.c"
+      "${_msg_output_dir}/${_ros_name}__type_support.c")
     foreach(_part "Request" "Response")
       list(APPEND _outputs
         "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.h"
@@ -194,9 +239,7 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
         "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.c"
         "${_msg_output_dir}/${_ros_name}_${_part}__type_support.c")
     endforeach()
-    list(APPEND _outputs "${_msg_output_dir}/${_ros_name}__type_support.c")
-    list(APPEND _sources "${_msg_output_dir}/${_ros_name}__type_support.c")
-  endif()
+  endforeach()
 
   add_custom_command(
     OUTPUT ${_outputs}
@@ -289,6 +332,11 @@ if(_generated_sources)
       "$<BUILD_INTERFACE:${_output_path}/srv>"
       "$<INSTALL_INTERFACE:include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv>")
   endif()
+  if(_tickle_has_action)
+    list(APPEND _tickle_public_include_dirs
+      "$<BUILD_INTERFACE:${_output_path}/action>"
+      "$<INSTALL_INTERFACE:include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/action>")
+  endif()
   if(_tickle_public_include_dirs)
     target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
       ${_tickle_public_include_dirs})
@@ -320,7 +368,7 @@ if(_generated_sources)
   # dependency that never used rosidl_typesupport_tickle_c at all leaves it unset, silently
   # contributing nothing - correct, not an error, since nothing here could reference a nested type
   # from a package that was never itself given TickLE typesupport.
-  foreach(_dep_pkg_name ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
+  foreach(_dep_pkg_name ${_tickle_dependency_packages})
     if(${_dep_pkg_name}_TARGETS${_target_suffix})
       target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
         ${${_dep_pkg_name}_TARGETS${_target_suffix}})
@@ -359,6 +407,11 @@ if(_generated_sources)
     if(_tickle_has_srv)
       install(DIRECTORY "${_output_path}/srv/"
         DESTINATION "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv"
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+    endif()
+    if(_tickle_has_action)
+      install(DIRECTORY "${_output_path}/action/"
+        DESTINATION "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/action"
         FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
     endif()
     # Found the hard way, in real CI, by rosidl_typesupport_tickle_c_tests_dep (a real package

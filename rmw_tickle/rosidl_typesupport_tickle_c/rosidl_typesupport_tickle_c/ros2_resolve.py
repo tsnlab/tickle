@@ -78,6 +78,14 @@ class Ros2Resolver:
         self.typesupport_packages = set(typesupport_packages)
         self.resolved_structs = {}
         self._builtin_fallback = Resolver(include_dirs, builtins.BUILTINS)
+        # An action's own implicit messages (<A>_Goal, <A>_Result, <A>_Feedback), which the
+        # wrappers derived from the same .action nest: {type name: .msg text}. They live under
+        # "action", not "msg", so they are found here rather than as sibling files -
+        # add_action_local() (ros2_cli.py's action path) registers them.
+        self._action_local = {}
+
+    def add_action_local(self, type_name, text):
+        self._action_local[type_name] = text
 
     def _find_independent_source(self, pkg_name, msg_name):
         if pkg_name == self.package_name:
@@ -118,6 +126,14 @@ class Ros2Resolver:
         if pkg_name != self.package_name and pkg_name not in self.typesupport_packages:
             raise UnsupportedNestedPackage(pkg_name, msg_name)
 
+        if pkg_name == self.package_name and msg_name in self._action_local:
+            spec = rosidl.parse_message_string(pkg_name, msg_name, self._action_local[msg_name])
+            struct = adapt_struct_fn(f"{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name, "action"))
+            struct.header_name = f"{msg_name}.h"
+            struct.origin = (pkg_name, "action", msg_name)
+            self.resolved_structs[key] = struct
+            return struct
+
         text = self._find_independent_source(pkg_name, msg_name)
 
         if text is None:
@@ -131,14 +147,14 @@ class Ros2Resolver:
         spec = rosidl.parse_message_string(pkg_name, msg_name, text)
         struct = adapt_struct_fn(f"{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name))
         struct.header_name = f"{msg_name}.h"
-        struct.origin = key
+        struct.origin = (pkg_name, "msg", msg_name)
         self.resolved_structs[key] = struct
         return struct
 
-    def _capacities_for(self, pkg_name, msg_name):
+    def _capacities_for(self, pkg_name, msg_name, subfolder="msg"):
         if pkg_name not in self._capacity_tables:
             self._capacity_tables[pkg_name] = capacity_file.find_installed(pkg_name, self.include_dirs)
-        return capacity_file.for_message(self._capacity_tables[pkg_name], msg_name)
+        return capacity_file.for_message(self._capacity_tables[pkg_name], msg_name, subfolder)
 
     def in_discovery_order(self):
         """Only ever the builtin_fallback's own resolutions - see this class's own doc comment

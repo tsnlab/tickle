@@ -111,6 +111,59 @@ def _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir):
     return written
 
 
+# The implicit interfaces rosidl derives from a .action, and that its type support dispatch asks
+# every typesupport for (rosidl_typesupport_c's action__type_support.c.em): four messages and two
+# services, all under the "action" subfolder.
+ACTION_MESSAGES = ("Goal", "Result", "Feedback", "FeedbackMessage")
+ACTION_SERVICES = ("SendGoal", "GetResult")
+# Bytes an action's Goal/Result/Feedback leave free when their capacities are auto-derived, for the
+# wrapper each is also sent inside: a 16-byte goal id (SendGoal request, FeedbackMessage) or an
+# int8 status (GetResult response), plus alignment. Generous rather than exact - a few bytes of one
+# array's capacity, against a wrapper that could never be sent.
+ACTION_WRAPPER_RESERVE = 64
+
+
+def _interfaces_of(subfolder, name):
+    """(messages, services) generated for one .msg/.srv/.action, by type name."""
+    if subfolder == "msg":
+        return [name], []
+    if subfolder == "srv":
+        return [], [name]
+    return [f"{name}_{m}" for m in ACTION_MESSAGES], [f"{name}_{s}" for s in ACTION_SERVICES]
+
+
+def _interface_files(package, subfolder, name):
+    """(every file generate() writes for this interface, the ROS names of its messages).
+
+    rosidl_typesupport_tickle_c_generate_interfaces.cmake declares the same set by the same rule,
+    and must: a file CMake expects and the generator does not write fails the build. Per message
+    M: TickLE's codec M.{h,c} (a .srv's own is "<name>_srv"), the C adapter, its type support, and
+    the C++ converters. Per service: the codec, both halves' adapters and C++ converters, and the
+    service-level type support."""
+    messages, services = _interfaces_of(subfolder, name)
+    filenames = []
+    message_names = []
+
+    def message_files(ros_name):
+        message_names.append(ros_name)
+        return [
+            f"{ros_name}__rosidl_typesupport_tickle_c.h",
+            f"{ros_name}__rosidl_typesupport_tickle_c.c",
+            f"{ros_name}__type_support.c",
+            f"{ros_name}__rosidl_typesupport_tickle_cpp.hpp",
+            f"{ros_name}__rosidl_typesupport_tickle_cpp.cpp",
+        ]
+
+    for message in messages:
+        filenames += [f"{message}.h", f"{message}.c"] + message_files(f"{package}__{subfolder}__{message}")
+    for service in services:
+        ros_service_name = f"{package}__{subfolder}__{service}"
+        filenames += [f"{service}_srv.h", f"{service}_srv.c", f"{ros_service_name}__type_support.c"]
+        for part in ("Request", "Response"):
+            filenames += message_files(f"{ros_service_name}_{part}")
+    return filenames, message_names
+
+
 def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
     """Writes the files CMake expects for a message TickLE cannot generate, carrying the reason.
 
@@ -125,31 +178,8 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
     past and the generated header is what somebody opens when they want to know why their message
     does not work.
     """
+    filenames, message_names = _interface_files(package, subfolder, name)
     ros_name = f"{package}__{subfolder}__{name}"
-    if subfolder == "srv":
-        # The file set rosidl_typesupport_tickle_c_generate_interfaces.cmake declares for a .srv:
-        # "<name>_srv" for TickLE's own codec (see generate()'s Milestone 56 note), an adapter and
-        # type_support per side, and the service-level type_support tying them together.
-        filenames = [f"{name}_srv.h", f"{name}_srv.c"]
-        message_names = [f"{ros_name}_Request", f"{ros_name}_Response"]
-        for part in ("Request", "Response"):
-            filenames += [
-                f"{ros_name}_{part}__rosidl_typesupport_tickle_c.h",
-                f"{ros_name}_{part}__rosidl_typesupport_tickle_c.c",
-                f"{ros_name}_{part}__type_support.c",
-                f"{ros_name}_{part}__rosidl_typesupport_tickle_cpp.cpp",
-            ]
-        filenames.append(f"{ros_name}__type_support.c")
-    else:
-        filenames = [
-            f"{name}.h",
-            f"{name}.c",
-            f"{ros_name}__rosidl_typesupport_tickle_c.h",
-            f"{ros_name}__rosidl_typesupport_tickle_c.c",
-            f"{ros_name}__type_support.c",
-            f"{ros_name}__rosidl_typesupport_tickle_cpp.cpp",
-        ]
-        message_names = [ros_name]
     banner = (
         f"// TickLE has no typesupport for {package}/{subfolder}/{name}.\n"
         f"//\n"
@@ -163,17 +193,14 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
     )
     # A typedef rather than nothing at all: an empty translation unit is not valid ISO C.
     marker = f"typedef int {ros_name}__tickle_unsupported_t;\n"
+    # A C++ header says so in a form rosidl_typesupport_tickle_cpp's type support wrapper can test:
+    # it then hands rclcpp no handle at all, instead of one that calls C converters which were
+    # never generated.
+    cpp_headers = {f"{m}__rosidl_typesupport_tickle_cpp.hpp": m for m in message_names}
     written = []
     for filename in filenames:
-        written.append(_write_text(outdir, filename, banner + marker, source_label, fmt_dir))
-    # The C++ header says so in a form rosidl_typesupport_tickle_cpp's type support wrapper can
-    # test: it then hands rclcpp no handle at all, instead of one that calls C converters which
-    # were never generated.
-    for message_name in message_names:
-        cpp_marker = f"#define {message_name}__TICKLE_UNSUPPORTED 1\n"
-        written.append(
-            _write_text(outdir, f"{message_name}__rosidl_typesupport_tickle_cpp.hpp", banner + cpp_marker, source_label, fmt_dir)
-        )
+        body = f"#define {cpp_headers[filename]}__TICKLE_UNSUPPORTED 1\n" if filename in cpp_headers else marker
+        written.append(_write_text(outdir, filename, banner + body, source_label, fmt_dir))
     print(f"{source_label}: DECLINED - {reason}", file=sys.stderr)
     return written
 
@@ -203,6 +230,104 @@ def _field_reason(error):
         f"(tools/typesupport/tickle_typesupport/capacities.py); a field that no capacity can fix, such as "
         f"a wstring, keeps the type unsupported."
     )
+
+
+def _action_texts(name, text):
+    """The .msg/.srv text of each implicit interface rosidl derives from an action: its own goal,
+    result and feedback, and the wrappers rcl_action sends them in (rosidl_parser's action
+    definition - the same fields, names and order rosidl_generator_c gives the ROS structs, which
+    the adapters convert field by field). Split on the separator exactly as the vendored
+    parse_action_string() does, which is called first to reject a malformed file."""
+    lines = text.splitlines()
+    separators = [i for i, line in enumerate(lines) if line == rosidl.ACTION_REQUEST_RESPONSE_SEPARATOR]
+    goal = "\n".join(lines[: separators[0]]) + "\n"
+    result = "\n".join(lines[separators[0] + 1 : separators[1]]) + "\n"
+    feedback = "\n".join(lines[separators[1] + 1 :]) + "\n"
+    messages = {
+        f"{name}_Goal": goal,
+        f"{name}_Result": result,
+        f"{name}_Feedback": feedback,
+        f"{name}_FeedbackMessage": f"unique_identifier_msgs/UUID goal_id\n{name}_Feedback feedback\n",
+    }
+    services = {
+        f"{name}_SendGoal": (
+            f"unique_identifier_msgs/UUID goal_id\n{name}_Goal goal\n---\nbool accepted\nbuiltin_interfaces/Time stamp\n"
+        ),
+        f"{name}_GetResult": f"unique_identifier_msgs/UUID goal_id\n---\nint8 status\n{name}_Result result\n",
+    }
+    return messages, services
+
+
+def _generate_action(package, name, text, resolver, table, source_label, outdir, fmt_dir):
+    """A .action: its four implicit messages and two implicit services, each generated as an
+    ordinary message or service under the "action" subfolder. rmw needs nothing more - there is no
+    action API in rmw; rcl_action builds an action from these services and topics, and
+    rosidl_typesupport_c assembles the action type support from the dispatch symbols this emits.
+    Declined as a whole if any part cannot be represented: half an action is no action."""
+    rosidl.parse_action_string(package, name, text)
+    messages, services = _action_texts(name, text)
+    for message_name, message_text in messages.items():
+        # The wrappers nest the action's own messages; these are where the resolver finds them.
+        resolver.add_action_local(message_name, message_text)
+    try:
+        # Every place an action's message is adapted - top level here, nested inside a wrapper by
+        # the resolver - is inside this block, so they agree on its capacities.
+        with model.reserving_for_wrapper(ACTION_WRAPPER_RESERVE):
+            message_irs = [
+                (
+                    message_name,
+                    adapt.adapt_message(
+                        message_name,
+                        rosidl.parse_message_string(package, message_name, message_text),
+                        resolver,
+                        capacity_file.for_message(table, message_name, "action"),
+                    ),
+                )
+                for message_name, message_text in messages.items()
+            ]
+            service_irs = []
+            for service_name, service_text in services.items():
+                spec = rosidl.parse_service_string(package, service_name, service_text)
+                request_capacities, response_capacities = capacity_file.for_service(
+                    table, service_name, {f.name for f in spec.request.fields}, {f.name for f in spec.response.fields}
+                )
+                service_irs.append(
+                    (
+                        service_name,
+                        adapt.adapt_service(f"{service_name}_srv", spec, resolver, request_capacities, response_capacities),
+                    )
+                )
+    except ros2_resolve.UnsupportedNestedPackage as unsupported:
+        return _decline(package, "action", name, outdir, source_label, fmt_dir, _nested_package_reason(unsupported))
+    except adapt.UnsupportedFieldError as error:
+        return _decline(package, "action", name, outdir, source_label, fmt_dir, _field_reason(error))
+
+    written = []
+    for message_name, ir in message_irs:
+        header, source = render.render_topic(ir)
+        written += cli._write_generated(message_name, header, source, source_label, outdir, fmt_dir)
+        written += _generate_message_typesupport(
+            ir.data, f"{package}__action__{message_name}", f"{message_name}.h", source_label, outdir, fmt_dir
+        )
+    for service_name, ir in service_irs:
+        header, source = render.render_service(ir)
+        written += cli._write_generated(f"{service_name}_srv", header, source, source_label, outdir, fmt_dir)
+        ros_service_name = f"{package}__action__{service_name}"
+        for part, struct in (("Request", ir.request), ("Response", ir.response)):
+            written += _generate_message_typesupport(
+                struct, f"{ros_service_name}_{part}", f"{service_name}_srv.h", source_label, outdir, fmt_dir
+            )
+        written.append(
+            _write_text(
+                outdir,
+                f"{ros_service_name}__type_support.c",
+                ros2_adapter.render_service_type_support(ros_service_name),
+                source_label,
+                fmt_dir,
+            )
+        )
+    written += _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir)
+    return written
 
 
 def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, include_dirs=(),
@@ -294,7 +419,10 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
         written += _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir)
         return written
 
-    raise SystemExit(f"{input_path}: rosidl_typesupport_tickle_c only supports .msg/.srv, not .{subfolder}")
+    if subfolder == "action":
+        return _generate_action(package, name, text, resolver, table, source_label, outdir, fmt_dir)
+
+    raise SystemExit(f"{input_path}: rosidl_typesupport_tickle_c only supports .msg/.srv/.action, not .{subfolder}")
 
 
 def main(argv=None):

@@ -45,8 +45,8 @@ def cpp_namespace(ros_name):
 
 
 def _nested_call(f, direction, ros_expr, tickle_expr):
-    pkg, type_name = f.nested.origin
-    namespace = f"::{pkg}::msg::rosidl_typesupport_tickle_cpp"
+    pkg, subfolder, _type_name = f.nested.origin
+    namespace = f"::{pkg}::{subfolder}::rosidl_typesupport_tickle_cpp"
     if direction == "to":
         return f"if (!{namespace}::to_tickle({ros_expr}, {tickle_expr})) {{ return false; }}"
     return f"if (!{namespace}::from_tickle({tickle_expr}, {ros_expr})) {{ return false; }}"
@@ -136,8 +136,8 @@ def _nested_cpp_adapter_headers(struct):
     names = set()
     for f in struct.fields:
         if f.kind == "nested" or (f.kind == "array" and f.array_element_kind == "nested"):
-            pkg, type_name = f.nested.origin
-            names.add(f"{pkg}__msg__{type_name}__rosidl_typesupport_tickle_cpp.hpp")
+            pkg, subfolder, type_name = f.nested.origin
+            names.add(f"{pkg}__{subfolder}__{type_name}__rosidl_typesupport_tickle_cpp.hpp")
     return sorted(names)
 
 

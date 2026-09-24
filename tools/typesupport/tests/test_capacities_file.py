@@ -88,8 +88,9 @@ def test_parse_reads_rows_and_ignores_extra_columns():
     "text, message",
     [
         ("other_msgs/msg/Foo data 4\n", "for package 'other_msgs'"),
-        (f"{PKG}/Foo data 4\n", "is not <pkg>/<msg|srv>/<Type>"),
-        (f"{PKG}/action/Foo data 4\n", "is not <pkg>/<msg|srv>/<Type>"),
+        (f"{PKG}/Foo data 4\n", "is not <pkg>/<msg|srv|action>/<Type>"),
+        # "action" is a subfolder now (an action's Goal/Result/Feedback); anything else still is not.
+        (f"{PKG}/idl/Foo data 4\n", "is not <pkg>/<msg|srv|action>/<Type>"),
         (f"{PKG}/msg/Foo data\n", "expected"),
         (f"{PKG}/msg/Foo data four\n", "not a whole number"),
         (f"{PKG}/msg/Foo data 0\n", "at least 1"),

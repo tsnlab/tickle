@@ -17,7 +17,7 @@ user can shadow the one TickLE ships.
 
 Format, one row per field, tab or space separated, `#` starts a comment:
 
-    <pkg>/<msg|srv>/<Type>   <field>   <N>   [free text...]
+    <pkg>/<msg|srv|action>/<Type>   <field>   <N>   [free text...]
 
 For a service, <Type> is the service name when the field name is unique across its request and
 response, or `<Name>_Request` / `<Name>_Response` to say which. Columns after N are ignored, so
@@ -57,11 +57,11 @@ def parse(text, package, source="<capacities>"):
         cols = line.split()
         where = f"{source}:{lineno}"
         if len(cols) < 3:
-            raise CapacityError(f"{where}: expected '<pkg>/<msg|srv>/<Type> <field> <N>', got {raw!r}")
+            raise CapacityError(f"{where}: expected '<pkg>/<msg|srv|action>/<Type> <field> <N>', got {raw!r}")
         iface, field, count = cols[0], cols[1], cols[2]
         parts = iface.split("/")
-        if len(parts) != 3 or parts[1] not in ("msg", "srv"):
-            raise CapacityError(f"{where}: '{iface}' is not <pkg>/<msg|srv>/<Type>")
+        if len(parts) != 3 or parts[1] not in ("msg", "srv", "action"):
+            raise CapacityError(f"{where}: '{iface}' is not <pkg>/<msg|srv|action>/<Type>")
         pkg, subfolder, type_name = parts
         if pkg != package:
             raise CapacityError(f"{where}: row is for package '{pkg}', but this file is for '{package}'")
@@ -101,17 +101,20 @@ def check_types_exist(table, package_root):
     root = pathlib.Path(package_root)
     for subfolder, type_name in table:
         base = type_name
-        if subfolder == "srv":
-            for suffix in ("_Request", "_Response"):
-                if base.endswith(suffix) and not (root / "srv" / f"{base}.srv").is_file():
+        if subfolder in ("srv", "action"):
+            suffixes = ("_Request", "_Response") if subfolder == "srv" else ("_Goal", "_Result", "_Feedback")
+            for suffix in suffixes:
+                if base.endswith(suffix) and not (root / subfolder / f"{base}.{subfolder}").is_file():
                     base = base[: -len(suffix)]
                     break
         if not (root / subfolder / f"{base}.{subfolder}").is_file():
             raise CapacityError(f"capacity row names {subfolder}/{type_name}, which is not in {root}")
 
 
-def for_message(table, name):
-    return dict(table.get(("msg", name), {}))
+def for_message(table, name, subfolder="msg"):
+    """subfolder "action": one of an action's messages, named as rosidl names it - <A>_Goal,
+    <A>_Result or <A>_Feedback."""
+    return dict(table.get((subfolder, name), {}))
 
 
 def for_service(table, name, request_fields, response_fields):

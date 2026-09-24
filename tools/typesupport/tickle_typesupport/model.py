@@ -19,6 +19,7 @@ can just delegate to the nested WireStruct's own first field / overall size: not
 nested field's position in its parent needs new alignment or padding rules of its own.
 """
 
+import contextlib
 from dataclasses import dataclass, field
 
 # TickLE CDR-4 (DESIGN.md, "Interface serialization"): each primitive is aligned to
@@ -89,6 +90,32 @@ def set_max_buffer_length(value):
             f"most {TT_IPV4_UDP_MAX_PAYLOAD}, the largest IPv4 UDP payload (config.h asserts the same)"
         )
     _max_buffer_length = value
+
+
+_auto_capacity_reserve = 0
+
+
+def auto_capacity_reserve():
+    """Bytes auto-derivation leaves unused at the end of the datagram, beyond FRAMING_OVERHEAD."""
+    return _auto_capacity_reserve
+
+
+@contextlib.contextmanager
+def reserving_for_wrapper(reserve):
+    """Auto-derived capacities within this block leave `reserve` bytes of the datagram free.
+
+    For a type that is also sent nested inside a wrapper with fields of its own - a ROS 2
+    action's Goal inside its SendGoal request, behind a 16-byte goal id - an array sized to fill the
+    datagram by itself would leave the wrapper unable to fit. Only the capacities change: every
+    place the type is adapted must be inside the same block, or they would disagree on its layout.
+    """
+    global _auto_capacity_reserve  # noqa: PLW0603 - scoped to this block, restored below
+    previous = _auto_capacity_reserve
+    _auto_capacity_reserve = reserve
+    try:
+        yield
+    finally:
+        _auto_capacity_reserve = previous
 # Smallest framing overhead any submessage carrying a payload has (a CALLREQUEST/CALLRESPONSE
 # payload starts at offset 16, DATA's at 28 - see DESIGN.md's "Interface serialization") - used
 # only as auto-capacity's safety margin, so an auto-derived array still leaves room for framing
@@ -257,10 +284,12 @@ class WireStruct:
     # The two below are set only on a struct a resolver produced for someone else's nested field,
     # never on a top-level interface adapt_message()/adapt_service() built.
     #
-    # origin: the (package, type) the nested field's `.msg` reference named - `std_msgs/Header`
-    # gives ("std_msgs", "Header"). It is the type's identity in TickLE's own IDL, kept because
-    # c_name does not always encode it: a resolver chooses its own naming convention.
-    origin: tuple[str, str] | None = None
+    # origin: the full name of the interface the nested field's reference resolved to, as
+    # (package, subfolder, type) - `std_msgs/Header` gives ("std_msgs", "msg", "Header"). It is the
+    # type's identity in TickLE's own IDL, kept because c_name does not always encode it: a resolver
+    # chooses its own naming convention. The subfolder is "msg" except for an interface a resolver
+    # derives itself - an action's own implicit messages are ("<pkg>", "action", "<Action>_Goal").
+    origin: tuple[str, str, str] | None = None
     # header_name: the file an `#include` for this struct names. None means "<c_name>.h", which is
     # what resolve.Resolver writes (render_nested()); a resolver that reuses a struct generated
     # under another file name (rmw_tickle's Ros2Resolver) sets it.

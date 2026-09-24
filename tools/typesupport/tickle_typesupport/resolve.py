@@ -82,7 +82,7 @@ class Resolver:
             return self.resolved_structs[key]
         spec = self.resolve_spec(pkg_name, msg_name)
         struct = adapt_struct_fn(f"{pkg_name}__{msg_name}", spec, self)
-        struct.origin = key
+        struct.origin = (pkg_name, "msg", msg_name)
         self.resolved_structs[key] = struct
         self._resolve_order.append(key)
         return struct

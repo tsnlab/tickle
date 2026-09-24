@@ -21,6 +21,9 @@
   <depend>builtin_interfaces</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
+  <!-- Optional (CMakeLists.txt): only action_check needs them. -->
+  <build_depend>rclcpp_action</build_depend>
+  <build_depend>example_interfaces</build_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

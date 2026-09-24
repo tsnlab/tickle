@@ -191,8 +191,19 @@ package_dir() {
     return 0
 }
 
-# The interface packages the package.xml in directory $1 depends on, one per line.
+# The interface packages rosidl makes every interface package use without its package.xml saying
+# so (rosidl_default_generators brings them in): builtin_interfaces and service_msgs always, and for
+# an action, action_msgs and unique_identifier_msgs too - its implicit interfaces nest a
+# unique_identifier_msgs/UUID goal id and a builtin_interfaces/Time. example_interfaces declares none
+# of them, and was built against the installed copies, which have no TickLE typesupport.
+IMPLICIT=(builtin_interfaces service_msgs unique_identifier_msgs action_msgs)
+
+# The interface packages the package.xml in directory $1 depends on, one per line - declared, and
+# the implicit ones above an action needs.
 interface_deps_of() {
+    if compgen -G "$1/action/*.action" >/dev/null; then
+        printf '%s\n' action_msgs unique_identifier_msgs builtin_interfaces
+    fi
     sed -n 's:.*<\(depend\|build_depend\|build_export_depend\|exec_depend\)>\([^<]*\)</.*:\2:p' "$1/package.xml" |
         while read -r dep; do
             [ -z "$(repo_of "$dep")" ] || echo "$dep"
@@ -233,8 +244,30 @@ override=()
 if colcon build --help 2>/dev/null | grep -q -- --allow-overriding; then
     override=(--allow-overriding "${PACKAGES[@]}")
 fi
-colcon build --base-paths "$SRC" --build-base "$WORKSPACE/build" --install-base "$WORKSPACE/install" \
-    "${override[@]}" --packages-select "${PACKAGES[@]}" --cmake-args -DBUILD_SHARED_LIBS=ON
+build() {
+    colcon build --base-paths "$SRC" --build-base "$WORKSPACE/build" --install-base "$WORKSPACE/install" \
+        "${override[@]}" --packages-select "$@" --cmake-args -DBUILD_SHARED_LIBS=ON
+}
+use_workspace() {
+    if [ -f "$WORKSPACE/install/setup.bash" ]; then
+        set +u
+        # shellcheck disable=SC1091
+        . "$WORKSPACE/install/setup.bash"
+        set -u
+    fi
+}
+# Two passes, because colcon orders packages and exposes each one's dependencies only by what
+# package.xml declares, and the implicit ones above are not declared: the first pass builds them,
+# and the second, with this workspace sourced, finds them here rather than in the ROS 2 install.
+first=()
+rest=()
+for pkg in "${PACKAGES[@]}"; do
+    case " ${IMPLICIT[*]} " in *" $pkg "*) first+=("$pkg") ;; *) rest+=("$pkg") ;; esac
+done
+use_workspace
+[ ${#first[@]} = 0 ] || build "${first[@]}"
+use_workspace
+[ ${#rest[@]} = 0 ] || build "${rest[@]}"
 
 # Proof, not assumption: each package now has TickLE's typesupport libraries - the C one rmw_tickle
 # reads, and the C++ one rclcpp reaches it through (rosidl_typesupport_tickle_cpp delegates to C).

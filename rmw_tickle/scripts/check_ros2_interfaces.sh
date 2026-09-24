@@ -17,16 +17,23 @@
 # publisher's own maps show rmw_tickle and the workspace's type_description_interfaces TickLE
 # typesupport. Against a workspace without those packages it fails - rclcpp refuses to start.
 #
+# -A: a ROS 2 action instead - example_interfaces/action/Fibonacci between an rclcpp_action server
+# and client, both default nodes (action_check.cpp). Needs the workspace built with -a. Passes only
+# when the client gets every feedback as a prefix of the true sequence and the exact result, AND its
+# maps show rmw_tickle and the workspace's example_interfaces TickLE typesupport.
+#
 # Loopback by default (TICKLE_BROADCAST_ADDR=127.255.255.255); set TICKLE_BROADCAST_ADDR yourself to
 # check over a real link. Exit 0 only when both types round-tripped AND both libraries were proved.
 set -euo pipefail
 
 WORKSPACE="${HOME}/tickle_ros2_interfaces"
 RCLCPP=0
-while getopts "w:r" opt; do
+ACTION=0
+while getopts "w:rA" opt; do
     case "$opt" in
     w) WORKSPACE="$OPTARG" ;;
     r) RCLCPP=1 ;;
+    A) ACTION=1 ;;
     *) exit 2 ;;
     esac
 done
@@ -87,6 +94,44 @@ export RMW_IMPLEMENTATION=rmw_tickle
 export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
 
 log="$(mktemp -d)"
+
+if [ "$ACTION" = 1 ]; then
+    action_check="$(dirname "$check")/action_check"
+    [ -x "$action_check" ] || fail "no $action_check - example_interfaces or rclcpp_action was not found when building it"
+    trap 'kill "${server_pid:-}" 2>/dev/null || true; rm -rf "$log"' EXIT
+    TICKLE_NODE_ID=124 "$action_check" server 25 >"$log/server.txt" 2>&1 &
+    server_pid=$!
+    sleep 1
+    TICKLE_NODE_ID=125 "$action_check" client 20 >"$log/client.txt" 2>&1 &
+    client_pid=$!
+    ex_lib="$WORKSPACE/install/example_interfaces/lib/libexample_interfaces__rosidl_typesupport_tickle_cpp.so"
+    action_identity="not seen"
+    for _ in $(seq 1 100); do
+        if [ -r "/proc/$client_pid/maps" ] && grep -q "libexample_interfaces__rosidl_typesupport_tickle_cpp" "/proc/$client_pid/maps"; then
+            mapped_rmw=$(grep -o '/[^ ]*librmw_tickle\.so' "/proc/$client_pid/maps" | sort -u | head -1)
+            mapped_ex=$(grep -o '/[^ ]*libexample_interfaces__rosidl_typesupport_tickle_cpp\.so' "/proc/$client_pid/maps" | sort -u | head -1)
+            if [ "$(readlink -f "$mapped_rmw")" = "$(readlink -f "$rmw_lib")" ] &&
+                [ "$(readlink -f "$mapped_ex")" = "$(readlink -f "$ex_lib")" ]; then
+                action_identity="OK: $mapped_rmw and $mapped_ex"
+            else
+                action_identity="WRONG LIBRARY: mapped $mapped_rmw and $mapped_ex, expected $rmw_lib and $ex_lib"
+            fi
+            break
+        fi
+        sleep 0.1
+    done
+    client_status=0
+    wait "$client_pid" || client_status=$?
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+    grep -v '\[INFO\]' "$log/server.txt" | tail -3
+    grep -v '\[INFO\]' "$log/client.txt" | tail -4
+    echo "identity: $action_identity"
+    case "$action_identity" in OK:*) ;; *) fail "the libraries under test were not the ones loaded" ;; esac
+    [ "$client_status" = 0 ] || fail "the Fibonacci action did not round-trip through rmw_tickle (exit $client_status)"
+    echo "check_ros2_interfaces: PASS"
+    exit 0
+fi
 trap 'kill "${sub_pid:-}" "${cpp_sub_pid:-}" 2>/dev/null || true; rm -rf "$log"' EXIT
 TICKLE_NODE_ID=121 "$check" sub 15 >"$log/sub.txt" 2>&1 &
 sub_pid=$!

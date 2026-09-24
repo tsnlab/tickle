@@ -95,12 +95,13 @@ def _ros2_sequence_scalar_type(scalar_type):
 
 
 def ros2_nested_struct_name(nested_struct):
-    """A nested field's ROS 2 C struct name, `<pkg>__msg__<Type>` ("msg" is the only subfolder that
-    can appear nested - ROS 2 does not nest .srv types). Built from the struct's `origin`, which
-    every resolver sets, not from c_name: Ros2Resolver's "<Name>Data" and Resolver's "pkg__Name"
-    conventions coexist, and neither is the ROS name."""
-    pkg_name, type_name = nested_struct.origin
-    return f"{pkg_name}__msg__{type_name}"
+    """A nested field's ROS 2 C struct name, `<pkg>__<subfolder>__<Type>` - "msg" for an ordinary
+    message, "action" for one of an action's own implicit messages (`<pkg>__action__<A>_Goal`,
+    nested in its SendGoal request). Built from the struct's `origin`, which every resolver sets,
+    not from c_name: Ros2Resolver's "<Name>Data" and Resolver's "pkg__Name" conventions coexist, and
+    neither is the ROS name."""
+    pkg_name, subfolder, type_name = nested_struct.origin
+    return f"{pkg_name}__{subfolder}__{type_name}"
 
 
 # The .tickle_max_encoded_size initialiser: either a real upper bound on this type's encoded
@@ -154,7 +155,23 @@ def ros2_header_path(ros_name):
     `_Request`/`_Response` suffix is a *struct*-naming convention only, stripped here before
     snake-casing so it doesn't leak into the file name too (e.g. "set_bool__request.h", wrong)."""
     pkg, subfolder, type_name = ros_name.split("__")
-    for suffix in ("_Request", "_Response"):
+    # An action's implicit interfaces all live in the action's one header too - longest suffix
+    # first, since "_SendGoal_Request" also ends in "_Request".
+    suffixes = ("_Request", "_Response")
+    if subfolder == "action":
+        suffixes = (
+            "_SendGoal_Request",
+            "_SendGoal_Response",
+            "_GetResult_Request",
+            "_GetResult_Response",
+            "_FeedbackMessage",
+            "_SendGoal",
+            "_GetResult",
+            "_Goal",
+            "_Result",
+            "_Feedback",
+        )
+    for suffix in suffixes:
         if type_name.endswith(suffix):
             type_name = type_name[: -len(suffix)]
             break

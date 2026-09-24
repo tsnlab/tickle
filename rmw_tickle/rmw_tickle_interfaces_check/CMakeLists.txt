@@ -34,4 +34,14 @@ target_link_libraries(default_node rclcpp::rclcpp ${std_msgs_TARGETS} ${sensor_m
 
 install(TARGETS interfaces_check default_node DESTINATION lib/${PROJECT_NAME})
 
+# A ROS 2 action through rmw_tickle (check_ros2_interfaces.sh -A). Optional: example_interfaces is
+# not part of every ROS 2 install, and a workspace built without it must still build the rest.
+find_package(rclcpp_action QUIET)
+find_package(example_interfaces QUIET)
+if(rclcpp_action_FOUND AND example_interfaces_FOUND)
+  add_executable(action_check src/action_check.cpp)
+  target_link_libraries(action_check rclcpp::rclcpp rclcpp_action::rclcpp_action ${example_interfaces_TARGETS})
+  install(TARGETS action_check DESTINATION lib/${PROJECT_NAME})
+endif()
+
 ament_package()
