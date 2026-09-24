@@ -100,7 +100,7 @@ packages against the workspace this doc sets up ahead of time.
    # expect to see rmw_fastrtps_cpp at minimum
    ```
 
-4. **Four local, TickLE-specific patches to the underlay's own sources** - found the hard way
+4. **Six local, TickLE-specific patches to the underlay's own sources** - found the hard way
    getting `rmw_tickle` through a real `buildfarm_perf_tests` run for the first time. None of
    these are upstreamed; they live only in this checkout of `~/rmw_perf_ws/src`, applied once here
    during provisioning (not by `rmw-perf.yml` on every run - that workflow only rebuilds
@@ -232,6 +232,51 @@ other dependencies (`test_msgs`, `rmw_dds_common`, `osrf_testing_tools_cpp`, ...
 `buildfarm_perf_tests` package specifically gets reconfigured, and that's a thin CMake layer, not a
 real rebuild cost. Re-run steps 1-3 by hand whenever you want to pick up a new ROS 2 patch release
 or a `buildfarm_perf_tests`/`performance_test` upstream change.
+
+### Patch (f): neither "Data consistency violated" assertion may abort the run (2026-09-24)
+
+Saved as a real patch file, `rmw_perf_patches/f-out-of-order-is-not-an-abort.patch`, rather than as
+prose like (a)-(e) - apply with `patch -p1` from `~/rmw_perf_ws/src/performance_test/performance_test`.
+
+`perf_test` threw `std::runtime_error` on two conditions, and `std::terminate()` then ran before any
+teardown - discarding the per-Subscriber delivery counters built to diagnose exactly these. The
+report of the problem destroyed the evidence for it. Both are now counters that print a
+`TICKLE-PATCH-F ...` line and let the process finish.
+
+**The two variants are deliberately not treated alike**, and that distinction is the whole patch:
+
+- The **id** variant (`communicator.cpp`) is the benchmark asserting ordering that its own
+  BEST_EFFORT configuration never promises - `experiment_configuration.cpp` selects RELIABLE only
+  when `--reliable` is passed, and the `two_process_rmw_` matrix passes neither that nor `--rate`.
+  Measured over 554 archived ctest logs on this box: `rmw_fastrtps_cpp` 8/284 cells (**2.82%**),
+  `rmw_cyclonedds_cpp` 6/284 (**2.11%**), `rmw_tickle` 23/1751 (**1.31%**). Both reference
+  implementations trip it more often than we do. **Reported, never gated.**
+- The **timestamp** variant (`ros2_communicator.hpp`) has never been seen under either DDS vendor,
+  and fired in 2 of 12 cells on the two-socket build against 5 of 1751 historically. It is treated
+  as ours until shown otherwise, and `rmw-perf.yml`'s "Fail on a timestamp-ordering violation" step
+  **fails the job** on it. Removing the throw is about keeping the evidence, not forgiving the
+  condition.
+
+### Patch (g) is not a patch: `performance_test` cannot currently be rebuilt (2026-09-24, open)
+
+`rosidl_typesupport_tickle_c` emits `_Static_assert(<size> <= tt_MAX_BUFFER_LENGTH, ...)` for every
+message type, and `performance_test` declares `Array4k`, `Array32k`, `PointCloud1m` and others that
+exceed one datagram. The generator processes every type in `rosidl_generate_interfaces()` - patch
+(a)'s symlinks govern path derivation, not type selection - so **the build fails on types nobody
+uses**. This workspace was provisioned on 2026-09-15 with an older generator and nothing rebuilt it
+for nine days, which is why the regression was invisible until something did.
+
+**Consequence**: `~/rmw_perf_ws/install/performance_test` is empty and the `rmw-perf.yml` job cannot
+run until this is fixed. Narrowing the interface list is **not** a workaround - `perf_test`'s own
+sources reference the wider type set. The fix belongs in the generator: decline to generate for a
+type that cannot fit one datagram, and let `rmw_create_publisher` report it at runtime, which it
+already does clearly ("no rmw_tickle typesupport for this message type").
+
+**If you rebuild `performance_test` for any reason**, source `<tickle>/install/setup.bash` *before*
+building, so the TickLE typesupport generator runs. Building without it regenerates
+`rosidl_typesupport_c` and leaves the TickLE typesupport at its previous date; every rmw_tickle cell
+then dies with "no rmw_tickle typesupport for this message type", which looks like a product bug and
+is not.
 
 ## Re-provisioning after an OS/ROS upgrade
 

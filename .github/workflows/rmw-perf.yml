@@ -288,6 +288,32 @@ jobs:
             exit $rc
           '
 
+      - name: Fail on a timestamp-ordering violation
+        # patch (f) turned perf_test's two "Data consistency violated" assertions into counters,
+        # because std::terminate() ran before any teardown and discarded the per-Subscriber
+        # delivery counters built to diagnose exactly this. Counting is not forgiving it: the run
+        # must still fail, and this is where that happens.
+        #
+        # Only the TIMESTAMP variant fails. The id variant fires for rmw_fastrtps_cpp and
+        # rmw_cyclonedds_cpp at ~2.8% and ~2.1% of cells on this box against rmw_tickle's 1.31%
+        # (554 archived ctest logs), so it is the benchmark asserting ordering its own BEST_EFFORT
+        # configuration never promised - failing on it would be failing on somebody else's
+        # behaviour. The timestamp variant has never been seen under either DDS vendor and is
+        # currently firing far above its own historical rate, so it is treated as ours until shown
+        # otherwise. Both are reported either way.
+        run: |
+          logs="$RMW_PERF_WS/build/buildfarm_perf_tests/launch_test"
+          ooo=$(grep -rhc 'TICKLE-PATCH-F out_of_order' "$logs" 2>/dev/null | paste -sd+ | bc 2>/dev/null || echo 0)
+          ts=$(grep -rhc 'TICKLE-PATCH-F timestamp_not_newer' "$logs" 2>/dev/null | paste -sd+ | bc 2>/dev/null || echo 0)
+          echo "out-of-order arrivals (benchmark assumption, not a gate): ${ooo:-0}"
+          echo "timestamp-ordering violations (gated): ${ts:-0}"
+          if [ "${ts:-0}" -gt 0 ]; then
+            echo "::error::${ts} timestamp-ordering violation(s) - a Subscriber was delivered a sample" \
+                 "no newer than the previous one. See README-rmw-perf.md patch (f)."
+            grep -rh 'TICKLE-PATCH-F timestamp_not_newer' "$logs" | head -20
+            exit 1
+          fi
+
       - name: Verify every expected cell actually ran
         run: |
           # A gate that fails on a failing test still cannot tell "everything passed" from
