@@ -171,10 +171,10 @@ result_field() {
 # taking the real several-second scenario runtime. Captures combined output (run_scenario.sh's
 # own stdout already interleaves the client's and server's own RESULT: lines, per its own script)
 # to $LOG_DIR/<label>.log for result_field() above to read back. `pre_client_sleep` is forwarded
-# as run_scenario.sh's own PRE_CLIENT_SLEEP env override (0 for history_depth_burst_loss - see
-# that scenario's own comment on why the usual pre-client sleep would hide the real race; the
-# run_scenario.sh default, 3, for everything else - passed explicitly here anyway so this function
-# never silently depends on that script's own default not changing later).
+# as run_scenario.sh's own PRE_CLIENT_SLEEP env override (0 for history_depth_burst_loss and
+# lifespan_expiry - see that scenario's own comment on why the usual pre-client sleep would hide
+# the real race; the run_scenario.sh default, 3, for everything else - passed explicitly here
+# anyway so this function never silently depends on that script's own default not changing later).
 run_scenario() {
     local label="$1" scenario="$2" pre_client_sleep="$3" client_args="${4:-}"
     echo "== $label =="
@@ -294,7 +294,15 @@ run_all_scenarios() {
 
     for pause in 1.0 1.5 2.0; do
         local label="lifespan_pause_${pause//./_}"
-        run_scenario "$label" "lifespan_expiry" 3 "-i 0.02 -T 0.1 -n 250 -p $pause"
+        # 0, not 3 (2026-09-25): like history_depth_burst_loss, server.c stalls for -p BEFORE
+        # creating its Subscriber, and the client has to be publishing through that stall for
+        # anything to expire. With 3 the Subscriber existed before the first sample (every -p here
+        # is under 3s), so lost=0 was the correct answer and the scenario measured nothing; it read
+        # as LIFESPAN broken in the 2026-09-24 re-sweep. The losses it reported before that were not
+        # LIFESPAN either: the same stagger-3 run at one commit disagreed between rig and loopback,
+        # most likely uninitialised Subscriber fields (set at create only since 718eaacf).
+        # ae615997, which added the scenario, already said it needs 0.
+        run_scenario "$label" "lifespan_expiry" 0 "-i 0.02 -T 0.1 -n 250 -p $pause"
     done
 }
 
