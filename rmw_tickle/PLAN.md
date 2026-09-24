@@ -1738,6 +1738,15 @@ itself does not fix it: `GetTypeDescription_Response` is 9944 B as a TickLE stru
    the OS does IP fragmentation. TickLE gets no fragmentation logic of its own. This supersedes the
    earlier "document large messages as future work".
 4. Actions - "액션 범위는 PLAN.md에 넣어 놓고 그 다음 숙제로 하자." Recorded below as the next item.
+5. rmw's default maximum packet size - "rmw의 기본 최대 패킷 크기: UDP 한계에 맞춰서", i.e.
+   `tt_MAX_BUFFER_LENGTH` = 65507 (the IPv4 UDP payload ceiling) in the rmw build. The core's own
+   default stays 1472. Switching the rmw default is blocked on sizing per-entity storage by the
+   entity's type (see the cost list below).
+6. Bundled ROS definitions - "TickLE 코어에서는 ROS의 std_msgs와 builtin_interfaces 정의를 빼자,
+   rmw_tickle로 옮기자". `tools/typesupport/builtins.py` leaves core. Two things were settled as not
+   ROS, and the user can still object: the vendored `.msg` parser stays, since TickLE's own IDL is
+   `.msg` and this is read as the "EMparser" exception; and the verbatim ROS `.msg` parser fixtures
+   stay as test data.
 
 **Research** (TickLE Plan, `rmw_tickle/tools/`, commits `35aead29`, `098a4697`, `8d8f7c81`).
 Every jazzy `.msg`/`.srv` in common_interfaces, rcl_interfaces, unique_identifier_msgs, geometry2 and
