@@ -52,6 +52,12 @@ int test_mock_send_call_count = 0;
 // specifically, for a test that cares whether the destination was right.
 int test_mock_send_to_call_count = 0;
 uint32_t test_mock_send_to_last_ip = 0;
+// Every destination this run sent to, in order. The last_ip/last_port pair answers "where did that
+// one go"; a per-link test needs "where did all of them go", because the whole point is that one
+// buffer is addressed differently on different links and only the set shows that.
+#define TEST_MOCK_MAX_SENDS 16
+uint32_t test_mock_send_to_ips[TEST_MOCK_MAX_SENDS] = {0};
+int test_mock_send_to_ip_count = 0;
 uint16_t test_mock_send_to_last_port = 0;
 // Copy of the most recent packet either send function was handed (truncated to the buffer size) -
 // for a test that needs to decode what was actually sent, not just count sends.
@@ -68,6 +74,9 @@ extern int32_t test_mock_send_return;
 extern int test_mock_send_call_count;
 extern int test_mock_send_to_call_count;
 extern uint32_t test_mock_send_to_last_ip;
+#define TEST_MOCK_MAX_SENDS 16
+extern uint32_t test_mock_send_to_ips[TEST_MOCK_MAX_SENDS];
+extern int test_mock_send_to_ip_count;
 extern uint16_t test_mock_send_to_last_port;
 extern uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
 extern size_t test_mock_send_last_len;
@@ -85,6 +94,10 @@ static inline void test_mock_reset(void) {
     test_mock_send_call_count = 0;
     test_mock_send_to_call_count = 0;
     test_mock_send_to_last_ip = 0;
+    test_mock_send_to_ip_count = 0;
+    for (int i = 0; i < TEST_MOCK_MAX_SENDS; i++) {
+        test_mock_send_to_ips[i] = 0;
+    }
     test_mock_send_to_last_port = 0;
     test_mock_send_last_len = 0;
     test_mock_wake_signal_call_count = 0;
@@ -159,6 +172,9 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     test_mock_capture_send(buf, len);
     test_mock_send_to_last_ip = ip;
     test_mock_send_to_last_port = port;
+    if (test_mock_send_to_ip_count < TEST_MOCK_MAX_SENDS) {
+        test_mock_send_to_ips[test_mock_send_to_ip_count++] = ip;
+    }
 
     if (test_mock_send_return_override) {
         return test_mock_send_return;
