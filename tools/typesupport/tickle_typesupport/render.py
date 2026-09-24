@@ -29,8 +29,8 @@ def _expand(template_name, **context):
     # fine - sys.stdout is the same object for the process's whole lifetime. Under pytest, it
     # isn't: capturing swaps sys.stdout for a new object between test items, so by the time a
     # second, independent em.expand() call happens (e.g. this module's own render_topic() called
-    # both from conftest.py's shared codegen fixture *and*, independently, from ros2_cli.generate()
-    # - see test_ros2_nested.py's own docstring) the live sys.stdout is no longer the one the
+    # both from conftest.py's shared codegen fixture *and*, independently, from rmw_tickle's
+    # ros2_cli.generate() - see its test_ros2_nested.py's own docstring) the live sys.stdout is no longer the one the
     # class-level flag was recorded against, and installProxy() raises a spurious "interpreter
     # stdout proxy lost" even though nothing is actually wrong. None of these templates ever
     # `print()` inside a @{...} code block (checked - they only use @(expr)/@[for/if] substitution,
@@ -46,7 +46,7 @@ def _nested_includes(struct):
     """The generated header for each of this struct's *own* nested fields (not recursed further -
     each of those headers already #includes whatever *it* nests, so the chain resolves the same
     way any C header dependency does). Templates splice this straight into `#include "@(x).h"` -
-    normally the same as the nested struct's own c_name, but not always any more: resolve.
+    normally the same as the nested struct's own c_name, but not always any more: rmw_tickle's
     Ros2Resolver's own nested structs reuse an already-independently-generated file whose name
     doesn't match its own "<Name>Data" c_name (see model.WireStruct.header_name's own doc
     comment), so this strips the ".h" back off header_name when one's set, rather than assuming

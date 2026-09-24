@@ -27,7 +27,7 @@ work unchanged.
 A capacity is part of the wire layout of every type that nests the field - a package nesting
 std_msgs/MultiArrayLayout has to see exactly the capacity std_msgs was built with, or the two
 disagree on the layout. So the file a package was generated with is installed beside it
-(INSTALLED_NAME, under share/<pkg>/), and resolve.Ros2Resolver reads it from there when it adapts a
+(INSTALLED_NAME, under share/<pkg>/), and rmw_tickle's Ros2Resolver reads it from there when it adapts a
 type from that package for someone else.
 
 Every row must land. A row naming a type the package does not have, a field the type does not
@@ -42,7 +42,7 @@ INSTALLED_NAME = "tickle_capacities.tsv"
 
 class CapacityError(ValueError):
     """A capacity file row that cannot apply. Deliberately not an adapt.UnsupportedFieldError, so
-    ros2_cli's decline path (which catches that) never swallows it."""
+    the decline path in rmw_tickle's ros2_cli (which catches that) never swallows it."""
 
 
 def parse(text, package, source="<capacities>"):

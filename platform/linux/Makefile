@@ -269,11 +269,11 @@ LINT_EXCLUDE_RE = ^(third_party|platform|examples/freertos)/|hal_freertos\.
 # how a formatting failure reached main on 2026-09-23.
 LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds)
 
-# tools/typesupport/tests/fixtures_ros2_adapter/'s hand-written rosidl_runtime_c stand-ins
+# rmw_tickle/rosidl_typesupport_tickle_c/test/fixtures/ros2_adapter/'s hand-written rosidl_runtime_c stand-ins
 # cross-include each other by ROS 2's own relative-path convention ("rosidl_runtime_c/string.h"),
 # so they only resolve with their own directory on the include path. check-all.yml synthesises
 # exactly this as a compile_commands.json entry for the same reason.
-LINT_TIDY_ARGS = --extra-arg=-I$(REPO_ROOT)/tools/typesupport/tests/fixtures_ros2_adapter
+LINT_TIDY_ARGS = --extra-arg=-I$(REPO_ROOT)/rmw_tickle/rosidl_typesupport_tickle_c/test/fixtures/ros2_adapter
 
 # Which binaries this actually used, printed rather than assumed. The whole class of bug this
 # target exists to catch is "I ran the check and it passed" - so a run that silently used a

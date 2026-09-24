@@ -69,7 +69,7 @@ point registration this depends on.
 
 import re
 
-from . import layout
+from tickle_typesupport import layout
 
 # A nested field's own ROS 2 struct name ("msg" is the only subfolder that can appear nested -
 # ROS 2 doesn't nest .srv types). Reads the nested WireStruct's own ros_pkg_name/ros_type_name

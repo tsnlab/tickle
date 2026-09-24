@@ -22,11 +22,10 @@ test, not just print a warning `subprocess.run(..., check=True)` would otherwise
 import pathlib
 import subprocess
 
-from conftest import CC, CFLAGS, REPO_ROOT
-from tickle_typesupport import ros2_cli
+from conftest import CC, CFLAGS, FIXTURES, FIXTURES_ROS2_ADAPTER, REPO_ROOT
+from rosidl_typesupport_tickle_c import ros2_cli
 
-FIXTURES_OWN = pathlib.Path(__file__).parent / "fixtures_own"
-FIXTURES_ROS2_ADAPTER = pathlib.Path(__file__).parent / "fixtures_ros2_adapter"
+FIXTURES_OWN = FIXTURES
 
 _MAIN_C = r"""
 #include <assert.h>

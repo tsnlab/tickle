@@ -6,7 +6,7 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-"""resolve.Ros2Resolver (rmw_tickle/PLAN.md's Milestone 15/38 nested-message follow-up) - the
+"""ros2_resolve.Ros2Resolver (rmw_tickle/PLAN.md's Milestone 15/38 nested-message follow-up) - the
 *same-package sibling* nested-message case a real ROS 2 package's own rosidl_typesupport_tickle_c
 CMake extension actually needs (test_msgs/msg/Nested.msg's own `BasicTypes basic_types_value`,
 mirrored here by fixtures_own/Branch.msg's own `Leaf leaf_value`). Unlike test_ros2_adapter.py's
@@ -30,11 +30,10 @@ import subprocess
 
 import pytest
 
-from conftest import CC, CFLAGS, REPO_ROOT
-from tickle_typesupport import ros2_cli
+from conftest import CC, CFLAGS, FIXTURES, FIXTURES_ROS2_ADAPTER, REPO_ROOT
+from rosidl_typesupport_tickle_c import ros2_cli
 
-FIXTURES_OWN = pathlib.Path(__file__).parent / "fixtures_own"
-FIXTURES_ROS2_ADAPTER = pathlib.Path(__file__).parent / "fixtures_ros2_adapter"
+FIXTURES_OWN = FIXTURES
 
 _MAIN_C = r"""
 #include <assert.h>
@@ -58,7 +57,7 @@ static void test_branch_nests_leaf_by_reusing_its_own_independent_codec(void) {
 
     /* The whole point: Branch's own nested field is a real, plain struct LeafData - the *exact
      * same type* Leaf.msg's own independent, separate generate() call produces (not a second,
-     * differently-named copy) - so this line only compiles at all if resolve.Ros2Resolver's own
+     * differently-named copy) - so this line only compiles at all if ros2_resolve.Ros2Resolver's own
      * "reuse, don't re-generate" contract actually held. */
     struct LeafData* nested = &tickle.leaf_value;
     assert(nested->value == -42);
@@ -157,7 +156,7 @@ def test_ros2_nested_roundtrip(ros2_nested_check_binary):
 
 
 def test_ros2_resolver_writes_no_duplicate_leaf_file(ros2_nested_generated):
-    """resolve.Ros2Resolver's own defining property (its own doc comment): resolving Branch's own
+    """ros2_resolve.Ros2Resolver's own defining property (its own doc comment): resolving Branch's own
     nested `Leaf leaf_value` field must NOT write a second Leaf.h/.c (or any other file for it) -
     Leaf.msg's own separate, independent generate() call is the only thing that ever does."""
     _outdir, branch_written = ros2_nested_generated

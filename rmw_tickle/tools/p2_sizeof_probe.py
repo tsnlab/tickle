@@ -30,10 +30,12 @@ import tempfile
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(REPO / "tools" / "typesupport"))
+sys.path.insert(0, str(REPO / "rmw_tickle" / "rosidl_typesupport_tickle_c"))
 sys.path.insert(0, str(HERE))
 
 from tickle_typesupport import _rosidl_parser as rosidl  # noqa: E402
-from tickle_typesupport import adapt, layout, model, render, resolve  # noqa: E402
+from rosidl_typesupport_tickle_c import ros2_resolve  # noqa: E402
+from tickle_typesupport import adapt, layout, model, render  # noqa: E402
 from p2_inventory import packages  # noqa: E402
 
 LIMIT = model.TT_MAX_BUFFER_LENGTH
@@ -59,7 +61,7 @@ def main(argv):
             for f in sorted(d.glob(f"*.{sub}")):
                 name = f.stem
                 label = f"{pkg}/{sub}/{name}"
-                resolver = resolve.Ros2Resolver(pkg, str(pdir / "msg"), include_dirs, typesupport_packages)
+                resolver = ros2_resolve.Ros2Resolver(pkg, str(pdir / "msg"), include_dirs, typesupport_packages)
                 try:
                     text = f.read_text(encoding="utf-8")
                     if sub == "msg":

@@ -6,7 +6,7 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-"""ros2_cli.generate()'s own sibling_dir computation for a *.srv* input (resolve.Ros2Resolver's
+"""ros2_cli.generate()'s own sibling_dir computation for a *.srv* input (ros2_resolve.Ros2Resolver's
 same-package sibling case, test_ros2_nested.py's own docstring) - a real, previously-broken case
 test_ros2_nested.py's own fixtures never exercised, since its Leaf.msg/Branch.msg are both .msg
 files sharing one flat directory. A real ROS 2 package keeps msg/ and srv/ as *separate*
@@ -21,10 +21,10 @@ Leaf is neither, so the failure mode was a hard, unmissable exception, not silen
 
 import pathlib
 
-from tickle_typesupport import ros2_cli
+from conftest import FIXTURES
+from rosidl_typesupport_tickle_c import ros2_cli
 
-FIXTURES_OWN = pathlib.Path(__file__).parent / "fixtures_own"
-PKG_DIR = FIXTURES_OWN / "srv_sibling_pkg"
+PKG_DIR = FIXTURES / "srv_sibling_pkg"
 
 
 def test_srv_resolves_same_package_msg_sibling(tmp_path):
@@ -42,7 +42,7 @@ def test_srv_sibling_reuses_leaf_not_a_second_copy(tmp_path):
     test_ros2_resolver_writes_no_duplicate_leaf_file asserts for the .msg-from-.msg case - here for
     .msg-from-.srv: resolving UsesLeaf's own `Leaf leaf_value` request field must not write a
     second Leaf.h/.c of its own (that's Leaf.msg's own separate, independent generate() call's job
-    alone - see resolve.Ros2Resolver's own class docstring)."""
+    alone - see ros2_resolve.Ros2Resolver's own class docstring)."""
     written = ros2_cli.generate(
         "srv_sibling_pkg", "srv", "UsesLeaf", str(PKG_DIR / "srv" / "UsesLeaf.srv"), str(tmp_path)
     )

@@ -17,13 +17,14 @@ cross-package nesting - and its own note described that restriction as a path-de
 limitation, which sent the next person looking in the wrong place.
 """
 
+import os
 import pathlib
 import subprocess
 import sys
 
 import pytest
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+from conftest import CORE, HERE
 ROS_SHARE = pathlib.Path("/opt/ros")
 
 
@@ -40,11 +41,14 @@ def _generate(tmp_path, name, body, include_dir, typesupport_packages=()):
     outdir = tmp_path / "out"
     outdir.mkdir(exist_ok=True)
     result = subprocess.run(
-        [sys.executable, "-m", "tickle_typesupport.ros2_cli",
+        [sys.executable, "-m", "rosidl_typesupport_tickle_c.ros2_cli",
          "--package", "pkg_under_test", "--subfolder", "msg", "--name", name,
          "--input", str(source), "--outdir", str(outdir), "-I", str(include_dir)]
         + [arg for pkg in typesupport_packages for arg in ("--typesupport-package", pkg)],
-        capture_output=True, text=True, cwd=str(REPO_ROOT / "tools" / "typesupport"),
+        capture_output=True, text=True, cwd=str(HERE.parent),
+        # The subprocess does not inherit this session's sys.path: name both source trees, so it
+        # imports this checkout rather than whatever tickle_typesupport pip installed last.
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([str(HERE.parent), str(CORE)])},
     )
     assert result.returncode == 0, f"generator failed outright:\n{result.stderr}"
     return outdir, result.stderr

@@ -22,8 +22,9 @@ ament_register_extension(
 # *this* package's own configure time rather than a relative one.
 set(rosidl_typesupport_tickle_c_TICKLE_ROOT "@TICKLE_ROOT@")
 
-# tools/typesupport's tickle_typesupport Python package isn't an ament/colcon package of its own
-# (see this package's package.xml) - invoked as a plain module, assumed already importable
-# (`pip install <tickle repo>/tools/typesupport` ahead of time - this repo's own check-all.yml
-# CI does this before colcon build runs).
-set(rosidl_typesupport_tickle_c_PYTHON_MODULE "tickle_typesupport.ros2_cli")
+# The generator run for each interface: this package's own Python package (installed by its
+# CMakeLists.txt with ament_python_install_package, so it is on a dependent's PYTHONPATH). It
+# imports tools/typesupport's tickle_typesupport, which isn't an ament/colcon package of its own
+# and is assumed already importable (`pip install <tickle repo>/tools/typesupport` ahead of time -
+# this repo's own check-all.yml CI does this before colcon build runs).
+set(rosidl_typesupport_tickle_c_PYTHON_MODULE "rosidl_typesupport_tickle_c.ros2_cli")

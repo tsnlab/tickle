@@ -6,7 +6,7 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-"""Entry point `python3 -m tickle_typesupport.ros2_cli`, invoked once per .msg/.srv by rosidl_
+"""Entry point `python3 -m rosidl_typesupport_tickle_c.ros2_cli`, invoked once per .msg/.srv by rosidl_
 typesupport_tickle_c's own CMake extension (rmw_tickle/rosidl_typesupport_tickle_c/cmake/
 rosidl_typesupport_tickle_c_generate_interfaces.cmake, registered into `rosidl_generate_
 interfaces()`'s `rosidl_generate_idl_interfaces` extension point - rmw_tickle/PLAN.md's Milestone
@@ -43,7 +43,7 @@ render_service() instead of render.render_topic()) - plus one more:
                                                rmw_create_service() actually receive
 
 Rejects (SystemExit) anything else (subfolders other than msg/srv, e.g. action). A nested message
-field is resolved via resolve.Ros2Resolver - see its own doc comment for why that's a genuinely
+field is resolved via ros2_resolve.Ros2Resolver - see its own doc comment for why that's a genuinely
 different resolver than cli.py's own -I/tickle_typesupport.builtins-based one, not just a thin
 wrapper: every message a real ROS 2 package's own nested field could reference is *also*
 independently generated as its own top-level interface by this exact same extension (either a
@@ -59,9 +59,11 @@ import argparse
 import os
 import sys
 
-from . import _rosidl_parser as rosidl
-from . import adapt, cli, postprocess, render, resolve, ros2_adapter
-from . import capacities as capacity_file
+from tickle_typesupport import _rosidl_parser as rosidl
+from tickle_typesupport import adapt, cli, postprocess, render
+from tickle_typesupport import capacities as capacity_file
+
+from . import ros2_adapter, ros2_resolve
 
 
 def _write_text(outdir, filename, text, source_label, fmt_dir):
@@ -91,7 +93,7 @@ def _generate_message_typesupport(struct, ros_name, tickle_header, source_label,
 
 
 def _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir):
-    """resolve.Ros2Resolver's own in_discovery_order() only ever reports TickLE's two small
+    """ros2_resolve.Ros2Resolver's own in_discovery_order() only ever reports TickLE's two small
     bundled builtins (std_msgs/Header, builtin_interfaces/Time) - everything else it resolves
     reuses an already-independently-generated sibling .msg's own file instead of writing a new
     one (see its own doc comment). Same render_nested() call cli.py's own identical loop makes."""
@@ -196,7 +198,7 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
     source_label = os.path.basename(input_path)
     text = open(input_path, encoding="utf-8").read()
     tickle_header = f"{name}.h"
-    # A nested field's own type is looked for in this package's own msg/ dir first (resolve.
+    # A nested field's own type is looked for in this package's own msg/ dir first (ros2_resolve.
     # Ros2Resolver's own "same-package sibling" case - see its doc comment) - a *nested* field is
     # always some other .msg, never a .srv (ROS 2's own grammar doesn't allow a .srv to nest another
     # .srv), so this is msg/ regardless of whether --input itself is a .msg or a .srv: for a .msg,
@@ -213,14 +215,14 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
     if capacities_path:
         table = capacity_file.load(capacities_path, package)
         capacity_file.check_types_exist(table, package_root)
-    resolver = resolve.Ros2Resolver(package, os.path.join(package_root, "msg"), include_dirs,
+    resolver = ros2_resolve.Ros2Resolver(package, os.path.join(package_root, "msg"), include_dirs,
                                     typesupport_packages, table)
 
     if subfolder == "msg":
         spec = rosidl.parse_message_string(package, name, text)
         try:
             ir = adapt.adapt_message(name, spec, resolver, capacity_file.for_message(table, name))
-        except resolve.UnsupportedNestedPackage as unsupported:
+        except ros2_resolve.UnsupportedNestedPackage as unsupported:
             return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _nested_package_reason(unsupported))
         except adapt.UnsupportedFieldError as error:
             return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _field_reason(error))
@@ -242,8 +244,8 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
         # type" compile error, not a warning. A .srv's own file, unlike a .msg's, is never a valid
         # *nested-field* target (ROS 2's grammar has no way to nest a .srv inside anything), so
         # nothing outside this one function ever looks a .srv's own TickLE-side name up again the
-        # way resolve.Ros2Resolver does for a .msg - safe to qualify only this side, leaving every
-        # .msg's own existing bare "<name>.h/.c" convention (and resolve.Ros2Resolver's own
+        # way ros2_resolve.Ros2Resolver does for a .msg - safe to qualify only this side, leaving every
+        # .msg's own existing bare "<name>.h/.c" convention (and ros2_resolve.Ros2Resolver's own
         # matching "{msg_name}.h" computation) completely untouched.
         srv_tickle_name = f"{name}_srv"
         spec = rosidl.parse_service_string(package, name, text)
@@ -252,7 +254,7 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
         )
         try:
             ir = adapt.adapt_service(srv_tickle_name, spec, resolver, request_capacities, response_capacities)
-        except resolve.UnsupportedNestedPackage as unsupported:
+        except ros2_resolve.UnsupportedNestedPackage as unsupported:
             return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _nested_package_reason(unsupported))
         except adapt.UnsupportedFieldError as error:
             return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _field_reason(error))
@@ -293,7 +295,7 @@ def main(argv=None):
         help="search DIR/<pkg>/msg/<Name>.msg to resolve a *cross-package* nested message field "
         "(repeatable) - a same-package sibling is always found automatically, no -I needed; "
         "builtin_interfaces/Time and std_msgs/Header are always available even without one - see "
-        "resolve.Ros2Resolver/tickle_typesupport.builtins. The real CMake extension "
+        "ros2_resolve.Ros2Resolver/tickle_typesupport.builtins. The real CMake extension "
         "(rosidl_typesupport_tickle_c_generate_interfaces.cmake) passes one of these per "
         "dependency package (each one's own share root, computed from that package's own "
         "find_package()-set _DIR variable) - see rmw_tickle/PLAN.md's own Milestone for this.",

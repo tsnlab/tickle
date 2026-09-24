@@ -15,11 +15,11 @@ exists. MultiArrayLayout.dim is a non-trailing array of a type holding a string,
 Float32MultiArray.data trails a field that is not fixed-size, so neither can be auto-derived and
 both need a capacity from somewhere.
 
-Three properties matter more than the happy path, and each has its own test:
-  * every row must land - a typo is an error, never a silent no-op;
-  * a row that does not apply is a build error, not a decline;
-  * a type nested from another package is sized by THAT package's installed file, so both sides
-    agree on the layout.
+What matters more than the happy path is that every row must land: a typo is an error, never a
+silent no-op. The two other properties - a bad row fails the build rather than declining the type,
+and a type nested from another package is sized by THAT package's installed file - belong to the
+ROS half of the generator and are tested with it, in
+rmw_tickle/rosidl_typesupport_tickle_c/test/test_capacities_nesting.py.
 """
 
 import pathlib
@@ -30,7 +30,7 @@ import pytest
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from tickle_typesupport import _rosidl_parser as rosidl  # noqa: E402
-from tickle_typesupport import adapt, capacities, resolve, ros2_cli  # noqa: E402
+from tickle_typesupport import adapt, capacities  # noqa: E402
 
 DIMENSION = "string label\nuint32 size\nuint32 stride\n"
 LAYOUT = "MultiArrayDimension[] dim\nuint32 data_offset\n"
@@ -63,11 +63,13 @@ def _mini(root):
     )
 
 
-def _adapt_message(pkg_dir, name, table, include_dirs=(), typesupport_packages=()):
+def _adapt_message(pkg_dir, name, table):
+    # No resolver: these messages nest nothing. Nesting - where a nested type has to be sized by
+    # its own package's file - is the ROS half's resolver, tested with it in
+    # rmw_tickle/rosidl_typesupport_tickle_c/test/test_capacities_nesting.py.
     package = pkg_dir.name
     spec = rosidl.parse_message_string(package, name, (pkg_dir / "msg" / f"{name}.msg").read_text())
-    resolver = resolve.Ros2Resolver(package, str(pkg_dir / "msg"), include_dirs, typesupport_packages, table)
-    return adapt.adapt_message(name, spec, resolver, capacities.for_message(table, name)).data
+    return adapt.adapt_message(name, spec, None, capacities.for_message(table, name)).data
 
 
 def _field(struct, name):
@@ -100,30 +102,6 @@ def test_parse_rejects_malformed_rows(text, message):
 
 
 # --- applying -------------------------------------------------------------------------------
-
-
-def test_file_sizes_what_nothing_else_could(tmp_path):
-    # Without a capacity, both types are ungenerable - this is the control for the test itself:
-    # if it passed without the file, the file would not be what made it pass.
-    pkg = _mini(tmp_path)
-    with pytest.raises(adapt.UnsupportedFieldError):
-        _adapt_message(pkg, "MultiArrayLayout", {})
-    with pytest.raises(adapt.UnsupportedFieldError):
-        _adapt_message(pkg, "Float32MultiArray", {})
-
-    table = capacities.parse(ROWS, PKG)
-    layout = _adapt_message(pkg, "MultiArrayLayout", table)
-    assert (_field(layout, "dim").capacity, _field(layout, "dim").capacity_source) == (4, "file")
-    data = _field(_adapt_message(pkg, "Float32MultiArray", table), "data")
-    assert (data.capacity, data.capacity_source) == (320, "file")
-
-
-def test_sibling_nested_type_uses_the_same_file(tmp_path):
-    # Float32MultiArray nests MultiArrayLayout from its own package: the nested struct must carry
-    # dim=4 from the file, the same as MultiArrayLayout generated on its own.
-    pkg = _mini(tmp_path)
-    struct = _adapt_message(pkg, "Float32MultiArray", capacities.parse(ROWS, PKG))
-    assert _field(_field(struct, "layout").nested, "dim").capacity == 4
 
 
 def test_file_outranks_an_annotation(tmp_path):
@@ -197,82 +175,3 @@ def test_service_row_that_is_ambiguous_must_say_which_side():
 def test_service_suffixed_rows_pass_the_type_check(tmp_path):
     pkg = _package(tmp_path, srvs={"Both": BOTH})
     capacities.check_types_exist(capacities.parse(f"{PKG}/srv/Both_Request values 8\n", PKG), pkg)
-
-
-# --- across packages ------------------------------------------------------------------------
-
-
-def test_nested_type_from_another_package_uses_that_packages_installed_file(tmp_path):
-    # The layout-consistency property. user_msgs nests mini_msgs/MultiArrayLayout. mini_msgs was
-    # generated with dim=4, and that file is installed beside it; user_msgs' generator must read it
-    # from there and arrive at the same capacity, because the two packages' structs meet in memory.
-    share = tmp_path / "share"
-    _mini(share)
-    (share / PKG / capacities.INSTALLED_NAME).write_text(ROWS)
-    user = _package(tmp_path / "src", "user_msgs", msgs={"Grid": f"{PKG}/MultiArrayLayout layout\n"})
-
-    grid = _adapt_message(user, "Grid", {}, include_dirs=[str(share)], typesupport_packages=[PKG])
-    assert _field(_field(grid, "layout").nested, "dim").capacity == 4
-
-    # Control: without the installed file, the same resolution has no capacity to find.
-    (share / PKG / capacities.INSTALLED_NAME).unlink()
-    with pytest.raises(adapt.UnsupportedFieldError):
-        _adapt_message(user, "Grid", {}, include_dirs=[str(share)], typesupport_packages=[PKG])
-
-
-# --- through the generator entry point -------------------------------------------------------
-
-
-def test_generate_declines_a_field_it_cannot_represent(tmp_path):
-    # A wstring can never be sized, so the type is declined - stub files carrying the reason - and
-    # the package build carries on, rather than one type failing it.
-    pkg = _package(tmp_path, msgs={"Wide": "wstring text\n"})
-    out = tmp_path / "out"
-    written = ros2_cli.generate(PKG, "msg", "Wide", str(pkg / "msg" / "Wide.msg"), str(out))
-    assert len(written) == 5
-    header = (out / "Wide.h").read_text()
-    assert "TickLE has no typesupport for mini_msgs/msg/Wide" in header
-    assert "wstring" in header
-    assert "get_message_type_support_handle" not in (out / f"{PKG}__msg__Wide__type_support.c").read_text()
-
-
-def test_generate_declines_a_service_with_the_files_cmake_expects(tmp_path):
-    pkg = _package(tmp_path, srvs={"Wide": "wstring text\n---\nbool ok\n"})
-    out = tmp_path / "out"
-    written = ros2_cli.generate(PKG, "srv", "Wide", str(pkg / "srv" / "Wide.srv"), str(out))
-    names = sorted(pathlib.Path(p).name for p in written)
-    ros_name = f"{PKG}__srv__Wide"
-    assert names == sorted(
-        ["Wide_srv.h", "Wide_srv.c", f"{ros_name}__type_support.c"]
-        + [
-            f"{ros_name}_{part}__{suffix}"
-            for part in ("Request", "Response")
-            for suffix in ("rosidl_typesupport_tickle_c.h", "rosidl_typesupport_tickle_c.c", "type_support.c")
-        ]
-    )
-
-
-def test_generate_fails_rather_than_declines_on_a_bad_row(tmp_path):
-    # The line between the two: a type TickLE cannot represent is declined, but a capacity file
-    # that does not fit the package is the user's mistake and must stop the build.
-    pkg = _mini(tmp_path)
-    rows = tmp_path / "mini.capacities"
-    rows.write_text(f"{PKG}/msg/MultiArrayLayout dims 4\n")
-    with pytest.raises(capacities.CapacityError):
-        ros2_cli.generate(
-            PKG, "msg", "MultiArrayLayout", str(pkg / "msg" / "MultiArrayLayout.msg"), str(tmp_path / "out"),
-            capacities_path=str(rows),
-        )
-
-
-def test_generate_applies_the_file(tmp_path):
-    pkg = _mini(tmp_path)
-    rows = tmp_path / "mini.capacities"
-    rows.write_text(ROWS)
-    out = tmp_path / "out"
-    ros2_cli.generate(
-        PKG, "msg", "Float32MultiArray", str(pkg / "msg" / "Float32MultiArray.msg"), str(out),
-        capacities_path=str(rows),
-    )
-    header = (out / "Float32MultiArray.h").read_text()
-    assert "data[320]" in header

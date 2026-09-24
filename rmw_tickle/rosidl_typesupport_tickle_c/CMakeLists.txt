@@ -7,6 +7,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_core REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_cmake REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_interface REQUIRED)
@@ -68,6 +69,15 @@ install(
   DIRECTORY cmake
   DESTINATION share/${PROJECT_NAME}
 )
+
+# The ROS 2 half of the generator (rosidl_typesupport_tickle_c/, the Python package): what
+# cmake/rosidl_typesupport_tickle_c_generate_interfaces.cmake runs for every interface of every
+# package that builds this typesupport. It lived in tools/typesupport until 2026-09-24, when the
+# user decided every ROS-related part belongs in rmw_tickle; it builds on tools/typesupport's
+# ROS-agnostic tickle_typesupport package, which still has to be pip-installed (see the extras
+# file). Installed the way rosidl's own generators install theirs, so a dependent package's build
+# environment already has it on PYTHONPATH.
+ament_python_install_package(${PROJECT_NAME})
 
 install(
   TARGETS rosidl_typesupport_tickle_c

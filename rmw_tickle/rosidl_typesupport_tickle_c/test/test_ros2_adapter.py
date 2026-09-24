@@ -6,7 +6,7 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-"""tickle_typesupport.ros2_adapter (rmw_tickle/PLAN.md's Milestone 1) generates a converter
+"""rosidl_typesupport_tickle_c.ros2_adapter (rmw_tickle/PLAN.md's Milestone 1) generates a converter
 between a real ROS 2 interface package's own rosidl_generator_c struct and TickLE's own codec for
 that same message - see ros2_adapter.py's own module docstring for the exact field mapping this
 assumes. No ROS 2 install exists in this tool's own dev/test environment (see that same
@@ -22,12 +22,12 @@ import subprocess
 
 import pytest
 
-from conftest import CC, CFLAGS, REPO_ROOT
+from conftest import CC, CFLAGS, FIXTURES_CORE, FIXTURES_ROS2_ADAPTER, REPO_ROOT
+from rosidl_typesupport_tickle_c import ros2_adapter
 from tickle_typesupport import _rosidl_parser as rosidl
-from tickle_typesupport import adapt, layout, postprocess, resolve, ros2_adapter
+from tickle_typesupport import adapt, layout, postprocess, resolve
 
-FIXTURES_OWN = pathlib.Path(__file__).parent / "fixtures_own"
-FIXTURES_ROS2_ADAPTER = pathlib.Path(__file__).parent / "fixtures_ros2_adapter"
+FIXTURES_OWN = FIXTURES_CORE
 NESTED_ARRAYS_MSG_DIR = FIXTURES_OWN / "nested_arrays_pkg" / "msg"
 
 _MAIN_C = r"""
