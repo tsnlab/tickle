@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790224159305,
+  "lastUpdate": 1790224163099,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -109707,6 +109707,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/1ef792fb13cf0522a8db9955b8d27cc55d1a4374"
         },
         "date": 1790219708140,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "loss_pct @ 1%",
+            "value": 0,
+            "unit": "%"
+          },
+          {
+            "name": "loss_pct @ 5%",
+            "value": 0.2,
+            "unit": "%"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "d2801a5572a674751b7325c0e96102d417c4a82d",
+          "message": "A run that used one socket cannot answer a question about two\n\nThe delivery-order counters exist to ask whether interleaving two sockets\nreorders delivery. A run in which one socket received nothing never interleaved\nanything, so it does not test that - and it reads exactly like a run that\ninterleaved and stayed in order. Two arms of such runs would compare zero\nagainst zero and look like a fix.\n\nThat is not hypothetical. The same shape cost a packet capture today: it was\ntaken on an interface the broadcast half of the stream never touched, so it\ncontained zero broadcast datagrams, and \"the wire was ordered\" would have been\nconcluded from a recording of half the wire. The capture now asserts it caught\nbroadcast traffic; this is the same assertion for the counters.\n\nSo rx_via_data/rx_via_well_known are split out of rx_datagrams, and a node that\nreceived on only one of them says so in its own report, in the words \"void for\nthat question, not negative\" - said out loud rather than left to a reader to\nderive, because that derivation is precisely the one nobody performs.\n\nThe per-Subscriber delivery counters are printed at teardown for the same\nreason: the WARNINGs during a run are throttled to the 1st/10th/100th\noccurrence and undercount by design, so a conclusion drawn from how many log\nlines appeared would be wrong. These are the complete numbers.\n\nVerified on a real two-node loopback run rather than by inspection:\nrx_via_data=9 rx_via_well_known=64 on the subscriber, delivered=5 with all\nthree disorder counters at zero.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T13:23:38+09:00",
+          "tree_id": "81c6bdff0d12ab92afff213b1f882aa26fcc5220",
+          "url": "https://github.com/tsnlab/tickle/commit/d2801a5572a674751b7325c0e96102d417c4a82d"
+        },
+        "date": 1790224161859,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
