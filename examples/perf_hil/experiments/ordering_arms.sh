@@ -44,6 +44,9 @@ mkdir -p "$OUT"
 exec > >(tee -a "$OUT/run.log") 2>&1
 echo "=== ordering arms, drop=${DROP}%, $(date -Is) ==="
 
+# shellcheck source=examples/perf_hil/experiments/assert_loaded_rmw_tickle.sh
+. "$(dirname "${BASH_SOURCE[0]}")/assert_loaded_rmw_tickle.sh"
+
 # shellcheck disable=SC1090,SC1091 # ROS setup scripts are generated at install time.
 for d in /opt/ros/*/setup.bash; do . "$d"; break; done
 # shellcheck disable=SC1091
@@ -83,22 +86,19 @@ run_arm() {
     TICKLE_NODE_ID=102 "$pt" "${common[@]}" -p 0 -s 1 "${rosargs[@]}" > "$OUT/${arm}_sub.log" 2>&1 &
     local sub=$!
 
-    # Assert which librmw_tickle.so the subscriber actually MAPPED, while it is still running.
+    # Assert which librmw_tickle.so the subscriber actually mapped, while it is still running.
     #
-    # Pinning AMENT_PREFIX_PATH above is a request, not a guarantee, and this experiment has
-    # already produced four confident results from a library built the previous day. Sourcing
-    # order is an environment fact nobody here controls; what a process mapped is observable, and
-    # a run that measured the wrong binary has to say so rather than produce a number - the same
-    # rule as a run that received on only one socket being void rather than negative.
+    # Delegated to assert_loaded_rmw_tickle.sh rather than checking the path here, because that
+    # helper also greps the mapped file for a marker - which catches the case a path check cannot:
+    # the right file, at the right path, with stale content. That happened in this very experiment
+    # when colcon declined to recompile tickle.c, so a path-only check would have passed on the
+    # exact run it needed to fail.
+    #
+    # The marker is a string introduced by the work under test. If it is absent, the arm measured
+    # something else and must say so rather than produce a number.
     sleep 2
-    local mapped
-    mapped=$(grep -m1 -o '/[^ ]*librmw_tickle\.so' "/proc/$sub/maps" 2>/dev/null)
-    if [ -z "$mapped" ]; then
-        echo "  LIBRARY CHECK: could not read /proc/$sub/maps - treat this arm as VOID"
-    elif [ "$mapped" != "$REPO/install/rmw_tickle/lib/librmw_tickle.so" ]; then
-        echo "  ARM $arm IS VOID: mapped $mapped, expected $REPO/install/rmw_tickle/lib/librmw_tickle.so"
-    else
-        echo "  library check: $mapped"
+    if ! assert_loaded_rmw_tickle "$sub" "no usable reorder buffer"; then
+        echo "  ARM $arm IS VOID - see above; its numbers below describe some other build"
     fi
 
     wait $pub 2>/dev/null; wait $sub 2>/dev/null
