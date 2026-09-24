@@ -23,6 +23,15 @@
 
 // Defined in exactly one place per test binary (see test_common.h's DEFINE_STORAGE convention).
 #ifdef TEST_MOCK_DEFINE_STORAGE
+bool test_mock_link_resolves = false;
+uint32_t test_mock_link_addr = 0;
+uint32_t test_mock_link_netmask = 0;
+#else
+extern bool test_mock_link_resolves;
+extern uint32_t test_mock_link_addr;
+extern uint32_t test_mock_link_netmask;
+#endif
+#ifdef TEST_MOCK_DEFINE_STORAGE
 struct _tt_Config _tt_CONFIG = {
     .addr = _tt_NODE_ADDRESS,
     .port = _tt_NODE_PORT,
@@ -94,6 +103,20 @@ uint64_t tt_get_ns(void) {
 
 int32_t tt_get_node_id(void) {
     return test_mock_node_id;
+}
+
+// Link resolution, mocked as "nothing is configured" by default. Tests that care set
+// test_mock_link_* first; everything else gets false, which is the same answer the real HAL gives
+// for a limited broadcast, so an unconfigured test behaves exactly as an unconfigured node does.
+bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast) {
+    (void)broadcast;
+    if (!test_mock_link_resolves) {
+        return false;
+    }
+    *addr = test_mock_link_addr;
+    *netmask = test_mock_link_netmask;
+    *bcast = test_mock_link_addr | ~test_mock_link_netmask;
+    return true;
 }
 
 tt_ret_t tt_bind(struct tt_Node* node) {

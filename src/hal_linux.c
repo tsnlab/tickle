@@ -95,6 +95,43 @@ int32_t tt_get_node_id(void) {
     return node_id;
 }
 
+bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast) {
+    if (broadcast == NULL || addr == NULL || netmask == NULL || bcast == NULL) {
+        return false;
+    }
+    uint32_t want = ntohl(inet_addr(broadcast));
+
+    struct ifaddrs* ifaddrs = NULL;
+    if (getifaddrs(&ifaddrs) != 0) {
+        TT_LOG_ERROR("Cannot get network interfaces: %s", strerror(errno));
+        return false;
+    }
+
+    bool found = false;
+    for (struct ifaddrs* ifaddr = ifaddrs; ifaddr != NULL && !found; ifaddr = ifaddr->ifa_next) {
+        if (ifaddr->ifa_addr == NULL || ifaddr->ifa_netmask == NULL || ifaddr->ifa_addr->sa_family != AF_INET ||
+            ifaddr->ifa_netmask->sa_family != AF_INET) {
+            continue;
+        }
+        uint32_t if_addr = ntohl(((struct sockaddr_in*)ifaddr->ifa_addr)->sin_addr.s_addr);
+        uint32_t if_mask = ntohl(((struct sockaddr_in*)ifaddr->ifa_netmask)->sin_addr.s_addr);
+        // Computed rather than read from ifa_broadaddr: that field is only valid when IFF_BROADCAST
+        // is set, and a point-to-point interface reuses the same union member for its destination
+        // address. The directed broadcast is (addr | ~netmask) by definition either way.
+        uint32_t if_bcast = if_addr | ~if_mask;
+        if (if_bcast != want) {
+            continue;
+        }
+        *addr = if_addr;
+        *netmask = if_mask;
+        *bcast = if_bcast;
+        found = true;
+    }
+
+    freeifaddrs(ifaddrs);
+    return found;
+}
+
 tt_ret_t tt_bind(struct tt_Node* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches

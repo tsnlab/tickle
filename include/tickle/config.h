@@ -32,8 +32,9 @@
 // of this file fail the build on a combination that cannot work, which is the point of allowing
 // the override at all - a silently broken configuration would be worse than an unoverridable one.
 
-#include <assert.h> // static_assert in C11 - see the invariant asserts at the end of this file
-#include <stdint.h> // UINT8_MAX, for those same asserts
+#include <assert.h>  // static_assert in C11 - see the invariant asserts at the end of this file
+#include <stdbool.h> // struct _tt_Link.resolved
+#include <stdint.h>  // UINT8_MAX, for those same asserts
 
 #define tt_SECOND 1000000000ULL
 #define tt_MILLISECOND 1000000ULL
@@ -276,6 +277,14 @@
 // peer); more than this many -> broadcast (tt_send() once). Zero known peers (nobody has
 // announced a matching endpoint yet) always broadcasts too, regardless of this threshold -
 // there's nothing to unicast to yet, so it falls back to today's discovery-by-broadcast behavior.
+// How many links (interfaces) one node can be configured to talk on. Fixed, because TickLE is
+// malloc-free: a node's links are part of its static configuration, not something it discovers.
+// Four is a guess sized for the cases in front of us - a wired test link plus a management
+// network is two, and a gateway bridging two segments is three - not a measured limit.
+#ifndef tt_MAX_LINK_COUNT
+#define tt_MAX_LINK_COUNT 4
+#endif
+
 #ifndef tt_UNICAST_PEER_THRESHOLD
 #define tt_UNICAST_PEER_THRESHOLD 2
 #endif
@@ -370,6 +379,37 @@ struct _tt_Config {
     // platform/linux/test.sh runs both sides of a pair in one namespace over loopback, each
     // started with a different id, without needing root for network namespaces at all.
     int32_t node_id;
+
+    // One link this node talks on: where its broadcasts go, which local address it sends them
+    // from, and how many peers on *this* link it will unicast to before switching to one
+    // broadcast. Per link rather than per node because the answer genuinely differs by medium -
+    // five subscribers on a 10Base-T1S segment and one on Ethernet want opposite decisions, and a
+    // single count across both loses on whichever it is not sized for.
+    //
+    // `resolved_*` are filled in at tt_bind() from the operating system, not from the strings:
+    // matching a peer to a link needs the link's netmask, which a broadcast address does not
+    // carry (x.y.z.255 implies /24 only by convention). The OS already knows every interface's
+    // address, netmask and broadcast together, so the link is resolved against the interface
+    // whose broadcast is the configured one. A link therefore has to correspond to a real local
+    // interface - which is what "per interface" means.
+    struct _tt_Link {
+        char* broadcast;
+        char* addr; // NULL or "0.0.0.0" = any local address
+        // Deliberately still 2, and deliberately still a guess. Making the threshold per-link
+        // does not make its value better-founded than the single global one was - see
+        // tt_UNICAST_PEER_THRESHOLD's own comment. It is now a guess per link.
+        uint8_t unicast_threshold;
+
+        uint32_t resolved_addr;      // host byte order, from the OS at bind time
+        uint32_t resolved_netmask;   // host byte order
+        uint32_t resolved_broadcast; // host byte order
+        bool resolved;
+    } links[tt_MAX_LINK_COUNT];
+    // 0 means "no links configured explicitly": tt_bind() then synthesises exactly one from the
+    // addr/broadcast/tt_UNICAST_PEER_THRESHOLD fields above, so every existing caller - and every
+    // single-link deployment - keeps working without knowing links[] exists at all. The
+    // single-link case is the degenerate one, not a special case.
+    uint8_t link_count;
 };
 
 extern struct _tt_Config _tt_CONFIG;

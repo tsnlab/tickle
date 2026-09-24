@@ -61,6 +61,25 @@ int32_t tt_get_node_id(void) {
     return (int32_t)(addr >> 24);
 }
 
+bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast) {
+    // One netif on this target (see tt_get_node_id()'s own comment), so there is nothing to search:
+    // either the configured broadcast is this interface's, or no local interface owns it.
+    if (broadcast == NULL || addr == NULL || netmask == NULL || bcast == NULL || netif_default == NULL) {
+        return false;
+    }
+    uint32_t want = ntohl(inet_addr(broadcast));
+    uint32_t if_addr = ntohl(ip4_addr_get_u32(netif_ip4_addr(netif_default)));
+    uint32_t if_mask = ntohl(ip4_addr_get_u32(netif_ip4_netmask(netif_default)));
+    uint32_t if_bcast = if_addr | ~if_mask;
+    if (if_bcast != want) {
+        return false;
+    }
+    *addr = if_addr;
+    *netmask = if_mask;
+    *bcast = if_bcast;
+    return true;
+}
+
 tt_ret_t tt_bind(struct tt_Node* node) {
     // See hal_linux.c's own tt_bind() comment on this same line - node->hal.sock relies on the
     // identical "only touched after it's known-good" convention.

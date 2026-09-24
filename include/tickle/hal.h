@@ -11,6 +11,7 @@
 #pragma once
 
 #include <byteswap.h>
+#include <stdbool.h> // tt_resolve_link()
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -116,6 +117,16 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
  *         other negative values for I/O error
  */
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout);
+
+// Resolves a configured broadcast address to the local interface that owns it, filling *addr,
+// *netmask and *bcast (all host byte order) from that interface. Returns false when no local
+// interface has that broadcast address - which includes the limited broadcast 255.255.255.255,
+// since no interface owns it.
+//
+// Exists because matching a peer to a link needs the link's netmask, and a broadcast address does
+// not carry one: x.y.z.255 implies /24 only by convention. The operating system already knows
+// every interface's address, netmask and broadcast together, so this asks it rather than guessing.
+bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast);
 
 // Non-blocking single receive: pulls one datagram if one is already waiting, without any poll()
 // wait. tt_Node_poll() uses this to drain whatever else the kernel has buffered after tt_receive()
