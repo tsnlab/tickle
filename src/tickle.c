@@ -1395,6 +1395,8 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->reliable = false;              // best-effort by default - see tt_Publisher.reliable's own doc comment
     pub->durable = false;               // volatile by default - see tt_Publisher.durable's own doc comment
     pub->heartbeat_period_ns = 0;       // no periodic Heartbeat by default - see its own doc comment
+    pub->heartbeat_piggyback_every = 0; // no piggybacked Heartbeat by default - see its own doc comment
+    pub->heartbeat_piggyback_count = 0;
     pub->ack_solicit_period_ns = 0;     // no periodic ACK solicitation by default - see its own doc comment
     pub->ack_solicit_watermark_pct = 0; // no watermark-triggered solicitation either (Phase 3 (d))
     pub->last_ack_solicit_ns = 0;
@@ -2081,6 +2083,38 @@ static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t nod
     }
 }
 
+static uint32_t reliable_cache_oldest_seq_no(struct tt_ReliableCache* cache);
+static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, uint32_t first_seq_no,
+                                      const struct tt_Peer* peers, uint8_t peer_count, uint8_t flags);
+
+// Whether this publish should carry a piggybacked Heartbeat (tt_Publisher.heartbeat_piggyback_every).
+// Only when it flushes anyway: a batching publisher leaves the send to node_flush(), and a
+// Heartbeat buried in a batch arrives no sooner than the batch does.
+static bool piggyback_due(struct tt_Publisher* pub, bool is_flush) {
+    if (!is_flush || pub->reliable_cache == NULL || pub->heartbeat_piggyback_every == 0) {
+        return false;
+    }
+    pub->heartbeat_piggyback_count++;
+    return pub->heartbeat_piggyback_count >= pub->heartbeat_piggyback_every;
+}
+
+// Append a Heartbeat behind the DATA the caller left pending, and send both in one datagram to the
+// DATA's own peers - so the unicast decision the DATA made is the one that holds.
+//
+// If the Heartbeat cannot be appended - no room behind this DATA, or an encode failure it rolled
+// back - the DATA is still sitting unsent, and goes on its own. A piggyback is an optimisation; it
+// must never be the reason a sample is not published. Returns false only if that send fails.
+static bool append_piggybacked_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, const struct tt_Peer* peers,
+                                         uint8_t peer_count) {
+    pub->heartbeat_piggyback_count = 0;
+    encode_and_send_heartbeat(node, pub, reliable_cache_oldest_seq_no(pub->reliable_cache), peers, peer_count,
+                              tt_HEARTBEAT_FLAG_FINAL);
+    if (node->tx_tail != sizeof(struct tt_Header)) {
+        return flush_tx(node, node->tx_tail, peers, peer_count);
+    }
+    return true;
+}
+
 tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
@@ -2193,12 +2227,24 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
             peer_count = count;
         }
     }
-    if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
+    // Piggybacked Heartbeat (heartbeat_piggyback_every, tickle.h). Decided here, before the DATA's
+    // end_encode(), because a piggyback changes whether that end_encode() flushes: the DATA is left
+    // pending so the Heartbeat can be appended behind it and one flush sends both. Only when this
+    // publish flushes anyway - a batching publisher leaves the send to node_flush(), and a
+    // Heartbeat buried in a batch arrives no sooner than the batch does.
+    bool piggyback = piggyback_due(pub, is_flush);
+
+    if (!end_encode(node, submessage_header, is_flush && !piggyback, peers, peer_count)) {
         rollback(node, old_tx_tail);
         return tt_RET_IO_ERROR;
     }
 
     pub->seq_no++;
+
+    // After seq_no++, so the Heartbeat's last_seq_no includes the DATA it travels with.
+    if (piggyback && !append_piggybacked_heartbeat(node, pub, peers, peer_count)) {
+        return tt_RET_IO_ERROR;
+    }
 
     // Phase 3 prerequisite (d) - after the sample is out and counted, ask for an ACK if the cache
     // is now watermark-full of unacknowledged samples. No-op unless a caller opted in.

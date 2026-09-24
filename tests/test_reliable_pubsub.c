@@ -2678,6 +2678,88 @@ static void test_released_sample_keeps_its_arrival_socket(void) {
     EXPECT_TRUE(sub.last_via_data_port);
 }
 
+// Walks the last datagram the mock sent and reports whether it carried a DATA and, after it, a
+// HEARTBEAT. Advances by each submessage's own length field, in bytes, the way the receiver's
+// process_packet() walk does.
+static void last_datagram_contents(bool* has_data, bool* heartbeat_after_data) {
+    *has_data = false;
+    *heartbeat_after_data = false;
+    size_t pos = sizeof(struct tt_Header);
+    while (pos + sizeof(struct tt_SubmessageHeader) <= test_mock_send_last_len) {
+        const struct tt_SubmessageHeader* sub = (const struct tt_SubmessageHeader*)(test_mock_send_last_buf + pos);
+        if (sub->type == tt_SUBMESSAGE_TYPE_DATA) {
+            *has_data = true;
+        } else if (sub->type == tt_SUBMESSAGE_TYPE_HEARTBEAT && *has_data) {
+            *heartbeat_after_data = true;
+        }
+        if (sub->length == 0) {
+            break;
+        }
+        pos += sub->length;
+    }
+}
+
+// Every Nth sample carries a Heartbeat in the SAME datagram as its DATA, after it, unicast.
+//
+// Each of those three is load-bearing. Same datagram: a separate one would cost the extra send the
+// piggyback exists to avoid. After the DATA: a publisher unicasts only when nothing was pending in
+// tx_buffer ahead of its DATA, so a Heartbeat placed first turns the datagram into a broadcast.
+// Unicast: that is the observable consequence, and the one a reordering would silently break.
+static void test_piggybacked_heartbeat_rides_every_nth_datagram_unicast(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    TEST_RELIABLE_CACHE(cache, 8);
+    pub.reliable_cache = &cache;
+    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+    pub.heartbeat_piggyback_every = 3;
+
+    bool has_data = false;
+    bool heartbeat_after_data = false;
+    for (uint32_t i = 1; i <= 6; i++) {
+        int send_to_before = test_mock_send_to_call_count;
+        int send_before = test_mock_send_call_count;
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+        // Exactly one datagram per sample, piggyback or not, and it went unicast.
+        EXPECT_EQ_INT(1, test_mock_send_call_count - send_before);
+        EXPECT_EQ_INT(1, test_mock_send_to_call_count - send_to_before);
+        EXPECT_EQ_U32(0xc0a80a02, test_mock_send_to_last_ip);
+
+        last_datagram_contents(&has_data, &heartbeat_after_data);
+        EXPECT_TRUE(has_data);
+        // Samples 3 and 6 carry it; the rest do not.
+        EXPECT_TRUE(heartbeat_after_data == (i % 3 == 0));
+    }
+    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // nothing left pending
+}
+
+// Off is the default, and off means the datagrams are exactly what they were before this existed.
+static void test_piggyback_off_by_default_sends_no_heartbeat(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    TEST_RELIABLE_CACHE(cache, 8);
+    pub.reliable_cache = &cache;
+    pub.peers[0] = (struct tt_Peer) {.node_id = 2, .ip = 0xc0a80a02, .port = 8282};
+
+    bool has_data = false;
+    bool heartbeat_after_data = false;
+    for (uint32_t i = 1; i <= 6; i++) {
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+        last_datagram_contents(&has_data, &heartbeat_after_data);
+        EXPECT_TRUE(has_data);
+        EXPECT_TRUE(!heartbeat_after_data);
+    }
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -2709,6 +2791,8 @@ int main(void) {
     test_retry_giveup_releases_the_samples_it_absorbs();
     test_heartbeat_jump_releases_what_it_passes();
     test_released_sample_keeps_its_arrival_socket();
+    test_piggybacked_heartbeat_rides_every_nth_datagram_unicast();
+    test_piggyback_off_by_default_sends_no_heartbeat();
     test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_silently();
     test_reliable_held_samples_precede_the_jump_that_releases_them();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();

@@ -825,6 +825,25 @@ struct tt_Publisher { // extends endpoint
     // announce for a best-effort Publisher).
     uint64_t heartbeat_period_ns;
 
+    // 0 (tt_Node_create_publisher()'s own default): off. Non-zero N: every Nth published sample
+    // carries a Heartbeat in the same datagram - "everything below first_available_seq_no is gone",
+    // for a reader that is waiting on a gap the publisher can no longer fill (2026-09-24).
+    //
+    // The alternative to heartbeat_period_ns above, and measured against it. A periodic Heartbeat
+    // costs a whole datagram per period whatever the data rate, which on a quiet publisher is most
+    // of its traffic. Piggybacked, it adds no datagram and no syscall - one small submessage on a
+    // datagram being sent anyway - and its frequency follows the data rate, which is when a gap can
+    // open at all. What it cannot do is speak once the publisher stops: a reader waiting on a gap
+    // near the end of a burst hears nothing further, which periodic still covers.
+    //
+    // Appended AFTER the DATA, never before: a publisher unicasts only when nothing was already
+    // pending in tx_buffer ahead of its DATA, so a Heartbeat placed first would silently turn every
+    // piggybacked datagram into a broadcast. Set it directly, like reliable_cache/durable - it
+    // schedules nothing, so unlike heartbeat_period_ns it needs no call.
+    uint32_t heartbeat_piggyback_every;
+    // Core-owned: samples published since the last piggybacked Heartbeat.
+    uint32_t heartbeat_piggyback_count;
+
     // 0 (tt_Node_create_publisher()'s own default): no periodic ACK solicitation, today's only
     // behavior. Non-zero: tt_Publisher_request_ack() (below) fires automatically every this-many
     // nanoseconds, instead of only when a caller happens to invoke it directly - see tt_Publisher_
