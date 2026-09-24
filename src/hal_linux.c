@@ -44,6 +44,26 @@
 #include "consts.h"
 #include "log.h"
 
+// TT_RX_FIXED_PREFERENCE - an experiment arm for the "Data consistency violated" abort, off by
+// default and not a knob anyone should turn in a deployment.
+//
+// A node reads two sockets: broadcasts land on the well-known one, unicast on its own data socket.
+// Whichever is ready is read, and when both are they alternate. A stream that is half broadcast
+// and half unicast - which is what a Publisher crossing tt_UNICAST_PEER_THRESHOLD mid-run produces
+// - is therefore interleaved by the reader, and an alternating reader can take a later unicast
+// before an earlier broadcast that was already waiting. That is a candidate cause of samples
+// reaching the application out of order.
+//
+// Defining this to 1 pins the well-known socket first instead, which removes the interleaving and
+// with it that candidate. It is a discriminator, not a fix: the alternation exists because a fixed
+// preference does not merely delay the other socket but starves it outright under a sustained
+// stream, and what starves is RELIABLE recovery (ACKNACKs are unicast while a Publisher over the
+// threshold broadcasts its data). If the abort survives this arm, the interleaving is not the
+// cause and the alternation keeps its reason for existing either way.
+#ifndef TT_RX_FIXED_PREFERENCE
+#define TT_RX_FIXED_PREFERENCE 0
+#endif
+
 #define SEC_NS 1000000000LL
 
 struct _tt_Config _tt_CONFIG = {
@@ -381,12 +401,19 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         // broadcasting its data. Alternating bounds the wait at one datagram either way.
         bool well_known_ready = (pfd[0].revents & POLLIN) != 0; // NOLINT(misc-include-cleaner)
         bool data_ready = (pfd[2].revents & POLLIN) != 0;       // NOLINT(misc-include-cleaner)
+#if TT_RX_FIXED_PREFERENCE
+        // EXPERIMENT ARM, not a proposed behaviour. See the note at tt_RX_FIXED_PREFERENCE below.
+        if (data_ready && !well_known_ready) {
+            read_fd = node->hal.data_sock;
+        }
+#else
         if (data_ready && (!well_known_ready || node->hal.rx_prefer_data)) {
             read_fd = node->hal.data_sock;
         }
         if (well_known_ready && data_ready) {
             node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
         }
+#endif
     }
 
     struct sockaddr_in addr;
@@ -419,9 +446,14 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     // other's backlog to the next poll(), which is exactly the per-packet round trip drain_rx()
     // exists to avoid - and a fixed order here would starve the second socket outright while the
     // first has a sustained stream on it, so the same alternation tt_receive() uses applies.
+#if TT_RX_FIXED_PREFERENCE
+    int first = node->hal.sock;
+    int second = node->hal.data_sock;
+#else
     int first = node->hal.rx_prefer_data ? node->hal.data_sock : node->hal.sock;
     int second = node->hal.rx_prefer_data ? node->hal.sock : node->hal.data_sock;
     node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
+#endif
 
     node->rx_via_data_port = (first == node->hal.data_sock);
     int32_t ret = (int32_t)recvfrom(first, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
