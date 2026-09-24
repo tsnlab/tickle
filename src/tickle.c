@@ -1162,6 +1162,10 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
                                 uint8_t sender_node_id, uint32_t sender_entity_id, uint32_t sender_ip,
                                 uint16_t sender_port);
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no);
+// RELIABLE in-order delivery - release any samples this Subscriber is holding for a writer that
+// has gone away, so its slots do not stay occupied for a stream that will never resume.
+static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id,
+                                             bool match_any_entity);
 static int highest_relevant_bit(const struct tt_WriterProxy* proxy);
 // Milestone 47 - WriterProxy table lookup/creation - see struct tt_WriterProxy's own doc comment
 // (tickle.h) and each definition. find_endpoint_by_entity() (the entity_id-aware ACKNACK routing
@@ -1428,6 +1432,13 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->timestamp_not_newer = 0;
     sub->via_socket_flips = 0;
     sub->out_of_order_discarded = 0;
+    sub->reorder_storage = NULL;
+    sub->reorder_slots = 0;
+    sub->reorder_slot_bytes = 0;
+    sub->reorder_held_peak = 0;
+    sub->reorder_delivered = 0;
+    sub->reorder_overflow = 0;
+    sub->reorder_abandoned = 0;
     sub->last_seq_no = 0;
     sub->last_source = 0;
     sub->last_entity_id = 0;
@@ -2638,6 +2649,10 @@ static bool bitmap_test_bit(const uint64_t* bitmap, uint32_t offset) {
     return (bitmap[offset / tt_RELIABLE_BITMAP_WORD_BITS] & (1ULL << (offset % tt_RELIABLE_BITMAP_WORD_BITS))) != 0;
 }
 
+static void bitmap_clear_bit(uint64_t* bitmap, uint32_t offset) {
+    bitmap[offset / tt_RELIABLE_BITMAP_WORD_BITS] &= ~(1ULL << (offset % tt_RELIABLE_BITMAP_WORD_BITS));
+}
+
 static void bitmap_set_bit(uint64_t* bitmap, uint32_t offset) {
     bitmap[offset / tt_RELIABLE_BITMAP_WORD_BITS] |= (1ULL << (offset % tt_RELIABLE_BITMAP_WORD_BITS));
 }
@@ -3521,6 +3536,12 @@ static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t en
             if (proxy->received_bitmap != NULL) {
                 bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
             }
+            // Anything still held for this writer is never going to be delivered: what it was
+            // waiting for was a gap this writer alone could have filled, and this writer is gone.
+            // Freeing the slots matters more than the samples - a dead writer's held samples
+            // would otherwise occupy the buffer for the lifetime of the Subscriber, and the only
+            // symptom would be reorder_overflow rising on the writers that are still alive.
+            release_reorder_slots_for_writer(sub, node_id, entity_id, match_any_entity);
             RSTAT_INC(proxies_dropped_liveliness);
         }
     }
@@ -4101,13 +4122,13 @@ struct data_delivery_ctx {
 // is the previous *delivered* sample and not merely the previous received one - a sample dropped
 // by RxO matching or by de-duplication was never seen by the application and cannot be what it
 // compared against.
-static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* sub,
-                                  const struct data_delivery_ctx* ctx) {
+static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
+                                  uint8_t source, uint32_t entity_id) {
     bool first = (sub->delivered == 0);
-    bool same_writer = !first && sub->last_source == ctx->header->source && sub->last_entity_id == ctx->entity_id;
+    bool same_writer = !first && sub->last_source == source && sub->last_entity_id == entity_id;
     // seq_no counts per writer, so it means nothing across a switch of speaker.
-    bool seq_back = same_writer && ctx->seq_no <= sub->last_seq_no;
-    bool time_back = !first && ctx->timestamp <= sub->last_timestamp;
+    bool seq_back = same_writer && seq_no <= sub->last_seq_no;
+    bool time_back = !first && timestamp <= sub->last_timestamp;
 
     if (!first && !same_writer) {
         sub->writer_switches++;
@@ -4126,19 +4147,191 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
         TT_LOG_WARNING("Delivery order: sample %u/%u from node %u entity %u ts %lu via %s follows "
                        "%u from node %u entity %u ts %lu via %s (delivered #%u, out_of_order %u, "
                        "timestamp_not_newer %u, writer_switches %u)",
-                       ctx->seq_no, ctx->endpoint_id, ctx->header->source, ctx->entity_id,
-                       (unsigned long)ctx->timestamp, node->rx_via_data_port ? "data" : "well-known", sub->last_seq_no,
-                       sub->last_source, sub->last_entity_id, (unsigned long)sub->last_timestamp,
+                       seq_no, sub->endpoint.id, source, entity_id, (unsigned long)timestamp,
+                       node->rx_via_data_port ? "data" : "well-known", sub->last_seq_no, sub->last_source,
+                       sub->last_entity_id, (unsigned long)sub->last_timestamp,
                        sub->last_via_data_port ? "data" : "well-known", sub->delivered + 1, sub->out_of_order,
                        sub->timestamp_not_newer, sub->writer_switches);
     }
 
-    sub->last_seq_no = ctx->seq_no;
-    sub->last_source = ctx->header->source;
-    sub->last_entity_id = ctx->entity_id;
-    sub->last_timestamp = ctx->timestamp;
+    sub->last_seq_no = seq_no;
+    sub->last_source = source;
+    sub->last_entity_id = entity_id;
+    sub->last_timestamp = timestamp;
     sub->last_via_data_port = node->rx_via_data_port;
     sub->delivered++;
+}
+
+// Decode one wire payload and hand it to the application, recording the delivery order first.
+// Split out of deliver_data_to_subscriber() so a sample released from the reorder buffer takes
+// exactly the same path as one delivered straight off the wire - including the zero-copy decode,
+// which a held sample is still eligible for because its bytes were copied verbatim.
+static void deliver_payload(struct tt_Node* node, struct tt_Subscriber* sub, uint32_t seq_no, uint64_t timestamp,
+                            uint8_t source, uint32_t entity_id, const uint8_t* payload, uint32_t length, bool is_native,
+                            bool* out_decode_failed) {
+    struct tt_Topic* topic = sub->topic;
+
+    // Zero-copy path: hand the callback a tt_Data* aliasing the payload directly, skipping the
+    // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
+    // the topic doesn't offer it or it declines (e.g. byte-swapped wire).
+    if (topic->data_decode_inplace != NULL) {
+        struct tt_Data* inplace = topic->data_decode_inplace(payload, length, is_native);
+        if (inplace != NULL) {
+            record_delivery_order(node, sub, seq_no, timestamp, source, entity_id);
+            sub->callback(sub, timestamp, (uint16_t)seq_no, inplace);
+            return;
+        }
+    }
+
+    uint8_t data[topic->data_size];
+    int32_t decoded = topic->data_decode((struct tt_Data*)data, payload, length, is_native);
+    if (decoded < 0) {
+        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %u", sub->endpoint.id, seq_no);
+        if (out_decode_failed != NULL) {
+            *out_decode_failed = true;
+        }
+        return;
+    }
+
+    record_delivery_order(node, sub, seq_no, timestamp, source, entity_id);
+    sub->callback(sub, timestamp, (uint16_t)seq_no, (struct tt_Data*)data);
+    topic->data_free((struct tt_Data*)data);
+}
+
+// Stride rounded up to 8 so every slot after the first is still aligned for its uint64_t header,
+// whatever the caller passed.
+#define REORDER_SLOT_ALIGN ((uint16_t)sizeof(uint64_t))
+
+static uint16_t reorder_stride(const struct tt_Subscriber* sub) {
+    return (uint16_t)((sub->reorder_slot_bytes + REORDER_SLOT_ALIGN - 1U) & ~(uint16_t)(REORDER_SLOT_ALIGN - 1U));
+}
+
+static struct tt_ReorderSlot* reorder_slot_at(struct tt_Subscriber* sub, uint16_t index) {
+    return (struct tt_ReorderSlot*)(sub->reorder_storage + ((size_t)index * reorder_stride(sub) / sizeof(uint64_t)));
+}
+
+static uint8_t* reorder_slot_payload(struct tt_ReorderSlot* slot) {
+    return (uint8_t*)slot + sizeof(struct tt_ReorderSlot);
+}
+
+// How many payload bytes one slot can hold, or 0 if this Subscriber has no usable buffer.
+static uint32_t reorder_payload_capacity(const struct tt_Subscriber* sub) {
+    if (sub->reorder_storage == NULL || sub->reorder_slots == 0 ||
+        sub->reorder_slot_bytes <= sizeof(struct tt_ReorderSlot)) {
+        return 0;
+    }
+    return (uint32_t)reorder_stride(sub) - (uint32_t)sizeof(struct tt_ReorderSlot);
+}
+
+// Hold a sample that arrived ahead of a gap, or - if it cannot be held - un-receive it so the
+// ordinary ACKNACK exchange fetches it again later.
+//
+// That fallback is what makes a Subscriber with no buffer at all still correct rather than lossy:
+// clearing the bit is a deliberate statement that this sample has NOT been received, which is
+// true from the application's point of view, since it was never delivered and nothing is keeping
+// it. Leaving the bit set and dropping the payload would silently lose the sample forever, which
+// is the one outcome a RELIABLE reader must never produce.
+static void hold_for_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy,
+                             struct data_delivery_ctx* ctx, bool is_native) {
+    (void)node;
+    uint32_t length = ctx->tail - ctx->head;
+    uint32_t capacity = reorder_payload_capacity(sub);
+
+    if (capacity >= length) {
+        uint16_t held = 0;
+        struct tt_ReorderSlot* free_slot = NULL;
+        for (uint16_t i = 0; i < sub->reorder_slots; i++) {
+            struct tt_ReorderSlot* slot = reorder_slot_at(sub, i);
+            if (slot->occupied) {
+                held++;
+                // Already holding this exact sample: a retransmit racing the original. Keep the
+                // copy already held rather than rewriting it - they are the same bytes, and a
+                // second copy in a second slot would be delivered twice on the drain.
+                if (slot->seq_no == ctx->seq_no && slot->node_id == ctx->header->source &&
+                    slot->entity_id == ctx->entity_id) {
+                    return;
+                }
+            } else if (free_slot == NULL) {
+                free_slot = slot;
+            }
+        }
+        if (free_slot != NULL) {
+            free_slot->seq_no = ctx->seq_no;
+            free_slot->timestamp = ctx->timestamp;
+            free_slot->entity_id = ctx->entity_id;
+            free_slot->node_id = ctx->header->source;
+            free_slot->length = (uint16_t)length;
+            free_slot->is_native = is_native;
+            free_slot->occupied = true;
+            memcpy(reorder_slot_payload(free_slot), ctx->buffer + ctx->head, length);
+            if ((uint32_t)(held + 1) > sub->reorder_held_peak) {
+                sub->reorder_held_peak = held + 1;
+            }
+            return;
+        }
+    }
+
+    // No room, or no buffer at all. Un-receive it: clear the bit so the gap logic still counts
+    // this sample as missing and asks for it again once the hole in front of it has filled.
+    sub->reorder_overflow++;
+    uint64_t offset = (uint64_t)ctx->seq_no - proxy->ack_seq_no;
+    if (offset < proxy_window_bits(proxy)) {
+        bitmap_clear_bit(proxy->received_bitmap, (uint32_t)offset);
+    }
+}
+
+static void release_reorder_slots_for_writer(struct tt_Subscriber* sub, uint8_t node_id, uint32_t entity_id,
+                                             bool match_any_entity) {
+    if (reorder_payload_capacity(sub) == 0) {
+        return;
+    }
+    for (uint16_t i = 0; i < sub->reorder_slots; i++) {
+        struct tt_ReorderSlot* slot = reorder_slot_at(sub, i);
+        if (!slot->occupied || slot->node_id != node_id) {
+            continue;
+        }
+        if (!match_any_entity && slot->entity_id != entity_id) {
+            continue;
+        }
+        slot->occupied = false;
+        sub->reorder_abandoned++;
+    }
+}
+
+// Release everything now in order: every held sample below the watermark, lowest first.
+//
+// Called after the watermark moves for any reason - a gap filled by a new arrival, or a gap given
+// up on by jump_ack_baseline()/advance_past_unavailable(). Giving up is a delivery event too: the
+// samples behind an abandoned gap have been waiting for something that is never coming, and DDS
+// hands over what it has rather than holding it forever.
+static void drain_reorder(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_WriterProxy* proxy) {
+    if (reorder_payload_capacity(sub) == 0) {
+        return;
+    }
+    // Lowest-first, re-scanning after each delivery: the table is tt_MAX_PEER_COUNT-scale and a
+    // sort would need storage this codebase does not allocate.
+    for (;;) {
+        struct tt_ReorderSlot* next = NULL;
+        for (uint16_t i = 0; i < sub->reorder_slots; i++) {
+            struct tt_ReorderSlot* slot = reorder_slot_at(sub, i);
+            if (!slot->occupied || slot->node_id != proxy->node_id || slot->entity_id != proxy->entity_id) {
+                continue;
+            }
+            if (slot->seq_no >= proxy->ack_seq_no) {
+                continue; // still ahead of the watermark - its turn has not come
+            }
+            if (next == NULL || slot->seq_no < next->seq_no) {
+                next = slot;
+            }
+        }
+        if (next == NULL) {
+            return;
+        }
+        next->occupied = false;
+        sub->reorder_delivered++;
+        deliver_payload(node, sub, next->seq_no, next->timestamp, next->node_id, next->entity_id,
+                        reorder_slot_payload(next), next->length, next->is_native, NULL);
+    }
 }
 
 static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -4153,7 +4346,6 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
         return;
     }
 
-    struct tt_Topic* topic = sub->topic;
     bool is_native = tt_is_native_endian(ctx->header);
 
     // BEST_EFFORT ordering (2026-09-24): a sample no newer than the last one delivered from this
@@ -4190,10 +4382,8 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     }
 
     // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op (always "new") unless sub->reliable. Milestone
-    // 60 (rmw_tickle/PLAN.md) - delivery to `callback` below is still unconditional for ordering (a
-    // late, retransmitted sample is still delivered whenever it arrives, out of its original order)
-    // but no longer for *identity* - a sample update_reliable_ack() recognizes as already delivered
-    // (a legitimate ACKNACK-driven retransmit racing the original, or a stale duplicate) is skipped
+    // 60 (rmw_tickle/PLAN.md) - a sample update_reliable_ack() recognizes as already delivered (a
+    // legitimate ACKNACK-driven retransmit racing the original, or a stale duplicate) is skipped
     // here instead of re-invoking the application callback a second time for it, matching real DDS
     // readers' own per-writer sequence-number de-duplication.
     if (!update_reliable_ack(node, sub, ctx->seq_no, ctx->header->source, ctx->entity_id, ctx->sender_ip,
@@ -4201,31 +4391,29 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
         return;
     }
 
-    // Zero-copy path: hand the callback a tt_Data* aliasing rx_buffer directly, skipping the
-    // decode-into-scratch copy and the matching data_free. Falls through to the copy path when
-    // the topic doesn't offer it or it declines (e.g. byte-swapped wire).
-    if (topic->data_decode_inplace != NULL) {
-        struct tt_Data* inplace = topic->data_decode_inplace(ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native);
-        if (inplace != NULL) {
-            record_delivery_order(node, sub, ctx);
-            sub->callback(sub, ctx->timestamp, (uint16_t)ctx->seq_no, inplace);
+    // RELIABLE in-order delivery (2026-09-24). Ordering is now the reader's job, not the
+    // application's: a sample ahead of an unfilled gap waits, and everything behind it waits with
+    // it. That is head-of-line blocking by construction, which is what RELIABLE means.
+    //
+    // Whether this sample was in order is read off the watermark rather than tracked separately:
+    // update_reliable_ack() advances ack_seq_no past this sample if and only if it was the next
+    // one expected, so ack_seq_no > seq_no means in-order and anything else means ahead of a gap.
+    if (sub->reliable) {
+        struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
+        if (proxy != NULL && proxy->ack_seq_no <= ctx->seq_no) {
+            hold_for_reorder(node, sub, proxy, ctx, is_native);
             return;
         }
-    }
-
-    uint8_t data[topic->data_size];
-    int32_t decoded =
-        topic->data_decode((struct tt_Data*)data, ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native);
-
-    if (decoded < 0) {
-        TT_LOG_ERROR("Cannot decode data for endpoint_id: %08x, seq_no: %d", ctx->endpoint_id, ctx->seq_no);
-        ctx->decode_failed = true;
+        deliver_payload(node, sub, ctx->seq_no, ctx->timestamp, ctx->header->source, ctx->entity_id,
+                        ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native, &ctx->decode_failed);
+        if (proxy != NULL) {
+            drain_reorder(node, sub, proxy);
+        }
         return;
     }
 
-    record_delivery_order(node, sub, ctx);
-    sub->callback(sub, ctx->timestamp, (uint16_t)ctx->seq_no, (struct tt_Data*)data);
-    topic->data_free((struct tt_Data*)data);
+    deliver_payload(node, sub, ctx->seq_no, ctx->timestamp, ctx->header->source, ctx->entity_id,
+                    ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native, &ctx->decode_failed);
 }
 
 static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
@@ -5169,6 +5357,11 @@ static void inform_subscriber_of_heartbeat(struct tt_Node* node, struct tt_Endpo
     } else {
         advance_past_unavailable(proxy, ctx->first_available_seq_no);
     }
+    // Giving up on a gap is a delivery event: whatever was held behind it has been waiting for
+    // something the Publisher has just said is never coming, so it is released now, in order.
+    // Without this a held sample would sit until the next in-order arrival happened to drain it -
+    // and on a stream that has stopped, that is forever.
+    drain_reorder(node, sub, proxy);
     if (!first_contact && ctx->last_seq_no >= proxy->ack_seq_no) {
         uint64_t offset = (uint64_t)ctx->last_seq_no - proxy->ack_seq_no;
         if (offset >= proxy_window_bits(proxy)) {

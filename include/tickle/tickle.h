@@ -1121,6 +1121,30 @@ struct tt_WriterProxy {
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                        struct tt_Data* data);
 
+// One held sample in a RELIABLE Subscriber's reorder buffer (2026-09-24).
+//
+// A RELIABLE reader must deliver in order, so a sample that arrives ahead of a gap has to be held
+// until the gap fills. This is the header of one such held sample; its wire payload follows
+// immediately after it inside the same slot, and the stride between slots is
+// tt_Subscriber.reorder_slot_bytes.
+//
+// The payload is kept as received rather than decoded, with its own endianness flag, because
+// decoding needs the topic's caller-owned scratch and there is exactly one of those - it belongs
+// to whichever sample is being delivered right now, not to a queue of samples waiting their turn.
+struct tt_ReorderSlot {
+    uint64_t timestamp;
+    uint32_t seq_no;
+    uint32_t entity_id;
+    uint16_t length;
+    uint8_t node_id;
+    bool occupied;
+    bool is_native;
+};
+
+// Bytes one reorder slot needs for a payload of `payload_bytes`. Callers size their storage as
+// tt_REORDER_SLOT_SIZE(largest payload) * slots.
+#define tt_REORDER_SLOT_SIZE(payload_bytes) (sizeof(struct tt_ReorderSlot) + (payload_bytes))
+
 struct tt_Subscriber { // extends endpoint
     struct tt_Endpoint endpoint;
     struct tt_Node* node;
@@ -1262,6 +1286,44 @@ struct tt_Subscriber { // extends endpoint
     // sample that never arrived - which is the same reason COMPARISON.MD reports raw and
     // post-match loss as separate columns rather than one number nobody can take apart.
     uint32_t out_of_order_discarded;
+
+    // RELIABLE in-order delivery (2026-09-24) - caller-owned storage for samples that arrived
+    // ahead of a gap and must wait for it.
+    //
+    // NULL (the default) does not mean "deliver out of order". It means this Subscriber waits
+    // without holding: a sample ahead of the gap is not delivered and is not recorded as
+    // received, so the ordinary ACKNACK exchange fetches it again once the gap has filled.
+    // Ordering is correct either way - what the buffer buys is not having to re-request
+    // everything that arrived after a single lost sample, which is the common case under loss
+    // and the one COMPARISON.MD section 3b measures.
+    //
+    // There is deliberately no builtin default, unlike tracking_bitmaps' own builtin_tracking[].
+    // A useful builtin would have to hold whole payloads - 8 slots at tt_MAX_BUFFER_LENGTH is
+    // ~11.8KB against a 920-byte tt_Subscriber - and an embedded-first library (PLAN.md's Project
+    // Goal 1) cannot put that in every Subscriber for a case a microcontroller stream may never
+    // hit. A Linux-class caller (rmw_tickle, the perf_hil examples) hands storage in; a small
+    // target leaves it NULL and pays in retransmissions instead of RAM.
+    //
+    // Set all three together before the first sample arrives. reorder_slot_bytes is the stride
+    // and must be at least tt_REORDER_SLOT_SIZE(largest payload this topic can carry); a payload
+    // too big for the stride is treated exactly like a full buffer.
+    // uint64_t*, not uint8_t*, and for the same reason tracking_bitmaps is: a slot header starts
+    // with a uint64_t timestamp, so the storage has to be 8-byte aligned. A uint8_t array gives no
+    // such guarantee - it would be undefined behaviour everywhere and an alignment fault on the
+    // Arm targets this library exists for. The type makes the caller's declaration carry it.
+    uint64_t* reorder_storage;
+    uint16_t reorder_slots;
+    // Stride in BYTES, not in uint64_t, and rounded up to a multiple of 8 internally so slot n
+    // stays aligned however the caller sized it.
+    uint16_t reorder_slot_bytes;
+    // Diagnostics, not protocol state. reorder_overflow rising means the buffer is too small for
+    // this stream's loss pattern and the Subscriber is paying for it in retransmissions - the one
+    // number that says "make this bigger". reorder_abandoned counts samples given up on because
+    // the gap in front of them was declared unrecoverable, which is loss, not disorder.
+    uint32_t reorder_held_peak;
+    uint32_t reorder_delivered;
+    uint32_t reorder_overflow;
+    uint32_t reorder_abandoned;
     uint32_t last_seq_no;
     uint32_t last_source;
     uint32_t last_entity_id;

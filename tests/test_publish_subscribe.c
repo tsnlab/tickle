@@ -669,35 +669,17 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     init_node_and_topic(&node, &topic);
     init_subscriber_registered_on_node(&sub, &node, &topic);
 
-    struct tt_Header header;
-    memset(&header, 0, sizeof(header));
-    header.magic_value = NATIVE_MAGIC_VALUE;
-    header.version = tt_VERSION;
-    header.source = REMOTE_NODE_ID;
-
-    struct data_delivery_ctx ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.header = &header;
-    ctx.endpoint_id = ENDPOINT_ID;
-
     // Two in order from one writer: nothing is out of order, and the first sample has no
     // predecessor to be out of order against.
-    ctx.seq_no = 10;
-    ctx.timestamp = 1000;
-    ctx.entity_id = 7;
-    record_delivery_order(&node, &sub, &ctx);
-    ctx.seq_no = 11;
-    ctx.timestamp = 2000;
-    record_delivery_order(&node, &sub, &ctx);
+    record_delivery_order(&node, &sub, 10, 1000, REMOTE_NODE_ID, 7);
+    record_delivery_order(&node, &sub, 11, 2000, REMOTE_NODE_ID, 7);
     EXPECT_EQ_U32(2, sub.delivered);
     EXPECT_EQ_U32(0, sub.out_of_order);
     EXPECT_EQ_U32(0, sub.timestamp_not_newer);
     EXPECT_EQ_U32(0, sub.writer_switches);
 
     // Same writer, both axes backwards: one sample, counted once on each.
-    ctx.seq_no = 10;
-    ctx.timestamp = 1000;
-    record_delivery_order(&node, &sub, &ctx);
+    record_delivery_order(&node, &sub, 10, 1000, REMOTE_NODE_ID, 7);
     EXPECT_EQ_U32(3, sub.delivered);
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(1, sub.timestamp_not_newer);
@@ -707,10 +689,7 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     // must NOT be read as disorder - it belongs to a different writer's own counting - while the
     // switch itself is recorded. This is the case that would otherwise report every legitimate
     // change of speaker as a fault.
-    ctx.seq_no = 1;
-    ctx.timestamp = 3000;
-    ctx.entity_id = 9;
-    record_delivery_order(&node, &sub, &ctx);
+    record_delivery_order(&node, &sub, 1, 3000, REMOTE_NODE_ID, 9);
     EXPECT_EQ_U32(4, sub.delivered);
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(1, sub.timestamp_not_newer);
@@ -718,10 +697,7 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
 
     // ... but a backwards timestamp across that switch IS counted, because that is the predicate
     // the application itself checks and it does not care which writer spoke.
-    ctx.seq_no = 12;
-    ctx.timestamp = 2500;
-    ctx.entity_id = 7;
-    record_delivery_order(&node, &sub, &ctx);
+    record_delivery_order(&node, &sub, 12, 2500, REMOTE_NODE_ID, 7);
     EXPECT_EQ_U32(5, sub.delivered);
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(2, sub.timestamp_not_newer);
@@ -734,18 +710,12 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     // socket. The boundary is what is counted, because that is where an interleaving reader can
     // misorder; a run of samples on one socket offers no such chance however long it is.
     node.rx_via_data_port = true;
-    ctx.seq_no = 13;
-    ctx.timestamp = 4000;
-    record_delivery_order(&node, &sub, &ctx);
+    record_delivery_order(&node, &sub, 13, 4000, REMOTE_NODE_ID, 7);
     EXPECT_EQ_U32(1, sub.via_socket_flips);
-    ctx.seq_no = 14;
-    ctx.timestamp = 5000;
-    record_delivery_order(&node, &sub, &ctx);
+    record_delivery_order(&node, &sub, 14, 5000, REMOTE_NODE_ID, 7);
     EXPECT_EQ_U32(1, sub.via_socket_flips); // same socket again: not a transition
     node.rx_via_data_port = false;
-    ctx.seq_no = 15;
-    ctx.timestamp = 6000;
-    record_delivery_order(&node, &sub, &ctx);
+    record_delivery_order(&node, &sub, 15, 6000, REMOTE_NODE_ID, 7);
     EXPECT_EQ_U32(2, sub.via_socket_flips);
 
     EXPECT_EQ_U32(8, sub.delivered);

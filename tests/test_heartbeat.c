@@ -115,6 +115,10 @@ static void init_publisher_registered_on_node(struct tt_Publisher* pub, struct t
     node->endpoints[0] = (struct tt_Endpoint*)pub;
 }
 
+#define TEST_REORDER_SLOTS 16
+#define TEST_REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + 64)
+static uint64_t test_reorder_storage[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Node* node,
                                                struct tt_Topic* topic) {
     memset(sub, 0, sizeof(*sub));
@@ -124,6 +128,16 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     sub->topic = topic;
     sub->callback = stub_subscriber_callback;
     sub->reliable = true;
+    // A reorder buffer, the way a Linux-class caller supplies one (tickle.h's own reorder_storage
+    // comment). Every test in this file asserts on gap *tracking* - which bits are set, where the
+    // watermark is - and a RELIABLE Subscriber with no buffer un-receives a sample that arrives
+    // ahead of the gap so the ACKNACK exchange fetches it again. That is correct, and it would
+    // turn every one of these into a test of the no-buffer fallback instead of the thing it was
+    // written for.
+    sub->reorder_storage = test_reorder_storage;
+    sub->reorder_slots = TEST_REORDER_SLOTS;
+    sub->reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+    memset(test_reorder_storage, 0, sizeof(test_reorder_storage));
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - matches tt_Node_create_
                                                       // subscriber()'s own init (Milestone 47 -

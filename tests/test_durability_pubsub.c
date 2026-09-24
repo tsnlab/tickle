@@ -535,6 +535,16 @@ static void test_durability_backlog_recovered_via_acknack_when_reliable_too(void
     sub.topic = &topic;
     sub.callback = stub_subscriber_callback;
     sub.reliable = true;
+    // A reorder buffer, because this test is about gap *tracking* and not about what a Subscriber
+    // does with a sample that arrives ahead of the gap. Without one, a RELIABLE Subscriber
+    // un-receives such a sample so the ACKNACK exchange fetches it again later (tickle.h's own
+    // reorder_storage comment), which would clear the very bit this test is asserting on and turn
+    // a test of Milestone 20's jump fix into a test of the reorder fallback.
+    static uint64_t reorder[4 * (sizeof(struct tt_ReorderSlot) + 64) / sizeof(uint64_t)];
+    memset(reorder, 0, sizeof(reorder));
+    sub.reorder_storage = reorder;
+    sub.reorder_slots = 4;
+    sub.reorder_slot_bytes = sizeof(struct tt_ReorderSlot) + 64;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub.writers[i].node_id = tt_NODE_ID_INVALID; // all empty - never heard from this Publisher
                                                      // before, exactly the "first contact" case

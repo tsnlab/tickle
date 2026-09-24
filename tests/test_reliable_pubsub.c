@@ -94,6 +94,10 @@ static void init_publisher(struct tt_Publisher* pub, struct tt_Node* node, struc
     pub->topic = topic;
 }
 
+#define TEST_REORDER_SLOTS 16
+#define TEST_REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + 64)
+static uint64_t test_reorder_storage[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+
 static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct tt_Node* node,
                                                struct tt_Topic* topic) {
     memset(sub, 0, sizeof(*sub));
@@ -103,6 +107,16 @@ static void init_subscriber_registered_on_node(struct tt_Subscriber* sub, struct
     sub->topic = topic;
     sub->callback = stub_subscriber_callback;
     sub->reliable = true;
+    // A reorder buffer, the way a Linux-class caller supplies one (tickle.h's own reorder_storage
+    // comment). Every test in this file asserts on gap *tracking* - which bits are set, where the
+    // watermark is - and a RELIABLE Subscriber with no buffer un-receives a sample that arrives
+    // ahead of the gap so the ACKNACK exchange fetches it again. That is correct, and it would
+    // turn every one of these into a test of the no-buffer fallback instead of the thing it was
+    // written for.
+    sub->reorder_storage = test_reorder_storage;
+    sub->reorder_slots = TEST_REORDER_SLOTS;
+    sub->reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+    memset(test_reorder_storage, 0, sizeof(test_reorder_storage));
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - matches tt_Node_create_
                                                       // subscriber()'s own init (Milestone 47 -
@@ -693,17 +707,27 @@ static void test_reliable_duplicate_delivery_is_not_re_delivered_to_callback(voi
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
 
+    // Ordered delivery (2026-09-24): seq_no 3 is ahead of the gap at 2, so it is HELD rather than
+    // delivered. It used to go straight to the callback here, and the count used to reach 2. What
+    // this test is for - a retransmit must not be delivered twice - is unchanged; only when the
+    // first copy reaches the application has changed, which is the whole point of the feature.
     tail = write_data(&node, 3, 300, 3); // out of order, genuinely new - ahead of the gap at 2
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count); // held, not delivered
 
     tail = write_data(&node, 3, 300, 3); // seq_no 3 again - e.g. a retransmit racing the original
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // not re-delivered - the bit was already set
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count); // still just held once, not twice
 
-    tail = write_data(&node, 2, 200, 2); // fills the gap - genuinely new, watermark advances past 3 too
+    // The gap fills: 2 is delivered, and 3 follows it immediately, in order, out of the buffer.
+    tail = write_data(&node, 2, 200, 2);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(1, sub.reorder_delivered); // exactly one sample came back out of the buffer
+
+    // And it was delivered in order: seq_no 3 is what the application saw last, after 2.
+    EXPECT_EQ_U32(3, sub.last_seq_no);
+    EXPECT_EQ_U32(0, sub.out_of_order);
 
     // seq_no 1 again, well below the watermark (4) now - deliberately NOT deduplicated (accepted
     // trade-off, see this test's own doc comment): still delivered, count advances.
@@ -2304,6 +2328,126 @@ static void test_keep_all_subscriber_never_gives_up(void) {
     EXPECT_TRUE(proxy->ack_seq_no > 1);
 }
 
+// RELIABLE delivers in order, and does so whether or not it has somewhere to hold what it is
+// waiting on. The two configurations reach the same guarantee by different routes, and both are
+// pinned here because the no-buffer one is the default and the easy one to leave untested.
+static void test_reliable_delivers_in_order_with_buffer(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    // Three samples arrive ahead of the gap at 2, out of order among themselves. None is
+    // delivered, and the buffer does not care what order they arrived in.
+    tail = write_data(&node, 5, 500, 5);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 3, 300, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 4, 400, 4);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(3, sub.reorder_held_peak);
+
+    // The gap fills. 2 goes up, then 3, 4 and 5 follow it in sequence order - not arrival order.
+    tail = write_data(&node, 2, 200, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(5, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(3, sub.reorder_delivered);
+    EXPECT_EQ_U32(5, sub.last_seq_no);
+    // The whole point: the application never saw a step backwards.
+    EXPECT_EQ_U32(0, sub.out_of_order);
+    EXPECT_EQ_U32(0, sub.timestamp_not_newer);
+    EXPECT_EQ_U32(0, sub.reorder_overflow);
+}
+
+// With no buffer - the default, and what a small target runs - ordering is still correct. The
+// sample ahead of the gap is not delivered and not recorded as received, so the ordinary ACKNACK
+// exchange fetches it again once the gap has filled. Slower, never wrong.
+static void test_reliable_delivers_in_order_without_buffer(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.reorder_storage = NULL;
+    sub.reorder_slots = 0;
+    sub.reorder_slot_bytes = 0;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    tail = write_data(&node, 3, 300, 3); // ahead of the gap at 2
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count); // not delivered
+    EXPECT_EQ_U32(1, sub.reorder_overflow);
+
+    // And crucially not recorded as received, so it is still asked for. A set bit here would mean
+    // the sample had been silently lost forever - the one outcome RELIABLE must never produce.
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);
+    EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
+
+    // The gap fills, then 3 is retransmitted and delivered - in order, one round trip later.
+    tail = write_data(&node, 2, 200, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count);
+    tail = write_data(&node, 3, 300, 3);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(3, sub.last_seq_no);
+    EXPECT_EQ_U32(0, sub.out_of_order);
+}
+
+// A gap the Publisher says is unrecoverable must release what is waiting behind it. Otherwise a
+// held sample waits for something that is never coming, and on a stream that then stops it waits
+// forever - the failure mode of ordered delivery, and the reason DDS hands over what it has.
+static void test_reliable_releases_held_samples_when_gap_is_abandoned(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    tail = write_data(&node, 4, 400, 4); // 2 and 3 missing
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count); // 4 is held
+
+    // The Publisher reports it no longer holds 2 or 3: the oldest it still has is 4.
+    tail = write_heartbeat(&node, ENDPOINT_ID, 4, 4, tt_HEARTBEAT_FLAG_FINAL);
+    EXPECT_TRUE(process_heartbeat(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // 4 released rather than stranded
+    EXPECT_EQ_U32(1, sub.reorder_delivered);
+    EXPECT_EQ_U32(4, sub.last_seq_no);
+    EXPECT_EQ_U32(0, sub.out_of_order);
+}
+
 int main(void) {
     test_keep_all_refuses_at_bound_and_unblocks_on_ack();
     test_keep_last_still_evicts_rather_than_refusing();
@@ -2328,6 +2472,9 @@ int main(void) {
     test_reliable_new_gap_while_armed_gets_immediate_narrow_nack();
     test_reliable_acknack_retry_uses_reliable_retry_interval();
     test_reliable_duplicate_delivery_is_not_re_delivered_to_callback();
+    test_reliable_delivers_in_order_with_buffer();
+    test_reliable_delivers_in_order_without_buffer();
+    test_reliable_releases_held_samples_when_gap_is_abandoned();
     test_reliable_reordered_arrivals_after_baseline_jump_are_still_delivered();
     test_reliable_subscribe_bitmap_stays_aligned_after_partial_recovery();
     test_acknack_retry_exhausted_gives_up();
