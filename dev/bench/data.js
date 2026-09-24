@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790217416875,
+  "lastUpdate": 1790217420627,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -102859,6 +102859,35 @@ window.BENCHMARK_DATA = {
           {
             "name": "avg RTT",
             "value": 0.244,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "b7afefab5bc2807c3cb2d826aaba1ff9a2e7a89f",
+          "message": "rig_lock: guard this machine too, not only the two rpis\n\nThe lock has only ever covered the rpis. The same-host benchmarks - compare_rmw_perf.sh by hand and\nCI's rmw-perf job - both run on this machine, and nothing stood between them but one session\nremembering to ask another. That is the arrangement the rpi lock exists because it failed. The\nmirror error also happened: this script took the rpi lock for a job that never touches an rpi and\nblocked the rig for most of an afternoon.\n\nRIG_LOCK_SCOPE picks the resource, hil (default) or box, and an unknown value exits 64 rather than\nfalling back to locking something else. The held-flag is per scope: one shared flag would make a\nbox-scoped call nested inside an hil-scoped one skip acquiring anything and report success, which\nis a lock that silently locks nothing.\n\nRenaming that flag nearly deadlocked a sweep that was running at the time - its run_scenario.sh had\nalready been read from disk and would have re-acquired a lock it was inside. rig_lock.sh still\nexports the old name for the hil scope so an in-flight job cannot be broken by this commit, and the\ncallers prefer the scoped one.\n\nVerified rather than assumed: a second box claim from a fresh environment exits 75 and its command\ndoes not run, a nested claim in the same scope passes through, an unknown scope exits 64, and the\nhil scope stays free while box is held. The first version of that check passed because of a typo in\na relative path - exit 127, not the lock refusing - so it was rerun with absolute paths.\n\nAlso fixes a message that named the wrong resource, and a shellcheck directive this change had\nseparated from the line it applied to.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T11:25:47+09:00",
+          "tree_id": "68207b667385ec78288005a45ef2f3861000d2e7",
+          "url": "https://github.com/tsnlab/tickle/commit/b7afefab5bc2807c3cb2d826aaba1ff9a2e7a89f"
+        },
+        "date": 1790217419417,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "avg RTT",
+            "value": 0.225,
             "unit": "ms"
           }
         ]
