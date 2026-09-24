@@ -1574,9 +1574,13 @@ struct tt_Header {
 #define tt_SUBMESSAGE_TYPE_HEARTBEAT 6
 
 struct tt_SubmessageHeader {
-    uint8_t type;     // 0 for Node update, 2 for Data, 3 for AckNack
+    uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
     uint8_t receiver; // Receiver ID
-    uint16_t length;  // Body length in 4 bytes including header
+    // Length of the whole submessage in BYTES, this header included, normally padded to a multiple of 4
+    // (ROUNDUP) - the offset from this header to the next one, which is how the receiver walks a
+    // datagram. Not a count of 4-byte words: this comment used to say "in 4 bytes", and a parser
+    // written from it misread every datagram as malformed.
+    uint16_t length;
 } __attribute__((packed));
 
 struct tt_UpdateHeader {
