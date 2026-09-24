@@ -96,6 +96,19 @@ jobs:
           # steps), then this repo's own fresh build becomes a second overlay on top of both.
           source "/opt/ros/$ROS_DISTRO_NAME/setup.bash"
           source "$RMW_PERF_WS/install/setup.bash"
+          # Under the box lock as well, and for a tree that is easy to overlook: this one writes
+          # $REPO_ROOT/install, not the perf workspace. A self-hosted runner reuses its checkout,
+          # so that install tree persists between runs, and a manual repro run on this box
+          # resolves rmw_tickle through it - the library under the benchmark it is measuring. A
+          # rebuild landing there mid-run swaps that library underneath a running test.
+          #
+          # This is the third writer found outside the lock today, after the benchmark's readers
+          # and the buildfarm_perf_tests rebuild. The pattern worth carrying: the lock was written
+          # to protect "the benchmark", and what actually needed protecting was every tree the
+          # benchmark resolves at runtime. Naming the resource as an activity rather than as the
+          # state it touches is what kept hiding these.
+          RIG_LOCK_SCOPE=box RIG_LOCK_OWNER="rmw-perf.yml build ${GITHUB_RUN_ID:-?} $(date -Is)" \
+          ./examples/perf_hil/rig_lock.sh \
           colcon build \
             --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp \
             --cmake-args -DBUILD_SHARED_LIBS=ON
