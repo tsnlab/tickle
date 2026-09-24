@@ -287,10 +287,10 @@ min/avg/max cells:
 
 | Topology | Message | Mode | TickLE (`rmw_tickle`) | FastDDS | CycloneDDS |
 |---|---|---|---:|---:|---:|
-| Same-host | Array1k | async | 0.0487ms†, 0.9905 Mbit/s | 0.0375ms†, 0.9901 Mbit/s | (skipped - see note) |
-| Same-host | Array1k | sync | 0.0467ms†, 0.9904 Mbit/s | 0.0363ms†, 0.9905 Mbit/s | 0.0322ms†, 0.9878 Mbit/s |
-| Same-host | Struct16 | async | 0.0543ms†, 0.0304 Mbit/s | 0.0369ms†, 0.0305 Mbit/s | (skipped - see note) |
-| Same-host | Struct16 | sync | 0.0464ms†, 0.0305 Mbit/s | 0.0310ms†, 0.0305 Mbit/s | 0.0357ms†, 0.0304 Mbit/s |
+| Same-host | Array1k | async | 0.0638ms (3 reps) | 0.0570ms (3 reps) | (skipped - see note) |
+| Same-host | Array1k | sync | 0.0579ms (3 reps) | 0.0487ms (3 reps) | 0.0455ms (3 reps) |
+| Same-host | Struct16 | async | 0.0600ms (3 reps) | 0.0526ms (3 reps) | (skipped - see note) |
+| Same-host | Struct16 | sync | 0.0588ms (2 reps, see outlier note) | 0.0452ms (3 reps) | 0.0475ms (3 reps) |
 | Cross-host | Bench, QoS=best_effort | - | 0.524ms† avg RTT, 0% loss | 0.516ms† avg RTT, 0% loss | 0.440ms† avg RTT, 0% loss |
 | Cross-host | Bench, QoS=reliable | - | 0.523ms† avg RTT, 0% loss | 0.523ms† avg RTT, 0% loss | 0.449ms† avg RTT, 0% loss |
 
@@ -298,10 +298,35 @@ min/avg/max cells:
 test-registration flakiness unrelated to any of the three `rmw`s, not yet chased down. Cross-host:
 18/18 runs clean, zero loss every time.)
 
-**Reading**: `rmw_tickle` runs **~1.3-1.6x higher latency** than both DDS vendors same-host
-(0.0464-0.0543ms vs. FastDDS's 0.0310-0.0375ms and CycloneDDS's 0.0322-0.0357ms), throughput
-indistinguishable across all three (dominated by the test's own fixed send rate, not
-implementation efficiency). Cross-host tells a slightly different story: `rmw_tickle` and
+**The same-host rows were re-measured on 2026-09-24** and the ones they replace are gone rather
+than annotated, because they were taken through a transport that was misdelivering roughly a tenth
+of its datagrams to the sender (`PLAN.md` milestone 67 / commit `82a6a02d`) - they measured a
+different system, not this one imprecisely. Three repetitions per cell this time instead of one;
+the figure is the mean of what `buildfarm_perf_tests` itself reports, which is already an average
+per run, so it is a mean of means and still carries no real stdev. **Outlier, stated rather than
+dropped silently**: `rmw_tickle`'s Struct16/sync cell read 0.1036ms in repetition 1 against
+0.0597 and 0.0579 in the other two. The cell above is the mean of the latter two. Nothing else in
+that repetition was anomalous, and no mechanism is offered for it. The cross-host rows are
+untouched and were never at risk - two hosts have never shared a port.
+
+**Reading, and the first thing to say is what these numbers do *not* show.** Compared cell by cell
+against the pre-fix figures, `rmw_tickle` looks ~12-15us slower - which looks like a regression
+from the same-host socket work. **It is not.** Every implementation moved by about the same amount:
+FastDDS by +12.4 to +19.5us, CycloneDDS by +11.8 and +13.3us, `rmw_tickle` by +5.7 to +15.1us, mean
+across all ten comparable cells roughly **+13us**. FastDDS and CycloneDDS contain no TickLE code at
+all, so a shift they share cannot have come from TickLE's; it is an additive, box-level offset
+between the two measurement days, cause not identified. **Absolute latencies from the two passes
+are therefore not comparable, and only figures taken within one pass should be compared to each
+other.**
+
+The corollary matters as much: the ratio *appears* to have improved, from ~1.3-1.6x to ~1.12-1.30x,
+and that is an artifact too. A constant additive term compresses every ratio toward 1 on its own -
+adding 13us to 37.5 and 48.7 takes their ratio from 1.30 to 1.19 without anything having changed.
+**No claim of improvement is made here.** What can be said is narrower and holds: within this pass,
+`rmw_tickle` is 1.12-1.30x the latency of the two DDS vendors, throughput is indistinguishable
+across all three (dominated by the test's own fixed send rate, not implementation efficiency), and
+the wire-correctness defect that invalidated the previous pass cost correctness without a visible
+latency cost in this particular benchmark. Cross-host tells a slightly different story: `rmw_tickle` and
 `rmw_fastrtps_cpp` land within noise of each other (~0.52ms), while `rmw_cyclonedds_cpp` is
 genuinely faster (~0.44ms) on the real link too. RELIABLE costs nothing measurable over
 BEST_EFFORT for any of the three, same-host or cross-host.
