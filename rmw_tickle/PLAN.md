@@ -1595,6 +1595,55 @@ This reframes item 2. The stated goal was closing a ~1.4x latency gap; the run s
 can abort a ROS 2 application under same-host load, which is a correctness problem and takes
 precedence over the latency work.
 
+#### RELIABLE in-order delivery: finished, and it costs nothing (2026-09-24)
+
+**The contract, stated without hedging** (TickLE Dev's wording, adopted): RELIABLE delivers each
+writer's samples in strictly increasing order; it waits for any gap still recoverable; a sample that
+arrives after something later from the same writer was already delivered is discarded and counted in
+`out_of_order_discarded`. The only data it gives up is data the reader had already declared lost.
+
+**Whose decision.** In-order delivery for RELIABLE and discard-older for BEST_EFFORT were the user's
+direct instruction in this session ("DDS의 besteffort가 순서가 바뀐 것을 버린다는 것이 정책이면 TickLE도 그
+정책을 따라가자. TickLE에서 순서가 바뀌면 기다리는 것으로 바꾸자. Core를 수정하자."). Strict order - what to
+do with a late sample from an already-abandoned range - was put to the user by TickLE Dev with the
+question tool; the user selected **"엄격한 순서 (Recommended)"** over "늦게라도 전달 (현재)". The
+"(Recommended)" was TickLE Dev's, recorded so nobody reads it as the user arriving there unprompted.
+It closed the known gap: at 8% loss, `out_of_order`/`timestamp_not_newer` went from 2493 to 0, with
+533 late samples discarded and counted.
+
+**The measured cost is zero** - `COMPARISON.MD` §3b, five builds on the rig. Without ordering 108.5 /
+104.1 / 97.5 / 54.7 / 21.9 Mbps at 0/1/5/20/50% loss; at `d63860c7`, which ships, 108.8 / 104.4 /
+98.1 / 55.0 / 22.0. Within 0.7% everywhere. Between those two sat 84.6 at 0% (512-slot linear scan)
+and 10.0 (the same scan at 4096 slots) - the reorder buffer walked every slot on every hold and
+re-walked them for each sample it drained, so per-sample cost scaled with capacity rather than with
+what was held. Fixed in `0b415269` by indexing slots by sequence number.
+
+**Four misattributions in one investigation, recorded because they share one shape.** Each was a
+real measurement, correctly taken, attributed to the thing being looked at rather than to its cause:
+
+| observed | first attributed to | actually |
+|---|---|---|
+| 4 of 15 KEEP_ALL runs delivered nothing | the ordering change | cancelled CI jobs leaving a process on the rig (0 of 27 without CI, 4 of 15 with it, same build; one-sided Fisher p = 0.012) |
+| 469,081 reorder overflows at a wide window | the sizing argument being wrong | a buffer overrun: slot stride rounded *up*, so core addressed past the caller's array (`a3a1bea1`) |
+| `reorder_held_peak` 270-272 against a 256 window | held exceeding the window | the same overrun, counting 16 slots of neighbouring memory as occupied; fixed build reads 253-255 |
+| 108.5 -> 84 Mbps at 0% loss | the price of ordering | the linear scan; ordering itself is free |
+
+The first nearly went out as "RELIABLE KEEP_ALL can now deliver nothing at 5% loss" and was reported
+to the user as a qualitative change before the CI timeline - available from the start - was checked.
+The fourth was one step from being published in `COMPARISON.MD` as the cost of the guarantee. What
+caught the last three was TickLE Dev writing its predictions down *before* each rig measurement: a
+prediction on the record turns "the number moved" into a finding instead of something to explain
+away, and on `a5b99b1b` it was wrong in exactly the way that located the scan.
+
+**Open, and the user's to decide.** At 20% loss the rig gives 55.0 Mbps against a single-retransmit
+ceiling of roughly 108.8 x 0.8 = 87, so there is headroom. The likeliest place is `keep_all_bound()`,
+which sizes a KEEP_ALL publisher's window from the lowest *cumulative* ack - so samples the reader
+already holds above a gap still count as unacknowledged and the publisher refuses writes it need not.
+Accounting them from the ACKNACK bitmap would let it keep sending while a gap is repaired. It touches
+the no-eviction guarantee, so it is a candidate to measure (A/B on one commit, a pre-registered
+reading, and a control that makes the guarantee fail visibly if the change breaks it), not a change
+to make. Immediate ACKNACK on a new gap already exists (Phase 1-a) and is not part of the cost.
+
 #### The "Data consistency violated" abort, closed (2026-09-24) - and the entry above is two different things confused into one
 
 **The abort is gone**: 36 consecutive `two_process_rmw_` matrix runs, **144 cells, zero occurrences**, at `cfeb234a`. The pre-fix rate measured the same day was 2 aborting cells in 48, so P(zero across 144 | unchanged) = **0.2%**. That is a result rather than a likely coincidence, and it was sized before the runs rather than after.

@@ -201,27 +201,58 @@ drain-until-acked), so no framework's tail loss depends on drain luck.
 **Net loss** = lost - refused writes, i.e. samples the middleware accepted and then failed to
 deliver. All three are **0 in every cell**, so the only thing that differs is what it costs:
 
-| `tc` loss | TickLE (KEEP_ALL) ‡ | FastDDS | CycloneDDS |
+| `tc` loss | TickLE (KEEP_ALL, strict order) ‡ | FastDDS | CycloneDDS |
 |---|---:|---:|---:|
-| 0% | **108.5 Mbps** | 28.3 | 93.2 |
-| 1% | **104.1** | 10.5 | 11.7 |
-| 5% | **97.5** | 8.7 | 2.6 |
-| 20% | **54.7** | 1.2 † | 0.39 |
-| 50% | **21.9** | 0.39 † | 0.15 |
+| 0% | **108.8 Mbps** | 35.9 | 93.2 |
+| 1% | **104.4** | 10.6 (median) | 13.0 |
+| 5% | **98.1** | 6.8 (median) | 2.5 |
+| 20% | **55.0** | 2.9 (median) † | 0.42 |
+| 50% | **22.0** ◊ | 0.68 (median) † | 0.13 |
 
-**All three columns were measured in one session on 2026-09-24, on the rig, at `5816aab3`** - 3 reps
-per cell, `-d 5`, interleaved *by framework within each loss level* rather than run as three blocks,
-so a drift during the session lands on all three equally instead of on whichever ran last. The mean
-of the three reps is what is reported.
+**Measured in one session on 2026-09-24 at `d63860c7`, both Pis confirmed at that commit by reporting
+their own HEAD** - 3 reps per cell, `-d 5`, interleaved by framework within each loss level. This is
+the build that ships: RELIABLE delivers each writer's samples in strictly increasing order, through a
+reorder buffer that costs O(1) per sample. TickLE's cells are the mean of three reps except where
+marked; every TickLE rep `drained=acked` with `write_fail=0` except the one noted under ◊.
 
-**They replace figures that were not comparable with each other.** The previous table had TickLE's
-column re-measured on 2026-09-24 while the two DDS columns still dated from 2026-09-23 - and §5 of
-this same document had just demonstrated that this rig carries an additive offset between
-measurement days that lands on every implementation at once. A "10-45x either vendor" claim spanning
-two days is exactly the defect §5 records, left sitting in the table beside it. Re-measuring one
-column closed a provisional mark and opened a comparability hole; this closes both. The size of what
-that hid: measured together, CycloneDDS reads 93.2 Mbps at 0% where the table had said 47.3, and
-FastDDS 28.3 where it had said 11.5.
+**◊** One of three 50% reps read 8.4 Mbps with 28 refused writes (still `drained=acked`, so not a
+stall). It did not recur: a follow-up of **8 consecutive 50% reps at the same build all read
+21.8-22.2**, with `write_fail=0`, `out_of_order_discarded=0`, `timestamp_not_newer=0` and
+`reorder_held_peak=255` in every one. The cell reports 22.0, the median of the sweep's three and
+consistent with all eight; the outlier is unexplained and is recorded rather than averaged in.
+
+**† and the FastDDS medians.** FastDDS varied far more than either other column in this session - at
+20% its three reps read 2.85, 1.41 and 38.77, at 50% 38.33, 0.68 and 0.56, and every rep that read
+above ~15 at those levels ended `drained=timeout`. `send_mbps` counts writes the middleware
+*accepted*, so a writer that never drained reports work it did not deliver; a mean over those reps
+would describe acceptance, not throughput. Medians are reported where the reps disagree, and the
+20% and 50% FastDDS cells should be read as "did not keep up" rather than as a rate.
+
+### Ordering costs nothing, and the number that said otherwise was an implementation defect
+
+TickLE's column is within 0.7% of its own pre-ordering figures (108.5 / 104.1 / 97.5 / 54.7 / 21.9,
+same rig, same method, earlier the same day) at every loss level. It took five builds to get there,
+and the sequence is the useful part:
+
+| build | what changed | 0% | 1% | 5% | 20% | 50% |
+|---|---|---:|---:|---:|---:|---:|
+| `5816aab3` | no ordering | 108.5 | 104.1 | 97.5 | 54.7 | 21.9 |
+| `e461e7f3` | ordering, reorder buffer scanned linearly, 512 slots | 84.6 | 58.2 | 44.8 | 32.8 | 18.4 |
+| `a5b99b1b` | same scan, buffer sized to the widest window, 4096 slots | 10.0 | 8.1 | 7.1 | 6.8 | 6.1 |
+| `0b415269` | buffer indexed by sequence number, O(1) per sample | 108.6 | 104.2 | 97.9 | 54.6 | 21.8 |
+| `d63860c7` | + strict order (discard below the delivered high-water mark) | 108.8 | 104.4 | 98.1 | 55.0 | 22.0 |
+
+Every hold and every drain used to walk every slot, and the drain re-walked them for each sample it
+released - so per-sample cost scaled with the buffer's *capacity*, not with what it held. On a clean
+link nothing is ever held, yet every sample paid for a full scan of an empty buffer: that is the whole
+0% drop. Growing the buffer 8x to make overflow impossible cost 8.5x in throughput, which is how the
+cause was found. **The 108.5 -> 84 drop was nearly published here as the price of the ordering
+guarantee.** It was the price of a loop.
+
+The same scan also manufactured loss. A subscriber spending its time scanning fell behind its socket
+and the kernel dropped datagrams the network had delivered - so `lost=` and `out_of_order` counts
+from `a5b99b1b` and earlier describe the subscriber's own backlog as much as the transport, and none
+of them are used here.
 
 **One earlier figure is still unexplained and is now superseded rather than resolved.** TickLE's 20%
 and 50% cells previously read 89.3 and 56.5 against today's 54.7 and 21.9. Four candidate causes
@@ -237,13 +268,15 @@ not even the commit was pinned down. The conclusion recorded here is that the ca
 not that it was ruled out; the table above supersedes those cells because it was taken under a
 controlled, internally comparable method, which they were not.
 
-**Reading, recomputed from the table above rather than carried over.** On a clean link TickLE's
-advantage is modest - 3.8x FastDDS and only **1.2x** CycloneDDS at 0% - and the whole story is what
-happens under loss. At 1/5/20% TickLE sustains **9.9-45.6x** FastDDS and **8.9-140x** CycloneDDS; at
-50% it is **56x** FastDDS and **146x** CycloneDDS. The shape differs as much as the magnitude: the
-DDS pair degrade steeply because a blocked writer is their only back-pressure mechanism, while
-TickLE keeps **20%** of its lossless rate at 50% injected loss. Every one of those figures comes
-from the single interleaved session above; none of them is a ratio between measurement days.
+**Reading, recomputed from the table above rather than carried over** (every figure below is
+arithmetic on the `d63860c7` table, redone when that table replaced the one before it - the previous
+version of this paragraph was once left computing from a superseded table, see below). On a clean
+link TickLE's advantage is modest - **3.0x** FastDDS and only **1.2x** CycloneDDS at 0% - and the
+whole story is what happens under loss. At 1% it is 9.8x and 8.0x; at 5% 14.4x and **39x**; at 20%
+19x and **131x**; at 50% 32x and **169x**. The FastDDS ratios at 20% and 50% are against a writer
+that did not keep up (see †), so they overstate the comparison with a draining writer and are best
+read as "FastDDS could not sustain this at all". TickLE keeps **20%** of its lossless rate at 50%
+injected loss; CycloneDDS keeps 0.14%. Every figure comes from one interleaved session at one build.
 
 *(The previous version of this paragraph said 10-45x, 160x, 510x and "~51% of its lossless rate".
 Those were arithmetic on the superseded rows and were carried over when the table was replaced,
@@ -253,6 +286,11 @@ Found on review, not by any tool.)*
 
 **What it costs TickLE**, re-measured against its own KEEP_LAST mode in one interleaved session
 (2026-09-24, `5816aab3`, 3 reps per cell, modes alternated within each loss level):
+
+*(Measured before in-order delivery existed. It is still the cost of the KEEP_ALL guarantee: the
+five-build table above shows the KEEP_ALL column at `d63860c7` within 0.7% of its `5816aab3` values
+at every loss level, so ordering moved neither side of this comparison. Re-measure both columns
+together before the next change to either mode.)*
 
 | `tc` loss | KEEP_ALL | KEEP_LAST | cost of the guarantee |
 |---|---:|---:|---:|
