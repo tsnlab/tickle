@@ -151,6 +151,14 @@ classDiagram
         +uint8_t entity_count
     }
 
+    class tt_UpdatePartHeader {
+        <<type=UPDATE_PART>>
+        +uint64_t last_modified
+        +uint8_t part_index
+        +uint8_t part_count
+        +uint8_t entity_count
+    }
+
     class tt_UpdateEntity {
         +uint32_t endpoint_id
         +uint8_t kind
@@ -186,7 +194,9 @@ classDiagram
     tt_SubmessageHeader <|.. tt_DataHeader : body when type=2
     tt_SubmessageHeader <|.. tt_CallRequestHeader : body when type=4
     tt_SubmessageHeader <|.. tt_CallResponseHeader : body when type=5
+    tt_SubmessageHeader <|.. tt_UpdatePartHeader : body when type=7
     tt_UpdateHeader "1" *-- "0..*" tt_UpdateEntity : entities[]
+    tt_UpdatePartHeader "1" *-- "0..*" tt_UpdateEntity : entities[] (this part's slice)
 ```
 
 # Sequence Diagrams
@@ -337,6 +347,59 @@ dev-server rig, the *default* (no `-B`) didn't just send slower - once discovery
 messages actually arriving), the "Discovery-learned peers" section below's own `-i 0`/uncapped-rate
 caveat in concrete numbers; `-B` restored both throughput (~4x higher sent rate) and reliability
 (0.7% loss) by coalescing that same flood into far fewer, larger packets.
+
+## Discovery announce in parts (`UPDATE_PART`, type 7)
+
+A node announces its endpoints in one `UPDATE` submessage. When that list outgrows one datagram
+(`tt_MAX_BUFFER_LENGTH` - about 15 endpoints with ROS-sized names at the default 1472), it is sent
+as `UPDATE_PART` submessages instead, each in a datagram of its own. The single `UPDATE` stays the
+format whenever it fits: nothing changes for a node that was already discoverable. Added
+2026-09-24; before it, such a node could not be discovered at all, and until the fix just before
+it, it could not send anything either.
+
+**Wire.** `tt_UpdatePartHeader` = `last_modified` (u64), `part_index` (u8, from 0), `part_count` (u8,
+2 to `tt_UPDATE_MAX_PARTS` = 32), `entity_count` (u8, this part's), followed by that many
+`tt_UpdateEntity` records encoded exactly as in `UPDATE`. Byte order follows the packet header, as
+for every submessage.
+
+**Sender.**
+- Every part of one announce carries the same `last_modified` and `part_count`, and each is flushed
+  as its own datagram to the same destination the `UPDATE` would have gone to: broadcast
+  periodically, unicast when replying to first contact.
+- Parts are filled greedily in endpoint order, up to the datagram and up to 255 entities per part.
+- An endpoint whose record alone could not fit a datagram is left out, logged and counted in
+  `tt_Node.tx_dropped_oversize`. If what remains fits one datagram, it goes as a single `UPDATE`:
+  a one-part announce is never sent.
+- An announce needing more than 32 parts is not sent at all, and is logged and counted.
+
+**Receiver - reassembly.**
+- A part whose `last_modified` matches the source's last completed announce is a periodic resend,
+  and is ignored.
+- Otherwise the first part of a `last_modified` (or `part_count`) not yet being assembled starts a
+  new announce. Exactly like a single `UPDATE`, it first forgets everything that source announced
+  before.
+- Each part's entities are applied as they arrive. A repeated part applies the same entities
+  again, which is harmless because discovery upserts.
+- Once every `part_index` below `part_count` has arrived, the announce is complete. It becomes the
+  source's acted-on announce (`update_last_modified`/`update_seen`), unmatched ack state is
+  dropped, and a first-contact reply goes out: all as for `UPDATE`.
+
+**Lost part.** The announce stays incomplete, and the source is known by the parts that did arrive.
+The next periodic announce (`tt_NODE_UPDATE_INTERVAL`) resends every part under the same
+`last_modified`, and that fills the gap without starting over. A source heard only through an
+announce that never completed still expires by the ordinary liveliness rule, since its entities
+are recorded all the same.
+
+**Replacement.** A newer `last_modified` replaces the old list the moment its first part arrives.
+A single `UPDATE` from the same source supersedes any assembly in progress (the node has shrunk
+back under a datagram, or it is saying farewell).
+
+**Interop with nodes built before it.** A new submessage type, not part fields inside `UPDATE`, is
+the user's choice of 2026-09-24. An older node skips type 7 as unknown (logging a warning per part),
+so it sees a large node exactly as before, which is not at all, and never as a partial list.
+Reusing `UPDATE` would have been worse: every part shares one `last_modified`, so an older node
+would take the first part as the complete list and deduplicate the rest away, leaving a stable,
+silently partial view. No `tt_VERSION` bump was needed, and small nodes are unaffected.
 
 ## Discovery-learned peers: unicast to a few, broadcast to the rest
 

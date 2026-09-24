@@ -1241,6 +1241,9 @@ static void reset_node_state(struct tt_Node* node) {
         node->update_last_modified[i] = 0;
         node->update_seen[i] = false;
         node->update_last_seen[i] = 0;
+        node->update_part_last_modified[i] = 0;
+        node->update_part_received[i] = 0;
+        node->update_part_count[i] = 0;
         node->traffic_last_seen[i] = 0;
     }
 
@@ -3526,6 +3529,124 @@ static int encode_update_entities(struct tt_Node* node, struct tt_Endpoint* cons
     return entity_count;
 }
 
+// Bytes one endpoint's UpdateEntity takes on the wire: the fixed record plus its two strings, each
+// a uint16 length and the bytes including '\0' (tt_encode_string()). Entities are packed with no
+// padding between them, so this is exact wherever the entity lands. 0 for an endpoint
+// encode_update_entities() would not encode at all.
+static uint32_t update_entity_wire_size(struct tt_Endpoint* endpoint) {
+    if (endpoint == NULL) {
+        return 0;
+    }
+    const char* type = endpoint_type_name(endpoint);
+    if (type == NULL || endpoint->name == NULL) {
+        return 0;
+    }
+    return (uint32_t)(sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) +
+                      _tt_strnlen(type, tt_MAX_STRING_LENGTH) + 1 + _tt_strnlen(endpoint->name, tt_MAX_STRING_LENGTH) +
+                      1);
+}
+
+// Whether a submessage whose header-plus-body is `bytes` fits one datagram (the check
+// submessage_fits_datagram() makes on an encoded one, made here before encoding).
+static bool submessage_bytes_fit_datagram(uint32_t bytes) {
+    return sizeof(struct tt_Header) + ROUNDUP(bytes) <= tt_MAX_BUFFER_LENGTH;
+}
+
+// Whether this node's whole announce fits one UPDATE: within one datagram, and within the 255
+// entities UpdateHeader.entity_count can say.
+static bool update_fits_single(struct tt_Endpoint* const* endpoints, uint32_t endpoint_count) {
+    uint32_t bytes = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_UpdateHeader);
+    uint32_t entities = 0;
+    for (uint32_t i = 0; i < endpoint_count; i++) {
+        uint32_t size = update_entity_wire_size(endpoints[i]);
+        if (size != 0) {
+            bytes += size;
+            entities++;
+        }
+    }
+    return entities < UINT8_MAX && submessage_bytes_fit_datagram(bytes);
+}
+
+// Splits endpoints[] into announce parts that each fit one datagram, in order: part p covers
+// endpoints[part_start[p]] up to endpoints[part_start[p + 1]]. An endpoint whose entity could not
+// fit even a part of its own is dropped from the announce (NULLed in endpoints[], counted and
+// logged) rather than holding everything else back. Returns the part count, or 0 when more than
+// tt_UPDATE_MAX_PARTS would be needed.
+static uint8_t plan_update_parts(struct tt_Node* node, struct tt_Endpoint** endpoints, uint32_t endpoint_count,
+                                 uint32_t part_start[tt_UPDATE_MAX_PARTS + 1]) {
+    const uint32_t part_overhead = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_UpdatePartHeader);
+    uint32_t parts = 0;
+    uint32_t bytes = part_overhead;
+    uint32_t entities = 0;
+    part_start[0] = 0;
+    for (uint32_t i = 0; i < endpoint_count; i++) {
+        uint32_t size = update_entity_wire_size(endpoints[i]);
+        if (size == 0) {
+            continue;
+        }
+        if (!submessage_bytes_fit_datagram(part_overhead + size)) {
+            TT_LOG_ERROR("Endpoint '%s' needs %u bytes to announce, more than a datagram - not announced",
+                         endpoints[i]->name, size);
+            node->tx_dropped_oversize++;
+            endpoints[i] = NULL;
+            continue;
+        }
+        if (entities == UINT8_MAX || !submessage_bytes_fit_datagram(bytes + size)) {
+            if (++parts == tt_UPDATE_MAX_PARTS) {
+                return 0;
+            }
+            part_start[parts] = i;
+            bytes = part_overhead;
+            entities = 0;
+        }
+        bytes += size;
+        entities++;
+    }
+    part_start[++parts] = endpoint_count;
+    return (uint8_t)parts;
+}
+
+// Sends this node's announce as the part_count (>= 2) tt_SUBMESSAGE_TYPE_UPDATE_PART parts
+// plan_update_parts() laid out (tt_UpdatePartHeader, tickle.h), each flushed as its own datagram to
+// the same destination the single UPDATE would have gone to.
+static bool send_update_parts(struct tt_Node* node, struct tt_Endpoint* const* endpoints,
+                              const uint32_t part_start[tt_UPDATE_MAX_PARTS + 1], uint8_t part_count,
+                              const struct tt_Peer* peers, uint8_t peer_count) {
+    for (uint8_t part_no = 0; part_no < part_count; part_no++) {
+        uint32_t old_tx_tail = node->tx_tail;
+        struct tt_SubmessageHeader* submessage_header =
+            start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE_PART, tt_SUBMESSAGE_ID_ALL);
+        if (submessage_header == NULL) {
+            return false;
+        }
+        struct tt_UpdatePartHeader* part = encode(node, sizeof(struct tt_UpdatePartHeader));
+        if (part == NULL) {
+            rollback(node, old_tx_tail);
+            return false;
+        }
+        part->last_modified = node->last_modified;
+        part->part_index = part_no;
+        part->part_count = part_count;
+        int entity_count = encode_update_entities(node, endpoints + part_start[part_no],
+                                                  part_start[part_no + 1] - part_start[part_no]);
+        if (entity_count < 0) {
+            rollback(node, old_tx_tail);
+            return false;
+        }
+        part->entity_count = (uint8_t)entity_count;
+        if (!end_encode(node, submessage_header, true, peers, peer_count)) {
+            rollback(node, old_tx_tail);
+            return false;
+        }
+        // end_encode() flushes what was pending ahead of a part that would not fit behind it and
+        // keeps the part for the next flush. Each part is meant to go now, as its own datagram.
+        if (node->tx_tail != sizeof(struct tt_Header) && !flush_tx(node, node->tx_tail, peers, peer_count)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Builds this node's current UPDATE announce (its own endpoint list) and sends it either way
 // node_update()/process_update() need it sent: peer_count == 0 broadcasts it, batched
 // (is_flush=false - the periodic case, no synchronous waiter, node_flush()'s own tick is fine);
@@ -3557,6 +3678,27 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
     uint32_t endpoint_count = node->endpoint_count;
     for (uint32_t i = 0; i < endpoint_count; i++) {
         endpoints[i] = node->endpoints[i];
+    }
+
+    // An announce too large for one datagram goes in parts; anything that fits stays the single
+    // UPDATE every node has always understood (the user's choice, 2026-09-24).
+    if (!update_fits_single(endpoints, endpoint_count)) {
+        uint32_t part_start[tt_UPDATE_MAX_PARTS + 1];
+        uint8_t part_count = plan_update_parts(node, endpoints, endpoint_count, part_start);
+        if (part_count == 0) {
+            TT_LOG_ERROR("Announce of %u endpoints needs more than %d parts - not announced", endpoint_count,
+                         tt_UPDATE_MAX_PARTS);
+            node->tx_dropped_oversize++;
+            rollback(node, old_tx_tail);
+            return false;
+        }
+        if (part_count >= 2) {
+            rollback(node, old_tx_tail);
+            return send_update_parts(node, endpoints, part_start, part_count, peers, peer_count);
+        }
+        // One part: what is left once plan_update_parts() dropped endpoints no datagram could
+        // carry fits a single UPDATE (its header is smaller than a part's), which every receiver
+        // understands - and a one-part announce is not a valid part at all.
     }
 
     int entity_count = encode_update_entities(node, endpoints, endpoint_count);
@@ -3732,9 +3874,12 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        if (!node->update_seen[i]) {
+        if (!node->update_seen[i] && node->update_part_received[i] == 0) {
             continue; // never heard from this node id at all - nothing to expire
         }
+        // A node heard only through parts of an announce it never finished (update_seen still
+        // false) has entities recorded all the same - each part is applied as it arrives - so it
+        // expires by the same clocks as one that completed.
         // Both clocks must have gone quiet. The announce clock keeps the timing exactly what it
         // always was - tt_LIVELINESS_MISS_THRESHOLD announce intervals - and the traffic clock is a
         // veto for a node still transmitting while its announces are being lost.
@@ -3752,6 +3897,7 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
             node->update_last_modified[i] = 0;
             node->update_last_seen[i] = 0;
             node->traffic_last_seen[i] = 0;
+            node->update_part_received[i] = 0;
         }
     }
 
@@ -4109,6 +4255,9 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
     forget_peers_from_source(node, source, /*preserve_ack=*/true);
     forget_discovered_entities_from_source(node, source);
+    // A whole announce in one datagram supersedes one this source was sending in parts - it has
+    // shrunk back under the datagram, or this is its farewell.
+    node->update_part_received[source] = 0;
 
     if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip, sender_port,
                                 last_modified)) {
@@ -4128,6 +4277,77 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
         reply_with_own_announce(node, source, sender_ip, sender_port);
     }
 
+    return true;
+}
+
+// Bit mask with one bit per part of an announce split into part_count parts.
+static uint32_t update_all_parts_mask(uint8_t part_count) {
+    return part_count >= 32 ? UINT32_MAX : ((uint32_t)1 << part_count) - 1;
+}
+
+_Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Node.update_part_received is a 32-bit mask, one bit per part");
+
+// One part of a discovery announce that did not fit a datagram (struct tt_UpdatePartHeader,
+// tickle.h; DESIGN.md's "Discovery announce in parts"). The same effect as process_update() once
+// every part has arrived, reached incrementally:
+//   - the first part of a last_modified this source has not completed replaces what it announced
+//     before, the way a whole UPDATE does (forget, then apply);
+//   - every part's entities are applied as it arrives - a repeated part re-applies the same
+//     entities, which upsert makes harmless;
+//   - when the last missing part arrives the announce is complete: it becomes this source's
+//     acted-on announce (update_last_modified/update_seen) and the post-announce cleanup and
+//     first-contact reply happen, both exactly as process_update() does them.
+// A lost part leaves the announce incomplete until the next periodic announce resends every part
+// under the same last_modified, which fills the gap without starting over. Until then the source
+// is known by the parts that did arrive.
+static bool process_update_part(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                                uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
+    struct tt_UpdatePartHeader* part = decode(node, buffer, &head, tail, sizeof(struct tt_UpdatePartHeader));
+    if (part == NULL) {
+        TT_LOG_ERROR("Illegal UpdatePartHeader");
+        return false;
+    }
+    if (part->part_count < 2 || part->part_count > tt_UPDATE_MAX_PARTS || part->part_index >= part->part_count) {
+        TT_LOG_ERROR("Illegal UpdatePartHeader: part %u of %u", part->part_index, part->part_count);
+        return false;
+    }
+
+    uint8_t source = header->source;
+    uint64_t last_modified = rd64(header, part->last_modified);
+    node->update_last_seen[source] = tt_get_ns(); // any announce, complete or not - see process_update()
+
+    if (node->update_seen[source] && node->update_last_modified[source] == last_modified) {
+        return true; // the periodic resend of an announce already complete here
+    }
+
+    if (node->update_part_received[source] == 0 || node->update_part_last_modified[source] != last_modified ||
+        node->update_part_count[source] != part->part_count) {
+        // A new announce from this source: like a whole UPDATE, it replaces what came before.
+        forget_peers_from_source(node, source, /*preserve_ack=*/true);
+        forget_discovered_entities_from_source(node, source);
+        node->update_part_last_modified[source] = last_modified;
+        node->update_part_count[source] = part->part_count;
+        node->update_part_received[source] = 0;
+    }
+
+    if (!decode_update_entities(node, header, buffer, &head, tail, part->entity_count, sender_ip, sender_port,
+                                last_modified)) {
+        return false;
+    }
+
+    node->update_part_received[source] |= (uint32_t)1 << part->part_index;
+    if (node->update_part_received[source] != update_all_parts_mask(part->part_count)) {
+        return true; // more parts to come
+    }
+
+    node->update_part_received[source] = 0;
+    drop_ack_state_for_unmatched_source(node, source); // see process_update()
+    bool is_first_contact_from_sender = !node->update_seen[source];
+    node->update_last_modified[source] = last_modified;
+    node->update_seen[source] = true;
+    if (is_first_contact_from_sender) {
+        reply_with_own_announce(node, source, sender_ip, sender_port);
+    }
     return true;
 }
 
@@ -5703,6 +5923,11 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     case tt_SUBMESSAGE_TYPE_UPDATE:
         if (!self_sent) {
             process_update(node, header, buffer, head, body_tail, sender_ip, sender_port);
+        }
+        return true;
+    case tt_SUBMESSAGE_TYPE_UPDATE_PART:
+        if (!self_sent) {
+            process_update_part(node, header, buffer, head, body_tail, sender_ip, sender_port);
         }
         return true;
     case tt_SUBMESSAGE_TYPE_DATA:

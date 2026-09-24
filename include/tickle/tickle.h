@@ -104,6 +104,13 @@ struct tt_Node {
     // malloc'd copy of the whole variable-length announce the way earlier versions did.
     uint64_t update_last_modified[tt_MAX_ENDPOINT_COUNT];
     bool update_seen[tt_MAX_ENDPOINT_COUNT];
+    // Per remote node, an announce arriving in parts (tt_SUBMESSAGE_TYPE_UPDATE_PART) that is not
+    // complete yet: its last_modified, how many parts it has, and which have arrived (bit i = part
+    // i; 0 = none in progress). Once every bit is set the announce is complete and moves into
+    // update_last_modified[]/update_seen[] above, exactly as a single UPDATE would.
+    uint64_t update_part_last_modified[tt_MAX_ENDPOINT_COUNT];
+    uint32_t update_part_received[tt_MAX_ENDPOINT_COUNT];
+    uint8_t update_part_count[tt_MAX_ENDPOINT_COUNT];
     // Phase 2 (rmw_tickle/PLAN.md) - the tt_VERSION last logged as mismatched for each remote node
     // (0 = nothing logged yet), so a peer speaking a different protocol version is reported once
     // rather than once per packet. At max rate an unfiltered log line per rejected packet would be
@@ -1577,6 +1584,9 @@ struct tt_Header {
 #define tt_SUBMESSAGE_TYPE_CALLREQUEST 4
 #define tt_SUBMESSAGE_TYPE_CALLRESPONSE 5
 #define tt_SUBMESSAGE_TYPE_HEARTBEAT 6
+// A discovery announce too large for one datagram, sent as numbered parts - struct
+// tt_UpdatePartHeader below. Only ever sent when the single UPDATE would not fit.
+#define tt_SUBMESSAGE_TYPE_UPDATE_PART 7
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
@@ -1595,6 +1605,34 @@ struct tt_UpdateHeader {
     struct tt_UpdateEntity entities[];
     */
 } __attribute__((packed));
+
+// One part of a discovery announce too large for a single datagram (tt_SUBMESSAGE_TYPE_UPDATE_PART,
+// 2026-09-24 - DESIGN.md's "Discovery announce in parts" has the full rule). A node sends the
+// ordinary single UPDATE whenever it fits one datagram, and parts only when it does not: a node
+// whose endpoint list outgrew the datagram could otherwise not be discovered at all.
+//
+// All parts of one announce carry the same last_modified and part_count; each carries its own
+// slice of the entity list, encoded exactly as in an UPDATE. The receiver treats the announce as
+// complete - and so as this node's whole endpoint list, replacing what it announced before - only
+// once every part_index below part_count has arrived. A lost part is recovered by the next
+// periodic announce, which resends every part under the same last_modified.
+//
+// A new submessage type rather than part fields inside UPDATE, so that a node built before it
+// skips it as unknown instead of reading the first part as a complete list. Chosen by the user
+// on 2026-09-24 over a protocol version bump.
+struct tt_UpdatePartHeader {
+    uint64_t last_modified;
+    uint8_t part_index;   // 0 .. part_count - 1
+    uint8_t part_count;   // 2 .. tt_UPDATE_MAX_PARTS
+    uint8_t entity_count; // entities in this part
+    /* Dynamically allocated
+    struct tt_UpdateEntity entities[];
+    */
+} __attribute__((packed));
+
+// Parts one announce may be split into - the width of tt_Node.update_part_received. At the default
+// tt_MAX_BUFFER_LENGTH that is ~480 ROS-sized endpoints, beyond tt_MAX_ENDPOINT_COUNT.
+#define tt_UPDATE_MAX_PARTS 32
 
 // QoS roadmap #1 (RxO matching, Milestone 31) - the bits struct tt_UpdateEntity.qos below
 // carries, one per policy this package implements a wire-visible mechanism for (services/

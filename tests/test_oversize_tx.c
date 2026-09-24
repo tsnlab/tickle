@@ -17,7 +17,8 @@
 // two default rclcpp nodes in one process are already past that line.
 //
 // These tests check the node stays usable and that the loss is visible (tx_dropped_oversize),
-// not merely survived. Announcing a large endpoint list at all is a separate, later change.
+// not merely survived. A large endpoint list is announced in parts (test_update_parts.c); what is
+// left for this file is what no datagram can carry at all.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -96,26 +97,46 @@ static void test_small_update_is_sent_and_counts_nothing(void) {
     expect_node_still_publishes();
 }
 
-static void test_update_past_one_datagram_is_refused_not_wedged(void) {
-    // 20 endpoints: the UPDATE fits tx_buffer (2 x the datagram) but no datagram. It used to be
-    // kept, and then failed every flush after it.
-    test_mock_reset();
-    init_node_with_endpoints(20);
-    EXPECT_TRUE(!build_and_send_update(&node, NULL, 0));
-    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
-    EXPECT_EQ_U32(1, (uint32_t)node.tx_dropped_oversize);
-    node_flush(&node, 0, NULL);
-    EXPECT_EQ_INT(0, test_mock_send_call_count);
-    expect_node_still_publishes();
+static void test_large_announce_leaves_node_usable(void) {
+    // 20 and 40 endpoints: past one datagram, and at 40 past tx_buffer itself. Both used to leave
+    // the node unable to send; both now announce in parts (test_update_parts.c covers the parts
+    // themselves), and nothing is dropped.
+    for (int count = 20; count <= 40; count += 20) {
+        test_mock_reset();
+        init_node_with_endpoints(count);
+        EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
+        node_flush(&node, 0, NULL);
+        EXPECT_TRUE(test_mock_send_call_count >= 2);
+        EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+        EXPECT_EQ_U32(0, (uint32_t)node.tx_dropped_oversize);
+        expect_node_still_publishes();
+    }
 }
 
-static void test_update_past_tx_buffer_leaves_node_usable(void) {
-    // 40 endpoints: does not even fit tx_buffer, so encoding fails before end_encode() - a
-    // different refusal, but the node must come out of it just as usable.
+static void test_endpoint_too_large_to_announce_is_dropped_alone(void) {
+    // An endpoint whose name alone outgrows a datagram cannot be announced even as a part of its
+    // own. It is left out and counted; the rest of the announce still goes, as the single UPDATE
+    // it fits - never as a one-part announce, which no receiver accepts.
+    static char huge_name[tt_MAX_BUFFER_LENGTH + 64];
     test_mock_reset();
-    init_node_with_endpoints(40);
-    EXPECT_TRUE(!build_and_send_update(&node, NULL, 0));
-    EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
+    init_node_with_endpoints(4);
+    memset(huge_name, 'x', sizeof(huge_name) - 1);
+    huge_name[sizeof(huge_name) - 1] = '\0';
+    static struct tt_Topic huge_topic;
+    static struct tt_Publisher huge_pub;
+    memset(&huge_topic, 0, sizeof(huge_topic));
+    huge_topic.name = huge_name;
+    huge_topic.data_size = sizeof(sample);
+    huge_topic.data_encode_size = sized_encode_size;
+    huge_topic.data_encode = sized_encode;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &huge_pub, &huge_topic, "my_robot_node_endpoint"));
+
+    EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
+    node_flush(&node, 0, NULL);
+    EXPECT_EQ_INT(1, test_mock_send_call_count);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_UPDATE,
+                  ((const struct tt_SubmessageHeader*)(test_mock_send_last_buf + sizeof(struct tt_Header)))->type);
+    EXPECT_EQ_U32(1, (uint32_t)node.tx_dropped_oversize);
     expect_node_still_publishes();
 }
 
@@ -157,8 +178,8 @@ static void test_flush_of_an_unsendable_buffer_drops_it(void) {
 
 int main(void) {
     test_small_update_is_sent_and_counts_nothing();
-    test_update_past_one_datagram_is_refused_not_wedged();
-    test_update_past_tx_buffer_leaves_node_usable();
+    test_large_announce_leaves_node_usable();
+    test_endpoint_too_large_to_announce_is_dropped_alone();
     test_sample_that_cannot_fit_is_refused_and_not_cached();
     test_flush_of_an_unsendable_buffer_drops_it();
 

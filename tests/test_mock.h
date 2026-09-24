@@ -63,6 +63,9 @@ uint16_t test_mock_send_to_last_port = 0;
 // for a test that needs to decode what was actually sent, not just count sends.
 uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
 size_t test_mock_send_last_len = 0;
+// Optional: called with every packet either send function is handed, untruncated - for a test that
+// needs all of several datagrams, not just the last one. NULL (the default) = not called.
+void (*test_mock_send_hook)(const void* buf, size_t len) = NULL;
 int test_mock_wake_signal_call_count = 0;
 #else
 extern uint64_t test_mock_now;
@@ -79,6 +82,7 @@ extern uint32_t test_mock_send_to_ips[TEST_MOCK_MAX_SENDS];
 extern int test_mock_send_to_ip_count;
 extern uint16_t test_mock_send_to_last_port;
 extern uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
+extern void (*test_mock_send_hook)(const void* buf, size_t len);
 extern size_t test_mock_send_last_len;
 extern int test_mock_wake_signal_call_count;
 #endif
@@ -100,6 +104,7 @@ static inline void test_mock_reset(void) {
     }
     test_mock_send_to_last_port = 0;
     test_mock_send_last_len = 0;
+    test_mock_send_hook = NULL;
     test_mock_wake_signal_call_count = 0;
 }
 
@@ -107,6 +112,9 @@ static inline void test_mock_reset(void) {
 static void test_mock_capture_send(const void* buf, size_t len) {
     test_mock_send_last_len = len < sizeof(test_mock_send_last_buf) ? len : sizeof(test_mock_send_last_buf);
     memcpy(test_mock_send_last_buf, buf, test_mock_send_last_len);
+    if (test_mock_send_hook != NULL) {
+        test_mock_send_hook(buf, len);
+    }
 }
 
 // These replace the real platform HAL symbols (normally hal_linux.c) in a test binary.
