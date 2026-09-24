@@ -562,8 +562,11 @@ jobs:
 
       # P2 (rmw_tickle/PLAN.md, the user's decisions of 2026-09-24): standard ROS 2 message packages
       # over rmw_tickle, built the way a user builds them - rmw_tickle/scripts/build_ros2_interfaces.sh
-      # clones builtin_interfaces and std_msgs at the versions this runner has installed and builds
-      # them with TickLE's typesupport and shipped capacity profile - then check_ros2_interfaces.sh
+      # -a clones every package TickLE ships capacities for (common_interfaces, rcl_interfaces and the
+      # rest of the inventory) at the versions this runner has installed and builds them with
+      # TickLE's typesupport and shipped capacity profile, failing unless each gets its C and C++
+      # typesupport libraries (example_interfaces/WString is declined, as a wstring) - then
+      # check_ros2_interfaces.sh
       # sends std_msgs/String and std_msgs/Header between two processes and proves from
       # /proc/PID/maps that rmw_tickle and that workspace's std_msgs typesupport are what loaded.
       # This is the jazzy proof; the same scripts pass on the dev box's lyrical.
@@ -573,7 +576,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           set -u
-          rmw_tickle/scripts/build_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" builtin_interfaces std_msgs
+          rmw_tickle/scripts/build_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -a
           rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces"
 
       # Lint toolchain version, worth knowing before you debug a disagreement: tsnlab/check pins

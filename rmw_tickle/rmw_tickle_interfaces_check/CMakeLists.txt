@@ -1,8 +1,11 @@
 cmake_minimum_required(VERSION 3.12)
-project(rmw_tickle_interfaces_check C)
+project(rmw_tickle_interfaces_check C CXX)
 
 if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 11)
+endif()
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -12,6 +15,7 @@ find_package(rcutils REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(rclcpp REQUIRED)
 
 # Talks to the rmw API directly rather than through rclcpp: an rclcpp node also starts services
 # (type description, parameters) whose interface packages would have to be built for TickLE too,
@@ -22,6 +26,11 @@ target_link_libraries(interfaces_check
   rmw::rmw rmw_implementation::rmw_implementation rcutils::rcutils rosidl_runtime_c::rosidl_runtime_c
   ${std_msgs_TARGETS} ${builtin_interfaces_TARGETS})
 
-install(TARGETS interfaces_check DESTINATION lib/${PROJECT_NAME})
+# The other half: what a user actually runs. A default rclcpp::Node, which starts every service and
+# publisher rclcpp starts on its own - see the file's own comment.
+add_executable(default_node src/default_node.cpp)
+target_link_libraries(default_node rclcpp::rclcpp ${std_msgs_TARGETS})
+
+install(TARGETS interfaces_check default_node DESTINATION lib/${PROJECT_NAME})
 
 ament_package()
