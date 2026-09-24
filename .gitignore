@@ -19,6 +19,7 @@
 
 # tools/typesupport (Python) build/test/dev-environment artifacts
 /tools/typesupport/**/__pycache__/
+/rmw_tickle/**/__pycache__/
 /tools/typesupport/.pytest_cache/
 /tools/typesupport/*.egg-info/
 /tools/typesupport/build/

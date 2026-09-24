@@ -1747,6 +1747,12 @@ itself does not fix it: `GetTypeDescription_Response` is 9944 B as a TickLE stru
    ROS, and the user can still object: the vendored `.msg` parser stays, since TickLE's own IDL is
    `.msg` and this is read as the "EMparser" exception; and the verbatim ROS `.msg` parser fixtures
    stay as test data.
+   The relocation itself landed in `c1396780` (TickLE Dev): `ros2_cli`, `ros2_adapter` and
+   `Ros2Resolver` now live in `rmw_tickle/rosidl_typesupport_tickle_c/`. **Follow-up, not yet
+   done:** core's `model.WireStruct` still carries fields that exist only for the ROS side
+   (`header_name`, `ros_pkg_name`, `ros_type_name`), and `resolve.Resolver` sets them. Removing
+   them is a refactor rather than a relocation, and it is tracked here so it does not become
+   permanent residue under decision 2.
 
 **Research** (TickLE Plan, `rmw_tickle/tools/`, commits `35aead29`, `098a4697`, `8d8f7c81`).
 Every jazzy `.msg`/`.srv` in common_interfaces, rcl_interfaces, unique_identifier_msgs, geometry2 and
