@@ -3,6 +3,30 @@
     {
       "buildtest": {
         "branch": "main",
+        "commit": "d7b6a285f38013b8ecd0c912b03d5354c90af9bd",
+        "commit_short": "d7b6a28",
+        "date": "2026-09-24T15:29Z",
+        "rows": {
+          "freertos": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "n/a"
+          },
+          "linux": {
+            "build": "pass",
+            "integration": "pass",
+            "unit": "pass"
+          }
+        },
+        "run_url": "https://github.com/tsnlab/tickle/actions/runs/36019266780"
+      },
+      "commit": "d7b6a285f38013b8ecd0c912b03d5354c90af9bd",
+      "commit_short": "d7b6a28",
+      "date": "2026-09-24T15:29Z"
+    },
+    {
+      "buildtest": {
+        "branch": "main",
         "commit": "872f59ace59c0a54db98003da47a72df21c4fb7a",
         "commit_short": "872f59a",
         "date": "2026-09-24T15:22Z",
@@ -2698,50 +2722,7 @@
         "rel_throughput_recv_0pct": 1870013,
         "run_url": "https://github.com/tsnlab/tickle/actions/runs/35945951840"
       }
-    },
-    {
-      "buildtest": {
-        "branch": "main",
-        "commit": "1e26797161833a1afe4ec49bec6bb75e68aa8103",
-        "commit_short": "1e26797",
-        "date": "2026-09-24T01:49Z",
-        "rows": {
-          "freertos": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "n/a"
-          },
-          "linux": {
-            "build": "pass",
-            "integration": "pass",
-            "unit": "pass"
-          }
-        },
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35943954695"
-      },
-      "commit": "1e26797161833a1afe4ec49bec6bb75e68aa8103",
-      "commit_short": "1e267971618",
-      "date": "2026-09-24T01:49Z",
-      "perf": {
-        "be_latency_ms": 0.216,
-        "be_throughput_recv": 1933810,
-        "build": "pass",
-        "commit": "1e26797161833a1afe4ec49bec6bb75e68aa8103",
-        "commit_short": "1e267971618",
-        "date": "2026-09-24T01:56Z",
-        "durability_durable_recv": 20,
-        "durability_volatile_recv": 0,
-        "history_beyond_depth_recv": 156,
-        "integration": "pass",
-        "lifespan_lost_1_5s": 0,
-        "liveliness_detect_2s_ms": 2327.461,
-        "rel_latency_ms": 0.231,
-        "rel_loss_1pct": 0.0,
-        "rel_loss_5pct": 0.2,
-        "rel_throughput_recv_0pct": 1883873,
-        "run_url": "https://github.com/tsnlab/tickle/actions/runs/35943954563"
-      }
     }
   ],
-  "updated": "2026-09-24 15:22 UTC"
+  "updated": "2026-09-24 15:29 UTC"
 }
