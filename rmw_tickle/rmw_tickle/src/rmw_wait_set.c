@@ -30,7 +30,7 @@
 // ones fired, so a guard condition observed ready in one rmw_wait() call doesn't immediately look
 // ready again in the next one without being retriggered.
 
-#include <errno.h>
+#include <errno.h> // NOLINT(misc-include-cleaner) -- ETIMEDOUT lives in a glibc-private header; <errno.h> is the correct public one, same as hal_linux.c's EINTR/EAGAIN
 #include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -285,6 +285,7 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
         int wait_ret = NULL == wait_timeout
                            ? pthread_cond_wait(&context_impl->wait_cond, &context_impl->wait_mutex)
                            : pthread_cond_timedwait(&context_impl->wait_cond, &context_impl->wait_mutex, &deadline);
+        // NOLINTNEXTLINE(misc-include-cleaner) -- see the <errno.h> include above
         if (ETIMEDOUT == wait_ret) {
             finalize_all(subscriptions, guard_conditions, services, clients, events);
             pthread_mutex_unlock(&context_impl->wait_mutex);

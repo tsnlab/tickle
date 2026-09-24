@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock lint lint-shell clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock lint lint-rmw lint-shell clean test-linux test-freertos test-all \
         install uninstall fuzz sanitize regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize:
@@ -51,6 +51,11 @@ check-doc-shas:
 
 check-rig-lock:
 	./.github/scripts/check_rig_lock_coverage.sh
+
+# clang-tidy over rmw_tickle/, which `make lint` excludes and CI's cpp-linter does not - see the
+# script's own header.
+lint-rmw:
+	./.github/scripts/lint_rmw.sh
 
 headers-cpp:
 	$(MAKE) -C platform/linux headers-cpp
