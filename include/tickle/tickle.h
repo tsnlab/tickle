@@ -1249,7 +1249,10 @@ bool tt_is_reverse_endian(struct tt_Header* header);
 //
 // Returns tt_RET_OK on success. tt_Node_create() can also return tt_RET_IILEGAL_NODE_ID (address
 // auto-detection found no usable id and none was set in _tt_CONFIG), tt_RET_IO_ERROR (socket
-// bind), or tt_RET_OUT_OF_SCHEDULE. The create_* helpers return tt_RET_OUT_OF_BUFFER /
+// bind), tt_RET_NO_SUCH_LINK (a configured link's broadcast address is owned by no local
+// interface - worth retrying, since an interface brought up by DHCP or a network manager may
+// simply not exist yet when a service starts; see that code's own comment in hal.h), or
+// tt_RET_OUT_OF_SCHEDULE. The create_* helpers return tt_RET_OUT_OF_BUFFER /
 // tt_RET_OUT_OF_SCHEDULE when the node's fixed endpoint table or scheduler is full.
 tt_ret_t tt_Node_create(struct tt_Node* node);
 tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,

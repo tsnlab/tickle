@@ -201,24 +201,41 @@ static uint8_t link_count(void) {
 //
 // Idempotent: re-resolving an already-resolved link asks the OS the same question and gets the
 // same answer, so a second node in the same process costs one getifaddrs and changes nothing.
-static void resolve_links(void) {
+static tt_ret_t resolve_links(void) {
     for (uint8_t i = 0; i < link_count(); i++) {
         struct _tt_Link* link = &_tt_CONFIG.links[i];
         link->resolved =
             tt_resolve_link(link->broadcast, &link->resolved_addr, &link->resolved_netmask, &link->resolved_broadcast);
         if (!link->resolved) {
-            // THE ONE PLACE the "configured interface does not exist" decision lands. Today this
-            // warns and the link becomes the catch-all, which is correct for the limited broadcast
-            // 255.255.255.255 - no interface owns it, by definition, and it must keep working
-            // because it is the compiled-in default. It is *not* obviously correct for a directed
-            // broadcast naming a subnet this host is not on: that is the user having asked for
-            // something that cannot be honoured, rather than the user not having said anything,
-            // and whether that should refuse to start is with the user. Whichever way they rule,
-            // it is this branch and nothing else.
-            TT_LOG_WARNING("Link %u (%s) matches no local interface - treating it as the catch-all", i,
-                           link->broadcast != NULL ? link->broadcast : "(null)");
+            // Two different situations, and the whole point of separating them is that one is a
+            // configuration error and the other is the default.
+            //
+            // The limited broadcast is owned by no interface by definition. It is the compiled-in
+            // default and the catch-all that makes an unconfigured node work, so it is normal and
+            // says nothing - warning here would fire on every node that has configured nothing,
+            // which is all of them today.
+            //
+            // A *directed* broadcast that matches no local interface is the caller having asked
+            // for an interface that is not here. That is reported rather than absorbed: the node
+            // is not created, and the caller decides what to do about it. A ROS 2 launch or a
+            // supervised service retries, because the interface may simply not be up yet - DHCP
+            // and network managers routinely lose that race - while a fixed-configuration embedded
+            // target treats it as fatal. The library does not decide that on the application's
+            // behalf, and it does not quietly run with a link the caller asked for silently not in
+            // use, which was the option this replaced.
+            if (link->resolved_broadcast != tt_LIMITED_BROADCAST) {
+                // Logged as well as returned, for a different reader: the return code tells the
+                // program, and this tells whoever is looking at a boot log wondering why a service
+                // keeps restarting. That person is usually the one who made the typo.
+                TT_LOG_ERROR("Link %u: no local interface has broadcast address %s - not creating the node", i,
+                             link->broadcast != NULL ? link->broadcast : "(null)");
+                return tt_RET_NO_SUCH_LINK;
+            }
+            TT_LOG_DEBUG("Link %u (%s) is the limited broadcast - no interface owns it, so it is the catch-all", i,
+                         link->broadcast != NULL ? link->broadcast : "(null)");
         }
     }
+    return tt_RET_OK;
 }
 
 // Which configured link a peer address belongs to. A link the OS resolved matches addresses in its
@@ -1249,7 +1266,10 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
     // accepts (e.g. tt_hash_id() itself).
     // Before anything can send: flush_tx() addresses every datagram through the link table, so it
     // has to exist first. Idempotent, so a second node in this process costs one getifaddrs.
-    resolve_links();
+    tt_ret_t link_ret = resolve_links();
+    if (link_ret != tt_RET_OK) {
+        return link_ret;
+    }
 
     node->entity_id_base = (uint32_t)tt_get_ns();
 

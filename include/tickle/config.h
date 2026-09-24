@@ -281,6 +281,10 @@
 // malloc-free: a node's links are part of its static configuration, not something it discovers.
 // Four is a guess sized for the cases in front of us - a wired test link plus a management
 // network is two, and a gateway bridging two segments is three - not a measured limit.
+// 255.255.255.255, as a number. Not a tunable - it is what the limited broadcast *is*, and a
+// deployment that wants a different broadcast sets one per link rather than redefining this.
+#define tt_LIMITED_BROADCAST 0xFFFFFFFFU
+
 #ifndef tt_MAX_LINK_COUNT
 #define tt_MAX_LINK_COUNT 4
 #endif

@@ -68,6 +68,21 @@ typedef enum tt_ret_t {
                                    // request still waiting on a response - already answered, timed
                                    // out, or never deferred in the first place. See tickle.h's own
                                    // tt_Server_send_response() doc comment.
+    tt_RET_NO_SUCH_LINK = -14,     // A configured link names a broadcast address no local interface
+                                   // owns (struct _tt_Link, config.h). Its own code rather than
+                                   // tt_RET_INVALID_ARGUMENT deliberately: the caller has to be
+                                   // able to tell "the interface I was told to use is not here
+                                   // yet" from "your arguments are malformed", because the first
+                                   // is worth retrying after a boot race - an interface brought up
+                                   // by DHCP or a network manager may simply not exist when a
+                                   // service starts - and the second never is. Collapsing them
+                                   // would force a caller to treat every creation failure as
+                                   // retryable or none of them.
+                                   //
+                                   // The limited broadcast 255.255.255.255 is NOT this error: no
+                                   // interface owns it by definition, it is the compiled-in
+                                   // default, and it is the catch-all that makes an unconfigured
+                                   // node work at all.
     tt_RET_WOULD_BLOCK = -13,      // Phase 3 (rmw_tickle/PLAN.md) - tt_Publisher_publish() on a
                                    // KEEP_ALL Publisher whose next write would have to evict a
                                    // sample no matched Subscriber has acknowledged yet. Nothing was
