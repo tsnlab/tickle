@@ -72,6 +72,15 @@ jobs:
         continue-on-error: true
         run: make check-doc-shas
 
+      # Three separate steps of rmw-perf.yml were found writing shared trees outside the box
+      # lock on 2026-09-24, one after another, because each fix asked "is the benchmark locked?"
+      # rather than "is this state shared?". The cost was a twelve-rep measurement corrupted by
+      # CI rewriting binaries underneath it, and a hypothesis built on the result.
+      - name: Shared-tree writes are under the rig lock
+        id: rig_lock
+        continue-on-error: true
+        run: make check-rig-lock
+
       - name: Public headers compile as C and C++
         id: headers
         continue-on-error: true
@@ -161,6 +170,7 @@ jobs:
             'Build FreeRTOS=${{ steps.build_freertos.outcome }}' \
             'Lint FreeRTOS=${{ steps.lint_freertos.outcome }}' \
             'Doc commit ids=${{ steps.doc_shas.outcome }}' \
+            'Rig lock coverage=${{ steps.rig_lock.outcome }}' \
             'Headers C/C++=${{ steps.headers.outcome }}' \
             'Unit tests=${{ steps.unit.outcome }}' \
             'Sanitizers=${{ steps.sanitize.outcome }}' \

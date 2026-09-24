@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas lint lint-shell clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock lint lint-shell clean test-linux test-freertos test-all \
         install uninstall fuzz sanitize regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize:
@@ -49,6 +49,9 @@ lint-shell:
 check-doc-shas:
 	./.github/scripts/check_doc_shas.sh
 
+check-rig-lock:
+	./.github/scripts/check_rig_lock_coverage.sh
+
 headers-cpp:
 	$(MAKE) -C platform/linux headers-cpp
 
@@ -70,7 +73,7 @@ test-freertos:
 # performance test (.github/workflows/performance.yml) is deliberately not part of this - it
 # needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add
 # here.
-test-all: test headers-cpp check-doc-shas test-samehost test-linux test-freertos
+test-all: test headers-cpp check-doc-shas check-rig-lock test-samehost test-linux test-freertos
 
 # Re-runs tools/typesupport over every real (non-test) interface, in place - each one flattened
 # into examples/<proto>/ alongside the .msg/.srv it's generated from (see tools/typesupport/
