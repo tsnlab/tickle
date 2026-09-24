@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790218029178,
+  "lastUpdate": 1790218033087,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -116563,6 +116563,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/15d73793d1729998a807b917e4e8924506f8482e"
         },
         "date": 1790216056582,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "3f211673552288cd517a255da0ed1197293f3f3d",
+          "message": "ci: make the rmw-perf job a functional gate, and check that it can fail\n\nThe user's standing decision: this box is for 기능 정합성 검증 - functional-correctness\nverification - and performance is measured on the rpis, which are dedicated hardware. Our own\nnumbers are the argument rather than a preference: a cross-day shift of about 13us landed on all\nthree rmw implementations at once, including two containing none of our code, at a quarter of the\nfigure being measured. The noise floor of this box is the size of the effects we were measuring on\nit.\n\nThe job carried `|| true` on both colcon calls, deliberately, because \"this benchmark's own\nnumbers are the actual point of this job, not a pass/fail gate\". Under the decision the numbers\nare not a signal at all, so what is left is the functional question - does the matrix run - and a\njob that cannot fail does not answer it. Calling it a smoke test while leaving `|| true` in place\nwould have been this week's recurring defect wearing a new label, so the test call fails the job\nnow. `colcon test-result` keeps its `|| true` because it only reports, and the stale-xunit problem\nthat partly motivated the blanket version is already handled by the `rm -rf` above it.\n\nThat exposed something that was a footnote while the numbers were the point and is not one now.\nThe job's only failing path is README-rmw-perf.md's provisioning patch (e), the delivery\nassertion - and (e) lives in the provisioned workspace, not in this repository. A missing (a)\nthrough (d) fails loudly and immediately because the job will not build. A missing (e) does not:\nthe job runs, reports success, and asserts nothing, which is exactly the shape we have removed\nfour times this week. So there is now a step that greps the workspace for the assertion and fails\nwith the patch reference if it is absent. A re-provisioned workspace says so instead of quietly\nbecoming a gate that cannot fail.\n\nVerified both directions against the real workspace rather than by reading: the check passes as\nprovisioned, and removing the assertion makes it fail.\n\nThe step-summary table stays, relabelled diagnostics, with the caveat printed in the step itself\nrather than only in COMPARISON.MD - whoever reads that table is reading a CI log and will not have\nthe document open. It is genuinely useful as diagnosis; it is how the zero-delivery cells were\nfound at all.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T11:41:14+09:00",
+          "tree_id": "0d41c57d38679be5710c342af7443e142116683d",
+          "url": "https://github.com/tsnlab/tickle/commit/3f211673552288cd517a255da0ed1197293f3f3d"
+        },
+        "date": 1790218031827,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
