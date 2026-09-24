@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790237162434,
+  "lastUpdate": 1790237166475,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -115739,6 +115739,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/7f4b23affa627da29cfd429da0a7e176c123b4e5"
         },
         "date": 1790235876161,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "volatile recv",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ec4874fdd06f225b23c2e81701942b10899972c5",
+          "message": "An arm that measured the wrong binary must say so, not produce a number\n\nPinning AMENT_PREFIX_PATH is a request, not a guarantee. This experiment had\nalready produced four confident results from a librmw_tickle.so built the\nprevious day, and the only clue was a log line whose wording was subtly the old\none - so adding a pin and trusting it would repeat the same class of mistake one\nlevel up.\n\nSourcing order is an environment fact nobody here controls. What a process\nmapped is observable: each arm now reads /proc/<pid>/maps while the subscriber\nis still running, and declares itself VOID by name if the mapped library is not\nthis checkout's. Same rule as a run that received on only one socket being void\nfor the interleaving question rather than negative.\n\nVerified in both directions, because a check only ever seen passing is not a\ncheck. With the pin removed it prints\n\n    ARM A_reliable IS VOID: mapped /home/semih/actions-runner-perf/_work/\n    tickle/tickle/install/rmw_tickle/lib/librmw_tickle.so, expected\n    /home/semih/tickle-dev/install/rmw_tickle/lib/librmw_tickle.so\n\nnaming the exact wrong library; with it in place it prints the expected path and\nthe arm runs.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T17:00:44+09:00",
+          "tree_id": "5562bf5d11694e5e2205c9f694296b60107cbc93",
+          "url": "https://github.com/tsnlab/tickle/commit/ec4874fdd06f225b23c2e81701942b10899972c5"
+        },
+        "date": 1790237165160,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
