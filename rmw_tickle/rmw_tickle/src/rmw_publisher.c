@@ -961,7 +961,10 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     if (!callbacks->to_tickle(ros_message, tickle_buf)) {
         // A bounds-check failure (a variable array/bounded string longer than TickLE's resolved
         // capacity) - see ros2_adapter.py's own emit_to_tickle() doc comment.
-        RMW_SET_ERROR_MSG("failed to convert ROS message to TickLE wire struct (capacity exceeded?)");
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "cannot publish this %s: a sequence or string in it is longer than the capacity TickLE generated the "
+            "type with - raise it with a capacity file (TICKLE_CAPACITIES_PATH) and rebuild the package",
+            callbacks->ros_type_name);
         pthread_mutex_unlock(&pub_impl->publish_mutex);
         return RMW_RET_ERROR;
     }
