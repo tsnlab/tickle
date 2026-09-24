@@ -19,6 +19,8 @@ from tickle_typesupport import _rosidl_parser as rosidl
 from tickle_typesupport import capacities as capacity_file
 from tickle_typesupport.resolve import Resolver, find_on_search_path
 
+from . import builtins
+
 
 class UnsupportedNestedPackage(Exception):
     """A message nests a type from another package that TickLE has no typesupport for.
@@ -75,7 +77,7 @@ class Ros2Resolver:
         # package from one that merely has a .msg on the search path.
         self.typesupport_packages = set(typesupport_packages)
         self.resolved_structs = {}
-        self._builtin_fallback = Resolver(include_dirs)
+        self._builtin_fallback = Resolver(include_dirs, builtins.BUILTINS)
 
     def _find_independent_source(self, pkg_name, msg_name):
         if pkg_name == self.package_name:

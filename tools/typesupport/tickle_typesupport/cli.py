@@ -93,8 +93,8 @@ def _write_generated(name, header, source, source_label, outdir, fmt_dir):
 def generate_interface(path, outdir, *, name_override=None, style_dir=None, include_dirs=()):
     """Parses one .msg/.srv, generates its <Name>.h/.c, clang-formats them, and writes them into
     outdir - along with a <pkg>__<Name>.h/.c pair for every distinct nested message type it (or
-    one of its own nested types, recursively) references, resolved from `include_dirs` (ROS 2's
-    own `pkg/msg/Name.msg` layout) or tickle_typesupport.builtins (see resolve.py). Returns every
+    one of its own nested types, recursively) references, resolved from `include_dirs` (the
+    `pkg/msg/Name.msg` layout - see resolve.py). Returns every
     file path written, top-level interface first."""
     package, guessed_name = _guess_package_and_name(path)
     name = name_override or guessed_name
@@ -146,8 +146,7 @@ def main(argv=None):
         default=[],
         metavar="DIR",
         help="search DIR/<pkg>/msg/<Name>.msg to resolve a nested message field's type "
-        "(repeatable; builtin_interfaces/Time and std_msgs/Header are always available even "
-        "without one - see tickle_typesupport.builtins)",
+        "(repeatable)",
     )
     args = parser.parse_args(argv)
 

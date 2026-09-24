@@ -12,7 +12,7 @@ sizing, and emit.py/the templates render into C. Kept separate from the vendored
 adapt.py.
 
 M3 scope adds nested messages (kind == "nested"): a field whose type is itself a WireStruct,
-resolved (resolve.py) from a `-I` search path or builtins.py. DESIGN.md's "nested message" rule
+resolved (resolve.py) from a `-I` search path. DESIGN.md's "nested message" rule
 - "the nested type's fields are inlined recursively at the current offset, no header, no extra
 alignment beyond what the first nested field needs" - is exactly why wire_align/wire_size below
 can just delegate to the nested WireStruct's own first field / overall size: nothing about a

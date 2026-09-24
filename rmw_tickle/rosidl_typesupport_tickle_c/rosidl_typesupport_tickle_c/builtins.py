@@ -9,14 +9,19 @@
 """A tiny built-in copy of the two ROS 2 interfaces almost every other message nests
 (`builtin_interfaces/Time`, `std_msgs/Header`), so a `.msg` that references them "just works"
 without the caller having to vendor those two upstream packages behind a `-I` path of their own
-just to get a timestamp. resolve.py falls back to these only when nothing on the caller's own
-`-I` search path provides the same (package, name) - an explicit `-I` always wins, so a caller who
-does vendor their own copy (e.g. a real ROS 2 checkout) is never overridden by this fallback.
+just to get a timestamp. ros2_resolve.Ros2Resolver hands these to tickle_typesupport's
+resolve.Resolver as its fallback, consulted only when nothing on the caller's own `-I` search path
+provides the same (package, name) - an explicit `-I` always wins, so a caller who does vendor their
+own copy (e.g. a real ROS 2 checkout) is never overridden by this fallback.
+
+Lived in tools/typesupport until 2026-09-24, when the user decided TickLE core carries no ROS 2
+definitions ("TickLE 코어에서는 ROS의 std_msgs와 builtin_interfaces 정의를 빼자, rmw_tickle로
+옮기자").
 
 Verbatim `.msg` text, not reparsed/rewritten from the originals, so a diff against upstream stays
 meaningful. Fetched from `ros2` GitHub repositories at the `jazzy` ref, licensed Apache License
 2.0 by Open Source Robotics Foundation, Inc. (per each source package's own `package.xml`) - same
-provenance as tests/fixtures_ros2/ (see its own README.md), just embedded here instead of kept as
+provenance as tools/typesupport/tests/fixtures_ros2/ (see its own README.md), just embedded here instead of kept as
 standalone files, since these two are load-bearing for the generator itself rather than only for
 its test suite.
 """

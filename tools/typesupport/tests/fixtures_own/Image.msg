@@ -6,7 +6,7 @@
 # (nests std_msgs/Header, which has a `string frame_id`) and `encoding` (a plain string) both
 # are here, so there's no safe worst-case budget to auto-derive from. Exercises a real ROS 2
 # message's nested type (std_msgs/Header, itself nesting builtin_interfaces/Time - both resolved
-# via tickle_typesupport.builtins, no -I needed) together with M2's array support in one message.
+# from tests/fixtures_ros2/ via -I) together with M2's array support in one message.
 #
 # This message contains an uncompressed image
 # (0, 0) is at top-left corner of image

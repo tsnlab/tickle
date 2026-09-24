@@ -61,14 +61,14 @@ CFLAGS = [
 #     @capacity annotation, and a default value on one), plus a plain unbounded string alongside
 #     them to prove that path is untouched (DESIGN.md's "Capacity" rule).
 #   - Stamped/Image (fixtures_own/, M3): nested messages - Stamped nests std_msgs/Header (itself
-#     nesting builtin_interfaces/Time) purely via tickle_typesupport.builtins, two levels deep,
-#     with no -I needed at all; Image is the same std_msgs/Header nest plus a real ROS 2 shape
+#     nesting builtin_interfaces/Time), two levels deep, both resolved from fixtures_ros2/ via
+#     -I (INCLUDE_DIRS, below); Image is the same std_msgs/Header nest plus a real ROS 2 shape
 #     (sensor_msgs/Image, with an explicit @capacity added to its own unbounded uint8[] - see its
 #     own file for why that's a fixtures_own/ copy rather than tests/fixtures_ros2/'s unmodified
 #     one).
-#   - Twist (fixtures_ros2/geometry_msgs/, M3): a real ROS 2 message exercising the *other* nested
-#     resolution path - an explicit `-I` search path (INCLUDE_DIRS, below) rather than a builtin -
-#     and the same nested type referenced twice (linear/angular, both Vector3), proving the
+#   - Twist (fixtures_ros2/geometry_msgs/, M3): a real ROS 2 message exercising nested
+#     resolution from an explicit `-I` search path (INCLUDE_DIRS, below) with the top-level type
+#     itself from there too, and the same nested type referenced twice (linear/angular, both Vector3), proving the
 #     resolver caches rather than re-adapting (and re-emitting) it twice.
 #   - NestedArrays (fixtures_own/nested_arrays_pkg/, M8): the array-of-nested-message-type wire
 #     shape - fixed/bounded/annotated-capacity arrays of OddAlign.msg, a nested type deliberately
@@ -95,11 +95,17 @@ GENERATED_INTERFACES = {
     "Twist.msg": FIXTURES_ROS2 / "geometry_msgs" / "msg",
     "NestedArrays.msg": FIXTURES_OWN / "nested_arrays_pkg" / "msg",
 }
-# -I search paths generate_interface() needs for the interfaces above that nest a nonstandard
-# type not covered by tickle_typesupport.builtins - keyed the same way as GENERATED_INTERFACES.
-# Stamped.msg/Image.msg both only nest std_msgs/Header (a builtin), so neither needs one.
+# -I search paths generate_interface() needs for the interfaces above that nest another
+# package's type - keyed the same way as GENERATED_INTERFACES.
 INCLUDE_DIRS = {
     "Twist.msg": [FIXTURES_ROS2],  # nests geometry_msgs/Vector3, found under fixtures_ros2/
+    # Both nest std_msgs/Header (itself nesting builtin_interfaces/Time), found under
+    # fixtures_ros2/ like any other package's type. Until 2026-09-24 the generator bundled those
+    # two ROS 2 definitions and needed no -I for them; TickLE core carries no ROS definitions now
+    # (user decision), so the real upstream files are handed in instead. Generated output is
+    # unchanged - same .msg text, same pkg__Name c_names - which is what keeps golden/ identical.
+    "Stamped.msg": [FIXTURES_ROS2],
+    "Image.msg": [FIXTURES_ROS2],
     # NestedArrays.msg's own unqualified `OddAlign` reference resolves against its *own* package
     # (nested_arrays_pkg, from its own pkg/msg/Name.msg path - _guess_package_and_name()) via
     # resolve.Resolver's usual -I search, needing FIXTURES_OWN itself as the search root so

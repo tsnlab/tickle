@@ -6,9 +6,12 @@
 # it under the terms of the GNU General Public License, version 3, as published by the Free
 # Software Foundation. A proprietary license is also available on request - see README.md.
 
-"""Finds and parses a nested message type's own `.msg` (`std_msgs/Header` referenced from inside
-another interface, say) - either from a caller-supplied `-I` search path (ROS 2's own `pkg/msg/
-Name.msg` layout) or, failing that, from builtins.py's small built-in fallback. adapt.py is the
+"""Finds and parses a nested message type's own `.msg` (`other_pkg/Stamp` referenced from inside
+another interface, say) - from a caller-supplied `-I` search path (the `pkg/msg/Name.msg` layout),
+or, failing that, from a fallback table of `.msg` sources the caller hands in. TickLE core bundles
+no message definitions of its own: the ROS 2 std_msgs/Header and builtin_interfaces/Time it used
+to carry moved to rmw_tickle on 2026-09-24 (user decision - core has no ROS dependency), which
+passes them in as that fallback. adapt.py is the
 only caller; kept separate so a future change to *how* dependencies are found (a real ament
 package index, say) doesn't have to touch adapt.py's own field-adapting logic.
 """
@@ -16,7 +19,6 @@ package index, say) doesn't have to touch adapt.py's own field-adapting logic.
 import pathlib
 
 from . import _rosidl_parser as rosidl
-from . import builtins
 
 
 class UnresolvedTypeError(ValueError):
@@ -42,8 +44,11 @@ class Resolver:
     `resolved_nested` to decide what else needs writing out alongside the top-level interface).
     """
 
-    def __init__(self, include_dirs):
+    def __init__(self, include_dirs, fallback_sources=None):
+        """fallback_sources: {(pkg_name, msg_name): .msg text} consulted only when nothing on the
+        search path provides the type - an explicit -I always wins."""
         self.include_dirs = list(include_dirs)
+        self._fallback_sources = dict(fallback_sources or {})
         self._specs = {}
         # In discovery order - cli.py writes each of these out once, after the top-level
         # interface, in exactly this order (so a dependency-of-a-dependency is written after the
@@ -58,12 +63,12 @@ class Resolver:
             return self._specs[key]
         text = find_on_search_path(pkg_name, msg_name, self.include_dirs)
         if text is None:
-            text = builtins.BUILTINS.get(key)
+            text = self._fallback_sources.get(key)
         if text is None:
             raise UnresolvedTypeError(
                 f"nested type '{pkg_name}/{msg_name}' not found on any -I search path "
-                f"({self.include_dirs or 'none given'}) and is not a built-in "
-                f"({sorted('/'.join(k) for k in builtins.BUILTINS)})"
+                f"({self.include_dirs or 'none given'})"
+                + (f" or among {sorted('/'.join(k) for k in self._fallback_sources)}" if self._fallback_sources else "")
             )
         spec = rosidl.parse_message_string(pkg_name, msg_name, text)
         self._specs[key] = spec
