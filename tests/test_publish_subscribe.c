@@ -647,13 +647,21 @@ static void test_process_data_fans_out_to_every_matching_subscriber(void) {
 }
 
 // The delivery-order diagnostic must actually move when delivery is out of order - an instrument
-// nobody has seen fire is not evidence of anything when it reads zero. Drives the three counters
+// nobody has seen fire is not evidence of anything when it reads zero. Drives the counters
 // independently, because they answer different questions (tt_Subscriber.delivered, tickle.h).
+//
+// Calls record_delivery_order() directly rather than driving it through process_data(), and that
+// is deliberate rather than convenient: BEST_EFFORT now discards a sample no newer than the last
+// delivered, so out-of-order samples no longer reach the recorder by that route at all. Driving
+// the recorder through the policy would make this test silently stop testing the recorder the
+// moment the policy tightened - which is exactly what happened when the discard landed. The
+// policy has its own test below.
+//
+// What these counters mean after the ordering work: they measure what ESCAPES the ordering
+// policy. In normal operation they should read zero, and a non-zero value is a defect rather
+// than a statistic.
 static void test_delivery_order_diagnostic_counts_disorder(void) {
     test_mock_reset();
-    subscriber_callback_count = 0;
-    data_free_call_count = 0;
-    decode_should_fail = false;
 
     struct tt_Node node;
     struct tt_Topic topic;
@@ -667,20 +675,29 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     header.version = tt_VERSION;
     header.source = REMOTE_NODE_ID;
 
+    struct data_delivery_ctx ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.header = &header;
+    ctx.endpoint_id = ENDPOINT_ID;
+
     // Two in order from one writer: nothing is out of order, and the first sample has no
     // predecessor to be out of order against.
-    uint32_t tail = write_data_from(&node, 10, 1000, 1, 7);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
-    tail = write_data_from(&node, 11, 2000, 2, 7);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    ctx.seq_no = 10;
+    ctx.timestamp = 1000;
+    ctx.entity_id = 7;
+    record_delivery_order(&node, &sub, &ctx);
+    ctx.seq_no = 11;
+    ctx.timestamp = 2000;
+    record_delivery_order(&node, &sub, &ctx);
     EXPECT_EQ_U32(2, sub.delivered);
     EXPECT_EQ_U32(0, sub.out_of_order);
     EXPECT_EQ_U32(0, sub.timestamp_not_newer);
     EXPECT_EQ_U32(0, sub.writer_switches);
 
-    // Same writer, both counters backwards: one sample, counted once on each axis.
-    tail = write_data_from(&node, 10, 1000, 3, 7);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    // Same writer, both axes backwards: one sample, counted once on each.
+    ctx.seq_no = 10;
+    ctx.timestamp = 1000;
+    record_delivery_order(&node, &sub, &ctx);
     EXPECT_EQ_U32(3, sub.delivered);
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(1, sub.timestamp_not_newer);
@@ -690,8 +707,10 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
     // must NOT be read as disorder - it belongs to a different writer's own counting - while the
     // switch itself is recorded. This is the case that would otherwise report every legitimate
     // change of speaker as a fault.
-    tail = write_data_from(&node, 1, 3000, 4, 9);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    ctx.seq_no = 1;
+    ctx.timestamp = 3000;
+    ctx.entity_id = 9;
+    record_delivery_order(&node, &sub, &ctx);
     EXPECT_EQ_U32(4, sub.delivered);
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(1, sub.timestamp_not_newer);
@@ -699,51 +718,42 @@ static void test_delivery_order_diagnostic_counts_disorder(void) {
 
     // ... but a backwards timestamp across that switch IS counted, because that is the predicate
     // the application itself checks and it does not care which writer spoke.
-    tail = write_data_from(&node, 12, 2500, 5, 7);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    ctx.seq_no = 12;
+    ctx.timestamp = 2500;
+    ctx.entity_id = 7;
+    record_delivery_order(&node, &sub, &ctx);
     EXPECT_EQ_U32(5, sub.delivered);
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(2, sub.timestamp_not_newer);
     EXPECT_EQ_U32(2, sub.writer_switches);
 
-    // Everything so far arrived on the well-known socket, so nothing has flipped yet - and the
-    // first sample of all cannot flip, having nothing before it.
+    // Everything so far arrived on the well-known socket, so nothing has flipped yet.
     EXPECT_EQ_U32(0, sub.via_socket_flips);
 
-    // Two on the data socket then one back on the well-known: two transitions, not three arrivals
-    // on a different socket. What is being counted is the boundary, because that is where an
-    // interleaving reader can misorder, and a run of samples on one socket offers no such chance
-    // however long it is.
+    // Two on the data socket then one back: two transitions, not three arrivals on a different
+    // socket. The boundary is what is counted, because that is where an interleaving reader can
+    // misorder; a run of samples on one socket offers no such chance however long it is.
     node.rx_via_data_port = true;
-    tail = write_data_from(&node, 13, 4000, 6, 7);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    ctx.seq_no = 13;
+    ctx.timestamp = 4000;
+    record_delivery_order(&node, &sub, &ctx);
     EXPECT_EQ_U32(1, sub.via_socket_flips);
-    tail = write_data_from(&node, 14, 5000, 7, 7);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    ctx.seq_no = 14;
+    ctx.timestamp = 5000;
+    record_delivery_order(&node, &sub, &ctx);
     EXPECT_EQ_U32(1, sub.via_socket_flips); // same socket again: not a transition
     node.rx_via_data_port = false;
-    tail = write_data_from(&node, 15, 6000, 8, 7);
-    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    ctx.seq_no = 15;
+    ctx.timestamp = 6000;
+    record_delivery_order(&node, &sub, &ctx);
     EXPECT_EQ_U32(2, sub.via_socket_flips);
 
-    // And the flips did not disturb the other three, which count different things entirely.
     EXPECT_EQ_U32(8, sub.delivered);
     EXPECT_EQ_U32(1, sub.out_of_order);
     EXPECT_EQ_U32(2, sub.timestamp_not_newer);
     EXPECT_EQ_U32(2, sub.writer_switches);
 }
 
-// The delivery counters must reach a log line whichever way the Subscriber goes away, and this
-// test exists because they did not.
-//
-// They were emitted only from tt_Node_destroy()'s walk of node->endpoints, which meant they never
-// appeared under rmw_tickle at all: rmw_destroy_subscription() destroys the subscription before
-// the node, so the walk found nothing. An entire benchmark computed them correctly and discarded
-// them in silence. The earlier verification was a real two-node run - which destroys its node with
-// endpoints still attached, and so exercised the one path that worked.
-//
-// Captures the log rather than eyeballing it, because "I saw the line on a run" is exactly the
-// check that passed while the product path was broken.
 static void expect_delivery_line(bool destroy_subscriber_first) {
     test_mock_reset();
     subscriber_callback_count = 0;
@@ -800,6 +810,63 @@ static void test_delivery_counters_are_reported_on_both_teardown_orders(void) {
     expect_delivery_line(/*destroy_subscriber_first=*/false); // examples: node with endpoints attached
 }
 
+// BEST_EFFORT must discard a sample no newer than the last delivered from the same writer, and
+// must not discard one from a different writer merely because that writer is further along.
+//
+// This is the DDS reader policy. TickLE used to deliver everything in arrival order, which is a
+// weaker guarantee than any DDS implementation offers - applications written against DDS assert
+// on it, and performance_test does exactly that.
+static void test_best_effort_discards_out_of_order(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+    decode_should_fail = false;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    sub.reliable = false;
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+
+    uint32_t tail = write_data_from(&node, 5, 5000, 1, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+
+    // Strictly newer: delivered.
+    tail = write_data_from(&node, 6, 6000, 2, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count);
+
+    // Older, and an exact duplicate: both discarded, and the callback never sees them.
+    tail = write_data_from(&node, 4, 4000, 3, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    tail = write_data_from(&node, 6, 6000, 4, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(2, sub.out_of_order_discarded);
+
+    // A gap is still delivered - BEST_EFFORT gives up on missing samples, it does not wait for
+    // them. This is the half that must NOT change.
+    tail = write_data_from(&node, 20, 20000, 5, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(3, (uint32_t)subscriber_callback_count);
+
+    // A different writer on the same node, starting from seq 1. It must be delivered: seq_no
+    // counts per writer, and comparing across writers would discard a perfectly good sample
+    // because somebody else was further along. This is also the restarted-Publisher case, which
+    // gets a new entity_id and therefore a new proxy.
+    tail = write_data_from(&node, 1, 100, 6, 9);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(4, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(2, sub.out_of_order_discarded);
+}
+
 int main(void) {
     test_publish_flushes_immediately_by_default();
     test_publish_batches_when_opted_in();
@@ -821,6 +888,7 @@ int main(void) {
     test_process_data_fans_out_to_every_matching_subscriber();
     test_delivery_order_diagnostic_counts_disorder();
     test_delivery_counters_are_reported_on_both_teardown_orders();
+    test_best_effort_discards_out_of_order();
 
     if (test_result() != 0) {
         return 1;

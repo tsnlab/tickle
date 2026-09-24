@@ -1256,6 +1256,12 @@ struct tt_Subscriber { // extends endpoint
     // broadcast volume, that is the interleaving hypothesis surviving a test that volume alone
     // would have failed it on.
     uint32_t via_socket_flips;
+    // BEST_EFFORT ordering: samples dropped because they were no newer than the last delivered
+    // from the same writer. Counted rather than silent, because this drop is a deliberate policy
+    // and an application seeing a gap deserves to be able to tell a discarded reorder from a
+    // sample that never arrived - which is the same reason COMPARISON.MD reports raw and
+    // post-match loss as separate columns rather than one number nobody can take apart.
+    uint32_t out_of_order_discarded;
     uint32_t last_seq_no;
     uint32_t last_source;
     uint32_t last_entity_id;

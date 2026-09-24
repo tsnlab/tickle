@@ -1427,6 +1427,7 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->out_of_order = 0;
     sub->timestamp_not_newer = 0;
     sub->via_socket_flips = 0;
+    sub->out_of_order_discarded = 0;
     sub->last_seq_no = 0;
     sub->last_source = 0;
     sub->last_entity_id = 0;
@@ -2542,10 +2543,11 @@ static void report_delivery_counters(const struct tt_Subscriber* sub, uint32_t e
     // undercount by design. These are the complete numbers, and a run's conclusion should be read
     // from them rather than from how many log lines appeared.
     TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
-                "writer_switches=%lu via_socket_flips=%lu rxo_drops=%lu",
+                "writer_switches=%lu via_socket_flips=%lu out_of_order_discarded=%lu rxo_drops=%lu",
                 endpoint_id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
                 (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
-                (unsigned long)sub->via_socket_flips, (unsigned long)sub->rxo_drops);
+                (unsigned long)sub->via_socket_flips, (unsigned long)sub->out_of_order_discarded,
+                (unsigned long)sub->rxo_drops);
 }
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
@@ -4153,6 +4155,39 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
 
     struct tt_Topic* topic = sub->topic;
     bool is_native = tt_is_native_endian(ctx->header);
+
+    // BEST_EFFORT ordering (2026-09-24): a sample no newer than the last one delivered from this
+    // same writer is discarded rather than handed up.
+    //
+    // This is the DDS reader policy, adopted deliberately rather than invented. A BEST_EFFORT
+    // reader gives up on missing samples but never hands the application one it has already moved
+    // past - so an application may see gaps, and may never see a sample twice or out of order.
+    // TickLE previously delivered everything in arrival order, which is a *weaker* guarantee than
+    // any DDS implementation offers, and applications written against DDS semantics assert on it:
+    // performance_test aborts with "Received sample with not strictly older timestamp", which is
+    // what this whole investigation was about.
+    //
+    // Per writer, not globally, because seq_no counts per writer - comparing across writers would
+    // discard a perfectly good sample because a different Publisher happened to be further along.
+    // The WriterProxy table already exists for exactly this identity and is bounded by
+    // tt_MAX_PEER_COUNT, so this needs no new storage; it just stops being reliable-only.
+    //
+    // A Publisher that restarts resets its seq_no to 1, which would otherwise be discarded forever
+    // against a high watermark. It is not, because a restarted Publisher carries a new entity_id
+    // (Milestone 47) and therefore claims a different proxy.
+    if (!sub->reliable) {
+        struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, ctx->header->source, ctx->entity_id, NULL);
+        // No proxy slot free: deliver rather than drop. Losing a sample because a *diagnostic-
+        // sized* table is full would be a worse failure than delivering one out of order, and the
+        // table is sized for the peers a node can talk to anyway.
+        if (proxy != NULL) {
+            if (ctx->seq_no < proxy->ack_seq_no) {
+                sub->out_of_order_discarded++;
+                return;
+            }
+            proxy->ack_seq_no = ctx->seq_no + 1;
+        }
+    }
 
     // QoS roadmap #5 (RELIABILITY/RELIABLE) - no-op (always "new") unless sub->reliable. Milestone
     // 60 (rmw_tickle/PLAN.md) - delivery to `callback` below is still unconditional for ordering (a
