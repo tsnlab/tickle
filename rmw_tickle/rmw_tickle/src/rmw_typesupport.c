@@ -12,7 +12,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h> // getenv()/strtoull() - rmw_tickle_cache_budget_bytes()
+#include <string.h>
 
+#include "rcutils/allocator.h"
 #include "rmw/error_handling.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
@@ -115,6 +117,41 @@ uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message
         bytes = (unsigned long long)tt_MAX_BUFFER_LENGTH; // no submessage can be larger than its datagram
     }
     return (uint32_t)RMW_TICKLE_ROUND_UP_8(bytes);
+}
+
+void* rmw_tickle_ros_message_create(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
+                                    const rcutils_allocator_t* allocator) {
+    void* ros_message = allocator->zero_allocate(1, callbacks->ros_struct_size, allocator->state);
+    if (NULL != ros_message && NULL != callbacks->ros_init) {
+        callbacks->ros_init(ros_message);
+    }
+    return ros_message;
+}
+
+void rmw_tickle_ros_message_destroy(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, void* ros_message,
+                                    const rcutils_allocator_t* allocator) {
+    if (NULL == ros_message) {
+        return;
+    }
+    if (NULL != callbacks->ros_fini) {
+        callbacks->ros_fini(ros_message);
+    }
+    allocator->deallocate(ros_message, allocator->state);
+}
+
+void rmw_tickle_ros_message_move(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, void* dst,
+                                 void* src) {
+    if (NULL != callbacks->ros_move) {
+        callbacks->ros_move(dst, src);
+        return;
+    }
+    // A C message: its owned buffers change hands with the pointers, so src must stop pointing at
+    // them. Clearing it here, rather than leaving that to each caller, is what lets a service's
+    // request storage be filled again safely - until 2026-09-25 it was not cleared after a take,
+    // and the next request's rosidl_runtime_c__String__assign() reallocated a buffer the caller
+    // of the previous take already owned.
+    memcpy(dst, src, callbacks->ros_struct_size);
+    memset(src, 0, callbacks->ros_struct_size);
 }
 
 bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support,

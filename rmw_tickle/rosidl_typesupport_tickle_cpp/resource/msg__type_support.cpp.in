@@ -17,14 +17,26 @@
 // never use it to reach anything beyond itself. rosidl_typesupport_fastrtps_cpp/introspection_cpp
 // sidestep this the same way: each embeds its OWN data directly rather than delegating further -
 // we do the same, just pointing at data someone else already built instead of building our own.
+//
+// 2026-09-25 - no longer the C handle's .data as-is. That lent rmw_tickle the C converters, which
+// read rclcpp's C++ message objects as rosidl_generator_c structs: strings happened to line up, a
+// std::vector does not, and every message with a sequence failed to publish while a take wrote C
+// allocations into C++ objects. .data is now a copy of the C callbacks with the C++ converters
+// (<ros_name>__rosidl_typesupport_tickle_cpp.hpp, generated with the C ones from the same model)
+// and the C++ object hooks (ros_init/ros_fini/ros_move, message_type_support.h) swapped in; the
+// codec itself - encode, decode, sizes - is the C one, shared.
 
 #include <cstddef>
+#include <new>
+#include <utility>
 
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_interface/macros.h"
 #include "rosidl_typesupport_tickle_cpp/identifier.h"
 
 #include "@PKG_NAME@/@SUBFOLDER@/detail/@HEADER_NAME@__functions.h"
+#include "rosidl_typesupport_tickle_c/message_type_support.h"
+#include "@PKG_NAME@__@SUBFOLDER@__@IDL_NAME@__rosidl_typesupport_tickle_cpp.hpp"
 
 extern "C" const rosidl_message_type_support_t *
 ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
@@ -38,6 +50,42 @@ namespace @SUBFOLDER@
 
 namespace rosidl_typesupport_tickle_cpp
 {
+
+#ifndef @PKG_NAME@__@SUBFOLDER@__@IDL_NAME@__TICKLE_UNSUPPORTED
+using _@IDL_NAME@_message = ::@PKG_NAME@::@SUBFOLDER@::@IDL_NAME@;
+
+static bool _@IDL_NAME@_to_tickle(const void * ros_message, void * tickle_message)
+{
+  return to_tickle(*static_cast<const _@IDL_NAME@_message *>(ros_message), tickle_message);
+}
+
+static bool _@IDL_NAME@_from_tickle(const void * tickle_message, void * ros_message)
+{
+  try {
+    return from_tickle(tickle_message, *static_cast<_@IDL_NAME@_message *>(ros_message));
+  } catch (const std::bad_alloc &) {
+    return false;  // the C converter's "allocation failed", not an exception across a C caller
+  }
+}
+
+static void _@IDL_NAME@_ros_init(void * ros_message)
+{
+  new (ros_message) _@IDL_NAME@_message();
+}
+
+static void _@IDL_NAME@_ros_fini(void * ros_message)
+{
+  static_cast<_@IDL_NAME@_message *>(ros_message)->~_@IDL_NAME@_message();
+}
+
+static void _@IDL_NAME@_ros_move(void * dst_ros_message, void * src_ros_message)
+{
+  *static_cast<_@IDL_NAME@_message *>(dst_ros_message) =
+    std::move(*static_cast<_@IDL_NAME@_message *>(src_ros_message));
+}
+
+static rosidl_typesupport_tickle_c_message_callbacks_t _@IDL_NAME@_callbacks;
+#endif
 
 // .data and .typesupport_identifier are both set on first access below, not here - .data needs
 // the real tickle_c handle's own .data (only available once that handle's own init-on-first-call
@@ -69,15 +117,31 @@ const rosidl_message_type_support_t *
 ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
   rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)(void)
 {
-  auto & handle = ::@PKG_NAME@::@SUBFOLDER@::rosidl_typesupport_tickle_cpp::_@IDL_NAME@_handle;
+#ifdef @PKG_NAME@__@SUBFOLDER@__@IDL_NAME@__TICKLE_UNSUPPORTED
+  // Declined by rosidl_typesupport_tickle_c (the reason is in the generated stub): no C handle to
+  // borrow a codec from, so no handle at all - rmw_tickle then reports the type unsupported.
+  return nullptr;
+#else
+  namespace ts = ::@PKG_NAME@::@SUBFOLDER@::rosidl_typesupport_tickle_cpp;
+  auto & handle = ts::_@IDL_NAME@_handle;
   if (!handle.typesupport_identifier) {
     const rosidl_message_type_support_t * tickle_c_handle =
       ROSIDL_TYPESUPPORT_INTERFACE__MESSAGE_SYMBOL_NAME(
         rosidl_typesupport_tickle_c, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)();
-    handle.data = tickle_c_handle->data;
+    auto & callbacks = ts::_@IDL_NAME@_callbacks;
+    callbacks =
+      *static_cast<const rosidl_typesupport_tickle_c_message_callbacks_t *>(tickle_c_handle->data);
+    callbacks.ros_struct_size = sizeof(ts::_@IDL_NAME@_message);
+    callbacks.to_tickle = &ts::_@IDL_NAME@_to_tickle;
+    callbacks.from_tickle = &ts::_@IDL_NAME@_from_tickle;
+    callbacks.ros_init = &ts::_@IDL_NAME@_ros_init;
+    callbacks.ros_fini = &ts::_@IDL_NAME@_ros_fini;
+    callbacks.ros_move = &ts::_@IDL_NAME@_ros_move;
+    handle.data = &callbacks;
     handle.typesupport_identifier = rosidl_typesupport_tickle_cpp__identifier;
   }
   return &handle;
+#endif
 }
 
 #ifdef __cplusplus

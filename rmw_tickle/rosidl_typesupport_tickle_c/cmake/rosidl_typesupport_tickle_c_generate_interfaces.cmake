@@ -171,7 +171,11 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
     list(APPEND _outputs
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.h"
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.c"
-      "${_msg_output_dir}/${_ros_name}__type_support.c")
+      "${_msg_output_dir}/${_ros_name}__type_support.c"
+      # The C++ converters (ros2_cpp_adapter.py) - generated here, from the same model as the C
+      # ones, and compiled by rosidl_typesupport_tickle_cpp's extension, not into this library.
+      "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_cpp.hpp"
+      "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_cpp.cpp")
     list(APPEND _sources
       "${_msg_output_dir}/${_ros_name}__rosidl_typesupport_tickle_c.c"
       "${_msg_output_dir}/${_ros_name}__type_support.c")
@@ -183,7 +187,9 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
       list(APPEND _outputs
         "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.h"
         "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.c"
-        "${_msg_output_dir}/${_ros_name}_${_part}__type_support.c")
+        "${_msg_output_dir}/${_ros_name}_${_part}__type_support.c"
+        "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_cpp.hpp"
+        "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_cpp.cpp")
       list(APPEND _sources
         "${_msg_output_dir}/${_ros_name}_${_part}__rosidl_typesupport_tickle_c.c"
         "${_msg_output_dir}/${_ros_name}_${_part}__type_support.c")
@@ -348,12 +354,12 @@ if(_generated_sources)
     if(_tickle_has_msg)
       install(DIRECTORY "${_output_path}/msg/"
         DESTINATION "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/msg"
-        FILES_MATCHING PATTERN "*.h")
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
     endif()
     if(_tickle_has_srv)
       install(DIRECTORY "${_output_path}/srv/"
         DESTINATION "include/${PROJECT_NAME}/rosidl_typesupport_tickle_c/srv"
-        FILES_MATCHING PATTERN "*.h")
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
     endif()
     # Found the hard way, in real CI, by rosidl_typesupport_tickle_c_tests_dep (a real package
     # with only .msg, no .srv, at all): exporting a path that was never actually install()ed above

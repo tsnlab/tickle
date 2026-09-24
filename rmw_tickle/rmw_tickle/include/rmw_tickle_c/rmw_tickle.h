@@ -97,6 +97,23 @@ unsigned long long rmw_tickle_cache_budget_bytes(void);
 uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
                                        size_t framing);
 
+// A ROS message object rmw_tickle holds itself - a received sample until it is taken, a service
+// request, a client response - handled through these, never with raw memcpy()/memset(). A C
+// message (the callbacks' ros_init/ros_fini/ros_move are NULL) is plain bytes and is treated
+// exactly as before; a C++ one (rosidl_typesupport_tickle_cpp) is constructed, moved and
+// destroyed. See message_type_support.h's ros_init for why.
+//
+// _create: storage for one message, constructed - NULL if allocation fails.
+// _destroy: destroys and frees what _create returned (NULL is a no-op).
+// _move: hands src's contents to dst - dst must be a constructed message it may overwrite - and
+//   leaves src empty and reusable.
+void* rmw_tickle_ros_message_create(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
+                                    const rcutils_allocator_t* allocator);
+void rmw_tickle_ros_message_destroy(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, void* ros_message,
+                                    const rcutils_allocator_t* allocator);
+void rmw_tickle_ros_message_move(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks, void* dst,
+                                 void* src);
+
 // The service-level counterpart, for rmw_client.c/rmw_service.c (Milestone 4) - bundles the one
 // rmw_tickle_get_message_callbacks() lookup per side plus the service's own callbacks (just its
 // ros_type_name - see rosidl_typesupport_tickle_c/service_type_support.h) into the three pieces

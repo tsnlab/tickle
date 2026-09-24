@@ -121,11 +121,15 @@ def test_generate_declines_a_field_it_cannot_represent(tmp_path):
     pkg = _package(tmp_path, msgs={"Wide": "wstring text\n"})
     out = tmp_path / "out"
     written = ros2_cli.generate(PKG, "msg", "Wide", str(pkg / "msg" / "Wide.msg"), str(out))
-    assert len(written) == 5
+    assert len(written) == 7  # the C set, and the C++ converter pair rosidl_typesupport_tickle_cpp compiles
     header = (out / "Wide.h").read_text()
     assert "TickLE has no typesupport for mini_msgs/msg/Wide" in header
     assert "wstring" in header
     assert "get_message_type_support_handle" not in (out / f"{PKG}__msg__Wide__type_support.c").read_text()
+    # What the C++ type support wrapper tests to hand rclcpp no handle, rather than one calling C
+    # converters that were never generated.
+    cpp_header = (out / f"{PKG}__msg__Wide__rosidl_typesupport_tickle_cpp.hpp").read_text()
+    assert f"#define {PKG}__msg__Wide__TICKLE_UNSUPPORTED 1" in cpp_header
 
 
 def test_generate_declines_a_service_with_the_files_cmake_expects(tmp_path):
@@ -139,7 +143,13 @@ def test_generate_declines_a_service_with_the_files_cmake_expects(tmp_path):
         + [
             f"{ros_name}_{part}__{suffix}"
             for part in ("Request", "Response")
-            for suffix in ("rosidl_typesupport_tickle_c.h", "rosidl_typesupport_tickle_c.c", "type_support.c")
+            for suffix in (
+                "rosidl_typesupport_tickle_c.h",
+                "rosidl_typesupport_tickle_c.c",
+                "type_support.c",
+                "rosidl_typesupport_tickle_cpp.hpp",
+                "rosidl_typesupport_tickle_cpp.cpp",
+            )
         ]
     )
 

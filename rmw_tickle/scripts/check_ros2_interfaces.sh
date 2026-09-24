@@ -11,9 +11,11 @@
 # -r: publish from a default rclcpp::Node (default_node.cpp) instead of the rmw-level publisher -
 # the first thing a user runs. rclcpp then starts the type description service, parameter services,
 # /parameter_events and /rosout on its own, so this needs the workspace built with -a (rcl_interfaces,
-# type_description_interfaces and their dependencies), and it passes only when that node exits 0
-# having published, AND its own maps show rmw_tickle and the workspace's type_description_interfaces
-# TickLE typesupport. Against a workspace without those packages it fails - rclcpp refuses to start.
+# type_description_interfaces and their dependencies). It also sends std_msgs/UInt8MultiArray and
+# sensor_msgs/JointState, and a second default node takes all four as C++ messages and compares
+# every field. It passes only when both nodes exit 0, the C subscriber passes as without -r, AND the
+# publisher's own maps show rmw_tickle and the workspace's type_description_interfaces TickLE
+# typesupport. Against a workspace without those packages it fails - rclcpp refuses to start.
 #
 # Loopback by default (TICKLE_BROADCAST_ADDR=127.255.255.255); set TICKLE_BROADCAST_ADDR yourself to
 # check over a real link. Exit 0 only when both types round-tripped AND both libraries were proved.
@@ -64,7 +66,7 @@ set +u
 set -u
 check="$WORKSPACE/install/rmw_tickle_interfaces_check/lib/rmw_tickle_interfaces_check/interfaces_check"
 publisher=("$check" pub 10)
-[ "$RCLCPP" = 0 ] || publisher=("$(dirname "$check")/default_node" 10)
+[ "$RCLCPP" = 0 ] || publisher=("$(dirname "$check")/default_node" pub 10)
 # The datagram size everything here was generated for (rmw_tickle refuses a type generated for
 # another): what decides whether GetTypeDescription's response fits at all.
 extras=""
@@ -85,9 +87,13 @@ export RMW_IMPLEMENTATION=rmw_tickle
 export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
 
 log="$(mktemp -d)"
-trap 'kill "${sub_pid:-}" 2>/dev/null || true; rm -rf "$log"' EXIT
+trap 'kill "${sub_pid:-}" "${cpp_sub_pid:-}" 2>/dev/null || true; rm -rf "$log"' EXIT
 TICKLE_NODE_ID=121 "$check" sub 15 >"$log/sub.txt" 2>&1 &
 sub_pid=$!
+if [ "$RCLCPP" = 1 ]; then
+    TICKLE_NODE_ID=123 "$(dirname "$check")/default_node" sub 15 >"$log/cpp_sub.txt" 2>&1 &
+    cpp_sub_pid=$!
+fi
 sleep 1
 TICKLE_NODE_ID=122 "${publisher[@]}" >"$log/pub.txt" 2>&1 &
 pub_pid=$!
@@ -147,6 +153,10 @@ if [ "$RCLCPP" = 1 ]; then
         fail "the default rclcpp::Node did not start and publish (exit $pub_status)"
     }
     case "$pub_identity" in OK:*) ;; *) fail "the rclcpp node did not load the libraries under test" ;; esac
+    cpp_sub_status=0
+    wait "$cpp_sub_pid" || cpp_sub_status=$?
+    grep -v '\[INFO\]' "$log/cpp_sub.txt" | tail -6
+    [ "$cpp_sub_status" = 0 ] || fail "the default rclcpp::Node subscriber did not receive all four intact (exit $cpp_sub_status)"
 fi
 [ "$sub_status" = 0 ] || {
     echo "--- publisher ---" >&2

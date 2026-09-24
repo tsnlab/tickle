@@ -63,7 +63,7 @@ from tickle_typesupport import _rosidl_parser as rosidl
 from tickle_typesupport import adapt, cli, model, postprocess, render
 from tickle_typesupport import capacities as capacity_file
 
-from . import ros2_adapter, ros2_resolve
+from . import ros2_adapter, ros2_cpp_adapter, ros2_resolve
 
 
 def _write_text(outdir, filename, text, source_label, fmt_dir):
@@ -89,6 +89,13 @@ def _generate_message_typesupport(struct, ros_name, tickle_header, source_label,
     type_support_name = f"{ros_name}__type_support.c"
     type_support_source = ros2_adapter.render_type_support(struct, ros_name, tickle_header, adapter_header_name)
     written.append(_write_text(outdir, type_support_name, type_support_source, source_label, fmt_dir))
+
+    # The C++ converters rclcpp's messages need (ros2_cpp_adapter.py). Written here, from the same
+    # struct, rather than by rosidl_typesupport_tickle_cpp's own extension, so the two sides cannot
+    # disagree on the layout; that extension compiles them.
+    cpp_header, cpp_source = ros2_cpp_adapter.render_cpp_adapter(struct, ros_name, tickle_header)
+    written.append(_write_text(outdir, f"{ros_name}__rosidl_typesupport_tickle_cpp.hpp", cpp_header, source_label, fmt_dir))
+    written.append(_write_text(outdir, f"{ros_name}__rosidl_typesupport_tickle_cpp.cpp", cpp_source, source_label, fmt_dir))
     return written
 
 
@@ -124,11 +131,13 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
         # "<name>_srv" for TickLE's own codec (see generate()'s Milestone 56 note), an adapter and
         # type_support per side, and the service-level type_support tying them together.
         filenames = [f"{name}_srv.h", f"{name}_srv.c"]
+        message_names = [f"{ros_name}_Request", f"{ros_name}_Response"]
         for part in ("Request", "Response"):
             filenames += [
                 f"{ros_name}_{part}__rosidl_typesupport_tickle_c.h",
                 f"{ros_name}_{part}__rosidl_typesupport_tickle_c.c",
                 f"{ros_name}_{part}__type_support.c",
+                f"{ros_name}_{part}__rosidl_typesupport_tickle_cpp.cpp",
             ]
         filenames.append(f"{ros_name}__type_support.c")
     else:
@@ -138,7 +147,9 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
             f"{ros_name}__rosidl_typesupport_tickle_c.h",
             f"{ros_name}__rosidl_typesupport_tickle_c.c",
             f"{ros_name}__type_support.c",
+            f"{ros_name}__rosidl_typesupport_tickle_cpp.cpp",
         ]
+        message_names = [ros_name]
     banner = (
         f"// TickLE has no typesupport for {package}/{subfolder}/{name}.\n"
         f"//\n"
@@ -155,6 +166,14 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
     written = []
     for filename in filenames:
         written.append(_write_text(outdir, filename, banner + marker, source_label, fmt_dir))
+    # The C++ header says so in a form rosidl_typesupport_tickle_cpp's type support wrapper can
+    # test: it then hands rclcpp no handle at all, instead of one that calls C converters which
+    # were never generated.
+    for message_name in message_names:
+        cpp_marker = f"#define {message_name}__TICKLE_UNSUPPORTED 1\n"
+        written.append(
+            _write_text(outdir, f"{message_name}__rosidl_typesupport_tickle_cpp.hpp", banner + cpp_marker, source_label, fmt_dir)
+        )
     print(f"{source_label}: DECLINED - {reason}", file=sys.stderr)
     return written
 

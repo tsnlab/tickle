@@ -181,11 +181,11 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     svc->service.response_decode = (tt_RESPONSE_DECODE)callbacks.response->tickle_decode;
     svc->service.response_free = (tt_RESPONSE_FREE)callbacks.response->tickle_free;
 
-    svc->request_storage = allocator->zero_allocate(1, callbacks.request->ros_struct_size, allocator->state);
+    svc->request_storage = rmw_tickle_ros_message_create(callbacks.request, allocator);
     svc->response_storage = allocator->zero_allocate(1, callbacks.response->tickle_struct_size, allocator->state);
     if (NULL == svc->request_storage || NULL == svc->response_storage) {
         RMW_SET_ERROR_MSG("failed to allocate request/response storage");
-        allocator->deallocate(svc->request_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -193,7 +193,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
 
     if (pthread_mutex_init(&svc->request_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize service request mutex");
-        allocator->deallocate(svc->request_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -205,7 +205,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
     if (NULL == svc->rmw_service.service_name) {
         RMW_SET_ERROR_MSG("failed to allocate service_name");
         pthread_mutex_destroy(&svc->request_mutex);
-        allocator->deallocate(svc->request_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -242,7 +242,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         allocator->deallocate(svc->pending_responses, allocator->state);
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
         pthread_mutex_destroy(&svc->request_mutex);
-        allocator->deallocate(svc->request_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -268,7 +268,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         allocator->deallocate(svc->pending_responses, allocator->state);
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
         pthread_mutex_destroy(&svc->request_mutex);
-        allocator->deallocate(svc->request_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.request, svc->request_storage, allocator);
         allocator->deallocate(svc->response_storage, allocator->state);
         allocator->deallocate(svc, allocator->state);
         return NULL;
@@ -297,7 +297,7 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
 
     rcutils_allocator_t allocator = svc->allocator;
     allocator.deallocate((char*)svc->rmw_service.service_name, allocator.state);
-    allocator.deallocate(svc->request_storage, allocator.state);
+    rmw_tickle_ros_message_destroy(svc->request_callbacks, svc->request_storage, &allocator);
     allocator.deallocate(svc->response_storage, allocator.state);
     allocator.deallocate(svc->response_cache, allocator.state); // after tt_Server_destroy() above
     allocator.deallocate(svc->pending_responses, allocator.state);
@@ -328,7 +328,7 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
     }
     // Same "ros_request assumed fresh/blank" caveat as rmw_subscription.c's own rmw_take_with_
     // info() - see its doc comment there.
-    memcpy(ros_request, svc->request_storage, svc->request_callbacks->ros_struct_size);
+    rmw_tickle_ros_message_move(svc->request_callbacks, ros_request, svc->request_storage);
     int64_t seq = svc->current_sequence_id;
     // Consumed - frees server_callback() to accept a new request (see its own module-doc-comment
     // note on why it now rejects a second one outright rather than the old blocking design's

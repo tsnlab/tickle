@@ -157,7 +157,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     client_impl->service.call_retry_count =
         (uint32_t)(tt_SERVER_DEFERRED_RESPONSE_TIMEOUT / RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS);
 
-    client_impl->response_storage = allocator->zero_allocate(1, callbacks.response->ros_struct_size, allocator->state);
+    client_impl->response_storage = rmw_tickle_ros_message_create(callbacks.response, allocator);
     if (NULL == client_impl->response_storage) {
         RMW_SET_ERROR_MSG("failed to allocate response storage");
         allocator->deallocate(client_impl, allocator->state);
@@ -166,7 +166,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
 
     if (pthread_mutex_init(&client_impl->response_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize client response mutex");
-        allocator->deallocate(client_impl->response_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.response, client_impl->response_storage, allocator);
         allocator->deallocate(client_impl, allocator->state);
         return NULL;
     }
@@ -177,7 +177,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     if (NULL == client_impl->rmw_client.service_name) {
         RMW_SET_ERROR_MSG("failed to allocate service_name");
         pthread_mutex_destroy(&client_impl->response_mutex);
-        allocator->deallocate(client_impl->response_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.response, client_impl->response_storage, allocator);
         allocator->deallocate(client_impl, allocator->state);
         return NULL;
     }
@@ -193,7 +193,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         RMW_SET_ERROR_MSG("failed to allocate client request storage");
         allocator->deallocate((char*)client_impl->rmw_client.service_name, allocator->state);
         pthread_mutex_destroy(&client_impl->response_mutex);
-        allocator->deallocate(client_impl->response_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.response, client_impl->response_storage, allocator);
         allocator->deallocate(client_impl, allocator->state);
         return NULL;
     }
@@ -217,7 +217,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         allocator->deallocate(client_impl->request_cache, allocator->state);
         allocator->deallocate((char*)client_impl->rmw_client.service_name, allocator->state);
         pthread_mutex_destroy(&client_impl->response_mutex);
-        allocator->deallocate(client_impl->response_storage, allocator->state);
+        rmw_tickle_ros_message_destroy(callbacks.response, client_impl->response_storage, allocator);
         allocator->deallocate(client_impl, allocator->state);
         return NULL;
     }
@@ -245,7 +245,7 @@ rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
 
     rcutils_allocator_t allocator = client_impl->allocator;
     allocator.deallocate((char*)client_impl->rmw_client.service_name, allocator.state);
-    allocator.deallocate(client_impl->response_storage, allocator.state);
+    rmw_tickle_ros_message_destroy(client_impl->response_callbacks, client_impl->response_storage, &allocator);
     allocator.deallocate(client_impl->request_cache, allocator.state); // after tt_Client_destroy() above
     allocator.deallocate(client_impl->owning_node_name, allocator.state);
     allocator.deallocate(client_impl->owning_node_namespace, allocator.state);
@@ -323,7 +323,7 @@ rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* requ
     if (success) {
         // Same "ros_response assumed fresh/blank" caveat as rmw_subscription.c's own rmw_take_
         // with_info() - see its doc comment there.
-        memcpy(ros_response, client_impl->response_storage, client_impl->response_callbacks->ros_struct_size);
+        rmw_tickle_ros_message_move(client_impl->response_callbacks, ros_response, client_impl->response_storage);
     }
     client_impl->response_ready = false; // consumed
     pthread_mutex_unlock(&client_impl->response_mutex);

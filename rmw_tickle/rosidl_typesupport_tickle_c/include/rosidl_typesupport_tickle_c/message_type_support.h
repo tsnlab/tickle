@@ -111,6 +111,20 @@ typedef struct rosidl_typesupport_tickle_c_message_callbacks_t {
     // rmw_tickle refuses a type whose value is set and differs from its own tt_MAX_BUFFER_LENGTH,
     // naming both - the runtime half of "a mismatch has to be impossible" (Plan's review, 2026-09-24).
     size_t tickle_max_buffer_length;
+
+    // How rmw_tickle handles a ROS message object it holds itself - a received sample waiting to be
+    // taken, a service request, a client response. All NULL for a C message
+    // (rosidl_typesupport_tickle_c): the object is plain bytes, so it is zero-allocated, handed over
+    // with memcpy() and cleared with memset(). All set for a C++ message
+    // (rosidl_typesupport_tickle_cpp), whose std::string and std::vector members must be
+    // constructed, moved and destroyed - memcpy() of a std::string that keeps its characters inline
+    // leaves the copy pointing into the original.
+    //
+    // ros_init constructs an object in ros_struct_size bytes of zeroed storage; ros_fini destroys
+    // it without freeing the storage; ros_move move-assigns src to dst, leaving src a valid object.
+    void (*ros_init)(void* ros_message);
+    void (*ros_fini)(void* ros_message);
+    void (*ros_move)(void* dst_ros_message, void* src_ros_message);
 } rosidl_typesupport_tickle_c_message_callbacks_t;
 
 #ifdef __cplusplus

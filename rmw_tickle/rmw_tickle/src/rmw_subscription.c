@@ -73,12 +73,18 @@ static void* shell_pool_pop(rmw_tickle_subscriber_t* sub_impl) {
 // to a real deallocate() only if the pool is somehow already full - shouldn't happen (it's sized
 // queue_capacity, the most shells that can ever be genuinely in flight at once - see that field's
 // own doc comment), but a defensive bound costs nothing next to silently overflowing shell_pool[].
+//
+// A C++ message (rosidl_typesupport_tickle_cpp) is not zeroed: it is an object, and memset() would
+// wreck it. It does not need to be - its from_tickle() assigns every field, so a shell that still
+// holds an old sample (dropped, not taken) is simply overwritten.
 static void shell_pool_push(rmw_tickle_subscriber_t* sub_impl, void* shell) {
-    memset(shell, 0, sub_impl->callbacks->ros_struct_size);
+    if (NULL == sub_impl->callbacks->ros_move) {
+        memset(shell, 0, sub_impl->callbacks->ros_struct_size);
+    }
     if (sub_impl->shell_pool_count < sub_impl->queue_capacity) {
         sub_impl->shell_pool[sub_impl->shell_pool_count++] = shell;
     } else {
-        sub_impl->allocator.deallocate(shell, sub_impl->allocator.state);
+        rmw_tickle_ros_message_destroy(sub_impl->callbacks, shell, &sub_impl->allocator);
     }
 }
 
@@ -95,7 +101,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     void* ros_message = shell_pool_pop(sub_impl);
     pthread_mutex_unlock(&sub_impl->queue_mutex);
     if (NULL == ros_message) {
-        ros_message = sub_impl->allocator.zero_allocate(1, callbacks->ros_struct_size, sub_impl->allocator.state);
+        ros_message = rmw_tickle_ros_message_create(callbacks, &sub_impl->allocator);
         if (NULL == ros_message) {
             return; // Nothing more useful to do from inside a poll-thread callback - drop silently.
         }
@@ -601,7 +607,8 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     // through shell_pool_push() - the pool itself is about to be freed too, right below.
     pthread_mutex_lock(&sub_impl->queue_mutex);
     while (sub_impl->queue_count > 0) {
-        sub_impl->allocator.deallocate(sub_impl->queue[sub_impl->queue_head].ros_message, sub_impl->allocator.state);
+        rmw_tickle_ros_message_destroy(sub_impl->callbacks, sub_impl->queue[sub_impl->queue_head].ros_message,
+                                       &sub_impl->allocator);
         sub_impl->queue_head = (sub_impl->queue_head + 1) % sub_impl->queue_capacity;
         sub_impl->queue_count--;
     }
@@ -609,7 +616,8 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     // drained just above, or out with an application that already called rmw_take()) also needs
     // freeing here - nothing else ever will.
     while (sub_impl->shell_pool_count > 0) {
-        sub_impl->allocator.deallocate(sub_impl->shell_pool[--sub_impl->shell_pool_count], sub_impl->allocator.state);
+        rmw_tickle_ros_message_destroy(sub_impl->callbacks, sub_impl->shell_pool[--sub_impl->shell_pool_count],
+                                       &sub_impl->allocator);
     }
     pthread_mutex_unlock(&sub_impl->queue_mutex);
     pthread_mutex_destroy(&sub_impl->queue_mutex);
@@ -671,7 +679,10 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     // array fields this way would leak their old backing buffers rather than fini() them first.
     // Fixing that generally needs a per-message __fini() function pointer rosidl_typesupport_
     // tickle_c doesn't generate yet - tracked as follow-on work, not solved here.
-    memcpy(ros_message, entry.ros_message, sub_impl->callbacks->ros_struct_size);
+    //
+    // A C++ message is moved instead (rmw_tickle_ros_message_move()), which replaces what the
+    // caller's object held rather than leaking it.
+    rmw_tickle_ros_message_move(sub_impl->callbacks, ros_message, entry.ros_message);
     // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h): the shallow copy above already
     // transferred every owned pointer field out of entry.ros_message, so shell_pool_push()'s own
     // memset() is exactly what makes reusing this same buffer safe, not just freeing it faster.

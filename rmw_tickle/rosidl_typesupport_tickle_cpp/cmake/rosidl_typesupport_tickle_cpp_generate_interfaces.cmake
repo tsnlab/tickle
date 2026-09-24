@@ -36,6 +36,10 @@ find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_interface REQUIRED)
 
 set(_generator_output_path "${CMAKE_CURRENT_BINARY_DIR}/rosidl_generator_c")
+# Where rosidl_typesupport_tickle_c's extension wrote this package's C++ converters
+# (<ros_name>__rosidl_typesupport_tickle_cpp.{hpp,cpp}, ros2_cpp_adapter.py) - generated there,
+# from the same model as the C ones, and compiled here.
+set(_tickle_c_output_path "${CMAKE_CURRENT_BINARY_DIR}/rosidl_typesupport_tickle_c/${PROJECT_NAME}")
 set(_output_path "${CMAKE_CURRENT_BINARY_DIR}/rosidl_typesupport_tickle_cpp/${PROJECT_NAME}")
 set(_msg_template_file
   "${rosidl_typesupport_tickle_cpp_DIR}/../resource/msg__type_support.cpp.in")
@@ -91,7 +95,8 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
     set(IDL_NAME "${_idl_name}")
     set(_out_cpp "${_msg_output_dir}/${HEADER_NAME}__type_support.cpp")
     configure_file("${_msg_template_file}" "${_out_cpp}" @ONLY)
-    list(APPEND _generated_sources "${_out_cpp}")
+    list(APPEND _generated_sources "${_out_cpp}"
+      "${_tickle_c_output_path}/msg/${PROJECT_NAME}__msg__${_idl_name}__rosidl_typesupport_tickle_cpp.cpp")
   else() # srv - one message-level shim each for _Request/_Response (rosidl_generator_c emits an
          # ordinary message struct for each - see rosidl_typesupport_tickle_c's own analogous
          # comment), reusing the exact same msg template, plus one service-level shim tying them
@@ -100,7 +105,8 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
       set(IDL_NAME "${_idl_name}_${_part}")
       set(_out_cpp "${_msg_output_dir}/${HEADER_NAME}_${_part}__type_support.cpp")
       configure_file("${_msg_template_file}" "${_out_cpp}" @ONLY)
-      list(APPEND _generated_sources "${_out_cpp}")
+      list(APPEND _generated_sources "${_out_cpp}"
+        "${_tickle_c_output_path}/srv/${PROJECT_NAME}__srv__${_idl_name}_${_part}__rosidl_typesupport_tickle_cpp.cpp")
     endforeach()
 
     set(IDL_NAME "${_idl_name}")
@@ -121,18 +127,37 @@ if(_generated_sources)
 
   target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
     "${_generator_output_path}"
+    "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/include"
   )
+  # The TickLE structs the C++ converters fill are laid out for this datagram size - the value the
+  # C side is compiled with.
+  target_compile_definitions(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
+    "tt_MAX_BUFFER_LENGTH=${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}")
+  # The C++ converters are outputs of rosidl_typesupport_tickle_c's custom command, in its target.
+  add_dependencies(${rosidl_generate_interfaces_TARGET}${_target_suffix}
+    ${rosidl_generate_interfaces_TARGET}__rosidl_typesupport_tickle_c)
 
   target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
-    ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c)
-  # A real link dependency, not just build-order - see resource/msg__type_support.cpp.in's own
-  # top comment for why this calls straight into rosidl_typesupport_tickle_c's own generated
-  # symbol rather than going through rosidl_typesupport_cpp's generic map-walking dispatch.
+    ${rosidl_generate_interfaces_TARGET}__rosidl_generator_c
+    ${rosidl_generate_interfaces_TARGET}__rosidl_generator_cpp
+    # A real link dependency, not just build-order - see resource/msg__type_support.cpp.in's own
+    # top comment for why this calls straight into rosidl_typesupport_tickle_c's own generated
+    # symbol rather than going through rosidl_typesupport_cpp's generic map-walking dispatch.
+    # PUBLIC since the C++ converters: its include directories carry this package's TickLE struct
+    # and C++ converter headers, which a package nesting these types compiles against.
+    ${rosidl_generate_interfaces_TARGET}__rosidl_typesupport_tickle_c)
   target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
-    ${rosidl_generate_interfaces_TARGET}__rosidl_typesupport_tickle_c
+    rosidl_typesupport_tickle_c::rosidl_typesupport_tickle_c
     rosidl_typesupport_tickle_cpp::rosidl_typesupport_tickle_cpp
     rosidl_runtime_c::rosidl_runtime_c
     rosidl_typesupport_interface::rosidl_typesupport_interface)
+  # A nested field from another package is converted by that package's own C++ converters.
+  foreach(_dep_pkg_name ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
+    if(${_dep_pkg_name}_TARGETS${_target_suffix})
+      target_link_libraries(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
+        ${${_dep_pkg_name}_TARGETS${_target_suffix}})
+    endif()
+  endforeach()
 
   add_dependencies(
     ${rosidl_generate_interfaces_TARGET}

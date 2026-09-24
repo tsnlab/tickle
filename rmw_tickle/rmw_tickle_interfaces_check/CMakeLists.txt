@@ -16,6 +16,7 @@ find_package(rosidl_runtime_c REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 # Talks to the rmw API directly rather than through rclcpp: an rclcpp node also starts services
 # (type description, parameters) whose interface packages would have to be built for TickLE too,
@@ -29,7 +30,7 @@ target_link_libraries(interfaces_check
 # The other half: what a user actually runs. A default rclcpp::Node, which starts every service and
 # publisher rclcpp starts on its own - see the file's own comment.
 add_executable(default_node src/default_node.cpp)
-target_link_libraries(default_node rclcpp::rclcpp ${std_msgs_TARGETS})
+target_link_libraries(default_node rclcpp::rclcpp ${std_msgs_TARGETS} ${sensor_msgs_TARGETS})
 
 install(TARGETS interfaces_check default_node DESTINATION lib/${PROJECT_NAME})
 

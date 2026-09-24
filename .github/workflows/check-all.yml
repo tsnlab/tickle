@@ -578,6 +578,26 @@ jobs:
           set -u
           rmw_tickle/scripts/build_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -a
           rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces"
+          # The headline user check (P2): a default rclcpp::Node - type description service, parameter
+          # services, /parameter_events, /rosout, nothing turned off - starts and publishes through
+          # rmw_tickle at this build's tt_MAX_BUFFER_LENGTH (65507), and a second one takes
+          # std_msgs/UInt8MultiArray and sensor_msgs/JointState as C++ messages intact alongside
+          # String and Header (rclcpp's messages go through the C++ converters, ros2_cpp_adapter.py).
+          rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_interfaces" -r
+          # Its control: the same node over a workspace with only std_msgs built for TickLE must not
+          # start - and must fail for that reason (rclcpp refusing, for want of rcl_interfaces), not
+          # some other one, or the pass above is not showing what it seems to.
+          rmw_tickle/scripts/build_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_std_only" builtin_interfaces std_msgs
+          if rmw_tickle/scripts/check_ros2_interfaces.sh -w "$RUNNER_TEMP/tickle_ros2_std_only" -r > "$RUNNER_TEMP/control.log" 2>&1; then
+            cat "$RUNNER_TEMP/control.log"
+            echo "control: a default rclcpp::Node started without rcl_interfaces built for TickLE"
+            exit 1
+          fi
+          grep "rclcpp refused to start" "$RUNNER_TEMP/control.log" || {
+            cat "$RUNNER_TEMP/control.log"
+            echo "control: failed, but not because rclcpp refused to start"
+            exit 1
+          }
 
       # Lint toolchain version, worth knowing before you debug a disagreement: tsnlab/check pins
       # cpp-linter-action to clang-format/clang-tidy 19 (actions/cpp/action.yml, version: '19').

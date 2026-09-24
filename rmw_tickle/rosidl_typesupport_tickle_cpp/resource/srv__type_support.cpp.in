@@ -23,6 +23,10 @@
 #include "rosidl_typesupport_interface/macros.h"
 #include "rosidl_typesupport_tickle_cpp/identifier.h"
 
+// Only for its __TICKLE_UNSUPPORTED marker: a service rosidl_typesupport_tickle_c declined has no C
+// handle to borrow from (see the getter below). Request and Response are declined together.
+#include "@PKG_NAME@__@SUBFOLDER@__@IDL_NAME@_Request__rosidl_typesupport_tickle_cpp.hpp"
+
 extern "C" const rosidl_service_type_support_t *
 ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
   rosidl_typesupport_tickle_c, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)(void);
@@ -76,6 +80,9 @@ const rosidl_service_type_support_t *
 ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
   rosidl_typesupport_tickle_cpp, @PKG_NAME@, @SUBFOLDER@, @IDL_NAME@)(void)
 {
+#ifdef @PKG_NAME@__@SUBFOLDER@__@IDL_NAME@_Request__TICKLE_UNSUPPORTED
+  return nullptr;
+#else
   auto & handle = ::@PKG_NAME@::@SUBFOLDER@::rosidl_typesupport_tickle_cpp::_@IDL_NAME@_handle;
   if (!handle.typesupport_identifier) {
     const rosidl_service_type_support_t * tickle_c_handle =
@@ -91,6 +98,7 @@ ROSIDL_TYPESUPPORT_INTERFACE__SERVICE_SYMBOL_NAME(
     handle.typesupport_identifier = rosidl_typesupport_tickle_cpp__identifier;
   }
   return &handle;
+#endif
 }
 
 #ifdef __cplusplus
