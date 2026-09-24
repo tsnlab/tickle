@@ -44,6 +44,44 @@
 #include "consts.h"
 #include "log.h"
 
+// TT_RX_DROP_PERCENT - receive-side loss injection for experiments, 0 (off) by default and not
+// something a deployment ever sets.
+//
+// Exists because the ordering work is only observable when it is stressed: with no loss, nothing
+// arrives out of order, the reorder buffer never holds anything, and reorder_held_peak == 0 reads
+// identically to a buffer that is not wired up at all.
+//
+// Injected here rather than with `tc netem loss` on lo, and the reason is not that tc needs root
+// on this box (it does). tc on the loopback interface hits *every* loopback flow on the machine -
+// another session's benchmark, anything else measuring at the same time - as loss it never asked
+// for and cannot see. This drops only datagrams this process received, so it cannot reach past
+// the experiment, needs no privilege, and leaves no global state that a crash could strand in a
+// bad configuration. The first HIL sweep left tc at 20% loss when it was killed mid-run and would
+// have silently corrupted every later measurement including CI's; the fix for that was a cleanup
+// trap, but not needing the global state at all is better than cleaning it up reliably.
+//
+// Deterministic by default (a fixed seed) so two arms see the same drop pattern and differ only
+// in what they do about it.
+#ifndef TT_RX_DROP_PERCENT
+#define TT_RX_DROP_PERCENT 0
+#endif
+#ifndef TT_RX_DROP_SEED
+#define TT_RX_DROP_SEED 20260924u
+#endif
+
+#if TT_RX_DROP_PERCENT > 0
+// xorshift32 rather than rand(): self-contained, identical across libc versions, and it cannot
+// perturb an application that seeded rand() for its own purposes.
+static uint32_t tt_rx_drop_state = TT_RX_DROP_SEED;
+
+static bool tt_rx_should_drop(void) {
+    tt_rx_drop_state ^= tt_rx_drop_state << 13;
+    tt_rx_drop_state ^= tt_rx_drop_state >> 17;
+    tt_rx_drop_state ^= tt_rx_drop_state << 5;
+    return (tt_rx_drop_state % 100u) < (uint32_t)TT_RX_DROP_PERCENT;
+}
+#endif
+
 // TT_RX_FIXED_PREFERENCE - an experiment arm for the "Data consistency violated" abort, off by
 // default and not a knob anyone should turn in a deployment.
 //
@@ -432,6 +470,15 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         }
         return -2; // I/O error
     }
+
+#if TT_RX_DROP_PERCENT > 0
+    // Reported as a timeout rather than an error: a dropped datagram is indistinguishable from one
+    // that never arrived, which is the whole point, and an error would make the caller tear the
+    // node down instead of carrying on the way real loss makes it carry on.
+    if (tt_rx_should_drop()) {
+        return -1;
+    }
+#endif
 
     return ret;
 }

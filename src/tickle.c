@@ -4165,6 +4165,21 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
     sub->delivered++;
 }
 
+// TT_ORDERING_DISABLED - an experiment arm that restores pre-2026-09-24 delivery, off by default
+// and not a knob for a deployment.
+//
+// Exists because both halves of the ordering work are only observable when they fail. With the
+// BEST_EFFORT discard and the RELIABLE reorder buffer working, the application never sees a sample
+// out of order - so a detector for that condition never fires, and "the detector is correct" is
+// indistinguishable from "the detector is dead code". The only way to tell the two apart is to put
+// the defect back and check that something notices.
+//
+// Same instrument as the socket-interleaving arm (TT_RX_FIXED_PREFERENCE, hal_linux.c): one -D
+// between two builds of the same commit, so the comparison cannot be confounded by anything else.
+#ifndef TT_ORDERING_DISABLED
+#define TT_ORDERING_DISABLED 0
+#endif
+
 // Decode one wire payload and hand it to the application, recording the delivery order first.
 // Split out of deliver_data_to_subscriber() so a sample released from the reorder buffer takes
 // exactly the same path as one delivered straight off the wire - including the zero-copy decode,
@@ -4390,7 +4405,7 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // A Publisher that restarts resets its seq_no to 1, which would otherwise be discarded forever
     // against a high watermark. It is not, because a restarted Publisher carries a new entity_id
     // (Milestone 47) and therefore claims a different proxy.
-    if (!sub->reliable) {
+    if (!sub->reliable && !TT_ORDERING_DISABLED) {
         struct tt_WriterProxy* proxy = find_or_create_writer_proxy(sub, ctx->header->source, ctx->entity_id, NULL);
         // No proxy slot free: deliver rather than drop. Losing a sample because a *diagnostic-
         // sized* table is full would be a worse failure than delivering one out of order, and the
@@ -4421,7 +4436,7 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     // Whether this sample was in order is read off the watermark rather than tracked separately:
     // update_reliable_ack() advances ack_seq_no past this sample if and only if it was the next
     // one expected, so ack_seq_no > seq_no means in-order and anything else means ahead of a gap.
-    if (sub->reliable) {
+    if (sub->reliable && !TT_ORDERING_DISABLED) {
         struct tt_WriterProxy* proxy = find_writer_proxy(sub, ctx->header->source, ctx->entity_id);
         if (proxy != NULL && proxy->ack_seq_no <= ctx->seq_no) {
             hold_for_reorder(node, sub, proxy, ctx, is_native);
