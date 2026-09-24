@@ -1709,6 +1709,81 @@ retransmit was attributable to it. Piggyback cannot do this by construction. Per
 this through `rmw` on the rig waits for the rig upgrade, since the rpis have no ROS 2 (user,
 2026-09-24).
 
+#### Standard ROS 2 message packages over rmw_tickle: decisions and research (2026-09-24)
+
+**The gap.** Every apt-installed interface package (std_msgs, geometry_msgs, sensor_msgs, ...)
+ships typesupport for FastDDS and CycloneDDS only. So `rmw_create_publisher()` fails for every
+standard type with "no rmw_tickle typesupport for this message type". That covers nested cases:
+a user message nesting `std_msgs/Header` is declined by `Ros2Resolver` on purpose, because the
+adapter needs std_msgs' own TickLE typesupport. Only user-built packages work today, plus
+test_msgs and rcl_interfaces, which CI builds from source with patches.
+
+**It also means an ordinary `rclcpp::Node` aborts at startup under rmw_tickle** (verified on the dev
+box, lyrical). The node auto-creates `~/get_type_description`, whose service type has no TickLE
+typesupport, and dies with `terminate ... Failed to initialize ~/get_type_description service`.
+Every benchmark here passes `start_type_description_service:=false` for exactly this reason. P2 by
+itself does not fix it: `GetTypeDescription_Response` is 9944 B as a TickLE struct.
+
+**User decisions, in their words:**
+1. Scope - "가능하면 모든 패키지, UDP 크기 범위 내에서"; capacities for unbounded arrays are TickLE
+   defaults the user can override; delivery is patches plus a build script that the user runs once
+   in their own workspace, as CI does; target distro jazzy.
+2. Design principle - "TickLE core 자체는 ROS2에 의존성이 없어야 함. EMparser를 제외하고는 의존을 아예
+   안 해야 함 / rmw_tickle은 ROS2에 의존하는 것이 문제가 없음", and then "ROS와 관련된 모든 부분은
+   rmw_tickle로 옮기자". So `tools/typesupport`'s ROS-specific pieces (`ros2_adapter.py`,
+   `ros2_cli.py`, and whatever else knows ROS) move under `rmw_tickle/`. `tools/typesupport` keeps
+   only what is ROS-agnostic plus EmPy.
+3. Large messages - "RMW를 사용할 때만 UDP fragment 기능을 이용해 큰 패킷을 지원하도록 하자 ... 즉, O/S의
+   기능에 의존하자". Under rmw only, `tt_MAX_BUFFER_LENGTH` (a compile-time `#ifndef`) is raised and
+   the OS does IP fragmentation. TickLE gets no fragmentation logic of its own. This supersedes the
+   earlier "document large messages as future work".
+4. Actions - "액션 범위는 PLAN.md에 넣어 놓고 그 다음 숙제로 하자." Recorded below as the next item.
+
+**Research** (TickLE Plan, `rmw_tickle/tools/`, commits `35aead29`, `098a4697`, `8d8f7c81`).
+Every jazzy `.msg`/`.srv` in common_interfaces, rcl_interfaces, unique_identifier_msgs, geometry2 and
+example_interfaces was run through the generator's own front end. A capacity proposal was applied
+(`p2_capacities_proposal.tsv`: rules parallel / structural / payload / element / rcl, with
+rcl_interfaces keeping the CI patch's values). **The pass criterion is the compiled
+`sizeof(TickLE struct) <= tt_MAX_BUFFER_LENGTH`**, because `tt_Node_create_*()` rejects anything
+larger. It is not the wire size: a plain string is 2 B on the wire and 8 B as a `char*` (TickLE
+Dev's correction; the first classification used `max_wire_size` and answered the wrong question).
+At 1472 B on x86_64 (LP64, same as the aarch64 rpis): **249 structs create, 13 do not, 1 wstring, 3
+actions.**
+- The 13 are the visualization_msgs Marker family, rosgraph_msgs Graph/Node,
+  type_description_interfaces and nav_msgs SetMap_Request.
+- Decision 3 is what makes them reachable.
+
+Two generator findings came out of the inventory:
+- **The nested-array bound disagreed with auto-capacity.** A capacity the generator chose itself
+  failed its own fits check. Fixed in `6db149ab`.
+- **Auto-capacity is wrong for a type that others nest.** Polygon's auto value took the whole
+  datagram and left PolygonStamped no room, so the proposal pins it (Dev will add a warning later).
+
+**What raising `tt_MAX_BUFFER_LENGTH` touches in core, for the rmw build** (TickLE Plan, from the
+code, not yet measured). The costs scale with N and are paid by every entity, not only by the
+large types:
+- `tt_Node` holds `tx_buffer[2N]` and `rx_buffer[2N]`.
+- Each client holds `cache_buf[2N]`.
+- **Each service server holds `cache_buf[64][2N]` plus `pending_response_buf[64][N]`, so 192N.**
+  At N = 65507 that is about 12.6 MB per server, and an `rclcpp::Node` creates about 8 of them.
+- rmw's non-KEEP_ALL reliable-cache record is N bytes per slot, and the KEEP_ALL clamp is N.
+
+Per-entity storage therefore has to follow the entity's own type size rather than N, or raising N
+is not affordable. Protocol fields stay safe up to the IPv4 UDP ceiling of 65507: submessage
+length, string length and array count are u16. The generator's `TT_MAX_BUFFER_LENGTH = 1472`
+(`model.py`) drives auto-capacity and the fits check, so it must become a parameter that matches
+the core's compiled value, or layouts and limits will silently disagree. Fragmentation amplifies
+loss: a 64 KB datagram is ~45 fragments, and at 1% per-packet loss only ~64% arrive whole, with
+RELIABLE retransmitting the entire datagram. The kernel also bounds reassembly (`ipfrag_*`) and
+receive buffers (`SO_RCVBUF`). Publishes flush per call unless `pub->batch` is set, so small
+samples are not coalesced into large datagrams by default.
+
+**Next assignment after this one: ROS 2 actions** (user decision 4). `rosidl_typesupport_tickle_c`
+generates no `.action` today (jazzy has 3 among the scanned packages: example_interfaces Fibonacci,
+tf2_msgs LookupTransform and test_msgs NestedMessage). An action is goal, result and feedback
+services plus feedback and status topics. It needs generator support and the rmw action entry
+points; scope and design are open.
+
 #### The "Data consistency violated" abort, closed (2026-09-24) - and the entry above is two different things confused into one
 
 **The abort is gone**: 36 consecutive `two_process_rmw_` matrix runs, **144 cells, zero occurrences**, at `cfeb234a`. The pre-fix rate measured the same day was 2 aborting cells in 48, so P(zero across 144 | unchanged) = **0.2%**. That is a result rather than a likely coincidence, and it was sized before the runs rather than after.
