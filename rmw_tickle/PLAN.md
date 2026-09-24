@@ -1595,6 +1595,23 @@ This reframes item 2. The stated goal was closing a ~1.4x latency gap; the run s
 can abort a ROS 2 application under same-host load, which is a correctness problem and takes
 precedence over the latency work.
 
+#### The "Data consistency violated" abort, closed (2026-09-24) - and the entry above is two different things confused into one
+
+**The abort is gone**: 36 consecutive `two_process_rmw_` matrix runs, **144 cells, zero occurrences**, at `cfeb234a`. The pre-fix rate measured the same day was 2 aborting cells in 48, so P(zero across 144 | unchanged) = **0.2%**. That is a result rather than a likely coincidence, and it was sized before the runs rather than after.
+
+**But "the abort" was never one thing, and this project spent four days treating it as one.** `perf_test` raises two different `std::runtime_error`s with nearly the same wording, from two different files, and they have different causes and different owners. Counted across all 554 archived `LastTest*.log` on the perf box:
+
+| variant | source | TickLE | FastDDS | CycloneDDS |
+|---|---|---:|---:|---:|
+| "not strictly higher **id**" | `communicator.cpp` | 23/1751 cells (1.31%) | 8/284 (**2.82%**) | 6/284 (**2.11%**) |
+| "not strictly older **timestamp**" | `ros2_communicator.hpp` | 5/1751 (0.29%) | 0/284 | 0/284 |
+
+**The id variant is not exclusively ours, and the first version of this correction said "not ours", which is wrong.** Both reference implementations trip it *more often than TickLE does*, on the same box, in the same runs - so the benchmark's assumption fails for reasons that have nothing to do with any one middleware. `perf_test` asserts strictly increasing ids while running BEST_EFFORT, which promises no ordering at all (`experiment_configuration.cpp` selects RELIABLE only under `--reliable`, and this matrix passes neither that nor `--rate`). **And TickLE additionally had its own mechanism for producing it**, documented immediately above with exact evidence: a liveliness false positive forgot a live peer, its next announce looked like fresh discovery, and the subscriber was handed sample id 1 again after ~7400. That was real, it was ours, and `7bb87702` fixed it by letting any received traffic refresh liveliness. Two causes, one message; the entry above correctly diagnosed one of them and could not have known there was another.
+
+**The timestamp variant is the one this investigation was actually about, and it was plausibly ours.** Never seen under either DDS vendor - and the exposure argument does not excuse it away in the end: at TickLE's own 0.29% rate, 284 cells would expect 0.81 occurrences and P(0) = 0.44, so zero from the vendors was *uninformative* rather than exonerating. What made it look like ours was the rate change: 2 of 12 cells on the two-socket build against 5 of 1751 historically, a ~57x jump with a chance probability near 0.05%. It is closed by the BEST_EFFORT discard (`7cc9fd45`): a reader that drops a sample no newer than the last delivered makes the application's own predicate unreachable.
+
+**What is established and what is not.** Established: the abort does not occur where ~6 occurrences were expected. Not established: the mechanism, caught in the act. By the time the delivery-order counters existed, the fix existed too, so no run ever recorded a violation with instrumentation in place. **Also not established**: that `perf_test` patch (f)'s replacement log line can be emitted at all. 144 cells of silence is exactly as consistent with "correctly silent" as with "dead code"; the gate in `rmw-perf.yml` is verified to fail on that line and nothing is verified to write it. Closing that needs a deliberately broken control arm, which is the shape of check this project has had to build seven times in three days.
+
 #### Bimodal measurements: the n=20 liveliness residuals, as data (2026-09-23, Dev measured, recorded by Plan)
 
 Kept as raw data, not only as a conclusion, because every band this project has published for
