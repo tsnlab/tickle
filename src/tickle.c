@@ -1420,6 +1420,15 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->callback = callback;
     sub->reliable = false; // best-effort by default - see tickle.h's own doc comment
     sub->rxo_drops = 0;
+    sub->delivered = 0;
+    sub->writer_switches = 0;
+    sub->out_of_order = 0;
+    sub->timestamp_not_newer = 0;
+    sub->last_seq_no = 0;
+    sub->last_source = 0;
+    sub->last_entity_id = 0;
+    sub->last_timestamp = 0;
+    sub->last_via_data_port = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         sub->writers[i].node_id = tt_NODE_ID_INVALID; // all empty - see struct tt_WriterProxy
     }
@@ -3945,6 +3954,22 @@ static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8
     return true;
 }
 
+// Throttle for diagnostics on a per-sample path: true on the 1st, 10th, 100th ... occurrence.
+// Rate-limiting by count rather than by time, because the interesting fact is that the thing
+// happened at all and what it was, and a stream at a thousand samples a second buries the run's
+// own output otherwise.
+static bool is_power_of_ten(uint32_t count) {
+    for (uint32_t step = 1; step <= count; step *= 10) {
+        if (step == count) {
+            return true;
+        }
+        if (step > count / 10) {
+            break;
+        }
+    }
+    return false;
+}
+
 // QoS roadmap #1 (RxO matching, Milestone 31) - true iff sub's own requested RELIABILITY/
 // DURABILITY cannot be honored by the remote Publisher (publisher_node_id, publisher_endpoint_id)
 // that just sent it DATA, per that Publisher's own last-announced tt_UpdateEntity.qos (mirrored
@@ -3989,24 +4014,15 @@ static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct 
     // limited by time: the interesting fact is that it happened at all and what the mismatch was,
     // and a stream at a thousand samples a second would otherwise bury the run's own output.
     sub->rxo_drops++;
-    uint32_t drops = sub->rxo_drops;
-    bool power_of_ten = false;
-    for (uint32_t step = 1; step <= drops; step *= 10) {
-        if (step == drops) {
-            power_of_ten = true;
-        }
-        if (step > drops / 10) {
-            break;
-        }
-    }
-    if (power_of_ten) {
+    if (is_power_of_ten(sub->rxo_drops)) {
         TT_LOG_WARNING("RxO mismatch: dropping DATA from node %u endpoint %u (drop #%u) - requested "
                        "reliable=%d durable=%d manual=%d lease=%luns deadline=%luns, offered reliable=%d "
                        "durable=%d manual=%d lease=%luns deadline=%luns",
-                       publisher_node_id, publisher_endpoint_id, drops, sub->reliable ? 1 : 0, sub->durable ? 1 : 0,
-                       sub->liveliness_manual ? 1 : 0, (unsigned long)sub->liveliness_lease_duration_ns,
-                       (unsigned long)sub->deadline_duration_ns, offered_reliable ? 1 : 0, offered_durable ? 1 : 0,
-                       offered_manual ? 1 : 0, (unsigned long)publisher->liveliness_lease_duration_ns,
+                       publisher_node_id, publisher_endpoint_id, sub->rxo_drops, sub->reliable ? 1 : 0,
+                       sub->durable ? 1 : 0, sub->liveliness_manual ? 1 : 0,
+                       (unsigned long)sub->liveliness_lease_duration_ns, (unsigned long)sub->deadline_duration_ns,
+                       offered_reliable ? 1 : 0, offered_durable ? 1 : 0, offered_manual ? 1 : 0,
+                       (unsigned long)publisher->liveliness_lease_duration_ns,
                        (unsigned long)publisher->deadline_duration_ns);
     }
     return true;
@@ -4040,6 +4056,51 @@ struct data_delivery_ctx {
 // independent RxO compatibility check, reliable-ack state, and callback delivery, exactly as if
 // each Subscriber had received its own private copy of the packet (which, semantically, it has:
 // this is the same fan-out real DDS pub/sub gives every matched Subscriber for one Publisher).
+// Records what was handed to the application callback, in the order it was handed up, and reports
+// the first/10th/100th ... time that order was not what a reader is entitled to assume. See
+// tt_Subscriber.delivered (tickle.h) for why this exists and why the three counters are separate.
+//
+// Called immediately before the callback rather than after, so the "previous" it compares against
+// is the previous *delivered* sample and not merely the previous received one - a sample dropped
+// by RxO matching or by de-duplication was never seen by the application and cannot be what it
+// compared against.
+static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* sub,
+                                  const struct data_delivery_ctx* ctx) {
+    bool first = (sub->delivered == 0);
+    bool same_writer = !first && sub->last_source == ctx->header->source && sub->last_entity_id == ctx->entity_id;
+    // seq_no counts per writer, so it means nothing across a switch of speaker.
+    bool seq_back = same_writer && ctx->seq_no <= sub->last_seq_no;
+    bool time_back = !first && ctx->timestamp <= sub->last_timestamp;
+
+    if (!first && !same_writer) {
+        sub->writer_switches++;
+    }
+    if (seq_back) {
+        sub->out_of_order++;
+    }
+    if (time_back) {
+        sub->timestamp_not_newer++;
+    }
+
+    if ((seq_back && is_power_of_ten(sub->out_of_order)) || (time_back && is_power_of_ten(sub->timestamp_not_newer))) {
+        TT_LOG_WARNING("Delivery order: sample %u/%u from node %u entity %u ts %lu via %s follows "
+                       "%u from node %u entity %u ts %lu via %s (delivered #%u, out_of_order %u, "
+                       "timestamp_not_newer %u, writer_switches %u)",
+                       ctx->seq_no, ctx->endpoint_id, ctx->header->source, ctx->entity_id,
+                       (unsigned long)ctx->timestamp, node->rx_via_data_port ? "data" : "well-known", sub->last_seq_no,
+                       sub->last_source, sub->last_entity_id, (unsigned long)sub->last_timestamp,
+                       sub->last_via_data_port ? "data" : "well-known", sub->delivered + 1, sub->out_of_order,
+                       sub->timestamp_not_newer, sub->writer_switches);
+    }
+
+    sub->last_seq_no = ctx->seq_no;
+    sub->last_source = ctx->header->source;
+    sub->last_entity_id = ctx->entity_id;
+    sub->last_timestamp = ctx->timestamp;
+    sub->last_via_data_port = node->rx_via_data_port;
+    sub->delivered++;
+}
+
 static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
     struct data_delivery_ctx* ctx = (struct data_delivery_ctx*)ctx_ptr;
     struct tt_Subscriber* sub = (struct tt_Subscriber*)endpoint;
@@ -4073,6 +4134,7 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
     if (topic->data_decode_inplace != NULL) {
         struct tt_Data* inplace = topic->data_decode_inplace(ctx->buffer + ctx->head, ctx->tail - ctx->head, is_native);
         if (inplace != NULL) {
+            record_delivery_order(node, sub, ctx);
             sub->callback(sub, ctx->timestamp, (uint16_t)ctx->seq_no, inplace);
             return;
         }
@@ -4088,6 +4150,7 @@ static void deliver_data_to_subscriber(struct tt_Node* node, struct tt_Endpoint*
         return;
     }
 
+    record_delivery_order(node, sub, ctx);
     sub->callback(sub, ctx->timestamp, (uint16_t)ctx->seq_no, (struct tt_Data*)data);
     topic->data_free((struct tt_Data*)data);
 }

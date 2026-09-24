@@ -487,15 +487,21 @@ static void test_publisher_destroy_broadcasts_goodbye_immediately(void) {
 
 // Builds a DataHeader + 4-byte payload at the start of node->rx_buffer, returning the tail
 // offset (matching what process_packet() would have handed process_data()).
-static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
+static uint32_t write_data_from(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value,
+                                uint32_t entity_id) {
     struct tt_DataHeader* data_header = (struct tt_DataHeader*)node->rx_buffer;
     data_header->endpoint_id = ENDPOINT_ID;
     data_header->seq_no = seq_no;
     data_header->timestamp = timestamp;
+    data_header->entity_id = entity_id;
 
     uint32_t tail = sizeof(struct tt_DataHeader);
     memcpy(node->rx_buffer + tail, &value, sizeof(value));
     return tail + sizeof(value);
+}
+
+static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t timestamp, uint32_t value) {
+    return write_data_from(node, seq_no, timestamp, value, 0);
 }
 
 // A registered subscriber must have its callback invoked exactly once, with the decoded value
@@ -639,6 +645,67 @@ static void test_process_data_fans_out_to_every_matching_subscriber(void) {
     EXPECT_EQ_U32(0xdeadbeef, last_value);
 }
 
+// The delivery-order diagnostic must actually move when delivery is out of order - an instrument
+// nobody has seen fire is not evidence of anything when it reads zero. Drives the three counters
+// independently, because they answer different questions (tt_Subscriber.delivered, tickle.h).
+static void test_delivery_order_diagnostic_counts_disorder(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+    data_free_call_count = 0;
+    decode_should_fail = false;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+
+    // Two in order from one writer: nothing is out of order, and the first sample has no
+    // predecessor to be out of order against.
+    uint32_t tail = write_data_from(&node, 10, 1000, 1, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    tail = write_data_from(&node, 11, 2000, 2, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(2, sub.delivered);
+    EXPECT_EQ_U32(0, sub.out_of_order);
+    EXPECT_EQ_U32(0, sub.timestamp_not_newer);
+    EXPECT_EQ_U32(0, sub.writer_switches);
+
+    // Same writer, both counters backwards: one sample, counted once on each axis.
+    tail = write_data_from(&node, 10, 1000, 3, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(3, sub.delivered);
+    EXPECT_EQ_U32(1, sub.out_of_order);
+    EXPECT_EQ_U32(1, sub.timestamp_not_newer);
+    EXPECT_EQ_U32(0, sub.writer_switches);
+
+    // A different entity on the same node, with a lower seq_no but a newer timestamp. The seq_no
+    // must NOT be read as disorder - it belongs to a different writer's own counting - while the
+    // switch itself is recorded. This is the case that would otherwise report every legitimate
+    // change of speaker as a fault.
+    tail = write_data_from(&node, 1, 3000, 4, 9);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(4, sub.delivered);
+    EXPECT_EQ_U32(1, sub.out_of_order);
+    EXPECT_EQ_U32(1, sub.timestamp_not_newer);
+    EXPECT_EQ_U32(1, sub.writer_switches);
+
+    // ... but a backwards timestamp across that switch IS counted, because that is the predicate
+    // the application itself checks and it does not care which writer spoke.
+    tail = write_data_from(&node, 12, 2500, 5, 7);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+    EXPECT_EQ_U32(5, sub.delivered);
+    EXPECT_EQ_U32(1, sub.out_of_order);
+    EXPECT_EQ_U32(2, sub.timestamp_not_newer);
+    EXPECT_EQ_U32(2, sub.writer_switches);
+}
+
 int main(void) {
     test_publish_flushes_immediately_by_default();
     test_publish_batches_when_opted_in();
@@ -658,6 +725,7 @@ int main(void) {
     test_process_data_unknown_endpoint_is_ignored();
     test_process_data_decode_failure_is_reported();
     test_process_data_fans_out_to_every_matching_subscriber();
+    test_delivery_order_diagnostic_counts_disorder();
 
     if (test_result() != 0) {
         return 1;

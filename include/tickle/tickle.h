@@ -1194,6 +1194,40 @@ struct tt_Subscriber { // extends endpoint
     // exactly the rmw_tickle zero-delivery failure under investigation on 2026-09-23, and it was
     // impossible to tell the two apart from outside.
     uint32_t rxo_drops;
+
+    // Delivery-order diagnostics, not protocol state (2026-09-24). What the application actually
+    // saw, in the order it saw it - which no other record in the system holds.
+    //
+    // Why: rmw_tickle's benchmark aborts with "Data consistency violated. Received sample with not
+    // strictly older timestamp", and every instrument we have looks at one side or the other of
+    // that sentence. A packet capture shows what arrived on the wire; the abort message shows that
+    // one comparison failed. Neither shows the sequence of samples this Subscriber handed up, so
+    // "the wire was in order and delivery reordered it" and "the wire was already out of order"
+    // are indistinguishable from outside. These fields make that difference visible, and if a
+    // capture and this disagree, the disagreement is itself the finding.
+    //
+    // The three are deliberately separate, because they fail for different reasons:
+    //   - writer_switches: the sample came from a different (node, entity) than the previous one.
+    //     seq_no is per-writer, so it is NOT compared across a switch - counting that as disorder
+    //     would report every legitimate change of speaker. This is also the counter that would
+    //     expose a stale writer from an earlier run still being delivered to.
+    //   - out_of_order: same writer, seq_no not strictly greater. Best-effort delivery has no
+    //     per-writer de-duplication at all (update_reliable_ack() is a no-op unless `reliable`),
+    //     so nothing upstream of here would have caught it.
+    //   - timestamp_not_newer: the abort's own predicate, checked regardless of writer, because
+    //     that is how the application checks it.
+    // last_via_data_port records which socket the offending sample came in on, since a node reads
+    // its well-known and data sockets alternately (hal_linux.c) and a reordering across that
+    // alternation would show up here as a flip.
+    uint32_t delivered;
+    uint32_t writer_switches;
+    uint32_t out_of_order;
+    uint32_t timestamp_not_newer;
+    uint32_t last_seq_no;
+    uint32_t last_source;
+    uint32_t last_entity_id;
+    uint64_t last_timestamp;
+    bool last_via_data_port;
 };
 
 typedef int32_t (*tt_DATA_ENCODE_SIZE)(struct tt_Data* data);
