@@ -83,6 +83,11 @@ jobs:
           # Must match .github/scripts/README-rmw-perf.md's own provisioning location exactly.
           echo "RMW_PERF_WS=$HOME/rmw_perf_ws" >> "$GITHUB_ENV"
           echo "RMW_PERF_RESULTS_DIR=$HOME/rmw_perf_ws/build/buildfarm_perf_tests/test_results/buildfarm_perf_tests" >> "$GITHUB_ENV"
+          # Where the benchmark step stages a private copy of its results, inside the rig lock,
+          # for the upload step to read. Under RUNNER_TEMP rather than in the workspace on
+          # purpose: RUNNER_TEMP is per-job, so nothing else on this shared box - a manual repro
+          # script, another workflow - can be rewriting it while the upload walks it.
+          echo "RMW_PERF_ARTIFACTS=${RUNNER_TEMP:-/tmp}/rmw-perf-results" >> "$GITHUB_ENV"
 
       - name: Build rmw_tickle against the pre-provisioned ROS 2 + DDS-vendor underlay
         run: |
@@ -212,17 +217,44 @@ jobs:
           # `colcon test-result` exit 1, and the same file with failures="0" exits 0. The
           # stale-xunit problem the blanket `|| true` originally protected against is handled by
           # the `rm -rf` of test_results just above.
+          # Everything that READS $RMW_PERF_WS/build goes inside the lock, not just the
+          # benchmark (2026-09-24). The lock used to wrap `colcon test` alone, on the reasoning
+          # that the benchmark is the contended thing. It is not the only one: a manual repro
+          # script on this same box deletes and rewrites build/buildfarm_perf_tests once per
+          # rep, so every later reader of that tree races it too. That is not hypothetical -
+          # d2801a55's job failed at "Upload raw results" while a twelve-rep run was rewriting
+          # the directory underneath it, and the two overlapped almost exactly.
+          #
+          # `colcon test-result` is the one that mattered more than the upload. It is the call
+          # that decides whether this gate passes, so a tree vanishing under *it* fails the job
+          # in a way that reads as a product problem - the expensive kind of false signal,
+          # because it is indistinguishable from the benchmark genuinely failing. The upload
+          # merely failed loudly.
+          #
+          # The results are staged to a per-job directory inside the lock as well, so the upload
+          # step - which cannot be wrapped in a shell command at all, being an action - reads a
+          # tree nothing else can touch and needs no lock of its own. Staging after the lock was
+          # released would move the race rather than close it.
+          # Refuse rather than improvise if the staging path did not get set: an empty value
+          # turns the cleanup below into `rm -rf ""` and the upload's path into `/**`.
+          : "${RMW_PERF_ARTIFACTS:?staging path unset - see Resolve workspace paths}"
           RIG_LOCK_SCOPE=box RIG_LOCK_OWNER="rmw-perf.yml run ${GITHUB_RUN_ID:-?} $(date -Is)" \
-          ./examples/perf_hil/rig_lock.sh \
-          colcon test \
-            --base-paths "$RMW_PERF_WS" \
-            --build-base "$RMW_PERF_WS/build" \
-            --install-base "$RMW_PERF_WS/install" \
-            --packages-select buildfarm_perf_tests \
-            --event-handlers console_direct+ \
-            --return-code-on-test-failure \
-            --ctest-args -R two_process_rmw_
-          colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
+          ./examples/perf_hil/rig_lock.sh bash -c '
+            colcon test \
+              --base-paths "$RMW_PERF_WS" \
+              --build-base "$RMW_PERF_WS/build" \
+              --install-base "$RMW_PERF_WS/install" \
+              --packages-select buildfarm_perf_tests \
+              --event-handlers console_direct+ \
+              --return-code-on-test-failure \
+              --ctest-args -R two_process_rmw_
+            rc=$?
+            rm -rf "$RMW_PERF_ARTIFACTS"
+            mkdir -p "$RMW_PERF_ARTIFACTS"
+            cp -a "$RMW_PERF_WS/build/buildfarm_perf_tests/." "$RMW_PERF_ARTIFACTS/" 2>/dev/null || true
+            colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose || rc=1
+            exit $rc
+          '
 
       - name: Verify every expected cell actually ran
         run: |
@@ -296,5 +328,5 @@ jobs:
         with:
           name: rmw-perf-results
           path: |
-            ${{ env.RMW_PERF_WS }}/build/buildfarm_perf_tests/**
+            ${{ env.RMW_PERF_ARTIFACTS }}/**
           if-no-files-found: warn
