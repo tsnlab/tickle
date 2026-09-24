@@ -18,6 +18,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h> // getenv()/strtoull() - resolve_reorder_slots()
 #include <string.h>
 
 #include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL

@@ -625,13 +625,13 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
         tt_Node_interrupt(&node_impl->context_impl->tickle_node);
         pthread_mutex_lock(&node_impl->context_impl->node_mutex);
-        tt_ret_t hb = tt_Publisher_set_heartbeat_period(&pub_impl->tickle_publisher, heartbeat_ns);
+        tt_ret_t armed = tt_Publisher_set_heartbeat_period(&pub_impl->tickle_publisher, heartbeat_ns);
         pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
-        if (hb != tt_RET_OK) {
+        if (armed != tt_RET_OK) {
             // Not fatal - the publisher works without it, exactly as it always has - but said, so a
             // run that asked for heartbeats and did not get them cannot be read as if it had.
             RCUTILS_LOG_WARN_NAMED("rmw_tickle", "RMW_TICKLE_HEARTBEAT_PERIOD_NS=%llu requested but not armed (%d)",
-                                   (unsigned long long)heartbeat_ns, (int)hb);
+                                   (unsigned long long)heartbeat_ns, (int)armed);
         } else {
             RCUTILS_LOG_INFO_NAMED("rmw_tickle", "periodic heartbeat armed: every %llu ns",
                                    (unsigned long long)heartbeat_ns);
