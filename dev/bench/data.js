@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790232943120,
+  "lastUpdate": 1790232947277,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -123866,6 +123866,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/7cc9fd4575e4bddddf6067e33124f6e7f0cdfbc2"
         },
         "date": 1790230277774,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "cb11c3622eeebd46c932bf28e366e979e7bfd6ea",
+          "message": "A type too big for a datagram must not fail a package that never uses it\n\nrosidl_typesupport_tickle_c could no longer build performance_test at all.\nThat package declares Array4k, Array32k and PointCloud1m alongside the small\ntypes anyone actually benchmarks, and rosidl_generate_interfaces() hands the\ngenerator every type in the list - so one type too large for a datagram failed\nthe whole package, including for consumers that never touch it. It went\nunnoticed for nine days because nothing rebuilt that workspace until today, and\nit is currently blocking the rmw-perf job for everyone.\n\nThe assertion was never the safety net it looked like. tt_Publisher_publish()\nalready refuses a message whose data_encode_size() exceeds tt_MAX_BUFFER_LENGTH,\nwith an error naming the size, so an oversized type cannot reach the wire\nwhether or not the header objects at compile time. What the assertion added was\nfailing early - and it failed early for types the consumer had not asked for,\nwhich is the wrong trade.\n\nSo it becomes a flag the compiler evaluates rather than an assertion that stops\nthe build: <Name>_FITS_ONE_DATAGRAM. The decision stays with the compiler\nbecause the generator does not know tt_MAX_BUFFER_LENGTH - it is a C constant\nthe consumer configures, which is exactly why this was written as an assertion\nin the first place.\n\nWhat this does NOT do, stated so nobody assumes otherwise: an oversized type now\nfails at publish rather than at rmw_create_publisher. The error is clear and\nnames the size, but it is later than it could be. Making rmw refuse at creation\nneeds the constant threaded through the typesupport descriptor, and I could not\nverify that without the workspace this change exists to unblock.\n\nOne thing worth recording about the verification. `make regen` initially\nreported success and changed nothing, because it runs the *installed*\ntickle_typesupport from ~/.local/lib/python3.14/site-packages while pytest\nimports the local source - so the tests saw the new template and the regen did\nnot, and the two silently disagreed. Reinstalled from local source first, then\nregenerated, then refreshed tests/golden/ from the same generator the test\nitself uses. The whole diff across 23 files is that one line per type.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T15:50:07+09:00",
+          "tree_id": "b6797d07863caf2cf452a55d286c7a34a40d4c1b",
+          "url": "https://github.com/tsnlab/tickle/commit/cb11c3622eeebd46c932bf28e366e979e7bfd6ea"
+        },
+        "date": 1790232945990,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
