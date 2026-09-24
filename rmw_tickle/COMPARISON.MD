@@ -96,8 +96,15 @@ loss", and that figure was the harness, not TickLE. **The same happened to lifes
 sample, and "lost 0" was the correct answer to a different question. Plan first published this as a
 LIFESPAN regression bisected to `261f39b8`. TickLE Dev showed it was the stagger: on loopback, each
 commit with stagger 0 loses 48 at pause 1.0, and with stagger 3 loses 0, at HEAD, at `fa3265f0` and
-before. The bisect's "good" point was an artifact too. Fixed in `a5f41b46`. The 2026-09-20 TickLE
-figures (28/43/79) were probably taken under the same stagger, so they are not kept.
+before. The bisect's "good" point was an artifact too. Fixed in `a5f41b46`. Re-measured after the fix: TickLE lost 21.3 / 54 / 77 at
+pause 1.0 / 1.5 / 2.0 (`lifespan_recheck.sh`). The pre-registered expectation was ~45 / 70 / 95, as
+CycloneDDS loses. The difference is explained by the harness, not by LIFESPAN. The slope is exactly
+the 50 samples/s the client publishes at, so every sample older than its 0.1 s lifespan is dropped.
+The offset of ~18 samples is the ~0.36 s the TickLE client starts after its server, one SSH
+connection later. The DDS twins start their writers from a match wait, so they have no such
+offset. The spread at pause 1.0 (8-29) is that SSH latency varying. The 2026-09-20 figures
+(28 / 43 / 79) agree with these, so they were valid LIFESPAN measurements taken before the 3 s
+stagger was introduced.
 
 | # | Scenario | Condition | TickLE (native) | FastDDS | CycloneDDS |
 |---|---|---|---|---|---|
@@ -111,7 +118,7 @@ figures (28/43/79) were probably taken under the same stagger, so they are not k
 | 7 | `deadline_miss_detection` | - | sent 198±0 msgs, recv 198±0 msgs, 0% loss, writer_misses=3† (own math), reader_misses=30† (harmless, unexplained) | writer_misses=7†, reader_misses=19†, detect -0.90ms† | writer_misses=7†, reader_misses=14†, detect 0.05ms† |
 | 8 | `liveliness_loss_detection` | - | **provisional, and NOT comparable to the DDS columns as measured - see §6 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
-| 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | **being re-measured** - the ★ run read lost 0/0/0, and that was the harness, not TickLE (see below) | lost 39/64.7/88.7 of 250 (n=3 each) ★ | lost 45/70/95 of 250 (n=3 each, identical) ★ |
+| 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` ★ | lost 21.3 (8-29) / 54 / 77 of 250 (n=3 each, at `6daf5b98` with `PRE_CLIENT_SLEEP=0`) - LIFESPAN enforced; see the note below for why these run ~18 below the DDS columns | lost 39/64.7/88.7 of 250 (n=3 each) | lost 45/70/95 of 250 (n=3 each, identical) |
 
 Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "sent Mbps" is each framework's own printed client-side rate. Every condition was reproduced 2/2 (scenario 6 beyond-depth: 3 runs; scenario 9 beyond-lifespan pause=1.5s: 4 runs - see §6 items 6/8) - see the Notation block above for how each cell's `avg±stdev` was computed from those runs.
 

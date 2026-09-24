@@ -1,0 +1,29 @@
+=== lifespan recheck, 2026-09-25T00:26:07+09:00, main 6daf5b98953358a6e29099cee03a499d27282ea5, 3 reps ===
+pause 1.0 rep1 tickle | role=server pause_s=1.00 recv=221 lost=29 loss_pct=11.6
+pause 1.0 rep1 cyclonedds | role=server pause_s=1.000 recv=205 lost=45 loss_pct=18.0
+pause 1.0 rep1 fastdds | role=server pause_s=1.000 recv=211 lost=39 loss_pct=15.6
+pause 1.0 rep2 tickle | role=server pause_s=1.00 recv=242 lost=8 loss_pct=3.2
+pause 1.0 rep2 cyclonedds | role=server pause_s=1.000 recv=205 lost=45 loss_pct=18.0
+pause 1.0 rep2 fastdds | role=server pause_s=1.000 recv=211 lost=39 loss_pct=15.6
+pause 1.0 rep3 tickle | role=server pause_s=1.00 recv=223 lost=27 loss_pct=10.8
+pause 1.0 rep3 cyclonedds | role=server pause_s=1.000 recv=205 lost=45 loss_pct=18.0
+pause 1.0 rep3 fastdds | role=server pause_s=1.000 recv=211 lost=39 loss_pct=15.6
+pause 1.5 rep1 tickle | role=server pause_s=1.50 recv=196 lost=54 loss_pct=21.6
+pause 1.5 rep1 cyclonedds | role=server pause_s=1.500 recv=180 lost=70 loss_pct=28.0
+pause 1.5 rep1 fastdds | role=server pause_s=1.500 recv=186 lost=64 loss_pct=25.6
+pause 1.5 rep2 tickle | role=server pause_s=1.50 recv=196 lost=54 loss_pct=21.6
+pause 1.5 rep2 cyclonedds | role=server pause_s=1.500 recv=180 lost=70 loss_pct=28.0
+pause 1.5 rep2 fastdds | role=server pause_s=1.500 recv=186 lost=64 loss_pct=25.6
+pause 1.5 rep3 tickle | role=server pause_s=1.50 recv=196 lost=54 loss_pct=21.6
+pause 1.5 rep3 cyclonedds | role=server pause_s=1.500 recv=180 lost=70 loss_pct=28.0
+pause 1.5 rep3 fastdds | role=server pause_s=1.500 recv=186 lost=64 loss_pct=25.6
+pause 2.0 rep1 tickle | role=server pause_s=2.00 recv=173 lost=77 loss_pct=30.8
+pause 2.0 rep1 cyclonedds | role=server pause_s=2.000 recv=155 lost=95 loss_pct=38.0
+pause 2.0 rep1 fastdds | role=server pause_s=2.000 recv=162 lost=88 loss_pct=35.2
+pause 2.0 rep2 tickle | role=server pause_s=2.00 recv=173 lost=77 loss_pct=30.8
+pause 2.0 rep2 cyclonedds | role=server pause_s=2.000 recv=155 lost=95 loss_pct=38.0
+pause 2.0 rep2 fastdds | role=server pause_s=2.000 recv=161 lost=89 loss_pct=35.6
+pause 2.0 rep3 tickle | role=server pause_s=2.00 recv=173 lost=77 loss_pct=30.8
+pause 2.0 rep3 cyclonedds | role=server pause_s=2.000 recv=155 lost=95 loss_pct=38.0
+pause 2.0 rep3 fastdds | role=server pause_s=2.000 recv=161 lost=89 loss_pct=35.6
+=== done 2026-09-25T00:33:24+09:00 ===
