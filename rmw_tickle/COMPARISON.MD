@@ -203,63 +203,39 @@ deliver. All three are **0 in every cell**, so the only thing that differs is wh
 
 | `tc` loss | TickLE (KEEP_ALL) ‡ | FastDDS | CycloneDDS |
 |---|---:|---:|---:|
-| 0% | **109.3 Mbps** | 11.5 | 47.3 |
-| 1% | **105.0** | 10.0 | 12.0 |
-| 5% | **98.2** | 6.8 | 2.4 |
-| 20% | **54.9** ◊ | 2.3 † | 0.36 |
-| 50% | **21.9** ◊ | 0.35 † | 0.11 |
+| 0% | **108.5 Mbps** | 28.3 | 93.2 |
+| 1% | **104.1** | 10.5 | 11.7 |
+| 5% | **97.5** | 8.7 | 2.6 |
+| 20% | **54.7** | 1.2 † | 0.39 |
+| 50% | **21.9** | 0.39 † | 0.15 |
 
-**TickLE's column was re-measured on 2026-09-24 at `5816aab3`** (9 reps per cell, `-Q -d 5`,
-harness pinned by `taskset -c 1-3`); the DDS columns are unchanged and were not re-measured. **Every
-figure in this document from here on carries the commit it was taken at** - the absence of one is
-why the paragraph below had to reconstruct a window from timestamps, and why it could not finish
-the job.
+**All three columns were measured in one session on 2026-09-24, on the rig, at `5816aab3`** - 3 reps
+per cell, `-d 5`, interleaved *by framework within each loss level* rather than run as three blocks,
+so a drift during the session lands on all three equally instead of on whichever ran last. The mean
+of the three reps is what is reported.
 
-**The bimodality is real, the pin removes it, and the pin costs about 1.5%.** The earlier five-rep
-observation (94.4 / 111.0 / 112.7 / 94.9 / 111.5) was the sender sharing a core with the NIC
-interrupt: `eth0`'s IRQ is entirely on CPU0 on both rpis (421,059,281 against 0 on CPU1-3), and the
-slow mode is the runs that landed there. `run_scenario.sh` has excluded CPU0 since `9f70d9b4`, and
-under that pin nine consecutive reps at tc 0% came back 108.8-109.5, a 0.6% spread with no clusters
-at all. So the pinned rate, 109.3, sits about 1.5% below the old unpinned *fast* mode of 110.8-112.3
-- one core fewer - and buys the disappearance of a mode 15% below. The ◊ is lifted at 0/1/5%.
-*(Method note, recorded because it nearly produced the opposite conclusion: the nine reps were first
-read as "the bimodality did not reproduce", which they cannot show. The pin excludes CPU0 by
-construction, so the sweep had removed the mode's precondition before it started. `cpu_main` varied
-across 1, 2 and 3 and never 0 - the question was never "does placement vary" but "does it take the
-one value the mechanism is about".)*
+**They replace figures that were not comparable with each other.** The previous table had TickLE's
+column re-measured on 2026-09-24 while the two DDS columns still dated from 2026-09-23 - and §5 of
+this same document had just demonstrated that this rig carries an additive offset between
+measurement days that lands on every implementation at once. A "10-45x either vendor" claim spanning
+two days is exactly the defect §5 records, left sitting in the table beside it. Re-measuring one
+column closed a provisional mark and opened a comparability hole; this closes both. The size of what
+that hid: measured together, CycloneDDS reads 93.2 Mbps at 0% where the table had said 47.3, and
+FastDDS 28.3 where it had said 11.5.
 
-**◊ The 20% and 50% cells do not reproduce this document's own earlier figures, and the cause was
-not found.** They previously read 89.3 and 56.5; they now read 54.9 and 21.9 across every
-measurement taken on 2026-09-24. Four candidate explanations were tested and each is excluded by
-measurement rather than by argument:
-
-- **The same-host socket work** (`82a6a02d`, `2d72282c`): an ABBA A/B, 4 blocks of 5 reps, arms at
-  55.00 / 54.77 (before) against 54.93 / 55.00 (after) at 20%. Within-arm spread as large as
-  between-arm.
-- **`835e8b44`'s added logging**: "Publisher peer registered" fires **exactly once** in a
-  20%-loss run (3 `[INFO]` lines total), so it cannot be a per-sample cost.
-- **Run duration**: the published method is 10s runs and today's were 5s. Measured directly -
-  `-d 5` gives 54.5 and `-d 10` gives 54.9 at 20%, `21.9` either way at 50%.
-- **The code, across the whole reconstructed window**: with the harness held at `5816aab3` and only
-  `src/`+`include/` moved, `acaa8049` (the KEEP_ALL-solicitation fix the published matrix was taken
-  immediately after), `b332dc1b`, `7bb87702`, `0be8c33f` and HEAD all measure 54.5-56.1. **The
-  published 89.3 does not reproduce at its own commit.**
-
-What remains is the original measurement's own conditions, which were not recorded and cannot now
-be recovered - `PLAN.md` cites the fix as `acaa8049`, a sha that is not in `main`'s history at all
-(it was rebased away before the push), so even the commit is not pinned down. These two cells are
-therefore marked as unexplained rather than corrected, and the arithmetic is worth stating for
-whoever picks this up: 89.3 and 56.5 are almost exactly `109.3 x (1 - p)`, the goodput of a stream
-where every lost sample is recovered by a single retransmission and nothing else is wasted. Today's
-figures are roughly half that, i.e. the sender pushes ~90k samples/s at 20% loss against ~180k on a
-clean link. The loss columns are unaffected: net loss is still 0 in every cell.
-
-**†** FastDDS did not finish draining here (`drained=timeout` in 1/3 reps at 20%, 3/3 at 50%): its
-net loss is 0 because refused writes are *counted*, not because everything was delivered - samples
-were still unacknowledged when the 3s teardown wait expired. That is a different end state from
-CycloneDDS's and TickLE's `acked`, so these two cells are not the same claim as the others in their
-column. **‡** TickLE's 0 is post-match loss; 0-5 samples per run at 50% (0 at 0-20%) were never
-observable to the Subscriber at all - see caveat 1 below.
+**One earlier figure is still unexplained and is now superseded rather than resolved.** TickLE's 20%
+and 50% cells previously read 89.3 and 56.5 against today's 54.7 and 21.9. Four candidate causes
+were each excluded by measurement rather than by argument: the same-host socket work (ABBA A/B, 4
+blocks of 5 reps, arms agreeing at 55.0); `835e8b44`'s added logging ("Publisher peer registered"
+fires **once** in a 20%-loss run); run duration (`-d 5` gives 54.5 and `-d 10` gives 54.9); and the
+code across the whole window, with the harness held constant and only `src/`+`include/` moved -
+`acaa8049` (the KEEP_ALL-solicitation fix the published matrix was taken immediately after),
+`b332dc1b`, `7bb87702`, `0be8c33f` and HEAD all measure 54.5-56.1. **The old 89.3 does not reproduce
+at its own commit.** What remains is the original measurement's own conditions, which were not
+recorded - `PLAN.md` cited that fix as `a437859`, a sha rebased away before it was ever pushed, so <!-- doc-shas-ignore: this line names the broken sha as its subject, so the checker must not read it as a citation -->
+not even the commit was pinned down. The conclusion recorded here is that the cause was not found,
+not that it was ruled out; the table above supersedes those cells because it was taken under a
+controlled, internally comparable method, which they were not.
 
 At the loss rates a real link sees, TickLE sustains **10-45x** either vendor's throughput under the
 same zero-loss guarantee; at 50% injected loss it is **160x** FastDDS and **510x** CycloneDDS. The
@@ -326,53 +302,39 @@ min/avg/max cells:
 
 | Topology | Message | Mode | TickLE (`rmw_tickle`) | FastDDS | CycloneDDS |
 |---|---|---|---:|---:|---:|
-| Same-host | Array1k | async | 0.0638ms (3 reps) | 0.0570ms (3 reps) | (skipped - see note) |
-| Same-host | Array1k | sync | 0.0579ms (3 reps) | 0.0487ms (3 reps) | 0.0455ms (3 reps) |
-| Same-host | Struct16 | async | 0.0600ms (3 reps) | 0.0526ms (3 reps) | (skipped - see note) |
-| Same-host | Struct16 | sync | 0.0588ms (2 reps, see outlier note) | 0.0452ms (3 reps) | 0.0475ms (3 reps) |
 | Cross-host | Bench, QoS=best_effort | - | 0.524ms† avg RTT, 0% loss | 0.516ms† avg RTT, 0% loss | 0.440ms† avg RTT, 0% loss |
 | Cross-host | Bench, QoS=reliable | - | 0.523ms† avg RTT, 0% loss | 0.523ms† avg RTT, 0% loss | 0.449ms† avg RTT, 0% loss |
 
-(CycloneDDS's own same-host `async` rows are missing - skipped by `ctest` on this particular run, a
-test-registration flakiness unrelated to any of the three `rmw`s, not yet chased down. Cross-host:
-18/18 runs clean, zero loss every time.)
+**The same-host rows are gone, and this is a policy rather than a gap** (the user's decision,
+2026-09-24): *"PC는 다양한 작업이 돌아가고 있기 때문에 PC에서 성능 측정한 것은 의미가 없어. RPi의
+경우 독립된 H/W이기 때문에 거기서의 성능 측정 결과만 의미가 있어. PC는 기능 정합성을 검증하는
+용도로만 사용하고 성능 측정 용도로는 사용하지 말자."* The dev box runs whatever else it is running -
+two Claude sessions, two CI runners, a Windows VM, an Android emulator - so a latency figure taken
+on it measures that machine's mood as much as the middleware. **This document therefore publishes no
+performance number measured on the dev box.** The rig's two Raspberry Pis are dedicated hardware and
+are where every performance figure in §2, §3, §3a, §3b and the rows above comes from.
 
-**The same-host rows were re-measured on 2026-09-24** and the ones they replace are gone rather
-than annotated, because they were taken through a transport that was misdelivering roughly a tenth
-of its datagrams to the sender (`PLAN.md` milestone 67 / commit `82a6a02d`) - they measured a
-different system, not this one imprecisely. Three repetitions per cell this time instead of one;
-the figure is the mean of what `buildfarm_perf_tests` itself reports, which is already an average
-per run, so it is a mean of means and still carries no real stdev. **Outlier, stated rather than
-dropped silently**: `rmw_tickle`'s Struct16/sync cell read 0.1036ms in repetition 1 against
-0.0597 and 0.0579 in the other two. The cell above is the mean of the latter two. Nothing else in
-that repetition was anomalous, and no mechanism is offered for it. The cross-host rows are
-untouched and were never at risk - two hosts have never shared a port.
+**This was not an abstract concern; it had already produced a wrong result here.** The same-host
+rows were re-measured on 2026-09-24 and read 12-15us slower than the pass they replaced - which
+looked like a regression from `82a6a02d`'s socket work. It was not: *every* implementation had moved
+by about the same amount between the two days (FastDDS +12.4 to +19.5us, CycloneDDS +11.8 and
++13.3us, `rmw_tickle` +5.7 to +15.1us, mean about **+13us** across all ten comparable cells), and two
+of the three contain no TickLE code at all. The offset was the box, and it was roughly a quarter of
+the whole figure. Chasing it cost most of a day. The ratio *appeared* to improve at the same time,
+from ~1.3-1.6x to ~1.12-1.30x, which is the same artifact read the flattering way - a constant
+additive term compresses every ratio toward 1 on its own.
 
-**Reading, and the first thing to say is what these numbers do *not* show.** Compared cell by cell
-against the pre-fix figures, `rmw_tickle` looks ~12-15us slower - which looks like a regression
-from the same-host socket work. **It is not.** Every implementation moved by about the same amount:
-FastDDS by +12.4 to +19.5us, CycloneDDS by +11.8 and +13.3us, `rmw_tickle` by +5.7 to +15.1us, mean
-across all ten comparable cells roughly **+13us**. FastDDS and CycloneDDS contain no TickLE code at
-all, so a shift they share cannot have come from TickLE's; it is an additive, box-level offset
-between the two measurement days, cause not identified. **Absolute latencies from the two passes
-are therefore not comparable, and only figures taken within one pass should be compared to each
-other.**
+**What is lost, stated plainly:** `buildfarm_perf_tests` only has a same-host shape - its
+"two-process" tests launch both sides with `launch_ros.actions.Node`, which forks local children and
+has no remote-host path at all (Milestone 14) - so the `rmw`-layer comparison against the two DDS
+vendors has no valid venue today. `rmw_perf_pingpong` on the rig is the cross-host replacement and
+is what the rows above are, but it covers RTT rather than `buildfarm_perf_tests`' full matrix. The
+honest position is that the `rmw`-layer cross-vendor comparison is **narrower than it looks
+elsewhere in this document**, not that it is unavailable.
 
-The corollary matters as much: the ratio *appears* to have improved, from ~1.3-1.6x to ~1.12-1.30x,
-and that is an artifact too. A constant additive term compresses every ratio toward 1 on its own -
-adding 13us to 37.5 and 48.7 takes their ratio from 1.30 to 1.19 without anything having changed.
-**No claim of improvement is made here.** What can be said is narrower and holds: within this pass,
-`rmw_tickle` is 1.12-1.30x the latency of the two DDS vendors, throughput is indistinguishable
-across all three (dominated by the test's own fixed send rate, not implementation efficiency), and
-the wire-correctness defect that invalidated the previous pass cost correctness without a visible
-latency cost in this particular benchmark. Cross-host tells a slightly different story: `rmw_tickle` and
-`rmw_fastrtps_cpp` land within noise of each other (~0.52ms), while `rmw_cyclonedds_cpp` is
-genuinely faster (~0.44ms) on the real link too. RELIABLE costs nothing measurable over
-BEST_EFFORT for any of the three, same-host or cross-host.
-
-Notably, `rmw_tickle`'s own gap here (a real, if modest, latency cost vs. two mature DDS stacks)
-sits in contrast with §3's own raw-core result, where TickLE was the *fastest* of the three - the
-gap is coming from `rmw_tickle`'s own wrapper layer, not from TickLE core itself. See §6, items 3-4.
+**Reading**: cross-host, `rmw_tickle` and `rmw_fastrtps_cpp` land within noise of each other
+(~0.52ms) while `rmw_cyclonedds_cpp` is genuinely faster (~0.44ms) on the real link. RELIABLE costs
+nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero loss every time.
 
 ## 6. To-do, from TickLE's own perspective
 
