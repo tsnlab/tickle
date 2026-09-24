@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790219716732,
+  "lastUpdate": 1790219720549,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -115325,6 +115325,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 148,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1ef792fb13cf0522a8db9955b8d27cc55d1a4374",
+          "message": "COMPARISON.MD §3b: the table was replaced and its arithmetic was not\n\nFour derived claims under the new table were still computed from the superseded rows: 160x/510x at\n50% (now 56x/146x), \"~51% of its lossless rate\" (now 20%), \"10-45x either vendor\" (now 9.9-45.6x\nand 8.9-140x), and a cost-of-the-guarantee paragraph putting a 2026-09-24 KEEP_ALL figure against a\n2026-09-23 KEEP_LAST one. Found on review by recomputing them, not by reading them.\n\nThe last is why this is more than a recomputation. That paragraph quantifies the headline trade-off\nand it was a cross-day comparison, in a document whose §5 exists to say cross-day absolutes cannot\nbe compared. Recomputing percentages from the new KEEP_ALL numbers alone would have left that in\nplace while making it look corrected, so KEEP_LAST was re-measured in the same interleaved session\ninstead: the guarantee costs -43% at 20% and -76% at 50%, against the -11% and -33% claimed - two\nto three times more. write_fail was 0 in all 15 KEEP_ALL runs, so none of it is refused writes.\n\nThe lesson is the seventh item in PLAN.md's through-line: a derived number does not look stale the\nway a citation does. check-doc-shas asserts every commit id resolves; nothing asserts that a ratio\nstill follows from the table above it, and a ratio reads as a conclusion rather than as arithmetic.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T12:09:43+09:00",
+          "tree_id": "82d9da24583cc05f6774ed28a933f9dd94ac12b5",
+          "url": "https://github.com/tsnlab/tickle/commit/1ef792fb13cf0522a8db9955b8d27cc55d1a4374"
+        },
+        "date": 1790219719374,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 156,
             "unit": "count"
           }
         ]
