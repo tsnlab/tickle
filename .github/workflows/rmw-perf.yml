@@ -149,6 +149,25 @@ jobs:
           # build/install output would land inside the git checkout instead of alongside
           # buildfarm_perf_tests' own sources in $RMW_PERF_WS, where every later step here (and
           # README-rmw-perf.md's own provisioning) expects to find it.
+          # Under the same box lock as the benchmark, because this step is a *writer* of the
+          # shared tree and the earlier fix only covered its readers (2026-09-24). It rewrites
+          # $RMW_PERF_WS/build and install - the trees a manual repro run on this box executes
+          # its benchmarks out of. On 2026-09-24 it did exactly that at 13:24:15 while a
+          # twelve-rep run was in progress, swapping installed binaries under tests that were
+          # already running.
+          #
+          # A writer outside the lock is worse than a reader outside it: a reader racing the tree
+          # fails its own job, which is visible. A writer racing it corrupts somebody else's
+          # measurement, which is not - their run completes and reports numbers.
+          #
+          # What this does NOT close, stated rather than papered over: this step and the benchmark
+          # take the lock separately, so the tree is unlocked for the moment between them. A lock
+          # cannot span two workflow steps, and merging them would cost the per-step timing in the
+          # job UI - which is what made the 13:24:15 collision visible in the first place. The gap
+          # only matters if something else *builds* into this workspace, and only CI does; a
+          # concurrent benchmark is excluded by both halves holding the same lock.
+          RIG_LOCK_SCOPE=box RIG_LOCK_OWNER="rmw-perf.yml rebuild ${GITHUB_RUN_ID:-?} $(date -Is)" \
+          ./examples/perf_hil/rig_lock.sh \
           colcon build \
             --base-paths "$RMW_PERF_WS" \
             --build-base "$RMW_PERF_WS/build" \
