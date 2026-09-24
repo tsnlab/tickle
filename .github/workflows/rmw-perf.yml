@@ -99,6 +99,32 @@ jobs:
           # plain .a static archive (see rmw_tickle/PLAN.md's Milestone 1(b)+(c) - the same fix
           # check-all.yml's own colcon build needed for the identical reason).
 
+      - name: Verify the delivery assertion is present
+        run: |
+          # This job's only failing path comes from README-rmw-perf.md's provisioning patch (e):
+          # launch_test's own gate checks exit codes and nothing else, so without (e) a run that
+          # exchanges zero messages for its whole duration passes - observed on 2026-09-23, a cell
+          # reporting received 0 / lost 7902 that launch_test called Passed in 16.01 seconds.
+          #
+          # (e) lives in the provisioned workspace, not in this repository, which is fine for the
+          # patches that make the job *run* - a missing (a) through (d) fails loudly and
+          # immediately. A missing (e) does not: the job runs, reports success, and asserts
+          # nothing. That is the difference worth a check of its own, and this is it. A
+          # re-provisioned workspace now says so instead of quietly becoming a gate that cannot
+          # fail.
+          f="$RMW_PERF_WS/src/buildfarm_perf_tests/test/test_performance.py.in"
+          if [ ! -f "$f" ]; then
+            echo "::error::$f is missing - the workspace is not provisioned (README-rmw-perf.md)" >&2
+            exit 1
+          fi
+          if ! grep -q 'total_received' "$f"; then
+            echo "::error::$f has no delivery assertion. Apply README-rmw-perf.md provisioning" \
+                 "patch (e) - without it this job cannot fail on a run that delivers nothing," \
+                 "which is the only thing it is here to catch." >&2
+            exit 1
+          fi
+          echo "delivery assertion present in $f"
+
       - name: Rebuild buildfarm_perf_tests with rmw_tickle now visible
         run: |
           # get_available_rmw_implementations() (rmw_implementation_cmake) - what buildfarm_
@@ -161,11 +187,19 @@ jobs:
           # the single-process tests this job deliberately never runs) would fail this job
           # forever after, even though nothing this job actually did produced it.
           rm -rf "$RMW_PERF_WS/build/buildfarm_perf_tests/test_results"
-          # This benchmark's own numbers (published below regardless) are the actual point of
-          # this job, not a pass/fail gate - `|| true` on both colcon calls so one bad run (or a
-          # real environment hiccup) never blocks every future push's table from showing up.
-          # colcon test-result's own per-test breakdown still prints either way, for whoever
-          # reads this step's log.
+          # This job is a functional gate, and a functional gate has to be able to fail.
+          #
+          # It used to carry `|| true` on both colcon calls, on the reasoning that "this
+          # benchmark's own numbers are the actual point of this job, not a pass/fail gate". That
+          # reasoning ended on 2026-09-24: performance measured on this box is not a signal at all
+          # - it is a shared machine, and a cross-day shift of about 13us landed on all three rmw
+          # implementations at once, including two containing none of our code, at a quarter of
+          # the figure being measured. The rpis are where performance is measured. This box
+          # verifies that things work.
+          #
+          # So the test call fails the job now. `colcon test-result` keeps its `|| true` because it
+          # only reports; the stale-xunit problem that partly motivated the original blanket
+          # version is handled by the `rm -rf` of test_results just above.
           RIG_LOCK_SCOPE=box RIG_LOCK_OWNER="rmw-perf.yml run ${GITHUB_RUN_ID:-?} $(date -Is)" \
           ./examples/perf_hil/rig_lock.sh \
           colcon test \
@@ -174,10 +208,10 @@ jobs:
             --install-base "$RMW_PERF_WS/install" \
             --packages-select buildfarm_perf_tests \
             --event-handlers console_direct+ \
-            --ctest-args -R two_process_rmw_ || true
+            --ctest-args -R two_process_rmw_
           colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose || true
 
-      - name: Publish benchmark table
+      - name: Publish diagnostic table
         if: always()
         run: |
           # buildfarm_perf_tests' own per-test PERF_TEST_RESULTS_BASE_PATH (test/add_performance_
@@ -191,6 +225,16 @@ jobs:
           # and get real gh-pages dev/bench history/graphing, the same way performance.yml's own
           # TickLE-core numbers already have (rmw_tickle/PLAN.md's benchmark plan's original
           # raw-artifacts/no-dashboard starting point, one step further).
+          # The caveat goes in the step, not only in COMPARISON.MD, because whoever reads this
+          # table is reading a CI log and will not have the document open.
+          {
+            echo "### rmw_tickle same-host diagnostics"
+            echo
+            echo "Measured on a shared box, not comparable across runs or against the rpis," \
+                 "present for diagnosis. Performance figures come from the rpi rig" \
+                 "(\`performance.yml\`); this job verifies that the matrix runs at all."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
           python3 .github/scripts/rmw_perf_summary.py "$RMW_PERF_RESULTS_DIR" \
             --benchmark-json-dir "$GITHUB_WORKSPACE" >> "$GITHUB_STEP_SUMMARY"
 
