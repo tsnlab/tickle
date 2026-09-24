@@ -56,6 +56,12 @@ static void ping_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
 }
 
 static const double default_safety_cap_s = 40.0;
+// +15s, as every other scenario's server already has (deadline_miss_detection/server.c explains why).
+// run_scenario.sh forwards the same -d to both sides, and here it caps this server's lifetime, while
+// the client starts pinging PRE_CLIENT_SLEEP (3s) plus its own discovery margin (2s) later. Without
+// the buffer this server exited halfway through the client's pings: at -i 0.1 -d 10 it answered 47
+// of 100, a steady "53% loss" that the 2026-09-24 re-sweep first read as a TickLE regression.
+static const double safety_cap_buffer_s = 15.0;
 
 int main(int argc, char** argv) {
     double safety_cap_s = default_safety_cap_s;
@@ -64,6 +70,7 @@ int main(int argc, char** argv) {
             safety_cap_s = atof(argv[++i]);
         }
     }
+    safety_cap_s += safety_cap_buffer_s;
 
     // real HIL link's own broadcast address (run_perf.sh's own PERF_LINK_BROADCAST) - the
     // compiled-in default (255.255.255.255) doesn't match this subnet, which breaks
