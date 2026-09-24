@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790237175164,
+  "lastUpdate": 1790237179384,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -123186,6 +123186,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "lease=4.0s",
             "value": 3279.755,
+            "unit": "ms"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "ec4874fdd06f225b23c2e81701942b10899972c5",
+          "message": "An arm that measured the wrong binary must say so, not produce a number\n\nPinning AMENT_PREFIX_PATH is a request, not a guarantee. This experiment had\nalready produced four confident results from a librmw_tickle.so built the\nprevious day, and the only clue was a log line whose wording was subtly the old\none - so adding a pin and trusting it would repeat the same class of mistake one\nlevel up.\n\nSourcing order is an environment fact nobody here controls. What a process\nmapped is observable: each arm now reads /proc/<pid>/maps while the subscriber\nis still running, and declares itself VOID by name if the mapped library is not\nthis checkout's. Same rule as a run that received on only one socket being void\nfor the interleaving question rather than negative.\n\nVerified in both directions, because a check only ever seen passing is not a\ncheck. With the pin removed it prints\n\n    ARM A_reliable IS VOID: mapped /home/semih/actions-runner-perf/_work/\n    tickle/tickle/install/rmw_tickle/lib/librmw_tickle.so, expected\n    /home/semih/tickle-dev/install/rmw_tickle/lib/librmw_tickle.so\n\nnaming the exact wrong library; with it in place it prints the expected path and\nthe arm runs.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T17:00:44+09:00",
+          "tree_id": "5562bf5d11694e5e2205c9f694296b60107cbc93",
+          "url": "https://github.com/tsnlab/tickle/commit/ec4874fdd06f225b23c2e81701942b10899972c5"
+        },
+        "date": 1790237177926,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "lease=1.0s",
+            "value": 67.989,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=2.0s",
+            "value": 2213.399,
+            "unit": "ms"
+          },
+          {
+            "name": "lease=4.0s",
+            "value": 3322.32,
             "unit": "ms"
           }
         ]
