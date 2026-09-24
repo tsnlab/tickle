@@ -61,6 +61,18 @@ def _nested_includes(struct):
     return sorted(names)
 
 
+def _nests_an_empty_struct(struct):
+    """Whether any nested field (or nested-array element), at any depth, is an empty message. Its
+    one-byte filler is in the C struct but not on the wire, so the containing struct's memory image
+    is one byte off its wire image even when every size is fixed - found through tf2_msgs'
+    LookupTransform action, whose FeedbackMessage wraps an empty Feedback (2026-09-25)."""
+    for f in struct.fields:
+        if f.kind == "nested" or (f.kind == "array" and f.array_element_kind == "nested"):
+            if not f.nested.fields or _nests_an_empty_struct(f.nested):
+                return True
+    return False
+
+
 def _struct_context(struct):
     layout.compute(struct)
     # An empty message (e.g. Trigger.srv's request) is fixed-size (wire_size 0) but still needs a
@@ -69,8 +81,11 @@ def _struct_context(struct):
     # wire-layout invariant. Skip it rather than do that (has_inplace, below, already excludes an
     # empty struct on its own terms - prefix_array_field needs a last field to look at, and a
     # fully-fixed empty struct has nothing to alias that'd be worth the two extra functions).
-    is_fixed_size = struct.is_fixed_size and bool(struct.fields)
-    prefix_field = None if is_fixed_size else layout.prefix_array_field(struct)
+    # The same holds for a struct that nests an empty one: neither the whole-struct in-place path
+    # nor the prefix one (which aliases the fields before an array) can treat memory as the wire.
+    wire_image = not _nests_an_empty_struct(struct)
+    is_fixed_size = struct.is_fixed_size and bool(struct.fields) and wire_image
+    prefix_field = None if is_fixed_size or not wire_image else layout.prefix_array_field(struct)
     if is_fixed_size:
         encode_inplace_lines = emit.emit_encode_inplace(struct)
         decode_inplace_lines = emit.emit_decode_inplace(struct)
