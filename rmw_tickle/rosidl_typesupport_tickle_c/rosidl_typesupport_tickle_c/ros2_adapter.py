@@ -501,6 +501,7 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             f'#include "{adapter_header}"',
             "",
             f"static rosidl_typesupport_tickle_c_message_callbacks_t {callbacks_var} = {{",
+            "    .struct_size = sizeof(rosidl_typesupport_tickle_c_message_callbacks_t),",
             f'    .ros_type_name = "{pkg}/{subfolder}/{type_name}",',
             f"    .tickle_struct_size = sizeof(struct {struct.c_name}),",
             f"    .ros_struct_size = sizeof(struct {ros_name}),",

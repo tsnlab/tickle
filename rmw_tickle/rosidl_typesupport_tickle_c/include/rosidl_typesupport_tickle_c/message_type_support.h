@@ -50,6 +50,18 @@ typedef bool (*rosidl_typesupport_tickle_c_from_tickle_function)(const void* tic
 #define ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED ((size_t)0)
 
 typedef struct rosidl_typesupport_tickle_c_message_callbacks_t {
+    // sizeof(rosidl_typesupport_tickle_c_message_callbacks_t) as the generator that wrote this struct
+    // saw it - first, so it is where every version of this struct can be read. rmw_tickle refuses a
+    // callbacks struct whose value is neither that nor 0 (hand-written, e.g. rmw_tickle's own tests),
+    // before reading anything else in it.
+    //
+    // Why (2026-09-24): tickle_max_buffer_length was appended below, and an interface library
+    // generated before it has the shorter struct - rmw_tickle then read past its end and refused the
+    // type for a "tt_MAX_BUFFER_LENGTH" that was whatever came next in memory. A struct generated
+    // before this field existed has its ros_type_name pointer here, which is never a small size, so
+    // every older library now fails the same clean way: "rebuild it". Anything appended from now on
+    // changes this value, so the same check keeps working.
+    size_t struct_size;
     // "pkg/subfolder/Type" (e.g. "test_msgs/msg/Simple") - the same string tt_Topic.name needs
     // (rmw_tickle/PLAN.md's Milestone 3: tt_hash_id(topic->name, endpoint_name) mixes in both the
     // type and the ROS topic name, matching ROS 2's own "both type and topic name must match to
