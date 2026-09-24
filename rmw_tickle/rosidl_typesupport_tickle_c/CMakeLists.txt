@@ -88,6 +88,15 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+# TickLE's shipped capacity defaults, one profile per tt_MAX_BUFFER_LENGTH (capacities/profile_<N>.tsv,
+# from Plan's inventory of jazzy) - read at each interface package's configure time by
+# rosidl_typesupport_tickle_c.capacity_profile; see its docstring for how one is chosen and how a
+# user's own overrides go on top.
+install(
+  DIRECTORY capacities
+  DESTINATION share/${PROJECT_NAME}
+)
+
 # The ROS 2 half of the generator (rosidl_typesupport_tickle_c/, the Python package): what
 # cmake/rosidl_typesupport_tickle_c_generate_interfaces.cmake runs for every interface of every
 # package that builds this typesupport. It lived in tools/typesupport until 2026-09-24, when the

@@ -77,6 +77,34 @@ foreach(_dep_pkg_name ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
   endif()
 endforeach()
 
+# The capacity table this package is generated with (the user's decision of 2026-09-24: TickLE ships
+# per-message defaults, the user can override them): the shipped profile for this build's
+# tt_MAX_BUFFER_LENGTH plus any <package>.capacities on TICKLE_CAPACITIES_PATH, merged by
+# rosidl_typesupport_tickle_c.capacity_profile. Computed at configure time, passed to every
+# generator run below (a DEPENDS, so a changed table regenerates), and installed beside the package,
+# because a package nesting these types has to size them identically (tickle_typesupport/
+# capacities.py). The files it read become configure dependencies, so editing one reconfigures.
+set(_tickle_capacities_file "${CMAKE_CURRENT_BINARY_DIR}/rosidl_typesupport_tickle_c/${PROJECT_NAME}.capacities")
+set(_tickle_capacities_deps "${_tickle_capacities_file}.deps")
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" -m rosidl_typesupport_tickle_c.capacity_profile
+    --package "${PROJECT_NAME}"
+    --max-buffer-length "${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}"
+    --shipped-dir "${rosidl_typesupport_tickle_c_CAPACITIES_DIR}"
+    --search-path "$ENV{TICKLE_CAPACITIES_PATH}"
+    --out "${_tickle_capacities_file}"
+    --depends-out "${_tickle_capacities_deps}"
+  RESULT_VARIABLE _tickle_capacities_result
+  OUTPUT_VARIABLE _tickle_capacities_summary
+  ERROR_VARIABLE _tickle_capacities_error
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT _tickle_capacities_result EQUAL 0)
+  message(FATAL_ERROR "rosidl_typesupport_tickle_c: cannot resolve ${PROJECT_NAME}'s capacities:\n${_tickle_capacities_error}")
+endif()
+message(STATUS "rosidl_typesupport_tickle_c: ${_tickle_capacities_summary}")
+file(STRINGS "${_tickle_capacities_deps}" _tickle_capacities_sources)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_tickle_capacities_sources})
+
 foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   # rosidl_generate_interfaces_ABS_IDL_FILES holds *adapted* .idl paths (rosidl_adapt_interfaces()
   # runs before any extension, including this one, so every generator only ever has to understand
@@ -176,7 +204,8 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
       ${_tickle_dep_include_args}
       ${_tickle_generated_pkg_args}
       --max-buffer-length "${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}"
-    DEPENDS "${_src_file}"
+      --capacities "${_tickle_capacities_file}"
+    DEPENDS "${_src_file}" "${_tickle_capacities_file}"
     COMMENT "Generating TickLE type support for ${_idl_name}"
     VERBATIM
   )
@@ -305,6 +334,10 @@ if(_generated_sources)
       LIBRARY DESTINATION lib
       RUNTIME DESTINATION bin
     )
+
+    # The capacities these types were generated with, where a package nesting them will look for
+    # them (share/<pkg>/tickle_capacities.tsv - tickle_typesupport/capacities.py INSTALLED_NAME).
+    install(FILES "${_tickle_capacities_file}" DESTINATION share/${PROJECT_NAME} RENAME tickle_capacities.tsv)
 
     # The generated headers themselves (mirrors rosidl_generator_c_generate_interfaces.cmake's
     # own install(DIRECTORY ...) for its own struct headers) - a downstream package's own
