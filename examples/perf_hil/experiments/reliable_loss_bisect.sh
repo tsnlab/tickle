@@ -21,7 +21,13 @@ CLIENT=10.1.1.214; SERVER=10.1.1.213
 HEADSHA="$(git rev-parse HEAD)"
 SHAS="${SHAS:-a4378596 b332dc1b 7bb87702 0be8c33f $HEADSHA}"
 REPS="${REPS:-3}"
-OUT="${OUT:-/tmp/tickle_loss_bisect.txt}"
+# Timestamped by default. A fixed filename means a run that never started leaves the PREVIOUS
+# run's file in place, and a summary read from it is indistinguishable from a fresh result -
+# which happened on 2026-09-24: an interleaved sweep sat blocked on the rig lock while its
+# predecessor's numbers were about to be reported as the after-measurement. The tell was that
+# they matched to three significant figures.
+OUT="${OUT:-/tmp/tickle_loss_bisect_$(date +%Y%m%d-%H%M%S).txt}"
+ln -sfn "$OUT" "/tmp/tickle_loss_bisect_latest.txt"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 sl() { if [ "$1" = 0 ]; then ssh -i "$K" -o BatchMode=yes "ci@$CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true

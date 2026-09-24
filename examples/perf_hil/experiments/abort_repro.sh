@@ -26,7 +26,13 @@ set -euo pipefail
 RMW_PERF_WS="${RMW_PERF_WS:-$HOME/rmw_perf_ws}"
 REPS="${REPS:-10}"
 CELL="${CELL:-two_process_rmw_tickle_sync_Struct16}"
-OUT="${OUT:-/tmp/tickle_abort_repro.txt}"
+# Timestamped by default. A fixed filename means a run that never started leaves the PREVIOUS
+# run's file in place, and a summary read from it is indistinguishable from a fresh result -
+# which happened on 2026-09-24: an interleaved sweep sat blocked on the rig lock while its
+# predecessor's numbers were about to be reported as the after-measurement. The tell was that
+# they matched to three significant figures.
+OUT="${OUT:-/tmp/tickle_abort_repro_$(date +%Y%m%d-%H%M%S).txt}"
+ln -sfn "$OUT" "/tmp/tickle_abort_repro_latest.txt"
 CAPDIR="${CAPDIR:-/tmp/tickle_abort_caps}"
 mkdir -p "$CAPDIR"
 

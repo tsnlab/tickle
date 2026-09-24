@@ -22,7 +22,13 @@ RPI_CLIENT=10.1.1.214
 RPI_SERVER=10.1.1.213
 REPS="${REPS:-3}"
 DUR="${DUR:-5}"
-OUT="${OUT:-/tmp/tickle_3b_threeway.txt}"
+# Timestamped by default. A fixed filename means a run that never started leaves the PREVIOUS
+# run's file in place, and a summary read from it is indistinguishable from a fresh result -
+# which happened on 2026-09-24: an interleaved sweep sat blocked on the rig lock while its
+# predecessor's numbers were about to be reported as the after-measurement. The tell was that
+# they matched to three significant figures.
+OUT="${OUT:-/tmp/tickle_3b_threeway_$(date +%Y%m%d-%H%M%S).txt}"
+ln -sfn "$OUT" "/tmp/tickle_3b_threeway_latest.txt"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ssh_c() { ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=8 "ci@$RPI_CLIENT" "$@"; }

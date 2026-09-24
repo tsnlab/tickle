@@ -18,7 +18,13 @@ set -eo pipefail
 : "${ROS_DISTRO_NAME:?set ROS_DISTRO_NAME}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 RMW_PERF_WS="${RMW_PERF_WS:-$HOME/rmw_perf_ws}"
-OUT="${OUT:-/tmp/tickle_rebuild_verify.txt}"
+# Timestamped by default. A fixed filename means a run that never started leaves the PREVIOUS
+# run's file in place, and a summary read from it is indistinguishable from a fresh result -
+# which happened on 2026-09-24: an interleaved sweep sat blocked on the rig lock while its
+# predecessor's numbers were about to be reported as the after-measurement. The tell was that
+# they matched to three significant figures.
+OUT="${OUT:-/tmp/tickle_rebuild_verify_$(date +%Y%m%d-%H%M%S).txt}"
+ln -sfn "$OUT" "/tmp/tickle_rebuild_verify_latest.txt"
 export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
 
 : > "$OUT"; say() { echo "$*" | tee -a "$OUT"; }

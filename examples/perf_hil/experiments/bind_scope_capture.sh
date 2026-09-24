@@ -28,7 +28,13 @@ HOST="ci@10.1.1.214"
 SHA="${SHA:-$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse HEAD)}"
 PORT=8282
 ETH_ADDR=192.168.10.3
-OUT="${OUT:-/tmp/tickle_bind_scope_result.txt}"
+# Timestamped by default. A fixed filename means a run that never started leaves the PREVIOUS
+# run's file in place, and a summary read from it is indistinguishable from a fresh result -
+# which happened on 2026-09-24: an interleaved sweep sat blocked on the rig lock while its
+# predecessor's numbers were about to be reported as the after-measurement. The tell was that
+# they matched to three significant figures.
+OUT="${OUT:-/tmp/tickle_bind_scope_result_$(date +%Y%m%d-%H%M%S).txt}"
+ln -sfn "$OUT" "/tmp/tickle_bind_scope_result_latest.txt"
 # Per-invocation, because tcpdump drops privileges after opening the device and then cannot
 # overwrite a pcap left root-owned by an earlier run - which this host has no sudo rm to clear.
 RUNID="$(date +%s)"
