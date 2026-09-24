@@ -257,18 +257,41 @@ the default rather than stopping the node:
 | `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | storage reserved per retained KEEP_ALL sample, for types whose size the generator cannot bound | the datagram size |
 | `RMW_TICKLE_REORDER_SLOTS` | how many out-of-order RELIABLE samples a subscription may hold; fewer saves memory and costs retransmissions | the tracking window |
 
-**Current limits under ROS 2** (being worked on - `rmw_tickle/PLAN.md`, "Standard ROS 2 message
-packages over rmw_tickle"):
+**Standard ROS 2 messages need a one-time build.** The interface packages installed with ROS 2
+(`std_msgs`, `geometry_msgs`, `sensor_msgs`, `rcl_interfaces`, ...) carry typesupport for FastDDS
+and CycloneDDS, not for TickLE. Without it, creating a publisher or subscription fails with "no
+rmw_tickle typesupport for this message type", and an ordinary `rclcpp::Node` cannot even start,
+because it creates its own `/rosout`, parameter services and `~/get_type_description`. Build them
+once into a workspace of your own:
 
-- A message type only works if its interface package was built with TickLE's typesupport. The
-  apt-installed standard packages (`std_msgs`, `geometry_msgs`, `sensor_msgs`, ...) were not, so
-  today they fail at publisher/subscription creation with "no rmw_tickle typesupport for this
-  message type". A build script that rebuilds them with TickLE's typesupport is in progress.
-- For the same reason, an ordinary `rclcpp::Node` currently needs
-  `--ros-args -p start_type_description_service:=false`, or it aborts creating its
-  `~/get_type_description` service.
-- A message must fit one datagram (1472 B as a TickLE struct). Support for larger messages through
-  the OS's IP fragmentation, under `rmw_tickle` only, is in progress.
+```sh
+source /opt/ros/$ROS_DISTRO/setup.bash
+source <rmw_tickle install>/setup.bash
+rmw_tickle/scripts/build_ros2_interfaces.sh -w ~/tickle_ifaces_ws -a   # every standard package
+source ~/tickle_ifaces_ws/install/setup.bash
+```
+
+`-a` builds all 23 jazzy interface packages that TickLE ships capacities for, in about 7 minutes. To
+build only some, name them instead, and the packages they depend on are added. After that, a
+default `rclcpp::Node` starts and runs with no extra parameters. The one type that is declined is
+`example_interfaces/msg/WString`, since TickLE has no `wstring`.
+
+- **Unbounded arrays get a fixed capacity.** TickLE stores a sequence in a fixed buffer, so every
+  unbounded array has a default capacity, chosen per message: a `LaserScan` holds 4096 beams, an
+  `Image` 64000 bytes of pixels, a `JointState` 24 joints. Your own values take precedence through
+  `TICKLE_CAPACITIES_PATH`. Publishing a sequence longer than its capacity fails with an error that
+  names the type.
+- **Messages up to 64 KB.** `rmw_tickle` builds with a 65507-byte maximum datagram (the UDP limit)
+  and lets the OS fragment larger datagrams at the IP layer. One lost fragment loses the whole
+  message, and a RELIABLE writer then resends all of it. To lower the maximum, set
+  `TICKLE_MAX_BUFFER_LENGTH` when building `rmw_tickle`, and rebuild the interface packages, because
+  `rmw_tickle` refuses a type generated for a different value. Discovery and other control traffic
+  always stays within 1472 bytes, so TickLE nodes built with the core default still see an
+  `rmw_tickle` node.
+- **Socket buffers.** `rmw_tickle` asks for 4 MiB receive buffers, which hold enough full-size
+  datagrams. A stock kernel caps the request at `net.core.rmem_max` (about 208 KB), and
+  `rmw_tickle` logs a warning naming that sysctl when it receives less. Raise the limit if you send
+  large messages.
 
 Senders (`ping`, `client`, `publisher`, `perf_client`) additionally take:
 
