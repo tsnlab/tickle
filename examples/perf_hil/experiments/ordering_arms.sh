@@ -58,8 +58,15 @@ run_arm() {
     local arm="$1" extra="$2" reliable="$3"
     echo "--- building arm $arm (CMAKE_C_FLAGS=$extra) ---"
     cd "$REPO" || return 1
-    # The build directory goes first, every arm. colcon did NOT recompile tickle.c when only its
-    # contents changed, so an arm can silently measure the previous arm's code.
+    # A clean build directory per arm. NOT because colcon fails to recompile - it does recompile a
+    # changed tickle.c, tested directly by injecting a unique string, rebuilding without touching
+    # the build directory, and finding it in the library. An earlier version of this comment
+    # claimed the opposite and was wrong: the stale binary that prompted it was the runner's
+    # library being mapped, not a stale local build, and wiping had nothing to do with the fix.
+    #
+    # It stays because the arms differ only by -D flags, and a clean tree makes "this arm built
+    # what its flags say" true by construction rather than by trusting a dependency scan. Two
+    # seconds an arm to remove a question.
     rm -rf "$REPO/build/rmw_tickle" "$REPO/install/rmw_tickle"
     colcon build --packages-select rmw_tickle rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp \
         --cmake-args -DBUILD_SHARED_LIBS=ON "-DCMAKE_C_FLAGS=$extra" > "$OUT/build_$arm.log" 2>&1 \
