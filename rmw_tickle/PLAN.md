@@ -1868,11 +1868,34 @@ and run plain and under ASan/UBSan. No uint16 truncation surfaced in core. Three
 The fuzz harness got a seed corpus from the real encoder (`86df2eb5`) so the 45 s CI smoke actually
 reaches the new UPDATE_PART parser. CI's `setup-ros` 404 recurred, and now retries once (`a4c9d7e1`).
 
-**Next assignment after this one: ROS 2 actions** (user decision 4). `rosidl_typesupport_tickle_c`
-generates no `.action` today (jazzy has 3 among the scanned packages: example_interfaces Fibonacci,
-tf2_msgs LookupTransform and test_msgs NestedMessage). An action is goal, result and feedback
-services plus feedback and status topics. It needs generator support and the rmw action entry
-points; scope and design are open.
+**Next assignment after this one: ROS 2 actions** (user decision 4). A first design reading by
+TickLE Plan (2026-09-24), from the jazzy sources of rosidl and rosidl_typesupport, not yet checked
+by building:
+- **rmw needs no new entry point.** There is no action API in rmw. `rcl_action` composes each
+  action from three services (`<A>_SendGoal`, `<A>_GetResult`, and `action_msgs/srv/CancelGoal`)
+  and two topics (`<A>_FeedbackMessage`, and `action_msgs/msg/GoalStatusArray` as status). It
+  creates them through the ordinary rmw client, service, publisher and subscription calls
+  rmw_tickle already implements.
+- **The action type support is assembled by the dispatch layer, not by us.**
+  `rosidl_typesupport_c`'s `action__type_support.c.em` builds `rosidl_action_type_support_t` by
+  asking the *dispatch* symbol of each implicit service and message. So what TickLE must provide
+  is typesupport for the implicit interfaces rosidl derives from a `.action`: `<A>_Goal`,
+  `<A>_Result`, `<A>_Feedback`, `<A>_FeedbackMessage`, and the services `<A>_SendGoal` and
+  `<A>_GetResult`. Dispatch then finds them under our identifier like any other message or
+  service.
+- **Work, in order:**
+  1. The generator and CMake hook accept `action/` tuples and emit those implicit interfaces.
+     The vendored parser already has `parse_action_string()`, and `ros2_cli` currently rejects
+     `.action` outright.
+  2. `action_msgs`, `unique_identifier_msgs` and `service_msgs` must build TickLE typesupport,
+     which falls under the P2 build script. Both `CancelGoal_Response` (1444 B) and
+     `GoalStatusArray` (1432 B) fit today's 1472 B limit, but only barely.
+  3. An end-to-end test: `example_interfaces/action/Fibonacci` through an `rclcpp_action` client
+     and server.
+  4. The same for `rosidl_typesupport_tickle_cpp`.
+- **Worth checking first:** whether jazzy's service event messages (`<S>_Event`, service
+  introspection) must also exist for action services, and what QoS `rcl_action` requests for the
+  status topic (TRANSIENT_LOCAL, depth 1, if I read it right) versus what rmw_tickle supports.
 
 #### The "Data consistency violated" abort, closed (2026-09-24) - and the entry above is two different things confused into one
 
