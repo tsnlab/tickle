@@ -1,0 +1,66 @@
+A best_effort_latency      tickle     n=3 c.sent=100 c.recv=46.7[46..47] c.loss_pct=53.3[53..54] c.rtt_avg_ms=0.209[0.207..0.211]
+A best_effort_latency      cyclonedds n=3 c.sent=98.3[95..100] c.recv=98[94..100] c.loss_pct=0.333[0..1] c.rtt_avg_ms=0.242[0.241..0.243]
+A best_effort_latency      fastdds    n=3 c.sent=100 c.recv=100 c.loss_pct=0 c.rtt_avg_ms=0.275[0.268..0.279]
+A reliable_latency         tickle     n=3 c.sent=100 c.recv=46.7[46..47] c.loss_pct=53.3[53..54] c.rtt_avg_ms=0.209[0.208..0.21]
+A reliable_latency         cyclonedds n=3 c.sent=100 c.recv=100 c.loss_pct=0 c.rtt_avg_ms=0.257[0.255..0.258]
+A reliable_latency         fastdds    n=3 c.sent=100 c.recv=100 c.loss_pct=0 c.rtt_avg_ms=0.285[0.283..0.289]
+A best_effort_throughput   tickle     n=3 c.sent=1549072[1540050..1554825] c.send_mbps=118[117..118] s.recv=1549057[1540042..1554797] s.lost=15[8..28] s.loss_pct=0
+A best_effort_throughput   cyclonedds n=3 c.sent=895944[890292..899323] c.send_mbps=71.7[71.2..71.9] s.recv=894118[888520..897284] s.lost=1824[1667..2038] s.loss_pct=0.2 s.recv_mbps=71.5[71.1..71.8]
+A best_effort_throughput   fastdds    n=3 c.sent=605023[598485..616689] c.send_mbps=48.4[47.9..49.3] s.recv=470805[395283..555549] s.lost=134216[42935..221403] s.loss_pct=22.1[7.2..35.9] s.recv_mbps=37.7[31.6..44.4]
+A deadline_miss_detection  tickle     n=3 c.sent=198 c.writer_misses=3 s.recv=198 s.reader_misses=29.7[29..30]
+A deadline_miss_detection  cyclonedds n=3 c.sent=100 c.offered_missed_total=205 c.detect_latency_ms=-4904[-4904..-4904] s.recv=100 s.requested_missed_total=198
+A deadline_miss_detection  fastdds    n=3 c.sent=100 c.offered_missed_total=205 c.detect_latency_ms=-4905[-4906..-4905] s.recv=100 s.requested_missed_total=200[199..203]
+A durability_volatile      tickle     n=3 c.received=0 c.backlog_delivery_ms=-1
+A durability_volatile      cyclonedds n=3 c.received=0 c.backlog_delivery_ms=-1
+A durability_volatile      fastdds    n=3 c.received=0 c.backlog_delivery_ms=-1
+A durability_durable       tickle     n=3 c.received=20 c.backlog_delivery_ms=16000[16000..16000]
+A durability_durable       cyclonedds n=3 c.received=20 c.backlog_delivery_ms=15004[15004..15004]
+A durability_durable       fastdds    n=3 c.received=20 c.backlog_delivery_ms=15042[15042..15042]
+A history_within_depth     tickle     n=3 c.sent=160 s.recv=160 s.lost=0 s.loss_pct=0
+A history_within_depth     cyclonedds n=3 c.sent=160 s.recv=160 s.lost=0 s.loss_pct=0
+A history_within_depth     fastdds    n=3 c.sent=160 s.recv=160 s.lost=0 s.loss_pct=0
+A history_beyond_depth     tickle     n=3 c.sent=160 s.recv=148[147..148] s.lost=12.3[12..13] s.loss_pct=7.7[7.5..8.1]
+A history_beyond_depth     cyclonedds n=3 c.sent=160 s.recv=109 s.lost=22 s.loss_pct=16.8
+A history_beyond_depth     fastdds    n=3 c.sent=160 s.recv=109 s.lost=22 s.loss_pct=16.8
+A lifespan_pause_1_0       tickle     n=3 c.sent=250 s.recv=250 s.lost=0 s.loss_pct=0
+A lifespan_pause_1_0       cyclonedds n=3 c.sent=250 s.recv=205 s.lost=45 s.loss_pct=18
+A lifespan_pause_1_0       fastdds    n=3 c.sent=250 s.recv=211 s.lost=39 s.loss_pct=15.6
+A lifespan_pause_1_5       tickle     n=3 c.sent=250 s.recv=250 s.lost=0 s.loss_pct=0
+A lifespan_pause_1_5       cyclonedds n=3 c.sent=250 s.recv=180 s.lost=70 s.loss_pct=28
+A lifespan_pause_1_5       fastdds    n=3 c.sent=250 s.recv=185[185..186] s.lost=64.7[64..65] s.loss_pct=25.9[25.6..26]
+A lifespan_pause_2_0       tickle     n=3 c.sent=250 s.recv=250 s.lost=0 s.loss_pct=0
+A lifespan_pause_2_0       cyclonedds n=3 c.sent=250 s.recv=155 s.lost=95 s.loss_pct=38
+A lifespan_pause_2_0       fastdds    n=3 c.sent=250 s.recv=161[161..162] s.lost=88.7[88..89] s.loss_pct=35.5[35.2..35.6]
+B loss0/K64                tickle     n=3 c.sent=1498640[1480976..1513051] c.write_fail=0 c.send_mbps=114[113..115] c.drained=acked s.recv=1498640[1480976..1513051] s.lost=0 s.loss_pct=0
+B loss0/K1024              tickle     n=3 c.sent=1494099[1484201..1499443] c.write_fail=0 c.send_mbps=114[113..114] c.drained=acked s.recv=1494099[1484201..1499443] s.lost=0 s.loss_pct=0
+B loss0/Bdefault           cyclonedds n=3 c.sent=1168901[1137778..1184765] c.write_fail=0 c.send_mbps=91.8[89.2..93.2] c.drained=acked s.recv=1168901[1137778..1184765] s.lost=0 s.loss_pct=0 s.recv_mbps=91.8[89.2..93.2]
+B loss0/B1ms               cyclonedds n=3 c.sent=1184807[1182596..1188487] c.write_fail=1.67[0..3] c.send_mbps=93.5[92.9..94.3] c.drained=acked s.recv=1184807[1182596..1188487] s.lost=1.67[0..3] s.loss_pct=0 s.recv_mbps=93.5[92.9..94.3]
+B loss0/Bdefault           fastdds    n=3 c.sent=455939[433080..473987] c.write_fail=0 c.send_mbps=36.5[34.6..37.9] c.drained=acked s.recv=455939[433080..473987] s.lost=0 s.loss_pct=0 s.recv_mbps=36.5[34.6..37.9]
+B loss0/B1ms               fastdds    n=3 c.sent=458816[438632..470435] c.write_fail=0 c.send_mbps=36.7[35.1..37.6] c.drained=acked s.recv=458816[438632..470435] s.lost=0 s.loss_pct=0 s.recv_mbps=36.7[35.1..37.6]
+B loss1/K64                tickle     n=3 c.sent=1457983[1457057..1458514] c.write_fail=0 c.send_mbps=111[111..111] c.drained=acked s.recv=1457837[1456913..1458364] s.lost=146[144..150] s.loss_pct=0
+B loss1/K1024              tickle     n=3 c.sent=1450336[1446301..1456164] c.write_fail=0 c.send_mbps=110[110..111] c.drained=acked s.recv=1450335[1446299..1456163] s.lost=1[0..2] s.loss_pct=0
+B loss1/Bdefault           cyclonedds n=3 c.sent=156959[146789..163017] c.write_fail=0 c.send_mbps=12.4[11.6..12.8] c.drained=acked s.recv=156959[146789..163017] s.lost=0 s.loss_pct=0 s.recv_mbps=12.4[11.6..12.8]
+B loss1/B1ms               cyclonedds n=3 c.sent=235070[233101..238486] c.write_fail=1724[1615..1783] c.send_mbps=18.6[18.4..18.8] c.drained=acked s.recv=235070[233101..238486] s.lost=1722[1615..1776] s.loss_pct=0.767[0.7..0.8] s.recv_mbps=18.6[18.4..18.8]
+B loss1/Bdefault           fastdds    n=3 c.sent=136415[134325..139528] c.write_fail=0 c.send_mbps=10.7[10.6..10.9] c.drained=acked s.recv=136415[134325..139528] s.lost=0 s.loss_pct=0 s.recv_mbps=10.7[10.6..10.9]
+B loss1/B1ms               fastdds    n=3 c.sent=134625[133578..135383] c.write_fail=3931[3893..4000] c.send_mbps=10.6[10.5..10.6] c.drained=acked s.recv=134625[133578..135383] s.lost=3930[3893..4000] s.loss_pct=2.83[2.8..2.9] s.recv_mbps=10.6[10.5..10.6]
+B loss5/K64                tickle     n=3 c.sent=1400031[1395799..1404702] c.write_fail=0 c.send_mbps=106[106..107] c.drained=acked s.recv=1396507[1392344..1400962] s.lost=3524[3376..3740] s.loss_pct=0.233[0.2..0.3]
+B loss5/K1024              tickle     n=3 c.sent=1402618[1402248..1402924] c.write_fail=0 c.send_mbps=107[107..107] c.drained=acked s.recv=1402117[1401637..1402526] s.lost=501[398..611] s.loss_pct=0
+B loss5/Bdefault           cyclonedds n=3 c.sent=36224[35346..37612] c.write_fail=0 c.send_mbps=2.87[2.81..2.98] c.drained=acked s.recv=36219[35346..37612] s.lost=5.33[0..16] s.loss_pct=0 s.recv_mbps=2.88[2.81..2.98]
+B loss5/B1ms               cyclonedds n=3 c.sent=32392[26953..42034] c.write_fail=6531[6073..7281] c.send_mbps=2.57[2.12..3.33] c.drained=acked s.recv=32392[26953..42034] s.lost=6482[6051..7235] s.loss_pct=17.2[12.6..21.2] s.recv_mbps=2.58[2.17..3.33]
+B loss5/Bdefault           fastdds    n=3 c.sent=97756[75743..131059] c.write_fail=19.7[0..32] c.send_mbps=7.4[5.29..10.3] c.drained=acked s.recv=97756[75743..131059] s.lost=7.67[0..23] s.loss_pct=0 s.recv_mbps=7.4[5.29..10.3]
+B loss5/B1ms               fastdds    n=3 c.sent=78889[30589..122767] c.write_fail=5385[4315..6610] c.send_mbps=6.16[2.39..9.59] c.drained=acked s.recv=78889[30589..122767] s.lost=3901[2163..5227] s.loss_pct=5.3[3.4..6.6] s.recv_mbps=6.16[2.39..9.6]
+B loss20/K64               tickle     n=3 c.sent=1268097[1266697..1270638] c.write_fail=0 c.send_mbps=96.4[96.3..96.6] c.drained=acked s.recv=1217182[1210644..1222243] s.lost=50916[48299..56053] s.loss_pct=4[3.8..4.4]
+B loss20/K1024             tickle     n=3 c.sent=1258267[1253212..1261163] c.write_fail=0 c.send_mbps=95.6[95.2..95.8] c.drained=acked/timeout s.recv=1224538[1219932..1227396] s.lost=33609[33280..33902] s.loss_pct=2.7
+B loss20/Bdefault          cyclonedds n=3 c.sent=4877[4108..5589] c.write_fail=0 c.send_mbps=0.384[0.321..0.442] c.drained=acked s.recv=4877[4108..5589] s.lost=0 s.loss_pct=0 s.recv_mbps=0.385[0.321..0.442]
+B loss20/B1ms              cyclonedds n=3 c.sent=4019[3297..5423] c.write_fail=7380[7375..7383] c.send_mbps=0.32[0.263..0.433] c.drained=acked s.recv=4019[3297..5423] s.lost=7285[7216..7326] s.loss_pct=64.9[57.1..68.9] s.recv_mbps=0.326[0.263..0.444]
+B loss20/Bdefault          fastdds    n=3 c.sent=31350[16005..44201] c.write_fail=52.3[40..65] c.send_mbps=2.09[0.929..3.03] c.drained=acked/timeout s.recv=30017[12005..44201] s.lost=20.3[3..36] s.loss_pct=0.0667[0..0.1] s.recv_mbps=2.27[1.36..3.12]
+B loss20/B1ms              fastdds    n=3 c.sent=41836[30365..49519] c.write_fail=6312[6111..6622] c.send_mbps=2.43[1.77..2.88] c.drained=timeout s.recv=39881[28662..46482] s.lost=5505[4596..6007] s.loss_pct=12.7[9.4..17.3] s.recv_mbps=2.81[2.04..3.3]
+B loss50/K64               tickle     n=3 c.sent=1215355[1207712..1223538] c.write_fail=0 c.send_mbps=92.4[91.8..93] c.drained=timeout s.recv=916830[914704..917942] s.lost=298481[292959..305631] s.loss_pct=24.6[24.3..25]
+B loss50/K1024             tickle     n=3 c.sent=1157016[1155043..1158756] c.write_fail=0 c.send_mbps=87.9[87.8..88.1] c.drained=timeout s.recv=935712[933951..937638] s.lost=221186[220961..221555] s.loss_pct=19.1
+B loss50/Bdefault          cyclonedds n=3 c.sent=1304[1018..1467] c.write_fail=0 c.send_mbps=0.102[0.079..0.116] c.drained=acked s.recv=1304[1018..1467] s.lost=0 s.loss_pct=0 s.recv_mbps=0.114[0.086..0.129]
+B loss50/B1ms              cyclonedds n=3 c.sent=2938[1609..5548] c.write_fail=7506[7498..7514] c.send_mbps=0.193[0.127..0.323] c.drained=acked/timeout s.recv=2723[1609..4904] s.lost=7059[6203..7492] s.loss_pct=73.3[55.8..82.3] s.recv_mbps=0.179[0.127..0.281]
+B loss50/Bdefault          fastdds    n=3 c.sent=4503[4000..5224] c.write_fail=77[76..78] c.send_mbps=0.261[0.232..0.302] c.drained=timeout s.recv=1362[1123..1740] s.lost=0 s.loss_pct=0 s.recv_mbps=1.89[0.065..4.53]
+B loss50/B1ms              fastdds    n=3 c.sent=307886[5295..912849] c.write_fail=6608[5264..7285] c.send_mbps=17.9[0.308..53.1] c.drained=timeout s.recv=1567[1295..1892] s.lost=0 s.loss_pct=0 s.recv_mbps=1.42[0.213..3.7]
+C liveliness_lease_1.0     tickle     n=3 s.recv=45.7[44..49] s.detect_latency_ms=1152[829..1317]
+C liveliness_lease_2.0     tickle     n=3 s.recv=46[44..49] s.detect_latency_ms=2103[1800..2327]
+C liveliness_lease_4.0     tickle     n=3 s.recv=44.3[44..45] s.detect_latency_ms=3270[3184..3316]

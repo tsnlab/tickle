@@ -76,19 +76,35 @@ replacing this document's own earlier mix of ranges/min-max/single-value styles)
   one, matching this section's own literal template; `loss Mbps` is the derived `sent - recv`
   aggregate, not an independently re-measured quantity.
 
+**★ = re-measured 2026-09-24/25 in one session, all three frameworks interleaved by rep, 3 reps each**
+(`examples/perf_hil/experiments/comparison_resweep.sh` at `659013e9`, which is the head of main at the
+time; the latency rows come from `latency_recheck.sh` at `5bed1a89`, after the harness fix below). These
+cells are comparable to each other and not to the older cells in this table, because the rig carries
+day-to-day offsets (§5). Rows without ★ were re-run in the same session and gave the same result as
+published: durability (TickLE durable 20/20 in 3/3, volatile 0 in 3/3, and both DDS the same), deadline
+(TickLE writer_misses 3, reader_misses 29-30), and TickLE liveliness (lease 1.0/2.0/4.0 s gave 1152/2103/3270
+ms mean). Their older cells stand.
+
+Two corrections came out of this pass. **The latency rows had never been measured at the same rate for
+TickLE and the DDS pair.** The DDS harness defaults to `-i 0.1` and TickLE's to `-i 1`, and the old cells
+used each harness's own default. All three now get explicit `-i 0.1 -d 10`. **TickLE's two latency
+servers also lacked the +15 s lifetime buffer** that every other scenario's server has
+(`0f536579`), so at 10 Hz they exited halfway through the client's pings. The first ★ run read "53%
+loss", and that figure was the harness, not TickLE.
+
 | # | Scenario | Condition | TickLE (native) | FastDDS | CycloneDDS |
 |---|---|---|---|---|---|
-| 1 | `best_effort_latency` | - | 0.21±0.01ms, 0% loss | 0.30ms†, 0% loss | 0.24ms†, 0% loss |
-| 2 | `reliable_latency` | - | 0.21±0.01ms, 0% loss | 0.30ms†, 0% loss | 0.30ms†, 0% loss |
-| 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss | sent 1244.0K±0.7K msgs, recv 1244.0K±0.7K msgs, 0% loss, sent 94.5Mbps, recv 94.5Mbps, loss 0Mbps | sent 245.4K±0.1K msgs, recv 181.9K±74.0K msgs, 25.9% loss, sent 19.6Mbps, recv 14.6Mbps, loss 5.1Mbps | sent 874.0K±35.4K msgs, recv 766.5K±30.4K msgs, 12.2% loss, sent 70.0Mbps, recv 61.3Mbps, loss 8.7Mbps |
+| 1 | `best_effort_latency` | `-i 0.1 -d 10` (100 pings) ★ | 0.20±0.00ms, 0% loss | 0.27±0.00ms, 0% loss | 0.25±0.00ms, 1.1% loss |
+| 2 | `reliable_latency` | `-i 0.1 -d 10` (100 pings) ★ | 0.20±0.00ms, 0% loss | 0.29±0.00ms, 0% loss | 0.29±0.06ms, 0% loss (one rep's max RTT 10.8ms) |
+| 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss ★ | sent 1549.1K±7.9K msgs, recv 1549.1K±7.9K msgs, 0% loss, sent 117.7Mbps, recv 117.7Mbps, loss 0Mbps | sent 605.0K±10.1K msgs, recv 470.8K±80.5K msgs, 22.2% loss, sent 48.4Mbps, recv 35.8Mbps, loss 12.6Mbps | sent 895.9K±4.9K msgs, recv 894.1K±4.9K msgs, 0.2% loss, sent 71.7Mbps, recv 68.0Mbps, loss 3.7Mbps |
 | 4 | `reliable_throughput` | see §3a | **superseded - see §3a below** | **superseded (measured over a WiFi path, §6 item 12)** | **superseded - see §3a** |
 | 5 | `durability_late_join` | - | durable: recv 20.0±0/20 msgs, 0% loss; volatile: recv 0.0±0/20 msgs, 100% loss (correctly excludes backlog, matches DDS exactly - see §6) | recv 20/20 msgs, 0% loss | recv 20/20 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
-| 6 | `history_depth_burst_loss` | beyond depth | recv 150.0±5.2/160 msgs, 6.25% loss (**non-deterministic**, n=3 - see §6) | recv 108/160 msgs, 32.5% loss (deterministic) | recv 108/160 msgs, 32.5% loss (deterministic) |
+| 6 | `history_depth_burst_loss` | beyond depth ★ | recv 147.7±0.6/160 msgs, 7.7% loss (n=3; the earlier n=3 read 150.0±5.2) | recv 109/160 msgs, 31.9% not delivered (deterministic, 3/3) | recv 109/160 msgs, 31.9% not delivered (deterministic, 3/3) |
 | 7 | `deadline_miss_detection` | - | sent 198±0 msgs, recv 198±0 msgs, 0% loss, writer_misses=3† (own math), reader_misses=30† (harmless, unexplained) | writer_misses=7†, reader_misses=19†, detect -0.90ms† | writer_misses=7†, reader_misses=14†, detect 0.05ms† |
 | 8 | `liveliness_loss_detection` | - | **provisional, and NOT comparable to the DDS columns as measured - see §6 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
-| 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` | pause=1.0s: lost 28.0±1.4; pause=1.5s: lost 43.0±12.7; pause=2.0s: lost 79.0±0 (**not the same condition as the other two** - see §6 item 6; slope-verified against the expected formula, see §6 item 8) | lost 5† (pause=0.3s) | lost 10† (pause=0.3s) |
+| 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` ★ | **REGRESSION: lost 0/0/0 (9/9 runs) - expired samples are delivered.** Bisected on the rig to `261f39b8` (2026-09-23), where it was lost 181 at pause=1.0 one commit earlier; fix in progress, see PLAN.md. The 2026-09-20 figures (lost 28.0±1.4 / 43.0±12.7 / 79.0±0) describe the build before that commit | lost 39/64.7/88.7 of 250 (n=3 each) | lost 45/70/95 of 250 (n=3 each, identical) |
 
 Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "sent Mbps" is each framework's own printed client-side rate. Every condition was reproduced 2/2 (scenario 6 beyond-depth: 3 runs; scenario 9 beyond-lifespan pause=1.5s: 4 runs - see §6 items 6/8) - see the Notation block above for how each cell's `avg±stdev` was computed from those runs.
 
@@ -97,14 +113,12 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 - **Latency (1-2)**: TickLE is the fastest of the three, ~0.20-0.22ms average RTT vs. FastDDS's
   ~0.30ms and CycloneDDS's ~0.24ms - and RELIABLE costs nothing extra over BEST_EFFORT for any of
   the three at this rate.
-- **Best-effort throughput (3)**: TickLE's own achievable send rate is roughly two orders of
-  magnitude higher than either DDS vendor's (~1.24M msg/s vs. ~245K for FastDDS, ~850-900K for
-  CycloneDDS) - and, measured correctly this time (§6, item 6), TickLE shows **zero loss** at that
-  rate, both runs. FastDDS and CycloneDDS both show real, but highly variable, loss at their own
-  (lower) max rate - not an artifact this time, reproduced twice, but noisy enough (FastDDS
-  4.6-47.2%, CycloneDDS 7.2-17.2%) that neither vendor's own number should be read as a precise
-  figure, only as "genuinely lossy under sustained max-rate BEST_EFFORT on this rig, unlike
-  TickLE."
+- **Best-effort throughput (3)** (★, 2026-09-25): TickLE sends ~1.55M msg/s (118 Mbps) with 0% loss in all
+  three reps, against ~896K (72 Mbps, 0.2% loss) for CycloneDDS and ~605K (48 Mbps, 7-36% loss) for
+  FastDDS. That is 1.7x CycloneDDS and 2.6x FastDDS, not the "two orders of magnitude" this bullet used
+  to claim, which never matched its own table. TickLE's own figure is 25% above the old 94.5 Mbps,
+  mostly because every harness is now pinned away from the NIC interrupt core (`9f70d9b4`). That fix
+  moves all three frameworks, which is why the columns are compared only within one session.
 - **Reliable throughput under controlled loss (4)**: at identical, real, `tc`/`netem`-injected
   loss, **CycloneDDS and FastDDS both fully recover 100% of it, at both 1% and 5%, every time
   (2/2 each)** - `recv` loss stays at exactly 0% regardless of the injected rate for either DDS
@@ -149,17 +163,28 @@ single "loss %" cell hides the real difference:
 So each cell reports **loss % / refused % / Mbps**. `-B` is `max_blocking_time` (DDS only).
 3 reps for TickLE, 2 for the DDS pair.
 
-**Max send rate**:
+**Max send rate** - re-measured 2026-09-24/25 in one session at `659013e9`, 3 reps per cell and all six
+columns interleaved within each loss level (`comparison_resweep.sh`, part B). Each cell reads
+**net loss / refused / Mbps**. Net loss counts samples the middleware accepted and failed to deliver;
+refused counts writes the DDS pair declined with `-B 1` (1 ms `max_blocking_time`). A range is
+min-max over the reps. Where a column did not end `drained=acked` in every rep, it is marked, and
+there `Mbps` counts acceptance, not delivery.
 
 | `tc` loss | TickLE, depth=64 | TickLE, depth=1024 | FastDDS (default `-B`) | FastDDS (`-B 1ms`) | CycloneDDS (default `-B`) | CycloneDDS (`-B 1ms`) |
 |---|---|---|---|---|---|---|
-| 0% | 0 / - / 107-121 | 0 / - / 107-121 | 0 / 0 / 10.0-11.3 | 0 / 1.3-2.5% / 11.8-17.0 | 0 / 0 / 47-55 | 0 / 0.01-0.1% / 72-93 |
-| 1% | 0.010% / - / 117 | **0% (Phase 2, 6/6)** / - / 117 | 0 / 0 / 8.8-10.8 | 0 / 2.9% / 10.3-10.6 | 0 / 0 / 11.4-11.8 | 0 / 0.73% / 18 |
-| 5% | 0.238% / - / 113 | **0.016% (Phase 2)** / - / 113 | 0 / 0 / 5.8-8.3 | 0 / 3.4-3.9% / 8.8-9.7 | 0 / 0 / 2.3-2.7 | 0 / 17-19% / 2.2 |
-| 20% | not measured | not measured | 0 / 0 / 0.9-3.1 | 0 / 15-38% / 0.9-3.0 | 0 / 0 / 0.5 | 0 / 61-66% / 0.3-0.4 |
-| 50% | not measured | not measured | 0 / 0 / 0.6-0.8 | 0 / 64-100% / 0.3-2.9 | 0 / 0 / 0.1 | 0 / 73-79% / 0.1-0.2 |
+| 0% | 0% / - / 113 | 0% / - / 113 | 0% / 0% / 34.6-37.9 | 0% / 0% / 35.1-37.6 | 0% / 0% / 89.2 | 0% / 0-0.00025% / 92.9 |
+| 1% | 0.0099% / - / 111 | 0-0.00014% / - / 110 | 0% / 0% / 10.6 | 0% / 2.8% / 10.5 | 0% / 0% / 11.6-12.8 | 0% / 0.67-0.76% / 18.4 |
+| 5% | 0.24-0.27% / - / 106 | 0.028-0.044% / - / 107 | 0% / 0-0.042% / 5.29-10.3 | 0% / 3.4-18% / 2.39-9.59 | 0-0.045% / 0% / 2.81-2.98 | 0% / 13-21% / 2.12-3.33 |
+| 20% | 3.8-4.4% / - / 96.3 | 2.7% / - / 95.2 (one rep timed out draining) | 0% / 0.09-0.4% / 0.93-3.03 (acked/timeout) | 0% / 11-18% / 1.77-2.88 (timeout) | 0% / 0% / 0.32-0.44 | 0% / 58-69% / 0.26-0.43 |
+| 50% | 24% / - / 91.8 (timeout) | 19% / - / 87.8 (timeout) | 0% / 1.4-1.9% / 0.23-0.30 (timeout) | 0% / 0.57-58% / 0.31-53.1 (timeout) | 0% / 0% / 0.08-0.12 | 0% / 57-82% / 0.13-0.32 (acked/timeout) |
 
-**Paced to ~8 Mbps** (the rate where all three can keep up):
+Against the previous table (2026-09-23), TickLE's column moved in the expected direction and by
+little. depth=1024 at 1% is 0-0.00014% (was 0%), and at 5% it is 0.028-0.044% (was 0.016%). The
+20% and 50% rows are new. They show where TickLE's KEEP_LAST default stops keeping up with loss: it
+keeps its rate (88-96 Mbps) and pays in loss (2.7-24%). The DDS pair keeps 0 net loss by slowing to
+0.08-3 Mbps. §3b is the like-for-like comparison under KEEP_ALL.
+
+**Paced to ~8 Mbps** (the rate where all three can keep up) - not re-measured in the 2026-09-25 pass; from 2026-09-23:
 
 | `tc` loss | TickLE (depth=64) | FastDDS | CycloneDDS |
 |---|---|---|---|
@@ -202,6 +227,25 @@ drain-until-acked), so no framework's tail loss depends on drain luck.
 deliver. All three are **0 in every cell**, so the only thing that differs is what it costs:
 
 | `tc` loss | TickLE (KEEP_ALL, strict order) ‡ | FastDDS | CycloneDDS |
+|---|---:|---:|---:|
+| 0% | **108.2 Mbps** | 36.2 (median) | 93.3 |
+| 1% | **103.8** | 10.9 (median) | 12.1 |
+| 5% | **97.1** | 9.6 (median) | 2.4 |
+| 20% | **54.7** | 1.1 (median) † | 0.42 |
+| 50% | **21.8** | 0.48 (median) † | 0.14 |
+
+**Re-measured 2026-09-24/25 at `659013e9`** (`keepall_three_way.sh`, run as part D of
+`comparison_resweep.sh`), 3 reps per cell, `-d 5`, interleaved by framework. That build is later than
+the `d63860c7` measurement below by the watermark drains, the piggybacked heartbeat, the oversize-flush
+fix, multi-part discovery and the create-default fix. TickLE's column did not move: 108.2 / 103.8 /
+97.1 / 54.7 / 21.8 against 108.8 / 104.4 / 98.1 / 55.0 / 22.0, within 1.3% everywhere. Every TickLE rep
+ended `drained=acked` with `write_fail=0`. **The ◊ outlier below did not recur.** All three 50% reps
+read 21.6-21.9. FastDDS again timed out draining at 20% and 50% in most reps, including one 50% rep
+that read 70.7 Mbps of accepted but undelivered writes, so its medians are marked as before.
+
+The previous measurement, kept because the ordering-cost discussion below refers to it:
+
+| `tc` loss (2026-09-24, `d63860c7`) | TickLE (KEEP_ALL, strict order) ‡ | FastDDS | CycloneDDS |
 |---|---:|---:|---:|
 | 0% | **108.8 Mbps** | 35.9 | 93.2 |
 | 1% | **104.4** | 10.6 (median) | 13.0 |

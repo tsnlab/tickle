@@ -1,0 +1,20 @@
+=== latency recheck, 2026-09-25T00:11:25+09:00, main 5bed1a89abcd18949ffc3875893bbec4a83b4823, 3 reps ===
+best_effort_latency rep1 tickle | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.196 rtt_avg_ms=0.204 rtt_max_ms=0.325
+best_effort_latency rep1 cyclonedds | sent=95 recv=94 loss_pct=1 rtt_min_ms=0.234 rtt_avg_ms=0.249 rtt_max_ms=0.345
+best_effort_latency rep1 fastdds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.247 rtt_avg_ms=0.273 rtt_max_ms=0.622
+best_effort_latency rep2 tickle | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.192 rtt_avg_ms=0.201 rtt_max_ms=0.288
+best_effort_latency rep2 cyclonedds | sent=95 recv=94 loss_pct=1 rtt_min_ms=0.225 rtt_avg_ms=0.242 rtt_max_ms=0.325
+best_effort_latency rep2 fastdds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.254 rtt_avg_ms=0.271 rtt_max_ms=0.601
+best_effort_latency rep3 tickle | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.149 rtt_avg_ms=0.200 rtt_max_ms=0.281
+best_effort_latency rep3 cyclonedds | sent=95 recv=94 loss_pct=1 rtt_min_ms=0.221 rtt_avg_ms=0.243 rtt_max_ms=0.370
+best_effort_latency rep3 fastdds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.245 rtt_avg_ms=0.272 rtt_max_ms=0.635
+reliable_latency rep1 tickle | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.193 rtt_avg_ms=0.202 rtt_max_ms=0.317
+reliable_latency rep1 cyclonedds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.239 rtt_avg_ms=0.259 rtt_max_ms=0.720
+reliable_latency rep1 fastdds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.252 rtt_avg_ms=0.282 rtt_max_ms=0.603
+reliable_latency rep2 tickle | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.195 rtt_avg_ms=0.204 rtt_max_ms=0.469
+reliable_latency rep2 cyclonedds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.232 rtt_avg_ms=0.257 rtt_max_ms=0.694
+reliable_latency rep2 fastdds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.255 rtt_avg_ms=0.288 rtt_max_ms=0.609
+reliable_latency rep3 tickle | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.194 rtt_avg_ms=0.201 rtt_max_ms=0.299
+reliable_latency rep3 cyclonedds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.226 rtt_avg_ms=0.362 rtt_max_ms=10.788
+reliable_latency rep3 fastdds | sent=100 recv=100 loss_pct=0 rtt_min_ms=0.266 rtt_avg_ms=0.285 rtt_max_ms=0.611
+=== done 2026-09-25T00:17:30+09:00 ===

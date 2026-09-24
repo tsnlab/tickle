@@ -1,0 +1,61 @@
+=== §3b three-way, one session, 2026-09-24T23:59:52+09:00 ===
+rig sha: 659013e9, 3 reps, -d 5
+--- building all three on both rpis ---
+built
+
+--- tc loss 0% ---
+tickle rep 1: mbps=107.651 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 1: mbps=93.214 drained=acked write_fail=0 leftover_before=none
+fastdds rep 1: mbps=36.211 drained=acked write_fail=0 leftover_before=none
+tickle rep 2: mbps=108.593 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 2: mbps=92.673 drained=acked write_fail=0 leftover_before=none
+fastdds rep 2: mbps=34.727 drained=acked write_fail=0 leftover_before=none
+tickle rep 3: mbps=108.332 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 3: mbps=93.940 drained=acked write_fail=0 leftover_before=none
+fastdds rep 3: mbps=37.197 drained=acked write_fail=0 leftover_before=none
+
+--- tc loss 1% ---
+tickle rep 1: mbps=103.982 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 1: mbps=12.225 drained=acked write_fail=0 leftover_before=none
+fastdds rep 1: mbps=10.863 drained=acked write_fail=0 leftover_before=none
+tickle rep 2: mbps=103.253 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 2: mbps=12.111 drained=acked write_fail=0 leftover_before=none
+fastdds rep 2: mbps=10.800 drained=acked write_fail=0 leftover_before=none
+tickle rep 3: mbps=104.059 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 3: mbps=12.104 drained=acked write_fail=0 leftover_before=none
+fastdds rep 3: mbps=11.636 drained=acked write_fail=0 leftover_before=none
+
+--- tc loss 5% ---
+tickle rep 1: mbps=96.681 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 1: mbps=2.112 drained=acked write_fail=0 leftover_before=none
+fastdds rep 1: mbps=3.501 drained=acked write_fail=32 leftover_before=none
+tickle rep 2: mbps=97.511 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 2: mbps=2.758 drained=acked write_fail=0 leftover_before=none
+fastdds rep 2: mbps=9.689 drained=acked write_fail=0 leftover_before=none
+tickle rep 3: mbps=97.012 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 3: mbps=2.377 drained=acked write_fail=0 leftover_before=none
+fastdds rep 3: mbps=9.598 drained=acked write_fail=2 leftover_before=none
+
+--- tc loss 20% ---
+tickle rep 1: mbps=54.564 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 1: mbps=0.409 drained=acked write_fail=0 leftover_before=none
+fastdds rep 1: mbps=1.136 drained=timeout write_fail=39 leftover_before=none
+tickle rep 2: mbps=54.924 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 2: mbps=0.507 drained=acked write_fail=0 leftover_before=none
+fastdds rep 2: mbps=0.722 drained=acked write_fail=45 leftover_before=none
+tickle rep 3: mbps=54.659 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 3: mbps=0.352 drained=acked write_fail=0 leftover_before=none
+fastdds rep 3: mbps=1.958 drained=timeout write_fail=30 leftover_before=none
+
+--- tc loss 50% ---
+tickle rep 1: mbps=21.855 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 1: mbps=0.148 drained=acked write_fail=0 leftover_before=none
+fastdds rep 1: mbps=70.655 drained=timeout write_fail=25 leftover_before=none
+tickle rep 2: mbps=21.591 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 2: mbps=0.112 drained=acked write_fail=0 leftover_before=none
+fastdds rep 2: mbps=0.476 drained=timeout write_fail=44 leftover_before=none
+tickle rep 3: mbps=21.853 drained=acked write_fail=0 leftover_before=none
+cyclonedds rep 3: mbps=0.156 drained=acked write_fail=0 leftover_before=none
+fastdds rep 3: mbps=0.318 drained=timeout write_fail=48 leftover_before=none
+
+=== done 2026-09-25T00:11:23+09:00; tc restored ===
