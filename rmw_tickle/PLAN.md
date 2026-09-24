@@ -2021,10 +2021,13 @@ scope:**
 - lyrical's `get_{clients,servers}_info_by_service`
 
 **Open:**
-- A C++ subscriber segfaulted once in the four-process `-r` shape: 1 in about 70 new-build runs.
-  A 50-run A/B against the previous build gave 0 in 25 on each side, so it is bounded but the cause
-  is unknown, and it may predate the change.
-- `check_ros2_interfaces.sh`'s own colcon build rewrites the caller's workspace underlay chain.
+- A C++ subscriber segfaulted once in the four-process `-r` shape. A 50-run A/B gave 0 crashes on
+  either build, and an overnight soak of 300 runs gave 0 more. In total that is 1 crash in about
+  370 new-build runs, a 95% upper bound of about 1.3% per run. The cause is unknown and it has not
+  been reproduced. The soak logs are in `/tmp/p2_soak/`.
+
+Closed: `check_ros2_interfaces.sh`'s own colcon build no longer rewrites the caller's workspace chain
+(`d02d670d`). The caller's install-level setup files hash identically before and after a run.
 
 The original design reading follows. **Actions, as first planned** (user decision 4). A first design reading by
 TickLE Plan (2026-09-24), from the jazzy sources of rosidl and rosidl_typesupport, not yet checked
