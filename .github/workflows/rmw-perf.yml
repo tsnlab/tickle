@@ -224,6 +224,37 @@ jobs:
             --ctest-args -R two_process_rmw_
           colcon test-result --test-result-base "$RMW_PERF_WS/build" --verbose
 
+      - name: Verify every expected cell actually ran
+        run: |
+          # A gate that fails on a failing test still cannot tell "everything passed" from
+          # "nothing ran". Demonstrated rather than reasoned: `colcon test-result` on a result base
+          # with no xunit files at all exits 0 and prints "0 tests, 0 errors, 0 failures", and
+          # ctest with a -R regex matching nothing exits 0 too. --return-code-on-test-failure only
+          # reports failures among tests that ran; test-result only reports failures among results
+          # that exist. Neither has an opinion about zero.
+          #
+          # That is not hypothetical for this job. `-R two_process_rmw_` matches names
+          # buildfarm_perf_tests registers from PERF_TEST_RMW_IMPLEMENTATIONS and PERF_TEST_TOPICS
+          # at configure time, so a provisioning change, an upstream rename, or the test-
+          # registration flakiness COMPARISON.MD section 5 already records would all produce a
+          # green run that tested nothing - and it would look like success for as long as nobody
+          # looked.
+          #
+          # So: count. The expected number is derived from this job's own configuration rather
+          # than written as a literal, or changing PERF_TEST_TOPICS would silently make the
+          # assertion wrong in the direction of passing.
+          rmws=$(echo "$PERF_TEST_RMW_IMPLEMENTATIONS" | tr ';' '\n' | grep -c .)
+          topics=$(echo "$PERF_TEST_TOPICS" | tr ';' '\n' | grep -c .)
+          expected=$((rmws * topics * 2)) # sync and async
+          actual=$(find "$RMW_PERF_RESULTS_DIR" -maxdepth 1 -name '*.benchmark.json' 2>/dev/null | wc -l)
+          echo "expected $expected cells ($rmws rmw x $topics topics x sync/async), found $actual"
+          if [ "$actual" -lt "$expected" ]; then
+            echo "::error::only $actual of $expected cells produced a result. A run that tested" \
+                 "less than the matrix is not a pass - check that the tests are still being" \
+                 "registered under these names." >&2
+            exit 1
+          fi
+
       - name: Publish diagnostic table
         if: always()
         run: |
