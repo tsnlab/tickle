@@ -44,7 +44,7 @@ example_interfaces/msg/UInt64MultiArray	data	160	payload
 example_interfaces/msg/Float64MultiArray	data	160	payload
 geometry_msgs/msg/PoseArray	poses	24	payload	Pose is 56 B
 nav_msgs/msg/Goals	goals	16	payload
-nav_msgs/msg/GridCells	cells	44	payload	Point is 24 B; 44 under max_wire_size's conservative per-element padding
+nav_msgs/msg/GridCells	cells	56	payload	Point is 24 B
 nav_msgs/msg/OccupancyGrid	data	1280	payload	about 36x35 cells - PRACTICALLY TOO SMALL
 nav_msgs/msg/Path	poses	16	payload
 nav_msgs/msg/Trajectory	points	4	payload	TrajectoryPoint is ~260 B
@@ -153,3 +153,4 @@ visualization_msgs/msg/InteractiveMarkerUpdate	markers	1	payload
 visualization_msgs/msg/InteractiveMarkerUpdate	poses	4	payload
 visualization_msgs/msg/InteractiveMarkerUpdate	erases	4	payload
 visualization_msgs/srv/GetInteractiveMarkers	markers	1	payload
+geometry_msgs/msg/Polygon	points	112	element	auto would take the whole datagram (120), leaving nothing for PolygonStamped/PolygonInstance/SolidPrimitive, which nest it
