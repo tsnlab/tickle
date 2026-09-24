@@ -17,6 +17,7 @@ import pathlib
 
 from . import _rosidl_parser as rosidl
 from . import builtins
+from . import capacities as capacity_file
 
 
 class UnresolvedTypeError(ValueError):
@@ -135,10 +136,14 @@ class Ros2Resolver:
     the same and only thing this class's own in_discovery_order() ever reports.
     """
 
-    def __init__(self, package_name, sibling_dir, include_dirs=(), typesupport_packages=()):
+    def __init__(self, package_name, sibling_dir, include_dirs=(), typesupport_packages=(), capacities=None):
         self.package_name = package_name
         self.sibling_dir = sibling_dir
         self.include_dirs = list(include_dirs)
+        # Capacity tables by package (capacities.py). This package's own comes from the caller
+        # (--capacities); another package's is read from where it was installed, so a type nested
+        # from it gets exactly the capacities it was generated with - the layout has to match.
+        self._capacity_tables = {package_name: capacities or {}}
         # Packages that build TickLE typesupport of their own, as determined by CMake (which can
         # see their exported target) and passed in. Nothing visible from here distinguishes such a
         # package from one that merely has a .msg on the search path.
@@ -196,12 +201,17 @@ class Ros2Resolver:
             self.resolved_structs[key] = struct
             return struct
         spec = rosidl.parse_message_string(pkg_name, msg_name, text)
-        struct = adapt_struct_fn(f"{msg_name}Data", spec, self)
+        struct = adapt_struct_fn(f"{msg_name}Data", spec, self, self._capacities_for(pkg_name, msg_name))
         struct.header_name = f"{msg_name}.h"
         struct.ros_pkg_name = pkg_name
         struct.ros_type_name = msg_name
         self.resolved_structs[key] = struct
         return struct
+
+    def _capacities_for(self, pkg_name, msg_name):
+        if pkg_name not in self._capacity_tables:
+            self._capacity_tables[pkg_name] = capacity_file.find_installed(pkg_name, self.include_dirs)
+        return capacity_file.for_message(self._capacity_tables[pkg_name], msg_name)
 
     def in_discovery_order(self):
         """Only ever the builtin_fallback's own resolutions - see this class's own doc comment

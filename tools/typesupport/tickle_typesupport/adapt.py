@@ -12,6 +12,7 @@ types, M3) and layout.py/emit.py only ever see our own IR."""
 
 import re
 
+from . import capacities as capacity_file
 from . import layout, model
 
 STRING_TYPES = {"string", "wstring"}
@@ -34,7 +35,7 @@ def _annotation_capacity(rosidl_field):
     return None
 
 
-def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_type, nested=None):
+def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_type, nested=None, file_capacity=None):
     """The three array_mode/capacity shapes (fixed T[N], bounded-variable T[<=N], unbounded-
     variable T[] - see PLAN.md's capacity priority order) are identical whether an element is a
     scalar, a plain string, or a nested message - only `scalar_type`/`array_element_kind`/`nested`
@@ -69,10 +70,15 @@ def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_t
             capacity_source="bounded",
             default=default,
         )
-    # Unbounded: T[] - variable, capacity comes from an explicit @capacity annotation if present,
-    # else gets auto-derived once every field's own size is known (_resolve_auto_capacities,
-    # below - needs the whole struct, not just this one field).
-    capacity = _annotation_capacity(rosidl_field)
+    # Unbounded: T[] - variable, capacity comes from the package's capacity file if it names this
+    # field, else an explicit @capacity annotation, else gets auto-derived once every field's own
+    # size is known (_resolve_auto_capacities, below - needs the whole struct, not just this one
+    # field).
+    if file_capacity is not None:
+        capacity, source = file_capacity, "file"
+    else:
+        capacity = _annotation_capacity(rosidl_field)
+        source = "annotation" if capacity is not None else None
     return model.WireField(
         name=rosidl_field.name,
         kind="array",
@@ -81,13 +87,42 @@ def _build_array_field(rosidl_field, field_type, *, array_element_kind, scalar_t
         nested=nested,
         array_mode="variable",
         capacity=capacity,
-        capacity_source="annotation" if capacity is not None else None,
+        capacity_source=source,
         default=default,
     )
 
 
-def adapt_field(rosidl_field, resolver=None):
+def _check_file_capacity_applies(rosidl_field):
+    """A capacity file may only size what has no size: an unbounded array or a plain string.
+    Anything else in the file is a mistake about the type, and saying so beats either overriding a
+    bound the interface author chose or ignoring the row."""
     field_type = rosidl_field.type
+    if field_type.is_array:
+        if field_type.array_size is not None:
+            kind = "a bounded array (<=N)" if field_type.is_upper_bound else "a fixed-size array"
+            raise capacity_file.CapacityError(
+                f"capacity file sizes field '{rosidl_field.name}', which is {kind} - only unbounded "
+                "arrays (T[]) and plain strings take a capacity"
+            )
+        return
+    if field_type.type in STRING_TYPES:
+        if field_type.string_upper_bound is not None:
+            raise capacity_file.CapacityError(
+                f"capacity file sizes field '{rosidl_field.name}', which is already a bounded string "
+                "(string<=N) - only unbounded arrays (T[]) and plain strings take a capacity"
+            )
+        return
+    raise capacity_file.CapacityError(
+        f"capacity file sizes field '{rosidl_field.name}', which is neither an array nor a string"
+    )
+
+
+def adapt_field(rosidl_field, resolver=None, file_capacity=None):
+    """file_capacity: this field's row from the package's capacity file (capacities.py), if any -
+    it outranks an in-.msg @capacity annotation, which outranks auto-derivation."""
+    field_type = rosidl_field.type
+    if file_capacity is not None:
+        _check_file_capacity_applies(rosidl_field)
 
     if field_type.pkg_name is not None:
         if resolver is None:
@@ -101,7 +136,10 @@ def adapt_field(rosidl_field, resolver=None):
             )
         nested = resolver.resolve_struct(field_type.pkg_name, field_type.type, adapt_struct)
         if field_type.is_array:
-            return _build_array_field(rosidl_field, field_type, array_element_kind="nested", scalar_type=None, nested=nested)
+            return _build_array_field(
+                rosidl_field, field_type, array_element_kind="nested", scalar_type=None, nested=nested,
+                file_capacity=file_capacity,
+            )
         return model.WireField(name=rosidl_field.name, kind="nested", nested=nested)
     if field_type.is_array:
         if field_type.type in STRING_TYPES:
@@ -112,12 +150,17 @@ def adapt_field(rosidl_field, resolver=None):
                     f"field '{rosidl_field.name}': a bounded string element (string<=N) inside an "
                     "array isn't supported yet - only a plain, unbounded string element is"
                 )
-            return _build_array_field(rosidl_field, field_type, array_element_kind="string", scalar_type=None)
+            return _build_array_field(
+                rosidl_field, field_type, array_element_kind="string", scalar_type=None, file_capacity=file_capacity
+            )
         if field_type.type not in model.SCALAR_SIZE:
             raise UnsupportedFieldError(
                 f"field '{rosidl_field.name}': unknown array element type '{field_type.type}'"
             )
-        return _build_array_field(rosidl_field, field_type, array_element_kind="scalar", scalar_type=field_type.type)
+        return _build_array_field(
+            rosidl_field, field_type, array_element_kind="scalar", scalar_type=field_type.type,
+            file_capacity=file_capacity,
+        )
     if field_type.type in STRING_TYPES:
         if field_type.type == "wstring":
             raise UnsupportedFieldError(f"field '{rosidl_field.name}': wstring is out of scope")
@@ -126,10 +169,12 @@ def adapt_field(rosidl_field, resolver=None):
         # PLAN.md's "Capacity" rule deliberately doesn't extend auto-derivation to plain strings,
         # see adapt.py's module docstring / PLAN.md for why) gets a fixed char[N+1] buffer
         # instead of the usual alias-into-the-rx-buffer char*.
-        capacity = _annotation_capacity(rosidl_field)
+        capacity = file_capacity if file_capacity is not None else _annotation_capacity(rosidl_field)
         if capacity is None and field_type.string_upper_bound is not None:
             capacity = field_type.string_upper_bound
             capacity_source = "bounded"
+        elif file_capacity is not None:
+            capacity_source = "file"
         elif capacity is not None:
             capacity_source = "annotation"
         else:
@@ -262,8 +307,18 @@ def adapt_constant(rosidl_constant):
     )
 
 
-def adapt_struct(c_name, rosidl_spec, resolver=None):
-    fields = [adapt_field(f, resolver) for f in rosidl_spec.fields]
+def adapt_struct(c_name, rosidl_spec, resolver=None, capacities=None):
+    """capacities: {field name: capacity} from the package's capacity file for this one struct.
+    A name that matches no field is an error rather than a no-op - see capacities.py."""
+    capacities = capacities or {}
+    names = {f.name for f in rosidl_spec.fields}
+    unknown = sorted(set(capacities) - names)
+    if unknown:
+        raise capacity_file.CapacityError(
+            f"capacity file names {', '.join(repr(n) for n in unknown)} for {c_name}, which has no such "
+            f"field (fields: {', '.join(f.name for f in rosidl_spec.fields) or 'none'})"
+        )
+    fields = [adapt_field(f, resolver, capacities.get(f.name)) for f in rosidl_spec.fields]
     _resolve_auto_capacities(fields)
     _validate_array_defaults(fields)
     struct = model.WireStruct(
@@ -280,16 +335,16 @@ def adapt_struct(c_name, rosidl_spec, resolver=None):
     return struct
 
 
-def adapt_message(name, rosidl_message_spec, resolver=None):
+def adapt_message(name, rosidl_message_spec, resolver=None, capacities=None):
     """.msg -> TopicIR. `name` is the interface name (e.g. "UInt64"), independent of whatever
     package/message name rosidl needed to satisfy its own validation."""
-    return model.TopicIR(name=name, data=adapt_struct(f"{name}Data", rosidl_message_spec, resolver))
+    return model.TopicIR(name=name, data=adapt_struct(f"{name}Data", rosidl_message_spec, resolver, capacities))
 
 
-def adapt_service(name, rosidl_service_spec, resolver=None):
+def adapt_service(name, rosidl_service_spec, resolver=None, request_capacities=None, response_capacities=None):
     """.srv -> ServiceIR."""
     return model.ServiceIR(
         name=name,
-        request=adapt_struct(f"{name}Request", rosidl_service_spec.request, resolver),
-        response=adapt_struct(f"{name}Response", rosidl_service_spec.response, resolver),
+        request=adapt_struct(f"{name}Request", rosidl_service_spec.request, resolver, request_capacities),
+        response=adapt_struct(f"{name}Response", rosidl_service_spec.response, resolver, response_capacities),
     )

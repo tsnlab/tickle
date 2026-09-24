@@ -115,7 +115,7 @@ class WireField:
     array_mode: str | None = None  # "fixed" (T[N]) | "variable" (T[] / T[<=N])
     array_size: int | None = None  # element count, when array_mode == "fixed"
     capacity: int | None = None  # max element count, when array_mode == "variable"
-    capacity_source: str | None = None  # "annotation" | "bounded" | "auto" - docs/errors only
+    capacity_source: str | None = None  # "file" | "annotation" | "bounded" | "auto" - docs/errors only
     # "scalar" (scalar_type names the element type, as always), "string" (every element is a
     # plain, unbounded string - `scalar_type` stays None; a *bounded* string element, e.g.
     # `string<=8[]`, isn't supported yet - adapt.py raises for it rather than silently truncating

@@ -61,6 +61,7 @@ import sys
 
 from . import _rosidl_parser as rosidl
 from . import adapt, cli, postprocess, render, resolve, ros2_adapter
+from . import capacities as capacity_file
 
 
 def _write_text(outdir, filename, text, source_label, fmt_dir):
@@ -116,6 +117,26 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
     does not work.
     """
     ros_name = f"{package}__{subfolder}__{name}"
+    if subfolder == "srv":
+        # The file set rosidl_typesupport_tickle_c_generate_interfaces.cmake declares for a .srv:
+        # "<name>_srv" for TickLE's own codec (see generate()'s Milestone 56 note), an adapter and
+        # type_support per side, and the service-level type_support tying them together.
+        filenames = [f"{name}_srv.h", f"{name}_srv.c"]
+        for part in ("Request", "Response"):
+            filenames += [
+                f"{ros_name}_{part}__rosidl_typesupport_tickle_c.h",
+                f"{ros_name}_{part}__rosidl_typesupport_tickle_c.c",
+                f"{ros_name}_{part}__type_support.c",
+            ]
+        filenames.append(f"{ros_name}__type_support.c")
+    else:
+        filenames = [
+            f"{name}.h",
+            f"{name}.c",
+            f"{ros_name}__rosidl_typesupport_tickle_c.h",
+            f"{ros_name}__rosidl_typesupport_tickle_c.c",
+            f"{ros_name}__type_support.c",
+        ]
     banner = (
         f"// TickLE has no typesupport for {package}/{subfolder}/{name}.\n"
         f"//\n"
@@ -130,22 +151,46 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
     # A typedef rather than nothing at all: an empty translation unit is not valid ISO C.
     marker = f"typedef int {ros_name}__tickle_unsupported_t;\n"
     written = []
-    for filename in (
-        f"{name}.h",
-        f"{name}.c",
-        f"{ros_name}__rosidl_typesupport_tickle_c.h",
-        f"{ros_name}__rosidl_typesupport_tickle_c.c",
-        f"{ros_name}__type_support.c",
-    ):
+    for filename in filenames:
         written.append(_write_text(outdir, filename, banner + marker, source_label, fmt_dir))
     print(f"{source_label}: DECLINED - {reason}", file=sys.stderr)
     return written
 
 
+def _nested_package_reason(unsupported):
+    return (
+        f"It nests {unsupported.pkg_name}/{unsupported.msg_name}, and {unsupported.pkg_name} does not "
+        f"build rosidl_typesupport_tickle_c. This applies even to a type TickLE bundles a definition "
+        f"for, such as std_msgs/Header: having the struct is not the same as being able to adapt it, "
+        f"because the generated ROS adapter needs {unsupported.pkg_name}'s own "
+        f"...__rosidl_typesupport_tickle_c.h to convert the ROS C struct into the TickLE one, and that "
+        f"header exists only if {unsupported.pkg_name} builds this typesupport itself. "
+        f"This is NOT a size limit - see <Name>_FITS_ONE_DATAGRAM for that, which is a different problem "
+        f"with a different fix. The remedy here is to build {unsupported.pkg_name} from source in this "
+        f"workspace with the TickLE typesupport extension applied, the way std_msgs ships FastDDS "
+        f"typesupport of its own."
+    )
+
+
+def _field_reason(error):
+    # A field TickLE cannot represent (a wstring, an unbounded field whose capacity cannot be
+    # derived, ...). Declined rather than failed, for the same reason as a nested package: one such
+    # type in a package must not stop every other type in it from building. A capacity-file row
+    # that does not apply is NOT this - capacities.CapacityError is not caught, and fails the build.
+    return (
+        f"{error} The capacity file for this package is where an unbounded field gets its size "
+        f"(tools/typesupport/tickle_typesupport/capacities.py); a field that no capacity can fix, such as "
+        f"a wstring, keeps the type unsupported."
+    )
+
+
 def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, include_dirs=(),
-             typesupport_packages=()):
+             typesupport_packages=(), capacities_path=None):
     """Returns the list of file paths written - same "top-level interface first" convention as
-    cli.generate_interface()."""
+    cli.generate_interface().
+
+    capacities_path: this package's capacity file (capacities.py), or None. Every row is checked
+    against the package on every run, not only the rows for this interface."""
     os.makedirs(outdir, exist_ok=True)
     fmt_dir = style_dir or outdir
     source_label = os.path.basename(input_path)
@@ -164,27 +209,21 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
     # annotations - see rosidl_typesupport_tickle_c_generate_interfaces.cmake's own former .srv
     # skip, removed together with this fix).
     package_root = os.path.dirname(os.path.dirname(input_path))
+    table = {}
+    if capacities_path:
+        table = capacity_file.load(capacities_path, package)
+        capacity_file.check_types_exist(table, package_root)
     resolver = resolve.Ros2Resolver(package, os.path.join(package_root, "msg"), include_dirs,
-                                    typesupport_packages)
+                                    typesupport_packages, table)
 
     if subfolder == "msg":
         spec = rosidl.parse_message_string(package, name, text)
         try:
-            ir = adapt.adapt_message(name, spec, resolver)
+            ir = adapt.adapt_message(name, spec, resolver, capacity_file.for_message(table, name))
         except resolve.UnsupportedNestedPackage as unsupported:
-            return _decline(
-                package, subfolder, name, outdir, source_label, fmt_dir,
-                f"It nests {unsupported.pkg_name}/{unsupported.msg_name}, and {unsupported.pkg_name} does not "
-                f"build rosidl_typesupport_tickle_c. This applies even to a type TickLE bundles a definition "
-                f"for, such as std_msgs/Header: having the struct is not the same as being able to adapt it, "
-                f"because the generated ROS adapter needs {unsupported.pkg_name}'s own "
-                f"...__rosidl_typesupport_tickle_c.h to convert the ROS C struct into the TickLE one, and that "
-                f"header exists only if {unsupported.pkg_name} builds this typesupport itself. "
-                f"This is NOT a size limit - see <Name>_FITS_ONE_DATAGRAM for that, which is a different problem "
-                f"with a different fix. The remedy here is to build {unsupported.pkg_name} from source in this "
-                f"workspace with the TickLE typesupport extension applied, the way std_msgs ships FastDDS "
-                f"typesupport of its own.",
-            )
+            return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _nested_package_reason(unsupported))
+        except adapt.UnsupportedFieldError as error:
+            return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _field_reason(error))
         header, source = render.render_topic(ir)
         written = list(cli._write_generated(name, header, source, source_label, outdir, fmt_dir))
         ros_name = f"{package}__msg__{name}"
@@ -208,7 +247,15 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
         # matching "{msg_name}.h" computation) completely untouched.
         srv_tickle_name = f"{name}_srv"
         spec = rosidl.parse_service_string(package, name, text)
-        ir = adapt.adapt_service(srv_tickle_name, spec, resolver)
+        request_capacities, response_capacities = capacity_file.for_service(
+            table, name, {f.name for f in spec.request.fields}, {f.name for f in spec.response.fields}
+        )
+        try:
+            ir = adapt.adapt_service(srv_tickle_name, spec, resolver, request_capacities, response_capacities)
+        except resolve.UnsupportedNestedPackage as unsupported:
+            return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _nested_package_reason(unsupported))
+        except adapt.UnsupportedFieldError as error:
+            return _decline(package, subfolder, name, outdir, source_label, fmt_dir, _field_reason(error))
         header, source = render.render_service(ir)
         written = list(cli._write_generated(srv_tickle_name, header, source, source_label, outdir, fmt_dir))
         srv_tickle_header = f"{srv_tickle_name}.h"
@@ -264,6 +311,13 @@ def main(argv=None):
         "<pkg>::<pkg>__rosidl_typesupport_tickle_c target, which only exists if it ran this "
         "extension.",
     )
+    parser.add_argument(
+        "--capacities",
+        metavar="FILE",
+        help="this package's capacity file: '<pkg>/<msg|srv>/<Type> <field> <N>' rows sizing its "
+        "unbounded arrays and plain strings, outranking in-.msg @capacity annotations. Every row "
+        "must apply, or generation fails - see tickle_typesupport/capacities.py.",
+    )
     args = parser.parse_args(argv)
 
     written = generate(
@@ -275,6 +329,7 @@ def main(argv=None):
         style_dir=args.style_dir,
         include_dirs=args.include_dir,
         typesupport_packages=args.typesupport_package,
+        capacities_path=args.capacities,
     )
     print(f"{args.input} -> {', '.join(written)}")
     return 0
