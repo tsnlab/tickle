@@ -172,6 +172,136 @@ static void rollback(struct tt_Node* node, uint32_t old_tx_tail) {
 // requester, see its own comment on why that's safe there specifically) and by
 // tt_Publisher_publish()/tt_Client_call()/resend_call_request() (a short list of known peers, see
 // tt_UNICAST_PEER_THRESHOLD) once discovery has learned a handful of them.
+// How many links this node talks on. Reads 1 when nothing has been configured *and* nothing has
+// resolved the table yet - a whitebox test constructs a tt_Node directly without going through
+// tt_Node_create(), so this cannot assume resolve_links() has run, and a zero here would make
+// every send loop iterate zero times and silently send nothing.
+static uint8_t link_count(void) {
+    if (_tt_CONFIG.link_count == 0) {
+        // Populate the default link here rather than only in resolve_links(), because a whitebox
+        // test constructs a tt_Node directly and never calls tt_Node_create(). Leaving the table
+        // empty was not merely "unconfigured": unicast_threshold read 0, so a single known peer
+        // failed the `on_link <= threshold` test and every call fell through to broadcast. A
+        // default that is never written is indistinguishable from a configured zero.
+        //
+        // Only the values, not the OS resolution - that needs the HAL and belongs at node
+        // creation. An unresolved link is the catch-all, which is the correct reading of "nothing
+        // has been configured" anyway.
+        _tt_CONFIG.links[0].broadcast = _tt_CONFIG.broadcast;
+        _tt_CONFIG.links[0].addr = _tt_CONFIG.addr;
+        _tt_CONFIG.links[0].unicast_threshold = tt_UNICAST_PEER_THRESHOLD;
+        _tt_CONFIG.link_count = 1;
+    }
+    return _tt_CONFIG.link_count < tt_MAX_LINK_COUNT ? _tt_CONFIG.link_count : tt_MAX_LINK_COUNT;
+}
+
+// Fills in the link table once, at node creation. A node with nothing configured gets exactly one
+// link, built from the scalar addr/broadcast/tt_UNICAST_PEER_THRESHOLD fields, so the single-link
+// case is the degenerate one rather than a branch everything else has to remember.
+//
+// Idempotent: re-resolving an already-resolved link asks the OS the same question and gets the
+// same answer, so a second node in the same process costs one getifaddrs and changes nothing.
+static void resolve_links(void) {
+    for (uint8_t i = 0; i < link_count(); i++) {
+        struct _tt_Link* link = &_tt_CONFIG.links[i];
+        link->resolved =
+            tt_resolve_link(link->broadcast, &link->resolved_addr, &link->resolved_netmask, &link->resolved_broadcast);
+        if (!link->resolved) {
+            // THE ONE PLACE the "configured interface does not exist" decision lands. Today this
+            // warns and the link becomes the catch-all, which is correct for the limited broadcast
+            // 255.255.255.255 - no interface owns it, by definition, and it must keep working
+            // because it is the compiled-in default. It is *not* obviously correct for a directed
+            // broadcast naming a subnet this host is not on: that is the user having asked for
+            // something that cannot be honoured, rather than the user not having said anything,
+            // and whether that should refuse to start is with the user. Whichever way they rule,
+            // it is this branch and nothing else.
+            TT_LOG_WARNING("Link %u (%s) matches no local interface - treating it as the catch-all", i,
+                           link->broadcast != NULL ? link->broadcast : "(null)");
+        }
+    }
+}
+
+// Which configured link a peer address belongs to. A link the OS resolved matches addresses in its
+// subnet; a link it did not resolve is the catch-all for everything else, which is what makes the
+// limited broadcast still work as the default. Falls back to link 0 so this always names a link.
+static uint8_t link_of_ip(uint32_t ip) {
+    uint8_t fallback = 0;
+    bool have_fallback = false;
+    for (uint8_t i = 0; i < link_count(); i++) {
+        const struct _tt_Link* link = &_tt_CONFIG.links[i];
+        if (link->resolved) {
+            if ((ip & link->resolved_netmask) == (link->resolved_addr & link->resolved_netmask)) {
+                return i;
+            }
+        } else if (!have_fallback) {
+            fallback = i;
+            have_fallback = true;
+        }
+    }
+    return fallback;
+}
+
+// Broadcast, when there is no addressable peer set: either nobody is known yet, or the caller has
+// batched submessages for different peers into one buffer and cannot aim it. Goes out on every
+// link, because this is how a node is discovered at all and its peers may be on any of them.
+//
+// One link goes through tt_send() and the HAL's precomputed broadcast address. That is not only an
+// optimisation: it keeps the single-link case - every deployment that has not configured links[],
+// which is all of them today - on exactly the path it used before per-link existed, rather than on
+// a new one that happens to be equivalent.
+static bool broadcast_all_links(struct tt_Node* node, uint32_t len) {
+    if (link_count() <= 1) {
+        node->tx_datagrams++;
+        return tt_send(node, node->tx_buffer, len) >= 0;
+    }
+    for (uint8_t i = 0; i < link_count(); i++) {
+        node->tx_datagrams++;
+        if (tt_send_to(node, node->tx_buffer, len, _tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port) <
+            0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// One link's share of an addressed buffer: unicast to its peers while there are few enough of
+// them, one broadcast once there are not. Per link rather than across the whole peer set because
+// the right answer differs by medium - five subscribers on a 10Base-T1S segment and one on
+// Ethernet want opposite answers, and a single count across both loses on whichever it is not
+// sized for.
+static bool send_to_link(struct tt_Node* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count,
+                         uint8_t link_index) {
+    uint8_t on_link = 0;
+    for (uint8_t i = 0; i < peer_count; i++) {
+        if (link_of_ip(peers[i].ip) == link_index) {
+            on_link++;
+        }
+    }
+    if (on_link == 0) {
+        return true; // nobody known on this link, and this buffer is for known peers
+    }
+
+    if (on_link > _tt_CONFIG.links[link_index].unicast_threshold) {
+        node->tx_datagrams++;
+        if (link_count() <= 1) {
+            return tt_send(node, node->tx_buffer, len) >= 0;
+        }
+        return tt_send_to(node, node->tx_buffer, len, _tt_CONFIG.links[link_index].resolved_broadcast,
+                          (uint16_t)_tt_CONFIG.port) >= 0;
+    }
+
+    for (uint8_t i = 0; i < peer_count; i++) {
+        if (link_of_ip(peers[i].ip) != link_index) {
+            continue;
+        }
+        node->tx_datagrams++;
+        if (tt_send_to(node, node->tx_buffer, len, peers[i].ip, peers[i].port) < 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
     // Check at least 1 submessage is contained
     if (len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
@@ -189,19 +319,16 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
     header->version = tt_VERSION;
     header->source = node->id;
 
-    bool sent_ok = true;
+    bool sent_ok;
     if (peer_count == 0) {
-        node->tx_datagrams++;
-        sent_ok = tt_send(node, node->tx_buffer, len) >= 0;
+        sent_ok = broadcast_all_links(node, len);
     } else {
-        for (uint8_t i = 0; i < peer_count; i++) {
-            node->tx_datagrams++;
-            if (tt_send_to(node, node->tx_buffer, len, peers[i].ip, peers[i].port) < 0) {
-                sent_ok = false;
-                break;
-            }
+        sent_ok = true;
+        for (uint8_t i = 0; i < link_count() && sent_ok; i++) {
+            sent_ok = send_to_link(node, len, peers, peer_count, i);
         }
     }
+
     if (!sent_ok) {
         TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
@@ -1120,6 +1247,10 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
     // node's own launch instant already is one, and this is exactly the kind of "coarse, no
     // cryptographic requirement" randomness every other sentinel/hash choice in this file already
     // accepts (e.g. tt_hash_id() itself).
+    // Before anything can send: flush_tx() addresses every datagram through the link table, so it
+    // has to exist first. Idempotent, so a second node in this process costs one getifaddrs.
+    resolve_links();
+
     node->entity_id_base = (uint32_t)tt_get_ns();
 
     // _tt_CONFIG.node_id (see its own comment) skips auto-detection when set explicitly.

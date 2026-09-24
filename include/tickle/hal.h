@@ -118,10 +118,14 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
  */
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout);
 
-// Resolves a configured broadcast address to the local interface that owns it, filling *addr,
-// *netmask and *bcast (all host byte order) from that interface. Returns false when no local
-// interface has that broadcast address - which includes the limited broadcast 255.255.255.255,
-// since no interface owns it.
+// Resolves a configured broadcast address to the local interface that owns it, filling *addr and
+// *netmask (host byte order) from that interface. Returns false when no local interface has that
+// broadcast address - which includes the limited broadcast 255.255.255.255, since no interface
+// owns it.
+//
+// *bcast is filled with the parsed broadcast address either way, so a caller can still address a
+// link whose broadcast no interface owns without having to parse the string itself. Only *addr and
+// *netmask depend on the return value.
 //
 // Exists because matching a peer to a link needs the link's netmask, and a broadcast address does
 // not carry one: x.y.z.255 implies /24 only by convention. The operating system already knows

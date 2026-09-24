@@ -100,6 +100,9 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
         return false;
     }
     uint32_t want = ntohl(inet_addr(broadcast));
+    // Reported even when no interface owns it, so a caller can still address the link. The return
+    // value says whether *addr and *netmask are meaningful; *bcast is always the parsed string.
+    *bcast = want;
 
     struct ifaddrs* ifaddrs = NULL;
     if (getifaddrs(&ifaddrs) != 0) {
@@ -124,7 +127,6 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
         }
         *addr = if_addr;
         *netmask = if_mask;
-        *bcast = if_bcast;
         found = true;
     }
 

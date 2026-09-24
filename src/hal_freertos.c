@@ -68,6 +68,8 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
         return false;
     }
     uint32_t want = ntohl(inet_addr(broadcast));
+    // See hal_linux.c: always reported, so a caller can address a link the stack does not own.
+    *bcast = want;
     uint32_t if_addr = ntohl(ip4_addr_get_u32(netif_ip4_addr(netif_default)));
     uint32_t if_mask = ntohl(ip4_addr_get_u32(netif_ip4_netmask(netif_default)));
     uint32_t if_bcast = if_addr | ~if_mask;
@@ -76,7 +78,6 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
     }
     *addr = if_addr;
     *netmask = if_mask;
-    *bcast = if_bcast;
     return true;
 }
 
