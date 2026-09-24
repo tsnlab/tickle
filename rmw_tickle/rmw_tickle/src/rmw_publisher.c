@@ -27,6 +27,7 @@
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
+#include "rcutils/logging_macros.h"
 #include "rcutils/strdup.h"
 #include "rmw/error_handling.h"
 #include "rmw/event.h"
@@ -281,6 +282,35 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
         return (uint32_t)tt_MAX_BUFFER_LENGTH;
     }
     return clamp_record_bytes(payload);
+}
+
+// Periodic Heartbeat for a RELIABLE publisher, off unless RMW_TICKLE_HEARTBEAT_PERIOD_NS is set.
+//
+// An EXPERIMENT switch, not yet a tuned default, and it exists to answer one question. A reader
+// learns that a sample is gone - evicted from a KEEP_LAST cache - from the eviction Heartbeat the
+// publisher sends back in answer to an ACKNACK. That is a single lossy exchange: if the ACKNACK or
+// its reply is dropped, the reader falls back to acknack_retry (tt_RELIABLE_RETRY_INTERVAL x
+// tt_RELIABLE_RETRY), and at a high rate a tracking window can fill before that retry wins -
+// forcing a window-sized jump rather than a clean skip. RTPS backs the exchange up with Heartbeats
+// the writer sends on its own, carrying firstSN; TickLE has the same thing in send_heartbeat(),
+// carrying first_available_seq_no, and rmw_tickle has never switched it on.
+//
+// Whether it closes the gap is what the switch measures. Off by default so every existing
+// measurement stays reproducible and the wire carries nothing new unless asked; the right default
+// period, and whether to piggyback on DATA instead, are decisions for after that measurement.
+// Zero or unparseable leaves it off, the same "a malformed tuning value must not stop a node
+// starting" rule the other knobs in this file follow.
+static uint64_t resolve_heartbeat_period_ns(void) {
+    const char* env = getenv("RMW_TICKLE_HEARTBEAT_PERIOD_NS");
+    if (NULL == env || '\0' == env[0]) {
+        return 0;
+    }
+    char* end = NULL;
+    unsigned long long period = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end)) {
+        return 0;
+    }
+    return (uint64_t)period;
 }
 
 // Split out of rmw_create_publisher() below purely to keep that function's own cognitive
@@ -586,6 +616,27 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     pub_impl->tickle_publisher.deadline_duration_ns = pub_impl->deadline_period_ns;
     pub_impl->tickle_publisher.liveliness_lease_duration_ns = pub_impl->liveliness_lease_ns;
     pub_impl->tickle_publisher.liveliness_manual = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness;
+
+    // Armed last, and under the node mutex: tt_Publisher_set_heartbeat_period() schedules on the
+    // node and refuses a publisher with no reliable_cache, so it has to follow both
+    // tt_Node_create_publisher() and setup_reliable_cache(). Configuration set before the object it
+    // configures is fully built is exactly how the reorder buffer shipped disconnected (9747c1ea).
+    uint64_t heartbeat_ns = resolve_heartbeat_period_ns();
+    if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
+        tt_Node_interrupt(&node_impl->context_impl->tickle_node);
+        pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+        tt_ret_t hb = tt_Publisher_set_heartbeat_period(&pub_impl->tickle_publisher, heartbeat_ns);
+        pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+        if (hb != tt_RET_OK) {
+            // Not fatal - the publisher works without it, exactly as it always has - but said, so a
+            // run that asked for heartbeats and did not get them cannot be read as if it had.
+            RCUTILS_LOG_WARN_NAMED("rmw_tickle", "RMW_TICKLE_HEARTBEAT_PERIOD_NS=%llu requested but not armed (%d)",
+                                   (unsigned long long)heartbeat_ns, (int)hb);
+        } else {
+            RCUTILS_LOG_INFO_NAMED("rmw_tickle", "periodic heartbeat armed: every %llu ns",
+                                   (unsigned long long)heartbeat_ns);
+        }
+    }
 
     return &pub_impl->rmw_publisher;
 }
