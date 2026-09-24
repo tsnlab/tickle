@@ -256,8 +256,34 @@
 // can carry without IP fragmentation. 1500 (MTU) - 20 (IPv4 header) - 8 (UDP header) = 1472.
 // Previously 1480, which is 8 bytes *larger* than that limit - a packet in the 1473-1480
 // byte range would pass this check yet still fragment at the IP layer on a standard network.
+#define tt_ETHERNET_UDP_PAYLOAD 1472  // the above, for a standard Ethernet MTU
+#define tt_IPV4_UDP_MAX_PAYLOAD 65507 // 65535 - 20 (IPv4 header) - 8 (UDP header): one datagram, fragmented
 #ifndef tt_MAX_BUFFER_LENGTH
-#define tt_MAX_BUFFER_LENGTH 1472
+#define tt_MAX_BUFFER_LENGTH tt_ETHERNET_UDP_PAYLOAD
+#endif
+
+// The largest datagram a node builds out of more than one submessage, and the size a discovery
+// announce is split to (DESIGN.md's "Discovery announce in parts") - kept at a standard Ethernet
+// datagram even when tt_MAX_BUFFER_LENGTH is raised, as rmw_tickle does (up to 65507, left to the
+// OS to fragment - the user's decision, 2026-09-24).
+//
+// tt_MAX_BUFFER_LENGTH bounds a single sample; this bounds everything a node sends that the other
+// side did not ask to be large. A node on core defaults (tt_MAX_BUFFER_LENGTH 1472, an MCU say)
+// can only receive 1472 bytes, and it has to be able to discover and be discovered by a node built
+// with the larger buffer: a batch or an announce that grew to the larger size would be truncated
+// on its side and silently lost. So submessages that share a datagram never take it past this,
+// and only one submessage sent on its own - a sample that is large because its type is - may use
+// the full tt_MAX_BUFFER_LENGTH.
+//
+// Chosen by the preprocessor rather than a ?: so the result is a plain constant: at the default
+// the two candidates are the same value, which a conditional expression would carry into every
+// use site as a branch with identical arms.
+#ifndef tt_CONTROL_MAX_LENGTH
+#if tt_MAX_BUFFER_LENGTH < tt_ETHERNET_UDP_PAYLOAD
+#define tt_CONTROL_MAX_LENGTH tt_MAX_BUFFER_LENGTH
+#else
+#define tt_CONTROL_MAX_LENGTH tt_ETHERNET_UDP_PAYLOAD
+#endif
 #endif
 
 // Node ID values are the last byte of the IPv4 address on the local network.
@@ -437,6 +463,11 @@ static_assert(tt_RELIABLE_BITMAP_MAX_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
 static_assert(tt_RELIABLE_BITMAP_MAX_BITS >= tt_RELIABLE_BITMAP_BITS,
               "tt_RELIABLE_BITMAP_MAX_BITS is the ceiling for tt_RELIABLE_BITMAP_BITS");
 static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint index must have room for every endpoint");
+static_assert(tt_MAX_BUFFER_LENGTH <= tt_IPV4_UDP_MAX_PAYLOAD,
+              "tt_MAX_BUFFER_LENGTH above 65507 cannot be one IPv4 UDP datagram, and "
+              "the protocol's uint16 lengths could not describe it either");
+static_assert(tt_CONTROL_MAX_LENGTH <= tt_MAX_BUFFER_LENGTH,
+              "tt_CONTROL_MAX_LENGTH cannot exceed tt_MAX_BUFFER_LENGTH - nothing larger could be received");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");

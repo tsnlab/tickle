@@ -193,14 +193,15 @@ static void test_announce_that_fits_stays_a_single_update(void) {
 }
 
 static void test_large_announce_goes_in_datagram_sized_parts(void) {
-    // Plan's acceptance test: over 100 endpoints, and every datagram within the default MTU.
+    // Plan's acceptance test: over 100 endpoints, and every datagram within the control limit -
+    // 1472 even in a build whose tt_MAX_BUFFER_LENGTH is larger (config.h).
     test_mock_reset();
     init_sender(MAX_ENDPOINTS, 100);
     int n = announce();
     EXPECT_TRUE(n >= 2);
     uint32_t entities = 0;
     for (int d = 0; d < n; d++) {
-        EXPECT_TRUE(datagram_len[d] <= 1472);
+        EXPECT_TRUE(datagram_len[d] <= tt_CONTROL_MAX_LENGTH); // whatever tt_MAX_BUFFER_LENGTH is
         const struct tt_SubmessageHeader* sub = first_submessage(d);
         EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_UPDATE_PART, sub->type);
         const struct tt_UpdatePartHeader* part = (const struct tt_UpdatePartHeader*)(sub + 1);

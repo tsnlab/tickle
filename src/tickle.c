@@ -437,12 +437,19 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     // must be deferred, in which case it's overridden to `base` (everything before it).
     uint32_t flush_len;
 
-    if (node->tx_tail + roundup <= tt_MAX_BUFFER_LENGTH) { // tail in below the buffer
+    // How large the datagram carrying this submessage may grow: the full tt_MAX_BUFFER_LENGTH only
+    // for a submessage that is on its own in the buffer, tt_CONTROL_MAX_LENGTH once it shares one
+    // (config.h). Identical to before whenever the two are equal, which is core's default.
+    uint32_t limit = tt_CONTROL_MAX_LENGTH;
+    if (base == sizeof(struct tt_Header)) {
+        limit = tt_MAX_BUFFER_LENGTH;
+    }
+
+    if (node->tx_tail + roundup <= limit) { // tail in below the buffer
         submessage_header->length = length + roundup;
         node->tx_tail += roundup;
         flush_len = node->tx_tail;
-    } else if (node->tx_tail <= tt_MAX_BUFFER_LENGTH &&
-               node->tx_tail + roundup > tt_MAX_BUFFER_LENGTH) { // tail exceeds buffer if roundup
+    } else if (node->tx_tail <= limit && node->tx_tail + roundup > limit) { // tail exceeds buffer if roundup
         submessage_header->length = length;
         is_flush = true;
         flush_len = base;
@@ -3575,10 +3582,11 @@ static uint32_t update_entity_wire_size(struct tt_Endpoint* endpoint) {
                       1);
 }
 
-// Whether a submessage whose header-plus-body is `bytes` fits one datagram (the check
-// submessage_fits_datagram() makes on an encoded one, made here before encoding).
+// Whether an announce submessage whose header-plus-body is `bytes` fits one datagram. The control
+// limit, not tt_MAX_BUFFER_LENGTH: an announce has to reach nodes built with the default buffer,
+// whatever this node was built with (tt_CONTROL_MAX_LENGTH, config.h).
 static bool submessage_bytes_fit_datagram(uint32_t bytes) {
-    return sizeof(struct tt_Header) + ROUNDUP(bytes) <= tt_MAX_BUFFER_LENGTH;
+    return sizeof(struct tt_Header) + ROUNDUP(bytes) <= tt_CONTROL_MAX_LENGTH;
 }
 
 // Whether this node's whole announce fits one UPDATE: within one datagram, and within the 255

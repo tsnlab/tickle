@@ -117,7 +117,7 @@ static void test_endpoint_too_large_to_announce_is_dropped_alone(void) {
     // An endpoint whose name alone outgrows a datagram cannot be announced even as a part of its
     // own. It is left out and counted; the rest of the announce still goes, as the single UPDATE
     // it fits - never as a one-part announce, which no receiver accepts.
-    static char huge_name[tt_MAX_BUFFER_LENGTH + 64];
+    static char huge_name[tt_CONTROL_MAX_LENGTH + 64];
     test_mock_reset();
     init_node_with_endpoints(4);
     memset(huge_name, 'x', sizeof(huge_name) - 1);
