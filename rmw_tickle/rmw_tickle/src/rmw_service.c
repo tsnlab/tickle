@@ -42,7 +42,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <tickle/hal.h> // tt_ret_t/tt_RET_OK
+#include <tickle/config.h> // tt_MAX_SERVER_CACHE_COUNT
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -209,13 +210,61 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         return NULL;
     }
 
+    // Core's cached and deferred responses for this server, sized for this service (stage (iv) of
+    // the storage design the user approved on 2026-09-24): rmw_tickle builds core with a tiny inline
+    // default (CMakeLists.txt), because the default sized for any message is 192 x
+    // tt_MAX_BUFFER_LENGTH per server - 12.6 MB at 65507.
+    //   - a cache entry holds one encoded response: this response type's largest, within an even
+    //     share of RMW_TICKLE_CACHE_BYTES across the slots. A response larger than that is still
+    //     sent, just not kept for a retry (tt_Server_set_storage(), tickle.h). At 1472 an entry is a
+    //     whole datagram, as before.
+    //   - a pending entry holds one deferred response as its TickLE struct.
+    const size_t response_framing = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallResponseHeader);
+    uint32_t cache_entry = rmw_tickle_message_slot_bytes(svc->response_callbacks, response_framing);
+    unsigned long long share = rmw_tickle_cache_budget_bytes() / tt_MAX_SERVER_CACHE_COUNT;
+    share -= share % RMW_TICKLE_ROUND_UP_8(1U); // whole 8-byte units
+    unsigned long long smallest = RMW_TICKLE_ROUND_UP_8(response_framing);
+    if (share < smallest) {
+        share = smallest;
+    }
+    if (cache_entry > share) {
+        cache_entry = (uint32_t)share;
+    }
+    uint32_t pending_entry = (uint32_t)RMW_TICKLE_ROUND_UP_8(svc->response_callbacks->tickle_struct_size);
+    svc->response_cache =
+        (uint8_t*)allocator->allocate((size_t)tt_MAX_SERVER_CACHE_COUNT * cache_entry, allocator->state);
+    svc->pending_responses =
+        (uint8_t*)allocator->allocate((size_t)tt_MAX_SERVER_CACHE_COUNT * pending_entry, allocator->state);
+    if (NULL == svc->response_cache || NULL == svc->pending_responses) {
+        RMW_SET_ERROR_MSG("failed to allocate service response storage");
+        allocator->deallocate(svc->response_cache, allocator->state);
+        allocator->deallocate(svc->pending_responses, allocator->state);
+        allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
+        pthread_mutex_destroy(&svc->request_mutex);
+        allocator->deallocate(svc->request_storage, allocator->state);
+        allocator->deallocate(svc->response_storage, allocator->state);
+        allocator->deallocate(svc, allocator->state);
+        return NULL;
+    }
+
     tt_Node_interrupt(&node_impl->context_impl->tickle_node);
     pthread_mutex_lock(&node_impl->context_impl->node_mutex);
     tt_ret_t ret = tt_Node_create_server(&node_impl->context_impl->tickle_node, &svc->tickle_server, &svc->service,
                                          svc->rmw_service.service_name, server_callback);
+    if (ret == tt_RET_OK) {
+        // After create, which resets the server to its inline storage, and under the same lock, so
+        // the poll thread cannot hand it a request in between.
+        ret = tt_Server_set_storage(&svc->tickle_server, svc->response_cache, cache_entry, svc->pending_responses,
+                                    pending_entry);
+        if (ret != tt_RET_OK) {
+            tt_Server_destroy(&svc->tickle_server);
+        }
+    }
     pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Node_create_server() failed");
+        RMW_SET_ERROR_MSG("tt_Node_create_server()/tt_Server_set_storage() failed");
+        allocator->deallocate(svc->response_cache, allocator->state);
+        allocator->deallocate(svc->pending_responses, allocator->state);
         allocator->deallocate((char*)svc->rmw_service.service_name, allocator->state);
         pthread_mutex_destroy(&svc->request_mutex);
         allocator->deallocate(svc->request_storage, allocator->state);
@@ -249,6 +298,8 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
     allocator.deallocate((char*)svc->rmw_service.service_name, allocator.state);
     allocator.deallocate(svc->request_storage, allocator.state);
     allocator.deallocate(svc->response_storage, allocator.state);
+    allocator.deallocate(svc->response_cache, allocator.state); // after tt_Server_destroy() above
+    allocator.deallocate(svc->pending_responses, allocator.state);
     allocator.deallocate(svc->owning_node_name, allocator.state);
     allocator.deallocate(svc->owning_node_namespace, allocator.state);
     allocator.deallocate(svc, allocator.state);

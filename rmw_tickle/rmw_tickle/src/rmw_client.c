@@ -167,15 +167,39 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
         return NULL;
     }
 
+    // Where core keeps the outstanding request for a retry: this service's largest request (stage
+    // (iv) of the storage design the user approved on 2026-09-24; core's inline one is built tiny -
+    // CMakeLists.txt). Not budgeted, unlike a server's cache: a request that does not fit is refused
+    // by tt_Client_call(), so this has to hold the largest one the type allows.
+    uint32_t request_cache_bytes = rmw_tickle_message_slot_bytes(
+        client_impl->request_callbacks, sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallRequestHeader));
+    client_impl->request_cache = (uint8_t*)allocator->allocate(request_cache_bytes, allocator->state);
+    if (NULL == client_impl->request_cache) {
+        RMW_SET_ERROR_MSG("failed to allocate client request storage");
+        allocator->deallocate((char*)client_impl->rmw_client.service_name, allocator->state);
+        pthread_mutex_destroy(&client_impl->response_mutex);
+        allocator->deallocate(client_impl->response_storage, allocator->state);
+        allocator->deallocate(client_impl, allocator->state);
+        return NULL;
+    }
+
     // Same tt_Node_interrupt()-then-lock pattern rmw_create_publisher()/_subscription() already
     // established - see rmw_tickle.h's own rmw_tickle_context_impl_t doc comment.
     tt_Node_interrupt(&node_impl->context_impl->tickle_node);
     pthread_mutex_lock(&node_impl->context_impl->node_mutex);
     tt_ret_t ret = tt_Node_create_client(&node_impl->context_impl->tickle_node, &client_impl->tickle_client,
                                          &client_impl->service, client_impl->rmw_client.service_name, client_callback);
+    if (ret == tt_RET_OK) {
+        // After create, under the same lock - see the matching block in rmw_service.c.
+        ret = tt_Client_set_storage(&client_impl->tickle_client, client_impl->request_cache, request_cache_bytes);
+        if (ret != tt_RET_OK) {
+            tt_Client_destroy(&client_impl->tickle_client);
+        }
+    }
     pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
     if (ret != tt_RET_OK) {
-        RMW_SET_ERROR_MSG("tt_Node_create_client() failed");
+        RMW_SET_ERROR_MSG("tt_Node_create_client()/tt_Client_set_storage() failed");
+        allocator->deallocate(client_impl->request_cache, allocator->state);
         allocator->deallocate((char*)client_impl->rmw_client.service_name, allocator->state);
         pthread_mutex_destroy(&client_impl->response_mutex);
         allocator->deallocate(client_impl->response_storage, allocator->state);
@@ -207,6 +231,7 @@ rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
     rcutils_allocator_t allocator = client_impl->allocator;
     allocator.deallocate((char*)client_impl->rmw_client.service_name, allocator.state);
     allocator.deallocate(client_impl->response_storage, allocator.state);
+    allocator.deallocate(client_impl->request_cache, allocator.state); // after tt_Client_destroy() above
     allocator.deallocate(client_impl->owning_node_name, allocator.state);
     allocator.deallocate(client_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(client_impl, allocator.state);

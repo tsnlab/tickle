@@ -349,7 +349,11 @@ struct tt_Client { // extends endpoint
 
     // Cache: fixed-size backing storage for the one outstanding call (tt_Client_call refuses a
     // second call while one is already pending), so a call/retry cycle never has to malloc/free.
-    uint8_t cache_buf[tt_MAX_BUFFER_LENGTH * 2];
+    tt_ALIGNAS(8) uint8_t cache_buf[tt_CLIENT_CACHE_LENGTH];
+    // Where the outstanding request is kept, and its size, when tt_Client_set_storage() attached the
+    // caller's own; NULL (create's default, and a zeroed struct's) means cache_buf above.
+    uint8_t* cache_storage;
+    uint32_t cache_length;
     struct tt_SubmessageHeader* cache; // NULL when idle, else points into cache_buf
     uint64_t cache_time;               // Cache time
     uint32_t latency;                  // Call latency
@@ -398,7 +402,13 @@ struct tt_Server { // extends endpoint
 
     // Fixed backing storage for cached responses (resent as-is if a client retries before
     // seeing one), so caching a response never has to malloc/free on the RPC hot path.
-    uint8_t cache_buf[tt_MAX_SERVER_CACHE_COUNT][tt_MAX_BUFFER_LENGTH * 2];
+    tt_ALIGNAS(8) uint8_t cache_buf[tt_MAX_SERVER_CACHE_COUNT][tt_SERVER_CACHE_ENTRY_LENGTH];
+    // Where cached responses are kept - tt_MAX_SERVER_CACHE_COUNT entries of cache_entry_length - when
+    // tt_Server_set_storage() attached the caller's own; NULL (create's default, and a zeroed
+    // struct's) means cache_buf above. A response larger than an entry is still sent, just not
+    // cached (set_server_cache(), tickle.c).
+    uint8_t* cache_storage;
+    uint32_t cache_entry_length;
     struct tt_SubmessageHeader* cache[tt_MAX_SERVER_CACHE_COUNT]; // NULL when slot i is unused
     struct server_cache_clean_config clean_config[tt_MAX_SERVER_CACHE_COUNT];
     bool clean_scheduled[tt_MAX_SERVER_CACHE_COUNT]; // Whether clean_config[i]'s timer is pending
@@ -421,7 +431,12 @@ struct tt_Server { // extends endpoint
     uint32_t pending_sender_ip[tt_MAX_SERVER_CACHE_COUNT];   // for the same unicast-the-response
     uint16_t pending_sender_port[tt_MAX_SERVER_CACHE_COUNT]; // optimization process_callrequest() uses
     int8_t pending_return_code[tt_MAX_SERVER_CACHE_COUNT];   // tt_Server_send_response()'s own return_code arg
-    uint8_t pending_response_buf[tt_MAX_SERVER_CACHE_COUNT][tt_MAX_BUFFER_LENGTH]; // raw tt_Response bytes
+    tt_ALIGNAS(8) uint8_t
+        pending_response_buf[tt_MAX_SERVER_CACHE_COUNT][tt_SERVER_PENDING_ENTRY_LENGTH]; // raw tt_Response
+    // As cache_storage, for pending_response_buf: tt_MAX_SERVER_CACHE_COUNT entries of
+    // pending_entry_length, each holding one deferred response's C struct (service->response_size).
+    uint8_t* pending_storage;
+    uint32_t pending_entry_length;
     struct server_cache_clean_config pending_timeout_config[tt_MAX_SERVER_CACHE_COUNT];
     bool pending_timeout_scheduled[tt_MAX_SERVER_CACHE_COUNT];
 };
@@ -1454,6 +1469,24 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
                                const char* endpoint_name, tt_CLIENT_CALLBACK callback);
 tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
                                const char* endpoint_name, tt_SERVER_CALLBACK callback);
+
+// Storage sized for this server's own service, in place of the inline default (config.h's
+// tt_SERVER_CACHE_ENTRY_LENGTH / tt_SERVER_PENDING_ENTRY_LENGTH, sized for any message). Call after
+// tt_Node_create_server() - which resets the server to its inline storage - and before it has
+// handled a request. Each area holds tt_MAX_SERVER_CACHE_COUNT entries of the given length:
+//   - cache: one already-encoded response per entry, kept for a retrying client. A response larger
+//     than an entry is still sent, just not cached, so a retry re-runs the callback - as it does
+//     once a cached response has timed out (tt_SERVER_CACHE_TIMEOUT).
+//   - pending: one deferred response per entry, as its C struct; at least service->response_size.
+// Lengths must be multiples of 8 and each area 8-byte aligned. A NULL area goes back to the inline
+// one. tt_RET_INVALID_ARGUMENT for a misfit, tt_RET_ILLEGAL_STATUS if a slot is already in use.
+tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
+                               uint8_t* pending_storage, uint32_t pending_entry_length);
+// The client's counterpart: where its one outstanding request is kept for retries, at least as
+// large as the largest request it will send (a larger one is refused by tt_Client_call() with
+// tt_RET_OUT_OF_BUFFER). Same rules: after creation, not during a call, 8-byte aligned, NULL for
+// the inline default.
+tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length);
 tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
                                   const char* endpoint_name);
 tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,

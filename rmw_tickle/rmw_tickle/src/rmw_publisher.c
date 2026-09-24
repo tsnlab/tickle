@@ -285,6 +285,7 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
 }
 
 // Byte budget for a KEEP_LAST publisher's retained samples (RMW_TICKLE_CACHE_BYTES, default 1 MiB -
+// read by rmw_tickle_cache_budget_bytes(), shared with a service's response cache -
 // the storage design the user approved on 2026-09-24). The arena used to be (depth + 1) x
 // tt_MAX_BUFFER_LENGTH whatever the type: 1.5 MB for /rosout's depth of 1000 at 1472, and 65 MB at
 // the 65507 rmw_tickle is moving to. Now it is (depth + 1) records of the type's own bound, capped
@@ -300,8 +301,6 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
 // KEEP_ALL is not budgeted. Its promise is that nothing unacknowledged is ever dropped, and byte
 // eviction would drop exactly that; its arena stays sized to its depth (resolve_keep_all_record_
 // bytes() above), and keep_all_bound() is a separate, open decision.
-#define RMW_TICKLE_CACHE_BYTES_DEFAULT (1024ULL * 1024ULL)
-
 static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth) {
     // The largest record one sample of this type can need: its generated bound when it has one, the
     // datagram otherwise (a submessage can be no larger).
@@ -312,15 +311,7 @@ static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_
     }
     unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
 
-    unsigned long long budget = RMW_TICKLE_CACHE_BYTES_DEFAULT;
-    const char* env = getenv("RMW_TICKLE_CACHE_BYTES");
-    if (NULL != env && '\0' != env[0]) {
-        char* end = NULL;
-        unsigned long long value = strtoull(env, &end, 10);
-        if (end != env && (end == NULL || '\0' == *end) && value > 0 && value <= UINT32_MAX) {
-            budget = value; // anything else falls back - a malformed knob must not stop a node starting
-        }
-    }
+    unsigned long long budget = rmw_tickle_cache_budget_bytes(); // rmw_typesupport.c
     if (budget < record) {
         budget = record;
     }

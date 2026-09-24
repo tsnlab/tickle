@@ -78,6 +78,20 @@ rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_suppo
 // Not applied to serialization, which puts nothing on the wire.
 bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
 
+// `n` rounded up to the 8-byte unit core's attached storage slots must come in (tt_Server_set_storage()).
+#define RMW_TICKLE_ROUND_UP_8(n) (((n) + 7U) & ~(size_t)7U)
+
+// RMW_TICKLE_CACHE_BYTES: the byte budget for what one entity keeps for retransmission - a KEEP_LAST
+// publisher's retained samples, a service's cached responses. Default 1 MiB (the value the user
+// approved on 2026-09-24); unset, malformed or out of range falls back to it.
+unsigned long long rmw_tickle_cache_budget_bytes(void);
+
+// Bytes a submessage of this type needs at its largest - `framing` bytes of headers plus its
+// generated bound, or plus a whole datagram when it has none - never more than one datagram, rounded
+// up to a multiple of 8 so it can size an aligned storage slot.
+uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
+                                       size_t framing);
+
 // The service-level counterpart, for rmw_client.c/rmw_service.c (Milestone 4) - bundles the one
 // rmw_tickle_get_message_callbacks() lookup per side plus the service's own callbacks (just its
 // ros_type_name - see rosidl_typesupport_tickle_c/service_type_support.h) into the three pieces
@@ -741,6 +755,9 @@ typedef struct rmw_tickle_client_t {
     void* response_storage; // response_callbacks->ros_struct_size bytes, reused across calls
                             // (only one outstanding at a time - see above)
     int64_t next_sequence_id;
+    // Where core keeps the outstanding request for a retry, sized for this service's requests and
+    // attached with tt_Client_set_storage() (rmw_tickle defines core's inline one tiny - CMakeLists).
+    uint8_t* request_cache;
 } rmw_tickle_client_t;
 
 // TickLE specific service data
@@ -789,6 +806,11 @@ typedef struct rmw_tickle_service_t {
     // it used to when server_callback() copied it back out itself, still waiting.
     void* response_storage;
     int64_t next_sequence_id;
+    // Core's cached and deferred responses for this server, sized for this service's own response
+    // and attached with tt_Server_set_storage() (rmw_tickle defines core's inline storage tiny -
+    // CMakeLists.txt): tt_MAX_SERVER_CACHE_COUNT entries of each.
+    uint8_t* response_cache;
+    uint8_t* pending_responses;
 } rmw_tickle_service_t;
 
 // TickLE specific wait set data. Unlike a typical DDS-backed rmw, this doesn't need its own

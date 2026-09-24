@@ -298,6 +298,22 @@
 #define tt_MAX_SERVER_CACHE_COUNT 64 // >= # of client
 #endif
 
+// The storage a server and a client carry inline, per slot. Sized for any message by default, which
+// is what core's own users - the examples, FreeRTOS - get without doing anything. A caller that
+// knows its types can instead attach storage sized for them after creation
+// (tt_Server_set_storage()/tt_Client_set_storage()) and define these small: rmw_tickle does, because
+// at tt_MAX_BUFFER_LENGTH 65507 the inline defaults would make every tt_Server 12.6 MB (the storage
+// design the user approved on 2026-09-24). Multiples of 8, so each slot can hold an aligned struct.
+#ifndef tt_SERVER_CACHE_ENTRY_LENGTH
+#define tt_SERVER_CACHE_ENTRY_LENGTH (tt_MAX_BUFFER_LENGTH * 2) // one cached, already-encoded response
+#endif
+#ifndef tt_SERVER_PENDING_ENTRY_LENGTH
+#define tt_SERVER_PENDING_ENTRY_LENGTH tt_MAX_BUFFER_LENGTH // one deferred response, as its C struct
+#endif
+#ifndef tt_CLIENT_CACHE_LENGTH
+#define tt_CLIENT_CACHE_LENGTH (tt_MAX_BUFFER_LENGTH * 2) // the outstanding request, encoded
+#endif
+
 // Threshold for how many known recipient nodes a Publisher/Client sends to individually before
 // switching to one broadcast instead. <= this many known peers -> unicast (tt_send_to() once per
 // peer); more than this many -> broadcast (tt_send() once). Zero known peers (nobody has

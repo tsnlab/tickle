@@ -58,6 +58,12 @@ if(NOT rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH)
   message(FATAL_ERROR "rosidl_typesupport_tickle_c exported no MAX_BUFFER_LENGTH - rebuild it")
 endif()
 target_compile_definitions(rmw_tickle PUBLIC "tt_MAX_BUFFER_LENGTH=${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}")
+# Core's inline server/client storage (config.h), sized for any message by default: 192 x
+# tt_MAX_BUFFER_LENGTH per tt_Server. rmw_tickle attaches storage sized for each service instead
+# (tt_Server_set_storage()/tt_Client_set_storage(), rmw_service.c/rmw_client.c), so the inline
+# arrays are made as small as allowed - 8 bytes, the alignment unit.
+target_compile_definitions(rmw_tickle PUBLIC tt_SERVER_CACHE_ENTRY_LENGTH=8 tt_SERVER_PENDING_ENTRY_LENGTH=8
+                                             tt_CLIENT_CACHE_LENGTH=8)
 
 target_include_directories(rmw_tickle PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

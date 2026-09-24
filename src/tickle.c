@@ -165,6 +165,33 @@ static void rollback(struct tt_Node* node, uint32_t old_tx_tail) {
     node->tx_tail = old_tx_tail;
 }
 
+// Where a client's or server's retry and deferred-response storage lives: the caller's, attached by
+// tt_Client_set_storage()/tt_Server_set_storage(), or the inline default when that pointer is NULL -
+// which is also what a zeroed struct holds, so an endpoint never set up through create or attach
+// still gets working storage rather than a zero-length one.
+static uint8_t* client_cache_area(struct tt_Client* client, uint32_t* length) {
+    *length = client->cache_storage != NULL ? client->cache_length : (uint32_t)tt_CLIENT_CACHE_LENGTH;
+    return client->cache_storage != NULL ? client->cache_storage : client->cache_buf;
+}
+
+static uint32_t server_cache_entry_length(const struct tt_Server* server) {
+    return server->cache_storage != NULL ? server->cache_entry_length : (uint32_t)tt_SERVER_CACHE_ENTRY_LENGTH;
+}
+
+static uint8_t* server_cache_entry(struct tt_Server* server, int slot) {
+    return server->cache_storage != NULL ? server->cache_storage + ((size_t)slot * server->cache_entry_length)
+                                         : server->cache_buf[slot];
+}
+
+static uint32_t server_pending_entry_length(const struct tt_Server* server) {
+    return server->pending_storage != NULL ? server->pending_entry_length : (uint32_t)tt_SERVER_PENDING_ENTRY_LENGTH;
+}
+
+static uint8_t* server_pending_entry(struct tt_Server* server, int slot) {
+    return server->pending_storage != NULL ? server->pending_storage + ((size_t)slot * server->pending_entry_length)
+                                           : server->pending_response_buf[slot];
+}
+
 // peer_count == 0 (peers may be NULL) means "no override, send to the node's usual broadcast
 // address" - the direct successor to the old dest_ip == 0 sentinel. peer_count >= 1 sends the
 // same already-encoded buffer to each peer in turn via tt_send_to() instead - used by
@@ -1372,6 +1399,8 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
     client->callback = callback;
     client->seq_no = 0;
     client->cache = NULL;
+    client->cache_storage = NULL; // inline - see client_cache_area()
+    client->cache_length = 0;
     client->cache_time = 0;
     client->latency = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -1411,6 +1440,10 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
         server->slot_state[i] = tt_SERVER_SLOT_EMPTY;
         server->pending_timeout_scheduled[i] = false;
     }
+    server->cache_storage = NULL; // inline - see server_cache_entry()
+    server->cache_entry_length = 0;
+    server->pending_storage = NULL;
+    server->pending_entry_length = 0;
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
     if (result != tt_RET_OK) {
@@ -1419,6 +1452,54 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
 
     node->last_modified = tt_get_ns();
 
+    return tt_RET_OK;
+}
+
+// Caller storage must hold aligned structs: a tt_SubmessageHeader in a cache entry, the service's
+// response struct in a pending entry.
+static bool storage_aligned(const uint8_t* storage, uint32_t entry_length) {
+    return ((uintptr_t)storage % 8U) == 0 && (entry_length % 8U) == 0;
+}
+
+tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
+                               uint8_t* pending_storage, uint32_t pending_entry_length) {
+    if (server == NULL || server->service == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    // A cache entry must at least hold the smallest response (headers, empty body); a pending
+    // entry must hold the response struct itself.
+    const uint32_t smallest_response = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_CallResponseHeader);
+    if ((cache_storage != NULL &&
+         (cache_entry_length < smallest_response || !storage_aligned(cache_storage, cache_entry_length))) ||
+        (pending_storage != NULL && (pending_entry_length < server->service->response_size ||
+                                     !storage_aligned(pending_storage, pending_entry_length)))) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    for (int i = 0; i < tt_MAX_SERVER_CACHE_COUNT; i++) {
+        if (server->cache[i] != NULL ||
+            __atomic_load_n(&server->slot_state[i], __ATOMIC_ACQUIRE) != tt_SERVER_SLOT_EMPTY) {
+            return tt_RET_ILLEGAL_STATUS; // an entry already lives in the storage being replaced
+        }
+    }
+    server->cache_storage = cache_storage; // NULL = inline, see server_cache_entry()
+    server->cache_entry_length = cache_storage != NULL ? cache_entry_length : 0;
+    server->pending_storage = pending_storage;
+    server->pending_entry_length = pending_storage != NULL ? pending_entry_length : 0;
+    return tt_RET_OK;
+}
+
+tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length) {
+    if (client == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (cache_storage != NULL && !storage_aligned(cache_storage, cache_length)) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (client->cache != NULL) {
+        return tt_RET_ILLEGAL_STATUS; // a call is outstanding in the storage being replaced
+    }
+    client->cache_storage = cache_storage; // NULL = inline, see client_cache_area()
+    client->cache_length = cache_storage != NULL ? cache_length : 0;
     return tt_RET_OK;
 }
 
@@ -1661,7 +1742,17 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     // tx_buffer is sized tt_MAX_BUFFER_LENGTH * 2 to let one submessage overshoot the flush
     // limit before being deferred, so cache_buf is sized to match that same worst case.
     size_t length = ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
-    struct tt_SubmessageHeader* cache = (struct tt_SubmessageHeader*)client->cache_buf;
+    uint32_t cache_length = 0;
+    uint8_t* cache_area = client_cache_area(client, &cache_length);
+    if (length > cache_length) {
+        // No room to keep it for a retry (tt_Client_set_storage() sized for smaller requests). Not
+        // sent either: a call that cannot be retried would fail silently on the first lost packet.
+        TT_LOG_ERROR("Request of %u bytes exceeds the client's %u-byte cache - not sent", (unsigned)length,
+                     (unsigned)cache_length);
+        rollback(node, old_tx_tail);
+        return tt_RET_OUT_OF_BUFFER;
+    }
+    struct tt_SubmessageHeader* cache = (struct tt_SubmessageHeader*)cache_area;
     _tt_memcpy(cache, submessage_header, length);
     cache->length = length;
 
@@ -4997,13 +5088,23 @@ static bool set_server_cache(struct tt_Server* server, struct tt_SubmessageHeade
         }
     }
 
+    if (length > server_cache_entry_length(server)) {
+        // Larger than this server's cache entries (tt_Server_set_storage() sized them for this
+        // service's responses, and this one is bigger). Sent, not cached: refusing to send it would
+        // turn a size limit on a retry optimisation into a lost response. A retry re-runs the
+        // callback, exactly as it does once a cached response has timed out.
+        TT_LOG_WARNING("Response of %u bytes exceeds the server's %u-byte cache entries - sent, not cached",
+                       (unsigned)length, (unsigned)server_cache_entry_length(server));
+        return true;
+    }
+
     if (free_slot < 0) {
         TT_LOG_ERROR("Out of server cache slots");
         return false;
     }
 
     // Copy into this slot's own fixed buffer instead of malloc'ing one.
-    struct tt_SubmessageHeader* cache = (struct tt_SubmessageHeader*)server->cache_buf[free_slot];
+    struct tt_SubmessageHeader* cache = (struct tt_SubmessageHeader*)server_cache_entry(server, free_slot);
     _tt_memcpy(cache, submessage_header, length);
     cache->length = length;
 
@@ -5211,7 +5312,10 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
         // ever match - safe to memcpy before the compare-exchange below claims it, since only the
         // poll thread (pending_response_timeout()) could otherwise touch this slot concurrently,
         // and it only ever *reclaims* (PENDING -> EMPTY), never overwrites pending_response_buf.
-        _tt_memcpy(server->pending_response_buf[i], response, server->service->response_size);
+        if (server->service->response_size > server_pending_entry_length(server)) {
+            return tt_RET_OUT_OF_BUFFER; // tt_Server_set_storage() refuses this; inline storage too small
+        }
+        _tt_memcpy(server_pending_entry(server, i), response, server->service->response_size);
         server->pending_return_code[i] = return_code;
 
         uint8_t expected = tt_SERVER_SLOT_PENDING;
@@ -5260,7 +5364,7 @@ static void flush_pending_responses(struct tt_Node* node) {
             uint32_t old_tx_tail = node->tx_tail;
             struct tt_SubmessageHeader* submessage_header =
                 encode_call_response(node, request_id.receiver, server, request_id.seq_no, return_code,
-                                     (struct tt_Response*)server->pending_response_buf[slot], old_tx_tail);
+                                     (struct tt_Response*)server_pending_entry(server, slot), old_tx_tail);
 
             // Reclaim the slot regardless of encode success - a failure here is already logged by
             // encode_call_response() itself, and retrying it from this same stale slot on the

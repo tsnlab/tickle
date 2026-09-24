@@ -10,6 +10,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h> // getenv()/strtoull() - rmw_tickle_cache_budget_bytes()
 
 #include "rmw/error_handling.h"
 #include "rmw_tickle_c/rmw_tickle.h"
@@ -72,6 +74,33 @@ bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message
         return false;
     }
     return true;
+}
+
+#define RMW_TICKLE_CACHE_BYTES_DEFAULT (1024ULL * 1024ULL)
+
+unsigned long long rmw_tickle_cache_budget_bytes(void) {
+    const char* env = getenv("RMW_TICKLE_CACHE_BYTES");
+    if (NULL == env || '\0' == env[0]) {
+        return RMW_TICKLE_CACHE_BYTES_DEFAULT;
+    }
+    char* end = NULL;
+    unsigned long long value = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || value == 0 || value > UINT32_MAX) {
+        return RMW_TICKLE_CACHE_BYTES_DEFAULT; // a malformed tuning knob must not stop a node starting
+    }
+    return value;
+}
+
+uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,
+                                       size_t framing) {
+    unsigned long long bytes = (unsigned long long)framing + (unsigned long long)tt_MAX_BUFFER_LENGTH;
+    if (NULL != callbacks && ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != callbacks->tickle_max_encoded_size) {
+        bytes = (unsigned long long)framing + (unsigned long long)callbacks->tickle_max_encoded_size;
+    }
+    if (bytes > (unsigned long long)tt_MAX_BUFFER_LENGTH) {
+        bytes = (unsigned long long)tt_MAX_BUFFER_LENGTH; // no submessage can be larger than its datagram
+    }
+    return (uint32_t)RMW_TICKLE_ROUND_UP_8(bytes);
 }
 
 bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support,
