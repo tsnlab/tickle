@@ -1439,8 +1439,26 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->ack_solicit_period_ns = 0;     // no periodic ACK solicitation by default - see its own doc comment
     pub->ack_solicit_watermark_pct = 0; // no watermark-triggered solicitation either (Phase 3 (d))
     pub->last_ack_solicit_ns = 0;
+    // Every field an UPDATE announce or the reliability path reads, not only the ones above: these
+    // used to be left as found, and a caller whose struct was not already zero (a stack or reused
+    // allocation) announced whatever QoS bits the garbage made, and could start with ack slots that
+    // looked occupied. Found 2026-09-24 by UBSan ("load of value 69 ... for type '_Bool'").
+    pub->keep_all = false;
+    pub->liveliness_manual = false;
+    pub->lifespan_duration_ns = 0;
+    pub->deadline_duration_ns = 0;
+    pub->liveliness_lease_duration_ns = 0;
+    pub->writable_callback = NULL;
+    pub->writable_callback_param = NULL;
+    pub->writable_pending = false;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
+    }
+    for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
+        pub->peer_acks[i].node_id = tt_NODE_ID_INVALID; // empty - see claim_peer_ack()
+        pub->peer_acks[i].entity_id = 0;
+        pub->peer_acks[i].ack_seq_no = 0;
+        pub->peer_acks[i].tracking_words = 0;
     }
 
     tt_ret_t result = add_endpoint_to_node(node, endpoint);
@@ -1469,6 +1487,17 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->topic = topic;
     sub->callback = callback;
     sub->reliable = false; // best-effort by default - see tickle.h's own doc comment
+    // As for tt_Node_create_publisher(): everything an announce or the receive path reads. The
+    // tracking pair matters most - tickle.h documents NULL/0 as this function's default, meaning
+    // "use builtin_tracking[]", and a caller that did not zero its struct otherwise handed the
+    // reliable path a garbage pointer to write through.
+    sub->durable = false;
+    sub->liveliness_manual = false;
+    sub->deadline_duration_ns = 0;
+    sub->liveliness_lease_duration_ns = 0;
+    sub->tracking_bitmaps = NULL;
+    sub->tracking_words = 0;
+    sub->seq_no = 0;
     sub->rxo_drops = 0;
     sub->delivered = 0;
     sub->writer_switches = 0;

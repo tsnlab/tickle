@@ -454,9 +454,10 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // by a buffer that never held one - and receive throughput collapsed to a quarter.
     //
     // tracking_bitmaps moved with it. It happened to work where it was, because
-    // tt_Node_create_subscriber() does not zero that pair, but that is a property of core's
-    // current init list rather than a contract - and relying on which caller-owned fields core
-    // does and does not reset is exactly how this bug happened.
+    // tt_Node_create_subscriber() did not zero that pair - a property of core's init list rather
+    // than a contract, and the warning here said so. Since 2026-09-24 it does zero it (NULL/0 is
+    // the documented default, and leaving it unset handed non-zeroed callers a garbage pointer), so
+    // attaching it before create would now be discarded exactly like reorder_storage was.
     sub_impl->tickle_subscriber.tracking_bitmaps = sub_impl->tracking_bitmaps;
     sub_impl->tickle_subscriber.tracking_words = RMW_TICKLE_TRACKING_WORDS;
     sub_impl->tickle_subscriber.reorder_storage = sub_impl->reorder_storage;
