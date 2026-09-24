@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790225644739,
+  "lastUpdate": 1790225648575,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -107660,6 +107660,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "recv @ 5%",
             "value": 1750290,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "1147eac540d6d32cc7fbb3deedcd9a18165e2780",
+          "message": "A check for the defect that was found and fixed three times today\n\nThe same hole appeared in three different steps of rmw-perf.yml within a few\nhours: colcon reading $RMW_PERF_WS/build outside the box lock, colcon rebuilding\nbuildfarm_perf_tests into it outside the lock, and colcon building rmw_tickle\ninto $REPO_ROOT/install - not in the perf workspace at all, which is why it\noutlived the first two fixes.\n\nNone of the three was careless. The lock was introduced to protect \"the\nbenchmark\", which is an activity, and each pass asked \"is the benchmark locked?\"\nrather than \"is this state shared?\" - so each fixed the instance in front of it\nand left the next. A rule saying \"take the lock\" would not have helped, because\neveryone believed they had. Only something that looks afterwards can catch that,\nwhich is the same reasoning check_doc_shas.sh was written under.\n\nWhat it cost: a twelve-rep measurement whose reps 2, 5 and 6 ran while CI was\nrewriting binaries underneath them reported 4 failures in 12, against 0 in 12\nfor an identical batch with no CI writing. An entire hypothesis about concurrent\nload was built on that difference and had to be withdrawn. That is the expensive\nkind of wrong, because the numbers looked real.\n\nVerified by restoring each of the three holes in turn and confirming the check\nfails on each, then restoring the file. Two degenerate cases fail rather than\npass, both of which would otherwise be indistinguishable from success: a\nworkflow where no colcon invocation is found at all (the check has stopped\nreading what it thinks it is) and a missing PyYAML.\n\nIt also knows that a colcon call inside a `bash -c` body that rig_lock.sh wraps\nis covered - the first version reported those as violations, which would have\nmade it noise people learn to ignore.\n\nWired into the test-all gate and not only added as a step: every step there\ncarries continue-on-error, so a step absent from the gate's own list cannot fail\nthe job. Cross-checked that the gate list and the continue-on-error steps are\nnow exactly the same set, in both directions.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T13:47:55+09:00",
+          "tree_id": "6ad7d78f3e4df42ea5fff4a16fc271b3ae796de0",
+          "url": "https://github.com/tsnlab/tickle/commit/1147eac540d6d32cc7fbb3deedcd9a18165e2780"
+        },
+        "date": 1790225647367,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "recv @ 0%",
+            "value": 1894032,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 1%",
+            "value": 1827359,
+            "unit": "count"
+          },
+          {
+            "name": "recv @ 5%",
+            "value": 1764616,
             "unit": "count"
           }
         ]
