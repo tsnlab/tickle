@@ -166,6 +166,47 @@ compiled-in defaults `make run*` relies on:
   they won't find each other
 - `-l` log level: `debug|info|warning|error|none` (default `info`)
 
+### Choosing which interface a node talks on
+
+A node sends on one link, configured as a pair: `-b`, the broadcast address it addresses announces
+to, and `-a`, the local address it sends from. (One pair today; per-link configuration on a
+multi-homed node is a separate, later question.) Getting this right matters more than it looks on
+a machine with more than one interface, and the three defaults in play are not the same value:
+
+| | broadcast default | scoped by the routing table? |
+|---|---|---|
+| These example binaries | `192.168.10.255` (each example sets it) | yes |
+| The library itself (`_tt_NODE_BROADCAST`, `config.h`) | `255.255.255.255` | **no** |
+| `rmw_tickle` under ROS 2 | the library's, unless `TICKLE_BROADCAST_ADDR` is set | **no** |
+
+That difference is not academic: it is why these examples have never left their link and why a
+`rmw_tickle` deployment did.
+
+- **`255.255.255.255` is the *limited* broadcast.** It has no subnet, so there is
+  nothing for the routing table to scope it by, and the kernel sends it out **whatever the host's
+  default route points at**. On a machine whose default route is a management network and whose
+  real traffic belongs on a separate segment, that is the wrong interface - and nothing reports
+  it, because the send succeeds either way. On 2026-09-23 this put a benchmark's traffic onto a
+  shared lab network for a day.
+- **A *directed* broadcast is scoped by the routing table on its own.** For a node on
+  `192.168.10.0/24`, `-b 192.168.10.255` leaves on the interface owning that subnet with no socket
+  binding involved - `ip route get 192.168.10.255` will name it. This is the normal answer and it
+  is sufficient by itself: set `-b` to the directed broadcast of the link you mean.
+- **`-a` pins sends to an interface when you cannot use a directed broadcast.** Set it to this
+  node's own address on that link. Measured on a two-interface host, 20 samples per run, three
+  runs each, counted with `tcpdump` on *both* interfaces: with `-a` unset, 0 datagrams on the test
+  link and 22-23 on the management one; with `-a` set to the test link's address, 22-23 on the
+  test link and **0** on the management one.
+- `-a` binds the data socket only. The well-known port stays bound to the wildcard, and that is
+  deliberate: a socket bound to a unicast address receives no broadcasts at all, so binding that
+  one would silently stop discovery while unicast kept working - a node that hears nobody and is
+  heard by nobody, with every send reporting success.
+
+Under ROS 2 there is no argv to pass, so `rmw_tickle` reads the same two settings from the
+environment at `rmw_init()`: `TICKLE_BROADCAST_ADDR` for `-b` and `TICKLE_NODE_ID` for `-I`. A ROS
+deployment that leaves `TICKLE_BROADCAST_ADDR` unset gets the limited broadcast and the default
+route with it, which is exactly the case that leaked above. Set it.
+
 Senders (`ping`, `client`, `publisher`, `perf_client`) additionally take:
 
 - `-c` stop after this many sends (default `0` = unlimited - `ping` also accepts `-d` instead/as
