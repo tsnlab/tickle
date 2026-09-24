@@ -125,7 +125,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint lint-shell clean fuzz sanitize
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize
 
 all:
 	$(MAKE) library
@@ -199,10 +199,27 @@ $(OBJ)/tests:
 	mkdir -p $@
 
 # Coverage-guided fuzzing of the packet parser - the untrusted-input boundary. Needs clang.
-# `make fuzz` builds and runs it; pass FUZZ_ARGS (e.g. '-max_total_time=60', or a corpus dir).
+# `make fuzz` builds and runs it; pass FUZZ_ARGS (e.g. '-max_total_time=60').
+#
+# Seeded from tests/fuzz_corpus/ (valid packets from the real encoder - see tests/gen_fuzz_corpus.c
+# for why), passed as a second, read-only corpus directory: libFuzzer writes what it discovers into
+# the FIRST directory only, so the checked-in seeds are never modified.
 FUZZ_CC ?= clang
-fuzz: $(OBJ)/fuzz/fuzz_process_packet
-	./$< $(FUZZ_ARGS)
+FUZZ_SEEDS = $(TEST_DIR)/fuzz_corpus
+fuzz: $(OBJ)/fuzz/fuzz_process_packet | $(OBJ)/fuzz/corpus
+	./$< $(FUZZ_ARGS) $(OBJ)/fuzz/corpus $(FUZZ_SEEDS)
+
+$(OBJ)/fuzz/corpus:
+	mkdir -p $@
+
+# Regenerates tests/fuzz_corpus/ from the current encoder - after a wire-format or tt_VERSION change,
+# which tests/test_fuzz_corpus.c reports.
+fuzz-corpus: | $(OBJ)/fuzz
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $(OBJ)/fuzz/gen_fuzz_corpus $(TEST_DIR)/gen_fuzz_corpus.c $(SRC)/encoding.c \
+	    $(SRC)/log.c -lm
+	rm -f $(FUZZ_SEEDS)/*.bin
+	mkdir -p $(FUZZ_SEEDS)
+	$(OBJ)/fuzz/gen_fuzz_corpus $(FUZZ_SEEDS)
 
 $(OBJ)/fuzz/fuzz_process_packet: $(TEST_DIR)/fuzz_process_packet.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c \
                                  | $(OBJ)/fuzz
