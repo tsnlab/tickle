@@ -22,6 +22,11 @@ ament_register_extension(
 # *this* package's own configure time rather than a relative one.
 set(rosidl_typesupport_tickle_c_TICKLE_ROOT "@TICKLE_ROOT@")
 
+# tt_MAX_BUFFER_LENGTH everything built on this package uses - see TICKLE_MAX_BUFFER_LENGTH in this
+# package's CMakeLists.txt. Passed to the generator and compiled into each generated library here,
+# and into rmw_tickle by its own CMakeLists.txt.
+set(rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH "@TICKLE_MAX_BUFFER_LENGTH@")
+
 # The generator run for each interface: this package's own Python package (installed by its
 # CMakeLists.txt with ament_python_install_package, so it is on a dependent's PYTHONPATH). It
 # imports tools/typesupport's tickle_typesupport, which isn't an ament/colcon package of its own

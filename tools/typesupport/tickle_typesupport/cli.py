@@ -16,7 +16,7 @@ import os
 import sys
 
 from . import _rosidl_parser as rosidl
-from . import adapt, postprocess, render, resolve
+from . import adapt, model, postprocess, render, resolve
 
 
 def _type_str(field_type):
@@ -148,7 +148,16 @@ def main(argv=None):
         help="search DIR/<pkg>/msg/<Name>.msg to resolve a nested message field's type "
         "(repeatable)",
     )
+    parser.add_argument(
+        "--max-buffer-length",
+        type=int,
+        default=model.TT_MAX_BUFFER_LENGTH,
+        metavar="N",
+        help="the tt_MAX_BUFFER_LENGTH the generated code will be built with (default %(default)s, core's). "
+        "Auto-derived capacities fill a datagram of this size, so it must match the build's.",
+    )
     args = parser.parse_args(argv)
+    model.set_max_buffer_length(args.max_buffer_length)
 
     if args.name and len(args.inputs) != 1:
         parser.error("--name only makes sense with a single input file")

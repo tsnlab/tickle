@@ -175,6 +175,7 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
       --outdir "${_msg_output_dir}"
       ${_tickle_dep_include_args}
       ${_tickle_generated_pkg_args}
+      --max-buffer-length "${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}"
     DEPENDS "${_src_file}"
     COMMENT "Generating TickLE type support for ${_idl_name}"
     VERBATIM
@@ -257,6 +258,10 @@ if(_generated_sources)
     target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PUBLIC
       ${_tickle_public_include_dirs})
   endif()
+  # The same tt_MAX_BUFFER_LENGTH the generator was given (--max-buffer-length above) and rmw_tickle
+  # is built with - see TICKLE_MAX_BUFFER_LENGTH in this package's CMakeLists.txt.
+  target_compile_definitions(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
+    "tt_MAX_BUFFER_LENGTH=${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}")
   target_include_directories(${rosidl_generate_interfaces_TARGET}${_target_suffix} PRIVATE
     "${_generator_output_path}"
     "${rosidl_typesupport_tickle_c_TICKLE_ROOT}/include"

@@ -128,3 +128,28 @@ def test_auto_derived_nested_capacity_is_reported_as_fitting():
     assert points.capacity == (budget - 4) // 12 == 120
     assert layout.max_wire_size(struct) == budget
     assert layout.max_encoded_size(struct) == budget
+
+
+def test_auto_capacity_follows_the_configured_buffer_length():
+    # --max-buffer-length (model.set_max_buffer_length) is what auto-derivation fills: a build with a
+    # larger tt_MAX_BUFFER_LENGTH gets proportionally larger auto capacities, and anything the
+    # generator says fits has to fit the datagram that build actually uses. Restored afterwards -
+    # the setting is per process.
+    polygon = FIXTURES_ROS2 / "geometry_msgs" / "msg" / "Polygon.msg"
+    try:
+        model.set_max_buffer_length(8192)
+        struct = _struct(polygon, "geometry_msgs", "Polygon")
+        assert struct.fields[0].capacity == (8192 - model.FRAMING_OVERHEAD - 4) // 12
+        assert layout.max_wire_size(struct) <= 8192 - model.FRAMING_OVERHEAD
+    finally:
+        model.set_max_buffer_length(model.TT_MAX_BUFFER_LENGTH)
+    assert _struct(polygon, "geometry_msgs", "Polygon").fields[0].capacity == 120  # the default again
+
+
+def test_buffer_length_outside_one_datagram_is_refused():
+    import pytest
+
+    for bad in (model.FRAMING_OVERHEAD, model.TT_IPV4_UDP_MAX_PAYLOAD + 1):
+        with pytest.raises(ValueError):
+            model.set_max_buffer_length(bad)
+    assert model.max_buffer_length() == model.TT_MAX_BUFFER_LENGTH

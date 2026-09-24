@@ -55,6 +55,25 @@ rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_suppo
     return (const rosidl_typesupport_tickle_c_message_callbacks_t*)ours->data;
 }
 
+bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks) {
+    if (0 != callbacks->tickle_max_buffer_length &&
+        (size_t)tt_MAX_BUFFER_LENGTH != callbacks->tickle_max_buffer_length) {
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "type '%s' was generated for tt_MAX_BUFFER_LENGTH %zu, but rmw_tickle was built with %d - rebuild the "
+            "interface package with the same value",
+            callbacks->ros_type_name, callbacks->tickle_max_buffer_length, tt_MAX_BUFFER_LENGTH);
+        return false;
+    }
+    if (callbacks->tickle_struct_size > (size_t)tt_MAX_BUFFER_LENGTH) {
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "type '%s' needs %zu bytes at its largest (every field at capacity), more than one %d-byte datagram - "
+            "rmw_tickle cannot carry it; lower its capacities or raise tt_MAX_BUFFER_LENGTH",
+            callbacks->ros_type_name, callbacks->tickle_struct_size, tt_MAX_BUFFER_LENGTH);
+        return false;
+    }
+    return true;
+}
+
 bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_support,
                                       rmw_tickle_service_typesupport_t* out) {
     if (NULL == type_support) {
@@ -76,12 +95,12 @@ bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_
 
     const rosidl_typesupport_tickle_c_message_callbacks_t* request =
         rmw_tickle_get_message_callbacks(ours->request_typesupport);
-    if (NULL == request) {
+    if (NULL == request || !rmw_tickle_check_callbacks_usable(request)) {
         return false; // error message already set
     }
     const rosidl_typesupport_tickle_c_message_callbacks_t* response =
         rmw_tickle_get_message_callbacks(ours->response_typesupport);
-    if (NULL == response) {
+    if (NULL == response || !rmw_tickle_check_callbacks_usable(response)) {
         return false; // error message already set
     }
 

@@ -305,7 +305,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     }
 
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = rmw_tickle_get_message_callbacks(type_support);
-    if (NULL == callbacks) {
+    if (NULL == callbacks || !rmw_tickle_check_callbacks_usable(callbacks)) {
         return NULL; // error message already set
     }
 

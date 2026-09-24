@@ -68,6 +68,16 @@ static inline bool rmw_tickle_identifier_matches(const char* identifier) {
 const rosidl_typesupport_tickle_c_message_callbacks_t*
 rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_support);
 
+// Whether a type can be used by a publisher, subscription, client or service of this build - false
+// with an rmw error naming the type and both numbers when it cannot:
+//   - it was generated for a different tt_MAX_BUFFER_LENGTH (callbacks->tickle_max_buffer_length,
+//     message_type_support.h): its layout was sized for a datagram this build does not use;
+//   - its TickLE struct is larger than tt_MAX_BUFFER_LENGTH, which core refuses at creation because
+//     the receive path decodes into a buffer of exactly that size - checked here first so the error
+//     says which type and by how much, rather than "tt_Node_create_publisher() failed".
+// Not applied to serialization, which puts nothing on the wire.
+bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
+
 // The service-level counterpart, for rmw_client.c/rmw_service.c (Milestone 4) - bundles the one
 // rmw_tickle_get_message_callbacks() lookup per side plus the service's own callbacks (just its
 // ros_type_name - see rosidl_typesupport_tickle_c/service_type_support.h) into the three pieces

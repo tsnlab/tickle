@@ -252,7 +252,7 @@ def _resolve_auto_capacities(fields):
         offset = layout.align_up(offset, f.wire_align) + f.wire_size
     offset = layout.align_up(offset, model.ARRAY_COUNT_ALIGN) + model.ARRAY_COUNT_SIZE
     offset = layout.align_up(offset, target.element_align)
-    remaining = (model.TT_MAX_BUFFER_LENGTH - model.FRAMING_OVERHEAD) - offset
+    remaining = (model.max_buffer_length() - model.FRAMING_OVERHEAD) - offset
     if target.array_element_kind == "nested":
         # Conservative: divide by the full per-element *stride* (the nested type's own wire size
         # rounded up to its own self-alignment - see model._nested_self_align), even though the

@@ -65,7 +65,30 @@ ARRAY_COUNT_ALIGN = 2
 # headers). Used only for the "message fits in one datagram" _Static_assert every generated
 # struct gets, and to auto-derive a variable array's capacity when nothing else specifies one.
 TT_MAX_STRING_LENGTH = 65535
+# The default tt_MAX_BUFFER_LENGTH, core's. A build that raises it (rmw_tickle, up to 65507 - the
+# user's decision of 2026-09-24) must tell the generator the same value: --max-buffer-length on
+# both CLIs, which set it through set_max_buffer_length(). Read it with max_buffer_length(), never
+# this constant, or an auto-derived capacity is sized for a datagram the build does not use.
 TT_MAX_BUFFER_LENGTH = 1472
+TT_IPV4_UDP_MAX_PAYLOAD = 65507
+_max_buffer_length = TT_MAX_BUFFER_LENGTH
+
+
+def max_buffer_length():
+    """The tt_MAX_BUFFER_LENGTH this generator run targets (TT_MAX_BUFFER_LENGTH unless set)."""
+    return _max_buffer_length
+
+
+def set_max_buffer_length(value):
+    """Sets the tt_MAX_BUFFER_LENGTH this generator run targets. Per process: each generator
+    invocation is its own process, one per interface, all given the same value by the build."""
+    global _max_buffer_length  # noqa: PLW0603 - one value per generator process, see above
+    if not FRAMING_OVERHEAD < value <= TT_IPV4_UDP_MAX_PAYLOAD:
+        raise ValueError(
+            f"--max-buffer-length {value}: must be above the {FRAMING_OVERHEAD}-byte framing overhead and at "
+            f"most {TT_IPV4_UDP_MAX_PAYLOAD}, the largest IPv4 UDP payload (config.h asserts the same)"
+        )
+    _max_buffer_length = value
 # Smallest framing overhead any submessage carrying a payload has (a CALLREQUEST/CALLRESPONSE
 # payload starts at offset 16, DATA's at 28 - see DESIGN.md's "Interface serialization") - used
 # only as auto-capacity's safety margin, so an auto-derived array still leaves room for framing

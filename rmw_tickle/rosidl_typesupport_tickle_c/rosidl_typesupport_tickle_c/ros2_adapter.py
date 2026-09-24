@@ -69,7 +69,7 @@ point registration this depends on.
 
 import re
 
-from tickle_typesupport import layout
+from tickle_typesupport import layout, model
 
 # A nested field's own ROS 2 struct name ("msg" is the only subfolder that can appear nested -
 # ROS 2 doesn't nest .srv types). Reads the nested WireStruct's own ros_pkg_name/ros_type_name
@@ -511,6 +511,7 @@ def render_type_support(struct, ros_name, tickle_header, adapter_header):
             f"    .tickle_decode = (tt_DATA_DECODE)&{struct.c_name}_decode,",
             f"    .tickle_free = (tt_DATA_FREE)&{struct.c_name}_free,",
             f"    .tickle_max_encoded_size = {_max_encoded_size_literal(struct)},",
+            f"    .tickle_max_buffer_length = {model.max_buffer_length()},",
             "};",
             "",
             "// .typesupport_identifier is set on first access below, not here - a plain (non-",

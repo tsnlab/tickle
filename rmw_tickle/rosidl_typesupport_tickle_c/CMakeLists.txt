@@ -22,6 +22,21 @@ find_package(rosidl_typesupport_interface REQUIRED)
 # which could be anywhere in a colcon workspace - a relative path wouldn't resolve there.
 get_filename_component(TICKLE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
+# tt_MAX_BUFFER_LENGTH for everything built on this package: rmw_tickle, and every interface
+# package whose typesupport it generates - one value, set here, exported through the extras file,
+# so no two of them can be built for different datagrams. rmw_tickle may raise it up to 65507 and
+# leave the OS to fragment (the user's decision, 2026-09-24); core's own default stays 1472.
+# Changing it means rebuilding every interface package too - rmw_tickle refuses a type generated
+# for a different value (rosidl_typesupport_tickle_c_message_callbacks_t.tickle_max_buffer_length).
+set(TICKLE_MAX_BUFFER_LENGTH "1472" CACHE STRING
+    "tt_MAX_BUFFER_LENGTH for rmw_tickle and every interface package generated with rosidl_typesupport_tickle_c")
+if(NOT TICKLE_MAX_BUFFER_LENGTH MATCHES "^[0-9]+$" OR TICKLE_MAX_BUFFER_LENGTH LESS 64 OR
+   TICKLE_MAX_BUFFER_LENGTH GREATER 65507)
+  message(FATAL_ERROR "TICKLE_MAX_BUFFER_LENGTH='${TICKLE_MAX_BUFFER_LENGTH}': must be a number from 64 to 65507 "
+                      "(65507 is the largest IPv4 UDP payload)")
+endif()
+message(STATUS "rosidl_typesupport_tickle_c: tt_MAX_BUFFER_LENGTH = ${TICKLE_MAX_BUFFER_LENGTH}")
+
 # Headers live under include/rosidl_typesupport_tickle_c/ (matching the package name, like
 # rosidl_typesupport_introspection_c's own layout) - callers #include "rosidl_typesupport_tickle_c/
 # identifier.h" *with* that subdirectory, so the -I root below is plain include/ (BUILD_INTERFACE)

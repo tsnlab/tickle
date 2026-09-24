@@ -60,7 +60,7 @@ import os
 import sys
 
 from tickle_typesupport import _rosidl_parser as rosidl
-from tickle_typesupport import adapt, cli, postprocess, render
+from tickle_typesupport import adapt, cli, model, postprocess, render
 from tickle_typesupport import capacities as capacity_file
 
 from . import ros2_adapter, ros2_resolve
@@ -320,7 +320,16 @@ def main(argv=None):
         "unbounded arrays and plain strings, outranking in-.msg @capacity annotations. Every row "
         "must apply, or generation fails - see tickle_typesupport/capacities.py.",
     )
+    parser.add_argument(
+        "--max-buffer-length",
+        type=int,
+        default=model.TT_MAX_BUFFER_LENGTH,
+        metavar="N",
+        help="the tt_MAX_BUFFER_LENGTH the generated code will be built with (default %(default)s, core's). "
+        "Auto-derived capacities fill a datagram of this size, so it must match the build's.",
+    )
     args = parser.parse_args(argv)
+    model.set_max_buffer_length(args.max_buffer_length)
 
     written = generate(
         args.package,

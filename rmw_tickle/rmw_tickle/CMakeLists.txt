@@ -49,6 +49,16 @@ add_library(rmw_tickle
   "${TICKLE_SRC_DIR}/hal_linux.c"
 )
 
+# tt_MAX_BUFFER_LENGTH: the one value every interface package's typesupport was generated for,
+# exported by rosidl_typesupport_tickle_c (its TICKLE_MAX_BUFFER_LENGTH). PUBLIC, because anything
+# compiled against rmw_tickle's headers sees struct tt_Node and the rest of tickle.h, whose layout
+# depends on it - two translation units in one process disagreeing on it would disagree on those
+# structs' sizes.
+if(NOT rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH)
+  message(FATAL_ERROR "rosidl_typesupport_tickle_c exported no MAX_BUFFER_LENGTH - rebuild it")
+endif()
+target_compile_definitions(rmw_tickle PUBLIC "tt_MAX_BUFFER_LENGTH=${rosidl_typesupport_tickle_c_MAX_BUFFER_LENGTH}")
+
 target_include_directories(rmw_tickle PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${TICKLE_INCLUDE_DIR}>
@@ -108,7 +118,7 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_test REQUIRED)
 
-  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default)
+  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks)
     add_executable(${_test_name} test/${_test_name}.c)
     target_link_libraries(${_test_name} rmw_tickle Threads::Threads)
     # GENERATE_RESULT_FOR_RETURN_CODE_ZERO: these are plain C executables (an assert()-per-check,

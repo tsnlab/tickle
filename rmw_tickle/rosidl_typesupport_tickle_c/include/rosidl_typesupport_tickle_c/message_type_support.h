@@ -88,6 +88,17 @@ typedef struct rosidl_typesupport_tickle_c_message_callbacks_t {
     // sample is sent but not retained), so an absent bound has to mean "use the ceiling" rather
     // than "guess".
     size_t tickle_max_encoded_size;
+
+    // The tt_MAX_BUFFER_LENGTH this type was generated for (the generator's --max-buffer-length),
+    // or 0 when unknown - a hand-written callbacks struct, or one generated before this field.
+    //
+    // A type's layout can depend on it - an auto-derived capacity fills a datagram of exactly that
+    // size - and every interface package in a process has to have been generated for the size
+    // rmw_tickle was built with. Changing it means rebuilding every interface package, and missing
+    // one would otherwise go unnoticed until its samples no longer fit or its peers disagree. So
+    // rmw_tickle refuses a type whose value is set and differs from its own tt_MAX_BUFFER_LENGTH,
+    // naming both - the runtime half of "a mismatch has to be impossible" (Plan's review, 2026-09-24).
+    size_t tickle_max_buffer_length;
 } rosidl_typesupport_tickle_c_message_callbacks_t;
 
 #ifdef __cplusplus

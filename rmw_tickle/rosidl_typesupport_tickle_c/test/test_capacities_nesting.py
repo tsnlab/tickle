@@ -168,3 +168,25 @@ def test_generate_applies_the_file(tmp_path):
     )
     header = (out / "Float32MultiArray.h").read_text()
     assert "data[320]" in header
+
+
+def test_type_support_records_the_buffer_length_it_was_generated_for(tmp_path):
+    # rmw_tickle refuses a type generated for a different tt_MAX_BUFFER_LENGTH, which only works if
+    # the generated type support says which one it was: through the real CLI entry point, as the
+    # CMake hook runs it.
+    pkg = _mini(tmp_path)
+    rows = tmp_path / "mini.capacities"
+    rows.write_text(ROWS)
+    out = tmp_path / "out"
+    try:
+        assert 0 == ros2_cli.main([
+            "--package", PKG, "--subfolder", "msg", "--name", "Float32MultiArray",
+            "--input", str(pkg / "msg" / "Float32MultiArray.msg"), "--outdir", str(out),
+            "--capacities", str(rows), "--max-buffer-length", "4096",
+        ])
+    finally:
+        from tickle_typesupport import model
+
+        model.set_max_buffer_length(model.TT_MAX_BUFFER_LENGTH)
+    source = (out / f"{PKG}__msg__Float32MultiArray__type_support.c").read_text()
+    assert ".tickle_max_buffer_length = 4096," in source
