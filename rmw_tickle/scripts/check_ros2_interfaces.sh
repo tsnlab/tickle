@@ -71,14 +71,22 @@ done
 ts_lib="$WORKSPACE/install/std_msgs/lib/libstd_msgs__rosidl_typesupport_tickle_c.so"
 [ -f "$ts_lib" ] || fail "no $ts_lib - std_msgs was not built with TickLE typesupport"
 
-colcon build --base-paths "$HERE/../rmw_tickle_interfaces_check" --build-base "$WORKSPACE/build" \
-    --install-base "$WORKSPACE/install" --packages-select rmw_tickle_interfaces_check >/dev/null ||
+log="$(mktemp -d)"
+trap 'rm -rf "$log"' EXIT
+# The check package is built into this run's own temp dir, never into WORKSPACE. colcon records
+# whatever is sourced at build time as an install's underlay chain, so building into the caller's
+# workspace rewrote that workspace's chain: found 2026-09-25, when running this with a second
+# rmw_tickle sourced made every later use of the workspace load that one. Sourced with
+# local_setup.bash, which adds this one package without chaining anything.
+colcon --log-base "$log/check_ws/log" build --base-paths "$HERE/../rmw_tickle_interfaces_check" \
+    --build-base "$log/check_ws/build" --install-base "$log/check_ws/install" \
+    --packages-select rmw_tickle_interfaces_check >/dev/null ||
     fail "building rmw_tickle_interfaces_check failed"
 set +u
 # shellcheck disable=SC1091
-. "$WORKSPACE/install/setup.bash"
+. "$log/check_ws/install/local_setup.bash"
 set -u
-check="$WORKSPACE/install/rmw_tickle_interfaces_check/lib/rmw_tickle_interfaces_check/interfaces_check"
+check="$log/check_ws/install/rmw_tickle_interfaces_check/lib/rmw_tickle_interfaces_check/interfaces_check"
 if [ -n "$OVERLAY" ]; then
     [ -f "$OVERLAY/setup.bash" ] || fail "no $OVERLAY/setup.bash"
     set +u
@@ -108,13 +116,12 @@ export LD_LIBRARY_PATH="$rmw_lib_dir:$WORKSPACE/install/std_msgs/lib:$WORKSPACE/
 export RMW_IMPLEMENTATION=rmw_tickle
 export TICKLE_BROADCAST_ADDR="${TICKLE_BROADCAST_ADDR:-127.255.255.255}"
 
-log="$(mktemp -d)"
 # CHECK_ROS2_KEEP_LOGS=DIR keeps every process's output (copied there on exit) - for chasing a
 # failure that does not reproduce on demand.
 keep_logs() {
     if [ -n "${CHECK_ROS2_KEEP_LOGS:-}" ]; then
         mkdir -p "$CHECK_ROS2_KEEP_LOGS"
-        cp -r "$log"/. "$CHECK_ROS2_KEEP_LOGS"/ 2>/dev/null || true
+        find "$log" -maxdepth 1 -type f -exec cp {} "$CHECK_ROS2_KEEP_LOGS"/ \; 2>/dev/null || true
     fi
 }
 
