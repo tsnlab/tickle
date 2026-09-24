@@ -2462,7 +2462,7 @@ static void test_reliable_releases_held_samples_when_gap_is_abandoned(void) {
 // fails if core ever steps past the end again.
 #define ODD_SLOTS 4
 #define ODD_SLOT_BYTES ((uint16_t)(sizeof(struct tt_ReorderSlot) + 12 + 5)) // deliberately not a multiple of 8
-static uint64_t odd_storage[(ODD_SLOTS * ODD_SLOT_BYTES) / sizeof(uint64_t)];
+static uint64_t odd_storage[((size_t)ODD_SLOTS * ODD_SLOT_BYTES) / sizeof(uint64_t)];
 
 static void test_reorder_stays_inside_an_odd_sized_buffer(void) {
     test_mock_reset();
