@@ -93,6 +93,21 @@ class Resolver:
         return [(pkg_name, msg_name, self.resolved_structs[(pkg_name, msg_name)]) for pkg_name, msg_name in self._resolve_order]
 
 
+class UnsupportedNestedPackage(Exception):
+    """A message nests a type from another package that TickLE has no typesupport for.
+
+    Carries the package and type so the caller can say which one, rather than emitting a generic
+    "no typesupport" that sends people looking in the wrong place - the two reasons a type can be
+    undeliverable (too large for a datagram, versus nesting an unsupported package) have entirely
+    different remedies.
+    """
+
+    def __init__(self, pkg_name, msg_name):
+        super().__init__(f"{pkg_name}/{msg_name} has no TickLE typesupport and is not one of TickLE's bundled builtins")
+        self.pkg_name = pkg_name
+        self.msg_name = msg_name
+
+
 class Ros2Resolver:
     """ros2_cli.py's own resolver - genuinely different from Resolver above, not just a thin
     wrapper: every message a real ROS 2 package's own rosidl_typesupport_tickle_c CMake extension
@@ -138,7 +153,36 @@ class Ros2Resolver:
         key = (pkg_name, msg_name)
         if key in self.resolved_structs:
             return self.resolved_structs[key]
+
+        # Any nested type from another package is declined in the ROS 2 path, and the rule is
+        # deliberately broader than "TickLE has no struct for it" (2026-09-24).
+        #
+        # Three layers had to be peeled before this was the right line to draw. std_msgs/Header is
+        # one of TickLE's own bundled builtins, so emitting the *struct* for it is easy - and doing
+        # that still does not work, because ros2_adapter.py also needs std_msgs' own
+        # ...__rosidl_typesupport_tickle_c.h to convert the ROS C struct into it, and that file
+        # exists only if std_msgs itself builds this typesupport. It does not; it ships FastDDS
+        # typesupport of its own and nothing else.
+        #
+        # Inlining the nested type instead is not available either, and it is worth recording so
+        # it does not get proposed again: two packages that both nest std_msgs/Header would each
+        # define `struct HeaderData` and `HeaderData_encode`, and a ROS 2 executable routinely
+        # links both. That is a duplicate-symbol link failure, not a path collision, so writing
+        # the files into per-package directories does not contain it.
+        #
+        # The real fix is the one FastDDS uses - the interface package ships its own typesupport -
+        # which means building std_msgs, sensor_msgs and anything else a consumer nests from
+        # source with this generator applied. That is a provisioning change, not a generator one.
+        #
+        # KNOWN LIMITATION, stated rather than silently wrong: a package that DOES build this
+        # typesupport in the same workspace is declined here too, because nothing available at
+        # generation time distinguishes it from one that does not. The decline says which package
+        # it was, so a reader who knows better can tell immediately that this is the case they hit.
+        if pkg_name != self.package_name:
+            raise UnsupportedNestedPackage(pkg_name, msg_name)
+
         text = self._find_independent_source(pkg_name, msg_name)
+
         if text is None:
             # Not this package's own sibling, not on any -I search path either - fall back to
             # TickLE's own small bundled builtins, same as Resolver's own resolve_spec() does.

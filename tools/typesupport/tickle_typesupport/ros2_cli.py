@@ -57,6 +57,7 @@ generated <pkg>__<Name>.h/.c pair, written out here the same way cli.py's own lo
 
 import argparse
 import os
+import sys
 
 from . import _rosidl_parser as rosidl
 from . import adapt, cli, postprocess, render, resolve, ros2_adapter
@@ -100,6 +101,47 @@ def _write_builtin_nested_files(resolver, source_label, outdir, fmt_dir):
     return written
 
 
+def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
+    """Writes the files CMake expects for a message TickLE cannot generate, carrying the reason.
+
+    The files have to exist: rosidl_typesupport_tickle_c_generate_interfaces.cmake declares each
+    one by name in an add_custom_command, so a missing output fails the build exactly as hard as
+    a broken one. What they must not do is define anything - no struct, no codec, and above all no
+    get_message_type_support_handle symbol, so rosidl's own lookup finds nothing and
+    rmw_create_publisher refuses the topic with a clear error instead of accepting it and failing
+    later.
+
+    The reason goes in the file rather than only in build output, because build output scrolls
+    past and the generated header is what somebody opens when they want to know why their message
+    does not work.
+    """
+    ros_name = f"{package}__{subfolder}__{name}"
+    banner = (
+        f"// TickLE has no typesupport for {package}/{subfolder}/{name}.\n"
+        f"//\n"
+        f"// {reason}\n"
+        f"//\n"
+        f"// This file is deliberately empty of declarations. Nothing is registered, so\n"
+        f"// rmw_create_publisher()/rmw_create_subscription() on this type fails with a clear\n"
+        f"// error rather than succeeding and breaking later. Every other type in this package is\n"
+        f"// unaffected - declining one type must not fail a build for consumers that never use\n"
+        f"// it, which is the whole reason this is a stub and not a compile error.\n"
+    )
+    # A typedef rather than nothing at all: an empty translation unit is not valid ISO C.
+    marker = f"typedef int {ros_name}__tickle_unsupported_t;\n"
+    written = []
+    for filename in (
+        f"{name}.h",
+        f"{name}.c",
+        f"{ros_name}__rosidl_typesupport_tickle_c.h",
+        f"{ros_name}__rosidl_typesupport_tickle_c.c",
+        f"{ros_name}__type_support.c",
+    ):
+        written.append(_write_text(outdir, filename, banner + marker, source_label, fmt_dir))
+    print(f"{source_label}: DECLINED - {reason}", file=sys.stderr)
+    return written
+
+
 def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, include_dirs=()):
     """Returns the list of file paths written - same "top-level interface first" convention as
     cli.generate_interface()."""
@@ -125,7 +167,17 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
 
     if subfolder == "msg":
         spec = rosidl.parse_message_string(package, name, text)
-        ir = adapt.adapt_message(name, spec, resolver)
+        try:
+            ir = adapt.adapt_message(name, spec, resolver)
+        except resolve.UnsupportedNestedPackage as unsupported:
+            return _decline(
+                package, subfolder, name, outdir, source_label, fmt_dir,
+                f"It nests {unsupported.pkg_name}/{unsupported.msg_name}, and {unsupported.pkg_name} does not build "
+                f"rosidl_typesupport_tickle_c. This is NOT a size limit - see <Name>_FITS_ONE_DATAGRAM for that, "
+                f"which is a different problem with a different fix. The remedy here is to build "
+                f"{unsupported.pkg_name} from source in this workspace with the TickLE typesupport extension "
+                f"applied, the way std_msgs ships FastDDS typesupport of its own.",
+            )
         header, source = render.render_topic(ir)
         written = list(cli._write_generated(name, header, source, source_label, outdir, fmt_dir))
         ros_name = f"{package}__msg__{name}"
