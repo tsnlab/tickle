@@ -313,6 +313,28 @@ static uint64_t resolve_heartbeat_period_ns(void) {
     return (uint64_t)period;
 }
 
+// Heartbeat piggybacked on every Nth sample, off unless RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY is set.
+//
+// The alternative to the periodic switch above, measured against it: a periodic Heartbeat costs a
+// whole datagram per period whatever the data rate, while a piggybacked one rides a datagram being
+// sent anyway and follows the data rate (tt_Publisher.heartbeat_piggyback_every, tickle.h). What
+// it cannot cover is a publisher that has stopped - which is why the two are separate switches,
+// so they can be compared and, if the measurement says so, combined.
+//
+// Off by default, and zero or unparseable leaves it off, like every other knob in this file.
+static uint32_t resolve_heartbeat_piggyback_every(void) {
+    const char* env = getenv("RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY");
+    if (NULL == env || '\0' == env[0]) {
+        return 0;
+    }
+    char* end = NULL;
+    unsigned long long every = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || every > UINT32_MAX) {
+        return 0;
+    }
+    return (uint32_t)every;
+}
+
 // Split out of rmw_create_publisher() below purely to keep that function's own cognitive
 // complexity under clang-tidy's threshold - see rmw_tickle_publisher_t.reliable_cache's own doc
 // comment for the full "why" this exists at all. Returns false (with RMW_SET_ERROR_MSG already
@@ -621,6 +643,16 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // node and refuses a publisher with no reliable_cache, so it has to follow both
     // tt_Node_create_publisher() and setup_reliable_cache(). Configuration set before the object it
     // configures is fully built is exactly how the reorder buffer shipped disconnected (9747c1ea).
+    // A plain field, schedules nothing - but set after tt_Node_create_publisher(), which
+    // initialises it, for the same reason as everything else in this block.
+    uint32_t piggyback_every = resolve_heartbeat_piggyback_every();
+    if (piggyback_every != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
+        pub_impl->tickle_publisher.heartbeat_piggyback_every = piggyback_every;
+        // Exact wording is load-bearing: the heartbeat sweep VOIDs a run whose log does not carry
+        // this line with the N it asked for. Change it only together with that script.
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "heartbeat piggyback armed: every %u samples", (unsigned)piggyback_every);
+    }
+
     uint64_t heartbeat_ns = resolve_heartbeat_period_ns();
     if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
         tt_Node_interrupt(&node_impl->context_impl->tickle_node);
