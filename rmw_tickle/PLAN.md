@@ -1925,6 +1925,21 @@ publisher is the failing control. It runs in jazzy CI, in Check all. Still to do
 packages from the inventory, the two capacity profiles picked by N in the CMake hook, and the
 README for users.
 
+**P2 is done** (TickLE Dev, `939bef8e` and `bd389e97`, 2026-09-25):
+- `build_ros2_interfaces.sh -a` builds all 23 jazzy interface packages with TickLE typesupport, C
+  and C++. That takes about 7 minutes in CI. `example_interfaces/WString` is the only declined
+  type.
+- **A default `rclcpp::Node` now starts and runs through rmw_tickle at N = 65507 with no
+  parameters.** `check_ros2_interfaces.sh -r` publishes String, Header, UInt8MultiArray and
+  JointState from one default node, and a second takes them as C++ messages and compares them
+  with `operator==`. All four arrive intact, also under ASan with 0 errors.
+- The control, a workspace with only std_msgs, must fail at "rclcpp refused to start", and does.
+- The C++ adapters (`ros2_cpp_adapter.py`) needed three `ros_init`/`ros_fini`/`ros_move` hooks in
+  rmw_tickle, because rmw copied whole ROS messages with `memcpy`. The C path is unchanged.
+- The callbacks struct grew, so interface libraries built before `bd389e97` are refused by the
+  size marker and must be rebuilt.
+- README documents the user-facing side (`27d715e0`).
+
 **Found by P2's default-node check: rclcpp messages were converted with the C converters**
 (TickLE Dev, 2026-09-25). `rosidl_typesupport_tickle_cpp`'s handle borrowed the C handle's
 `to_tickle`/`from_tickle`, but rclcpp passes a C++ message object.
