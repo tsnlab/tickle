@@ -53,18 +53,52 @@ done
 wait
 say "built"
 
+# Before every cell: is a benchmark process from an earlier cell still alive on either Pi? Three
+# false numbers on 2026-09-24 came from a leftover process - a CI server sharing the rig, a cancelled
+# CI job, and (suspected, not shown) a FastDDS pair still retransmitting into a 50%-loss link after
+# its drain timed out, which preceded the one TickLE rep that read 8.4 instead of ~22.
+#
+# Identified by /proc/PID/exe under ~/tickle/examples/perf_hil, never by a name pattern (CLAUDE.md
+# rule 3: a pattern matches the command doing the matching). Waits for them to exit rather than
+# killing them - killing would destroy the evidence of which framework left one behind - and if they
+# outlive the wait, the cell is still run but tagged, so a contaminated number can never be read as
+# a clean one.
+rig_leftovers() {
+    local host out=""
+    for host in "$RPI_CLIENT" "$RPI_SERVER"; do
+        out+=$(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=8 "ci@$host" '
+            for d in /proc/[0-9]*; do
+                e=$(readlink "$d/exe" 2>/dev/null) || continue
+                case "$e" in */tickle/examples/perf_hil/*/client|*/tickle/examples/perf_hil/*/server)
+                    fw=${e%/*/*}; fw=${fw##*/}; printf "%s:%s:%s " "$(hostname)" "$fw" "${d#/proc/}";;
+                esac
+            done' 2>/dev/null)
+    done
+    printf '%s' "$out"
+}
+wait_rig_quiet() {
+    local left _
+    for _ in $(seq 1 20); do
+        left=$(rig_leftovers)
+        [ -z "$left" ] && { echo none; return 0; }
+        sleep 1
+    done
+    echo "$left"
+}
+
 for pct in 0 1 5 20 50; do
     sl "$pct"
     say ""
     say "--- tc loss ${pct}% ---"
     for rep in $(seq 1 "$REPS"); do
         for fw in tickle cyclonedds fastdds; do
+            leftover=$(wait_rig_quiet)
             args="-d $DUR"
             [ "$fw" = tickle ] && args="-Q $args"
             # shellcheck disable=SC2086 # $args is deliberately word-split
             line="$("$HERE/../$fw/run_scenario.sh" reliable_throughput $args 2>/dev/null | grep '^RESULT:' | grep 'role=client' || true)"
-            if [ -z "$line" ]; then say "$fw rep $rep: NO RESULT LINE"; continue; fi
-            say "$fw rep $rep: mbps=$(echo "$line" | grep -oP 'send_mbps=\K[0-9.]+') drained=$(echo "$line" | grep -oP 'drained=\K[a-z]+') write_fail=$(echo "$line" | grep -oP 'write_fail=\K[0-9]+')"
+            if [ -z "$line" ]; then say "$fw rep $rep: NO RESULT LINE leftover_before=$leftover"; continue; fi
+            say "$fw rep $rep: mbps=$(echo "$line" | grep -oP 'send_mbps=\K[0-9.]+') drained=$(echo "$line" | grep -oP 'drained=\K[a-z]+') write_fail=$(echo "$line" | grep -oP 'write_fail=\K[0-9]+') leftover_before=$leftover$([ "$leftover" != none ] && echo ' CONTAMINATED')"
         done
     done
 done
