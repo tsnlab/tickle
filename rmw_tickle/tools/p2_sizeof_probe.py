@@ -38,7 +38,8 @@ from rosidl_typesupport_tickle_c import ros2_resolve  # noqa: E402
 from tickle_typesupport import adapt, layout, model, render  # noqa: E402
 from p2_inventory import packages  # noqa: E402
 
-LIMIT = model.TT_MAX_BUFFER_LENGTH
+# Same selector as p2_inventory.py (imported above, which has already applied it to model).
+LIMIT = model.max_buffer_length()
 
 
 def main(argv):
@@ -91,7 +92,7 @@ def main(argv):
         incs = ["-I", str(REPO / "include"), "-I", str(out / pkg)]
         for dep in deps:
             incs += ["-I", str(out / dep)]
-        cc = subprocess.run(["cc", "-std=c11", "-w", *incs, str(src), "-o", str(exe)], capture_output=True, text=True)
+        cc = subprocess.run(["cc", "-std=c11", "-w", f"-Dtt_MAX_BUFFER_LENGTH={LIMIT}", *incs, str(src), "-o", str(exe)], capture_output=True, text=True)
         if cc.returncode != 0:
             err = (cc.stderr.strip().splitlines() or ["?"])[0]
             for label, _s, _w in structs:

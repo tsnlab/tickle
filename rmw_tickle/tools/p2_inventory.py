@@ -39,7 +39,10 @@ from tickle_typesupport import _rosidl_parser as rosidl  # noqa: E402
 from rosidl_typesupport_tickle_c import ros2_resolve  # noqa: E402
 from tickle_typesupport import adapt, layout, model  # noqa: E402
 
-BUDGET = model.TT_MAX_BUFFER_LENGTH - model.FRAMING_OVERHEAD
+# The datagram size the types are generated for: tt_MAX_BUFFER_LENGTH, which rmw_tickle sets from
+# TICKLE_MAX_BUFFER_LENGTH (5bba76df). P2_MAX_BUFFER_LENGTH selects it here; the default is core's 1472.
+model.set_max_buffer_length(int(os.environ.get("P2_MAX_BUFFER_LENGTH", model.TT_MAX_BUFFER_LENGTH)))
+BUDGET = model.max_buffer_length() - model.FRAMING_OVERHEAD
 
 
 def packages(roots):
