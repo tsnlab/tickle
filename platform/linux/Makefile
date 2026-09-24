@@ -125,7 +125,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost lint clean fuzz sanitize
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint clean fuzz sanitize
 
 all:
 	$(MAKE) library
@@ -290,6 +290,26 @@ LINT_TIDY_ARGS = --extra-arg=-I$(REPO_ROOT)/tools/typesupport/tests/fixtures_ros
 # target exists to close. The tree is clean as of 2026-09-23, so anything new here is new.
 CLANG_FORMAT ?= clang-format
 CLANG_TIDY ?= clang-tidy
+
+# Every public header must compile on its own, as C AND as C++. rmw_tickle's typesupport is C++ and
+# includes these, so a C-only construct here breaks it - which is not hypothetical: _Static_assert
+# in config.h took CI's rmw_tickle step red for eight commits, and nothing in `make test`, `make
+# lint` or the integration tiers could see it because all of them are C. This target is the cheap
+# thing that can.
+HEADERS := $(wildcard $(REPO_ROOT)/include/tickle/*.h)
+headers-cpp:
+	@fail=0; \
+	 for h in $(HEADERS); do \
+	     base=$$(basename $$h); \
+	     case $$base in hal_freertos.h) continue;; esac; \
+	     printf '#include <tickle/%s>\nint main(void){return 0;}\n' "$$base" > /tmp/tt_hdr_$$$$.c; \
+	     printf '#include <tickle/%s>\nint main(){return 0;}\n' "$$base" > /tmp/tt_hdr_$$$$.cpp; \
+	     $(CC) -I$(REPO_ROOT)/include -fsyntax-only /tmp/tt_hdr_$$$$.c   || { echo "headers-cpp: $$base fails as C" >&2; fail=1; }; \
+	     g++ -std=c++17 -I$(REPO_ROOT)/include -fsyntax-only /tmp/tt_hdr_$$$$.cpp || { echo "headers-cpp: $$base fails as C++" >&2; fail=1; }; \
+	     rm -f /tmp/tt_hdr_$$$$.c /tmp/tt_hdr_$$$$.cpp; \
+	 done; \
+	 [ $$fail = 0 ] && echo "headers-cpp: every public header compiles as C and as C++"; \
+	 exit $$fail
 
 lint:
 	@cf=$$(command -v $(CLANG_FORMAT) || true); ct=$$(command -v $(CLANG_TIDY) || true); \

@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost lint clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint clean test-linux test-freertos test-all \
         install uninstall fuzz sanitize regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz sanitize:
@@ -43,6 +43,9 @@ uninstall:
 # see platform/linux/test.sh's own comment). Needs passwordless sudo for `ip`; the no-privilege
 # tier is `make test` (unit tests). Named for the platform under test, not the mechanism -
 # `test-<platform>` always runs platform/<platform>/test.sh.
+headers-cpp:
+	$(MAKE) -C platform/linux headers-cpp
+
 test-samehost:
 	$(MAKE) -C platform/linux test-samehost
 
@@ -61,7 +64,7 @@ test-freertos:
 # performance test (.github/workflows/performance.yml) is deliberately not part of this - it
 # needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add
 # here.
-test-all: test test-samehost test-linux test-freertos
+test-all: test headers-cpp test-samehost test-linux test-freertos
 
 # Re-runs tools/typesupport over every real (non-test) interface, in place - each one flattened
 # into examples/<proto>/ alongside the .msg/.srv it's generated from (see tools/typesupport/

@@ -32,7 +32,8 @@
 // of this file fail the build on a combination that cannot work, which is the point of allowing
 // the override at all - a silently broken configuration would be worse than an unoverridable one.
 
-#include <stdint.h>
+#include <assert.h> // static_assert in C11 - see the invariant asserts at the end of this file
+#include <stdint.h> // UINT8_MAX, for those same asserts
 
 #define tt_SECOND 1000000000ULL
 #define tt_MILLISECOND 1000000ULL
@@ -373,19 +374,25 @@ struct _tt_Config {
 
 extern struct _tt_Config _tt_CONFIG;
 
-// Invariants between the settings above. These hold for the defaults; they are asserted because
-// the defaults are now overridable and an override that breaks one would otherwise fail at
-// runtime, as a silent misbehaviour, far from the line that caused it.
-_Static_assert(tt_MAX_PEER_COUNT > tt_UNICAST_PEER_THRESHOLD,
-               "tt_MAX_PEER_COUNT must exceed tt_UNICAST_PEER_THRESHOLD - see tt_MAX_PEER_COUNT's own "
-               "comment: a full peer table is only safe because it already implies broadcasting");
-_Static_assert(tt_RELIABLE_BITMAP_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
-               "tt_RELIABLE_BITMAP_BITS must be a whole number of words");
-_Static_assert(tt_RELIABLE_BITMAP_MAX_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
-               "tt_RELIABLE_BITMAP_MAX_BITS must be a whole number of words");
-_Static_assert(tt_RELIABLE_BITMAP_MAX_BITS >= tt_RELIABLE_BITMAP_BITS,
-               "tt_RELIABLE_BITMAP_MAX_BITS is the ceiling for tt_RELIABLE_BITMAP_BITS");
-_Static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint index must have room for every endpoint");
-_Static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
-               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
-_Static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");
+// Invariants between the settings above.
+//
+// static_assert, not _Static_assert: this is a public header and rmw_tickle includes it from C++.
+// _Static_assert is C-only, so the first version of these broke every C++ translation unit that
+// reached this file - "expected constructor, destructor, or type conversion" at each one - and
+// took CI's rmw_tickle compile_commands step red for eight commits before anyone looked. C11 gives
+// static_assert as a macro in <assert.h>, C++11 as a keyword, so this spelling works in both. These hold for the
+// defaults; they are asserted because the defaults are now overridable and an override that breaks one would otherwise
+// fail at runtime, as a silent misbehaviour, far from the line that caused it.
+static_assert(tt_MAX_PEER_COUNT > tt_UNICAST_PEER_THRESHOLD,
+              "tt_MAX_PEER_COUNT must exceed tt_UNICAST_PEER_THRESHOLD - see tt_MAX_PEER_COUNT's own "
+              "comment: a full peer table is only safe because it already implies broadcasting");
+static_assert(tt_RELIABLE_BITMAP_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
+              "tt_RELIABLE_BITMAP_BITS must be a whole number of words");
+static_assert(tt_RELIABLE_BITMAP_MAX_BITS % tt_RELIABLE_BITMAP_WORD_BITS == 0,
+              "tt_RELIABLE_BITMAP_MAX_BITS must be a whole number of words");
+static_assert(tt_RELIABLE_BITMAP_MAX_BITS >= tt_RELIABLE_BITMAP_BITS,
+              "tt_RELIABLE_BITMAP_MAX_BITS is the ceiling for tt_RELIABLE_BITMAP_BITS");
+static_assert(tt_ENDPOINT_INDEX_SIZE >= tt_MAX_ENDPOINT_COUNT, "the endpoint index must have room for every endpoint");
+static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
+              "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
+static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");
