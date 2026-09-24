@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790219030015,
+  "lastUpdate": 1790219034078,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -115073,6 +115073,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 275,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "f7ff5843bb46082fc808d6282094de41d878f73e",
+          "message": "PLAN.md: four became six, and the sixth is about a near-success\n\nTwo more instances, both found after the entry was written and both inside the work of fixing the\nfirst four. The fifth: removing `|| true` from `colcon test` created no failing path, because that\ncall returns 0 on test failures unless asked not to, while the `|| true` that was kept was on the\ncall that does return non-zero. The halves were inverted and a green run was consistent with that.\nThe sixth: a run that tested nothing still reads as a run where everything passed - colcon\ntest-result against an empty result base exits 0, and ctest with a regex matching nothing exits 0.\nBoth demonstrated rather than reasoned.\n\nThe rule that comes out of the fifth is the one worth keeping, and it is about what went right.\nThat commit named its own unexercised half in its message, which is the only reason anyone went\nlooking. Writing down which half is unexercised is better than not writing it down, and it is not a\nsubstitute for exercising it - in that order, because the first half is what made the second\nfindable.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T11:57:59+09:00",
+          "tree_id": "ae5eb974d7bafd96b5a58a352d8814cd7754befd",
+          "url": "https://github.com/tsnlab/tickle/commit/f7ff5843bb46082fc808d6282094de41d878f73e"
+        },
+        "date": 1790219032830,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 148,
             "unit": "count"
           }
         ]
