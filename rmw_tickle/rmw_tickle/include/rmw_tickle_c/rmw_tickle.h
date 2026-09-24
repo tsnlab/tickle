@@ -78,6 +78,11 @@ rmw_tickle_get_message_callbacks(const rosidl_message_type_support_t* type_suppo
 // Not applied to serialization, which puts nothing on the wire.
 bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks);
 
+// How often an rmw_tickle client re-sends an unanswered request (rmw_client.c): often enough to
+// recover a lost request or response well within a human-scale service call, rare enough that a
+// call waiting the full tt_SERVER_DEFERRED_RESPONSE_TIMEOUT costs 50 small datagrams.
+#define RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS 100000000U // 100 ms
+
 // `n` rounded up to the 8-byte unit core's attached storage slots must come in (tt_Server_set_storage()).
 #define RMW_TICKLE_ROUND_UP_8(n) (((n) + 7U) & ~(size_t)7U)
 

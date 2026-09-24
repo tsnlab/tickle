@@ -249,7 +249,37 @@ static void test_call_retry_exhausted_reports_timeout(void) {
     EXPECT_TRUE(client.cache == NULL);
 }
 
+// call_retry_count 0 means tt_CALL_RETRY_COUNT (struct tt_Service's own doc comment), not "none":
+// the call survives exactly that many retries and times out on the next. It used to give up on the
+// first, which is what every caller passing 0 got.
+static void test_call_retry_count_zero_means_the_default(void) {
+    test_mock_reset();
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Client client;
+    init_node_and_client(&node, &service, &client);
+    service.call_retry_count = 0;
+
+    struct tt_Request request;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, &request));
+
+    callback_calls = 0;
+    int sends_before = test_mock_send_call_count;
+    for (int i = 0; i < tt_CALL_RETRY_COUNT; i++) {
+        call_retry(&node, tt_get_ns(), &client);
+    }
+    EXPECT_EQ_U32(0, (uint32_t)callback_calls);                                   // still outstanding
+    EXPECT_EQ_INT(sends_before + tt_CALL_RETRY_COUNT, test_mock_send_call_count); // each retry was sent
+    EXPECT_TRUE(client.cache != NULL);
+
+    call_retry(&node, tt_get_ns(), &client); // one more than the default: now it gives up
+    EXPECT_EQ_U32(1, (uint32_t)callback_calls);
+    EXPECT_EQ_INT((int)tt_CALL_TIMEOUT, last_return_code);
+    EXPECT_TRUE(client.cache == NULL);
+}
+
 int main(void) {
+    test_call_retry_count_zero_means_the_default();
     test_call_rejected_while_one_outstanding();
     test_call_flushes_immediately_and_fills_cache();
     test_call_unicasts_to_known_servers_at_or_under_threshold();

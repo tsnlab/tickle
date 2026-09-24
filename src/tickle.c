@@ -1668,7 +1668,15 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
     struct tt_CallRequestHeader* callrequest_header =
         (struct tt_CallRequestHeader*)((void*)submessage_header + sizeof(struct tt_SubmessageHeader));
 
-    if (++callrequest_header->retry > client->service->call_retry_count) {
+    // 0 means tt_CALL_RETRY_COUNT, as struct tt_Service documents. It used to be compared as given,
+    // so 0 - what every caller in the tree passes, core's own examples included, and what a
+    // zero-allocated rmw_tickle client holds - meant no retries at all: the call was abandoned at
+    // its first retry interval (~7.5 ms), and a response arriving after that was ignored as
+    // "CallResponse with no outstanding call". Found 2026-09-24 by the first rmw test to make a real
+    // service call, where the deferred response took longer than that to be sent.
+    uint32_t retry_count =
+        client->service->call_retry_count != 0 ? client->service->call_retry_count : (uint32_t)tt_CALL_RETRY_COUNT;
+    if (++callrequest_header->retry > retry_count) {
         client->callback(client, tt_CALL_TIMEOUT, NULL); // every retry went unanswered
 
         client->cache = NULL;

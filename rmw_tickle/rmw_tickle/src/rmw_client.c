@@ -27,7 +27,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <tickle/hal.h> // tt_ret_t/tt_RET_OK
+#include <tickle/config.h> // tt_SERVER_DEFERRED_RESPONSE_TIMEOUT
+#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -139,8 +140,21 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_typ
     client_impl->service.response_encode = (tt_RESPONSE_ENCODE)callbacks.response->tickle_encode;
     client_impl->service.response_decode = (tt_RESPONSE_DECODE)callbacks.response->tickle_decode;
     client_impl->service.response_free = (tt_RESPONSE_FREE)callbacks.response->tickle_free;
-    // call_retry_interval/call_retry_count left 0 (zero_allocate) - "0 means auto"/"0 means
-    // tt_CALL_RETRY_COUNT" (tickle.h's own struct tt_Service doc comment), i.e. TickLE's defaults.
+    // How long a call is kept alive, retrying, before core gives up on it. ROS 2 has no rmw-level
+    // service timeout: rmw_send_request() promises a response whenever the service sends one, and a
+    // timeout is the application's business (rclcpp's future). And the server always answers through
+    // tt_Server_send_response() - deferred until the ROS executor has taken the request and run the
+    // callback - so the answer can take as long as that callback does. Core's defaults (TickLE's own
+    // synchronous services: a few retries ~1.5 x latency apart, tens of milliseconds) would abandon
+    // any call slower than that, and the late response would be ignored.
+    //
+    // So a call lives as long as the server keeps it: retried every RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS
+    // until tt_SERVER_DEFERRED_RESPONSE_TIMEOUT, after which the server has dropped it too. A retry of
+    // a request still pending on the server does not re-run its callback (find_pending_slot(),
+    // tickle.c); once answered, a retry gets the cached response.
+    client_impl->service.call_retry_interval = RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS;
+    client_impl->service.call_retry_count =
+        (uint32_t)(tt_SERVER_DEFERRED_RESPONSE_TIMEOUT / RMW_TICKLE_CLIENT_RETRY_INTERVAL_NS);
 
     client_impl->response_storage = allocator->zero_allocate(1, callbacks.response->ros_struct_size, allocator->state);
     if (NULL == client_impl->response_storage) {
