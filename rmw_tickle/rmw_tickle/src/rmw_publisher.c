@@ -295,9 +295,11 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
 // the writer sends on its own, carrying firstSN; TickLE has the same thing in send_heartbeat(),
 // carrying first_available_seq_no, and rmw_tickle has never switched it on.
 //
-// Whether it closes the gap is what the switch measures. Off by default so every existing
-// measurement stays reproducible and the wire carries nothing new unless asked; the right default
-// period, and whether to piggyback on DATA instead, are decisions for after that measurement.
+// It does close the gap (Plan's sweep at d55d8ac5), but so does the piggybacked Heartbeat below at
+// a small fraction of the wire cost, and that one is what ships on by default. This one stays off
+// unless asked: what it adds over the piggyback is a Heartbeat from a publisher that has stopped
+// sending, and lower mean latency at low rates (a loss is seen at the next tick rather than at the
+// next sample), paid for with a datagram per period.
 // Zero or unparseable leaves it off, the same "a malformed tuning value must not stop a node
 // starting" rule the other knobs in this file follow.
 static uint64_t resolve_heartbeat_period_ns(void) {
@@ -313,7 +315,8 @@ static uint64_t resolve_heartbeat_period_ns(void) {
     return (uint64_t)period;
 }
 
-// Heartbeat piggybacked on every Nth sample, off unless RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY is set.
+// Heartbeat piggybacked on every Nth sample of a RELIABLE publisher. On by default at N=64;
+// RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0 turns it off, any other number replaces 64.
 //
 // The alternative to the periodic switch above, measured against it: a periodic Heartbeat costs a
 // whole datagram per period whatever the data rate, while a piggybacked one rides a datagram being
@@ -321,18 +324,54 @@ static uint64_t resolve_heartbeat_period_ns(void) {
 // it cannot cover is a publisher that has stopped - which is why the two are separate switches,
 // so they can be compared and, if the measurement says so, combined.
 //
-// Off by default, and zero or unparseable leaves it off, like every other knob in this file.
+// Default on is the user's decision (2026-09-24, "기본으로 켜자"), taken on Plan's measurement at
+// 9afacfe1..118507ed: at max rate N=64 took window jumps from 505-767 per run to 0-1, the same as
+// a 1ms periodic Heartbeat, and it costs 0.37 B per sample (+0.035%) with no extra datagram, where
+// the periodic one nearly doubles the datagram count at 1000/s. Periodic stays opt-in.
+//
+// Unset or empty means the default. A value that does not parse also falls back to the default,
+// with a warning, rather than to off: the "a malformed tuning value must not stop a node starting"
+// rule the other knobs here follow, applied to a switch whose normal state is on - a typo should
+// not silently remove loss recovery that nobody asked to remove.
+#define RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT 64U
+
 static uint32_t resolve_heartbeat_piggyback_every(void) {
     const char* env = getenv("RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY");
     if (NULL == env || '\0' == env[0]) {
-        return 0;
+        return RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT;
     }
     char* end = NULL;
     unsigned long long every = strtoull(env, &end, 10);
     if (end == env || (end != NULL && '\0' != *end) || every > UINT32_MAX) {
-        return 0;
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY='%s' is not a valid sample count; using %u", env,
+                               (unsigned)RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT);
+        return RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY_DEFAULT;
     }
     return (uint32_t)every;
+}
+
+// Split out of rmw_create_publisher() to keep its cognitive complexity under clang-tidy's
+// threshold. A plain field, schedules nothing - but set after tt_Node_create_publisher(), which
+// initialises it, and after setup_reliable_cache(), whose cache it checks.
+//
+// Only a publisher with a reliable_cache can piggyback (the Heartbeat names its oldest cached
+// sample) - RELIABLE, or TRANSIENT_LOCAL - so a BEST_EFFORT VOLATILE one neither arms nor logs.
+//
+// Exact wording of both lines is load-bearing: the heartbeat sweep VOIDs a run whose log does not
+// carry the armed line with the N it asked for, and verifies an off arm by the off line. Change
+// them only together with that script.
+static void arm_heartbeat_piggyback(rmw_tickle_publisher_t* pub_impl) {
+    if (NULL == pub_impl->tickle_publisher.reliable_cache) {
+        return;
+    }
+    uint32_t piggyback_every = resolve_heartbeat_piggyback_every();
+    pub_impl->tickle_publisher.heartbeat_piggyback_every = piggyback_every;
+    if (piggyback_every != 0) {
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "heartbeat piggyback armed: every %u samples", (unsigned)piggyback_every);
+    } else {
+        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "heartbeat piggyback off");
+    }
 }
 
 // Split out of rmw_create_publisher() below purely to keep that function's own cognitive
@@ -643,15 +682,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // node and refuses a publisher with no reliable_cache, so it has to follow both
     // tt_Node_create_publisher() and setup_reliable_cache(). Configuration set before the object it
     // configures is fully built is exactly how the reorder buffer shipped disconnected (9747c1ea).
-    // A plain field, schedules nothing - but set after tt_Node_create_publisher(), which
-    // initialises it, for the same reason as everything else in this block.
-    uint32_t piggyback_every = resolve_heartbeat_piggyback_every();
-    if (piggyback_every != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
-        pub_impl->tickle_publisher.heartbeat_piggyback_every = piggyback_every;
-        // Exact wording is load-bearing: the heartbeat sweep VOIDs a run whose log does not carry
-        // this line with the N it asked for. Change it only together with that script.
-        RCUTILS_LOG_INFO_NAMED("rmw_tickle", "heartbeat piggyback armed: every %u samples", (unsigned)piggyback_every);
-    }
+    arm_heartbeat_piggyback(pub_impl);
 
     uint64_t heartbeat_ns = resolve_heartbeat_period_ns();
     if (heartbeat_ns != 0 && pub_impl->tickle_publisher.reliable_cache != NULL) {
