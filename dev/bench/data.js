@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790233856732,
+  "lastUpdate": 1790233860742,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -119218,6 +119218,35 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/24e1dbf27612125dc288c5f1ba2f39221fec05e9"
         },
         "date": 1790233483230,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "writer_misses",
+            "value": 3,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "cfeb234a0d4a94c1d415186c962dc9ce84281874",
+          "message": "Decline a message TickLE cannot generate, instead of half-generating it\n\nrosidl_typesupport_tickle_c could not build performance_test at all, and\ncb11c362 - removing the fatal size assertion - was only the first of three\nlayers. Behind it, a message nesting std_msgs/Header resolved that type off the\n-I search path and assumed some other package generates HeaderData. Nothing\ndoes. The output carried `#include \"Header.h\"` for a file that was never\nwritten.\n\nThe line was drawn twice before it was drawn correctly, and the middle attempt\nis worth recording because it looked right. Making TickLE's bundled builtin win\nover the search path emits std_msgs__Header.h properly - and still does not\nbuild, because ros2_adapter.py needs std_msgs' own\n...__rosidl_typesupport_tickle_c.h to convert the ROS C struct into the TickLE\none, and that exists only if std_msgs itself builds this typesupport. Having the\nstruct is not the same as being able to adapt it, and only the second makes a\nmessage usable from ROS 2.\n\nSo: any nested type from another package is declined in the ROS 2 path. The\nfiles CMake's add_custom_command names are still written - a missing output\nfails the build exactly as hard as a broken one - but they declare nothing, and\nabove all no get_message_type_support_handle, so rosidl's lookup finds nothing\nand rmw_create_publisher refuses the topic with a clear error rather than\naccepting it and failing later.\n\nThe decline says which package and which type, and says explicitly that this is\nNOT the size limit. Those are the two ways a type can be undeliverable, they\nhave entirely different remedies, and a single \"no typesupport\" message sends\npeople looking in the wrong place - which is where an afternoon went today.\n\nInlining the nested type is not the alternative, recorded so it does not get\nproposed again: two packages that both nest std_msgs/Header would each define\n`struct HeaderData` and `HeaderData_encode`, and a ROS 2 executable routinely\nlinks both. That is a duplicate-symbol link failure, not a path collision, so\nper-package output directories do not contain it. The real fix is the one\nFastDDS uses - the interface package ships its own typesupport - which means\nbuilding std_msgs and sensor_msgs from source with this generator applied. A\nprovisioning change, not a generator one.\n\nKnown limitation, stated rather than silently wrong: a package that DOES build\nthis typesupport in the same workspace is declined here too, because nothing\navailable at generation time distinguishes it from one that does not. The\ndecline names the package, so a reader who knows better can see immediately\nthat this is the case they hit.\n\nThis also reframes the provisioning workaround that restricted generation to\nArray1k and Struct16. Its note calls the restriction a path-derivation\nlimitation; those are in fact the only two types in performance_test with no\ncross-package nesting at all, so it was the workaround for this bug and has been\nholding the workspace up for nine days.\n\nVerified by rebuilding performance_test in the real workspace: five PointCloud\ntypes decline with their reason and the package now builds, which it had not\nsince 2026-09-15.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T16:06:03+09:00",
+          "tree_id": "6f5cf11580f630c004152f157b24bcb9f920c200",
+          "url": "https://github.com/tsnlab/tickle/commit/cfeb234a0d4a94c1d415186c962dc9ce84281874"
+        },
+        "date": 1790233859457,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
