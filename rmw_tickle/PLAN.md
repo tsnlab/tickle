@@ -1980,7 +1980,7 @@ lifespan has passed. TickLE enforces lifespan only at the writer (backlog and NA
 unit-tested). A reader-side check needs the writer's lifespan at the reader and comparable clocks
 across nodes.
 
-**ROS 2 actions work through rmw_tickle** (TickLE Dev, `3402d345` and `e8b388ee`, 2026-09-25).
+**ROS 2 actions work through rmw_tickle** (TickLE Dev, `08f36413` and `e8b388ee`, 2026-09-25).
 `example_interfaces/action/Fibonacci` runs between an `rclcpp_action` server and client on default
 nodes at N = 65507: the goal is accepted, 10 feedbacks each carry a correct prefix, and the result
 is exact. It runs in CI as `check_ros2_interfaces.sh -A`. As the design reading below predicted,
@@ -1993,7 +1993,7 @@ rmw_tickle itself did not change.
   - `example_interfaces` declares no interface dependencies, so the build script now builds
     rosidl's implicit dependencies in a first pass.
   - A core generator bug: a struct nesting an *empty* message asserted `sizeof` equal to the wire
-    size, off by the filler byte, and could take the in-place codec (`3402d345`, tested).
+    size, off by the filler byte, and could take the in-place codec (`08f36413`, tested).
 
 Closed in `312bb700`:
 - **Action-specific control arm.** example_interfaces is rebuilt with only ROS 2 visible and
