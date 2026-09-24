@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790215048463,
+  "lastUpdate": 1790215052306,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -114099,6 +114099,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "beyond depth",
             "value": 155,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "committer": {
+            "email": "41898282+github-actions[bot]@users.noreply.github.com",
+            "name": "github-actions[bot]",
+            "username": "github-actions[bot]"
+          },
+          "distinct": true,
+          "id": "1e26797161833a1afe4ec49bec6bb75e68aa8103",
+          "message": "ci: fix the shellcheck finding I shipped, and make `make lint` stop pretending to cover shell\n\n46a66cd3 turned Check all red. The cause is one SC2016 in the script that commit added: the\nbacktick in its grep pattern is a literal character being matched, and shellcheck reads it as a\ncommand substitution that will not expand inside single quotes. Suppressed with the reason, since\nsingle quotes are exactly what keeps it literal.\n\nThe finding is trivial. How it reached CI is not, and it is the second time today in the same\nshape. I added a shell script, ran `make lint`, saw it pass, and said so - and `make lint` does not\nread shell at all. Shellcheck is not installed on this machine, so there was nothing to notice: the\ntool that would have caught it was never asked. That is the same defect as `make lint` reporting\nclean while rmw_tickle's C++ went uncompiled, which cost eight commits on a red gate this morning.\n\nSo: `make lint-shell`, over every tracked .sh outside third_party/build/install, the same set CI\nchecks. It is a separate target rather than folded into `lint` for one reason - if shellcheck\ncannot be resolved it **refuses and exits non-zero** rather than skipping. A lint target that\nquietly passes over a whole language is not a weaker check, it is a false statement, and I have now\nmade that statement twice.\n\nVerified: every tracked shell script in the repo is clean under shellcheck 0.11.0, the new target\nreports the resolved binary and its version so a pass says what it checked, and with shellcheck\nabsent it fails instead of passing.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T10:40:19+09:00",
+          "tree_id": "901495741b4dad85a50a6c7ec0d54038848cf53b",
+          "url": "https://github.com/tsnlab/tickle/commit/1e26797161833a1afe4ec49bec6bb75e68aa8103"
+        },
+        "date": 1790215051084,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "within depth",
+            "value": 160,
+            "unit": "count"
+          },
+          {
+            "name": "beyond depth",
+            "value": 156,
             "unit": "count"
           }
         ]
