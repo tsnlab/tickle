@@ -203,17 +203,56 @@ deliver. All three are **0 in every cell**, so the only thing that differs is wh
 
 | `tc` loss | TickLE (KEEP_ALL) ‡ | FastDDS | CycloneDDS |
 |---|---:|---:|---:|
-| 0% | **109.8 Mbps** ◊ | 11.5 | 47.3 |
-| 1% | **108.2** ◊ | 10.0 | 12.0 |
-| 5% | **104.8** ◊ | 6.8 | 2.4 |
-| 20% | **89.3** ◊ | 2.3 † | 0.36 |
-| 50% | **56.5** ◊ | 0.35 † | 0.11 |
+| 0% | **109.3 Mbps** | 11.5 | 47.3 |
+| 1% | **105.0** | 10.0 | 12.0 |
+| 5% | **98.2** | 6.8 | 2.4 |
+| 20% | **54.9** ◊ | 2.3 † | 0.36 |
+| 50% | **21.9** ◊ | 0.35 † | 0.11 |
 
-**◊** TickLE's throughput figures are **provisional**: five consecutive `reliable_throughput` reps
-at tc 0% came back 94.4 / 111.0 / 112.7 / 94.9 / 111.5 Mbps - two clean clusters at ~95 and ~112
-with nothing between them (`post_match_lost` 0 in all five). Each cell above is a median of 3, so
-it reports whichever cluster that cell happened to sample. The loss columns are unaffected; only
-the rates are. Being re-measured with enough reps to report both modes - see `PLAN.md`.
+**TickLE's column was re-measured on 2026-09-24 at `5816aab3`** (9 reps per cell, `-Q -d 5`,
+harness pinned by `taskset -c 1-3`); the DDS columns are unchanged and were not re-measured. **Every
+figure in this document from here on carries the commit it was taken at** - the absence of one is
+why the paragraph below had to reconstruct a window from timestamps, and why it could not finish
+the job.
+
+**The bimodality is real, the pin removes it, and the pin costs about 1.5%.** The earlier five-rep
+observation (94.4 / 111.0 / 112.7 / 94.9 / 111.5) was the sender sharing a core with the NIC
+interrupt: `eth0`'s IRQ is entirely on CPU0 on both rpis (421,059,281 against 0 on CPU1-3), and the
+slow mode is the runs that landed there. `run_scenario.sh` has excluded CPU0 since `9f70d9b4`, and
+under that pin nine consecutive reps at tc 0% came back 108.8-109.5, a 0.6% spread with no clusters
+at all. So the pinned rate, 109.3, sits about 1.5% below the old unpinned *fast* mode of 110.8-112.3
+- one core fewer - and buys the disappearance of a mode 15% below. The ◊ is lifted at 0/1/5%.
+*(Method note, recorded because it nearly produced the opposite conclusion: the nine reps were first
+read as "the bimodality did not reproduce", which they cannot show. The pin excludes CPU0 by
+construction, so the sweep had removed the mode's precondition before it started. `cpu_main` varied
+across 1, 2 and 3 and never 0 - the question was never "does placement vary" but "does it take the
+one value the mechanism is about".)*
+
+**◊ The 20% and 50% cells do not reproduce this document's own earlier figures, and the cause was
+not found.** They previously read 89.3 and 56.5; they now read 54.9 and 21.9 across every
+measurement taken on 2026-09-24. Four candidate explanations were tested and each is excluded by
+measurement rather than by argument:
+
+- **The same-host socket work** (`82a6a02d`, `2d72282c`): an ABBA A/B, 4 blocks of 5 reps, arms at
+  55.00 / 54.77 (before) against 54.93 / 55.00 (after) at 20%. Within-arm spread as large as
+  between-arm.
+- **`835e8b44`'s added logging**: "Publisher peer registered" fires **exactly once** in a
+  20%-loss run (3 `[INFO]` lines total), so it cannot be a per-sample cost.
+- **Run duration**: the published method is 10s runs and today's were 5s. Measured directly -
+  `-d 5` gives 54.5 and `-d 10` gives 54.9 at 20%, `21.9` either way at 50%.
+- **The code, across the whole reconstructed window**: with the harness held at `5816aab3` and only
+  `src/`+`include/` moved, `acaa8049` (the KEEP_ALL-solicitation fix the published matrix was taken
+  immediately after), `b332dc1b`, `7bb87702`, `0be8c33f` and HEAD all measure 54.5-56.1. **The
+  published 89.3 does not reproduce at its own commit.**
+
+What remains is the original measurement's own conditions, which were not recorded and cannot now
+be recovered - `PLAN.md` cites the fix as `a437859`, a sha that is not in `main`'s history at all
+(it was rebased away before the push), so even the commit is not pinned down. These two cells are
+therefore marked as unexplained rather than corrected, and the arithmetic is worth stating for
+whoever picks this up: 89.3 and 56.5 are almost exactly `109.3 x (1 - p)`, the goodput of a stream
+where every lost sample is recovered by a single retransmission and nothing else is wasted. Today's
+figures are roughly half that, i.e. the sender pushes ~90k samples/s at 20% loss against ~180k on a
+clean link. The loss columns are unaffected: net loss is still 0 in every cell.
 
 **†** FastDDS did not finish draining here (`drained=timeout` in 1/3 reps at 20%, 3/3 at 50%): its
 net loss is 0 because refused writes are *counted*, not because everything was delivered - samples
