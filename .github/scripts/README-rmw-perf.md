@@ -106,22 +106,46 @@ packages against the workspace this doc sets up ahead of time.
    during provisioning (not by `rmw-perf.yml` on every run - that workflow only rebuilds
    `rmw_tickle`'s own packages and reconfigures `buildfarm_perf_tests`, per its own comments).
 
-   a. **`performance_test`'s own `Array1k.msg`/`Struct16.msg` need a standard-layout symlink.**
-      `performance_test`'s `CMakeLists.txt` uses `rosidl_generate_interfaces()`'s colon-prefixed
-      custom-base-directory syntax (`"${CMAKE_CURRENT_SOURCE_DIR}/src:msg/Array1k.msg"`, real file
-      at `src/msg/Array1k.msg`) - `rosidl_typesupport_tickle_c_generate_interfaces.cmake`'s own
-      path-derivation only understands the standard `<pkg>/msg/<Name>.msg` layout yet (a real,
-      not-yet-fixed limitation - not fixed here since a symlink workaround costs nothing and
-      touches nothing upstream):
+   a. **`performance_test`'s own `Array1k.msg`/`Struct16.msg` need a standard-layout symlink** -
+      and, separately, those two are **the only types in that package `rosidl_typesupport_tickle_c`
+      can generate at all**. The second half was discovered on 2026-09-24 and is the important one;
+      what follows replaces an earlier note here which described this restriction as a convenience,
+      because it is not one.
+
+      The symlink half: `performance_test`'s `CMakeLists.txt` uses `rosidl_generate_interfaces()`'s
+      colon-prefixed custom-base-directory syntax (`"${CMAKE_CURRENT_SOURCE_DIR}/src:msg/Array1k.msg"`,
+      real file at `src/msg/Array1k.msg`) and `rosidl_typesupport_tickle_c_generate_interfaces.cmake`
+      only understands the standard `<pkg>/msg/<Name>.msg` layout:
       ```sh
       cd ~/rmw_perf_ws/src/performance_test/performance_test
       mkdir -p msg
       ln -s ../src/msg/Array1k.msg msg/Array1k.msg
       ln -s ../src/msg/Struct16.msg msg/Struct16.msg
       ```
-      (`Struct256.msg` deliberately has no symlink here - it embeds a nested `Struct16` field,
-      which `rosidl_typesupport_tickle_c` doesn't support yet - see `rmw-perf.yml`'s own
-      `PERF_TEST_TOPICS`, which excludes it for exactly this reason.)
+
+      **Why only these two, which is not about symlinks.** `rosidl_generate_interfaces()` names
+      every type explicitly, so the symlinks do not select what gets generated - the generator
+      processes all of them. Two independent limits then bite:
+
+      - **Cross-package nesting.** `PointCloud1m`/`2m`/`4m`/`8m`/`512k`, `NavSatFix`,
+        `RadarDetection`, `RadarTrack`, `Range` and `Polygon` nest `std_msgs/Header` or
+        `sensor_msgs/PointField`. The generator emits `#include "Header.h"` and never writes that
+        file, because it only writes TickLE's own bundled builtins and otherwise assumes a sibling
+        `.msg` in the same package already produced one. That assumption fails for any package
+        nesting from a package with no TickLE typesupport - which is every ROS interface package
+        today. Fixing it properly means generating TickLE typesupport *for `std_msgs` and
+        `sensor_msgs` themselves*, the way `libstd_msgs__rosidl_typesupport_fastrtps_c.so` exists on
+        this box - a provisioning change, not a generator tweak. Emitting the nested types inline
+        instead would give two consumers each their own `struct HeaderData`, which is a duplicate
+        symbol the moment a real executable links both.
+      - **Size.** `Array4k`/`Array32k` and the larger point clouds exceed `tt_MAX_BUFFER_LENGTH`.
+        This used to fail the whole build via `_Static_assert`; since `cb11c362` it is a
+        `#define <Type>_FITS_ONE_DATAGRAM` and the refusal happens at publish instead.
+
+      `Array1k` and `Struct16` are simply the two types that hit neither limit. **If you are
+      wondering whether you can add a third topic to `PERF_TEST_TOPICS`, that is the question to
+      check first** - and `Struct256` cannot, for the same nesting reason (it embeds `Struct16`,
+      which is same-package, but see `rmw-perf.yml`'s own note).
 
    b. **`performance_test`'s own nodes need several rclcpp internals disabled.** A real
       `rclcpp::Node` unconditionally creates a `/rosout` publisher and parameter services/event
