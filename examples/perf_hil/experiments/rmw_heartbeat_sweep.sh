@@ -85,8 +85,10 @@ identity() { # $1 = pid; prints OK or VOID with the reason
 # Arm label -> environment. The "armed" check below derives what each arm must and must not log.
 arm_env() {
     case "$1" in
-        off)   ;;
-        hb1ms) echo "RMW_TICKLE_HEARTBEAT_PERIOD_NS=1000000" ;;
+        # Piggyback is on by default since the user's decision of 2026-09-24, so "off" and the
+        # periodic-only reference must switch it off explicitly rather than by leaving it unset.
+        off)   echo "RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0" ;;
+        hb1ms) echo "RMW_TICKLE_HEARTBEAT_PERIOD_NS=1000000 RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0" ;;
         pb*)   echo "RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=${1#pb}" ;;
     esac
 }
@@ -94,10 +96,13 @@ arm_check() { # $1 arm, $2 pub log; prints OK or VOID(...)
     local periodic=no piggy="" bad=""
     grep -aq 'periodic heartbeat armed' "$2" && periodic=yes
     piggy=$(grep -aoE 'heartbeat piggyback armed: every [0-9]+' "$2" | grep -oE '[0-9]+$' | head -1)
+    # d6d312cd: piggyback is on (64) by default and an explicit 0 logs this line, so "off" is
+    # positively confirmed rather than inferred from a missing armed line.
+    grep -aq 'heartbeat piggyback off' "$2" && piggy="${piggy:-off}"
     grep -aqE 'requested but not armed' "$2" && bad=" ARM-FAILED"
     case "$1" in
-        off)   [ "$periodic" = no ] && [ -z "$piggy" ] ;;
-        hb1ms) [ "$periodic" = yes ] && [ -z "$piggy" ] ;;
+        off)   [ "$periodic" = no ] && [ "$piggy" = off ] ;;
+        hb1ms) [ "$periodic" = yes ] && [ "$piggy" = off ] ;;
         pb*)   [ "$periodic" = no ] && [ "$piggy" = "${1#pb}" ] ;;
     esac && [ -z "$bad" ] && { echo OK; return; }
     echo "VOID(periodic=$periodic piggyback=${piggy:-none}$bad)"
@@ -107,7 +112,7 @@ pt="$WS/install/performance_test/lib/performance_test/perf_test"
 run() { # $1 phase, $2 arm, $3 rep, $4 rate (0 = max)
     local tag="$1_$2_rep$3" common=(-c ROS2 -t Array1k --max_runtime 15 --rate "$4" --keep_last --history_depth 10 --reliable)
     local rosargs=(--ros-args --param start_type_description_service:=false) env_arm=()
-    local e; e=$(arm_env "$2"); [ -n "$e" ] && env_arm=("$e")
+    local e; e=$(arm_env "$2"); [ -n "$e" ] && read -ra env_arm <<<"$e"
     env "${env_arm[@]}" TICKLE_NODE_ID=101 "$pt" "${common[@]}" -p 1 -s 0 "${rosargs[@]}" > "$OUT/${tag}_pub.log" 2>&1 & local pub=$!
     env "${env_arm[@]}" TICKLE_NODE_ID=102 "$pt" "${common[@]}" -p 0 -s 1 "${rosargs[@]}" > "$OUT/${tag}_sub.log" 2>&1 & local sub=$!
     sleep 2

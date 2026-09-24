@@ -1644,6 +1644,71 @@ the no-eviction guarantee, so it is a candidate to measure (A/B on one commit, a
 reading, and a control that makes the guarantee fail visibly if the change breaks it), not a change
 to make. Immediate ACKNACK on a new gap already exists (Phase 1-a) and is not part of the cost.
 
+#### RELIABLE under the default ROS 2 profile: window stalls, and a piggybacked Heartbeat on by default (2026-09-24)
+
+**Found through the ROS 2 path, not the native one.** `examples/perf_hil/experiments/rmw_shipping_check.sh`
+(`e7f3ec8c`) runs the shipping build through `rmw_tickle` with the library identity proved from
+`/proc/PID/maps`. Its RELIABLE part - `perf_test` Array1k, RELIABLE, KEEP_LAST depth 10 (the ROS 2
+default profile), max rate, 8% loss injected in TickLE's receive path on both processes - kept order
+perfectly (`out_of_order=0`, `timestamp_not_newer=0`) but filled the 1024-slot reorder buffer
+(`reorder_overflow=145760`) and logged ~1063 "Reliable gap too large to track" window jumps in 15s.
+The rig never showed this because its §3b sweep runs KEEP_ALL, where no lost sample is ever evicted.
+Behaviour on the dev box, not a performance figure.
+
+**Two separate things, told apart by a pre-registered re-run.** TickLE Dev found two paths that moved
+the ack watermark without releasing held samples - `acknack_retry()`'s give-up, and the heartbeat
+handler's second move - and fixed both (`e300fe72`). Dev predicted overflow would go to 0 while the
+jumps stayed if these were separate things. Re-run: overflow 145760 -> **0**, jumps 1063 -> 1120.
+Two results from that run were then read wrongly, and are corrected here:
+- **`out_of_order_discarded` rose 227 -> 36834, and "about 1.2% of the stream is lost" was TickLE
+  Plan's reading, withdrawn.** `delivered` *rose* over the same change (2.96M -> 3.04M), which points
+  to duplicates rather than lost data. But the counter cannot tell a duplicate retransmission from
+  late new data - both are `seq <= highest_delivered` - so neither "lost" nor "none lost" is
+  measured. It is not a loss measure and is not judged anywhere below.
+- **`via_socket_flips` 5 -> 1462 was an instrument artifact.** A held sample was credited to the
+  socket of whatever packet released it; it is now recorded at hold time (`73c4c8b8`).
+
+**The jumps: TickLE had DDS's GAP but not its backstop.** For samples evicted from a KEEP_LAST cache,
+DDS's GAP is already covered. A publisher answers an ACKNACK for an evicted sample with an eviction
+Heartbeat, and its `first_available_seq_no` makes the reader skip exactly what is gone. KEEP_LAST
+eviction is always a prefix, so "everything below X is gone" says all GAP would. What was missing is
+what RTPS relies on when that ACKNACK or its reply is itself lost: a HEARTBEAT that does not depend
+on one exchange. TickLE had `send_heartbeat()`, but `heartbeat_period_ns` defaults to 0 and
+`rmw_tickle` never armed it. That left only `acknack_retry` (1ms x 3), while a max-rate stream fills
+1024 slots in ~5ms.
+
+| experiment (all on the dev box, same profile, 8% loss) | commit | result |
+|---|---|---|
+| periodic Heartbeat 1ms vs off, 5 reps each | `9afacfe1` | jumps off 972-1102, on **0-6** |
+| piggyback every N vs periodic, max rate, 5 reps | `b97eb126` | off 505-767; pb16 0-2; **pb64 0-1**; pb256 1-13; hb1ms 0-3 |
+| same, 1000 msg/s, 3 reps | `b97eb126` | 0 jumps in every arm; worst latency overlaps |
+| wire cost, loopback capture, no loss | `118507ed` | pb64: +24 B per 64 samples (+0.035% on 1 KB), **no extra datagram**; hb1ms at 1000/s: **+92% datagrams** |
+| default-on confirmation | `d6d312cd` | shipping check part 2 with no env var: armed at 64, **0 jumps**, overflow 0; sweep replicated (off 837-1151, pb64 0-1) |
+
+**Piggyback, not periodic, is the default** - the user's choice at each step ("데이터에 실어 보내는
+방식을 구현해서 실험해보자.", then "기본으로 켜자."). A periodic Heartbeat costs a datagram per period
+whatever the data rate: nearly doubling the packets of a 1000 msg/s publisher, and most of the
+traffic of a quieter one. A Heartbeat piggybacked on every 64th DATA (`7e034ef2`, `d55d8ac5`; on by
+default in `d6d312cd`, `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0` turns it off) rides a datagram that
+was going out anyway. It is appended *after* the DATA, because prepending it would flip a unicast
+datagram to broadcast (TickLE Dev). Its frequency scales with the data rate, which is when a window
+can fill at all. At max rate it also clears gaps sooner than a 1ms timer: 64 samples take ~0.3ms,
+and `reorder_held_peak` was 116-135 against ~800-1000 for hb1ms.
+
+**Its known hole, measured rather than argued.** Piggyback only speaks while data flows. At 1000
+msg/s pb64 fires every 64ms and is indistinguishable from off, and the retry covers that regime: no
+jumps in any arm. The periodic Heartbeat does buy something there that is *not* the stall fix. Mean
+latency was 0.136-0.150ms against 0.206-0.216 for off and pb64, in both sweeps. A reader otherwise
+learns of a lost last sample only when the next DATA arrives, and a Heartbeat tells it sooner
+(TickLE Dev, confirmed against the reader path). This was not pre-registered, and it remains an
+opt-in (`RMW_TICKLE_HEARTBEAT_PERIOD_NS`), not a default.
+
+**Not tested**: overtaking on a real NIC, where a periodic Heartbeat read from a different socket
+before the DATA it covers would provoke a needless ACKNACK and retransmit. On loopback no ACKNACK or
+retransmit was attributable to it. Piggyback cannot do this by construction. Performance of any of
+this through `rmw` on the rig waits for the rig upgrade, since the rpis have no ROS 2 (user,
+2026-09-24).
+
 #### The "Data consistency violated" abort, closed (2026-09-24) - and the entry above is two different things confused into one
 
 **The abort is gone**: 36 consecutive `two_process_rmw_` matrix runs, **144 cells, zero occurrences**, at `cfeb234a`. The pre-fix rate measured the same day was 2 aborting cells in 48, so P(zero across 144 | unchanged) = **0.2%**. That is a result rather than a likely coincidence, and it was sized before the runs rather than after.

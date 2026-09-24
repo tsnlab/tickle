@@ -70,8 +70,10 @@ identity() {
 }
 arm_env() {
     case "$1" in
-        off)   ;;
-        hb1ms) echo "RMW_TICKLE_HEARTBEAT_PERIOD_NS=1000000" ;;
+        # Piggyback is on by default since the user's decision of 2026-09-24, so "off" and the
+        # periodic-only reference must switch it off explicitly rather than by leaving it unset.
+        off)   echo "RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0" ;;
+        hb1ms) echo "RMW_TICKLE_HEARTBEAT_PERIOD_NS=1000000 RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0" ;;
         pb*)   echo "RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=${1#pb}" ;;
     esac
 }
@@ -79,10 +81,13 @@ arm_check() {
     local periodic=no piggy="" bad=""
     grep -aq 'periodic heartbeat armed' "$2" && periodic=yes
     piggy=$(grep -aoE 'heartbeat piggyback armed: every [0-9]+' "$2" | grep -oE '[0-9]+$' | head -1)
+    # d6d312cd: piggyback is on (64) by default and an explicit 0 logs this line, so "off" is
+    # positively confirmed rather than inferred from a missing armed line.
+    grep -aq 'heartbeat piggyback off' "$2" && piggy="${piggy:-off}"
     grep -aqE 'requested but not armed' "$2" && bad=" ARM-FAILED"
     case "$1" in
-        off)   [ "$periodic" = no ] && [ -z "$piggy" ] ;;
-        hb1ms) [ "$periodic" = yes ] && [ -z "$piggy" ] ;;
+        off)   [ "$periodic" = no ] && [ "$piggy" = off ] ;;
+        hb1ms) [ "$periodic" = yes ] && [ "$piggy" = off ] ;;
         pb*)   [ "$periodic" = no ] && [ "$piggy" = "${1#pb}" ] ;;
     esac && [ -z "$bad" ] && { echo OK; return; }
     echo "VOID(periodic=$periodic piggyback=${piggy:-none}$bad)"
@@ -97,7 +102,7 @@ run() { # $1 arm, $2 rep, $3 rate, $4 seconds
     local tag="r$3_$1_rep$2" pcap="$OUT/r$3_$1_rep$2.pcap"
     local common=(-c ROS2 -t Array1k --max_runtime "$4" --rate "$3" --keep_last --history_depth 10 --reliable)
     local rosargs=(--ros-args --param start_type_description_service:=false) env_arm=()
-    local e; e=$(arm_env "$1"); [ -n "$e" ] && env_arm=("$e")
+    local e; e=$(arm_env "$1"); [ -n "$e" ] && read -ra env_arm <<<"$e"
     # PID from the launch itself (CLAUDE.md rule 3), so the stop below can only hit this tcpdump.
     tcpdump -i lo -s 0 -B 262144 -U -w "$pcap" udp > "$OUT/${tag}_tcpdump.log" 2>&1 & local td=$!
     for _ in $(seq 1 50); do grep -q 'listening on' "$OUT/${tag}_tcpdump.log" && break; sleep 0.1; done

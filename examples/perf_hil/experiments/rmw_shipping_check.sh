@@ -27,6 +27,10 @@
 #   1: all 4 cells pass, 4 benchmark results, timestamp_not_newer=0 and out_of_order=0 per cell
 #   2: reorder_held_peak > 0 (the buffer really held), reorder_overflow=0, out_of_order=0,
 #      timestamp_not_newer=0. held_peak == 0 under injected loss means rmw's buffer is not wired.
+#      Since d6d312cd (piggybacked Heartbeat on by default): the RELIABLE publisher must log
+#      "heartbeat piggyback armed: every 64 samples" with no env var set, and window jumps ("gap
+#      too large") must be in single digits - they were ~1000 per run before, 0-1 with pb64 in
+#      rmw_heartbeat_sweep.sh. Hundreds of jumps means the default did not take effect.
 #   3: out_of_order_discarded > 0 (the discard fired) and out_of_order=0
 set -o pipefail
 REPO=/home/semih/tickle; WS="$HOME/rmw_perf_ws"; DROP="${DROP:-8}"
@@ -108,6 +112,8 @@ pair() { # $1 label, $2 reliable|besteffort
     wait "$pub" 2>/dev/null; wait "$sub" 2>/dev/null
     echo; echo "--- $1 ($2, ${DROP}% loss injected in TickLE's receive path) ---"
     echo "identity: $id"
+    echo "publisher: $(grep -aoE 'heartbeat piggyback (armed: every [0-9]+ samples|off)' "$OUT/$1_pub.log" | head -1 || echo 'no piggyback line')"
+    echo "window jumps (gap too large): $(grep -ac 'gap too large' "$OUT/$1_sub.log")"
     grep -a 'delivery:' "$OUT/$1_sub.log" | tail -1 | tr ' ' '\n' | grep '=' | paste -sd' '
 }
 pair part2 reliable
