@@ -124,8 +124,18 @@ bool rmw_tickle_get_service_callbacks(const rosidl_service_type_support_t* type_
         return false;
     }
 
+    // The C++ identifier first, as rmw_tickle_get_message_callbacks() above does and for the same
+    // reason: rclcpp's services (a default Node's type description and parameter services among
+    // them) start from rosidl_typesupport_cpp's dispatch, which only knows rosidl_typesupport_tickle_
+    // cpp. Asking it for the C identifier finds nothing, and every rclcpp::Node failed to start here
+    // once its message types were available. rosidl_typesupport_tickle_cpp's service handle carries
+    // the C++ Request/Response handles, which rmw_tickle_get_message_callbacks() resolves the same way.
     const rosidl_service_type_support_t* ours =
-        get_service_typesupport_handle(type_support, rosidl_typesupport_tickle_c__identifier);
+        get_service_typesupport_handle(type_support, rosidl_typesupport_tickle_cpp__identifier);
+    if (NULL == ours) {
+        rmw_reset_error();
+        ours = get_service_typesupport_handle(type_support, rosidl_typesupport_tickle_c__identifier);
+    }
     if (NULL == ours) {
         // Same reasoning as rmw_tickle_get_message_callbacks()'s own NULL case - could be a real
         // mismatch (a service using a request/response with a nested field - not yet supported)
