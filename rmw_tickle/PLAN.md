@@ -1693,7 +1693,7 @@ default in `d6d312cd`, `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY=0` turns it off) ri
 was going out anyway. It is appended *after* the DATA, because prepending it would flip a unicast
 datagram to broadcast (TickLE Dev). Its frequency scales with the data rate, which is when a window
 can fill at all. At max rate it also clears gaps sooner than a 1ms timer: 64 samples take ~0.3ms,
-and `reorder_held_peak` was 116-135 against ~800-1000 for hb1ms.
+and `reorder_held_peak` was 116-135 against 726-1021 for hb1ms (`b97eb126`).
 
 **Its known hole, measured rather than argued.** Piggyback only speaks while data flows. At 1000
 msg/s pb64 fires every 64ms and is indistinguishable from off, and the retry covers that regime: no
