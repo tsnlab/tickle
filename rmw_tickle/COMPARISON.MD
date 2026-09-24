@@ -246,7 +246,7 @@ measurement rather than by argument:
   published 89.3 does not reproduce at its own commit.**
 
 What remains is the original measurement's own conditions, which were not recorded and cannot now
-be recovered - `PLAN.md` cites the fix as `a437859`, a sha that is not in `main`'s history at all
+be recovered - `PLAN.md` cites the fix as `acaa8049`, a sha that is not in `main`'s history at all
 (it was rebased away before the push), so even the commit is not pinned down. These two cells are
 therefore marked as unexplained rather than corrected, and the arithmetic is worth stating for
 whoever picks this up: 89.3 and 56.5 are almost exactly `109.3 x (1 - p)`, the goodput of a stream
@@ -284,7 +284,7 @@ back-pressure never binds.
    match time, a core change the user deliberately deferred (PLAN.md). **Update 2026-09-23**: this
    applies to a VOLATILE Subscriber, which is not owed pre-match history. With **TRANSIENT_LOCAL**
    the window is gone entirely - measured 15/15 reps at tc 0/1/5/20/50%, `first_seq=1` every time,
-   after `215e16c4` taught the DATA-first contact path to respect requested durability the same way
+   after `261f39b8` taught the DATA-first contact path to respect requested durability the same way
    the Heartbeat path already did.
    *(This is what the `‡` on the TickLE column marks: post-match loss is 0; the pre-match window is
    reported separately rather than folded into it.)*

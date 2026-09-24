@@ -439,7 +439,7 @@ responsiveness latency) - pending the user's own prioritization.
 **Implementation**: `tt_SCHEDULER_IO_INTERLEAVE` (config.h, 8) bounds consecutive scheduler-task
 execution in `tt_Node_poll()`'s own inner loop, forcing a non-blocking `tt_try_receive()` peek
 after that many back-to-back scheduler tasks - exactly the fix proposed above. Branch
-`experiment/poll-loop-io-interleave` (commit `8f5ef5a`, pushed - does **not** trigger rig-touching
+`experiment/poll-loop-io-interleave` (commit `b7d822ab`, pushed - does **not** trigger rig-touching
 CI, only a push to `main` does), based on `origin/main` at `92d248d` (before both TickLE Dev's own
 bitmap-widening work and this fix, to isolate this one variable). `make test`/`make sanitize`
 (ASan+UBSan)/`make -C platform/freertos`/`clang-format --dry-run --Werror`/`clang-tidy` all clean
@@ -525,7 +525,7 @@ the application level - fixed (commit `474e755`, harness-only, no TickLE core ch
 **Hypothesis 2, re-tested with the now-fixed harness, on top of the just-landed bitmap widening
 (Milestone 65)**: does the poll-loop I/O-interleave fix still show an effect once the bitmap fix
 is also present? Rebased the fix onto post-bitmap `main` (`experiment/poll-loop-io-interleave-v2`,
-commit `a365f4b`, clean cherry-pick, `make test`/`sanitize` clean) and re-ran the same `tc`/`netem`
+commit `b7d822ab`, clean cherry-pick, `make test`/`sanitize` clean) and re-ran the same `tc`/`netem`
 matrix, 2 reps each, against a plain-`main` (bitmap+harness-fix-only) baseline built fresh
 alongside it. Full numbers and the real methodology correction found along the way (the
 automated `Performance Test` CI's own "0.0% loss" figure measures a *different*, lower-rate tool
@@ -592,7 +592,7 @@ and install prefixes removed on both Pis, no lingering processes).
 #### Final validation (2026-09-22, TickLE Plan, at the user's own instruction: "진행해줘") - a clean, honest, mixed result: real throughput win, loss% roughly a wash
 
 Full `tc`/`netem` matrix (0%/1%/5%), 3 reps each, plain `main` (`1d89ac4`, bitmap+harness fix,
-no scheduler change) vs. `experiment/poll-loop-io-interleave-v2` (`a365f4b`, + the scheduler
+no scheduler change) vs. `experiment/poll-loop-io-interleave-v2` (`b7d822ab`, + the scheduler
 fix), both built clean (no instrumentation overhead this time), same real HIL rig:
 
 | Condition | `main` loss% (avg) | `main` send Mbps (avg) | `v2` loss% (avg) | `v2` send Mbps (avg) | Mbps change |
@@ -991,7 +991,7 @@ before rig use or any push to `main`.
 | ~67 Mbps | 0% | 0.3-0.4% | 4.4% |
 | ~117-120 Mbps (max) | 0% | 0.5% | 4.6% |
 
-**0-c, instrumented (`83798dc`, 2 reps per cell)**: every datagram carries exactly 1 DATA (no
+**0-c, instrumented (`55da6b62`, 2 reps per cell)**: every datagram carries exactly 1 DATA (no
 batching, ~190K pps at max). All recovered samples arrive <256µs after their first ACKNACK (RTT is
 not the limit, so H1 is ruled out as the root cause). Every lost sample is exactly
 `jump_abandoned_seq` (loss = abandoned by `jump_ack_baseline()`).
@@ -1259,7 +1259,7 @@ it means local rmw builds are not the authoritative ones).
 
 #### Phase 3 step 1 result: prerequisites (2026-09-23, Dev implemented + measured, Plan verified raw logs)
 
-`7b266d2` (branch `experiment/phase3-prereqs`), items (a), (c), (d); item (b) needed the wire
+`24c5b927` (branch `experiment/phase3-prereqs`), items (a), (c), (d); item (b) needed the wire
 change and moved into the Phase 2 bundle.
 
 - **(a)** `tombstone_entities_past_own_lease()` now drops a lease-expired remote Subscriber from
@@ -1411,7 +1411,7 @@ A second mismatch behind it: the watermark was measured against cache *depth* wh
 at min(depth, window), so with depth 2048/window 1024 a watermark above 50% would only have
 solicited after the Publisher was already blocked.
 
-Fix (`a437859`): `keep_all` now implies solicitation in core, measured against `keep_all_bound()`
+Fix (`acaa8049`): `keep_all` now implies solicitation in core, measured against `keep_all_bound()`
 (half of it), reusing the existing min-gap throttle; `ack_solicit_watermark_pct` keeps its old
 meaning for everyone else. Plus, at Plan's request, **every refusal also solicits**: once the
 Publisher has stopped, `seq_no` stops moving, so nothing can cross the watermark a second time and
@@ -1540,7 +1540,7 @@ Risk to weigh: a durable Subscriber whose Heartbeat never arrives would then sit
 a real behavior change in code the user has already made one call about (the match-time baseline).
 **Put to the user as its own decision.**
 
-**Decided (the user: "고치기") and fixed (`215e16c4`, Dev)**: `process_data()`'s first-contact branch
+**Decided (the user: "고치기") and fixed (`261f39b8`, Dev)**: `process_data()`'s first-contact branch
 is now `if (first_contact && !sub->durable)` - volatile keeps the Milestone 60 pin (with its own
 test), a durable Subscriber leaves `ack_seq_no` at 1 so the retained range is recoverable through
 the ordinary ACKNACK exchange, and the "durable Subscriber that never hears a Heartbeat" case
@@ -2192,6 +2192,10 @@ The first repetition looked like a regression - `rmw_tickle` at 57.0-103.6us aga
 **For TickLE Dev's bisect note, now moot but worth keeping**: TickLE Dev pointed out that if a regression had survived repetition, `2d72282c` (the receive-socket alternation, up to 2N `recvfrom()` per drain instead of N) was at least as plausible a candidate as `82a6a02d` (the socket split), and that building `82a6a02d`'s receive path against HEAD isolates the alternation cheaply. It also proposed a cheaper alternation - flip the preference only after a read that produced data, keeping the starvation bound while not paying the wasted syscall when one socket carries everything. No number asks for that today, and it is recorded so the option exists rather than being rediscovered.
 
 **Verification of the instrument, since two measurements lied earlier the same day**: the running benchmark was confirmed to have `/home/semih/tickle/install/rmw_tickle/lib/librmw_tickle.so` mapped, read out of `/proc/<pid>/maps` while it ran, rather than inferred from the build having succeeded. A stray reference to the CI runner's own install tree in an `rcutils` stale-error message was what prompted the check; it was not the library actually loaded. **Still outstanding**: §3b's Mbps cells and their provisional ◊ marks, which need the rig rather than this box.
+
+**Every commit id in both documents was audited, and six of them were wrong** (TickLE Plan, 2026-09-24, prompted by TickLE Dev after `a437859` turned out not to exist). The §3b investigation stalled on a citation that named a commit rebased away before it was ever pushed, so the same check was run over every backtick-quoted sha in `PLAN.md` and `COMPARISON.MD`: resolve it, then assert it is an ancestor of `origin/main`. Six failed - `215e16c4` (cited in **both** documents, for the durability fix `COMPARISON.MD` §3b's own TRANSIENT_LOCAL result rests on), `a437859`, `7b266d2`, `83798dc`, `8f5ef5a` and `a365f4b`. All six had main-branch equivalents, found by matching the commit subject, and all are now corrected: `261f39b8`, `acaa8049`, `24c5b927`, `55da6b62` and `b7d822ab`. Note that `8f5ef5a` and `a365f4b` were two local iterations of one experiment that landed as the single commit `b7d822ab`, so the documents previously cited two shas for one change, neither of them real.
+
+**Why this is worth more than the tidy-up it looks like.** Every one of these was written down at the moment the work was done, by whoever did it, citing the sha they had in front of them - and then a rebase before the push changed it. Nothing was careless; the local sha is simply not the published one, and no step in the workflow ever compared them. The cost landed hours later: an entire evening's investigation could not check whether a figure reproduced at its own commit, because the commit named did not exist. **The audit is two lines of shell** (`git cat-file -e` then `git merge-base --is-ancestor`) **and should run over these documents whenever either changes**, which is a better safeguard than remembering to re-check a sha after a rebase. Recording the sha with every published figure, agreed separately, does nothing on its own if the sha recorded is the pre-rebase one.
 
 **The process finding, recorded because it outlives this bug.** The mechanism was not unknown to this project: `platform/linux/test.sh`'s own header has stated for some time that "a kernel delivers a *unicast* packet aimed at one wildcard-bound socket to whichever such socket bound last, not by any real address distinction, so that setup silently could not validate any of the unicast paths." The response at the time was to give *that test* two network namespaces so it would stop hitting the condition. The test passed from then on and the product stayed broken, and because the only suite that runs on every push mocks the HAL away entirely (`tests/test_mock.h`), nothing else was ever positioned to see it. It took a benchmark, months later, to find it. **The rule this yields**: when a test is changed so that it stops hitting a real condition, the condition is a product finding until something proves otherwise - the change closes the test's exposure to it, never the product's. `platform/linux/test_samehost.sh` is the standing answer here (real sockets, two real nodes, one host, over loopback; no root, no namespaces, so it runs on every push, wired into `make test-samehost`/`make test-all` and `test-all.yml`'s own gate). TickLE Dev raised this itself rather than leaving it in a commit message, which is the reason it is written down at this length.
 
