@@ -1748,11 +1748,9 @@ itself does not fix it: `GetTypeDescription_Response` is 9944 B as a TickLE stru
    `.msg` and this is read as the "EMparser" exception; and the verbatim ROS `.msg` parser fixtures
    stay as test data.
    The relocation itself landed in `c1396780` (TickLE Dev): `ros2_cli`, `ros2_adapter` and
-   `Ros2Resolver` now live in `rmw_tickle/rosidl_typesupport_tickle_c/`. **Follow-up, not yet
-   done:** core's `model.WireStruct` still carries fields that exist only for the ROS side
-   (`header_name`, `ros_pkg_name`, `ros_type_name`), and `resolve.Resolver` sets them. Removing
-   them is a refactor rather than a relocation, and it is tracked here so it does not become
-   permanent residue under decision 2.
+   `Ros2Resolver` now live in `rmw_tickle/rosidl_typesupport_tickle_c/`. **Follow-up, done** (`d7b6a285`): core's
+   `WireStruct.ros_pkg_name`/`ros_type_name` became one generic `origin = (package, type)`, and
+   the ROS name is now built in `ros2_adapter`. `header_name` stays, as a generic include override.
 
 **Research** (TickLE Plan, `rmw_tickle/tools/`, commits `35aead29`, `098a4697`, `8d8f7c81`).
 Every jazzy `.msg`/`.srv` in common_interfaces, rcl_interfaces, unique_identifier_msgs, geometry2 and
@@ -1914,6 +1912,34 @@ latency servers treated the forwarded `-d` as their own lifetime without the +15
 other server has. So they exited halfway through the client's pings. It was not a TickLE
 regression: the rpi log shows the server alive exactly 10 s, and TickLE Dev's loopback repro got
 100/100.
+
+**P2 end to end** (`5bed1a89`, TickLE Dev): `rmw_tickle/scripts/build_ros2_interfaces.sh` builds
+builtin_interfaces and std_msgs at the installed tags with TickLE typesupport.
+`check_ros2_interfaces.sh` then round-trips `std_msgs/String` and `std_msgs/Header`; Header nests
+Time across packages. Library identity is checked from `/proc/PID/maps`, and a subscriber with no
+publisher is the failing control. It runs in jazzy CI, in Check all. Still to do: the remaining
+packages from the inventory, the two capacity profiles picked by N in the CMake hook, and the
+README for users.
+
+**A false alarm worth keeping: "LIFESPAN regressed at 261f39b8"** (TickLE Plan's, withdrawn). The
+2026-09-25 re-sweep read TickLE lifespan_expiry as lost 0 in 9/9 runs, and a rig bisect pinned that
+on `261f39b8`. TickLE Dev showed that both were the harness:
+- The scenario's server sleeps its pause *before* creating its Subscriber, so it needs
+  `PRE_CLIENT_SLEEP=0`. Both callers passed 3 s, which is longer than every pause, so the
+  Subscriber existed before the first sample.
+- On loopback at stagger 0, every commit loses what the pause should cost.
+- Fixed in `a5f41b46`. The 2026-09-20 TickLE lifespan figures were probably taken under the same
+  stagger, so COMPARISON.MD no longer keeps them.
+
+This was the second harness timing artifact of the night read as a core result, after the latency
+servers' missing +15 s. **Method change:** before trusting a scenario's number, check from the
+server log's timeline that the harness put both sides into the state the scenario is about. A
+result that repeats identically in 9/9 runs points at the setup as much as at the code.
+
+**Open design question, not a fix:** DDS readers also drop samples whose source timestamp plus
+lifespan has passed. TickLE enforces lifespan only at the writer (backlog and NACK resend, both
+unit-tested). A reader-side check needs the writer's lifespan at the reader and comparable clocks
+across nodes.
 
 **Next assignment after this one: ROS 2 actions** (user decision 4). A first design reading by
 TickLE Plan (2026-09-24), from the jazzy sources of rosidl and rosidl_typesupport, not yet checked
