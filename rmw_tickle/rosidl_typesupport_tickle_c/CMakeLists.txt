@@ -24,11 +24,14 @@ get_filename_component(TICKLE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
 # tt_MAX_BUFFER_LENGTH for everything built on this package: rmw_tickle, and every interface
 # package whose typesupport it generates - one value, set here, exported through the extras file,
-# so no two of them can be built for different datagrams. rmw_tickle may raise it up to 65507 and
-# leave the OS to fragment (the user's decision, 2026-09-24); core's own default stays 1472.
+# so no two of them can be built for different datagrams. It defaults to 65507, the largest IPv4 UDP
+# payload, left to the OS to fragment: the user's decision of 2026-09-24 ("rmw의 기본 최대 패킷
+# 크기: UDP 한계에 맞춰서"). Core's own default stays 1472. A user may lower it; everything built
+# on this package follows. Note that an existing build tree keeps whatever value its CMake cache
+# already holds - pass -DTICKLE_MAX_BUFFER_LENGTH=... (or build afresh) to change it there.
 # Changing it means rebuilding every interface package too - rmw_tickle refuses a type generated
 # for a different value (rosidl_typesupport_tickle_c_message_callbacks_t.tickle_max_buffer_length).
-set(TICKLE_MAX_BUFFER_LENGTH "1472" CACHE STRING
+set(TICKLE_MAX_BUFFER_LENGTH "65507" CACHE STRING
     "tt_MAX_BUFFER_LENGTH for rmw_tickle and every interface package generated with rosidl_typesupport_tickle_c")
 if(NOT TICKLE_MAX_BUFFER_LENGTH MATCHES "^[0-9]+$" OR TICKLE_MAX_BUFFER_LENGTH LESS 64 OR
    TICKLE_MAX_BUFFER_LENGTH GREATER 65507)

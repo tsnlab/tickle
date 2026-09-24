@@ -192,6 +192,29 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
     return found;
 }
 
+// Says what receive buffer the kernel actually granted, which is rarely what was asked for: an
+// unprivileged setsockopt() is clamped to net.core.rmem_max (208 KB on many distros; the kernel
+// then reports double what it keeps). Worth a warning only when the result holds few of this
+// build's largest datagrams - the case rmw_tickle's 65507-byte buffer (2026-09-24) makes real,
+// where a burst of full-size samples overflows the socket and is lost below TickLE, invisibly.
+// Plan's review: name the sysctl, because nothing else will tell the user it is the limit.
+#define tt_RCVBUF_WARN_DATAGRAMS 16
+static void report_receive_buffer(int sock, const char* which) {
+    int granted = 0;
+    socklen_t length = sizeof(granted);
+    // NOLINTNEXTLINE(misc-include-cleaner) - same as the setsockopt() calls below
+    if (getsockopt(sock, SOL_SOCKET, SO_RCVBUF, (void*)&granted, &length) < 0) {
+        return;
+    }
+    if ((long)granted < (long)tt_RCVBUF_WARN_DATAGRAMS * tt_MAX_BUFFER_LENGTH) {
+        TT_LOG_WARNING("%s socket receive buffer is %d bytes (asked %d) - fewer than %d datagrams of %d bytes; raise "
+                       "net.core.rmem_max to let it grow",
+                       which, granted, (int)tt_SOCKET_BUFFER_SIZE, tt_RCVBUF_WARN_DATAGRAMS, tt_MAX_BUFFER_LENGTH);
+    } else {
+        TT_LOG_DEBUG("%s socket receive buffer is %d bytes (asked %d)", which, granted, (int)tt_SOCKET_BUFFER_SIZE);
+    }
+}
+
 tt_ret_t tt_bind(struct tt_Node* node) {
     // Set before anything below can fail into tt_close(): -1 says "nothing to close here yet",
     // the same convention node->hal.sock itself relies on implicitly (every failure that reaches
@@ -235,6 +258,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     if (setsockopt(node->hal.sock, SOL_SOCKET, SO_RCVBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
         TT_LOG_WARNING("Cannot set socket receive buffer size: %s", strerror(errno));
     }
+    report_receive_buffer(node->hal.sock, "Well-known");
 
     // The well-known socket always binds the wildcard, never _tt_CONFIG.addr. Measured on Linux:
     // a socket bound to a unicast address receives no broadcasts at all, directed or limited - so
@@ -288,6 +312,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     if (setsockopt(node->hal.data_sock, SOL_SOCKET, SO_RCVBUF, (const void*)&buffer_size, sizeof(int)) < 0) {
         TT_LOG_WARNING("Cannot set data socket receive buffer size: %s", strerror(errno));
     }
+    report_receive_buffer(node->hal.data_sock, "Data");
 
     // This one does honour _tt_CONFIG.addr. Left at 0.0.0.0 it behaves as before; set to a local
     // address it scopes this node's sends to the link that owns that address, which is the

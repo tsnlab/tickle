@@ -260,6 +260,11 @@ static uint32_t clamp_record_bytes(unsigned long long payload) {
     return record > (uint32_t)tt_MAX_BUFFER_LENGTH ? (uint32_t)tt_MAX_BUFFER_LENGTH : record;
 }
 
+// The KEEP_ALL per-sample reservation for a type with no bound - see the unset branch below.
+static uint32_t keep_all_unbounded_default(void) {
+    return (uint32_t)(tt_MAX_BUFFER_LENGTH < tt_ETHERNET_UDP_PAYLOAD ? tt_MAX_BUFFER_LENGTH : tt_ETHERNET_UDP_PAYLOAD);
+}
+
 static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
     if (NULL != pub_impl->callbacks &&
         ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != pub_impl->callbacks->tickle_max_encoded_size) {
@@ -268,18 +273,23 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
 
     const char* env = getenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
     if (NULL == env || '\0' == env[0]) {
-        // No bound from either source. tt_MAX_BUFFER_LENGTH raw, without the record conversion,
-        // because that is literally what this code passed before any of this existed - "unchanged"
-        // has to mean byte-identical, not merely similar.
-        return (uint32_t)tt_MAX_BUFFER_LENGTH;
+        // No bound from either source: the standard 1472-byte datagram, raw, without the record
+        // conversion - what this code reserved before any of this existed, when that was also
+        // tt_MAX_BUFFER_LENGTH. Deliberately not tt_MAX_BUFFER_LENGTH now that rmw_tickle builds
+        // it at 65507 (2026-09-24): KEEP_ALL is not budgeted (it may not drop an unacknowledged
+        // sample), so a depth-8192 DURABLE publisher of a type with a plain string would reserve
+        // 536 MB. Every sample that could exist before 65507 is retained exactly as before; a
+        // larger one - newly possible - is sent but not retained, which setup_reliable_cache()
+        // warns about, and RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES raises.
+        return keep_all_unbounded_default();
     }
     char* end = NULL;
     unsigned long long payload = strtoull(env, &end, 10);
     if (end == env || (end != NULL && '\0' != *end) || payload == 0) {
         // Unparseable or zero: fall back rather than fail publisher creation, same reasoning as
         // resolve_max_blocking_ns() - a malformed tuning knob should not stop a node starting, and
-        // this one can only cost retention.
-        return (uint32_t)tt_MAX_BUFFER_LENGTH;
+        // this one can only cost retention. To the same default as unset, not to something else.
+        return keep_all_unbounded_default();
     }
     return clamp_record_bytes(payload);
 }
@@ -493,6 +503,19 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     // DURABLE-but-BEST_EFFORT KEEP_ALL Publisher keeps its deep cache and its non-blocking writes,
     // which is the only behavior it could have.
     pub_impl->tickle_publisher.keep_all = keep_all && pub_impl->tickle_publisher.reliable;
+    if (keep_all && tt_MAX_BUFFER_LENGTH > tt_ETHERNET_UDP_PAYLOAD &&
+        resolve_keep_all_record_bytes(pub_impl) < (uint32_t)tt_MAX_BUFFER_LENGTH &&
+        (NULL == pub_impl->callbacks ||
+         ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED == pub_impl->callbacks->tickle_max_encoded_size)) {
+        // resolve_keep_all_record_bytes() says why: said out loud, because a sample that is sent but
+        // not retained is otherwise invisible until a reader misses it.
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "KEEP_ALL publisher of %s: its type has no size bound, so samples larger than %u bytes "
+                               "are sent but not retained for retransmission; set RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES "
+                               "to retain larger ones (reserves that much per sample, depth %u)",
+                               NULL != pub_impl->callbacks ? pub_impl->callbacks->ros_type_name : "?",
+                               (unsigned)resolve_keep_all_record_bytes(pub_impl), (unsigned)depth);
+    }
     if (pub_impl->tickle_publisher.keep_all) {
         pub_impl->tickle_publisher.writable_callback = publisher_writable_callback;
         pub_impl->tickle_publisher.writable_callback_param = pub_impl;
