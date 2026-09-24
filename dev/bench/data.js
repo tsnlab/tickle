@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790234990099,
+  "lastUpdate": 1790234994182,
   "repoUrl": "https://github.com/tsnlab/tickle",
   "entries": {
     "Latency (ping/pong)": [
@@ -125302,6 +125302,45 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/tsnlab/tickle/commit/9747c1eab3dde93c5e2a619a08e69f48e7edf36a"
         },
         "date": 1790234569009,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pause=1.0s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=1.5s",
+            "value": 0,
+            "unit": "count"
+          },
+          {
+            "name": "pause=2.0s",
+            "value": 0,
+            "unit": "count"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "committer": {
+            "email": "semih@tsnlab.com",
+            "name": "Semih",
+            "username": "semihlab"
+          },
+          "distinct": true,
+          "id": "a18add6619ef1169e0be7591d839e5a7e1a4061a",
+          "message": "Two arms for work that is only visible when it fails\n\nBoth halves of the ordering change are unobservable while they work. With the\nBEST_EFFORT discard and the RELIABLE reorder buffer doing their jobs, the\napplication never sees a sample out of order - so every detector for that reads\nzero, and \"the detector is correct\" is indistinguishable from \"the detector is\ndead code\". Two things were sitting in exactly that state:\n\n  - rmw_tickle's reorder buffer. reorder_held_peak == 0 on every clean run,\n    which reads the same whether it is holding nothing or is not wired up.\n  - performance_test's patch (f) log line, verified to be READ by its gate\n    against a fabricated log, and never once observed being WRITTEN.\n\nTT_ORDERING_DISABLED puts the defect back, so something can notice. Same\ninstrument as TT_RX_FIXED_PREFERENCE: one -D between two builds of the same\ncommit. Controlled the way that one was - =0 produces an object byte-identical\nto no flag, =1 differs, and under =1 the BEST_EFFORT discard test fails with\nexactly the old counts, so the arm demonstrably restores the old behaviour\nrather than merely compiling differently. The first attempt at this passed its\nown hash check while the default build was broken, because I had wired the\nmacro's uses without its #define; the control caught it.\n\nTT_RX_DROP_PERCENT injects the loss that makes any of it observable, inside\nTickLE rather than with `tc netem loss` on lo. Not because tc needs root here,\nthough it does - tc on the loopback interface hits every loopback flow on this\nmachine, including another session's benchmark, as loss it never asked for and\ncannot see. Dropping in the receive path cannot reach past the experiment,\nneeds no privilege, and leaves no global state a crash could strand in a bad\nconfiguration. The cleanup trap CLAUDE.md records for the 20%-loss incident is\nthe right fix for tc; not needing the global state is better than restoring it\nreliably. A dropped datagram is reported as a timeout, not an error, because\nthat is what it is indistinguishable from and an error would tear the node down\ninstead of carrying on the way real loss makes it carry on.\n\nThe experiment's readings are written into its header before it runs, including\nthe one that is not a result: injected loss also hits discovery, so a pair that\nnever matched delivers almost nothing and looks exactly like a buffer failure.\ndelivered= is read before anything else and a low count makes the arm void.\n\nDefault builds are byte-identical to before: both switches are #ifndef-guarded\nat 0, and the whole suite, lint and headers-cpp pass unchanged.\n\nCo-Authored-By: Claude Opus 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-24T16:24:46+09:00",
+          "tree_id": "8679a6f2a6b7605cbbeeaa5e1cef622d94545c83",
+          "url": "https://github.com/tsnlab/tickle/commit/a18add6619ef1169e0be7591d839e5a7e1a4061a"
+        },
+        "date": 1790234992879,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
