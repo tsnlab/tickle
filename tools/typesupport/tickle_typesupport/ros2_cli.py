@@ -142,7 +142,8 @@ def _decline(package, subfolder, name, outdir, source_label, fmt_dir, reason):
     return written
 
 
-def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, include_dirs=()):
+def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, include_dirs=(),
+             typesupport_packages=()):
     """Returns the list of file paths written - same "top-level interface first" convention as
     cli.generate_interface()."""
     os.makedirs(outdir, exist_ok=True)
@@ -163,7 +164,8 @@ def generate(package, subfolder, name, input_path, outdir, *, style_dir=None, in
     # annotations - see rosidl_typesupport_tickle_c_generate_interfaces.cmake's own former .srv
     # skip, removed together with this fix).
     package_root = os.path.dirname(os.path.dirname(input_path))
-    resolver = resolve.Ros2Resolver(package, os.path.join(package_root, "msg"), include_dirs)
+    resolver = resolve.Ros2Resolver(package, os.path.join(package_root, "msg"), include_dirs,
+                                    typesupport_packages)
 
     if subfolder == "msg":
         spec = rosidl.parse_message_string(package, name, text)
@@ -249,6 +251,19 @@ def main(argv=None):
         "dependency package (each one's own share root, computed from that package's own "
         "find_package()-set _DIR variable) - see rmw_tickle/PLAN.md's own Milestone for this.",
     )
+    parser.add_argument(
+        "--typesupport-package",
+        action="append",
+        default=[],
+        metavar="PKG",
+        help="PKG builds TickLE typesupport of its own, so a nested field from it can be resolved "
+        "(repeatable). Without this, a cross-package nested type is DECLINED, because nothing "
+        "visible here distinguishes a package that generated its own TickLE struct and ROS adapter "
+        "from one that merely has a .msg on the -I search path - std_msgs has the .msg and neither "
+        "of the rest. The CMake extension determines it by looking for that package's exported "
+        "<pkg>::<pkg>__rosidl_typesupport_tickle_c target, which only exists if it ran this "
+        "extension.",
+    )
     args = parser.parse_args(argv)
 
     written = generate(
@@ -259,6 +274,7 @@ def main(argv=None):
         args.outdir,
         style_dir=args.style_dir,
         include_dirs=args.include_dir,
+        typesupport_packages=args.typesupport_package,
     )
     print(f"{args.input} -> {', '.join(written)}")
     return 0

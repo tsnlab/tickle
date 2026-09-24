@@ -57,6 +57,26 @@ foreach(_tickle_dep_include_dir ${_tickle_dep_include_dirs})
   list(APPEND _tickle_dep_include_args "-I" "${_tickle_dep_include_dir}")
 endforeach()
 
+# Which dependency packages actually build TickLE typesupport of their own (2026-09-24).
+#
+# The generator cannot tell. A nested type from another package is only usable if that package
+# generated its own TickLE struct AND its own ROS adapter header - the adapter is the half that
+# gets forgotten, because having the struct is not the same as being able to convert the ROS C
+# struct into it. From inside the generator, std_msgs/Header (no TickLE typesupport anywhere) and
+# rosidl_typesupport_tickle_c_tests_dep/Leaf (typesupport built right here) look identical: both
+# resolve to a .msg on the -I search path.
+#
+# CMake can tell, because a package that ran this extension exports a library target for it. So
+# the answer is computed here and passed down, rather than guessed there. Getting this wrong in
+# the safe-looking direction is what broke `test_dispatch_nested`: declining every cross-package
+# nested type made a supported, tested case fail for ten commits.
+set(_tickle_generated_pkg_args "")
+foreach(_dep_pkg_name ${rosidl_generate_interfaces_DEPENDENCY_PACKAGE_NAMES})
+  if(TARGET ${_dep_pkg_name}::${_dep_pkg_name}__rosidl_typesupport_tickle_c)
+    list(APPEND _tickle_generated_pkg_args "--typesupport-package" "${_dep_pkg_name}")
+  endif()
+endforeach()
+
 foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
   # rosidl_generate_interfaces_ABS_IDL_FILES holds *adapted* .idl paths (rosidl_adapt_interfaces()
   # runs before any extension, including this one, so every generator only ever has to understand
@@ -154,6 +174,7 @@ foreach(_abs_idl_file ${rosidl_generate_interfaces_ABS_IDL_FILES})
       --input "${_src_file}"
       --outdir "${_msg_output_dir}"
       ${_tickle_dep_include_args}
+      ${_tickle_generated_pkg_args}
     DEPENDS "${_src_file}"
     COMMENT "Generating TickLE type support for ${_idl_name}"
     VERBATIM

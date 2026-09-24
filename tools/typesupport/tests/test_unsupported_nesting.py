@@ -34,7 +34,7 @@ def _ros_share_dir():
     return None
 
 
-def _generate(tmp_path, name, body, include_dir):
+def _generate(tmp_path, name, body, include_dir, typesupport_packages=()):
     source = tmp_path / f"{name}.msg"
     source.write_text(body, encoding="utf-8")
     outdir = tmp_path / "out"
@@ -42,7 +42,8 @@ def _generate(tmp_path, name, body, include_dir):
     result = subprocess.run(
         [sys.executable, "-m", "tickle_typesupport.ros2_cli",
          "--package", "pkg_under_test", "--subfolder", "msg", "--name", name,
-         "--input", str(source), "--outdir", str(outdir), "-I", str(include_dir)],
+         "--input", str(source), "--outdir", str(outdir), "-I", str(include_dir)]
+        + [arg for pkg in typesupport_packages for arg in ("--typesupport-package", pkg)],
         capture_output=True, text=True, cwd=str(REPO_ROOT / "tools" / "typesupport"),
     )
     assert result.returncode == 0, f"generator failed outright:\n{result.stderr}"
@@ -103,3 +104,32 @@ def test_unsupported_nested_package_declines_without_failing_the_build(tmp_path)
         "pkg_under_test__msg__HasPointField__type_support.c",
     ):
         assert (outdir / expected).is_file(), f"{expected} was not written"
+
+
+def test_a_declared_typesupport_package_resolves(tmp_path):
+    """A cross-package nested type IS resolved when CMake says that package builds typesupport.
+
+    The generator cannot tell the two cases apart: std_msgs/Header and a sibling package's Leaf
+    both resolve to a .msg on the -I search path, and only one of them has a TickLE struct and a
+    ROS adapter behind it. CMake can tell, because a package that ran the extension exports a
+    <pkg>::<pkg>__rosidl_typesupport_tickle_c target, so the answer is passed down rather than
+    guessed here.
+
+    Declining everything cross-package instead - which is what this file asserted for ten commits -
+    broke test_dispatch_nested, a real supported case, and left check-all red the whole time.
+    """
+    share = tmp_path / "share" / "depper" / "msg"
+    share.mkdir(parents=True)
+    (share / "Leaf.msg").write_text("int32 leaf_value\n", encoding="utf-8")
+
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    declined, stderr = _generate(tmp_path / "a", "Branchy", "depper/Leaf leaf\nint64 value\n",
+                                 tmp_path / "share")
+    assert "DECLINED" in stderr, "without the flag it must still decline"
+
+    resolved, stderr = _generate(tmp_path / "b", "Branchy", "depper/Leaf leaf\nint64 value\n",
+                                 tmp_path / "share", typesupport_packages=("depper",))
+    assert "DECLINED" not in stderr
+    header = (resolved / "Branchy.h").read_text(encoding="utf-8")
+    assert '#include "Leaf.h"' in header, "the nested type must be referenced as the sibling generation names it"

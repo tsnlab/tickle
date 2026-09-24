@@ -135,10 +135,14 @@ class Ros2Resolver:
     the same and only thing this class's own in_discovery_order() ever reports.
     """
 
-    def __init__(self, package_name, sibling_dir, include_dirs=()):
+    def __init__(self, package_name, sibling_dir, include_dirs=(), typesupport_packages=()):
         self.package_name = package_name
         self.sibling_dir = sibling_dir
         self.include_dirs = list(include_dirs)
+        # Packages that build TickLE typesupport of their own, as determined by CMake (which can
+        # see their exported target) and passed in. Nothing visible from here distinguishes such a
+        # package from one that merely has a .msg on the search path.
+        self.typesupport_packages = set(typesupport_packages)
         self.resolved_structs = {}
         self._builtin_fallback = Resolver(include_dirs)
 
@@ -178,7 +182,7 @@ class Ros2Resolver:
         # typesupport in the same workspace is declined here too, because nothing available at
         # generation time distinguishes it from one that does not. The decline says which package
         # it was, so a reader who knows better can tell immediately that this is the case they hit.
-        if pkg_name != self.package_name:
+        if pkg_name != self.package_name and pkg_name not in self.typesupport_packages:
             raise UnsupportedNestedPackage(pkg_name, msg_name)
 
         text = self._find_independent_source(pkg_name, msg_name)
