@@ -54,7 +54,7 @@ measure() {   # $1 fw  $2 label
     kill_all
     local r
     r=$(sh_ "$env cd ~/$d && nohup taskset -c 1-3 ./server -i 0.1 -d 600 > /tmp/idle_srv.log 2>&1 < /dev/null & sleep 4
-p=\$(for q in \$(ls /proc|grep -E '^[0-9]+\$'); do e=\$(readlink /proc/\$q/exe 2>/dev/null); case "\$e" in */perf_hil/$fw/*/server) echo "\$q";; esac; done | head -1)
+p=\$(for q in \$(ls /proc|grep -E "^[0-9]+\$"); do e=\$(readlink /proc/\$q/exe 2>/dev/null); case \$e in */perf_hil/$fw/*/server) echo \$q;; esac; done | head -1)
 [ -n \"\$p\" ] || { echo 'NO-PID'; exit 0; }
 read -r u1 s1 <<<\"\$(awk '{print \$14, \$15}' /proc/\$p/stat)\"
 v1=\$(awk '/voluntary_ctxt_switches/{print \$2}' /proc/\$p/status | head -1)
