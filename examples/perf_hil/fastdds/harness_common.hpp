@@ -33,6 +33,8 @@ namespace harness {
     constexpr double ns_per_s_real = 1e9;
     constexpr double ns_per_ms = 1e6;
     constexpr double percent = 100.0;
+    constexpr double bits_per_byte = 8.0;
+    constexpr double bits_per_megabit = 1e6;
 
     inline volatile sig_atomic_t g_interrupted = 0;
 
