@@ -1,0 +1,42 @@
+=== FastDDS sweep identity, 2026-09-25T21:05:09+09:00 ===
+pre=4baa3b76  post=44a4f59c
+
+--- building 4baa3b76 on both rpis ---
+  both rpis: all 1 scenarios present at the executed paths
+
+PRE1  REP  lifespan_expiry rep1 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep2 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+PRE1  REP  lifespan_expiry rep3 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+PRE1  REP  lifespan_expiry rep4 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep5 | role=client sent=100 role=server recv=97 lost=3 loss_pct=3.0 
+PRE1  REP  lifespan_expiry rep6 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep7 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+PRE1  REP  lifespan_expiry rep8 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep9 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep10 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+PRE1  REP  lifespan_expiry rep11 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+PRE1  REP  lifespan_expiry rep12 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep13 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+PRE1  REP  lifespan_expiry rep14 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep15 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+
+--- building 44a4f59c on both rpis ---
+  both rpis: all 1 scenarios present at the executed paths
+
+POST  REP  lifespan_expiry rep1 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep2 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+POST  REP  lifespan_expiry rep3 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+POST  REP  lifespan_expiry rep4 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+POST  REP  lifespan_expiry rep5 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+POST  REP  lifespan_expiry rep6 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep7 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+POST  REP  lifespan_expiry rep8 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep9 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+POST  REP  lifespan_expiry rep10 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep11 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+POST  REP  lifespan_expiry rep12 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+POST  REP  lifespan_expiry rep13 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+POST  REP  lifespan_expiry rep14 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep15 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+
+=== done ===

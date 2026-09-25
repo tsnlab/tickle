@@ -1,0 +1,44 @@
+=== FastDDS sweep identity, 2026-09-25T20:43:16+09:00 ===
+pre=4baa3b76  post=44a4f59c
+
+--- building 4baa3b76 on both rpis ---
+  both rpis: all 7 scenarios present at the executed paths
+
+PRE1  EXACT deadline_miss_detection | role=client sent=100 offered_missed_total=7 detect_latency_ms=-0.923 RESULT: framework=fastdds scenario=deadline_miss_detection role=server recv=100 requested_missed_total=35
+PRE1  EXACT durability_late_join | role=client durable=0 received=0 backlog_delivery_ms=-1.000 RESULT: framework=fastdds scenario=durability_late_join role=server durable=0 backlog_sent=20 acked=1
+PRE1  EXACT history_depth_burst_loss | role=client sent=160 write_dropped=0 RESULT: framework=fastdds scenario=history_depth_burst_loss role=server pause_s=3.0 recv=108 lost=52 loss_pct=32.5
+PRE1  EXACT lifespan_expiry | role=client sent=100 RESULT: framework=fastdds scenario=lifespan_expiry role=server pause_s=0.300 recv=95 lost=5 loss_pct=5.0
+PRE1  EXACT liveliness_loss_detection | role=client sent=50 (ran to completion, not killed) RESULT: framework=fastdds scenario=liveliness_loss_detection role=server recv=50 loss_detected=0 detect_latency_ms=-1.000 lease_s=2.000
+PRE1  TIME  reliable_latency rep1 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.289 rtt_max_ms=0.591 
+PRE1  TIME  reliable_latency rep2 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.289 rtt_max_ms=0.588 
+PRE1  TIME  reliable_latency rep3 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.295 rtt_max_ms=0.638 
+PRE1  TIME  reliable_throughput rep1 | role=client sent=281170 send_mbps=35.963 role=server recv=281170 lost=0 loss_pct=0.0 
+PRE1  TIME  reliable_throughput rep2 | role=client sent=294905 send_mbps=37.725 role=server recv=294905 lost=0 loss_pct=0.0 
+PRE1  TIME  reliable_throughput rep3 | role=client sent=278553 send_mbps=35.638 role=server recv=278553 lost=0 loss_pct=0.0 
+
+--- building 44a4f59c on both rpis ---
+  both rpis: all 7 scenarios present at the executed paths
+
+POST  EXACT deadline_miss_detection | role=client sent=100 offered_missed_total=7 detect_latency_ms=-0.928 RESULT: framework=fastdds scenario=deadline_miss_detection role=server recv=100 requested_missed_total=35
+POST  EXACT durability_late_join | role=client durable=0 received=0 backlog_delivery_ms=-1.000 RESULT: framework=fastdds scenario=durability_late_join role=server durable=0 backlog_sent=20 acked=1
+POST  EXACT history_depth_burst_loss | role=client sent=160 write_dropped=0 RESULT: framework=fastdds scenario=history_depth_burst_loss role=server pause_s=3.0 recv=108 lost=52 loss_pct=32.5
+POST  EXACT lifespan_expiry | role=client sent=100 RESULT: framework=fastdds scenario=lifespan_expiry role=server pause_s=0.300 recv=96 lost=4 loss_pct=4.0
+POST  EXACT liveliness_loss_detection | role=client sent=50 (ran to completion, not killed) RESULT: framework=fastdds scenario=liveliness_loss_detection role=server recv=50 loss_detected=0 detect_latency_ms=-1.000 lease_s=2.000
+POST  TIME  reliable_latency rep1 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.296 rtt_max_ms=0.614 
+POST  TIME  reliable_latency rep2 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.287 rtt_max_ms=0.589 
+POST  TIME  reliable_latency rep3 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.289 rtt_max_ms=0.668 
+POST  TIME  reliable_throughput rep1 | role=client sent=289886 send_mbps=37.081 role=server recv=289886 lost=0 loss_pct=0.0 
+POST  TIME  reliable_throughput rep2 | role=client sent=287162 send_mbps=36.747 role=server recv=287162 lost=0 loss_pct=0.0 
+POST  TIME  reliable_throughput rep3 | role=client sent=285989 send_mbps=36.589 role=server recv=285989 lost=0 loss_pct=0.0 
+
+--- building 4baa3b76 on both rpis ---
+  both rpis: all 7 scenarios present at the executed paths
+
+PRE2  TIME  reliable_latency rep1 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.308 rtt_max_ms=0.873 
+PRE2  TIME  reliable_latency rep2 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.299 rtt_max_ms=0.708 
+PRE2  TIME  reliable_latency rep3 | sent=100 recv=100 loss_pct=0 rtt_avg_ms=0.294 rtt_max_ms=0.612 
+PRE2  TIME  reliable_throughput rep1 | role=client sent=282110 send_mbps=36.107 role=server recv=282110 lost=0 loss_pct=0.0 
+PRE2  TIME  reliable_throughput rep2 | role=client sent=288577 send_mbps=36.930 role=server recv=288577 lost=0 loss_pct=0.0 
+PRE2  TIME  reliable_throughput rep3 | role=client sent=287939 send_mbps=36.825 role=server recv=287939 lost=0 loss_pct=0.0 
+
+=== done ===

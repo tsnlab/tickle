@@ -1,0 +1,26 @@
+=== FastDDS sweep identity, 2026-09-25T20:58:33+09:00 ===
+pre=4baa3b76  post=44a4f59c
+
+--- building 4baa3b76 on both rpis ---
+  both rpis: all 3 scenarios present at the executed paths
+
+PRE1  ONCE best_effort_latency | RESULT: framework=fastdds scenario=best_effort_latency sent=100 recv=100 loss_pct=0 rtt_min_ms=0.257 rtt_avg_ms=0.283 rtt_max_ms=0.681 NO-SERVER-RESULT
+PRE1  ONCE best_effort_throughput | RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=374821 elapsed_s=5.000 send_mbps=47.977 sample_bytes=76 utime_s=1.554 stime_s=3.458 cpu_s_per_Msample=13.372 cpu_s_per_MB=0.176 peak_rss_kb=14208 wire_rx_bytes=4292 wire_rx_packets=14 wire_tx_bytes=95213848 wire_tx_packets=374846 wire_bytes_total=95218140 wire_packets_total=374860 wire_bytes_per_sample=254.0 wire_packets_per_sample=1.000 wire_role_packets_per_sample=1.000 iface=eth0 instrument=ok RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=284627 lost=90167 loss_pct=24.1 elapsed_s=5.000 recv_mbps=36.432 sample_bytes=76 utime_s=3.410 stime_s=3.354 cpu_s_per_Msample=23.764 cpu_s_per_MB=0.313 peak_rss_kb=14336 wire_rx_bytes=89966494 wire_rx_packets=374848 wire_tx_bytes=8334 wire_tx_packets=24 wire_bytes_total=89974828 wire_packets_total=374872 wire_bytes_per_sample=316.1 wire_packets_per_sample=1.317 wire_role_packets_per_sample=1.317 iface=eth0 instrument=ok
+PRE1  REP  lifespan_expiry rep1 | role=client sent=100 role=server recv=94 lost=6 loss_pct=6.0 
+PRE1  REP  lifespan_expiry rep2 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep3 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+PRE1  REP  lifespan_expiry rep4 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+PRE1  REP  lifespan_expiry rep5 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+
+--- building 44a4f59c on both rpis ---
+  both rpis: all 3 scenarios present at the executed paths
+
+POST  ONCE best_effort_latency | RESULT: framework=fastdds scenario=best_effort_latency sent=100 recv=100 loss_pct=0 rtt_min_ms=0.252 rtt_avg_ms=0.277 rtt_max_ms=0.657 NO-SERVER-RESULT
+POST  ONCE best_effort_throughput | RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=375698 elapsed_s=5.000 send_mbps=48.089 sample_bytes=76 utime_s=1.496 stime_s=3.517 cpu_s_per_Msample=13.341 cpu_s_per_MB=0.176 peak_rss_kb=14208 wire_rx_bytes=4292 wire_rx_packets=14 wire_tx_bytes=95436606 wire_tx_packets=375723 wire_bytes_total=95440898 wire_packets_total=375737 wire_bytes_per_sample=254.0 wire_packets_per_sample=1.000 wire_role_packets_per_sample=1.000 iface=eth0 instrument=ok RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=281729 lost=93968 loss_pct=25.0 elapsed_s=5.000 recv_mbps=36.062 sample_bytes=76 utime_s=3.272 stime_s=3.385 cpu_s_per_Msample=23.630 cpu_s_per_MB=0.311 peak_rss_kb=14336 wire_rx_bytes=90176974 wire_rx_packets=375725 wire_tx_bytes=8334 wire_tx_packets=24 wire_bytes_total=90185308 wire_packets_total=375749 wire_bytes_per_sample=320.1 wire_packets_per_sample=1.334 wire_role_packets_per_sample=1.334 iface=eth0 instrument=ok
+POST  REP  lifespan_expiry rep1 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep2 | role=client sent=100 role=server recv=95 lost=5 loss_pct=5.0 
+POST  REP  lifespan_expiry rep3 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep4 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+POST  REP  lifespan_expiry rep5 | role=client sent=100 role=server recv=96 lost=4 loss_pct=4.0 
+
+=== done ===
