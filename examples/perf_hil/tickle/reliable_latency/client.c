@@ -26,6 +26,7 @@
 
 #include "Bench.h"
 #include "BenchStats.h" // shared instrumentation - see its own header
+#include "CpuFreq.h"
 
 static struct BenchStats g_bench_stats;
 static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
@@ -61,6 +62,15 @@ static double rtt_min_ms = -1.0, rtt_max_ms = 0.0, rtt_sum_ms = 0.0;
 static uint32_t seq = 0;
 static struct tt_Publisher* g_pub;
 
+// CPU frequency around each round trip (2026-09-25). A tail excursion after the scheduler-driven poll
+// has two platform explanations besides the change itself: an ordinary loss recovery, or the ondemand
+// governor lowering the package clock once the client stopped spinning and a P-state change - made
+// through the firmware, with a latency the kernel reports as unknown - landing on a round trip.
+// Sampled AFTER the round trip is recorded, never between send and receive, so it cannot perturb what
+// it measures. Identical in all three frameworks' clients, per the fairness rule.
+static struct BenchCpuFreq g_rtt_freq;
+static double cpu_mhz_at_rtt_max = -1.0;
+
 static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
     (void)timestamp;
@@ -70,10 +80,15 @@ static void pong_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_
     if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
         rtt_min_ms = rtt_ms;
     }
-    if (rtt_ms > rtt_max_ms) {
+    bool new_max = rtt_ms > rtt_max_ms;
+    if (new_max) {
         rtt_max_ms = rtt_ms;
     }
     rtt_sum_ms += rtt_ms;
+    BenchCpuFreq_sample(&g_rtt_freq, tt_get_ns(), 0);
+    if (new_max) {
+        cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
+    }
 }
 
 static void ping(struct tt_Node* node, uint64_t time, void* param) {
@@ -100,6 +115,7 @@ int main(int argc, char** argv) {
     // Armed at the very top, before any middleware setup, so the counters cover discovery
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
+    BenchCpuFreq_init(&g_rtt_freq);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
@@ -193,8 +209,11 @@ int main(int argc, char** argv) {
     }
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
-           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f %s\n",
+           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
+           "cpu_mhz_at_rtt_max=%.1f retransmitted=%u gap_abandoned=%u %s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
+           BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
+           cpu_mhz_at_rtt_max, g_pub->retransmitted, sub.gap_abandoned,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

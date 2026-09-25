@@ -25,6 +25,7 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+#include "CpuFreq.h"
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
 //
@@ -48,11 +49,18 @@ static void handle_sigint(int sig) {
 
 static struct tt_Publisher* g_pub;
 
+// TickLE-only diagnostics for the latency tail question (2026-09-25), not compared across frameworks -
+// the CycloneDDS and FastDDS latency servers print no RESULT line at all. The server host's clock
+// matters as much as the client's: it idles between pings too, so the ondemand governor can lower it
+// before each echo. Sampled after the echo is published, never before it.
+static struct BenchCpuFreq g_echo_freq;
+
 static void ping_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint16_t seq_no, struct BenchData* data) {
     (void)sub;
     (void)timestamp;
     (void)seq_no;
     tt_Publisher_publish(g_pub, (struct tt_Data*)data);
+    BenchCpuFreq_sample(&g_echo_freq, tt_get_ns(), 0);
 }
 
 static const double default_safety_cap_s = 40.0;
@@ -64,6 +72,7 @@ static const double default_safety_cap_s = 40.0;
 static const double safety_cap_buffer_s = 15.0;
 
 int main(int argc, char** argv) {
+    BenchCpuFreq_init(&g_echo_freq);
     double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -143,7 +152,10 @@ int main(int argc, char** argv) {
         ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
-    printf("RESULT: framework=tickle scenario=reliable_latency role=server\n");
+    printf("RESULT: framework=tickle scenario=reliable_latency role=server cpu_mhz_mean=%.1f cpu_mhz_min=%.1f "
+           "cpu_mhz_max=%.1f retransmitted=%u gap_abandoned=%u\n",
+           BenchCpuFreq_mean_mhz(&g_echo_freq), BenchCpuFreq_min_mhz(&g_echo_freq), BenchCpuFreq_max_mhz(&g_echo_freq),
+           pub.retransmitted, sub.gap_abandoned);
 
     tt_Node_destroy(&node);
     return 0;

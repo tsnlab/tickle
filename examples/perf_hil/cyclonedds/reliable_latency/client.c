@@ -14,6 +14,7 @@
 #include <dds/dds.h>
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/CpuFreq.h"
 #include "../common.h"
 #include "Bench.h"
 
@@ -32,10 +33,20 @@ static uint64_t now_ns(void) {
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
+// CPU frequency around each round trip (2026-09-25). A tail excursion after the scheduler-driven poll
+// has two platform explanations besides the change itself: an ordinary loss recovery, or the ondemand
+// governor lowering the package clock once the client stopped spinning and a P-state change - made
+// through the firmware, with a latency the kernel reports as unknown - landing on a round trip.
+// Sampled AFTER the round trip is recorded, never between send and receive, so it cannot perturb what
+// it measures. Identical in all three frameworks' clients, per the fairness rule.
+static struct BenchCpuFreq g_rtt_freq;
+static double cpu_mhz_at_rtt_max = -1.0;
+
 int main(int argc, char** argv) {
     // Armed at the very top, before any middleware setup, so the counters cover discovery
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
+    BenchCpuFreq_init(&g_rtt_freq);
     double interval_s = 1.0;
     double duration_s = 10.0;
     for (int i = 1; i < argc; i++) {
@@ -115,11 +126,16 @@ int main(int argc, char** argv) {
                 if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
                     rtt_min_ms = rtt_ms;
                 }
-                if (rtt_ms > rtt_max_ms) {
+                bool new_max = rtt_ms > rtt_max_ms;
+                if (new_max) {
                     rtt_max_ms = rtt_ms;
                 }
                 rtt_sum_ms += rtt_ms;
                 rtt_sum_sq_ms += rtt_ms * rtt_ms;
+                BenchCpuFreq_sample(&g_rtt_freq, now_ns(), 0);
+                if (new_max) {
+                    cpu_mhz_at_rtt_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
+                }
             }
         }
 
@@ -139,8 +155,11 @@ int main(int argc, char** argv) {
     }
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
-           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f %s\n",
+           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
+           "cpu_mhz_at_rtt_max=%.1f %s\n",
            (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
+           BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq), BenchCpuFreq_max_mhz(&g_rtt_freq),
+           cpu_mhz_at_rtt_max,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

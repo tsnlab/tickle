@@ -49,6 +49,10 @@ struct BenchCpuFreq {
     uint64_t sum_khz;
     uint32_t samples;
     uint64_t next_sample_ns;
+    // The most recent reading, 0 before the first - so a caller can note the frequency at the moment
+    // of a particular event, not only over the run (2026-09-25: a latency tail that one explanation
+    // attributes to a P-state change landing on the round trip).
+    uint32_t last_khz;
 };
 
 static inline void BenchCpuFreq_init(struct BenchCpuFreq* freq) {
@@ -57,6 +61,7 @@ static inline void BenchCpuFreq_init(struct BenchCpuFreq* freq) {
     freq->sum_khz = 0;
     freq->samples = 0;
     freq->next_sample_ns = 0;
+    freq->last_khz = 0;
 }
 
 // Call from the send or receive path; it reads sysfs at most once per period_ns and returns
@@ -84,8 +89,14 @@ static inline void BenchCpuFreq_sample(struct BenchCpuFreq* freq, uint64_t now_n
         }
         freq->sum_khz += khz;
         freq->samples++;
+        freq->last_khz = (uint32_t)khz;
     }
     fclose(stream);
+}
+
+// The most recent reading in MHz, or -1 before the first.
+static inline double BenchCpuFreq_last_mhz(const struct BenchCpuFreq* freq) {
+    return freq->last_khz != 0 ? (double)freq->last_khz / 1000.0 : -1.0;
 }
 
 static inline double BenchCpuFreq_mean_mhz(const struct BenchCpuFreq* freq) {
