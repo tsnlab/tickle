@@ -6713,10 +6713,12 @@ static tt_ret_t poll_once_nonblocking(struct tt_Node* node, uint64_t time) {
 // work: the old slice. That keeps the only property of the old cadence anyone could legitimately
 // depend on - a bounded time to return under load - and drops the part nobody wanted, the same bound
 // when there is nothing to do.
-static bool poll_should_return_after_work(struct tt_Node* node, uint64_t poll_start) {
-    uint64_t now = tt_get_ns();
-    return !scheduler_entry_due(node, now) || now - poll_start >= (uint64_t)tt_RECEIVE_TIMEOUT;
-}
+//
+// Both checks are placed where they cost nothing extra per entry. "Nothing more is due" is decided by
+// the peek the next iteration does anyway: it lands in the I/O branch, which returns instead of waiting
+// once work has been done. The slice is checked against the clock reading the loop takes anyway. The
+// first version peeked and read the clock again after every entry, and that alone cost -1.5% of max-rate
+// throughput on the rig and ~24% of the loop's own entries per second in a microbenchmark.
 
 // How long the I/O wait in tt_Node_poll() may last, and whether it ends for a scheduler entry. A
 // negative-timeout poll waits exactly until the next entry, or - with none - passes 0, which
@@ -6734,6 +6736,39 @@ static int64_t poll_wait_length(const struct tt_TCB* tcb, uint64_t time, int64_t
     }
     *woke_for_scheduler = false;
     return timeout;
+}
+
+// tt_Node_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
+// Returns true with *result set when the poll should end.
+static bool poll_wait_io(struct tt_Node* node, const struct tt_TCB* tcb, uint64_t time, int64_t timeout,
+                         bool until_next_event, bool did_work, tt_ret_t* result) {
+    // A negative-timeout poll that has already run what fell due returns here instead of starting
+    // another wait.
+    if (until_next_event && did_work) {
+        *result = tt_RET_TIMEOUT;
+        return true;
+    }
+
+    bool woke_for_scheduler = false;
+    int64_t rest = poll_wait_length(tcb, time, timeout, until_next_event, &woke_for_scheduler);
+
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
+
+    // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
+    // by a signal (the HALs report EINTR as a timeout). Hand control back rather than wait again: under
+    // an indefinite wait that is what lets Ctrl-C reach the caller's loop.
+    if (until_next_event && len == -1 && !scheduler_entry_due(node, tt_get_ns())) {
+        *result = tt_RET_TIMEOUT;
+        return true;
+    }
+
+    if (handle_receive_result(node, len, ip, port, woke_for_scheduler, result)) {
+        *result = drain_rx(node, *result);
+        return true;
+    }
+    return false;
 }
 
 tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
@@ -6769,6 +6804,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     // starve tt_receive() for this whole call's own timeout budget. See tt_SCHEDULER_IO_INTERLEAVE's
     // own doc comment (config.h) for the full reasoning.
     uint32_t consecutive_scheduler_runs = 0;
+    bool did_work = false; // a scheduler entry has run during this call
 
     while (until_next_event || timeout > 0) {
         struct tt_TCB* tcb = peek_scheduler(node);
@@ -6778,9 +6814,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
             tcb->function(node, time, tcb->param);
             pop_scheduler(node);
             consecutive_scheduler_runs++;
-            if (until_next_event && poll_should_return_after_work(node, poll_start)) {
-                return tt_RET_TIMEOUT;
-            }
+            did_work = true;
         } else if (tcb != NULL && tcb->time <= time) {
             // A scheduler entry is still due, but tt_SCHEDULER_IO_INTERLEAVE consecutive ones have
             // already run without a receive check - force one non-blocking peek before letting more
@@ -6794,25 +6828,10 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
                 return drain_rx(node, process_datagram(node, len, ip, port));
             }
         } else {
-            // Run network I/O next
             consecutive_scheduler_runs = 0;
-            bool woke_for_scheduler = false;
-            int64_t rest = poll_wait_length(tcb, time, timeout, until_next_event, &woke_for_scheduler);
-
-            uint32_t ip = 0;
-            uint16_t port = 0;
-            int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
-
-            // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was
-            // cut short by a signal (the HALs report EINTR as a timeout). Hand control back rather than
-            // wait again: under an indefinite wait that is what lets Ctrl-C reach the caller's loop.
-            if (until_next_event && len == -1 && !scheduler_entry_due(node, tt_get_ns())) {
-                return tt_RET_TIMEOUT;
-            }
-
             tt_ret_t result;
-            if (handle_receive_result(node, len, ip, port, woke_for_scheduler, &result)) {
-                return drain_rx(node, result);
+            if (poll_wait_io(node, tcb, time, timeout, until_next_event, did_work, &result)) {
+                return result;
             }
         }
 
@@ -6821,6 +6840,9 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
             timeout -= (int64_t)(new_time - time);
         }
         time = new_time;
+        if (until_next_event && did_work && time - poll_start >= (uint64_t)tt_RECEIVE_TIMEOUT) {
+            return tt_RET_TIMEOUT; // the busy-node slice
+        }
     }
 
     return tt_RET_TIMEOUT;
