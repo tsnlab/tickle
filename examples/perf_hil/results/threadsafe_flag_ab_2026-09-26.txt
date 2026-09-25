@@ -1,0 +1,8 @@
+=== THREAD_SAFE flag-only A/B, 2026-09-26T00:13:49+09:00, same commit, interleaved ===
+staged at /tmp/ts_off (-Dtt_THREAD_SAFE=0) and /tmp/ts_on (default), both from 940d2094
+
+ts_off 6.077 6.009 6.072 6.007
+ts_on  6.005 6.011 6.005 6.001
+
+means: off 6.0412 on 6.0055 us/sample, difference -36 ns, ranges overlap
+baseline 97e1a278 in the M1 re-run: 5.773 us/sample
