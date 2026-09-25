@@ -15,15 +15,16 @@
 //
 // Field order is `send_ns` before `seq` deliberately, and must stay that way. Standard CDR aligns
 // a 64-bit field to 8 while TickLE's CDR-4 caps alignment at 4, so with `seq` first this file
-// produced 1388 bytes on TickLE's wire and four more on both vendors' - a difference that would
+// produced 1292 bytes on TickLE's wire and four more on both vendors' - a difference that would
 // have landed inside the wire-bytes-per-sample metric and been charged to framing. `send_ns`
 // first is 8 + 4 + N under both rules, with no padding under either.
 //
-// 8 + 4 + 1376 = 1388 bytes: the like-for-like large size, sized to RTPS framing (the most
-// constrained of the three) so that all three send exactly one datagram. 1472 - 76 (RTPS header 20
-// + INFO_TS 12 + DATA submessage 24 + encapsulation 4, plus an INFO_DST) = 1396, less 8 bytes of
-// headroom. That is spec arithmetic rather than a measurement, so wire_packets_per_sample must
-// read 1.0 for all three at N0 or this size's cross-vendor comparison is void.
+// 8 + 4 + 1280 = 1292 bytes: the like-for-like large size, sized so that all three send exactly
+// one datagram. It was 1388, derived from the RTPS spec, and the campaign's own gate caught that
+// as wrong - FastDDS sent 2.000 datagrams per sample there, its real per-sample framing being
+// 209.6 bytes against an estimate of 60-76. The size now comes from measurement; see
+// tickle/common/p2/Bench.msg for the model, its validation against twelve observed packet counts,
+// and why it is still gated rather than trusted.
 //
 // @extensibility(FINAL) pinned explicitly, not left to whatever each tool's own current default
 // happens to be (idlc warns this may change to "appendable" in a future release) - both vendors
@@ -32,5 +33,5 @@
 struct Bench {
     unsigned long long send_ns; // sender's own monotonic send timestamp (CLOCK_MONOTONIC, ns)
     unsigned long seq;          // per-Publisher monotonic sample counter, starts at 1
-    octet payload[1376];          // fixed filler, unused by any scenario's own logic
+    octet payload[1280];          // fixed filler, unused by any scenario's own logic
 };

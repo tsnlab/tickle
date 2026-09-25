@@ -104,6 +104,28 @@ jobs:
         continue-on-error: true
         run: |
           source /opt/ros/jazzy/setup.bash
+          # Each framework in its own subshell whose failure is captured rather than propagated
+          # (2026-09-25). Before this the three ran under `bash -e` in sequence, so the cyclonedds
+          # block exiting non-zero - which it does on every runner, there being no idlc here -
+          # meant the fastdds block never ran at all, and the fastddsgen this workflow installs
+          # two steps earlier was never reached. A CI that stops before the thing it installed a
+          # toolchain for is worse than one that never had it.
+          status=0
+          (
+            # TickLE's own harness, which was not built here before and is the reason this step
+            # exists at all today: its scenarios include a bare "Bench.h", resolved from whichever
+            # of common/p1..p4 the build selects, so without an entry here clang-tidy reports
+            # 'Bench.h' file not found on every one of them. It needs no ROS and no vendor
+            # toolchain, so unlike the other two it builds on any runner.
+            cd examples/perf_hil/tickle
+            bear --output compile_commands.json -- bash -c '
+              for s in best_effort_latency best_effort_throughput deadline_miss_detection \
+                       durability_late_join history_depth_burst_loss lifespan_expiry \
+                       liveliness_loss_detection reliable_latency reliable_throughput; do
+                ./build.sh "$s"
+              done
+              ./build.sh reliable_throughput p2'
+          ) || status=1
           (
             cd examples/perf_hil/cyclonedds
             bear --output compile_commands.json -- bash -c '
@@ -114,7 +136,7 @@ jobs:
               # <scenario>_<pN> from idl/pN/Bench.idl, and that path has to compile somewhere
               # other than the rig. p2 is the like-for-like large size.
               ./build.sh reliable_throughput p2'
-          )
+          ) || status=1
           (
             cd examples/perf_hil/fastdds
             bear --output compile_commands.json -- bash -c '
@@ -125,7 +147,12 @@ jobs:
               # <scenario>_<pN> from idl/pN/Bench.idl, and that path has to compile somewhere
               # other than the rig. p2 is the like-for-like large size.
               ./build.sh reliable_throughput p2'
-          )
+          ) || status=1
+          echo "perf_hil build blocks finished, aggregate status=$status"
+          for fw in tickle cyclonedds fastdds; do
+            n=$(jq 'length' "examples/perf_hil/$fw/compile_commands.json" 2>/dev/null || echo 0)
+            echo "  $fw: $n compile_commands entries"
+          done
 
       - name: Check the HIL benchmark payload shapes agree across .msg, .idl and the generated header
         # Complements the regen drift check below rather than duplicating it: that one catches a
@@ -323,6 +350,7 @@ jobs:
           # continue-on-error "Build examples/perf_hil" step above; may not exist at all if that
           # step's own real hardware-verified-but-not-CI-verified build failed on this runner, so
           # substitute an empty array rather than let a missing file break this merge too.
+          [ -f examples/perf_hil/tickle/compile_commands.json ] || echo '[]' > examples/perf_hil/tickle/compile_commands.json
           [ -f examples/perf_hil/cyclonedds/compile_commands.json ] || echo '[]' > examples/perf_hil/cyclonedds/compile_commands.json
           [ -f examples/perf_hil/fastdds/compile_commands.json ] || echo '[]' > examples/perf_hil/fastdds/compile_commands.json
           jq -s 'add' compile_commands.json build/rmw_tickle/compile_commands.json \
@@ -332,9 +360,27 @@ jobs:
             build/rosidl_typesupport_tickle_c_tests/compile_commands.json \
             build/rmw_perf_pingpong/compile_commands.json \
             build/rmw_tickle_interfaces_check/compile_commands.json \
+            examples/perf_hil/tickle/compile_commands.json \
             examples/perf_hil/cyclonedds/compile_commands.json \
             examples/perf_hil/fastdds/compile_commands.json > compile_commands.tmp
           mv compile_commands.tmp compile_commands.json
+
+          # A hard check on the one thing the empty-array fallbacks above can silently produce: a
+          # database with no entry for a file clang-tidy is about to lint, which reads as
+          # "'Bench.h' file not found" rather than as a missing build (2026-09-25, eighteen such
+          # errors failed this job while the build step that caused them reported success, being
+          # continue-on-error). TickLE's harness needs no vendor toolchain, so unlike the DDS
+          # halves its absence here is always a real fault rather than a runner limitation.
+          missing=0
+          for f in examples/perf_hil/tickle/reliable_throughput/client.c \
+                   examples/perf_hil/tickle/reliable_throughput/server.c \
+                   examples/perf_hil/tickle/reliable_latency/client.c; do
+            if [ "$(jq --arg f "$f" '[.[] | select(.file | endswith($f))] | length' compile_commands.json)" = "0" ]; then
+              echo "No compile_commands.json entry for $f - clang-tidy will fail to find Bench.h" >&2
+              missing=1
+            fi
+          done
+          [ "$missing" = "0" ]
 
       - name: Verify rosidl_typesupport_tickle_c/_cpp are reachable through the standard dispatch chain
         run: |

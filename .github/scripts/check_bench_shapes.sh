@@ -13,6 +13,7 @@
 #   2. `send_ns` comes before `seq` in both - the CDR-4 vs CDR-8 padding difference that would
 #      otherwise put 76 bytes on TickLE's wire and 80 on both vendors' for the same source
 #   3. the shape's total is the size the campaign says it is, and the generated header agrees
+#   4. each shape still lands on the side of the MTU its design depends on, with real margin
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -20,7 +21,30 @@ IDL_DIR="$HERE/examples/perf_hil/idl"
 MSG_DIR="$HERE/examples/perf_hil/tickle/common"
 
 # Shape -> the total CDR sample size the campaign specifies. 8 (send_ns) + 4 (seq) + the array.
-declare -A EXPECTED=([p1]=76 [p2]=1388 [p3]=1440 [p4]=2800)
+declare -A EXPECTED=([p1]=76 [p2]=1292 [p3]=1424 [p4]=2800)
+
+# Per-sample framing, in tenths of a byte, measured on the rig in the 2026-09-25 campaign at the
+# sizes where every framework sent exactly one datagram. It covers Ethernet + IP + UDP (42 bytes)
+# as well as each protocol's own headers and its amortised ACK/heartbeat traffic.
+#
+# These are measurements, not constants, and that is the point of gating with them: a vendor
+# upgrade can move them, and when it does this gate fails and says the premise needs re-measuring
+# rather than letting a cell quietly change what it tests. **Re-measure after any CycloneDDS or
+# FastDDS upgrade.** TickLE's own figure is the check on the decomposition rather than another
+# datapoint: 42 + 28 = 70, and 28 is the DATA framing DESIGN.md specifies (tt_Header 4 +
+# submessage header 4 + tt_DataHeader 20).
+declare -A BASE_TENTHS=([tickle]=706 [cyclonedds]=1041 [fastdds]=2096)
+# 1500 MTU + 14 bytes of Ethernet header, because /proc/net/dev counts at L2.
+FRAME_TENTHS=15140
+# How close to an edge a shape may sit. 1440 was a working P3 with 3.4 bytes to spare, which is
+# not a margin - it is a cell that would flip on any change to TickLE's framing and read as a
+# regression on packet count rather than as a test that lost its premise.
+MIN_MARGIN_TENTHS=100
+
+# Which frameworks each shape must fit in one frame. Everything not listed must split, and both
+# directions are checked: a P3 that stopped splitting CycloneDDS would be just as broken as one
+# that stopped fitting TickLE, and far quieter.
+declare -A FITS=([p1]="tickle cyclonedds fastdds" [p2]="tickle cyclonedds fastdds" [p3]="tickle" [p4]="")
 
 fail=0
 note() { printf '%-4s %s\n' "$1" "$2"; }
@@ -86,7 +110,41 @@ for shape in p1 p2 p3 p4; do
         continue
     fi
 
-    note OK "$shape: $total bytes, payload[$msg_n], send_ns first, .msg and .idl agree"
+    # The MTU premise, per framework, in both directions.
+    shape_ok=1
+    margins=""
+    for fw in tickle cyclonedds fastdds; do
+        frame=$((total * 10 + BASE_TENTHS[$fw]))
+        want_fit=0
+        case " ${FITS[$shape]} " in *" $fw "*) want_fit=1 ;; esac
+        if [ "$want_fit" = "1" ]; then
+            margin=$((FRAME_TENTHS - frame))
+            verb="fits"
+        else
+            margin=$((frame - FRAME_TENTHS))
+            verb="splits"
+        fi
+        # Formatted by hand because a negative margin is the interesting case and integer
+        # division truncates toward zero on both halves, which prints -3.-4 for -34 tenths.
+        sign=""
+        abs=$margin
+        if [ "$margin" -lt 0 ]; then
+            sign="-"
+            abs=$((-margin))
+        fi
+        pretty="$sign$((abs / 10)).$((abs % 10))"
+        if [ "$margin" -lt "$MIN_MARGIN_TENTHS" ]; then
+            note FAIL "$shape: $fw frame is $((frame / 10)).$((frame % 10)) B, must $verb, margin $pretty B"
+            shape_ok=0
+        fi
+        margins="$margins $fw:$verb+$pretty"
+    done
+    if [ "$shape_ok" != "1" ]; then
+        fail=1
+        continue
+    fi
+
+    note OK "$shape: $total bytes, payload[$msg_n], send_ns first, .msg and .idl agree;$margins"
 done
 
 if [ "$fail" != "0" ]; then

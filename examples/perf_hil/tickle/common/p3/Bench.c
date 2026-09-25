@@ -32,7 +32,7 @@ struct tt_Topic BenchTopic = {
 
 int32_t BenchData_encode_size(struct BenchData* data) {
     (void)data;
-    return 1440;
+    return 1424;
 }
 
 int32_t BenchData_encode(struct BenchData* data, uint8_t* payload, uint32_t len) {
@@ -55,11 +55,11 @@ int32_t BenchData_encode(struct BenchData* data, uint8_t* payload, uint32_t len)
         encoded += 4;
     }
     {
-        if ((uint32_t)encoded + 1428 > len) {
+        if ((uint32_t)encoded + 1412 > len) {
             return -1;
         }
-        memcpy(payload + encoded, data->payload, 1428);
-        encoded += 1428;
+        memcpy(payload + encoded, data->payload, 1412);
+        encoded += 1412;
     }
     return encoded;
 }
@@ -93,22 +93,22 @@ int32_t BenchData_decode(struct BenchData* data, const uint8_t* payload, uint32_
         decoded += 4;
     }
     {
-        if ((uint32_t)decoded + 1428 > len) {
+        if ((uint32_t)decoded + 1412 > len) {
             return -1;
         }
-        memcpy(data->payload, payload + decoded, 1428);
-        decoded += 1428;
+        memcpy(data->payload, payload + decoded, 1412);
+        decoded += 1412;
     }
     return decoded;
 }
 
 int32_t BenchData_encode_inplace(struct BenchData* data, const uint8_t** payload_out) {
     *payload_out = (const uint8_t*)data;
-    return 1440;
+    return 1424;
 }
 
 struct BenchData* BenchData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian) {
-    if (!is_native_endian || len < 1440) {
+    if (!is_native_endian || len < 1424) {
         return NULL;
     }
     return (struct BenchData*)payload;

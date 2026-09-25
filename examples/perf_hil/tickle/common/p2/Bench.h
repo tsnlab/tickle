@@ -22,7 +22,7 @@
 struct BenchData {
     uint64_t send_ns;
     uint32_t seq;
-    uint8_t payload[1376];
+    uint8_t payload[1280];
 };
 #pragma pack(pop)
 
@@ -33,7 +33,7 @@ int32_t BenchData_encode_inplace(struct BenchData* data, const uint8_t** payload
 struct BenchData* BenchData_decode_inplace(const uint8_t* payload, uint32_t len, bool is_native_endian);
 void BenchData_free(struct BenchData* data);
 
-_Static_assert(sizeof(struct BenchData) == 1388, "BenchData must match its CDR-4 wire size - ABI mismatch");
-#define BenchData_FITS_ONE_DATAGRAM (1388 <= tt_MAX_BUFFER_LENGTH)
+_Static_assert(sizeof(struct BenchData) == 1292, "BenchData must match its CDR-4 wire size - ABI mismatch");
+#define BenchData_FITS_ONE_DATAGRAM (1292 <= tt_MAX_BUFFER_LENGTH)
 
 extern struct tt_Topic BenchTopic;
