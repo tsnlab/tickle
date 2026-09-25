@@ -543,6 +543,22 @@ with zero mismatches**, which is what makes this a model rather than an extrapol
 | c12 | P1, +10 ms delay, mean | 10.3 | 10.4 | **10.3** |
 | c12 | P1, +10 ms delay, max | **12.2** | 21.1 | 12.3 |
 
+**Every absolute latency figure in this section was measured with the `ondemand` CPU governor, and
+that costs about 10% (2026-09-25).** Holding the package clock at its 2,400 MHz ceiling instead of
+letting it fall to 1,500 between messages makes a round trip **19-21 us faster on this rig, about
+10% of a 207 us round trip** - measured on two builds of TickLE, each 15 runs, by pinning a
+`nice 19` spinner to a core the harness does not use (`cpufreq/policy0 related_cpus = "0 1 2 3"`, so
+one core lifts the package). Both Raspberry Pi 5s run `ondemand` with a 1.5-2.4 GHz range and report
+`cpuidle current_driver=none`, so this is frequency scaling and not C-states.
+
+**The comparison stays fair; the absolute numbers move.** All three frameworks were measured on the
+same two hosts under the same governor in the same sessions, so nothing about the ordering or the
+margins between them depends on this. What it means is that a reader should not take 0.204 ms as
+"TickLE's RTT" - it is TickLE's RTT on a host that lets an idle core down-clock, and the same code
+on a pinned-clock host would read roughly a tenth lower. The same applies to both vendors' figures.
+That is a property of every latency measurement on a DVFS host, not a flaw in this one, but leaving
+it implicit would let the numbers read as protocol properties.
+
 c12's mean is a three-way draw by construction: a 10 ms injected delay dominates a 0.2 ms RTT, so
 that cell measures `netem`. The tail still separates - CycloneDDS's worst round trip is 21.1 ms
 against TickLE's 12.2, and at c10 CycloneDDS shows a 10.9 ms spike against TickLE's 0.44.
