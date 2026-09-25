@@ -1,0 +1,10 @@
+=== retry confound isolation, 2026-09-26, interleaved, identity confirmed both arms retry_cfg=1000000 ===
+A 97e1a278 fixed retry, no locks : 5.787 5.795 5.793  mean 5.7917
+B 6fe29eea fixed retry, no locks : 5.914 5.919 5.905  mean 5.9127
+code cost +121 ns
+
+decomposition against the same cell:
+  97e1a278 fixed/nolock  5.792
+  6fe29eea fixed/nolock  5.913   code        +121 ns
+  6fe29eea dyn/nolock    6.041   retry deflt +128 ns
+  6fe29eea dyn/lock      6.006   locks        -35 ns
