@@ -1,0 +1,99 @@
+=== RTT spacing dose-response, 2026-09-25T19:20:16+09:00 ===
+harness=4baa3b76  oldcore=9a230a1b  new=4baa3b76  runs=20 per combination
+
+--- building old ---
+  core has until_next_event: 0
+0  (expect 0 for old, >0 for new)
+
+OLD s=0.1 IDENT | ppoll=65911 sent=100 cpu_mhz_mean=1660.0 
+OLD s=0.1 run1 | sent=100 recv=100 rtt_avg_ms=0.206 rtt_max_ms=0.327 cpu_mhz_mean=1599.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run2 | sent=100 recv=100 rtt_avg_ms=0.204 rtt_max_ms=0.306 cpu_mhz_mean=1608.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run3 | sent=100 recv=100 rtt_avg_ms=0.204 rtt_max_ms=0.309 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run4 | sent=100 recv=100 rtt_avg_ms=0.209 rtt_max_ms=0.425 cpu_mhz_mean=1607.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run5 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.312 cpu_mhz_mean=1607.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run6 | sent=100 recv=100 rtt_avg_ms=0.210 rtt_max_ms=0.460 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run7 | sent=100 recv=100 rtt_avg_ms=0.209 rtt_max_ms=0.463 cpu_mhz_mean=1598.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run8 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.305 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run9 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.323 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run10 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.312 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run11 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.337 cpu_mhz_mean=1606.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run12 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.325 cpu_mhz_mean=1599.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run13 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.308 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run14 | sent=100 recv=100 rtt_avg_ms=0.210 rtt_max_ms=0.445 cpu_mhz_mean=1608.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run15 | sent=100 recv=100 rtt_avg_ms=0.206 rtt_max_ms=0.334 cpu_mhz_mean=1607.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run16 | sent=100 recv=100 rtt_avg_ms=0.204 rtt_max_ms=0.314 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run17 | sent=100 recv=100 rtt_avg_ms=0.210 rtt_max_ms=0.461 cpu_mhz_mean=1607.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run18 | sent=100 recv=100 rtt_avg_ms=0.205 rtt_max_ms=0.312 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run19 | sent=100 recv=100 rtt_avg_ms=0.206 rtt_max_ms=0.314 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=0.1 run20 | sent=100 recv=100 rtt_avg_ms=0.210 rtt_max_ms=0.496 cpu_mhz_mean=1599.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+
+OLD s=1.0 IDENT | ppoll=38514 sent=5 cpu_mhz_mean=1640.0 
+OLD s=1.0 run1 | sent=5 recv=5 rtt_avg_ms=0.232 rtt_max_ms=0.304 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run2 | sent=5 recv=5 rtt_avg_ms=0.234 rtt_max_ms=0.322 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run3 | sent=5 recv=5 rtt_avg_ms=0.241 rtt_max_ms=0.321 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run4 | sent=5 recv=5 rtt_avg_ms=0.239 rtt_max_ms=0.318 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run5 | sent=5 recv=5 rtt_avg_ms=0.235 rtt_max_ms=0.333 cpu_mhz_mean=1760.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run6 | sent=5 recv=5 rtt_avg_ms=0.234 rtt_max_ms=0.317 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run7 | sent=5 recv=5 rtt_avg_ms=0.243 rtt_max_ms=0.331 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run8 | sent=5 recv=5 rtt_avg_ms=0.239 rtt_max_ms=0.320 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run9 | sent=5 recv=5 rtt_avg_ms=0.251 rtt_max_ms=0.352 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run10 | sent=5 recv=5 rtt_avg_ms=0.237 rtt_max_ms=0.316 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run11 | sent=5 recv=5 rtt_avg_ms=0.245 rtt_max_ms=0.334 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run12 | sent=5 recv=5 rtt_avg_ms=0.241 rtt_max_ms=0.302 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run13 | sent=5 recv=5 rtt_avg_ms=0.236 rtt_max_ms=0.311 cpu_mhz_mean=1620.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run14 | sent=5 recv=5 rtt_avg_ms=0.239 rtt_max_ms=0.309 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run15 | sent=5 recv=5 rtt_avg_ms=0.242 rtt_max_ms=0.339 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run16 | sent=5 recv=5 rtt_avg_ms=0.245 rtt_max_ms=0.323 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run17 | sent=5 recv=5 rtt_avg_ms=0.244 rtt_max_ms=0.339 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run18 | sent=5 recv=5 rtt_avg_ms=0.238 rtt_max_ms=0.302 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run19 | sent=5 recv=5 rtt_avg_ms=0.240 rtt_max_ms=0.330 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+OLD s=1.0 run20 | sent=5 recv=5 rtt_avg_ms=0.244 rtt_max_ms=0.347 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 cpu_mhz_at_rtt_max=1600.0 retransmitted=0 gap_abandoned=0 
+
+--- building new ---
+  core has until_next_event: 11  (expect 0 for old, >0 for new)
+
+NEW s=0.1 IDENT | ppoll=247 sent=100 cpu_mhz_mean=1500.0 
+NEW s=0.1 run1 | sent=100 recv=100 rtt_avg_ms=0.212 rtt_max_ms=0.350 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run2 | sent=100 recv=100 rtt_avg_ms=0.218 rtt_max_ms=0.553 cpu_mhz_mean=1518.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run3 | sent=100 recv=100 rtt_avg_ms=0.217 rtt_max_ms=0.506 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run4 | sent=100 recv=100 rtt_avg_ms=0.215 rtt_max_ms=0.482 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run5 | sent=100 recv=100 rtt_avg_ms=0.214 rtt_max_ms=0.499 cpu_mhz_mean=1518.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run6 | sent=100 recv=100 rtt_avg_ms=0.217 rtt_max_ms=0.387 cpu_mhz_mean=1518.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run7 | sent=100 recv=100 rtt_avg_ms=0.213 rtt_max_ms=0.461 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run8 | sent=100 recv=100 rtt_avg_ms=0.214 rtt_max_ms=0.489 cpu_mhz_mean=1509.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run9 | sent=100 recv=100 rtt_avg_ms=0.212 rtt_max_ms=0.445 cpu_mhz_mean=1509.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run10 | sent=100 recv=100 rtt_avg_ms=0.211 rtt_max_ms=0.294 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run11 | sent=100 recv=100 rtt_avg_ms=0.214 rtt_max_ms=0.338 cpu_mhz_mean=1509.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run12 | sent=100 recv=100 rtt_avg_ms=0.211 rtt_max_ms=0.322 cpu_mhz_mean=1518.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run13 | sent=100 recv=100 rtt_avg_ms=0.211 rtt_max_ms=0.310 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run14 | sent=100 recv=100 rtt_avg_ms=0.212 rtt_max_ms=0.421 cpu_mhz_mean=1518.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run15 | sent=100 recv=100 rtt_avg_ms=0.216 rtt_max_ms=0.500 cpu_mhz_mean=1518.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run16 | sent=100 recv=100 rtt_avg_ms=0.210 rtt_max_ms=0.324 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run17 | sent=100 recv=100 rtt_avg_ms=0.213 rtt_max_ms=0.527 cpu_mhz_mean=1501.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run18 | sent=100 recv=100 rtt_avg_ms=0.211 rtt_max_ms=0.309 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run19 | sent=100 recv=100 rtt_avg_ms=0.210 rtt_max_ms=0.315 cpu_mhz_mean=1509.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=0.1 run20 | sent=100 recv=100 rtt_avg_ms=0.212 rtt_max_ms=0.390 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+
+NEW s=1.0 IDENT | ppoll=36 sent=5 cpu_mhz_mean=1500.0 
+NEW s=1.0 run1 | sent=5 recv=5 rtt_avg_ms=0.240 rtt_max_ms=0.327 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run2 | sent=5 recv=5 rtt_avg_ms=0.252 rtt_max_ms=0.318 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run3 | sent=5 recv=5 rtt_avg_ms=0.255 rtt_max_ms=0.328 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run4 | sent=5 recv=5 rtt_avg_ms=0.237 rtt_max_ms=0.310 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run5 | sent=5 recv=5 rtt_avg_ms=0.243 rtt_max_ms=0.327 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run6 | sent=5 recv=5 rtt_avg_ms=0.236 rtt_max_ms=0.301 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run7 | sent=5 recv=5 rtt_avg_ms=0.251 rtt_max_ms=0.315 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run8 | sent=5 recv=5 rtt_avg_ms=0.247 rtt_max_ms=0.330 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run9 | sent=5 recv=5 rtt_avg_ms=0.244 rtt_max_ms=0.321 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run10 | sent=5 recv=5 rtt_avg_ms=0.248 rtt_max_ms=0.315 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run11 | sent=5 recv=5 rtt_avg_ms=0.238 rtt_max_ms=0.299 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run12 | sent=5 recv=5 rtt_avg_ms=0.237 rtt_max_ms=0.307 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run13 | sent=5 recv=5 rtt_avg_ms=0.245 rtt_max_ms=0.340 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run14 | sent=5 recv=5 rtt_avg_ms=0.247 rtt_max_ms=0.330 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run15 | sent=5 recv=5 rtt_avg_ms=0.236 rtt_max_ms=0.302 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run16 | sent=5 recv=5 rtt_avg_ms=0.238 rtt_max_ms=0.298 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run17 | sent=5 recv=5 rtt_avg_ms=0.236 rtt_max_ms=0.311 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run18 | sent=5 recv=5 rtt_avg_ms=0.250 rtt_max_ms=0.369 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run19 | sent=5 recv=5 rtt_avg_ms=0.257 rtt_max_ms=0.327 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+NEW s=1.0 run20 | sent=5 recv=5 rtt_avg_ms=0.243 rtt_max_ms=0.302 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 cpu_mhz_at_rtt_max=1500.0 retransmitted=0 gap_abandoned=0 
+
+=== done ===
