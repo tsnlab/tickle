@@ -26,8 +26,29 @@ esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GEN_DIR="$HERE/generated/$SHAPE"
 
+IDL="$HERE/../idl/$SHAPE/Bench.idl"
+# shellcheck disable=SC1091 # sibling helper, sourced by path relative to this script
+. "$HERE/../bench_shape.sh"
+
+# The CDR sample size, derived from this shape's own IDL rather than written down a second time:
+# 8 (send_ns) + 4 (seq) + the payload array. Reported in the RESULT line by every harness so the
+# payload-boundary gate is checkable from the line alone - which is only true if the binding below
+# was generated from this same IDL, and that is checked below rather than assumed.
+BENCH_ARRAY="$(bench_idl_payload "$IDL")"
+if [ -z "$BENCH_ARRAY" ]; then
+    echo "Could not read the payload array size out of $IDL" >&2
+    exit 1
+fi
+BENCH_SAMPLE_BYTES=$((12 + BENCH_ARRAY))
+
+# Regenerated whenever the binding is missing, older than its IDL, or declares a different payload
+# size (2026-09-25). It used to be regenerated only when missing, and generated/ is gitignored, so a
+# binding from before a resize survived every checkout and build since - see ../bench_shape.sh.
+# The size check is the one that does not depend on file times, which a checkout or a copy can set.
 mkdir -p "$GEN_DIR"
-if [ ! -f "$GEN_DIR/Bench.c" ]; then
+if [ ! -f "$GEN_DIR/Bench.c" ] || [ ! -f "$GEN_DIR/Bench.h" ] || [ "$IDL" -nt "$GEN_DIR/Bench.c" ] ||
+    [ "$(bench_cyclonedds_gen_payload "$GEN_DIR/Bench.h")" != "$BENCH_ARRAY" ]; then
+    rm -f "$GEN_DIR"/Bench*
     if [ -x /opt/ros/rolling/bin/idlc ]; then
         IDLC=/opt/ros/rolling/bin/idlc
         IDLC_LIB_DIR="$(find /opt/ros/rolling/lib/*/ -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
@@ -42,7 +63,15 @@ if [ ! -f "$GEN_DIR/Bench.c" ]; then
         echo "No idlc on this host - CycloneDDS's IDL compiler is needed to build this harness" >&2
         exit 1
     fi
-    LD_LIBRARY_PATH="$IDLC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$IDLC" -o "$GEN_DIR" "$HERE/../idl/$SHAPE/Bench.idl"
+    LD_LIBRARY_PATH="$IDLC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$IDLC" -o "$GEN_DIR" "$IDL"
+fi
+
+# Whatever path got here, the binding about to be compiled must be this IDL's. A refusal here costs
+# one rebuild; a mismatch that got through cost a whole P2 column.
+GEN_ARRAY="$(bench_cyclonedds_gen_payload "$GEN_DIR/Bench.h")"
+if [ "$GEN_ARRAY" != "$BENCH_ARRAY" ]; then
+    echo "Generated $GEN_DIR/Bench.h declares payload[$GEN_ARRAY] but $IDL declares payload[$BENCH_ARRAY] - refusing to build" >&2
+    exit 1
 fi
 
 SRC_DIR="$HERE/$SCENARIO"
@@ -63,8 +92,12 @@ fi
 # scenarios' own "ping"/"pong" (COMPARISON.MD's own "Blocked" section) - rolling's own CycloneDDS
 # (11.0.1, matching this repo's dev box) installed alongside jazzy specifically to test whether a
 # newer release doesn't have the same defect, per that section's own recommendation.
-CDDS_INCLUDE="$(find /opt/ros/rolling/include -maxdepth 1 -iname CycloneDDS 2>/dev/null | head -1)"
-CDDS_LIB="$(find /opt/ros/rolling/lib/*/ -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
+#
+# `|| true` on the rolling lookups only (2026-09-25): on a host with no rolling install, `find`
+# fails on the missing directory, and under pipefail that ended this script silently before the
+# fallback below could run. Absence is decided by the explicit -z checks, which say why.
+CDDS_INCLUDE="$({ find /opt/ros/rolling/include -maxdepth 1 -iname CycloneDDS 2>/dev/null || true; } | head -1)"
+CDDS_LIB="$({ find /opt/ros/rolling/lib/*/ -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null || true; } | head -1 | xargs -r dirname)"
 if [ -z "$CDDS_INCLUDE" ] || [ -z "$CDDS_LIB" ]; then
     CDDS_INCLUDE="$(find /opt/ros/*/include -maxdepth 1 -iname CycloneDDS 2>/dev/null | head -1)"
     CDDS_LIB="$(find /opt/ros/*/lib/*/  -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
@@ -74,15 +107,6 @@ if [ -z "$CDDS_INCLUDE" ] || [ -z "$CDDS_LIB" ]; then
     exit 1
 fi
 
-# The CDR sample size, derived from this shape's own IDL rather than written down a second time:
-# 8 (send_ns) + 4 (seq) + the payload array. Reported in the RESULT line by every harness so the
-# payload-boundary gate is checkable from the line alone.
-BENCH_ARRAY="$(sed -n 's/.*octet *payload\[\([0-9]*\)\].*/\1/p' "$HERE/../idl/$SHAPE/Bench.idl")"
-if [ -z "$BENCH_ARRAY" ]; then
-    echo "Could not read the payload array size out of $HERE/../idl/$SHAPE/Bench.idl" >&2
-    exit 1
-fi
-BENCH_SAMPLE_BYTES=$((12 + BENCH_ARRAY))
 
 CC="${CC:-gcc}"
 # -fno-strict-aliasing: a real, bisected bug (not assumed) - the best_effort_throughput scenario's

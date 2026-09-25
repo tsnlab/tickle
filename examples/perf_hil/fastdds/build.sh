@@ -25,9 +25,30 @@ esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GEN_DIR="$HERE/generated/$SHAPE"
 
+IDL="$HERE/../idl/$SHAPE/Bench.idl"
+# shellcheck disable=SC1091 # sibling helper, sourced by path relative to this script
+. "$HERE/../bench_shape.sh"
+
+# The CDR sample size, derived from this shape's own IDL rather than written down a second time:
+# 8 (send_ns) + 4 (seq) + the payload array. Reported in the RESULT line by every harness so the
+# payload-boundary gate is checkable from the line alone - which is only true if the binding below
+# was generated from this same IDL, and that is checked below rather than assumed.
+BENCH_ARRAY="$(bench_idl_payload "$IDL")"
+if [ -z "$BENCH_ARRAY" ]; then
+    echo "Could not read the payload array size out of $IDL" >&2
+    exit 1
+fi
+BENCH_SAMPLE_BYTES=$((12 + BENCH_ARRAY))
+
+# Regenerated whenever the binding is missing, older than its IDL, or declares a different payload
+# size (2026-09-25). It used to be regenerated only when missing, and generated/ is gitignored, so a
+# binding from before a resize survived every checkout and build since - see ../bench_shape.sh.
+# The size check is the one that does not depend on file times, which a checkout or a copy can set.
 mkdir -p "$GEN_DIR"
-if [ ! -f "$GEN_DIR/Bench.cxx" ]; then
-    fastddsgen -replace -d "$GEN_DIR" "$HERE/../idl/$SHAPE/Bench.idl"
+if [ ! -f "$GEN_DIR/Bench.cxx" ] || [ ! -f "$GEN_DIR/Bench.h" ] || [ "$IDL" -nt "$GEN_DIR/Bench.cxx" ] ||
+    [ "$(bench_fastdds_gen_payload "$GEN_DIR/Bench.h")" != "$BENCH_ARRAY" ]; then
+    rm -f "$GEN_DIR"/Bench*
+    fastddsgen -replace -d "$GEN_DIR" "$IDL"
 
     # A real, confirmed API drift between this Ubuntu-packaged fastddsgen (2.3.0+dfsg) and the
     # actually-installed fastcdr (2.2.7, via ros-*-fastcdr): fastddsgen's own generated code calls
@@ -49,6 +70,14 @@ if [ ! -f "$GEN_DIR/Bench.cxx" ]; then
     # the version tags disagree, but the real interface contract does not, so bypassing this
     # specific check (not the two real API-rename fixes above) is safe here.
     sed -i '/#if !defined(GEN_API_VER)/,/#endif  \/\/ GEN_API_VER/d' "$GEN_DIR"/*PubSubTypes.h
+fi
+
+# Whatever path got here, the binding about to be compiled must be this IDL's. A refusal here costs
+# one rebuild; a mismatch that got through cost a whole P2 column.
+GEN_ARRAY="$(bench_fastdds_gen_payload "$GEN_DIR/Bench.h")"
+if [ "$GEN_ARRAY" != "$BENCH_ARRAY" ]; then
+    echo "Generated $GEN_DIR/Bench.h declares payload[$GEN_ARRAY] but $IDL declares payload[$BENCH_ARRAY] - refusing to build" >&2
+    exit 1
 fi
 
 SRC_DIR="$HERE/$SCENARIO"
@@ -76,15 +105,6 @@ if [ -z "$FDDS_INCLUDE" ] || [ -z "$FDDS_LIB" ] || [ -z "$FASTCDR_INCLUDE" ]; th
     exit 1
 fi
 
-# The CDR sample size, derived from this shape's own IDL rather than written down a second time:
-# 8 (send_ns) + 4 (seq) + the payload array. Reported in the RESULT line by every harness so the
-# payload-boundary gate is checkable from the line alone.
-BENCH_ARRAY="$(sed -n 's/.*octet *payload\[\([0-9]*\)\].*/\1/p' "$HERE/../idl/$SHAPE/Bench.idl")"
-if [ -z "$BENCH_ARRAY" ]; then
-    echo "Could not read the payload array size out of $HERE/../idl/$SHAPE/Bench.idl" >&2
-    exit 1
-fi
-BENCH_SAMPLE_BYTES=$((12 + BENCH_ARRAY))
 
 CXX="${CXX:-g++}"
 CXXFLAGS="-O2 -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -std=c++17 -I$GEN_DIR -I$FDDS_INCLUDE -I$FASTCDR_INCLUDE"

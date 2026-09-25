@@ -14,11 +14,21 @@
 #      otherwise put 76 bytes on TickLE's wire and 80 on both vendors' for the same source
 #   3. the shape's total is the size the campaign says it is, and the generated header agrees
 #   4. each shape still lands on the side of the MTU its design depends on, with real margin
+#   5. every CycloneDDS/FastDDS binding generated on THIS host declares the IDL's payload size
+#
+# 5 was added on 2026-09-25, after the P2 resize ran for a day without reaching either DDS harness
+# on the rig (see examples/perf_hil/bench_shape.sh). Those bindings are gitignored and generated
+# per host, so this can only check the ones this host has - which is why it is worth running on the
+# rig before a sweep, and why it names every binding it did not find rather than passing quietly.
+# build.sh now refuses to compile a mismatched binding as well; this is the check that says so
+# before a sweep starts rather than at its first build.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IDL_DIR="$HERE/examples/perf_hil/idl"
 MSG_DIR="$HERE/examples/perf_hil/tickle/common"
+# shellcheck disable=SC1091 # repo helper, sourced by path relative to the repo root
+. "$HERE/examples/perf_hil/bench_shape.sh"
 
 # Shape -> the total CDR sample size the campaign specifies. 8 (send_ns) + 4 (seq) + the array.
 declare -A EXPECTED=([p1]=76 [p2]=1292 [p3]=1424 [p4]=2800)
@@ -47,6 +57,8 @@ MIN_MARGIN_TENTHS=100
 declare -A FITS=([p1]="tickle cyclonedds fastdds" [p2]="tickle cyclonedds fastdds" [p3]="tickle" [p4]="")
 
 fail=0
+gen_checked=0
+gen_absent=""
 note() { printf '%-4s %s\n' "$1" "$2"; }
 
 for shape in p1 p2 p3 p4; do
@@ -62,7 +74,7 @@ for shape in p1 p2 p3 p4; do
     done
 
     msg_n="$(sed -n 's/^uint8\[\([0-9]*\)\] *payload.*/\1/p' "$msg")"
-    idl_n="$(sed -n 's/.*octet *payload\[\([0-9]*\)\].*/\1/p' "$idl")"
+    idl_n="$(bench_idl_payload "$idl")"
     if [ -z "$msg_n" ] || [ -z "$idl_n" ]; then
         note FAIL "$shape: could not read the payload array size (msg='$msg_n' idl='$idl_n')"
         fail=1
@@ -144,8 +156,32 @@ for shape in p1 p2 p3 p4; do
         continue
     fi
 
+    # The DDS bindings generated on this host, if any. Checked after the premise rather than
+    # before it so a shape that fails both reports both.
+    for fw in cyclonedds fastdds; do
+        dds_gen="$HERE/examples/perf_hil/$fw/generated/$shape/Bench.h"
+        if [ ! -f "$dds_gen" ]; then
+            gen_absent="$gen_absent $fw/$shape"
+            continue
+        fi
+        dds_n="$(bench_${fw}_gen_payload "$dds_gen")"
+        gen_checked=$((gen_checked + 1))
+        if [ "$dds_n" != "$msg_n" ]; then
+            note FAIL "$shape: $fw/generated/$shape/Bench.h declares payload[$dds_n], sources say $msg_n - stale binding, rebuild it"
+            shape_ok=0
+        fi
+    done
+    if [ "$shape_ok" != "1" ]; then
+        fail=1
+        continue
+    fi
+
     note OK "$shape: $total bytes, payload[$msg_n], send_ns first, .msg and .idl agree;$margins"
 done
+
+# Said every time, so "no DDS binding was checked" can never be mistaken for "every DDS binding
+# agreed".
+echo "DDS bindings generated on this host: $gen_checked checked; absent:${gen_absent:- none}"
 
 if [ "$fail" != "0" ]; then
     echo "Bench payload shapes are inconsistent - see above" >&2
