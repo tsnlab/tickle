@@ -1,0 +1,22 @@
+=== dynamic vs fixed retry interval, 2026-09-25T18:12:28+09:00, repo 871129d8d2dad1ecc2e944a232984abb7346c52d ===
+--- building with TICKLE_DYNAMIC_RETRY=0 on both rpis ---
+
+A  E hi-rtt fixed   rep1 | sent=69814 send_mbps=8.489 wire_bytes_per_sample=544.4 | recv=69799 retry_interval_cfg_ns=1000000 recovery_srtt_ns=2586473 recovery_rttvar_ns=2333300 
+A  E hi-rtt fixed   rep2 | sent=70282 send_mbps=8.546 wire_bytes_per_sample=543.3 | recv=70268 retry_interval_cfg_ns=1000000 recovery_srtt_ns=1254168 recovery_rttvar_ns=1087746 
+A  E hi-rtt fixed   rep3 | sent=69746 send_mbps=8.481 wire_bytes_per_sample=545.7 | recv=69745 retry_interval_cfg_ns=1000000 recovery_srtt_ns=1218155 recovery_rttvar_ns=1187890 
+
+C  G c1 fixed   rep1 ABORT: not exactly one server
+C  G c1 fixed   rep2 ABORT: not exactly one server
+C  G c1 fixed   rep3 | sent=866802 send_mbps=105.403 wire_bytes_per_sample=146.7 | recv=866802 retry_interval_cfg_ns=1000000 recovery_srtt_ns=26081 recovery_rttvar_ns=6023 
+--- building with TICKLE_DYNAMIC_RETRY=1 on both rpis ---
+
+B  F hi-rtt dynamic rep1 | sent=59896 send_mbps=7.283 wire_bytes_per_sample=313.3 | recv=59850 retry_interval_cfg_ns=0 recovery_srtt_ns=3957597 recovery_rttvar_ns=3258859 
+B  F hi-rtt dynamic rep2 | sent=60256 send_mbps=7.327 wire_bytes_per_sample=312.6 | recv=60219 retry_interval_cfg_ns=0 recovery_srtt_ns=2050745 recovery_rttvar_ns=1594504 
+B  F hi-rtt dynamic rep3 | sent=60368 send_mbps=7.341 wire_bytes_per_sample=311.9 | recv=60330 retry_interval_cfg_ns=0 recovery_srtt_ns=2150751 recovery_rttvar_ns=1875984 
+
+D  H c1 dynamic rep1 | sent=876382 send_mbps=106.568 wire_bytes_per_sample=146.7 | recv=876382 retry_interval_cfg_ns=0 recovery_srtt_ns=23574 recovery_rttvar_ns=10160 
+D  H c1 dynamic rep2 | sent=878211 send_mbps=106.790 wire_bytes_per_sample=146.7 | recv=878211 retry_interval_cfg_ns=0 recovery_srtt_ns=28603 recovery_rttvar_ns=10435 
+D  H c1 dynamic rep3 | sent=870985 send_mbps=105.912 wire_bytes_per_sample=146.7 | recv=870985 retry_interval_cfg_ns=0 recovery_srtt_ns=28092 recovery_rttvar_ns=7928 
+
+qdisc now: qdisc fq_codel 0: root refcnt 2 limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms memory_limit 32Mb ecn drop_batch 64 
+=== done ===
