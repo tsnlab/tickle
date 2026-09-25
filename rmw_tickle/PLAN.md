@@ -2120,12 +2120,34 @@ guard:
   present and readable. What it breaks is the ring invariant, so the cache believes live bytes are
   free. The test now asserts directly that records ascend from offset 0 after a repack.
 
-**And the local gate had the same gap as the bug it was meant to catch.** `make lint-rmw` linted
-only `rmw_tickle/rmw_tickle/src/*.c` while CI's cpp-linter checks every file a push changed, so it
-reported clean for a test file CI then failed on - four clang-tidy findings that sat red on main
-until `81c8186c`. It now lints the tests too, 34 sources. Related, for whoever reads CI next: a
-green run on a docs-only commit does **not** clear a red run on a code commit, because cpp-linter
-lints only what that commit changed.
+**Four clang-tidy findings sat red on main from `435dbe42` to `81c8186c`, and the reason was not
+coverage.** `make lint-rmw` did only cover `rmw_tickle/rmw_tickle/src/*.c` and now covers the tests
+too, 34 sources - but `make lint` already covered `tests/`, and it *found* the finding. What
+happened was `make -s lint >/dev/null 2>&1 && echo "lint: clean"`: the redirect discarded the
+findings and the `&&` turned a failure into silence, so the answer was read as a pass (TickLE Dev,
+who corrected TickLE Plan's wrong diagnosis of a coverage gap). **The gate was right; its answer was
+thrown away** - the same shape as the through-line below, not a new one. A changed-files gate would
+have changed nothing, because the file was already in scope.
+
+The fix is to make a failing gate impossible to misread: `make check-gates` (`16503de6`) runs lint,
+lint-shell, check-doc-shas, check-rig-lock, the unit tests and lint-rmw in one command, never hides
+a failing gate's output, prints PASS/FAIL/SKIP per gate, and exits non-zero if any failed. A gate
+that cannot run says SKIP rather than passing quietly. It earned itself on its first run by finding
+two pre-existing findings in files no recent commit had touched, which is precisely what CI cannot
+see because cpp-linter lints only changed files.
+
+Two things to know when reading a red CI run, both of which cost time today:
+- **cpp-linter reports findings as GitHub annotations, so `gh run view --log` shows only the count
+  and never the finding.** The only way to see it is to run clang-tidy locally over the files that
+  push changed. Now in CONTRIBUTING and `lint_rmw.sh`'s header.
+- **A green run on a docs-only commit does not clear a red run on a code commit**, because
+  cpp-linter lints only what that commit changed.
+- **`make check-gates` predicts CI only with CI's own clang-tidy.** `.clang-tidy` selects by
+  wildcard (`readability-*`), so a newer clang-tidy enables checks CI's pinned 19 does not have: on
+  clang-tidy 21 the gates FAIL on `readability-use-concise-preprocessor-directives` in
+  `rmw_unsupported.c`, and with the 19 venv CONTRIBUTING documents all six gates PASS. A gate that
+  cries wolf gets ignored, which is the very failure it exists to prevent, so the version belongs in
+  the answer.
 
 The deferral case is kept because it is the record of why this was nearly not built:
 1. (b) removes the case that motivated it - a process-wide number forcing one size on forty
