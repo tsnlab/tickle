@@ -2144,10 +2144,27 @@ Two things to know when reading a red CI run, both of which cost time today:
   cpp-linter lints only what that commit changed.
 - **`make check-gates` predicts CI only with CI's own clang-tidy.** `.clang-tidy` selects by
   wildcard (`readability-*`), so a newer clang-tidy enables checks CI's pinned 19 does not have: on
-  clang-tidy 21 the gates FAIL on `readability-use-concise-preprocessor-directives` in
-  `rmw_unsupported.c`, and with the 19 venv CONTRIBUTING documents all six gates PASS. A gate that
-  cries wolf gets ignored, which is the very failure it exists to prevent, so the version belongs in
-  the answer.
+  clang-tidy 21 it finds `readability-use-concise-preprocessor-directives` in `rmw_unsupported.c`,
+  which 19 has no such check for. A gate that cries wolf gets ignored, which is the very failure it
+  exists to prevent. Resolved in `b2731354` by keeping those gates *running* on a mismatched version
+  - a newer clang-tidy finds real things, and found two on the script's first run - but reporting
+  **ADVS** instead of FAIL and not failing the run. Verified here with a control, which is the part
+  that matters: under clang-tidy 21 `lint-rmw` is ADVS and the run exits 0, while a deliberately
+  broken shell script in the same run still reports FAIL and exits 2. So advisory is scoped to the
+  clang-tidy gates and cannot swallow a genuine failure.
+
+**The `setup-ros` 404 was a shared rate limit, and it is fixed** (`b2731354`). Three occurrences
+(`d1f2fc04`, `82089b2f`, `b3a043d0`), and on the third the 60-second retry failed too. The failing
+line lives inside `ros-tooling/setup-ros`: `ROS_APT_SOURCE_VERSION=$(curl -s
+https://api.github.com/.../releases/latest | grep tag_name ...)`. Unauthenticated api.github.com
+allows 60 requests per hour **per IP** and Actions runners share egress IPs, so when the quota is
+gone the variable is empty and the download URL 404s - which is also why a 60-second retry never
+could have helped an hourly quota. A token would not have fixed it either: the action's call is a
+bare `curl -s` with no auth header. The fix installs `ros2-apt-source` 1.3.0 from the release
+download URL before calling the action, then asserts the exact condition the action checks
+(`apt-cache policy | grep packages.ros.org/ros2/ubuntu`), so a stale pin fails loudly there instead
+of silently letting the lookup happen anyway. **Until this landed a red `Check all` was ambiguous** -
+our code or this - which is the "answer you cannot act on" shape one level up from the gates.
 
 The deferral case is kept because it is the record of why this was nearly not built:
 1. (b) removes the case that motivated it - a process-wide number forcing one size on forty
