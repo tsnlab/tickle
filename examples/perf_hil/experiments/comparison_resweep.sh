@@ -66,6 +66,10 @@ say "=== COMPARISON.MD native re-sweep, $(date -Is), ${REPS} reps, main $SHA ===
 
 say "--- deploying $SHA and building every scenario for all three frameworks on both rpis ---"
 SCENS="best_effort_latency reliable_latency best_effort_throughput reliable_throughput durability_late_join history_depth_burst_loss deadline_miss_detection liveliness_loss_detection lifespan_expiry"
+# Bare `wait` returns 0 however the background jobs ended, so a BUILD FAILED here used to print and
+# the resweep would carry on measuring whatever binary was left from the previous checkout. Each pid
+# is waited on individually instead (campaign_sweep.sh, d32e7406).
+build_pids=()
 for host in "$RPI_CLIENT" "$RPI_SERVER"; do
     ssh_h "$host" "set -e
 cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
@@ -74,8 +78,11 @@ for fw in tickle cyclonedds fastdds; do for s in $SCENS; do
   (cd \$fw && ./build.sh \$s >/tmp/resweep_build_\${fw}_\$s.log 2>&1) || { echo \"BUILD FAILED: \$fw \$s\"; tail -5 /tmp/resweep_build_\${fw}_\$s.log; exit 1; }
 done; done
 echo \"built on \$(hostname) at \$(git -C ~/tickle rev-parse --short HEAD)\"" &
+    build_pids+=($!)
 done
-wait
+build_failed=0
+for pid in "${build_pids[@]}"; do wait "$pid" || build_failed=1; done
+[ "$build_failed" = 0 ] || { say "BUILD FAILED on at least one rpi - see above. Not measuring."; exit 1; }
 say "$(ssh_h "$RPI_CLIENT" 'git -C ~/tickle rev-parse HEAD') client / $(ssh_h "$RPI_SERVER" 'git -C ~/tickle rev-parse HEAD') server"
 
 # Leftover guard, as keepall_three_way.sh: identify by /proc/PID/exe, wait, never kill, tag.
