@@ -303,15 +303,19 @@ int main(int argc, char** argv) {
 
     bench_stats_end(&g_bench_stats);
 
+    // gap_abandoned=/gap_evicted= (2026-09-25) are the samples this Subscriber stopped waiting for
+    // without delivering - core counts them in every build now, where before a RELIABLE Subscriber
+    // could drop samples with every production counter at zero. They separate "never arrived"
+    // from "given up on", which recv against the client's sent cannot.
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
-           "cpu_migrations=%u %s\n",
+           "cpu_migrations=%u gap_abandoned=%u gap_evicted=%u %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
            BenchCpuFreq_mean_mhz(&g_cpu_freq), BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq),
            g_cpu_freq.samples, BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place),
-           g_cpu_place.migrations,
+           g_cpu_place.migrations, sub.gap_abandoned, sub.gap_evicted,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("server");

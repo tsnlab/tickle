@@ -573,12 +573,16 @@ static void test_heartbeat_first_available_advances_existing_proxy(void) {
 
     feed_heartbeat(&node, &header, 4, 7);                           // 2, 3 are gone at the Publisher
     EXPECT_EQ_U32(6, proxy->ack_seq_no);                            // past 2, 3; then 4, 5 absorbed
+    EXPECT_EQ_U32(2, sub.gap_evicted);                              // 2 and 3 - not 4, 5, which arrived
+    EXPECT_EQ_U32(0, sub.gap_abandoned);                            // the Publisher's doing, not ours
     EXPECT_TRUE(bitmap_equals_u64(proxy->received_bitmap, 0x2ULL)); // bit 1 -> seq_no 7
     EXPECT_EQ_U32(0, (uint32_t)proxy->retry);                       // seq_no 6 gets a fresh budget
     EXPECT_TRUE(proxy->acknack_scheduled);                          // 6 still outstanding
 
     feed_heartbeat(&node, &header, 8, 7); // everything up to 7 gone (first_available = newest + 1)
     EXPECT_EQ_U32(8, proxy->ack_seq_no);
+    EXPECT_EQ_U32(3, sub.gap_evicted); // ...then 6; 7 had arrived. Counted in every build, and it must
+                                       // agree with heartbeat_abandoned_seq below where both exist.
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
     EXPECT_TRUE(!proxy->acknack_scheduled); // nothing left to ask for
 

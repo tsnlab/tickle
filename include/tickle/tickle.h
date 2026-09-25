@@ -884,6 +884,13 @@ struct tt_Publisher { // extends endpoint
     uint32_t heartbeat_piggyback_every;
     // Core-owned: samples published since the last piggybacked Heartbeat.
     uint32_t heartbeat_piggyback_count;
+    // Diagnostic, core-owned: samples re-sent in answer to ACKNACKs (2026-09-25). Against seq_no -
+    // how many were published - it is the retransmission ratio, which is how a Publisher can tell
+    // it is working far harder than its loss rate explains. The rig case that prompted it ran at
+    // ~47 transmissions per sample under 5% loss, and until this existed the only place that
+    // showed was an interface counter on the host: the kernel was failing IP reassembly of
+    // fragmented datagrams, and every failure came back as another request.
+    uint32_t retransmitted;
 
     // 0 (tt_Node_create_publisher()'s own default): no periodic ACK solicitation, today's only
     // behavior. Non-zero: tt_Publisher_request_ack() (below) fires automatically every this-many
@@ -1431,6 +1438,21 @@ struct tt_Subscriber { // extends endpoint
     uint32_t reorder_delivered;
     uint32_t reorder_overflow;
     uint32_t reorder_abandoned;
+    // RELIABLE samples this Subscriber stopped waiting for without ever delivering them - the gap
+    // itself, where reorder_abandoned above counts the samples held behind one (2026-09-25).
+    // Counted in every build: before these existed, the only record outside tt_RELIABLE_STATS was
+    // a throttled WARNING that undercounts by design, so a RELIABLE Subscriber could drop samples
+    // while every production counter read zero - verified, not supposed.
+    //   gap_abandoned - this side gave up while the Publisher may still hold the sample: the gap
+    //                   fell out of the tracking window (jump_ack_baseline()), or ran out of
+    //                   ACKNACK retries.
+    //   gap_evicted   - the Publisher said it no longer holds it (an eviction Heartbeat), which
+    //                   under KEEP_LAST is that writer's HISTORY working as specified.
+    // Kept apart because they point at different fixes: a rising gap_abandoned says widen this
+    // Subscriber's window or its retry budget, a rising gap_evicted says the writer's depth is too
+    // shallow for the loss it sees.
+    uint32_t gap_abandoned;
+    uint32_t gap_evicted;
     uint32_t last_seq_no;
     uint32_t last_source;
     uint32_t last_entity_id;

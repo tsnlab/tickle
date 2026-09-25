@@ -787,6 +787,10 @@ static void test_reliable_late_arrivals_after_baseline_jump_are_discarded_not_si
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_EQ_U32(far_seq + 1, proxy->ack_seq_no);
+    // Nothing arrived between 1 and far_seq, so every one of 2..far_seq-1 was given up on - and is
+    // counted in a production counter, not only a throttled WARNING.
+    EXPECT_EQ_U32(far_seq - 2, sub.gap_abandoned);
+    EXPECT_EQ_U32(0, sub.gap_evicted);
 
     uint32_t late = 0;
     for (uint32_t seq = 2; seq < far_seq; seq += 7) {
@@ -924,6 +928,7 @@ static void test_acknack_retry_give_up_does_not_bulk_skip(void) {
     acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up on seq_no 1 only
 
     EXPECT_EQ_U32(2, proxy->ack_seq_no);                               // past seq_no 1 alone, no bulk skip
+    EXPECT_EQ_U32(1, sub.gap_abandoned);                               // seq_no 1, and only seq_no 1
     EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, far_seq - 2)); // far_seq still tracked
     EXPECT_TRUE(proxy->acknack_scheduled); // the rest of the gap (2..far_seq-1) gets its own retries
 }
@@ -959,6 +964,7 @@ static void test_acknack_retry_exhausted_gives_up(void) {
     acknack_retry(&node, tt_get_ns(), proxy); // exceeds the cap -> give up
 
     EXPECT_TRUE(!proxy->acknack_scheduled);
+    EXPECT_EQ_U32(1, sub.gap_abandoned); // seq_no 5; 6 had already arrived and is not a loss
     EXPECT_TRUE(bitmap_is_zero(proxy->received_bitmap, proxy_words(proxy)));
     EXPECT_EQ_U32(7, proxy->ack_seq_no); // skipped past seq_no 5, absorbed the already-known 6 too
 }
@@ -1140,6 +1146,7 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
     EXPECT_EQ_U32(1, (uint32_t)cache.index[0].retry);
+    EXPECT_EQ_U32(1, pub.retransmitted);
 }
 
 // Milestone 62 (rmw_tickle/PLAN.md) - find_resendable_cache_entry()'s own direct-index math
@@ -1311,6 +1318,7 @@ static void test_retransmit_is_exactly_the_named_set_across_a_wide_window(void) 
     uint32_t tail = write_wide_acknack(&node, 1, bitmap, WIDE_WORDS);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(0, pub.retransmitted);
     uint32_t touched = 0;
     for (uint32_t slot = 0; slot < WIDE_DEPTH; slot++) {
         touched += cache.index[slot].retry != 0 ? 1U : 0U;
@@ -1344,8 +1352,9 @@ static void test_retransmit_is_exactly_the_named_set_across_a_wide_window(void) 
             resent_unnamed++;
         }
     }
-    EXPECT_EQ_U32((uint32_t)WIDE_NAMED_COUNT, resent_named); // every named sample went out...
-    EXPECT_EQ_U32(0, resent_unnamed);                        // ...and not one it was not asked for
+    EXPECT_EQ_U32((uint32_t)WIDE_NAMED_COUNT, resent_named);      // every named sample went out...
+    EXPECT_EQ_U32((uint32_t)WIDE_NAMED_COUNT, pub.retransmitted); // and the Publisher's own count agrees
+    EXPECT_EQ_U32(0, resent_unnamed);                             // ...and not one it was not asked for
 }
 
 // The Subscriber's half: A2. With a window four times the 256-bit default and gaps scattered across
@@ -1436,6 +1445,53 @@ static void test_acknack_names_every_gap_across_a_wide_window(void) {
     EXPECT_EQ_U32(1 + (uint32_t)(sizeof(gaps) / sizeof(gaps[0])), named_wanted);
     EXPECT_EQ_U32(0, missing);
     EXPECT_EQ_U32(0, extra);
+}
+
+// A RELIABLE Subscriber that gives a gap up must count exactly the samples it never delivered -
+// in every build (2026-09-25). This is the shape that showed the counter was missing: the default
+// 256-sample window, a reorder buffer deep enough to hold everything behind the gap (as the HIL
+// harness has), seq_no 2 lost and 3..400 arriving. When 258 lands 256 past the stalled watermark
+// the Subscriber gives 2 up and releases the 255 it was holding. Before gap_abandoned existed, that
+// run ended with every production counter at zero and seq_no 2 simply gone.
+//
+// One sample was lost, not 256. A count of the watermark's jump would say 256; the count has to
+// subtract what had already arrived inside that span, and this is the case that tells them apart.
+#define GAP_HELD_SLOTS 512
+static uint64_t gap_held_storage[GAP_HELD_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+static void test_gap_abandoned_counts_only_what_was_never_delivered(void) {
+    test_mock_reset();
+    subscriber_callback_count = 0;
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    memset(gap_held_storage, 0, sizeof(gap_held_storage));
+    sub.reorder_storage = gap_held_storage;
+    sub.reorder_slots = GAP_HELD_SLOTS;
+    sub.reorder_slot_bytes = TEST_REORDER_SLOT_BYTES;
+
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1); // first contact at 1, so the watermark starts there
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    for (uint32_t seq = 3; seq <= 400; seq++) { // 2 is lost
+        tail = write_data(&node, seq, seq * 100ULL, seq);
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    }
+
+    EXPECT_EQ_U32(399, (uint32_t)subscriber_callback_count); // everything but 2, in order
+    EXPECT_EQ_U32(255, sub.reorder_delivered);               // 3..257, held behind the gap and released
+    EXPECT_EQ_U32(1, sub.gap_abandoned);                     // 2 - one sample, not the 256 the jump spanned
+    EXPECT_EQ_U32(0, sub.gap_evicted);
+
+    // The lost sample arriving now changes nothing: it is below the watermark and already counted.
+    tail = write_data(&node, 2, 200, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(399, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(1, sub.gap_abandoned);
 }
 
 // QoS roadmap #6 (LIFESPAN) - a cached sample past pub->lifespan_duration_ns must not be
@@ -3365,6 +3421,7 @@ int main(void) {
     test_process_acknack_direct_index_correct_after_wraparound();
     test_retransmit_is_exactly_the_named_set_across_a_wide_window();
     test_acknack_names_every_gap_across_a_wide_window();
+    test_gap_abandoned_counts_only_what_was_never_delivered();
     test_process_acknack_skips_expired_sample();
     test_process_acknack_ignored_for_besteffort_publisher();
     test_process_acknack_ignored_for_durable_only_publisher();

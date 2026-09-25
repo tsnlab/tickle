@@ -1524,6 +1524,7 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->heartbeat_period_ns = 0;       // no periodic Heartbeat by default - see its own doc comment
     pub->heartbeat_piggyback_every = 0; // no piggybacked Heartbeat by default - see its own doc comment
     pub->heartbeat_piggyback_count = 0;
+    pub->retransmitted = 0;
     pub->ack_solicit_period_ns = 0;     // no periodic ACK solicitation by default - see its own doc comment
     pub->ack_solicit_watermark_pct = 0; // no watermark-triggered solicitation either (Phase 3 (d))
     pub->last_ack_solicit_ns = 0;
@@ -1601,6 +1602,8 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     sub->reorder_held_peak = 0;
     sub->reorder_delivered = 0;
     sub->reorder_overflow = 0;
+    sub->gap_abandoned = 0;
+    sub->gap_evicted = 0;
     sub->reorder_abandoned = 0;
     sub->last_seq_no = 0;
     sub->last_source = 0;
@@ -2432,6 +2435,7 @@ static bool piggyback_due(struct tt_Publisher* pub, bool is_flush) {
 static bool append_piggybacked_heartbeat(struct tt_Node* node, struct tt_Publisher* pub, const struct tt_Peer* peers,
                                          uint8_t peer_count) {
     pub->heartbeat_piggyback_count = 0;
+    pub->retransmitted = 0;
     encode_and_send_heartbeat(node, pub, reliable_cache_oldest_seq_no(pub->reliable_cache), peers, peer_count,
                               tt_HEARTBEAT_FLAG_FINAL);
     if (node->tx_tail != sizeof(struct tt_Header)) {
@@ -2978,13 +2982,15 @@ static void report_delivery_counters(const struct tt_Subscriber* sub, uint32_t e
     // from them rather than from how many log lines appeared.
     TT_LOG_INFO("Subscriber %u delivery: delivered=%lu out_of_order=%lu timestamp_not_newer=%lu "
                 "writer_switches=%lu via_socket_flips=%lu out_of_order_discarded=%lu rxo_drops=%lu "
-                "reorder_held_peak=%lu reorder_delivered=%lu reorder_overflow=%lu reorder_abandoned=%lu",
+                "reorder_held_peak=%lu reorder_delivered=%lu reorder_overflow=%lu reorder_abandoned=%lu "
+                "gap_abandoned=%lu gap_evicted=%lu",
                 endpoint_id, (unsigned long)sub->delivered, (unsigned long)sub->out_of_order,
                 (unsigned long)sub->timestamp_not_newer, (unsigned long)sub->writer_switches,
                 (unsigned long)sub->via_socket_flips, (unsigned long)sub->out_of_order_discarded,
                 (unsigned long)sub->rxo_drops, (unsigned long)sub->reorder_held_peak,
                 (unsigned long)sub->reorder_delivered, (unsigned long)sub->reorder_overflow,
-                (unsigned long)sub->reorder_abandoned);
+                (unsigned long)sub->reorder_abandoned, (unsigned long)sub->gap_abandoned,
+                (unsigned long)sub->gap_evicted);
 }
 
 tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
@@ -3429,6 +3435,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
     if (proxy->keep_all == tt_WRITER_KEEP_ALL_NO && proxy->retry > tt_RELIABLE_RETRY) {
         TT_LOG_WARNING("Giving up on a reliable sample after %d ACKNACK retries", tt_RELIABLE_RETRY);
         RSTAT_INC(retry_giveups);
+        proxy->sub->gap_abandoned++; // ack_seq_no itself, which is missing by definition
         proxy->acknack_scheduled = false;
         // Give up on ack_seq_no itself - the same "advance past it" advance_ack_seq_no() already
         // does for a real receipt, since from here on it makes no difference *why* nothing more
@@ -3554,6 +3561,25 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
 // bitmap at all (tt_RELIABLE_BITMAP_BITS bits wide on the wire, config.h), so nothing genuinely
 // recoverable is given up on by not tracking it - see update_reliable_ack()'s own call site for
 // the full "why" comment, not repeated here.
+// How many of the first `span` positions of proxy's window - ack_seq_no and the span-1 after it -
+// have already arrived. Used to count what a watermark move gives up on: span minus this is the
+// number of samples skipped without ever being delivered. Positions past the window cannot have
+// been recorded at all, so they count as not arrived, which is what they are.
+static uint32_t received_in_first(const struct tt_WriterProxy* proxy, uint32_t span) {
+    if (span == 0) {
+        return 0;
+    }
+    uint16_t words = proxy_words(proxy);
+    uint32_t window = proxy_window_bits(proxy);
+    uint64_t mask[tt_RELIABLE_BITMAP_MAX_WORDS];
+    bitmap_low_mask(mask, words, span >= window ? (int)window - 1 : (int)span - 1);
+    uint32_t count = 0;
+    for (uint16_t word = 0; word < words; word++) {
+        count += (uint32_t)__builtin_popcountll(proxy->received_bitmap[word] & mask[word]);
+    }
+    return count;
+}
+
 static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
 #ifdef tt_RELIABLE_STATS
     if (seq_no > proxy->ack_seq_no) {
@@ -3562,6 +3588,10 @@ static void jump_ack_baseline(struct tt_WriterProxy* proxy, uint32_t seq_no) {
         g_rstats.jump_abandoned_seq += span > received ? span - received : 0;
     }
 #endif
+    if (seq_no > proxy->ack_seq_no) {
+        uint32_t span = seq_no - proxy->ack_seq_no;
+        proxy->sub->gap_abandoned += span - received_in_first(proxy, span);
+    }
     proxy->ack_seq_no = seq_no;
     bitmap_clear(proxy->received_bitmap, proxy_words(proxy));
     advance_ack_seq_no(proxy);
@@ -5877,6 +5907,7 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
         rollback(node, old_tx_tail);
     } else {
         RSTAT_INC(retransmitted);
+        pub->retransmitted++;
         cache_entry->retry++;
     }
     return false;
@@ -6065,6 +6096,7 @@ static void advance_past_unavailable(struct tt_WriterProxy* proxy, uint32_t firs
         return;
     }
     uint32_t skipped = first_available_seq_no - proxy->ack_seq_no;
+    proxy->sub->gap_evicted += skipped - received_in_first(proxy, skipped);
 #ifdef tt_RELIABLE_STATS
     {
         uint64_t skipped_mask[tt_RELIABLE_BITMAP_MAX_WORDS];
