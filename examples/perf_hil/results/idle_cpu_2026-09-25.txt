@@ -1,0 +1,13 @@
+=== idle CPU, 2026-09-25T23:02:04+09:00, window 20s ===
+
+--- building for arm 881be64d ---
+built; until_next_event in core: 
+NEW  tickle | CPU 0 ticks / 20s @100Hz = 0.000% duty | vol_ctxt=71 (3.5/s) nonvol=0
+NEW  cyclonedds | CPU 0 ticks / 20s @100Hz = 0.000% duty | vol_ctxt=20 (1.0/s) nonvol=0
+NEW  fastdds | CPU 0 ticks / 20s @100Hz = 0.000% duty | vol_ctxt=20 (1.0/s) nonvol=0
+
+--- building for arm 9a230a1b ---
+built; until_next_event in core: 
+OLD  tickle | CPU 18 ticks / 20s @100Hz = 0.900% duty | vol_ctxt=18964 (948.2/s) nonvol=1
+
+=== done ===
