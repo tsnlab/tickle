@@ -44,8 +44,13 @@ typedef struct rmw_tickle_publisher_payload_t {
     /// this header is refused rather than misread - the same marker rosidl_typesupport_tickle_c's
     /// callbacks struct carries, and for the same reason.
     uint32_t struct_size;
-    /// Byte budget for retained samples on a KEEP_LAST publisher, or 0 for RMW_TICKLE_CACHE_BYTES.
-    /// The arena is still never smaller than one sample of this type, nor larger than
+    /// Byte budget for what this publisher holds, or 0 for the environment's default. What reaching
+    /// it means depends on the history policy:
+    ///   - KEEP_LAST: retained samples, 0 = RMW_TICKLE_CACHE_BYTES. Past it the oldest are evicted.
+    ///   - KEEP_ALL, VOLATILE: unacknowledged samples, 0 = RMW_TICKLE_KEEP_ALL_BYTES (since
+    ///     2026-09-25). Past it the writer blocks - nothing is ever dropped.
+    ///   - KEEP_ALL, TRANSIENT_LOCAL: not budgeted; its depth is the history a late joiner replays.
+    /// Either way the arena is never smaller than one sample of this type, nor larger than
     /// (depth + 1) records - this caps it, it does not set it.
     uint32_t cache_bytes;
     /// How large this publisher's samples actually get, or 0 for

@@ -243,7 +243,13 @@ int main(void) {
     // cheaper stand-in): an application that knows its own types can shrink the per-sample arena
     // reservation. Three things to pin - the default is byte-identical to what it was before the
     // knob existed, a set value really sizes the arena, and B1's count guarantee survives it.
+    //
+    // With the byte budget held out of the way: since 2026-09-25 a VOLATILE KEEP_ALL arena is also
+    // capped at RMW_TICKLE_KEEP_ALL_BYTES, which would bind first for these records and turn every
+    // assertion below into a statement about the budget. This block is about the reservation per
+    // sample; the budget has its own tests in test_storage_budget.c and test_keep_all_blocking.c.
     {
+        setenv("RMW_TICKLE_KEEP_ALL_BYTES", "4294967295", 1);
         rmw_qos_profile_t qos = base_qos();
         qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
         qos.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
@@ -335,6 +341,7 @@ int main(void) {
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(10, tt_MAX_BUFFER_LENGTH) == pub_impl->reliable_cache->arena_limit);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
+        unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
     }
 
     assert(RMW_RET_OK == rmw_destroy_node(node));

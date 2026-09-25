@@ -171,6 +171,13 @@ static void sample_peer_acks(void);
 // announces, so the Subscriber's window is what bounds blocking rather than this cache. Costs
 // nothing extra - the backing arrays below are statically sized for MAX_RELIABLE_DEPTH regardless.
 static const uint32_t keep_all_default_depth = 2048;
+// -M <bytes>: KEEP_ALL's byte budget, 0 for the default. The default mirrors rmw_tickle's own
+// RMW_TICKLE_KEEP_ALL_BYTES (512 KiB, 2026-09-25) so that running this harness with no flags measures
+// what a user of the product gets rather than a configuration nobody ships. It is reached by blocking,
+// never by dropping - core refuses a KEEP_ALL publish the arena's bytes cannot admit. It changes no
+// fair comparison: those pass their QoS explicitly to all three frameworks, this included.
+static const uint32_t keep_all_default_bytes = 512U * 1024U;
+static uint32_t keep_all_bytes = 0;
 static const uint32_t default_ack_solicit_us = 200; // well under the time to send throttle_lag
                                                     // messages at max rate for every -T value
                                                     // this scenario tests (64-200)
@@ -357,11 +364,28 @@ static void parse_args(int argc, char** argv) {
             keep_all = true;
         } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
             max_blocking_ms = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-M") == 0 && i + 1 < argc) {
+            keep_all_bytes = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
     }
     if (throttle_lag > 0 && ack_solicit_us == 0) {
         ack_solicit_us = default_ack_solicit_us;
     }
+}
+
+// The arena this run uses: (depth + 1) records, capped for VOLATILE KEEP_ALL at the byte budget and
+// never below one record. The same rule as rmw_tickle's resolve_keep_all_arena_bytes().
+static uint32_t keep_all_arena_bytes(void) {
+    const uint32_t record = tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData));
+    const uint32_t full = tt_RELIABLE_CACHE_ARENA_BYTES(reliable_depth, record);
+    if (!keep_all || durable) {
+        return full;
+    }
+    uint32_t budget = keep_all_bytes != 0 ? keep_all_bytes : keep_all_default_bytes;
+    if (budget < record) {
+        budget = record;
+    }
+    return full < budget ? full : budget;
 }
 
 int main(int argc, char** argv) {
@@ -432,9 +456,9 @@ int main(int argc, char** argv) {
     pub_cache.depth = (uint16_t)reliable_depth;
     pub_cache.arena = pub_cache_arena;
     // Only the part of the arena this run's own -K depth can use, so a smaller -K really is a
-    // smaller retention window in bytes too, not just in slots.
-    pub_cache.arena_size =
-        tt_RELIABLE_CACHE_ARENA_BYTES(reliable_depth, tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)));
+    // smaller retention window in bytes too, not just in slots - and, for VOLATILE KEEP_ALL, no more
+    // than the byte budget (-M), exactly as rmw_tickle sizes it.
+    pub_cache.arena_size = keep_all_arena_bytes();
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
     // Phase 3 step 4 - KEEP_ALL's back-pressure. Blocking is bounded by min(cache depth, the
@@ -496,14 +520,14 @@ int main(int argc, char** argv) {
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s peer_acks_end=%u "
            "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u %s\n",
            (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
            durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
            g_drain_fully_acked ? "acked" : "timeout", count_peer_acks(&pub),
            g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min, BenchCpuFreq_mean_mhz(&g_cpu_freq),
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
-           pub.retransmitted,
+           pub.retransmitted, pub_cache.arena_size,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("client");

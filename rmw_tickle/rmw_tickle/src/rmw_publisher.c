@@ -440,9 +440,9 @@ static uint32_t resolve_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
 // answered with an eviction Heartbeat, i.e. lost to that reader. With 64 KiB samples 1 MiB holds
 // 16, fine at camera rates and tight at max rate (Plan's review).
 //
-// KEEP_ALL is not budgeted. Its promise is that nothing unacknowledged is ever dropped, and byte
-// eviction would drop exactly that; its arena stays sized to its depth (resolve_keep_all_record_
-// bytes() above), and keep_all_bound() is a separate, open decision.
+// KEEP_ALL is budgeted too, but differently - see resolve_keep_all_arena_bytes() below: its promise is
+// that nothing unacknowledged is ever dropped, so its budget is reached by blocking the writer, not
+// by evicting.
 static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth) {
     // The largest record one sample of this type can need: its generated bound when it has one, the
     // datagram otherwise (a submessage can be no larger).
@@ -462,6 +462,48 @@ static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_
     unsigned long long budget = NULL != payload && 0 != payload->cache_bytes
                                     ? (unsigned long long)payload->cache_bytes
                                     : rmw_tickle_cache_budget_bytes(); // rmw_typesupport.c
+    if (budget < record) {
+        budget = record;
+    }
+    return (uint32_t)(full < budget ? full : budget);
+}
+
+// Byte budget for a KEEP_ALL publisher's unacknowledged samples (2026-09-25, the user's decision to
+// change the defaults in TickLE's favour).
+//
+// It used to be unbudgeted: (depth + 1) records, for fear that a byte bound would drop what KEEP_ALL
+// promises to keep. That fear was about EVICTION. Core has since learned to REFUSE instead - a KEEP_ALL
+// publish that the arena's bytes cannot admit is refused with tt_RET_WOULD_BLOCK before anything is
+// encoded, exactly as one past the count bound is (tt_Publisher_publish(), tickle.c) - so a byte
+// budget now costs nothing KEEP_ALL promises. The writer waits sooner at large sample sizes; it never
+// loses a sample.
+//
+// Why it matters: at KEEP_ALL with the ack window full, the arena's touched pages ARE the
+// unacknowledged samples, so peak RSS is bytes-in-flight and lazy reservation cannot lower it - only
+// fewer unacknowledged bytes can. Unbudgeted, a 2800-byte stream could hold the whole 1024-sample ack
+// window, ~2.9 MB. CycloneDDS's own default bounds the same thing at 500 kB (its WhcHigh watermark);
+// the default here, RMW_TICKLE_KEEP_ALL_BYTES = 512 KiB, is the same order. Small samples are
+// untouched: at a 100-byte record 512 KiB is ~5,200 records, far past the count bound, which still
+// binds first. Nothing about throughput should notice either - even 185 in-flight 2800-byte samples
+// are orders of magnitude past this link's bandwidth-delay product - but that is a prediction for
+// the rig to check, not a measurement.
+//
+// VOLATILE only. A TRANSIENT_LOCAL publisher's depth is literally how much history a late joiner is
+// replayed (RMW_TICKLE_KEEP_ALL_DEPTH_DURABLE's comment above), so budgeting it by bytes would change
+// what a reader receives, not just when a writer waits. That is a different decision and it is not
+// made here.
+//
+// The per-publisher payload's cache_bytes overrides the environment, and the budget never drops below
+// one record, so any single legal sample can still be admitted.
+static uint32_t resolve_keep_all_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth, bool durable) {
+    unsigned long long record = (unsigned long long)resolve_record_bytes(pub_impl);
+    unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
+    if (durable) {
+        return (uint32_t)full;
+    }
+    const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
+    unsigned long long budget = NULL != payload && 0 != payload->cache_bytes ? (unsigned long long)payload->cache_bytes
+                                                                             : rmw_tickle_keep_all_budget_bytes();
     if (budget < record) {
         budget = record;
     }
@@ -618,7 +660,7 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     //
     // (depth + 1) records either way - the wrap slack B1 added, so the byte bound still cannot
     // evict before the count bound, which is what `depth` promises.
-    uint32_t arena_bytes = keep_all ? tt_RELIABLE_CACHE_ARENA_BYTES(depth, resolve_record_bytes(pub_impl))
+    uint32_t arena_bytes = keep_all ? resolve_keep_all_arena_bytes(pub_impl, depth, durable)
                                     : resolve_keep_last_arena_bytes(pub_impl, depth);
 
     // Said at attach, where it is decidable, rather than discovered on the first publish that hits

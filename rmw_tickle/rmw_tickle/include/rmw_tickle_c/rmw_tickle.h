@@ -91,6 +91,11 @@ bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message
 // approved on 2026-09-24); unset, malformed or out of range falls back to it.
 unsigned long long rmw_tickle_cache_budget_bytes(void);
 
+// RMW_TICKLE_KEEP_ALL_BYTES: the byte budget for what a VOLATILE KEEP_ALL publisher may hold
+// unacknowledged (2026-09-25). Default 512 KiB; unset, malformed or out of range falls back to it.
+// Reached by blocking the writer, never by dropping - see resolve_keep_all_arena_bytes().
+unsigned long long rmw_tickle_keep_all_budget_bytes(void);
+
 // Bytes a submessage of this type needs at its largest - `framing` bytes of headers plus its
 // generated bound, or plus a whole datagram when it has none - never more than one datagram, rounded
 // up to a multiple of 8 so it can size an aligned storage slot.

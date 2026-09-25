@@ -68,6 +68,9 @@
 #define RECOVERING_MAX_BLOCKING_MS "2000"
 #define UNBLOCK_DELAY_MS 30
 
+// Case 5's budget: room for a few dozen of this test's one-byte samples, far under the count bound.
+#define KEEP_ALL_SMALL_BUDGET "2000"
+
 // Stand-in identifiers for the faked matched Subscriber below - any values peer_acks[] reads as
 // "in use" will do; nothing here decodes them.
 #define FAKE_PEER_NODE_ID 42
@@ -330,6 +333,32 @@ int main(void) {
         assert(EXPECTED_BLOCK_AFTER == accepted);
         assert(elapsed < MAX_CREDIBLE_WAIT_MS);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+    }
+
+    // Case 5 (2026-09-25): the byte budget. A VOLATILE KEEP_ALL publisher's unacknowledged bytes are
+    // capped at RMW_TICKLE_KEEP_ALL_BYTES, and what must hold is the KEEP_ALL promise: it blocks on
+    // BYTES, well before the count bound Case 4 blocks at, and it drops nothing - every sample it
+    // accepted is still retained when the refusal comes. Case 4 is this case's control: the same
+    // publisher without the budget blocks at the count bound instead.
+    {
+        setenv("RMW_TICKLE_MAX_BLOCKING_MS", "0", 1); // refuse at once; waiting is Case 2's subject
+        setenv("RMW_TICKLE_KEEP_ALL_BYTES", KEEP_ALL_SMALL_BUDGET, 1);
+        rmw_publisher_t* pub = rmw_create_publisher(node, type_support, "keep_all_byte_budget", &qos, &pub_opts);
+        assert(NULL != pub);
+        rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
+        const struct tt_ReliableCache* cache = pub_impl->reliable_cache;
+        assert(cache->arena_limit == (uint32_t)strtoul(KEEP_ALL_SMALL_BUDGET, NULL, 10));
+        attach_stalled_peer(pub_impl);
+
+        rmw_ret_t final_ret = RMW_RET_OK;
+        uint32_t accepted = fill_until_blocked(pub, &final_ret);
+
+        assert(RMW_RET_TIMEOUT == final_ret);    // refused, reported - not silently taken
+        assert(accepted > 0);                    // it did accept some...
+        assert(accepted < EXPECTED_BLOCK_AFTER); // ...and the bytes bound before the count did
+        assert(cache->newest_seq_no - cache->oldest_seq_no + 1 == accepted); // nothing was evicted
+        assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+        unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
     }
 
     unsetenv("RMW_TICKLE_MAX_BLOCKING_MS");

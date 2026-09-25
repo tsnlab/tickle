@@ -11,7 +11,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h> // getenv()/strtoull() - rmw_tickle_cache_budget_bytes()
+#include <stdlib.h> // getenv()/strtoull() - env_bytes_or()
 #include <string.h>
 
 #include "rcutils/allocator.h"
@@ -93,18 +93,33 @@ bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message
 }
 
 #define RMW_TICKLE_CACHE_BYTES_DEFAULT (1024ULL * 1024ULL)
+// 512 KiB: the same order as CycloneDDS's own default bound on what a reliable writer holds
+// unacknowledged - its WhcHigh watermark is 500 kB (read from the installed libddsc 11.0.1's own
+// configuration defaults, 2026-09-25, not recalled). Measured against it at 2800-byte samples,
+// TickLE's unbudgeted KEEP_ALL held up to the whole 1024-sample ack window, ~2.9 MB.
+#define RMW_TICKLE_KEEP_ALL_BYTES_DEFAULT (512ULL * 1024ULL)
 
-unsigned long long rmw_tickle_cache_budget_bytes(void) {
-    const char* env = getenv("RMW_TICKLE_CACHE_BYTES");
+// A byte budget from the environment, or `fallback` when unset, malformed or out of range - a
+// malformed tuning knob must not stop a node starting.
+static unsigned long long env_bytes_or(const char* name, unsigned long long fallback) {
+    const char* env = getenv(name);
     if (NULL == env || '\0' == env[0]) {
-        return RMW_TICKLE_CACHE_BYTES_DEFAULT;
+        return fallback;
     }
     char* end = NULL;
     unsigned long long value = strtoull(env, &end, 10);
     if (end == env || (end != NULL && '\0' != *end) || value == 0 || value > UINT32_MAX) {
-        return RMW_TICKLE_CACHE_BYTES_DEFAULT; // a malformed tuning knob must not stop a node starting
+        return fallback;
     }
     return value;
+}
+
+unsigned long long rmw_tickle_cache_budget_bytes(void) {
+    return env_bytes_or("RMW_TICKLE_CACHE_BYTES", RMW_TICKLE_CACHE_BYTES_DEFAULT);
+}
+
+unsigned long long rmw_tickle_keep_all_budget_bytes(void) {
+    return env_bytes_or("RMW_TICKLE_KEEP_ALL_BYTES", RMW_TICKLE_KEEP_ALL_BYTES_DEFAULT);
 }
 
 uint32_t rmw_tickle_message_slot_bytes(const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks,

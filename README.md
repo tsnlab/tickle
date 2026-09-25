@@ -265,6 +265,7 @@ the default rather than stopping the node:
 | `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a periodic Heartbeat at this period | unset (off) |
 | `RMW_TICKLE_MAX_BLOCKING_MS` | how long a KEEP_ALL publish may block before it fails; `0` fails at once | `100` |
 | `RMW_TICKLE_CACHE_BYTES` | byte budget for a KEEP_LAST publisher's retained samples; a publisher of large samples then keeps fewer than its depth | 1 MiB |
+| `RMW_TICKLE_KEEP_ALL_BYTES` | byte budget for what a VOLATILE KEEP_ALL publisher holds unacknowledged; past it the writer blocks, it never drops. The same order as CycloneDDS's own default writer bound (500 kB) | 512 KiB |
 | `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | storage reserved per retained KEEP_ALL sample, for types whose size the generator cannot bound; a larger sample fills the cache faster, so the publisher blocks sooner | 1472 bytes (one standard datagram) |
 | `RMW_TICKLE_REORDER_SLOTS` | how many out-of-order RELIABLE samples a subscription may hold; fewer saves memory and costs retransmissions | the tracking window |
 

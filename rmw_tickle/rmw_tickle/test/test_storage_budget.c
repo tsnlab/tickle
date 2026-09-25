@@ -49,10 +49,11 @@
 #define REORDER_BUDGET \
     ((unsigned long long)RMW_TICKLE_REORDER_SLOTS * (sizeof(struct tt_ReorderSlot) + tt_ETHERNET_UDP_PAYLOAD))
 #define BOUNDED_PAYLOAD 76
-#define SMALL_BUDGET 5000                 // bytes: below /rosout-sized arenas, above one 1472-byte record
-#define PAYLOAD_SAMPLE_BYTES 16384        // what an application claims its samples reach, through the payload
-#define FOREIGN_PAYLOAD_MAGIC 0xDEADBEEFU // a payload that is not rmw_tickle's, however it got here
-#define LAZY_INITIAL_BYTES (64U * 1024U)  // RMW_TICKLE_INITIAL_ARENA_BYTES (rmw_publisher.c)
+#define SMALL_BUDGET 5000                  // bytes: below /rosout-sized arenas, above one 1472-byte record
+#define KEEP_ALL_BUDGET (512ULL * 1024ULL) // RMW_TICKLE_KEEP_ALL_BYTES's default (rmw_typesupport.c)
+#define PAYLOAD_SAMPLE_BYTES 16384         // what an application claims its samples reach, through the payload
+#define FOREIGN_PAYLOAD_MAGIC 0xDEADBEEFU  // a payload that is not rmw_tickle's, however it got here
+#define LAZY_INITIAL_BYTES (64U * 1024U)   // RMW_TICKLE_INITIAL_ARENA_BYTES (rmw_publisher.c)
 #define ROSOUT_DEPTH 1000      // the deepest queue a default rclcpp::Node creates, and the budget's test case
 #define BIG_SAMPLE_BYTES 16384 // a sample large enough that the initial arena slice holds only a few
 #define GROWTH_DEPTH 10        // ...and a depth the byte bound falls short of until the arena grows
@@ -150,7 +151,18 @@ static uint32_t keep_last_arena(size_t depth) {
 }
 
 // The bytes a KEEP_ALL publisher of this type reserves per sample, with `payload` attached.
+//
+// Measured with RMW_TICKLE_KEEP_ALL_BYTES at its maximum, so the byte budget cannot bind: since
+// 2026-09-25 a VOLATILE KEEP_ALL arena is min((depth + 1) records, budget), and dividing a budgeted
+// arena by depth + 1 would report the budget's share rather than the record. The caller's own
+// setting is restored afterwards.
 static uint32_t keep_all_record_with(rmw_tickle_publisher_payload_t* payload) {
+    const char* saved = getenv("RMW_TICKLE_KEEP_ALL_BYTES");
+    char saved_copy[32] = {0};
+    if (NULL != saved) {
+        snprintf(saved_copy, sizeof(saved_copy), "%s", saved);
+    }
+    setenv("RMW_TICKLE_KEEP_ALL_BYTES", "4294967295", 1);
     rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, 1);
     q.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
     rmw_publisher_options_t opts = rmw_get_default_publisher_options();
@@ -161,7 +173,30 @@ static uint32_t keep_all_record_with(rmw_tickle_publisher_payload_t* payload) {
     // The arena is (depth + 1) records of whatever was reserved, so the record is what it divides to.
     uint32_t record = pub_impl->reliable_cache->arena_limit / (pub_impl->reliable_cache->depth + 1U);
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+    if (NULL != saved) {
+        setenv("RMW_TICKLE_KEEP_ALL_BYTES", saved_copy, 1);
+    } else {
+        unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
+    }
     return record;
+}
+
+// A KEEP_ALL publisher's arena limit and depth, with `payload` attached and the given durability.
+static uint32_t keep_all_arena_with(rmw_tickle_publisher_payload_t* payload, bool durable, uint32_t* depth) {
+    rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, 1);
+    q.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
+    if (durable) {
+        q.durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
+    }
+    rmw_publisher_options_t opts = rmw_get_default_publisher_options();
+    opts.rmw_specific_publisher_payload = payload;
+    rmw_publisher_t* pub = rmw_create_publisher(node, &handle, "/budget_keep_all_bytes", &q, &opts);
+    assert(NULL != pub);
+    const struct tt_ReliableCache* cache = ((const rmw_tickle_publisher_t*)pub->data)->reliable_cache;
+    uint32_t arena = cache->arena_limit;
+    *depth = cache->depth;
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+    return arena;
 }
 
 static void reorder_shape(enum rmw_qos_reliability_policy_e reliability, uint16_t* slots, uint16_t* slot_bytes,
@@ -280,6 +315,51 @@ int main(void) {
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         callbacks.tickle_encode_size = (tt_DATA_ENCODE_SIZE)&fake_encode_size;
         callbacks.tickle_encode = (tt_DATA_ENCODE)&fake_encode;
+    }
+
+    // --- KEEP_ALL byte budget (2026-09-25) ----------------------------------------------------------
+    // A VOLATILE KEEP_ALL publisher's unacknowledged bytes are capped at RMW_TICKLE_KEEP_ALL_BYTES,
+    // 512 KiB by default - reached by blocking the writer, never by dropping. Small samples must be
+    // untouched by it, a TRANSIENT_LOCAL publisher's replay history must be untouched by it, and it
+    // never drops below one record.
+    unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
+    unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
+    {
+        uint32_t depth = 0;
+        callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
+        const unsigned long long record = keep_all_record_with(NULL);
+        uint32_t arena = keep_all_arena_with(NULL, false, &depth);
+        const unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
+        assert(full > KEEP_ALL_BUDGET);   // unbudgeted, this would have been larger...
+        assert(arena == KEEP_ALL_BUDGET); // ...and the default binds
+
+        // TRANSIENT_LOCAL: depth is replay history, so it keeps every record it had.
+        uint32_t durable_depth = 0;
+        uint32_t durable_arena = keep_all_arena_with(NULL, true, &durable_depth);
+        assert(durable_arena == ((unsigned long long)durable_depth + 1ULL) * record);
+        assert(durable_arena > KEEP_ALL_BUDGET);
+
+        setenv("RMW_TICKLE_KEEP_ALL_BYTES", "1000000", 1); // the environment moves it
+        assert(keep_all_arena_with(NULL, false, &depth) == min_ull(full, 1000000ULL));
+        setenv("RMW_TICKLE_KEEP_ALL_BYTES", "100", 1); // below one record: one record, never zero
+        assert(keep_all_arena_with(NULL, false, &depth) == record);
+        setenv("RMW_TICKLE_KEEP_ALL_BYTES", "nonsense", 1); // malformed: the default, not a failure
+        assert(keep_all_arena_with(NULL, false, &depth) == KEEP_ALL_BUDGET);
+        unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");
+
+        rmw_tickle_publisher_payload_t roomy = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
+        roomy.cache_bytes = 2U * (uint32_t)MIB; // the payload overrides the environment
+        assert(keep_all_arena_with(&roomy, false, &depth) == min_ull(full, 2ULL * MIB));
+    }
+    {
+        // A small type is untouched: 76-byte samples at the full depth fit far inside the budget,
+        // so the count bound still binds first, exactly as before.
+        uint32_t depth = 0;
+        callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
+        const unsigned long long record = keep_all_record_with(NULL);
+        uint32_t arena = keep_all_arena_with(NULL, false, &depth);
+        assert(((unsigned long long)depth + 1ULL) * record < KEEP_ALL_BUDGET);
+        assert(arena == ((unsigned long long)depth + 1ULL) * record);
     }
 
     // --- per-publisher payload (rmw_tickle_c/publisher_payload.h) ----------------------------------
