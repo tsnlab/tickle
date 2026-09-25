@@ -1228,6 +1228,11 @@ static void sched_sift_down(struct tt_Node* node, int32_t index) {
 // Only the scheduler's own lock: an insert never races a running entry, because a running entry has
 // already been taken out of the heap (run_due_entry()). That is what lets another thread schedule
 // without waiting behind a datagram the poll thread is processing.
+//
+// Wakes the poller only when it is blocked waiting for something later than this entry
+// (struct tt_Node.wait_until). An insert made while the poller is not waiting - which is every insert
+// made on the poll thread itself, from a callback or a datagram - costs nothing extra, because the
+// poll loop re-reads the heap before it next waits.
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
     sched_lock(node);
@@ -1242,8 +1247,12 @@ bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
     node->scheduler[index].param = param;
     node->scheduler_tail++;
     sched_sift_up(node, index);
+    bool wake = node->wait_until != 0 && time < node->wait_until;
     sched_unlock(node);
 
+    if (wake) {
+        tt_wake_signal(node);
+    }
     return true;
 }
 
@@ -1404,6 +1413,7 @@ static void node_init_locks(struct tt_Node* node) {
     node->state_lock_stats = (struct tt_LockStats) {0};
     node->sched_lock_stats = (struct tt_LockStats) {0};
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
+    node->wait_until = 0;
 }
 
 static void reset_node_state(struct tt_Node* node) {
@@ -7124,12 +7134,31 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
         return true;
     }
 
+    // Re-read under the scheduler lock, and record what this wait will wait until in the same critical
+    // section: an insert from another thread either lands before this read, and the wait below already
+    // covers it, or after, and then sees wait_until and wakes this wait (tt_Node_schedule()). Either
+    // way nothing earlier than the wait is missed - which under an indefinite wait would be forever.
+    sched_lock(node);
+    const struct tt_TCB* head = peek_scheduler(node);
+    has_next = head != NULL;
+    next = has_next ? head->time : next;
+    uint64_t until = has_next ? next : UINT64_MAX;
+    if (!until_next_event && time + (uint64_t)timeout < until) {
+        until = time + (uint64_t)timeout;
+    }
+    node->wait_until = until;
+    sched_unlock(node);
+
     bool woke_for_scheduler = false;
     int64_t rest = poll_wait_length(has_next, next, time, timeout, until_next_event, &woke_for_scheduler);
 
     uint32_t ip = 0;
     uint16_t port = 0;
     int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
+
+    sched_lock(node);
+    node->wait_until = 0; // not waiting: an insert now is seen by the loop, no wake needed
+    sched_unlock(node);
 
     // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
     // by a signal (the HALs report EINTR as a timeout). Hand control back rather than wait again: under

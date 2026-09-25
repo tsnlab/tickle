@@ -194,6 +194,10 @@ struct tt_Node {
     // Set while a tt_Node_poll() is running, so a second concurrent one fails with tt_RET_BUSY instead
     // of sharing rx_buffer with the first. Accessed only through __atomic builtins.
     uint8_t poller_active;
+    // What a poll blocked in tt_receive() is waiting until (UINT64_MAX: indefinitely), or 0 when no poll
+    // is waiting. Guarded by sched_lock, so tt_Node_schedule() from another thread can tell whether its
+    // new entry is earlier than the wait and must wake it.
+    uint64_t wait_until;
 
     // Opt-in graph introspection (tt_Node_set_discovery(), rmw_tickle/PLAN.md's Milestone 0(c)) -
     // NULL (the default - see reset_node_state()) unless a caller attaches its own, externally-
@@ -1604,9 +1608,9 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
                                   const char* endpoint_name);
 tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                    const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
-// Runs `function` at `time` from inside tt_Node_poll(). Callable from any thread. From a thread other
-// than the one polling, follow it with tt_Node_interrupt(), or a poll already waiting will not see the
-// new entry until it wakes for something else (see tt_Node_poll()).
+// Runs `function` at `time` from inside tt_Node_poll(). Callable from any thread. When a poll is blocked
+// waiting for something later than `time`, this wakes it (that poll returns tt_RET_INTERRUPTED and the
+// caller's next poll runs the entry on time); no tt_Node_interrupt() is needed.
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
 // Cancels every pending schedule entry matching (function, param) exactly. Returns true if any were removed.
@@ -1638,11 +1642,10 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
  *                       still reaches a caller's loop at once.
  *
  * One thread polls a node at a time; a second concurrent tt_Node_poll() returns tt_RET_BUSY. Work
- * raised from another thread - a tt_Node_schedule(), a tt_Server_send_response() - must be followed
- * by tt_Node_interrupt() so the poll thread wakes and sees it; otherwise it waits until something
- * else happens, which under an indefinite wait may be never. tt_Node_schedule() does not interrupt by
- * itself: most calls come from the poll thread, where a wake-up on every insert would cost a syscall
- * per scheduled sample.
+ * raised from another thread wakes a waiting poll by itself: tt_Node_schedule() - and so every core
+ * call that arms a timer, a client call's retry, a batching publisher's flush - wakes it when the new
+ * entry is earlier than what it is waiting for, and tt_Server_send_response() always does. A wake
+ * ends that poll with tt_RET_INTERRUPTED. Inserts made on the poll thread itself never wake anything.
  *
  * No lock is held while the poll waits. The node's state lock is taken per datagram and per due
  * scheduler entry, and user callbacks run inside it - see "Threading" at tt_Node_lock().

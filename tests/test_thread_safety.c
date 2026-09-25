@@ -339,13 +339,53 @@ static void* timer_thread(void* param) {
             struct timespec pause = {0, 100000};
             nanosleep(&pause, NULL); // heap full for a moment - the poll thread is draining it
         }
-        tt_Node_interrupt(&node_a);
+        // No tt_Node_interrupt(): tt_Node_schedule() wakes a waiting poll by itself when it must.
         if (i % 5 == 0) {
             timer_cancelled[i] = 1;
             EXPECT_TRUE(tt_Node_unschedule(&node_a, on_timer, &timer_ids[i]));
         }
     }
     return NULL;
+}
+
+// ---- A timer armed from another thread must wake an idle node's indefinite wait by itself.
+
+#define WAKE_ROUNDS 20
+#define WAKE_DELAY_NS 1000000ULL       // each entry is due 1 ms after it is scheduled
+#define WAKE_LATE_LIMIT_NS 50000000ULL // and must run within 50 ms of that
+#define WAKE_GIVE_UP_NS 2000000000ULL  // an idle node's own periodic work is up to 1 s away
+
+static uint64_t wake_ran_at; // atomic: when on_wake_timer ran, 0 until then
+
+static void on_wake_timer(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+    __atomic_store_n(&wake_ran_at, tt_get_ns(), __ATOMIC_RELEASE);
+}
+
+// Node B is idle once the stream has been delivered, its poll thread waiting indefinitely for the next
+// scheduler entry. Without the wake, an entry scheduled from here would run only when B's own
+// periodic announce happened to wake it - on average half a second late.
+static void test_schedule_wakes_an_idle_poll(void) {
+    uint64_t worst = 0;
+    for (int round = 0; round < WAKE_ROUNDS; round++) {
+        __atomic_store_n(&wake_ran_at, 0, __ATOMIC_RELEASE);
+        uint64_t due = tt_get_ns() + WAKE_DELAY_NS;
+        EXPECT_TRUE(tt_Node_schedule(&node_b, due, on_wake_timer, NULL));
+        uint64_t give_up = due + WAKE_GIVE_UP_NS;
+        uint64_t ran = 0;
+        while ((ran = __atomic_load_n(&wake_ran_at, __ATOMIC_ACQUIRE)) == 0 && tt_get_ns() < give_up) {
+            struct timespec pause = {0, 100000};
+            nanosleep(&pause, NULL);
+        }
+        EXPECT_TRUE(ran != 0);
+        uint64_t late = ran > due ? ran - due : 0;
+        worst = late > worst ? late : worst;
+    }
+    printf("schedule from another thread: worst lateness %lu us over %d rounds\n", (unsigned long)(worst / 1000),
+           WAKE_ROUNDS);
+    EXPECT_TRUE(worst < WAKE_LATE_LIMIT_NS);
 }
 
 static void create_endpoints(void) {
@@ -413,6 +453,10 @@ int main(void) {
     // The uncancelled timers were scheduled 100 us out; give the last of them time to run.
     struct timespec settle = {0, 200000000};
     nanosleep(&settle, NULL);
+
+#ifndef CONTROL_BUILD
+    test_schedule_wakes_an_idle_poll();
+#endif
 
     __atomic_store_n(&stop_polling, 1, __ATOMIC_RELEASE);
     tt_Node_interrupt(&node_a);
