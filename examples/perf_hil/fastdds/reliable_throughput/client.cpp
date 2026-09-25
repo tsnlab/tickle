@@ -125,7 +125,7 @@ namespace {
                 result.write_fail++;
             }
             if (interval_s > 0.0) {
-                harness::pace_seconds(interval_s);
+                harness::sleep_seconds(interval_s);
             }
         }
         return result;

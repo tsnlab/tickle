@@ -68,13 +68,34 @@ namespace harness {
         return static_cast<uint64_t>(seconds * ns_per_s_real);
     }
 
-    // The throughput clients' -i pacing, exactly as it always was: whole seconds, then the fraction in
-    // nanoseconds - not seconds_to_ns(), whose rounding could differ from it by a nanosecond.
-    inline void pace_seconds(double interval_s) {
-        const auto whole_s = static_cast<time_t>(interval_s);
-        const struct timespec pace_ts = {
-            whole_s, static_cast<long>((interval_s - static_cast<double>(whole_s)) * ns_per_s_real)};
-        nanosleep(&pace_ts, nullptr);
+    // Sleeps `seconds` split exactly as the throughput clients' -i pacing and the stalling servers' pause
+    // always split it: whole seconds, then the fraction in nanoseconds - not seconds_to_ns(), whose rounding
+    // could differ from it by a nanosecond.
+    inline void sleep_seconds(double seconds) {
+        const auto whole_s = static_cast<time_t>(seconds);
+        const struct timespec ts = {whole_s,
+                                    static_cast<long>((seconds - static_cast<double>(whole_s)) * ns_per_s_real)};
+        nanosleep(&ts, nullptr);
+    }
+
+    constexpr long match_poll_ns = 50L * 1000L * 1000L; // 50ms
+
+    // The match-wait every scenario that cannot rely on a blind discovery sleep uses: checks `matched`
+    // every 50ms until it holds (true) or `timeout_s` has passed (false). See best_effort_throughput/
+    // client.cpp for why a blind sleep was not enough.
+    template <typename Pred> inline auto wait_until(double timeout_s, Pred matched) -> bool {
+        const uint64_t start = now_ns();
+        for (;;) {
+            if (matched()) {
+                return true;
+            }
+            const double elapsed = static_cast<double>(now_ns() - start) / ns_per_s_real;
+            if (elapsed >= timeout_s) {
+                return false;
+            }
+            const struct timespec poll_interval = {0, match_poll_ns};
+            nanosleep(&poll_interval, nullptr);
+        }
     }
 
     // Megabits per second of `samples` samples of `sample_size` bytes. The throughput harnesses have always

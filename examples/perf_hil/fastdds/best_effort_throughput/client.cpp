@@ -11,7 +11,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <time.h> // NOLINT(modernize-deprecated-headers) - nanosleep() is POSIX, not in <ctime>
 
 #include <fastdds/dds/core/policy/QosPolicies.hpp>
 #include <fastdds/dds/core/status/PublicationMatchedStatus.hpp>
@@ -37,7 +36,6 @@ namespace {
 
     constexpr double default_duration_s = 10.0;
     constexpr double match_timeout_s = 10.0;
-    constexpr long match_poll_ns = 50L * 1000L * 1000L; // 50ms
 
     struct client_options {
         double duration_s = default_duration_s;
@@ -62,20 +60,11 @@ namespace {
     // reliable for a write-only participant on a topic other than the two latency scenarios' own
     // "ping"/"pong", confirmed the hard way (0 received, 100% loss, reproduced twice).
     auto wait_for_writer_match(DataWriter* writer, double timeout_s) -> bool {
-        const uint64_t start = harness::now_ns();
-        for (;;) {
+        return harness::wait_until(timeout_s, [writer] {
             PublicationMatchedStatus status;
             writer->get_publication_matched_status(status);
-            if (status.current_count > 0) {
-                return true;
-            }
-            const double elapsed = static_cast<double>(harness::now_ns() - start) / harness::ns_per_s_real;
-            if (elapsed >= timeout_s) {
-                return false;
-            }
-            const struct timespec poll_interval = {0, match_poll_ns};
-            nanosleep(&poll_interval, nullptr);
-        }
+            return status.current_count > 0;
+        });
     }
 
     auto send_until(DataWriter* writer, uint64_t deadline, double interval_s) -> uint64_t {
@@ -89,7 +78,7 @@ namespace {
                 sent++;
             }
             if (interval_s > 0.0) {
-                harness::pace_seconds(interval_s);
+                harness::sleep_seconds(interval_s);
             }
         }
         return sent;
