@@ -1,0 +1,22 @@
+=== dynamic vs fixed retry interval, 2026-09-25T18:07:34+09:00, repo 871129d8d2dad1ecc2e944a232984abb7346c52d ===
+--- building with TICKLE_DYNAMIC_RETRY=0 on both rpis ---
+
+A  c5 fixed   rep1 | sent=783412 send_mbps=95.263 wire_bytes_per_sample=149.8 | recv=783412 retry_interval_cfg_ns=1000000 recovery_srtt_ns=288076 recovery_rttvar_ns=279115 
+A  c5 fixed   rep2 | sent=787824 send_mbps=95.799 wire_bytes_per_sample=149.8 | recv=787824 retry_interval_cfg_ns=1000000 recovery_srtt_ns=211092 recovery_rttvar_ns=88276 
+A  c5 fixed   rep3 | sent=791389 send_mbps=96.233 wire_bytes_per_sample=149.8 | recv=791389 retry_interval_cfg_ns=1000000 recovery_srtt_ns=363024 recovery_rttvar_ns=338791 
+
+C  c1 fixed   rep1 | sent=867607 send_mbps=105.501 wire_bytes_per_sample=146.7 | recv=867607 retry_interval_cfg_ns=1000000 recovery_srtt_ns=23524 recovery_rttvar_ns=8023 
+C  c1 fixed   rep2 | sent=875007 send_mbps=106.401 wire_bytes_per_sample=146.7 | recv=875007 retry_interval_cfg_ns=1000000 recovery_srtt_ns=27130 recovery_rttvar_ns=13565 
+C  c1 fixed   rep3 | sent=873590 send_mbps=106.229 wire_bytes_per_sample=146.7 | recv=873590 retry_interval_cfg_ns=1000000 recovery_srtt_ns=22016 recovery_rttvar_ns=10930 
+--- building with TICKLE_DYNAMIC_RETRY=1 on both rpis ---
+
+B  c5 dynamic rep1 | sent=806860 send_mbps=98.114 wire_bytes_per_sample=150.7 | recv=806860 retry_interval_cfg_ns=0 recovery_srtt_ns=181493 recovery_rttvar_ns=48622 
+B  c5 dynamic rep2 | sent=785929 send_mbps=95.569 wire_bytes_per_sample=150.8 | recv=785929 retry_interval_cfg_ns=0 recovery_srtt_ns=147775 recovery_rttvar_ns=54548 
+B  c5 dynamic rep3 | sent=811193 send_mbps=98.641 wire_bytes_per_sample=150.7 | recv=811193 retry_interval_cfg_ns=0 recovery_srtt_ns=141557 recovery_rttvar_ns=39126 
+
+D  c1 dynamic rep1 | sent=871934 send_mbps=106.027 wire_bytes_per_sample=146.7 | recv=871934 retry_interval_cfg_ns=0 recovery_srtt_ns=17937 recovery_rttvar_ns=6739 
+D  c1 dynamic rep2 | sent=873283 send_mbps=106.191 wire_bytes_per_sample=146.7 | recv=873283 retry_interval_cfg_ns=0 recovery_srtt_ns=24532 recovery_rttvar_ns=12288 
+D  c1 dynamic rep3 | sent=873641 send_mbps=106.235 wire_bytes_per_sample=146.7 | recv=873641 retry_interval_cfg_ns=0 recovery_srtt_ns=25428 recovery_rttvar_ns=9300 
+
+qdisc now: qdisc fq_codel 0: root refcnt 2 limit 10240p flows 1024 quantum 1514 target 5ms interval 100ms memory_limit 32Mb ecn drop_batch 64 
+=== done ===
