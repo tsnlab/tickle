@@ -11,13 +11,17 @@
 #pragma once
 
 #include <stdbool.h> // rx_prefer_data
+#include <stdint.h>
 
 #include <lwip/sockets.h>
 #include <tickle/config.h>
 
-// See hal_linux.h's tt_lock_t - the same five operations over a FreeRTOS mutex, statically allocated
-// so a node needs no heap for it. Recursive and plain mutexes are separate object kinds in FreeRTOS,
-// with separate take/give calls, so the lock remembers which one it is.
+// See hal_linux.h's tt_lock_t - the same operations over a FreeRTOS mutex, statically allocated so a
+// node needs no heap for it. Recursive and plain mutexes are separate object kinds in FreeRTOS, with
+// separate take/give calls, so the lock remembers which one it is.
+//
+// pdTRUE, pdMS_TO_TICKS, TickType_t and portMAX_DELAY are defined in FreeRTOS's projdefs.h and the
+// port's portmacro.h, which FreeRTOS supports reaching only through FreeRTOS.h - hence the NOLINTs.
 #if tt_THREAD_SAFE
 #include <FreeRTOS.h>
 #include <semphr.h>
@@ -35,19 +39,20 @@ static inline void tt_lock_init(tt_lock_t* lock, bool recursive) {
         recursive ? xSemaphoreCreateRecursiveMutexStatic(&lock->storage) : xSemaphoreCreateMutexStatic(&lock->storage);
 }
 static inline bool tt_lock_try(tt_lock_t* lock) {
-    return (lock->recursive ? xSemaphoreTakeRecursive(lock->handle, 0) : xSemaphoreTake(lock->handle, 0)) == pdTRUE;
+    return (lock->recursive ? xSemaphoreTakeRecursive(lock->handle, 0) : xSemaphoreTake(lock->handle, 0)) ==
+           pdTRUE; // NOLINT(misc-include-cleaner)
 }
 static inline void tt_lock_acquire(tt_lock_t* lock) {
     if (lock->recursive) {
-        xSemaphoreTakeRecursive(lock->handle, portMAX_DELAY);
+        xSemaphoreTakeRecursive(lock->handle, portMAX_DELAY); // NOLINT(misc-include-cleaner)
     } else {
-        xSemaphoreTake(lock->handle, portMAX_DELAY);
+        xSemaphoreTake(lock->handle, portMAX_DELAY); // NOLINT(misc-include-cleaner)
     }
 }
 static inline bool tt_lock_acquire_timed(tt_lock_t* lock, uint64_t timeout_ns) {
-    TickType_t ticks = pdMS_TO_TICKS((uint32_t)(timeout_ns / 1000000ULL));
+    TickType_t ticks = pdMS_TO_TICKS((uint32_t)(timeout_ns / 1000000ULL)); // NOLINT(misc-include-cleaner)
     return (lock->recursive ? xSemaphoreTakeRecursive(lock->handle, ticks) : xSemaphoreTake(lock->handle, ticks)) ==
-           pdTRUE;
+           pdTRUE; // NOLINT(misc-include-cleaner)
 }
 static inline void tt_lock_release(tt_lock_t* lock) {
     if (lock->recursive) {

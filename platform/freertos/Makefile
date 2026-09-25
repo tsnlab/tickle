@@ -157,7 +157,7 @@ REPO_ROOT = $(abspath $(ROOT))
 OBJ_DIR = obj-$(ROLE)-$(NODE_ID)
 OBJS = $(foreach src,$(SRCS),$(OBJ_DIR)/$(patsubst $(REPO_ROOT)/%,%,$(abspath $(src))).o)
 
-.PHONY: all clean run lint
+.PHONY: all clean run lint lint-headers-ci
 
 all: $(ELF)
 
@@ -227,6 +227,17 @@ EXTERNAL_TIDY_FILES = $(ROOT)/src/hal_freertos.c $(ROOT)/include/tickle/hal_free
                       $(ROOT)/examples/freertos/uint64/main_publisher.c $(ROOT)/examples/freertos/uint64/main_subscriber.c \
                       $(ROOT)/examples/freertos/set_bool/main_client.c $(ROOT)/examples/freertos/set_bool/main_server.c \
                       $(ROOT)/examples/freertos/perf/main_perf_client.c $(ROOT)/examples/freertos/perf/main_perf_server.c
+
+# CI's cpp-linter checks the FreeRTOS HAL header on its own, under the repository's .clang-tidy with every
+# check on - include-cleaner included, which `lint` below turns off for files outside this directory
+# (EXTERNAL_TIDY_CHECKS). So a header finding CI fails on was invisible here: 1765dc21 went red on seven
+# include-cleaner findings in hal_freertos.h that `lint` passed. This runs the header the way CI does.
+CLANG_TIDY ?= clang-tidy
+lint-headers-ci:
+	$(CLANG_TIDY) --quiet --warnings-as-errors='*' $(ROOT)/include/tickle/hal_freertos.h -- -x c \
+	    --target=riscv32-unknown-elf -march=rv32imac_zicsr_zifencei -mabi=ilp32 -isystem $(PICOLIBC_INCLUDE) \
+	    -DTT_PLATFORM_FREERTOS -I. -Iboard -Ilwip_arch -I$(FREERTOS)/include -I$(RISCV_PORT) \
+	    -I$(LWIP)/src/include -I$(LWIP_FREERTOS_PORT)/include -I$(ROOT)/include -I$(ROOT)/src
 
 lint:
 	find . -name '*.[ch]' -exec clang-format --dry-run --Werror {} +
