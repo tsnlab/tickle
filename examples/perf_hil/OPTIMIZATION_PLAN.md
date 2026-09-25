@@ -1,182 +1,209 @@
 # Rig performance campaign: five metrics against both DDS vendors
 
-**Status: DRAFT, awaiting the user's approval (step 2 of their own plan).** Written by TickLE Plan,
-2026-09-25, at the user's request: compare memory, CPU, network, latency and throughput against
-FastDDS and CycloneDDS across a range of QoS combinations and `tc`-shaped network conditions, then
-optimise TickLE until it wins each one.
+**Status: DRAFT rev 2, awaiting the user's approval (step 2 of their own plan).** TickLE Plan,
+2026-09-25. Rev 2 applies the user's four constraints (one hour, the existing network shaped only by
+`tc`, four payload sizes, no QoS cross) and two findings from TickLE Dev's review.
+
+Goal: compare memory, CPU, network bytes, latency and throughput against FastDDS and CycloneDDS
+across QoS and `tc`-shaped network conditions, then optimise until TickLE wins each.
 
 ## 1. What already exists, and what does not
 
-Measured today on the rig (`COMPARISON.MD` §3, §3a, §3b): latency, throughput, and the nine QoS
-scenarios. **Not measured anywhere on the rig: memory, CPU utilisation, network bytes.**
+On the rig today (`COMPARISON.MD` §3, §3a, §3b): latency, throughput, and the nine QoS scenarios.
+**Not measured anywhere: memory, CPU utilisation, network bytes.** `CpuPlace.h` is shared by all
+three harnesses and reports `cpu_main` / `cpu_main_share` / `cpu_migrations` - *where* a process ran,
+not how much CPU it used. No harness reads `VmHWM`, `getrusage()` or a packet count.
 
-`examples/perf_hil/CpuPlace.h` is shared by all three frameworks' harnesses and reports `cpu_main`,
-`cpu_main_share` and `cpu_migrations` - *where* the process ran, not how much CPU it used.
-`CpuFreq.h` is TickLE-only. No harness reads `VmHWM`, `getrusage()` or a packet count.
+Where TickLE already leads: latency (0.20 ms against 0.25-0.29), throughput (118 Mbps against 72 and
+48), memory under `rmw` on the dev box (16.8 MB against 21.7 and 35.0). **CPU and network bytes are
+the genuine unknowns**, and are where this campaign can produce a surprise. TickLE's DATA framing is
+28 B against RTPS's 60-76, which argues for it; the piggybacked Heartbeat every 64 samples and
+broadcast discovery argue the other way.
 
-Where TickLE already leads, from figures we hold: latency (0.20 ms against 0.25-0.29), throughput
-(118 Mbps against 72 and 48), and memory under `rmw` on the dev box (16.8 MB against 21.7 and 35.0).
-**The two genuine unknowns are CPU and network bytes**, and they are where this campaign can produce
-a surprise. TickLE's per-message framing is 30 B against RTPS's ~50-60, which argues for it; the
-piggybacked Heartbeat every 64 samples and broadcast discovery argue the other way.
+## 2. The five metrics do not multiply the runs
 
-## 2. The design problem: the matrix does not fit
-
-A full factorial is out of reach. Reliability x history x durability x payload x rate is 48 QoS
-cells; times 8 network conditions, 3 frameworks and 3 repetitions is 3456 runs, and a run costs
-25-40 s on the rig including orchestration. That is weeks.
-
-Three decisions make it fit in one session:
-
-**(a) The five metrics do not multiply the runs - they multiply the instrumentation.** One
-throughput run can yield throughput, CPU per sample, peak RSS and wire bytes per sample at the same
-time. Only latency needs its own run shape. So the matrix is (run shape x QoS x network), not
-(metric x QoS x network).
-
-**(b) Screening, not factorial.** One baseline plus one-factor-at-a-time. 48 QoS cells become 7.
-This finds *where* TickLE loses, which is what step 6 needs; it does not measure interactions
-between QoS policies, and it is not meant to. If a factor turns out to matter, its interactions get
-their own follow-up sweep rather than being paid for up front.
-
-**(c) Tiered network coverage.** The baseline gets every network condition; the QoS variations get
-three. A variation that shows something interesting earns a full sweep afterwards.
-
-## 3. Run shapes
+One throughput run yields throughput, CPU per sample, peak RSS and wire bytes per sample at once.
+Only latency needs its own shape. So the matrix is (run shape x payload x QoS x network), and the
+metrics are a property of the instrumentation rather than of the cell count. This is what makes an
+hour feasible at all.
 
 | id | shape | yields |
 |---|---|---|
-| **T** | one-directional stream, fixed window | throughput (Mbps, msg/s), net loss, refused writes, CPU per delivered sample, peak RSS, wire bytes and packets per delivered sample |
+| **T** | one-directional stream, `-d 5` | throughput (Mbps, msg/s), net loss, refused writes, CPU per delivered sample, peak RSS, wire bytes and packets per delivered sample |
 | **L** | ping-pong at a low rate | RTT min/avg/max and a high percentile, CPU per sample, peak RSS, wire bytes per sample |
 
-Both shapes exist already (`reliable_throughput` / `best_effort_throughput`, `reliable_latency` /
-`best_effort_latency`). What they need is the instrumentation in §6.
+## 3. Payload sizes (the user's four cases)
 
-## 4. QoS cells
+Framing, both verified rather than assumed where possible:
+- **TickLE DATA framing is 28 B** (`DESIGN.md`:569-571, `tt_Header` 4 + `tt_SubmessageHeader` 4 +
+  `tt_DataHeader` 20). Single-datagram ceiling **1444 B**. *(README's "30" is BulkData's framing plus
+  that message's own length prefix, which is payload encoding, not framing - Plan conflated the two
+  in rev 1.)*
+- **RTPS framing is 60-76 B** (header 20 + INFO_TS 12 + DATA submessage 24 + encapsulation 4, plus
+  16 for an INFO_DST). Ceiling **1396-1412 B**. This is arithmetic from the spec, **not measured**,
+  which is why §7's gate exists.
 
-Baseline **Q0**, then one factor changed at a time. Every cell runs in all three frameworks with the
-same request.
+| id | payload | TickLE | DDS | the user's case |
+|---|---|---|---|---|
+| **P1** | 64 B | 1 pkt | 1 pkt | small data |
+| **P2** | 1388 B | 1 pkt | 1 pkt | fills one DDS packet |
+| **P3** | 1440 B | 1 pkt | **2 pkt** | fills one TickLE packet, DDS splits |
+| **P4** | 2800 B | **2 pkt** | 2 pkt | TickLE splits too |
 
-| id | reliability | history | durability | payload | rate | what it isolates |
-|---|---|---|---|---|---|---|
-| **Q0** | RELIABLE | KEEP_LAST 64 | VOLATILE | 76 B | max | baseline |
-| Q1 | BEST_EFFORT | KEEP_LAST 64 | VOLATILE | 76 B | max | the cost of reliability |
-| Q2 | RELIABLE | **KEEP_ALL** | VOLATILE | 76 B | max | back-pressure instead of eviction |
-| Q3 | RELIABLE | **KEEP_LAST 1024** | VOLATILE | 76 B | max | retention depth |
-| Q4 | RELIABLE | KEEP_LAST 64 | **TRANSIENT_LOCAL** | 76 B | max | durability's retention cost |
-| Q5 | RELIABLE | KEEP_LAST 64 | VOLATILE | **1442 B** | max | large messages |
-| Q6 | RELIABLE | KEEP_LAST 64 | VOLATILE | 76 B | **paced** | behaviour below saturation |
+**P2 is sized to the most constrained framing, not to TickLE's.** 1472 - 76 = 1396, less headroom,
+gives 1388. TickLE then uses 1416 of its 1472, comfortably inside. Rev 1 used 1400, which was a
+guess; this is TickLE Dev's arithmetic.
 
-Latency shape uses a smaller set, since history and durability do not bear on an unloaded RTT:
-**L0** RELIABLE 76 B, **L1** BEST_EFFORT 76 B, **L2** RELIABLE 1442 B, **L3** BEST_EFFORT 1442 B.
+**P3 is deliberately asymmetric and must be read as such.** TickLE sends one datagram where the DDS
+vendors send two, so under loss a two-fragment datagram is lost ~2x as often - at `loss 5%`, 9.75%
+against 5%. **A "TickLE wins at large messages" claim must not be read off P3.** What P3 measures is
+narrower and real: the cost, to each implementation, of the size where its own framing tips it over
+the MTU. TickLE Dev flagged rev 1 for using 1442 B - tuned to TickLE's ceiling - as the *only* large
+size, which would have been exactly that unearned claim. P2 is the like-for-like large size; P3 is
+the boundary case the user asked for.
 
-**Both payload sizes are required, and this is the one non-trivial harness addition.** Network bytes
-per sample is dominated by framing, which only shows at 76 B; throughput is dominated by payload,
-which only shows at 1442 B. A single size would mislead on one metric or the other. The `Bench`
-shape is fixed at 76 B in all three harnesses today, so a second shape has to be added to all three
-identically.
+**P4 needs a second TickLE build** with `-Dtt_MAX_BUFFER_LENGTH=4096`, so a 2828 B datagram leaves
+the node and the kernel IP-fragments it. The DDS vendors need no such change: they fragment at the
+protocol level (`DATA_FRAG`) automatically. **That is a genuine mechanism difference, not a
+confound**, and it is the interesting part of P4: a lost IP fragment loses the whole TickLE datagram,
+while RTPS can retransmit one fragment. Under loss, TickLE is expected to lose P4, and that
+expectation is recorded here so the result is a finding either way. Two consequences to state: the
+`tt_Node` tx/rx buffers are `2N` each, so the P4 build carries ~10 KB more node buffer than the
+others - immaterial against a peak RSS in the megabytes, but the P4 memory figure is not strictly
+comparable to P1-P3's for TickLE.
 
-## 5. Network conditions
+## 4. One IDL change, needed for the small-size metric to mean anything
 
-Loss is the only dimension the current sweeps use. That is a blind spot: three of these conditions
-exercise paths loss never reaches.
+`Bench.idl` is `unsigned long seq; unsigned long long send_ns; octet payload[N]`. TickLE's CDR-4 puts
+`send_ns` at offset 4, giving 76 B - which the existing `_Static_assert` pins. **Standard CDR aligns
+a 64-bit field to 8, so the DDS vendors insert 4 bytes of padding and put 80 B on the wire for the
+same IDL** (TickLE Dev's finding). At P1 that is a 5% payload difference landing inside the one
+metric the small size exists to measure, and it would be charged to framing.
 
-| id | `tc` | why it is here |
+**Fix: put `send_ns` first.** `unsigned long long send_ns; unsigned long seq; octet payload[N]` is
+8 + 4 + N with no padding under either rule, so all three agree exactly at every size.
+
+This does not invalidate any published figure. `COMPARISON.MD` §3's Mbps is computed as
+`recv_count x 76 x 8 / elapsed` for all three alike, so it is application-payload throughput and is
+unaffected. It is the *new* wire-bytes metric that the padding would have distorted.
+
+## 5. QoS cells
+
+Baseline **Q0**, one factor at a time - the user confirmed no QoS cross is wanted.
+
+| id | reliability | history | durability |
+|---|---|---|---|
+| **Q0** | RELIABLE | KEEP_LAST 64 | VOLATILE |
+| Q1 | BEST_EFFORT | KEEP_LAST 64 | VOLATILE |
+| Q2 | RELIABLE | **KEEP_ALL** | VOLATILE |
+
+Q3 (depth 1024) and Q4 (TRANSIENT_LOCAL) from rev 1 are **cut for the hour budget**. They are the
+first thing to add if a second session is approved.
+
+## 6. Network conditions
+
+The user's constraint: the existing network, shaped only by `tc` for reorder, delay and loss. Rev
+1's 10 Mbit rate cap is dropped accordingly.
+
+| id | `tc` on eth0 | why |
 |---|---|---|
 | **N0** | none | baseline |
-| N1 | `loss 1%` | mild |
-| N2 | `loss 5%` | moderate |
-| N3 | `loss 20%` | severe |
-| N4 | `loss 50%` | the published extreme; kept for continuity with §3b |
-| N5 | `delay 10ms jitter 2ms` | makes the retransmit round trip the binding cost rather than the link. Exposes anything tuned against a sub-millisecond RTT - and every TickLE retry interval was |
-| N6 | `delay 1ms reorder 5%` | reordering, which **RELIABLE's strict in-order delivery now has to absorb** (`0b415269`, `d63860c7`). No existing sweep tests it, and it is the newest code in the reliable path |
-| N7 | `rate 10mbit burst 32kbit latency 50ms` | **the actual 10Base-T1S target rate.** Every figure published so far was taken on a ~100 Mbit link, i.e. ten times the speed of the hardware TickLE is for |
+| N1 | `loss 5%` | moderate loss; the level §3a and §3b both use |
+| N2 | `delay 10ms jitter 2ms` | makes the retransmit round trip the binding cost rather than the link. Every TickLE retry interval was tuned against a sub-millisecond RTT |
+| N3 | `delay 1ms reorder 5%` | reordering, which **RELIABLE's strict in-order delivery now has to absorb** (`0b415269`, `d63860c7`). No existing sweep tests it, and it is the newest code in the reliable path |
 
-N6 and N7 are the two most likely to find something, and neither has ever been run.
+N3 has never been run. `netem` needs a delay for `reorder` to have anything to reorder against,
+hence the 1 ms.
 
-## 6. Instrumentation to add, and the fairness rule
+## 7. The matrix: 12 combinations
 
-**Every metric below goes into a header shared by all three harnesses, as `CpuPlace.h` already is,
-and is reported in the same `RESULT:` fields with the same units.** Instrumenting TickLE alone, or
-better, is how a comparison quietly becomes a claim about the instrument. The CPU-pinning finding
-(`9f70d9b4`) is the precedent: a fix applied to one harness would have handed TickLE a 15%
-advantage a quarter of the time.
+| # | shape | payload | QoS | network | what it is for |
+|---|---|---|---|---|---|
+| 1-4 | T | P1, P2, P3, P4 | Q0 | N0 | the core comparison across all four sizes |
+| 5 | T | P1 | Q0 | N1 | loss at the small size |
+| 6 | T | P4 | Q0 | N1 | loss where TickLE is IP-fragmented - the §3 risk, measured |
+| 7 | T | P1 | Q0 | N3 | reorder against strict ordering |
+| 8 | T | P1 | Q1 | N0 | what reliability costs |
+| 9 | T | P1 | Q2 | N0 | KEEP_ALL, where TickLE's preallocation may lose on memory |
+| 10-11 | L | P1, P2 | Q0 | N0 | RTT at both comparable sizes |
+| 12 | L | P1 | Q0 | N2 | RTT under a real network delay |
+
+**12 x 3 frameworks x 3 repetitions = 108 runs.** The 2026-09-24 re-sweep ran 243 cells plus two
+build phases in 77 minutes, i.e. ~19 s a cell. At 25 s that is **45 minutes**, plus ~8 minutes of
+builds including the second TickLE build for P4: **~53 minutes**, inside the hour with margin.
+
+Three repetitions, not two: every published figure uses three, and `COMPARISON.MD` reports the
+spread rather than a mean alone. Frameworks are interleaved within each repetition so a drift lands
+on all three.
+
+## 8. Instrumentation, and the fairness rule
+
+**Every counter goes into a header shared by all three harnesses, as `CpuPlace.h` already is, with
+the same `RESULT:` field names and units.** Instrumenting TickLE alone, or better, turns a
+comparison into a claim about the instrument. Precedent: the CPU-pinning fix (`9f70d9b4`) applied to
+one harness would have handed TickLE 15% a quarter of the time.
 
 | metric | how | reported as |
 |---|---|---|
-| CPU | `getrusage(RUSAGE_SELF)` utime+stime at start and end, both processes | `cpu_s_per_Msample`, `cpu_s_per_MB`, and the raw `utime_s`/`stime_s` |
-| memory | `VmHWM` from `/proc/self/status` at exit, plus `VmRSS` sampled | `peak_rss_kb` |
-| network | `/proc/net/dev` byte and packet deltas on the test interface, both hosts | `wire_bytes_per_sample`, `wire_packets_per_sample`, `wire_bytes_total` |
+| CPU | `getrusage(RUSAGE_SELF)` utime+stime, both processes | `cpu_s_per_Msample`, `cpu_s_per_MB`, raw `utime_s`/`stime_s` |
+| memory | `VmHWM` from `/proc/self/status` at exit | `peak_rss_kb` |
+| network | `/proc/net/dev` eth0 byte and packet deltas, both hosts | `wire_bytes_per_sample`, `wire_packets_per_sample`, `wire_bytes_total` |
 
-**CPU must be normalised per delivered sample, not reported as a percentage.** The three frameworks
-run at different rates by up to 3x, so CPU% compares three different workloads. Per-sample and
-per-megabyte are the comparable forms, and both are needed: per-sample favours large payloads,
-per-megabyte favours small ones.
+**CPU is normalised per delivered sample and per megabyte, never as a percentage.** The three run at
+up to 3x different rates, so CPU% compares three different workloads. Both normalisations are needed:
+per-sample favours large payloads, per-megabyte favours small ones.
 
-`/proc/net/dev` rather than a capture, for the bulk figure: it costs nothing, needs no privileges,
-and counts what actually left the interface. `tickle_pcap_count.py` stays for the one-off question
-of *what* those bytes were (DATA against ACKNACK against discovery), which is the diagnostic step 6
-will want but not something to run 387 times.
+**`/proc/net/dev` on eth0 is sound, and TickLE Dev measured it rather than assuming.** The rig's
+control plane (SSH, orchestration, internet) is on wlan0 via the default route; eth0 is a direct
+192.168.10.x pair with no gateway and no third host. Idle eth0 over 20 s showed a **byte- and
+packet-identical** counter at both ends - not small background traffic, none. All three frameworks
+are already pinned to eth0 (CycloneDDS `<NetworkInterface name="eth0"/>`, FastDDS
+`fastdds_eth0_only.xml`, TickLE `_tt_CONFIG.broadcast` 192.168.10.255), and every `tc qdisc` in
+`examples/perf_hil/` is on eth0, so the shaped, measured and data interfaces are the same one.
 
-## 7. Coverage and the time budget
+`tickle_pcap_count.py` is kept for the diagnostic question of *what* those bytes were (DATA against
+ACKNACK against discovery), which step 6 will want - not something to run 108 times.
 
-| tier | cells | network | combinations |
-|---|---|---|---|
-| 1 | T/Q0 and L/L0 | N0-N7, all eight | 16 |
-| 2 | T/Q1-Q6 and L/L1-L3 | N0, N2, N7 | 27 |
+## 9. How the results will be read, written before running
 
-**43 combinations x 3 frameworks x 3 repetitions = 387 runs.** At 25-40 s a run that is **2.7 to 4.3
-hours** of rig time, holding the hil lock throughout. It splits cleanly at the tier boundary if one
-session is too long.
-
-Repetitions are 3 because that is what every published figure used, and because the spread across
-three is what `COMPARISON.MD` reports rather than a mean alone. Frameworks are interleaved within
-each repetition, so a drift during the session lands on all three rather than on whichever ran last.
-
-## 8. How the results will be read, written before running
-
-- **A cell is void** if its leftover guard fired, if it produced no `RESULT:` line, or if the
-  framework did not end `drained=acked` where that is expected. Void cells are reported as void,
-  never as a zero.
-- **Comparisons are within one session only.** The rig carries day-to-day offsets of ~13 us on
-  latency across all implementations at once (`COMPARISON.MD` §5), so a figure from this campaign is
-  compared to another figure from this campaign, and to the published ones only as "moved / did not
-  move".
-- **TickLE wins a cell** when it is better than *both* vendors on that metric, outside the spread of
-  the three repetitions. Inside the spread is a draw, not a win.
-- **Where TickLE does not win, that cell is an optimisation target** and needs a named hypothesis
-  before any code changes - the §3b lesson, where 108.5 to 84 Mbps was read as the price of ordering
+- **Instrument gates, checked before any cell is believed.** Idle eth0 is measurably a zero delta, so
+  a zero byte counter during a run is an instrument failure, not a quiet link. Same for a zero CPU
+  counter. The harness must say so rather than report a zero.
+- **The payload-boundary gate, free from a metric already planned**: at N0,
+  `wire_packets_per_sample` must read **1.0 for all three at P1 and P2**, **1.0 for TickLE and 2.0
+  for both vendors at P3**, and **2.0 or more for all three at P4**. If a size does not produce its
+  intended split, that size was computed wrong and its cross-vendor comparison is **void** - the RTPS
+  framing figure is spec arithmetic, not a measurement, and this is what checks it.
+- **A cell is void** if its leftover guard fired, if it produced no `RESULT:` line, or if a framework
+  did not end `drained=acked` where expected. Void is reported as void, never as zero.
+- **Comparisons are within this session only.** The rig carries day-to-day offsets of ~13 us on
+  latency across all implementations at once (`COMPARISON.MD` §5). Published figures are compared
+  only as "moved / did not move".
+- **TickLE wins a cell** when it beats *both* vendors on that metric, outside the spread of the three
+  repetitions. Inside the spread is a draw, not a win.
+- **Where TickLE does not win, that cell is an optimisation target and needs a named hypothesis
+  before any code change** - the §3b lesson, where 108.5 to 84 Mbps was read as the price of ordering
   and was actually a linear scan.
-- **The goal may not be reachable everywhere, and saying so is part of the result.** A known risk:
-  under Q2 (KEEP_ALL) TickLE preallocates its cache to the resource limit while CycloneDDS allocates
-  as samples arrive, so TickLE may legitimately lose on memory there. If it does, the answer is
-  either the lazy growth that now exists (`81c8186c`) or documenting the trade - not pretending the
-  cell was a draw.
+- **Two results are expected rather than hoped for, and are recorded now so that neither is read as a
+  surprise**: TickLE should lose P4 under N1, because a lost IP fragment costs it the whole datagram
+  while RTPS retransmits one fragment; and TickLE may lose memory under Q2, because it preallocates
+  its cache to the resource limit while CycloneDDS allocates as samples arrive. If either happens,
+  the answer is the lazy growth that now exists (`81c8186c`) or documenting the trade - not calling
+  the cell a draw.
 
-## 9. Sequence and split
+## 10. Sequence
 
-1. **This draft is approved or changed** by the user.
-2. **Instrumentation first** (§6), by TickLE Dev, in shared headers across all three harnesses, with
-   the second payload shape. Verified before any sweep: a run whose CPU or byte counters read zero
-   is an instrument failure, and the harness must say so rather than report a zero.
-3. **Sweep script** extending `comparison_resweep.sh`, by TickLE Plan: the tier structure, the `tc`
-   conditions including the three new ones, the leftover guard, and timestamped output.
-4. **Baseline pass on the rig** (§7), by TickLE Plan, holding the hil lock.
-5. **COMPARISON.MD gains a section per metric**, with the raw output committed under
-   `examples/perf_hil/results/` as the existing sweeps do.
-6. **Optimisation targets** from §8, each with a hypothesis and a pre-registered reading.
-7. **Optimise, then re-run the affected cells** - and the unaffected ones as the control, because a
-   change that helps one cell and quietly costs another is the failure mode this whole document
-   exists to avoid.
-
-## 10. What the user needs to decide
-
-1. **The time budget.** 387 runs is 2.7-4.3 hours of exclusive rig time. Approve as one session, or
-   split at the tier boundary?
-2. **The two new network conditions.** N6 (reorder) and N7 (10 Mbit rate cap) have never been run.
-   N7 in particular may change the story, since every published figure was taken at roughly ten
-   times the target link's speed.
-3. **The second payload shape.** It is the one real harness addition, and both sizes are needed for
-   the network and throughput metrics to mean anything. Approve, or accept measuring those two
-   metrics at one size?
-4. **Scope of the screening design.** One-factor-at-a-time finds where TickLE loses but does not
-   measure QoS interactions. Accept, or is a specific combination worth the full cross?
+1. **This draft approved or changed** by the user.
+2. **TickLE Dev**: the IDL field reorder and the large shapes (`Bench.idl` is the single source both
+   DDS generators consume, so a second shape there is two lines; `tickle/common/Bench.h` is
+   hand-written and is the one place it could diverge, so it needs the same `_Static_assert` guard);
+   then the shared instrumentation of §8, with the zero-counter failure built in.
+3. **TickLE Plan**: the sweep script extending `comparison_resweep.sh` - the 12 combinations, the
+   four `tc` conditions, the two TickLE builds, the leftover guard, timestamped output.
+4. **Baseline pass on the rig**, holding the hil lock, ~53 minutes.
+5. **`COMPARISON.MD` gains a section per metric**, raw output committed under
+   `examples/perf_hil/results/`.
+6. **Optimisation targets** from §9, each with a hypothesis and a pre-registered reading.
+7. **Optimise, then re-run the affected cells and the unaffected ones as the control**, because a
+   change that helps one cell and quietly costs another is the failure mode this document exists to
+   avoid.
