@@ -2077,8 +2077,20 @@ attach instead of being discovered on a first oversize publish. The older "sampl
 the reservation" warning is suppressed when the application set `max_sample_bytes`, since it then
 describes a size the caller chose deliberately.
 
-**(c) proposed for deferral** (TickLE Dev's recommendation, TickLE Plan agreeing; the user approved
-all three, so the deferral is theirs to grant). Three reasons:
+**(c) is being built after all** - the user, 2026-09-25: *"(c)에 대해 rmw_tickle이 메모리를 관리하는
+것이니까 크기를 변경 하도록 하자."* Both sessions had recommended deferring it; the user's reasoning is
+that the owner of the size decision should own the ability to revise it, which is the same principle
+that settled (b). **The constraint that keeps it from undoing (a): resize reserves lazily up to the
+limit, it never raises the limit.** The limit stays whatever `max_sample_bytes` / `cache_bytes`, the
+environment or the derived default set, and the resize entry point cannot exceed the recorded limit
+by construction. Otherwise a WOULD_BLOCK could be answered by allocating more, and KEEP_ALL's
+back-pressure would become unbounded growth. Grow only, no shrink. Because this is the one path
+where a mistake silently loses data, the evidence asked for is heavier than usual: mutation on the
+migration, an ACKNACK for a migrated sample answered from its new location, every record's bytes and
+seq mapping surviving, and a resize to a capacity that is not a multiple of the old one, where
+`seq % capacity` remaps worst.
+
+The deferral case is kept because it is the record of why this was nearly not built:
 1. (b) removes the case that motivated it - a process-wide number forcing one size on forty
    publishers is now a per-publisher number at creation.
 2. What (c) adds beyond (b) is only the case where the right size is unknown until after the
