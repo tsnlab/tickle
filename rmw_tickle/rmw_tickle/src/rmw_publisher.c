@@ -36,6 +36,7 @@
 #include "rmw/rmw.h"
 #include "rmw/time.h" // rmw_time_total_nsec() - QoS roadmap #2 (DEADLINE)
 #include "rmw/types.h"
+#include "rmw_tickle_c/publisher_payload.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
@@ -266,6 +267,43 @@ static uint32_t clamp_record_bytes(unsigned long long payload) {
     return record > (uint32_t)tt_MAX_BUFFER_LENGTH ? (uint32_t)tt_MAX_BUFFER_LENGTH : record;
 }
 
+// What to call this publisher's type in a diagnostic before anything has been created.
+static const char* type_name_of(const rmw_tickle_publisher_t* pub_impl) {
+    return NULL != pub_impl->callbacks ? pub_impl->callbacks->ros_type_name : "?";
+}
+
+// The per-publisher storage sizing an application may pass in rmw_publisher_options_t.rmw_specific_
+// publisher_payload (rmw_tickle_c/publisher_payload.h), or NULL when there is none to use. The field
+// is a bare void* shared with every other rmw implementation, so a payload meant for one of those
+// can arrive here: the magic is what tells them apart, and the size marker catches a payload built
+// against a different version of the header. Either mismatch is a warning and a fall back to the
+// environment, not a failure - the same "a malformed tuning knob must not stop a node starting"
+// rule resolve_max_blocking_ns() follows, and a node that refuses to start is worse than one that
+// ignores a knob it cannot read.
+static const rmw_tickle_publisher_payload_t* publisher_payload(const rmw_tickle_publisher_t* pub_impl,
+                                                               const char* type_name) {
+    const void* raw = pub_impl->rmw_publisher.options.rmw_specific_publisher_payload;
+    if (NULL == raw) {
+        return NULL;
+    }
+    const rmw_tickle_publisher_payload_t* payload = (const rmw_tickle_publisher_payload_t*)raw;
+    if (RMW_TICKLE_PUBLISHER_PAYLOAD_MAGIC != payload->magic) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "publisher of %s: rmw_specific_publisher_payload is not rmw_tickle's (magic 0x%08x, "
+                               "expected 0x%08x) - ignored; was it meant for another rmw implementation?",
+                               type_name, payload->magic, RMW_TICKLE_PUBLISHER_PAYLOAD_MAGIC);
+        return NULL;
+    }
+    if (sizeof(*payload) != payload->struct_size) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "publisher of %s: rmw_specific_publisher_payload reads as %u bytes, this rmw_tickle's "
+                               "is %zu - ignored; rebuild against this version of publisher_payload.h",
+                               type_name, payload->struct_size, sizeof(*payload));
+        return NULL;
+    }
+    return payload;
+}
+
 // The KEEP_ALL per-sample reservation for a type with no bound - see the unset branch below.
 static uint32_t keep_all_unbounded_default(void) {
     return (uint32_t)(tt_MAX_BUFFER_LENGTH < tt_ETHERNET_UDP_PAYLOAD ? tt_MAX_BUFFER_LENGTH : tt_ETHERNET_UDP_PAYLOAD);
@@ -277,6 +315,11 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
         return clamp_record_bytes((unsigned long long)pub_impl->callbacks->tickle_max_encoded_size);
     }
 
+    const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
+    if (NULL != payload && 0 != payload->keep_all_max_sample_bytes) {
+        return clamp_record_bytes((unsigned long long)payload->keep_all_max_sample_bytes);
+    }
+
     const char* env = getenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
     if (NULL == env || '\0' == env[0]) {
         // No bound from either source: the standard 1472-byte datagram, raw, without the record
@@ -285,19 +328,20 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
         // it at 65507 (2026-09-24): KEEP_ALL is not budgeted (it may not drop an unacknowledged
         // sample), so a depth-8192 DURABLE publisher of a type with a plain string would reserve
         // 536 MB. Every sample that could exist before 65507 is retained exactly as before; a
-        // larger one - newly possible - is sent but not retained, which setup_reliable_cache()
-        // warns about, and RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES raises.
+        // larger one - newly possible - fills the arena faster than the count bound, so this
+        // Publisher blocks sooner (setup_reliable_cache() warns), and either this payload's
+        // keep_all_max_sample_bytes or RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES raises it.
         return keep_all_unbounded_default();
     }
     char* end = NULL;
-    unsigned long long payload = strtoull(env, &end, 10);
-    if (end == env || (end != NULL && '\0' != *end) || payload == 0) {
+    unsigned long long env_bytes = strtoull(env, &end, 10);
+    if (end == env || (end != NULL && '\0' != *end) || env_bytes == 0) {
         // Unparseable or zero: fall back rather than fail publisher creation, same reasoning as
         // resolve_max_blocking_ns() - a malformed tuning knob should not stop a node starting, and
         // this one can only cost retention. To the same default as unset, not to something else.
         return keep_all_unbounded_default();
     }
-    return clamp_record_bytes(payload);
+    return clamp_record_bytes(env_bytes);
 }
 
 // Byte budget for a KEEP_LAST publisher's retained samples (RMW_TICKLE_CACHE_BYTES, default 1 MiB -
@@ -327,7 +371,10 @@ static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_
     }
     unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
 
-    unsigned long long budget = rmw_tickle_cache_budget_bytes(); // rmw_typesupport.c
+    const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
+    unsigned long long budget = NULL != payload && 0 != payload->cache_bytes
+                                    ? (unsigned long long)payload->cache_bytes
+                                    : rmw_tickle_cache_budget_bytes(); // rmw_typesupport.c
     if (budget < record) {
         budget = record;
     }

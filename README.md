@@ -264,8 +264,17 @@ the default rather than stopping the node:
 | `RMW_TICKLE_HEARTBEAT_PIGGYBACK_EVERY` | piggyback a Heartbeat on every Nth RELIABLE sample (see "Delivery guarantees"); `0` turns it off | `64` |
 | `RMW_TICKLE_HEARTBEAT_PERIOD_NS` | also send a periodic Heartbeat at this period | unset (off) |
 | `RMW_TICKLE_MAX_BLOCKING_MS` | how long a KEEP_ALL publish may block before it fails; `0` fails at once | `100` |
-| `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | storage reserved per retained KEEP_ALL sample, for types whose size the generator cannot bound | the datagram size |
+| `RMW_TICKLE_CACHE_BYTES` | byte budget for a KEEP_LAST publisher's retained samples; a publisher of large samples then keeps fewer than its depth | 1 MiB |
+| `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` | storage reserved per retained KEEP_ALL sample, for types whose size the generator cannot bound; a larger sample fills the cache faster, so the publisher blocks sooner | 1472 bytes (one standard datagram) |
 | `RMW_TICKLE_REORDER_SLOTS` | how many out-of-order RELIABLE samples a subscription may hold; fewer saves memory and costs retransmissions | the tracking window |
+
+Those two storage knobs can also be set for one publisher instead of the whole process, which
+matters when a node has one large-sample topic among forty: fill in an
+`rmw_tickle_publisher_payload_t` (`rmw_tickle_c/publisher_payload.h`) and point
+`rmw_publisher_options_t.rmw_specific_publisher_payload` at it - through `rclcpp`, by subclassing
+`rclcpp::detail::RMWImplementationSpecificPublisherPayload`. It must outlive the publishers created
+with it, and a field left `0` keeps that knob's environment-wide value. A payload meant for another
+rmw implementation is ignored with a warning rather than misread.
 
 **Standard ROS 2 messages need a one-time build.** The interface packages installed with ROS 2
 (`std_msgs`, `geometry_msgs`, `sensor_msgs`, `rcl_interfaces`, ...) carry typesupport for FastDDS

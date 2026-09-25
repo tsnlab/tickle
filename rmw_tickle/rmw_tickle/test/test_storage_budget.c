@@ -37,6 +37,7 @@
 #include "rmw/subscription_options.h"
 #include "rmw/time.h"
 #include "rmw/types.h"
+#include "rmw_tickle_c/publisher_payload.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 #include "rosidl_runtime_c/message_type_support_struct.h"
 #include "rosidl_typesupport_tickle_c/identifier.h"
@@ -108,14 +109,35 @@ static rmw_qos_profile_t qos(enum rmw_qos_reliability_policy_e reliability, size
 
 static rmw_node_t* node;
 
-static uint32_t keep_last_arena(size_t depth) {
+// The arena a publisher of this type gets, with `payload` attached to its options (NULL for none).
+static uint32_t keep_last_arena_with(size_t depth, const rmw_tickle_publisher_payload_t* payload) {
     rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, depth);
     rmw_publisher_options_t opts = rmw_get_default_publisher_options();
+    opts.rmw_specific_publisher_payload = (void*)(uintptr_t)payload; // rmw's own field is non-const
     rmw_publisher_t* pub = rmw_create_publisher(node, &handle, "/budget", &q, &opts);
     assert(NULL != pub);
     uint32_t arena = ((rmw_tickle_publisher_t*)pub->data)->reliable_cache->arena_size;
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     return arena;
+}
+
+static uint32_t keep_last_arena(size_t depth) {
+    return keep_last_arena_with(depth, NULL);
+}
+
+// The bytes a KEEP_ALL publisher of this type reserves per sample, with `payload` attached.
+static uint32_t keep_all_record_with(const rmw_tickle_publisher_payload_t* payload) {
+    rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, 1);
+    q.history = RMW_QOS_POLICY_HISTORY_KEEP_ALL;
+    rmw_publisher_options_t opts = rmw_get_default_publisher_options();
+    opts.rmw_specific_publisher_payload = (void*)(uintptr_t)payload;
+    rmw_publisher_t* pub = rmw_create_publisher(node, &handle, "/budget_keep_all", &q, &opts);
+    assert(NULL != pub);
+    const rmw_tickle_publisher_t* pub_impl = (const rmw_tickle_publisher_t*)pub->data;
+    // The arena is (depth + 1) records of whatever was reserved, so the record is what it divides to.
+    uint32_t record = pub_impl->reliable_cache->arena_size / (pub_impl->reliable_cache->depth + 1U);
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
+    return record;
 }
 
 static void reorder_shape(enum rmw_qos_reliability_policy_e reliability, uint16_t* slots, uint16_t* slot_bytes,
@@ -172,6 +194,47 @@ int main(void) {
     // --- KEEP_LAST cache, bounded type: records of the type's own size -----------------------------
     callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
     assert(keep_last_arena(10) == 11ULL * tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD));
+
+    // --- per-publisher payload (rmw_tickle_c/publisher_payload.h) ----------------------------------
+    // It is the process-wide environment variables that these override, for this publisher only.
+    callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
+    setenv("RMW_TICKLE_CACHE_BYTES", "5000", 1); // the process default, deliberately small
+    rmw_tickle_publisher_payload_t payload = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
+    payload.cache_bytes = 4U * (uint32_t)MIB;
+    assert(keep_last_arena_with(1000, &payload) == min_ull(1001 * buf_len, 4 * MIB)); // payload wins
+    assert(keep_last_arena(1000) < keep_last_arena_with(1000, &payload));             // ...and the env still binds
+                                                                                      // the publisher without one
+
+    payload.cache_bytes = 0; // 0 means "leave this knob to the environment", not "no budget"
+    assert(keep_last_arena_with(1000, &payload) == keep_last_arena(1000));
+    unsetenv("RMW_TICKLE_CACHE_BYTES");
+
+    // A payload from another rmw implementation, or built against another version of the header:
+    // ignored with a warning, never obeyed and never a failure.
+    rmw_tickle_publisher_payload_t foreign = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
+    foreign.magic = 0xDEADBEEFU;
+    foreign.cache_bytes = 4U * (uint32_t)MIB;
+    assert(keep_last_arena_with(10, &foreign) == keep_last_arena(10));
+    rmw_tickle_publisher_payload_t stale = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
+    stale.struct_size = (uint32_t)sizeof(stale) + 4U;
+    stale.cache_bytes = 4U * (uint32_t)MIB;
+    assert(keep_last_arena_with(10, &stale) == keep_last_arena(10));
+
+    // The KEEP_ALL reservation, the knob that decides when such a publisher starts blocking.
+    setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "2000", 1);
+    assert(keep_all_record_with(NULL) == tt_RELIABLE_RECORD_BYTES(2000)); // the process default
+    rmw_tickle_publisher_payload_t big = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
+    big.keep_all_max_sample_bytes = 16384;
+    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(16384)); // payload wins
+    unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
+    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(16384)); // ...with or without one
+
+    // A type whose size the generator did bound ignores both: the bound is exact, so reserving more
+    // would only waste memory.
+    callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
+    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD));
+    // Left bounded on purpose: that is the state the reorder section below starts from, and this
+    // block sits between it and the one that set it.
 
     // --- reorder buffer ----------------------------------------------------------------------------
     uint16_t slots = 0;
