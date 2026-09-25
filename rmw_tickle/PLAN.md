@@ -2090,6 +2090,43 @@ migration, an ACKNACK for a migrated sample answered from its new location, ever
 seq mapping surviving, and a resize to a capacity that is not a multiple of the old one, where
 `seq % capacity` remaps worst.
 
+**(c) landed** in `81c8186c`. `tt_ReliableCache_grow(cache, new_arena, new_arena_size)` migrates the
+live records into the caller's buffer in seq order, rewrites each live entry's `offset`, and leaves
+the old arena to the caller to free. Core still allocates nothing.
+- **Depth does not change, so the index never remaps** (TickLE Dev's refinement on the approved
+  shape, and the better call). `tickle.h` already forbids changing depth while anything is
+  retained, and the index is sized from depth, so a grow only rewrites offsets. The memory it gives
+  up is 1.6%: at KEEP_ALL depth 2048 the index is 2048 x 24 B = 49 KB against a 3.07 MB arena. That
+  buys away the `seq % capacity` remapping, which was the riskiest part of the original shape.
+- **The limit cannot grow**: `arena_limit` is written once at init and never by grow, which refuses
+  anything above it and refuses shrinking. So a WOULD_BLOCK can be answered by growing only up to
+  the number already fixed, and then it blocks. Back-pressure stays back-pressure.
+- **Two triggers, because KEEP_LAST can never return WOULD_BLOCK** (`keep_all_writable()` returns
+  true immediately for it). The first proposal grew only on WOULD_BLOCK, which would have left every
+  KEEP_LAST publisher at its initial 64 KiB forever - `/rosout` would have retained about 290 logs
+  where it retains 1000 today, a regression in one of the two cases that motivated this work. The
+  second trigger is `newest_seq_no >= depth && (newest - oldest + 1) < depth` after a successful
+  publish, which is exactly "the byte bound evicted what the count bound would have kept", and costs
+  two field reads on the ordinary path.
+- Verified independently by TickLE Plan by mutation: dropping the offset rewrite fails, and dropping
+  the limit check fails. Full core suite green.
+
+**Two tests that could not fail, found by TickLE Dev while strengthening them.** Both are the
+session's recurring shape and both were only caught by mutating the code the test was meant to
+guard:
+- Every sample carried identical bytes, so reading the *wrong* record still found the right
+  content. Each sample now carries its own sequence number in every payload byte.
+- A correct repack in the wrong *order* passed every content check, because each record was still
+  present and readable. What it breaks is the ring invariant, so the cache believes live bytes are
+  free. The test now asserts directly that records ascend from offset 0 after a repack.
+
+**And the local gate had the same gap as the bug it was meant to catch.** `make lint-rmw` linted
+only `rmw_tickle/rmw_tickle/src/*.c` while CI's cpp-linter checks every file a push changed, so it
+reported clean for a test file CI then failed on - four clang-tidy findings that sat red on main
+until `81c8186c`. It now lints the tests too, 34 sources. Related, for whoever reads CI next: a
+green run on a docs-only commit does **not** clear a red run on a code commit, because cpp-linter
+lints only what that commit changed.
+
 The deferral case is kept because it is the record of why this was nearly not built:
 1. (b) removes the case that motivated it - a process-wide number forcing one size on forty
    publishers is now a per-publisher number at creation.
