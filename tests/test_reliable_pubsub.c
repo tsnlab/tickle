@@ -1222,6 +1222,222 @@ static void test_process_acknack_direct_index_correct_after_wraparound(void) {
     EXPECT_EQ_U32(1, (uint32_t)cache.index[2].retry); // found via slot 2, the right one
 }
 
+// Retransmission amplification (2026-09-25, examples/perf_hil/OPTIMIZATION_PLAN.md section 9a,
+// target A). A reliable 2800-byte stream under 5% loss spent 183 packets per sample on the rig
+// against an ideal of 2.2, with a live peer throughout. Two mechanisms predict that same
+// amplification and differ only in *which* samples go out, so no throughput figure can separate
+// them:
+//
+//   A1 - the Publisher answers an ACKNACK with more than it names (the whole unacked window, say)
+//        rather than exactly the named gaps.
+//   A2 - the Subscriber cannot name every gap, because one ACKNACK is capped at
+//        tt_RELIABLE_BITMAP_BITS (256) positions while the window it tracks is wider.
+//
+// The pair below observes *which*, one side each, over a window four times the 256-bit default so
+// both halves are exercised past the boundary A2 is about. Either one failing names the mechanism;
+// both passing rules both out at the unit level and leaves the rig to explain the 183.
+#define WIDE_DEPTH 1024
+#define WIDE_WORDS (WIDE_DEPTH / tt_RELIABLE_BITMAP_WORD_BITS)
+_Static_assert(WIDE_DEPTH > tt_RELIABLE_BITMAP_BITS, "the wide window must straddle the 256-bit default");
+_Static_assert(WIDE_WORDS <= tt_RELIABLE_BITMAP_MAX_WORDS, "the wide window must be one core accepts");
+
+// write_acknack() fills word 0 only; this writes as many words as the request needs.
+static uint32_t write_wide_acknack(struct tt_Node* node, uint32_t seq_no, const uint64_t* bitmap, uint16_t words) {
+    struct tt_AckNackHeader* acknack_header = (struct tt_AckNackHeader*)node->rx_buffer;
+    memset(acknack_header, 0, sizeof(*acknack_header) + ((size_t)words * sizeof(uint64_t)));
+    acknack_header->endpoint_id = ENDPOINT_ID;
+    acknack_header->sender_entity_id = REMOTE_SUB_ENTITY_ID;
+    acknack_header->seq_no = seq_no;
+    acknack_header->bitmap_words = words;
+    for (uint16_t word = 0; word < words; word++) {
+        acknack_header->bitmap[word] = bitmap[word];
+    }
+    return (uint32_t)(sizeof(struct tt_AckNackHeader) + ((size_t)words * sizeof(uint64_t)));
+}
+
+// Positions named in the scattered request, as bits from the ACKNACK's base seq_no: both edges of
+// a word, both sides of the 256-bit default and deep into the rest of the window.
+static const uint32_t wide_named_bits[] = {0, 1, 63, 64, 255, 256, 257, 511, 700, 1023};
+#define WIDE_NAMED_COUNT (sizeof(wide_named_bits) / sizeof(wide_named_bits[0]))
+
+static bool wide_is_named(uint32_t bit) {
+    for (size_t i = 0; i < WIDE_NAMED_COUNT; i++) {
+        if (wide_named_bits[i] == bit) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The Publisher's half: A1. Named exactly the scattered set, it must resend those samples and no
+// others. With WIDE_DEPTH samples published into a WIDE_DEPTH-deep cache nothing has been evicted,
+// so slot k holds seq_no k + 1 - bit k of an ACKNACK based at seq_no 1 - and a slot's own retry
+// counter says whether *that* sample went out. That is what makes this about which samples, not
+// how many: a Publisher that resent the right count of the wrong samples fails it too.
+//
+// The zero-bitmap arm is the control that makes the rest mean anything. It is built by the same
+// helper as the named arm and differs only in the bitmap, so if that helper produced something the
+// Publisher could not parse and it fell back to resending everything, this arm would resend
+// everything as well. Without it, "everything was resent" could equally mean A1 or a malformed
+// request.
+static void test_retransmit_is_exactly_the_named_set_across_a_wide_window(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_node_and_topic(&node, &topic);
+    init_publisher(&pub, &node, &topic);
+    node.endpoint_count = 1;
+    node.endpoints[0] = (struct tt_Endpoint*)&pub;
+
+    TEST_RELIABLE_CACHE(cache, WIDE_DEPTH);
+    pub.reliable_cache = &cache;
+    pub.reliable = true;
+
+    for (uint32_t i = 0; i < WIDE_DEPTH; i++) { // seq_no 1..WIDE_DEPTH, filling the cache exactly
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&i));
+    }
+    EXPECT_EQ_U32(1, cache.index[0].seq_no);
+    EXPECT_EQ_U32(WIDE_DEPTH, cache.index[WIDE_DEPTH - 1].seq_no);
+
+    struct tt_Header header;
+    init_header(&header);
+    uint64_t bitmap[WIDE_WORDS];
+
+    // Control: a well-formed request naming nothing resends nothing.
+    memset(bitmap, 0, sizeof(bitmap));
+    test_mock_send_to_call_count = 0;
+    uint32_t tail = write_wide_acknack(&node, 1, bitmap, WIDE_WORDS);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    uint32_t touched = 0;
+    for (uint32_t slot = 0; slot < WIDE_DEPTH; slot++) {
+        touched += cache.index[slot].retry != 0 ? 1U : 0U;
+    }
+    EXPECT_EQ_U32(0, touched);
+
+    // The scattered request: exactly the named samples go out, each once, and nothing else. Retry
+    // counters are cleared first so this arm's verdict does not depend on the control's: when the
+    // control fails, it should fail alone rather than drag this arm down with its leftovers.
+    for (uint32_t slot = 0; slot < WIDE_DEPTH; slot++) {
+        cache.index[slot].retry = 0;
+    }
+    memset(bitmap, 0, sizeof(bitmap));
+    for (size_t i = 0; i < WIDE_NAMED_COUNT; i++) {
+        bitmap[wide_named_bits[i] / tt_RELIABLE_BITMAP_WORD_BITS] |=
+            1ULL << (wide_named_bits[i] % tt_RELIABLE_BITMAP_WORD_BITS);
+    }
+    test_mock_send_to_call_count = 0;
+    tail = write_wide_acknack(&node, 1, bitmap, WIDE_WORDS);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32((uint32_t)WIDE_NAMED_COUNT, (uint32_t)test_mock_send_to_call_count);
+    uint32_t resent_named = 0;
+    uint32_t resent_unnamed = 0;
+    for (uint32_t slot = 0; slot < WIDE_DEPTH; slot++) {
+        if (cache.index[slot].retry == 0) {
+            continue;
+        }
+        if (wide_is_named(slot)) {
+            resent_named++;
+        } else {
+            resent_unnamed++;
+        }
+    }
+    EXPECT_EQ_U32((uint32_t)WIDE_NAMED_COUNT, resent_named); // every named sample went out...
+    EXPECT_EQ_U32(0, resent_unnamed);                        // ...and not one it was not asked for
+}
+
+// The Subscriber's half: A2. With a window four times the 256-bit default and gaps scattered across
+// all of it, the ACKNACK it sends must name every gap - above bit 256 as well as below - and
+// nothing it has already received. Checked in both directions, since a request that named extra
+// positions would be its own amplification and one that dropped the far gaps is A2 itself.
+//
+// Its control is the same shape as the Publisher's: a Subscriber that has received nothing and
+// seen no Heartbeat has nothing it can know is missing, and must name nothing.
+static void test_acknack_names_every_gap_across_a_wide_window(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    static uint64_t tracking[tt_MAX_PEER_COUNT * WIDE_WORDS];
+    memset(tracking, 0, sizeof(tracking));
+    sub.tracking_bitmaps = tracking;
+    sub.tracking_words = WIDE_WORDS;
+
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U32(WIDE_WORDS, proxy_words(proxy)); // the wide window really took, not the default
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    proxy->sender_ip = TEST_SENDER_IP;
+    proxy->sender_port = TEST_SENDER_PORT;
+    EXPECT_EQ_U32(1, proxy->ack_seq_no);
+
+    // Control: nothing received, no Heartbeat - nothing to name.
+    test_mock_send_to_call_count = 0;
+    send_acknack(&node, proxy);
+    const struct tt_AckNackHeader* acknack = last_sent_acknack();
+    uint32_t named_when_empty = 0;
+    if (acknack != NULL) {
+        for (uint32_t word = 0; word < acknack->bitmap_words; word++) {
+            named_when_empty += (uint32_t)__builtin_popcountll(acknack->bitmap[word]);
+        }
+    }
+    EXPECT_EQ_U32(0, named_when_empty);
+
+    // Everything up to highest_received has arrived except the watermark itself (bit 0, missing by
+    // definition) and the gaps. Bit j here is seq_no ack_seq_no + j.
+    static const uint32_t gaps[] = {5, 100, 255, 256, 300, 700};
+    const uint32_t highest_received = 800;
+    _Static_assert(800 < WIDE_DEPTH, "the pattern must fit the wide window");
+    for (uint32_t bit = 1; bit <= highest_received; bit++) {
+        bool is_gap = false;
+        for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); i++) {
+            is_gap |= gaps[i] == bit;
+        }
+        if (!is_gap) {
+            bitmap_set_bit(proxy->received_bitmap, bit);
+        }
+    }
+
+    test_mock_send_to_call_count = 0;
+    send_acknack(&node, proxy);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    acknack = last_sent_acknack();
+    EXPECT_TRUE(acknack != NULL);
+    if (acknack == NULL) {
+        return;
+    }
+    EXPECT_EQ_U32(1, acknack->seq_no);
+
+    uint32_t wire_bits = (uint32_t)acknack->bitmap_words * tt_RELIABLE_BITMAP_WORD_BITS;
+    uint32_t named_wanted = 0;
+    uint32_t missing = 0; // a gap the request should name and does not - A2
+    uint32_t extra = 0;   // a position it names that has in fact arrived
+    for (uint32_t bit = 0; bit <= highest_received; bit++) {
+        bool want = bit == 0;
+        for (size_t i = 0; i < sizeof(gaps) / sizeof(gaps[0]); i++) {
+            want |= gaps[i] == bit;
+        }
+        bool named =
+            bit < wire_bits &&
+            ((acknack->bitmap[bit / tt_RELIABLE_BITMAP_WORD_BITS] >> (bit % tt_RELIABLE_BITMAP_WORD_BITS)) & 1ULL);
+        if (want && named) {
+            named_wanted++;
+        } else if (want) {
+            missing++;
+        } else if (named) {
+            extra++;
+        }
+    }
+    EXPECT_EQ_U32(1 + (uint32_t)(sizeof(gaps) / sizeof(gaps[0])), named_wanted);
+    EXPECT_EQ_U32(0, missing);
+    EXPECT_EQ_U32(0, extra);
+}
+
 // QoS roadmap #6 (LIFESPAN) - a cached sample past pub->lifespan_duration_ns must not be
 // retransmitted even though it's still physically sitting in reliable_cache and the Subscriber's
 // ACKNACK is otherwise perfectly valid - "as if it had never been sent" (tt_Publisher.lifespan_
@@ -3147,6 +3363,8 @@ int main(void) {
     test_acknack_retry_budget_resets_for_next_gap();
     test_process_acknack_retransmits_cached_sample();
     test_process_acknack_direct_index_correct_after_wraparound();
+    test_retransmit_is_exactly_the_named_set_across_a_wide_window();
+    test_acknack_names_every_gap_across_a_wide_window();
     test_process_acknack_skips_expired_sample();
     test_process_acknack_ignored_for_besteffort_publisher();
     test_process_acknack_ignored_for_durable_only_publisher();
