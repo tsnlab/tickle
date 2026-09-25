@@ -48,10 +48,20 @@ typedef struct rmw_tickle_publisher_payload_t {
     /// The arena is still never smaller than one sample of this type, nor larger than
     /// (depth + 1) records - this caps it, it does not set it.
     uint32_t cache_bytes;
-    /// Bytes reserved per sample on a KEEP_ALL publisher whose type has no generated size bound, or
-    /// 0 for RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES. A type that does have a bound ignores both: its
-    /// bound is exact, so nothing is gained by reserving more. Capped at the datagram size.
-    uint32_t keep_all_max_sample_bytes;
+    /// How large this publisher's samples actually get, or 0 for
+    /// RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES and the derived default. This is what the cache reserves
+    /// per retained sample, under either history policy.
+    ///
+    /// Clamped upward by what the type can actually produce - the generator's bound when it has
+    /// one, the datagram otherwise - since reserving past an exact maximum is waste with no
+    /// benefit. Setting it LOWER than that bound is the point: a type bounded at 64 KB whose
+    /// samples are really 8 KB costs 11 x 64 KB at depth 10, and saying 8192 here gets the same
+    /// ten samples for an eighth of the memory.
+    ///
+    /// Under-reserving is safe under both policies, and costs only retention or throughput: a
+    /// KEEP_LAST publisher keeps fewer than its depth, and a KEEP_ALL one blocks sooner. Neither
+    /// drops an unacknowledged sample.
+    uint32_t max_sample_bytes;
 } rmw_tickle_publisher_payload_t;
 
 /// Initialiser that sets the two markers and leaves every knob to the environment:

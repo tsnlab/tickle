@@ -276,6 +276,13 @@ matters when a node has one large-sample topic among forty: fill in an
 with it, and a field left `0` keeps that knob's environment-wide value. A payload meant for another
 rmw implementation is ignored with a warning rather than misread.
 
+Its `max_sample_bytes` is worth knowing about even if nothing else is: it says how large this
+publisher's samples really get, and is clamped up by what the type can produce, so its use is to go
+*lower*. A type bounded at 64 KB whose images are really 8 KB costs eleven 64 KB records at depth
+10; saying `8192` keeps the same ten samples for an eighth of the memory. Reserving too little is
+safe - a KEEP_LAST publisher keeps fewer than its depth, a KEEP_ALL one blocks sooner, and neither
+drops a sample a reader has not acknowledged.
+
 **Standard ROS 2 messages need a one-time build.** The interface packages installed with ROS 2
 (`std_msgs`, `geometry_msgs`, `sensor_msgs`, `rcl_interfaces`, ...) carry typesupport for FastDDS
 and CycloneDDS, not for TickLE. Without it, creating a publisher or subscription fails with "no

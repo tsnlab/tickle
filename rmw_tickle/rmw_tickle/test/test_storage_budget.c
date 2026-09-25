@@ -224,15 +224,22 @@ int main(void) {
     setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "2000", 1);
     assert(keep_all_record_with(NULL) == tt_RELIABLE_RECORD_BYTES(2000)); // the process default
     rmw_tickle_publisher_payload_t big = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
-    big.keep_all_max_sample_bytes = 16384;
+    big.max_sample_bytes = 16384;
     assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(16384)); // payload wins
     unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
     assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(16384)); // ...with or without one
 
-    // A type whose size the generator did bound ignores both: the bound is exact, so reserving more
-    // would only waste memory.
+    // A bounded type clamps the payload on the way up - reserving past an exact maximum is waste -
+    // but takes it on the way down, which is the useful direction: the same ten samples for an
+    // eighth of the memory when the application knows its images are smaller than the bound allows.
     callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
-    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD));
+    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD)); // clamped up
+    rmw_tickle_publisher_payload_t small = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
+    small.max_sample_bytes = BOUNDED_PAYLOAD / 2;
+    assert(keep_all_record_with(&small) == tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD / 2)); // lowered
+    // ...and it lowers a KEEP_LAST publisher's arena the same way, keeping its whole depth.
+    assert(keep_last_arena_with(10, &small) == 11ULL * tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD / 2));
+    assert(keep_last_arena_with(10, &small) < keep_last_arena(10));
     // Left bounded on purpose: that is the state the reorder section below starts from, and this
     // block sits between it and the one that set it.
 

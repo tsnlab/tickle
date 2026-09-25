@@ -304,20 +304,45 @@ static const rmw_tickle_publisher_payload_t* publisher_payload(const rmw_tickle_
     return payload;
 }
 
-// The KEEP_ALL per-sample reservation for a type with no bound - see the unset branch below.
+// What the cache reserves per retained sample, for either history policy: the application's own
+// number for this publisher when it gave one, else the process-wide environment variable, else what
+// the type can produce. Named for KEEP_ALL until 2026-09-25, when the payload made it KEEP_LAST's
+// answer too.
 static uint32_t keep_all_unbounded_default(void) {
     return (uint32_t)(tt_MAX_BUFFER_LENGTH < tt_ETHERNET_UDP_PAYLOAD ? tt_MAX_BUFFER_LENGTH : tt_ETHERNET_UDP_PAYLOAD);
 }
 
-static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
+// What one sample of this type can actually need: the generator's bound, or a whole datagram when
+// it has none. Nothing reserves more than this, because nothing larger can arrive.
+static unsigned long long type_ceiling_bytes(const rmw_tickle_publisher_t* pub_impl) {
+    if (NULL != pub_impl->callbacks &&
+        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != pub_impl->callbacks->tickle_max_encoded_size) {
+        return (unsigned long long)pub_impl->callbacks->tickle_max_encoded_size;
+    }
+    return (unsigned long long)tt_MAX_BUFFER_LENGTH;
+}
+
+// The application's own per-publisher reservation (publisher_payload.h), clamped to the ceiling on
+// the way up, or 0 when it gave none. Applies under either history policy: it is a statement about
+// this publisher's samples, not about a policy.
+static uint32_t payload_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
+    const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
+    if (NULL == payload || 0 == payload->max_sample_bytes) {
+        return 0;
+    }
+    unsigned long long asked = (unsigned long long)payload->max_sample_bytes;
+    unsigned long long ceiling = type_ceiling_bytes(pub_impl);
+    return clamp_record_bytes(asked < ceiling ? asked : ceiling);
+}
+
+static uint32_t resolve_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
+    uint32_t chosen = payload_record_bytes(pub_impl);
+    if (0 != chosen) {
+        return chosen;
+    }
     if (NULL != pub_impl->callbacks &&
         ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != pub_impl->callbacks->tickle_max_encoded_size) {
         return clamp_record_bytes((unsigned long long)pub_impl->callbacks->tickle_max_encoded_size);
-    }
-
-    const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
-    if (NULL != payload && 0 != payload->keep_all_max_sample_bytes) {
-        return clamp_record_bytes((unsigned long long)payload->keep_all_max_sample_bytes);
     }
 
     const char* env = getenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
@@ -330,7 +355,7 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
         // 536 MB. Every sample that could exist before 65507 is retained exactly as before; a
         // larger one - newly possible - fills the arena faster than the count bound, so this
         // Publisher blocks sooner (setup_reliable_cache() warns), and either this payload's
-        // keep_all_max_sample_bytes or RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES raises it.
+        // max_sample_bytes or RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES raises it.
         return keep_all_unbounded_default();
     }
     char* end = NULL;
@@ -364,10 +389,15 @@ static uint32_t resolve_keep_all_record_bytes(const rmw_tickle_publisher_t* pub_
 static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth) {
     // The largest record one sample of this type can need: its generated bound when it has one, the
     // datagram otherwise (a submessage can be no larger).
-    unsigned long long record = (unsigned long long)tt_MAX_BUFFER_LENGTH;
-    if (NULL != pub_impl->callbacks &&
-        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != pub_impl->callbacks->tickle_max_encoded_size) {
-        record = clamp_record_bytes((unsigned long long)pub_impl->callbacks->tickle_max_encoded_size);
+    // The type's bound when it has one, the datagram otherwise - and below either, the
+    // application's own max_sample_bytes when it gave one, which is the only thing the payload
+    // changes here. Deliberately not resolve_record_bytes(): that one falls back to KEEP_ALL's
+    // 1472-byte default for an unbounded type, because KEEP_ALL is not budgeted and would otherwise
+    // reserve hundreds of megabytes. KEEP_LAST is budgeted, so it can afford a whole datagram per
+    // record and the cap below is what bounds it.
+    unsigned long long record = payload_record_bytes(pub_impl);
+    if (0 == record) {
+        record = clamp_record_bytes(type_ceiling_bytes(pub_impl));
     }
     unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
 
@@ -527,12 +557,33 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     // encoded_size), which is what the ceiling below used to stand in for: a depth-8192 DURABLE
     // KEEP_ALL publisher of a 76-byte type reserved ~12.06 MB and needs ~0.6 MB. Types carrying a
     // plain unbounded string still have no bound and still get the ceiling. See
-    // resolve_keep_all_record_bytes() above for which source applies when and why.
+    // resolve_record_bytes() above for which source applies when and why.
     //
     // (depth + 1) records either way - the wrap slack B1 added, so the byte bound still cannot
     // evict before the count bound, which is what `depth` promises.
-    uint32_t arena_bytes = keep_all ? tt_RELIABLE_CACHE_ARENA_BYTES(depth, resolve_keep_all_record_bytes(pub_impl))
+    uint32_t arena_bytes = keep_all ? tt_RELIABLE_CACHE_ARENA_BYTES(depth, resolve_record_bytes(pub_impl))
                                     : resolve_keep_last_arena_bytes(pub_impl, depth);
+
+    // Said at attach, where it is decidable, rather than discovered on the first publish that hits
+    // it (Plan's request, 2026-09-25): a sample too large for the whole arena is sent without being
+    // cached at all (B1, tickle.c), so a reader that misses it can never recover it. Whether that
+    // can happen is a question about this cache and this type, and both are known here. The arena
+    // may legitimately be smaller than (depth + 1) full-size records - that only costs retention -
+    // so the test is against ONE such record, which is where retention stops working entirely.
+    unsigned long long largest = (unsigned long long)tt_MAX_BUFFER_LENGTH;
+    if (NULL != pub_impl->callbacks &&
+        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != pub_impl->callbacks->tickle_max_encoded_size) {
+        largest = (unsigned long long)pub_impl->callbacks->tickle_max_encoded_size;
+    }
+    if ((unsigned long long)arena_bytes < (unsigned long long)tt_RELIABLE_RECORD_BYTES(largest)) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "publisher of %s: its retained-sample cache is %u bytes, but one sample of this type "
+                               "can need %u - such a sample is sent without being retained, so a reader that misses "
+                               "it cannot ask for it again. Raise the budget (the payload's cache_bytes, or "
+                               "RMW_TICKLE_CACHE_BYTES) to at least that.",
+                               type_name_of(pub_impl), (unsigned)arena_bytes,
+                               (unsigned)tt_RELIABLE_RECORD_BYTES(largest));
+    }
     pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(arena_bytes, allocator->state);
     if (NULL == pub_impl->reliable_cache->arena) {
         RMW_SET_ERROR_MSG("failed to allocate reliable_cache arena");
@@ -556,11 +607,13 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     // DURABLE-but-BEST_EFFORT KEEP_ALL Publisher keeps its deep cache and its non-blocking writes,
     // which is the only behavior it could have.
     pub_impl->tickle_publisher.keep_all = keep_all && pub_impl->tickle_publisher.reliable;
-    if (keep_all && tt_MAX_BUFFER_LENGTH > tt_ETHERNET_UDP_PAYLOAD &&
-        resolve_keep_all_record_bytes(pub_impl) < (uint32_t)tt_MAX_BUFFER_LENGTH &&
+    const rmw_tickle_publisher_payload_t* sizing = publisher_payload(pub_impl, type_name_of(pub_impl));
+    bool application_chose_the_size = NULL != sizing && 0 != sizing->max_sample_bytes;
+    if (keep_all && tt_MAX_BUFFER_LENGTH > tt_ETHERNET_UDP_PAYLOAD && !application_chose_the_size &&
+        resolve_record_bytes(pub_impl) < (uint32_t)tt_MAX_BUFFER_LENGTH &&
         (NULL == pub_impl->callbacks ||
          ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED == pub_impl->callbacks->tickle_max_encoded_size)) {
-        // resolve_keep_all_record_bytes() says why: said out loud, because the cost is otherwise
+        // resolve_record_bytes() says why: said out loud, because the cost is otherwise
         // invisible until this publisher starts blocking far below its depth.
         RCUTILS_LOG_WARN_NAMED("rmw_tickle",
                                "KEEP_ALL publisher of %s: its type has no size bound, so only %u bytes are reserved "
@@ -568,7 +621,7 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
                                "cache is full rather than at depth %u. Set RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES to "
                                "the largest sample this publisher sends (it reserves that much per sample)",
                                NULL != pub_impl->callbacks ? pub_impl->callbacks->ros_type_name : "?",
-                               (unsigned)resolve_keep_all_record_bytes(pub_impl), (unsigned)depth);
+                               (unsigned)resolve_record_bytes(pub_impl), (unsigned)depth);
     }
     if (pub_impl->tickle_publisher.keep_all) {
         pub_impl->tickle_publisher.writable_callback = publisher_writable_callback;
