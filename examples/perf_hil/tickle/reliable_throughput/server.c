@@ -25,7 +25,11 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "../common/Bench.h"
+#include "Bench.h"
+#include "BenchStats.h" // shared instrumentation - see its own header
+
+static struct BenchStats g_bench_stats;
+static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 #include "../common/CpuFreq.h"
 #include "../common/CpuPlace.h"
 #include "../common/reliable_stats_print.h"
@@ -155,6 +159,9 @@ static uint32_t window_samples = 0;
 static const double safety_cap_buffer_s = 15.0;
 
 int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
     bool durable = false; // -D, see sub.durable below
     double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
@@ -266,15 +273,19 @@ int main(int argc, char** argv) {
 
     print_missing_seqs(lost);
 
+    bench_stats_end(&g_bench_stats);
+
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
-           "cpu_migrations=%u\n",
+           "cpu_migrations=%u %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
            BenchCpuFreq_mean_mhz(&g_cpu_freq), BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq),
            g_cpu_freq.samples, BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place),
-           g_cpu_place.migrations);
+           g_cpu_place.migrations,
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
     print_reliable_stats("server");
 
     tt_Node_destroy(&node);

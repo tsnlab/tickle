@@ -37,7 +37,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "../common/Bench.h"
+#include "Bench.h"
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {

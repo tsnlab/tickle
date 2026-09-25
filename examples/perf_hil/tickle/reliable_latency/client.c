@@ -24,7 +24,11 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "../common/Bench.h"
+#include "Bench.h"
+#include "BenchStats.h" // shared instrumentation - see its own header
+
+static struct BenchStats g_bench_stats;
+static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
 //
@@ -93,6 +97,9 @@ static void stop(struct tt_Node* node, uint64_t time, void* param) {
 }
 
 int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
@@ -184,9 +191,12 @@ int main(int argc, char** argv) {
     if (received > 0) {
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms);
     }
+    bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
-           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
-           (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms);
+           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f %s\n",
+           (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
 
     tt_Node_destroy(&node);
     return 0;

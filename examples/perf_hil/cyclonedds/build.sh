@@ -7,9 +7,24 @@
 # is what actually stays correct everywhere, not a committed snapshot from one specific host.
 set -euo pipefail
 
-SCENARIO="${1:?usage: build.sh <scenario>}"
+SCENARIO="${1:?usage: build.sh <scenario> [p1|p2|p3|p4]}"
+# Optional payload shape (examples/perf_hil/OPTIMIZATION_PLAN.md section 3). Omitted is today's
+# behaviour exactly - the P1 shape, built into <scenario>/ - so every sweep written before the
+# campaign keeps working untouched. Given explicitly, the binaries go to <scenario>_<pN>/ instead,
+# which is all run_scenario.sh needs to reach them (it forwards the string into REMOTE_DIR).
+# All four idl/pN/Bench.idl declare the same `struct Bench`, so the scenario sources compile
+# unchanged at every size and the size is chosen by which directory the generator is pointed at.
+PAYLOAD="${2:-}"
+SHAPE="${PAYLOAD:-p1}"
+case "$SHAPE" in
+p1 | p2 | p3 | p4) ;;
+*)
+    echo "Unknown payload shape: $SHAPE (want p1, p2, p3 or p4)" >&2
+    exit 1
+    ;;
+esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GEN_DIR="$HERE/generated"
+GEN_DIR="$HERE/generated/$SHAPE"
 
 mkdir -p "$GEN_DIR"
 if [ ! -f "$GEN_DIR/Bench.c" ]; then
@@ -17,16 +32,28 @@ if [ ! -f "$GEN_DIR/Bench.c" ]; then
         IDLC=/opt/ros/rolling/bin/idlc
         IDLC_LIB_DIR="$(find /opt/ros/rolling/lib/*/ -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
     else
-        IDLC="$(command -v idlc)"
+        IDLC="$(command -v idlc || true)"
         IDLC_LIB_DIR="$(find /opt/ros/*/lib/*/  -maxdepth 1 -iname 'libddsc.so*' 2>/dev/null | head -1 | xargs -r dirname)"
     fi
-    LD_LIBRARY_PATH="$IDLC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$IDLC" -o "$GEN_DIR" "$HERE/../idl/Bench.idl"
+    # Named rather than left to `set -e` to end the script wordlessly: this is the one failure a
+    # host without CycloneDDS installed hits, and inside a 45-minute sweep a silent exit 1 is
+    # indistinguishable from a build that produced nothing for some subtler reason.
+    if [ -z "$IDLC" ]; then
+        echo "No idlc on this host - CycloneDDS's IDL compiler is needed to build this harness" >&2
+        exit 1
+    fi
+    LD_LIBRARY_PATH="$IDLC_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$IDLC" -o "$GEN_DIR" "$HERE/../idl/$SHAPE/Bench.idl"
 fi
 
-SCEN_DIR="$HERE/$SCENARIO"
-if [ ! -d "$SCEN_DIR" ]; then
-    echo "No such scenario dir: $SCEN_DIR" >&2
+SRC_DIR="$HERE/$SCENARIO"
+if [ ! -d "$SRC_DIR" ]; then
+    echo "No such scenario dir: $SRC_DIR" >&2
     exit 1
+fi
+SCEN_DIR="$SRC_DIR"
+if [ -n "$PAYLOAD" ]; then
+    SCEN_DIR="$HERE/${SCENARIO}_${PAYLOAD}"
+    mkdir -p "$SCEN_DIR"
 fi
 
 # Located rather than hardcoded - the include/lib layout differs between hosts (ROS distro name,
@@ -47,6 +74,16 @@ if [ -z "$CDDS_INCLUDE" ] || [ -z "$CDDS_LIB" ]; then
     exit 1
 fi
 
+# The CDR sample size, derived from this shape's own IDL rather than written down a second time:
+# 8 (send_ns) + 4 (seq) + the payload array. Reported in the RESULT line by every harness so the
+# payload-boundary gate is checkable from the line alone.
+BENCH_ARRAY="$(sed -n 's/.*octet *payload\[\([0-9]*\)\].*/\1/p' "$HERE/../idl/$SHAPE/Bench.idl")"
+if [ -z "$BENCH_ARRAY" ]; then
+    echo "Could not read the payload array size out of $HERE/../idl/$SHAPE/Bench.idl" >&2
+    exit 1
+fi
+BENCH_SAMPLE_BYTES=$((12 + BENCH_ARRAY))
+
 CC="${CC:-gcc}"
 # -fno-strict-aliasing: a real, bisected bug (not assumed) - the best_effort_throughput scenario's
 # server silently received nothing at plain -O2 (reader/writer matched fine, dds_take() just never
@@ -54,7 +91,7 @@ CC="${CC:-gcc}"
 # aliasing (also worked) - the DDS C API's own void*-based dds_take()/samples[] pattern is a known
 # class of strict-aliasing hazard for a C caller, and this benchmark gains nothing from the
 # type-based aliasing optimizations it disables.
-CFLAGS="-O2 -fno-strict-aliasing -I$GEN_DIR -I$CDDS_INCLUDE"
+CFLAGS="-O2 -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -fno-strict-aliasing -I$GEN_DIR -I$CDDS_INCLUDE"
 # --disable-new-dtags: DT_RPATH (old-style, transitively searched by every library this binary
 # loads, including libddsc.so's own dependency on libiceoryx_binding_c.so) instead of the
 # linker's modern default DT_RUNPATH, which only covers this executable's own *direct*
@@ -65,7 +102,7 @@ LDFLAGS="-L$CDDS_LIB -Wl,-rpath,$CDDS_LIB -Wl,--disable-new-dtags -lddsc -lm"
 
 # shellcheck disable=SC2086 # CFLAGS/LDFLAGS are deliberately word-split into multiple flags -
 # same convention .github/scripts/run_perf.sh/test.sh already use for the identical case.
-$CC $CFLAGS -o "$SCEN_DIR/server" "$SCEN_DIR/server.c" "$GEN_DIR/Bench.c" $LDFLAGS
+$CC $CFLAGS -o "$SCEN_DIR/server" "$SRC_DIR/server.c" "$GEN_DIR/Bench.c" $LDFLAGS
 # shellcheck disable=SC2086
-$CC $CFLAGS -o "$SCEN_DIR/client" "$SCEN_DIR/client.c" "$GEN_DIR/Bench.c" $LDFLAGS
+$CC $CFLAGS -o "$SCEN_DIR/client" "$SRC_DIR/client.c" "$GEN_DIR/Bench.c" $LDFLAGS
 echo "Built $SCEN_DIR/{client,server}"

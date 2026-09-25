@@ -28,7 +28,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "../common/Bench.h"
+#include "Bench.h"
 
 // Never set any more: this scenario installs no SIGINT handler (see main()). Kept so the
 // send loop reads the same as its sibling scenarios; the loop ends on its own duration cap.

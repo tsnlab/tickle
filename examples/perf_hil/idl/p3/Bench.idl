@@ -1,0 +1,36 @@
+// Shared, framework-neutral message for the HIL 3-way comparison, at payload shape P3
+// (examples/perf_hil/OPTIMIZATION_PLAN.md section 3). One of four: idl/p1..p4/Bench.idl.
+//
+// All four are named Bench.idl and declare the same `struct Bench`, so every scenario's own
+// client/server compiles unchanged at each size and the size is chosen purely by which directory
+// the generator is pointed at (build.sh's second argument). Four differently-named structs would
+// have put a type switch into every harness source, and the harness would then no longer be the
+// same code at the four sizes - which is what this comparison rests on.
+//
+// Both fastddsgen and CycloneDDS's own idlc compile this exact file - "identical data" is a
+// byte-identical source guarantee, not a hand-matched one (COMPARISON.MD's own design note). The
+// TickLE side is generated too, since 2026-09-25, from the matching
+// tickle/common/p3/Bench.msg; tools/scripts/check_bench_shapes.sh checks the two against each
+// other so this file and that one cannot drift apart unnoticed.
+//
+// Field order is `send_ns` before `seq` deliberately, and must stay that way. Standard CDR aligns
+// a 64-bit field to 8 while TickLE's CDR-4 caps alignment at 4, so with `seq` first this file
+// produced 1440 bytes on TickLE's wire and four more on both vendors' - a difference that would
+// have landed inside the wire-bytes-per-sample metric and been charged to framing. `send_ns`
+// first is 8 + 4 + N under both rules, with no padding under either.
+//
+// 8 + 4 + 1428 = 1440 bytes: deliberately asymmetric. It fills one TickLE datagram (28 + 1440 =
+// 1468 of 1472) and forces both vendors to split, at ~1500-1516. **A "TickLE wins at large
+// messages" claim must not be read off this size** - under loss a two-fragment datagram is lost
+// ~9.75% of the time against 5% for one, so TickLE would show half the effective loss from the
+// size alone. P2 is the like-for-like large size; this one measures the cost of the boundary.
+//
+// @extensibility(FINAL) pinned explicitly, not left to whatever each tool's own current default
+// happens to be (idlc warns this may change to "appendable" in a future release) - both vendors
+// must interpret this identically regardless of tool version.
+@extensibility(FINAL)
+struct Bench {
+    unsigned long long send_ns; // sender's own monotonic send timestamp (CLOCK_MONOTONIC, ns)
+    unsigned long seq;          // per-Publisher monotonic sample counter, starts at 1
+    octet payload[1428];          // fixed filler, unused by any scenario's own logic
+};

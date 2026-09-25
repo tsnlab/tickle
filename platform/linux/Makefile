@@ -291,6 +291,19 @@ LINT_TIDY_EXCLUDE_PATHS = rmw_tickle|examples/perf_hil/(cyclonedds|fastdds)
 # so they only resolve with their own directory on the include path. check-all.yml synthesises
 # exactly this as a compile_commands.json entry for the same reason.
 LINT_TIDY_ARGS = --extra-arg=-I$(REPO_ROOT)/rmw_tickle/rosidl_typesupport_tickle_c/test/fixtures/ros2_adapter
+#
+# examples/perf_hil/tickle/'s scenarios include a bare "Bench.h", because the benchmark's four
+# payload shapes are four directories each declaring the same type and the shape is chosen by the
+# include path (build.sh's second argument). Without one of them here clang-tidy stops at 'file
+# not found' on every scenario. p1 is the right one to hand it: the shapes differ only in an array
+# length, so any of them type-checks the same code, and p1 is what an unqualified build produces.
+LINT_TIDY_ARGS += --extra-arg=-I$(REPO_ROOT)/examples/perf_hil/tickle/common/p1
+LINT_TIDY_ARGS += --extra-arg=-I$(REPO_ROOT)/examples/perf_hil/tickle/common
+# Each harness's build.sh derives BENCH_SAMPLE_BYTES from the shape it is building and passes it
+# in, so the RESULT line can carry the CDR sample size. There is deliberately no default in the
+# header - a missing -D should be a build failure, not a wrong number in a results file - which
+# means clang-tidy has to be told the same thing a p1 build would tell it.
+LINT_TIDY_ARGS += --extra-arg=-DBENCH_SAMPLE_BYTES=76
 
 # Which binaries this actually used, printed rather than assumed. The whole class of bug this
 # target exists to catch is "I ran the check and it passed" - so a run that silently used a

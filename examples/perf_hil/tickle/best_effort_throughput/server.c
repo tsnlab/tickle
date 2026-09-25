@@ -27,7 +27,11 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "../common/Bench.h"
+#include "Bench.h"
+#include "BenchStats.h" // shared instrumentation - see its own header
+
+static struct BenchStats g_bench_stats;
+static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -54,6 +58,9 @@ static const double default_safety_cap_s = 40.0;
 static const double safety_cap_buffer_s = 15.0;
 
 int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
     double safety_cap_s = default_safety_cap_s;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -99,8 +106,12 @@ int main(int argc, char** argv) {
     uint64_t total = received + lost;
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
 
-    printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.1f\n",
-           (unsigned long)received, (unsigned long)lost, loss_pct);
+    bench_stats_end(&g_bench_stats);
+
+    printf("RESULT: framework=tickle scenario=best_effort_throughput role=server recv=%lu lost=%lu loss_pct=%.1f %s\n",
+           (unsigned long)received, (unsigned long)lost, loss_pct,
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
 
     tt_Node_destroy(&node);
     return 0;

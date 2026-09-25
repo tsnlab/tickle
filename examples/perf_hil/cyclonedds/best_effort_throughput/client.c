@@ -25,8 +25,12 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../common.h"
 #include "Bench.h"
+
+static struct BenchStats g_bench_stats;
+static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -41,6 +45,9 @@ static uint64_t now_ns(void) {
 }
 
 int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
     double duration_s = 10.0;
     double interval_s = 0.0; // 0 = as fast as possible, matching perf_client.c's own default
     for (int i = 1; i < argc; i++) {
@@ -93,9 +100,12 @@ int main(int argc, char** argv) {
 
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
+    bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
-           "send_mbps=%.3f\n",
-           (unsigned long)sent, elapsed_s, mbps);
+           "send_mbps=%.3f %s\n",
+           (unsigned long)sent, elapsed_s, mbps,
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
 
     dds_delete(participant);
     return 0;

@@ -24,7 +24,7 @@
 #include <tickle/hal.h>
 #include <tickle/tickle.h>
 
-#include "../common/Bench.h"
+#include "Bench.h"
 
 // Reorder-buffer geometry for this example's RELIABLE Subscriber - see where it is assigned.
 //

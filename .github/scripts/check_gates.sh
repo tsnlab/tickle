@@ -90,6 +90,7 @@ run_lint_gate "lint (clang-format + clang-tidy)" make lint "${lint_vars[@]}"
 run_gate "lint-shell" make lint-shell
 run_gate "check-doc-shas" make check-doc-shas
 run_gate "check-rig-lock" make check-rig-lock
+run_gate "check-bench-shapes" make check-bench-shapes
 run_gate "test (unit)" make test
 name="lint-rmw"
 if [ -z "$(find /opt/ros -maxdepth 2 -name setup.bash -print -quit 2>/dev/null)" ]; then

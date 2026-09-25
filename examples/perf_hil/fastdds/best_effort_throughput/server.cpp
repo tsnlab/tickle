@@ -18,7 +18,11 @@
 #include <fastdds/dds/topic/Topic.hpp>
 #include <fastdds/dds/topic/TypeSupport.hpp>
 
+#include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "Bench.h"
+
+static struct BenchStats g_bench_stats;
+static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 #include "BenchPubSubTypes.h"
 
 using namespace eprosima::fastdds::dds;
@@ -35,6 +39,9 @@ static uint64_t now_ns() {
 }
 
 int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
     double safety_cap_s = 40.0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -111,9 +118,13 @@ int main(int argc, char** argv) {
     double loss_pct = total > 0 ? (100.0 * (double)lost / (double)total) : 0.0;
     double mbps = elapsed_s > 0.0 ? ((double)received * sizeof(Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
 
+    bench_stats_end(&g_bench_stats);
+
     printf("RESULT: framework=fastdds scenario=best_effort_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f\n",
-           (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps);
+           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s\n",
+           (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps,
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

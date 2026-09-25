@@ -13,8 +13,12 @@
 
 #include <dds/dds.h>
 
+#include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../common.h"
 #include "Bench.h"
+
+static struct BenchStats g_bench_stats;
+static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -29,6 +33,9 @@ static uint64_t now_ns(void) {
 }
 
 int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
     double interval_s = 1.0;
     double duration_s = 10.0;
     for (int i = 1; i < argc; i++) {
@@ -130,9 +137,12 @@ int main(int argc, char** argv) {
     if (received > 0) {
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms);
     }
+    bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
-           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
-           (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms);
+           "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f %s\n",
+           (unsigned long)transmitted, (unsigned long)received, loss_pct, rtt_min_ms, avg, rtt_max_ms,
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, transmitted, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
 
     dds_delete(participant);
     return 0;

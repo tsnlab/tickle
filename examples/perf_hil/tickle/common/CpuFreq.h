@@ -22,7 +22,7 @@
 // published rather than only fixing the ones taken from here on.
 //
 // Header-only and plain C on purpose: every scenario's build compiles exactly one shared .c file
-// (common/Bench.c), and the CycloneDDS and FastDDS harnesses are built by their own scripts, so a
+// (common/<shape>/Bench.c), and the CycloneDDS and FastDDS harnesses are built by their own scripts, so a
 // new translation unit would mean editing three build scripts to answer one question. Including
 // this from a C++ harness works as-is.
 //

@@ -6,13 +6,28 @@
 # FastDDS 2.14.6/fastddsgen 2.3.0+dfsg (v2-API output) - the two are not interchangeable.
 set -euo pipefail
 
-SCENARIO="${1:?usage: build.sh <scenario>}"
+SCENARIO="${1:?usage: build.sh <scenario> [p1|p2|p3|p4]}"
+# Optional payload shape (examples/perf_hil/OPTIMIZATION_PLAN.md section 3). Omitted is today's
+# behaviour exactly - the P1 shape, built into <scenario>/ - so every sweep written before the
+# campaign keeps working untouched. Given explicitly, the binaries go to <scenario>_<pN>/ instead,
+# which is all run_scenario.sh needs to reach them (it forwards the string into REMOTE_DIR).
+# All four idl/pN/Bench.idl declare the same `struct Bench`, so the scenario sources compile
+# unchanged at every size and the size is chosen by which directory the generator is pointed at.
+PAYLOAD="${2:-}"
+SHAPE="${PAYLOAD:-p1}"
+case "$SHAPE" in
+p1 | p2 | p3 | p4) ;;
+*)
+    echo "Unknown payload shape: $SHAPE (want p1, p2, p3 or p4)" >&2
+    exit 1
+    ;;
+esac
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GEN_DIR="$HERE/generated"
+GEN_DIR="$HERE/generated/$SHAPE"
 
 mkdir -p "$GEN_DIR"
 if [ ! -f "$GEN_DIR/Bench.cxx" ]; then
-    fastddsgen -replace -d "$GEN_DIR" "$HERE/../idl/Bench.idl"
+    fastddsgen -replace -d "$GEN_DIR" "$HERE/../idl/$SHAPE/Bench.idl"
 
     # A real, confirmed API drift between this Ubuntu-packaged fastddsgen (2.3.0+dfsg) and the
     # actually-installed fastcdr (2.2.7, via ros-*-fastcdr): fastddsgen's own generated code calls
@@ -36,10 +51,15 @@ if [ ! -f "$GEN_DIR/Bench.cxx" ]; then
     sed -i '/#if !defined(GEN_API_VER)/,/#endif  \/\/ GEN_API_VER/d' "$GEN_DIR"/*PubSubTypes.h
 fi
 
-SCEN_DIR="$HERE/$SCENARIO"
-if [ ! -d "$SCEN_DIR" ]; then
-    echo "No such scenario dir: $SCEN_DIR" >&2
+SRC_DIR="$HERE/$SCENARIO"
+if [ ! -d "$SRC_DIR" ]; then
+    echo "No such scenario dir: $SRC_DIR" >&2
     exit 1
+fi
+SCEN_DIR="$SRC_DIR"
+if [ -n "$PAYLOAD" ]; then
+    SCEN_DIR="$HERE/${SCENARIO}_${PAYLOAD}"
+    mkdir -p "$SCEN_DIR"
 fi
 
 # v2.x (the tickle-hil rpis' own installed FastDDS/fastddsgen line) names both the package and
@@ -56,14 +76,24 @@ if [ -z "$FDDS_INCLUDE" ] || [ -z "$FDDS_LIB" ] || [ -z "$FASTCDR_INCLUDE" ]; th
     exit 1
 fi
 
+# The CDR sample size, derived from this shape's own IDL rather than written down a second time:
+# 8 (send_ns) + 4 (seq) + the payload array. Reported in the RESULT line by every harness so the
+# payload-boundary gate is checkable from the line alone.
+BENCH_ARRAY="$(sed -n 's/.*octet *payload\[\([0-9]*\)\].*/\1/p' "$HERE/../idl/$SHAPE/Bench.idl")"
+if [ -z "$BENCH_ARRAY" ]; then
+    echo "Could not read the payload array size out of $HERE/../idl/$SHAPE/Bench.idl" >&2
+    exit 1
+fi
+BENCH_SAMPLE_BYTES=$((12 + BENCH_ARRAY))
+
 CXX="${CXX:-g++}"
-CXXFLAGS="-O2 -std=c++17 -I$GEN_DIR -I$FDDS_INCLUDE -I$FASTCDR_INCLUDE"
+CXXFLAGS="-O2 -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -std=c++17 -I$GEN_DIR -I$FDDS_INCLUDE -I$FASTCDR_INCLUDE"
 LDFLAGS="-L$FDDS_LIB -lfastrtps -lfastcdr -lpthread"
 
 # shellcheck disable=SC2086 # CXXFLAGS/LDFLAGS are deliberately word-split - see
 # cyclonedds/build.sh's own identical note.
-$CXX $CXXFLAGS -o "$SCEN_DIR/server" "$SCEN_DIR/server.cpp" "$GEN_DIR/Bench.cxx" "$GEN_DIR/BenchPubSubTypes.cxx" $LDFLAGS
+$CXX $CXXFLAGS -o "$SCEN_DIR/server" "$SRC_DIR/server.cpp" "$GEN_DIR/Bench.cxx" "$GEN_DIR/BenchPubSubTypes.cxx" $LDFLAGS
 # shellcheck disable=SC2086
-$CXX $CXXFLAGS -o "$SCEN_DIR/client" "$SCEN_DIR/client.cpp" "$GEN_DIR/Bench.cxx" "$GEN_DIR/BenchPubSubTypes.cxx" $LDFLAGS
+$CXX $CXXFLAGS -o "$SCEN_DIR/client" "$SRC_DIR/client.cpp" "$GEN_DIR/Bench.cxx" "$GEN_DIR/BenchPubSubTypes.cxx" $LDFLAGS
 echo "Built $SCEN_DIR/{client,server}"
 echo "Run with: LD_LIBRARY_PATH=$FDDS_LIB ./client|./server"

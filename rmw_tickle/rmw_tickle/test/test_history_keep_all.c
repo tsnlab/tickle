@@ -54,7 +54,7 @@
 #define EXPECTED_KEEP_ALL_DEPTH_VOLATILE 2048
 
 // What a generated typesupport reports for a type the generator can bound. 76 is BenchData's own
-// figure (examples/perf_hil/tickle/common/Bench.h), i.e. a realistic fixed-layout telemetry type
+// figure (examples/perf_hil/tickle/common/p1/Bench.msg), i.e. a realistic fixed-layout telemetry type
 // rather than a round number.
 #define BOUNDED_TYPE_MAX_ENCODED 76
 

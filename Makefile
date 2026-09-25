@@ -9,7 +9,7 @@
 
 .DEFAULT_GOAL := all
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock lint lint-rmw lint-shell clean test-linux test-freertos test-all \
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes lint lint-rmw lint-shell clean test-linux test-freertos test-all \
         install uninstall fuzz fuzz-corpus sanitize regen
 
 all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize:
@@ -52,6 +52,12 @@ check-doc-shas:
 check-rig-lock:
 	./.github/scripts/check_rig_lock_coverage.sh
 
+# The four HIL benchmark payload shapes, checked against each other: the .msg TickLE generates
+# from, the .idl both DDS vendors generate from, and the generated header. See the script's own
+# header for why two sources per shape need a gate at all.
+check-bench-shapes:
+	./.github/scripts/check_bench_shapes.sh
+
 # clang-tidy over rmw_tickle/, which `make lint` excludes and CI's cpp-linter does not - see the
 # script's own header.
 lint-rmw:
@@ -84,7 +90,7 @@ test-freertos:
 # performance test (.github/workflows/performance.yml) is deliberately not part of this - it
 # needs the two real, exclusively-held Pis, so there's no "run it anywhere" version of it to add
 # here.
-test-all: test headers-cpp check-doc-shas check-rig-lock test-samehost test-linux test-freertos
+test-all: test headers-cpp check-doc-shas check-rig-lock check-bench-shapes test-samehost test-linux test-freertos
 
 # Re-runs tools/typesupport over every real (non-test) interface, in place - each one flattened
 # into examples/<proto>/ alongside the .msg/.srv it's generated from (see tools/typesupport/
@@ -101,3 +107,7 @@ regen:
 	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/set_bool examples/set_bool/SetBool.srv
 	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/ping_pong examples/ping_pong/PingPong.srv
 	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/perf examples/perf/Bulk.msg
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/perf_hil/tickle/common/p1 examples/perf_hil/tickle/common/p1/Bench.msg
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/perf_hil/tickle/common/p2 examples/perf_hil/tickle/common/p2/Bench.msg
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/perf_hil/tickle/common/p3 examples/perf_hil/tickle/common/p3/Bench.msg
+	$(TICKLE_TYPESUPPORT) --style-dir . -O examples/perf_hil/tickle/common/p4 examples/perf_hil/tickle/common/p4/Bench.msg

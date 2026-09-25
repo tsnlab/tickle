@@ -109,15 +109,29 @@ jobs:
             bear --output compile_commands.json -- bash -c '
               for s in best_effort_latency reliable_latency best_effort_throughput reliable_throughput durability_late_join; do
                 ./build.sh "$s"
-              done'
+              done
+              # One alternate payload shape as well (2026-09-25): the campaign builds
+              # <scenario>_<pN> from idl/pN/Bench.idl, and that path has to compile somewhere
+              # other than the rig. p2 is the like-for-like large size.
+              ./build.sh reliable_throughput p2'
           )
           (
             cd examples/perf_hil/fastdds
             bear --output compile_commands.json -- bash -c '
               for s in best_effort_latency reliable_latency best_effort_throughput reliable_throughput durability_late_join; do
                 ./build.sh "$s"
-              done'
+              done
+              # One alternate payload shape as well (2026-09-25): the campaign builds
+              # <scenario>_<pN> from idl/pN/Bench.idl, and that path has to compile somewhere
+              # other than the rig. p2 is the like-for-like large size.
+              ./build.sh reliable_throughput p2'
           )
+
+      - name: Check the HIL benchmark payload shapes agree across .msg, .idl and the generated header
+        # Complements the regen drift check below rather than duplicating it: that one catches a
+        # .msg edited without re-running the generator, this one catches a .msg and its .idl twin
+        # edited apart from each other - which no amount of regenerating would reveal.
+        run: make check-bench-shapes
 
       - name: Regenerate typesupport codecs and check for drift
         run: |

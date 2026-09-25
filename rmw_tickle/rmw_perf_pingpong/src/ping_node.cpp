@@ -9,7 +9,7 @@
 // does that).
 //
 // -m <bench|array1k|struct16> (payload-size expansion, COMPARISON.MD's own priority list): `Bench`
-// stays the default (64-byte payload, matches examples/perf_hil/idl/Bench.idl exactly, for the
+// stays the default (64-byte payload, matches examples/perf_hil/idl/p1/Bench.idl exactly, for the
 // native-HIL-vs-rmw-layer comparison this tool was originally built for); `array1k`/`struct16`
 // give this same single-clock-RTT-correct methodology the same message shapes buildfarm_perf_
 // tests' own Array1k.msg/Struct16.msg already use (msg/Array1k.msg's own header comment explains

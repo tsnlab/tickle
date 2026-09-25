@@ -13,9 +13,13 @@
 
 #include <dds/dds.h>
 
-#include "../../tickle/common/CpuPlace.h" // shared with the TickLE harness - see its own header
+#include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
+#include "../../tickle/common/CpuPlace.h"   // shared with the TickLE harness - see its own header
 #include "../common.h"
 #include "Bench.h"
+
+static struct BenchStats g_bench_stats;
+static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
@@ -30,6 +34,9 @@ static uint64_t now_ns(void) {
 }
 
 int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
     double duration_s = 10.0;
     double interval_s = 0.0;        // -i: pause between writes, 0 = as fast as possible
     double max_blocking_ms = 10000; // -B: RELIABILITY max_blocking_time, default unchanged (10s)
@@ -114,11 +121,14 @@ int main(int argc, char** argv) {
 
     double elapsed_s = (double)(now_ns() - start) / 1e9;
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
+    bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u\n",
+           "cpu_main_share=%.2f cpu_migrations=%u %s\n",
            (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained,
-           BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations);
+           BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations,
+           bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
+                              sizeof g_bench_fields));
 
     dds_delete(participant);
     return 0;
