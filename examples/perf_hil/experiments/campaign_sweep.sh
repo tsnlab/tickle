@@ -118,6 +118,11 @@ fi
 SHA="$(git -C "$REPO" rev-parse origin/main)"
 say "--- deploying $SHA and building $(needed_variants | wc -l) variant(s) x 3 frameworks on both rpis ---"
 VARIANTS="$(needed_variants | paste -sd' ')"
+# `wait` with no arguments returns 0 however the background jobs ended, so a BUILD FAILED on either
+# rpi would print and the sweep would carry on through 108 cells against a stale or missing build.
+# Each PID is waited on individually, and then the binaries are checked for existence - the exit
+# code says the builder thinks it succeeded, the check says the binaries are there.
+pids=()
 for host in "${HOSTS[@]}"; do
     ssh_h "$host" "set -e
 cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
@@ -130,8 +135,26 @@ for v in $VARIANTS; do
   done
 done
 echo \"built on \$(hostname) at \$(git -C ~/tickle rev-parse --short HEAD)\"" &
+    pids+=($!)
 done
-wait
+build_failed=0
+for pid in "${pids[@]}"; do wait "$pid" || build_failed=1; done
+[ "$build_failed" = 0 ] || { say "BUILD FAILED on at least one rpi - see the output above. Not running."; exit 1; }
+
+# The binaries themselves, independent of any exit code. A DDS harness that has never been compiled
+# anywhere (true of these sources until this runs) fails here rather than turning into 108 void cells.
+# One ssh per host, not one per binary: the list is built remotely. run_scenario.sh in all three
+# frameworks runs `./client`/`./server` from ~/tickle/examples/perf_hil/<fw>/<scenario>_<pN>/, so
+# these are the exact paths the sweep is about to execute, not a guess at what a build emits.
+missing=""
+for host in "${HOSTS[@]}"; do
+    absent="$(ssh_h "$host" "for v in $VARIANTS; do for fw in tickle cyclonedds fastdds; do
+  for b in client server; do d=~/tickle/examples/perf_hil/\$fw/\$v/\$b
+    [ -x \"\$d\" ] || echo \"\$fw/\$v/\$b\"; done; done; done" 2>&1)"
+    [ -z "$absent" ] || missing+="$host: $(tr '\n' ' ' <<<"$absent")"
+done
+[ -z "$missing" ] || { say "MISSING BINARIES after a build that reported success: $missing"; exit 1; }
+say "all $(( $(wc -w <<<"$VARIANTS") * 3 * 2 )) binaries present on both rpis"
 say "client at $(ssh_h "$RPI_CLIENT" 'git -C ~/tickle rev-parse --short HEAD'), server at $(ssh_h "$RPI_SERVER" 'git -C ~/tickle rev-parse --short HEAD')"
 
 # --- leftover guard: identify by /proc/PID/exe, never by a name pattern (CLAUDE.md rule 3) ------
