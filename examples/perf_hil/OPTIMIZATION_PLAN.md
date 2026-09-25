@@ -87,6 +87,36 @@ This does not invalidate any published figure. `COMPARISON.MD` §3's Mbps is com
 `recv_count x 76 x 8 / elapsed` for all three alike, so it is application-payload throughput and is
 unaffected. It is the *new* wire-bytes metric that the padding would have distorted.
 
+## 4b. TickLE's harness codec moves to the generator
+
+The user's decision, 2026-09-25: *"DDS가 Bench.idl을 사용하듯이 TickLE 또한 Bench.msg를 사용하는 것이
+어떨까? codec 부분을 손으로 쓰는 부분이 있다면 일괄 삭제하고 xxx.msg 형태로 유지하는 것이 좋을 것 같아."*
+Approved and in scope for step 2.
+
+`tickle/common/Bench.h` is hand-written today, and its own header comment says it "mirrors
+`idl/Bench.idl`'s exact field shape". Three reasons this has to change before the campaign runs, not
+after:
+- **The benchmark does not currently measure the product path.** A real TickLE user gets a
+  `tools/typesupport`-generated codec. Measuring a hand-written one measures something users do not
+  have - the same class of error as measuring a stale library, and worse for a published figure.
+- **It is the only place in this comparison that can diverge silently.** Both DDS vendors generate
+  from one `Bench.idl`, so `idlc` and `fastddsgen` cannot disagree by construction - the IDL's own
+  comment calls that "a byte-identical source guarantee, not a hand-matched one". TickLE's side is
+  precisely the hand-matched one, in a campaign whose headline metric is bytes on the wire.
+- **Four payload sizes are about to multiply it.** One hand-written codec becoming four quadruples
+  the places it can drift. Now is when it costs least.
+
+Two checks that belong with the change, not after it:
+- The generated struct must still be **76 B at P1**, which the existing `_Static_assert` already
+  pins. If the generator lays `octet payload[64]`'s equivalent out differently, the comparison
+  changes and that has to be seen, not discovered later.
+- **The field reorder of §4 applies to both `Bench.msg` and `Bench.idl`.** Moving to the generator
+  does not fix the padding by itself.
+
+`examples/perf/Bulk.msg` already uses the generator, so `perf_hil`'s TickLE harness is the lone
+exception. Removing it makes "every TickLE example uses the generator" a rule rather than a habit,
+which is what stops the next hand-written codec.
+
 ## 5. QoS cells
 
 Baseline **Q0**, one factor at a time - the user confirmed no QoS cross is wanted.
@@ -194,10 +224,12 @@ ACKNACK against discovery), which step 6 will want - not something to run 108 ti
 ## 10. Sequence
 
 1. **This draft approved or changed** by the user.
-2. **TickLE Dev**: the IDL field reorder and the large shapes (`Bench.idl` is the single source both
-   DDS generators consume, so a second shape there is two lines; `tickle/common/Bench.h` is
-   hand-written and is the one place it could diverge, so it needs the same `_Static_assert` guard);
-   then the shared instrumentation of §8, with the zero-counter failure built in.
+2. **TickLE Dev**: (i) replace `tickle/common/Bench.h`'s hand-written codec with a
+   `tools/typesupport`-generated one from a new `Bench.msg` (§4b), deleting the hand-written codec
+   rather than keeping both; (ii) the field reorder of §4, in `Bench.msg` *and* `Bench.idl`; (iii) the
+   four payload shapes - two lines of IDL for the DDS pair, and the generator for TickLE, so all
+   three stay single-source; (iv) the shared instrumentation of §8, with the zero-counter failure
+   built in.
 3. **TickLE Plan**: the sweep script extending `comparison_resweep.sh` - the 12 combinations, the
    four `tc` conditions, the two TickLE builds, the leftover guard, timestamped output.
 4. **Baseline pass on the rig**, holding the hil lock, ~53 minutes.
