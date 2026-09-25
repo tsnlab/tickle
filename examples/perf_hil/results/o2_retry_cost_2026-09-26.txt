@@ -1,0 +1,5 @@
+=== retry default cost at -O2, 2026-09-26 ===
+identity: peek_scheduler 0 both arms; A retry_interval_cfg_ns=1000000, B=0
+A fixed   cpu 5.270 5.274 5.267  mbps 115.511 115.409 115.576
+B dynamic cpu 5.216 5.223 5.226  mbps 116.706 116.487 116.492
+CPU -49 ns (was +128 at -O0); throughput +0.9%
