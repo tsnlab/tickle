@@ -1,0 +1,7 @@
+=== core -O0 vs -O2, 2026-09-26, same commit d8949ba3, interleaved ===
+identity: objdump peek_scheduler calls  debug=3  release=0 (inlined away) on both rpis
+
+o2_dbg  cpu 6.067 6.066 6.074   mbps 100.341 100.352 100.214
+o2_rel  cpu 5.235 5.233 5.236   mbps 116.270 116.330 116.193
+
+CPU/sample -13.7%   throughput +15.9%
