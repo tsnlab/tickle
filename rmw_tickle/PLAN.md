@@ -1970,6 +1970,43 @@ Also found on that path:
 - Service typesupport lookup tried only the C identifier, so every rclcpp service failed.
 - Four `get_actual_qos` entry points that rcl calls unconditionally were missing.
 
+**KEEP_ALL can drop an unacknowledged sample when the byte bound binds before the count bound**
+(TickLE Dev, `1050d704`, verified independently by TickLE Plan by reading the code and running the
+test). The two bounds are enforced in different places and different units:
+- `keep_all_writable()` refuses a publish only when the unacknowledged run would pass
+  `keep_all_bound()`, which is `min(window, depth)` **in samples**.
+- `cache_reliable_sample()` enforces the arena **in bytes**, and its eviction loop has no KEEP_ALL
+  guard. It cannot have one: it takes the cache, not the Publisher.
+
+They agree only while every sample fits the record the arena was sized for. At the rmw default
+N = 65507 an *unbounded* type (one carrying a plain string) reserves 1472 B per record, so the
+VOLATILE arena is 3.07 MB while a full-size sample needs 65532 B: 46 samples fill it, with the
+count bound still at 2048. The 47th publish returns `tt_RET_OK`, evicts a sample nobody
+acknowledged, and an ACKNACK for it is answered with an eviction Heartbeat.
+
+`tests/test_reliable_pubsub.c` carries the evidence and its control:
+`test_keep_all_evicts_unacked_when_bytes_bind_before_count()` publishes twice into an arena sized
+for a much smaller record and asserts the first sample is gone with no refusal;
+`test_keep_all_retains_both_when_the_arena_fits_the_record()` sizes the arena correctly and keeps
+both. `tt_RELIABLE_RECORD_BYTES`'s own comment had the shape of this already - its `+1` record of
+slack exists so the byte bound cannot evict before depth is reached, which holds only when the
+record is right.
+
+**Exposure**: explicit KEEP_ALL, an unbounded type, and samples well over ~1.5 KB.
+`sensor_msgs/Image` is a real instance, since its `string encoding` makes it unbounded.
+`rclcpp`'s own default is KEEP_LAST, so this needs a deliberate KEEP_ALL.
+**Workaround today**: `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` sizes the arena for the samples
+actually sent. **Proposed fix, the user's to take** because it changes when publish blocks: make
+the refusal byte-aware, so KEEP_ALL blocks rather than drops. Sizing the arena for a full datagram
+instead is the 536 MB case the 1472 default exists to avoid.
+
+**Two wrong readings preceded this, both recorded because the pattern matters.** TickLE Dev first
+reported "larger samples are sent but not retained", which named the wrong path: core's only drop
+is `length > cache->arena_size`, which cannot fire at this N. TickLE Plan then corrected that to
+"the guarantee holds, the limit just binds sooner", which was also wrong, from reading the refusal
+path and the drop path but never the eviction path between them. What settled it was a test with a
+control, not more reading.
+
 **A false alarm worth keeping: "LIFESPAN regressed at 261f39b8"** (TickLE Plan's, withdrawn). The
 2026-09-25 re-sweep read TickLE lifespan_expiry as lost 0 in 9/9 runs, and a rig bisect pinned that
 on `261f39b8`. TickLE Dev showed that both were the harness:
