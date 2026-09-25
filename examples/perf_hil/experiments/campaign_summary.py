@@ -38,9 +38,36 @@ DIRECTION = {
     "peak_rss_kb": False,
     "wire_bytes_per_sample": False,
     "loss_pct": False,
-    "utime_s": False,
-    "stime_s": False,
 }
+# utime_s and stime_s are deliberately NOT verdict metrics, and this is a rule CHANGED AFTER SEEING
+# DATA, which is worth stating plainly rather than burying. They were in DIRECTION when the campaign
+# started; the first four cells showed why they cannot be.
+#
+# Every throughput cell runs for a FIXED DURATION (-d 5), not a fixed sample count. A framework that
+# pushes more samples in those 5 seconds necessarily burns more CPU seconds, so absolute CPU time
+# measures how much work was done at least as much as how efficiently. At c1 it inverts the ranking
+# outright:
+#
+#     fw            samples  stime_s  us/sample
+#     tickle         869468    3.943       4.53
+#     cyclonedds     741843    3.529       4.76
+#     fastdds        286155    3.634      12.70
+#
+#   by absolute stime_s (lower better): cyclonedds, fastdds, tickle
+#   by stime per sample (lower better): tickle, cyclonedds, fastdds
+#
+# FastDDS "beats" TickLE on absolute stime while doing a third of the work in the same 5 seconds.
+# The metric rewards being slow, so it answers a different question from the one section 2 asks.
+#
+# The reason to trust the change despite its timing: the argument does not depend on which way it
+# fell. Had TickLE been the slow one, the same metric would have handed TickLE a free WIN by the
+# same mechanism, and it would have been just as wrong. It happens to remove a TickLE LOSE, which is
+# exactly the direction that should invite suspicion - so the numbers above are printed here, and
+# both values are still reported per cell, marked not-comparable rather than dropped.
+#
+# cpu_s_per_Msample and cpu_s_per_MB are the normalised forms and stay verdict metrics; they are
+# what section 2's "less CPU than both DDS vendors" has to mean in a fixed-duration test.
+INFORMATIONAL = ("utime_s", "stime_s")
 # wire_packets_per_sample is deliberately NOT in DIRECTION. It is the boundary GATE, not a metric to
 # win: at P1/P2 all three are meant to read 1.0, and calling an intended three-way equality a draw
 # (or worse, a win) would be a verdict on the test design rather than on TickLE. The controlled test
@@ -91,7 +118,7 @@ def parse(path):
             role_m = re.match(r"role=(\w+)", chunk)
             role = role_m.group(1) if role_m else "client"
             for k, v in re.findall(r"([A-Za-z_]\w*)=([-\d.]+)", chunk):
-                if k in DIRECTION or k in ("sample_bytes", GATE_METRIC):
+                if k in DIRECTION or k in INFORMATIONAL or k in ("sample_bytes", GATE_METRIC):
                     try:
                         fw["vals"].setdefault(f"{role}.{k}", []).append(float(v))
                     except ValueError:
@@ -174,6 +201,12 @@ def main(path):
                 print(f"   {fw:<11} VOID x{len(data['void'])}: {data['void'][0]}")
         tvals = per_fw.get("tickle", {}).get("vals", {})
         metrics = [m for m in sorted(tvals) if m.split(".", 1)[1] in DIRECTION]
+        for m in [m for m in sorted(tvals) if m.split(".", 1)[1] in INFORMATIONAL]:
+            vend = {v: per_fw[v]["vals"][m] for v in VENDORS
+                    if v in per_fw and m in per_fw[v]["vals"]}
+            cols = "  ".join(f"{name[:6]} {fmt(vals)}" for name, vals in vend.items())
+            print(f"   {m:<24} tickle {fmt(tvals[m]):<22} {cols:<44} not-comparable"
+                  f"  (absolute CPU over a fixed duration; see cpu_s_per_Msample)")
         for m in metrics:
             t = per_fw["tickle"]["vals"][m]
             vend = {v: per_fw[v]["vals"][m] for v in VENDORS
