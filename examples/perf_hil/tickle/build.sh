@@ -83,6 +83,29 @@ case "${TICKLE_DYNAMIC_RETRY:-}" in
     ;;
 esac
 
+# TICKLE_CORE_BUILD: how libtickle.a itself is optimised - release (-O2, the default since 2026-09-26)
+# or debug (-O0 -g). Until then this script built the core through `make install` with the platform
+# Makefile's own default, BUILD_TYPE=debug, so every TickLE figure measured on the rig - the campaign,
+# the single-packet sweep, every COMPARISON.MD cell - was an unoptimised core against CycloneDDS and
+# FastDDS release packages. Only this directory's client.c/server.c were -O2. Found by disassembling two
+# rig builds: not a single static helper was inlined. `debug` reproduces those builds exactly, for a
+# like-for-like comparison with anything measured before; the RESULT line says which one ran
+# (core_build=). Release gets its own prefix, because the reinstall check below only looks at source
+# times, and an existing -O0 prefix would otherwise have survived this fix untouched.
+case "${TICKLE_CORE_BUILD:-release}" in
+release)
+    CORE_BUILD_TYPE=release
+    INSTALL_PREFIX="${INSTALL_PREFIX}_o2"
+    ;;
+debug)
+    CORE_BUILD_TYPE=debug
+    ;;
+*)
+    echo "TICKLE_CORE_BUILD must be release (the default, -O2) or debug (-O0, the builds before 2026-09-26)" >&2
+    exit 1
+    ;;
+esac
+
 # Anything that changes how libtickle.a itself is compiled gets a from-scratch build into its own
 # prefix, bracketed by `make clean`. Not belt and braces: object files in the repo build dir are
 # reused across `make install` calls regardless of CPPFLAGS, so without the clean a prefix named
@@ -101,12 +124,12 @@ elif [ -n "$(find "$REPO_ROOT/src" "$REPO_ROOT/include" -type f -newer "$INSTALL
     echo "libtickle.a in $INSTALL_PREFIX is older than src/ or include/ - reinstalling"
     NEEDS_INSTALL=1
 fi
+# Always bracketed by `make clean` now, defines or not: every BUILD_TYPE links the same
+# platform/linux/libtickle.a, and make judges it by timestamps, so an archive left by a build of the
+# other type could pass for up to date and be installed under the wrong prefix.
 if [ "$NEEDS_INSTALL" = "1" ]; then
-    if [ -n "${CORE_DEFINES// /}" ]; then
-        (cd "$REPO_ROOT" && make clean && make install "PREFIX=$INSTALL_PREFIX" "CPPFLAGS=$CORE_DEFINES" && make clean)
-    else
-        (cd "$REPO_ROOT" && make install "PREFIX=$INSTALL_PREFIX")
-    fi
+    (cd "$REPO_ROOT" && make clean && make install "PREFIX=$INSTALL_PREFIX" "BUILD_TYPE=$CORE_BUILD_TYPE" \
+        "CPPFLAGS=$CORE_DEFINES" && make clean)
 fi
 
 SRC_DIR="$HERE/$SCENARIO"
@@ -143,7 +166,7 @@ TICKLE_LIBS="$(PKG_CONFIG_PATH="$PKG_CONFIG_PATH" pkg-config --libs tickle)"
 # The payload shape comes first on the include path, and the four shapes all declare the same
 # `struct BenchData` / `BenchTopic`, so every scenario's own client.c and server.c compiles
 # unchanged at each size - the size is chosen here and nowhere else.
-CFLAGS="-O2 $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
+CFLAGS="-O2 -DBENCH_CORE_BUILD=$CORE_BUILD_TYPE $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
 
 # Compile-time proof that this shape fits the datagram *this* build's libtickle.a was compiled
 # for. The generator emits BenchData_FITS_ONE_DATAGRAM as (sample_bytes <= tt_MAX_BUFFER_LENGTH),

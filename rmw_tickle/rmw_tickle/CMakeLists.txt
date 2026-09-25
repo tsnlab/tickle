@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.8)
 project(rmw_tickle C)
 
+# Optimised unless the caller chooses otherwise (2026-09-26). colcon passes no build type by default, and
+# CMake's empty one adds no optimisation flags at all, so every rmw_tickle comparison until now ran this
+# package unoptimised against rmw_cyclonedds_cpp and rmw_fastrtps_cpp release packages - the same fairness
+# gap the TickLE harness had (examples/perf_hil/tickle/build.sh, TICKLE_CORE_BUILD). An explicit
+# -DCMAKE_BUILD_TYPE still wins; this only replaces "nothing".
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (default Release)" FORCE)
+endif()
+
 if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 11)
 endif()
@@ -133,6 +142,11 @@ if(BUILD_TESTING)
   foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks test_storage_budget test_service_roundtrip test_context_fini_leaked_node test_unsupported_entry_points)
     add_executable(${_test_name} test/${_test_name}.c)
     target_link_libraries(${_test_name} rmw_tickle Threads::Threads)
+    # Every check in these tests is an assert(), so NDEBUG - which Release, now the default build type
+    # above, defines - would compile every one of them away and leave tests that pass whatever the
+    # library does. Measured, not assumed: a Release build of these binaries referenced no
+    # __assert_fail at all, and "passed" 38 of 38.
+    target_compile_options(${_test_name} PRIVATE -UNDEBUG)
     # GENERATE_RESULT_FOR_RETURN_CODE_ZERO: these are plain C executables (an assert()-per-check,
     # exit 0/nonzero), not something that emits its own JUnit result file - ament_add_test()'s own
     # run_test.py wrapper otherwise treats "no result file produced" as a failure regardless of

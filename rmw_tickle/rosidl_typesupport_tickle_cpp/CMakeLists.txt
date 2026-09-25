@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.12)
 project(rosidl_typesupport_tickle_cpp C)
 
+# Optimised unless the caller chooses otherwise (2026-09-26). colcon passes no build type by default, and
+# CMake's empty one adds no optimisation flags at all, so every rmw_tickle comparison until now ran this
+# package unoptimised against rmw_cyclonedds_cpp and rmw_fastrtps_cpp release packages - the same fairness
+# gap the TickLE harness had (examples/perf_hil/tickle/build.sh, TICKLE_CORE_BUILD). An explicit
+# -DCMAKE_BUILD_TYPE still wins; this only replaces "nothing".
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (default Release)" FORCE)
+endif()
+
 if(NOT CMAKE_C_STANDARD)
   set(CMAKE_C_STANDARD 11)
 endif()

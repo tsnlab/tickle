@@ -109,7 +109,9 @@ printf '{"build":"fail","integration":"fail","commit":"%s","commit_short":"%s","
 # `[ -f .../libtickle.a ]` check - left alone across runs, a later push with new TickLE source would
 # silently keep building every scenario against a stale install. Force-cleaned here every run so
 # that can never happen (the same staleness class of bug this whole codebase's own history has hit
-# more than once - see e.g. rmw_tickle/PLAN.md's own pip-install-staleness lesson).
+# more than once - see e.g. rmw_tickle/PLAN.md's own pip-install-staleness lesson). build.sh installs
+# into ~/tickle_local_install_o2 since it started building the core optimised (TICKLE_CORE_BUILD), so
+# both prefixes are cleared.
 update_and_build() {
     local sha
     sha="$(git rev-parse HEAD)"
@@ -123,7 +125,7 @@ cd ~/$REMOTE_DIR
 git fetch --quiet origin
 git reset --hard --quiet $sha
 git clean -fdq
-rm -rf ~/tickle_local_install"
+rm -rf ~/tickle_local_install ~/tickle_local_install_o2"
             for scenario in "${SCENARIOS[@]}"; do
                 build_cmds="$build_cmds
 cd ~/$REMOTE_DIR/$SCEN_ROOT && ./build.sh $scenario"

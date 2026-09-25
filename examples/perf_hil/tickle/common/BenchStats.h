@@ -165,6 +165,23 @@ static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
 // actually delivered (sent for a publisher, received for a subscriber) and `sample_bytes` is the
 // CDR size of one sample, which is carried in the line so the payload-boundary gate is checkable
 // from the line alone rather than from which directory produced it.
+// How TickLE's own core library was optimised, when the build says (examples/perf_hil/tickle/build.sh,
+// TICKLE_CORE_BUILD). Printed as core_build= so a reader can refuse a comparison across optimisation
+// levels rather than discover it: until 2026-09-26 the TickLE core was built -O0 on the rig without
+// anything saying so. The DDS harnesses share this file and define nothing - their libraries are the
+// vendors' release packages - so the field is simply absent from their lines.
+// build.sh passes the build type as a bare token (release or debug) - a quoted string would need shell
+// quoting inside a word-split variable - so it is turned into a string here.
+#ifdef BENCH_CORE_BUILD
+#define BENCH_STRINGIFY_(x) #x
+#define BENCH_STRINGIFY(x) BENCH_STRINGIFY_(x)
+#define BENCH_CORE_BUILD_FIELD " core_build="
+#define BENCH_CORE_BUILD_VALUE BENCH_STRINGIFY(BENCH_CORE_BUILD)
+#else
+#define BENCH_CORE_BUILD_FIELD ""
+#define BENCH_CORE_BUILD_VALUE ""
+#endif
+
 static inline const char* bench_stats_fields(struct BenchStats* stats, int role, uint64_t samples,
                                              uint64_t sample_bytes, char* buf, size_t buf_len) {
     struct rusage usage; // NOLINT(misc-include-cleaner)
@@ -212,12 +229,12 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
              "peak_rss_kb=%" PRIu64 " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64
              " wire_tx_packets=%" PRIu64 " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
              " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
-             "iface=%s instrument=%s%s",
+             "iface=%s instrument=%s%s%s%s",
              sample_bytes, utime_s, stime_s, samples > 0 ? cpu_s * 1e6 / (double)samples : 0.0,
              megabytes > 0.0 ? cpu_s / megabytes : 0.0, peak_rss_kb, rx_bytes, rx_packets, tx_bytes, tx_packets,
              wire_bytes_total, wire_packets_total, samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
              samples > 0 ? (double)wire_packets_total / (double)samples : 0.0,
              samples > 0 ? (double)role_packets / (double)samples : 0.0, stats->iface, fail[0] != '\0' ? "fail:" : "ok",
-             fail);
+             fail, BENCH_CORE_BUILD_FIELD, BENCH_CORE_BUILD_VALUE);
     return buf;
 }
