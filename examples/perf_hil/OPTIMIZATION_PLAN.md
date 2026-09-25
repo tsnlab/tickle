@@ -426,20 +426,37 @@ are the same behaviour seen from two sides, and the target platform is the one w
 | TickLE c12 (76 B, +10 ms) | 0.622 | 6.22 ms | 10.032 |
 | CycloneDDS, all three | 0.010-0.014 | ~0.13 ms | 0.358-10.438 |
 
-**Hypothesis B1 - the receive path polls at a fixed rate independent of traffic.** The evidence is
-what does *not* move: TickLE's system time is 0.630, 0.631 and 0.622 s across an 18x payload
-difference and a 50x RTT difference. It is neither per-byte work (c11 carries 18x the payload for
-the same CPU) nor time spent waiting for the pong (c12 waits 50x longer for identical CPU). A
-constant ~0.63 s over a ~5 s run is 12.6% of one core, spent whatever the traffic does.
+**B1 CONFIRMED, with its control (2026-09-25).** `experiments/b1_syscall_count.sh`, raw output
+`results/b1_syscalls_2026-09-25.txt`.
 
-**Disproof:** `strace -c -f` one latency client run, or `perf stat -e syscalls`. B1 predicts a syscall
-count that is roughly constant across c10 and c12 and far larger than 100 - order 10^5, since 0.63 s
-of kernel time at a few microseconds per call is ~10^5 calls. If the syscall count instead tracks
-the 100 samples, B1 is wrong and the cost is per-sample work in the send/receive path.
+    TickLE latency client, strace -c:   ppoll  38,503 calls   99.69% of system time   11 us/call
+                                        sendto     18
+                                        recvfrom   60
 
-**The trade this is not.** TickLE has the lowest RTT of the three in both ungated latency cells
-(0.204 against 0.358 and 0.284). A tight poll buys that. The question for section 7 is whether the
-same RTT survives a poll interval chosen for the target platform, not whether to keep the latency.
+    no shaping   77,398 syscalls, 5 round trips, rtt 0.344 ms
+    +10 ms delay 77,396 syscalls, 5 round trips, rtt 10.076 ms      <- two calls' difference
+    CONTROL, CycloneDDS, identical strace, same 5 round trips: hundreds of syscalls in total
+
+38,503 ppolls in a ~5 s run is ~7,700/s under strace, consistent with a 100 us cadence. The count
+tracks neither traffic nor samples. The control is what makes that mean something: strace is not
+generating the calls.
+
+**The mechanism, and it is narrower than "TickLE polls".** `tt_Node_poll()` already computes the
+wait from the scheduler - `rest = min(timeout, next_due - now)` - so the scheduler's next entry can
+make the wait *shorter*. What it cannot do is raise the ceiling, and four lines into the function a
+negative timeout is normalised to `tt_RECEIVE_TIMEOUT`, 100 us. So a caller asking to block gets a
+100 us ceiling, and with nothing due for 50 ms the loop still wakes 500 times.
+
+**The user's instruction (2026-09-25): compute the poll timeout from the scheduler and reduce the
+number of poll calls.** Core work, with TickLE Dev.
+
+**What must not be traded away.** TickLE has the lowest RTT of the three (0.204 ms against 0.358 and
+0.282) and the poll cadence is the plausible reason; CycloneDDS blocks and pays thread handoff
+instead - 234 futex calls for 5 round trips in the control. So the controls are as important as the
+target: **c10's RTT must not get worse**, and c1's throughput must not move, since the same loop
+carries the publisher's send path and `tt_SCHEDULER_IO_INTERLEAVE` exists precisely because a
+max-rate publisher can starve `tt_receive()`. A version that cuts CPU and loses the latency is a
+loss, not a win. Pre-registered target: `ppoll` down at least 10x at c10.
 
 ### C. Memory at P4 (c4, the remaining LOSE) - already modelled
 
@@ -448,8 +465,12 @@ shapes - a 13 KB spread against a 5464 KB range, so the retention window is the 
 the touched arena is 5651 KB of a 7384 KB peak.
 
 **Hypothesis C1 - the default depth is a constant sample count where it should be a byte budget.**
-`reliable_depth` is 2048 samples regardless of sample size, so the arena grows linearly with the
-payload. Predicted peak RSS at depth 1024 is 4584 KB against CycloneDDS's 5544 - a win - and at 512,
+`reliable_depth` is 2048 samples regardless of sample size, so the *unacked bytes* grow linearly
+with the payload. **An earlier draft of this described it as an allocation-strategy problem, which
+was wrong** (TickLE Dev): rmw_tickle's arena already grows lazily from 64 KiB, and peak RSS tracks
+pages touched, so under KEEP_ALL with a full window the touched pages *are* the unacked samples.
+Lazy allocation therefore cannot move the P4 figure. The only lever is fewer unacked bytes - a byte
+budget works because it blocks the writer sooner, not because it reserves less. Predicted peak RSS at depth 1024 is 4584 KB against CycloneDDS's 5544 - a win - and at 512,
 3184 KB.
 
 **Why this is not simply "reduce the depth".** A smaller window is exactly where KEEP_ALL starts
