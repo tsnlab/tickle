@@ -450,6 +450,41 @@ negative timeout is normalised to `tt_RECEIVE_TIMEOUT`, 100 us. So a caller aski
 **The user's instruction (2026-09-25): compute the poll timeout from the scheduler and reduce the
 number of poll calls.** Core work, with TickLE Dev.
 
+**Measured cost of the change, after it landed (2026-09-25).** `experiments/rtt_spinner_arm.sh`,
+raw output `results/rtt_spinner_arm_2026-09-25.txt`. Four arms of 15 at 0.1 s ping spacing:
+
+| arm | rtt_avg (us) | cpu_mhz_mean |
+|---|---|---|
+| A old, no spinner | 207.3 +/-0.6 | 1601 |
+| B new, no spinner | 212.2 +/-0.5 | 1504 |
+| C new, spinner | 191.4 +/-0.4 | 2400 |
+| D old, spinner | 188.6 +/-0.3 | 2400 |
+
+    clocks unequal  B-A  +4.9 +/- 1.6 us     clocks equal  C-D  +2.8 +/- 1.0 us
+
+**A term that is not frequency is real and is at least 2.8 us at 2,400 MHz.** How the 4.9 us splits
+between that term and the clock is *model-dependent* and this arm cannot settle it (TickLE Dev): if
+the residual is fixed in time the clock accounts for 2.1 us, and if it is cycle-bound it costs
+2.8 x 2400/1504 = 4.5 us at the lower clock, leaving only 0.4 us for the clock. So the clock's share
+is somewhere in **0.4 to 2.1 us of the 4.9**, and separating them needs an arm at equal *low* clocks,
+which no sudo-free method can produce - a spinner only raises the package clock, and `scaling_governor`
+is not in the rig's NOPASSWD list. The next instrument is therefore cache-miss and context-switch
+counters per round trip, not more RTT arms.
+
+**Two pre-registration failures worth keeping**, both from this arm. First, the committed reading
+"C ~ A means the clock is the whole story" assumed the spinner acts only on the new build; it lifts
+the old build from 1,601 to 2,400 MHz too and makes it 18.7 us faster, so that pairing could not have
+been right whichever way the numbers fell. The control arm D is what exposed it, for a different
+reason than it was written for. Second, an earlier reading of the same question was expressed as a
+percentage, which made a fixed-per-wake term look like it should vary with spacing; in absolute
+microseconds both candidate mechanisms predict the same delta, so the percentage framing was the unit
+in which the preferred story happened to work.
+
+**The largest effect here is not the change.** Holding the clock at 2,400 MHz makes both builds
+19-21 us faster, ~10% of the round trip. On a DVFS host the governor's treatment of an idle core
+costs several times more than the difference between these two versions of the poll, which is why
+`COMPARISON.MD` section 3c now carries that caveat on every absolute latency figure.
+
 **What must not be traded away.** TickLE has the lowest RTT of the three (0.204 ms against 0.358 and
 0.282) and the poll cadence is the plausible reason; CycloneDDS blocks and pays thread handoff
 instead - 234 futex calls for 5 round trips in the control. So the controls are as important as the
