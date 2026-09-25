@@ -2049,13 +2049,33 @@ and whether static sizing costs memory against DDS. Measured and read rather tha
 
 **(b) landed** in `435dbe42`: a standalone public header `rmw_tickle_c/publisher_payload.h`, carried
 through `rmw_publisher_options_t.rmw_specific_publisher_payload` (rclcpp's
-`rmw_implementation_payload`), with `cache_bytes` and `keep_all_max_sample_bytes`. The field is a
+`rmw_implementation_payload`), with `cache_bytes` and `max_sample_bytes`. The field is a
 bare `void*` shared with every rmw implementation, so the payload carries a magic and its own size,
 and a mismatch in either warns and falls back to the environment rather than misreading. Precedence:
 payload, then environment as the process default, then the derived default; `0` leaves a knob to the
-level below. One refinement on review: the payload may **lower** a bounded type's reservation, since
-under-reserving is safe in both policies now and buys memory, but is clamped to the type's own bound
-on the way up, where reserving past an exact maximum is pure waste.
+level below. One refinement on review (`cd96b42b`): the payload sets the reservation under
+**either** policy, clamped upward by what the type can actually produce. A first cut had a bounded
+type ignore it, on the reasoning that its bound is exact so a smaller number buys nothing - but it
+buys memory, which is the whole point for a constrained target. `max_sample_bytes` 8192 on a type
+bounded at 64 KB now gives eleven 8 KB records at the same depth, an eighth of the memory. The field
+was `keep_all_max_sample_bytes` until this change and is now `max_sample_bytes`, since it describes
+the publisher's samples rather than a history policy.
+
+**A trap worth recording, the same class as the bug at the top of this entry.** TickLE Dev's first
+attempt had one function serve both policies' reservations, which silently shrank every unbounded
+KEEP_LAST arena from a whole datagram per record to 1472. Both policies default to a number, and for
+unbounded types both numbers *look* the same, but the reasons differ: KEEP_LAST reserves a full
+datagram because a byte budget caps its arena anyway, while KEEP_ALL reserves 1472 because nothing
+caps it and a full datagram would reserve hundreds of megabytes. **The same value arrived at for two
+different reasons is not one value**, and sharing the function silently took the wrong one. Existing
+assertions caught it immediately.
+
+The B1 diagnostic is in too, at `setup_reliable_cache()` where the arena size and the type's ceiling
+are both known. It fires when the arena cannot hold even one sample of the size the type can
+produce - not merely fewer than `depth`, which is only a retention cost - so the case is reported at
+attach instead of being discovered on a first oversize publish. The older "samples are larger than
+the reservation" warning is suppressed when the application set `max_sample_bytes`, since it then
+describes a size the caller chose deliberately.
 
 **(c) proposed for deferral** (TickLE Dev's recommendation, TickLE Plan agreeing; the user approved
 all three, so the deferral is theirs to grant). Three reasons:
