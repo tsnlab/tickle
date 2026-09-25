@@ -59,15 +59,27 @@ A ROS 2 interface or QoS request outside this list is a hard, explicit failure (
 typesupport_tickle_c` generate-time error, or an `RMW_RET_UNSUPPORTED`-equivalent return from
 `rmw_create_publisher`/`rmw_create_subscription`/etc.) - never silent best-effort degradation.
 
-- **Message/service grammar**: exactly what `tools/typesupport/PLAN.md`'s own "Out of scope"
-  section lists as unsupported (`.action`, multi-dimensional arrays, `wstring`, 128-bit types, a
-  *bounded* string element inside an array, arrays of nested message types, defaults on a nested
-  message field) - a ROS 2 package using any of those simply cannot get a
-  `rosidl_typesupport_tickle_c` for that interface. A plain (unbounded-element) array of strings
-  is supported by the core generator as of `tools/typesupport/PLAN.md`'s Milestone M7, but
-  `rosidl_typesupport_tickle_c`'s own ROS 2 converter (`ros2_adapter.py`) doesn't convert it yet
-  either - see Milestone 38 below - so it's still effectively unsupported end to end for a real
-  ROS 2 package until that adapter-layer gap closes too.
+- **Message/service grammar** (updated 2026-09-25 - this list was stale in three places). Still
+  unsupported, and a hard generate-time error rather than silent degradation: multi-dimensional
+  arrays, 128-bit types, a *bounded* string element inside an array (`string<=N[]`), defaults on a
+  nested message field, and `wstring`. Now supported end to end, against what this list used to
+  say: **`.action`** (the ROS 2 layer decomposes it into the implicit messages and services -
+  Fibonacci runs in CI), **arrays of nested message types** (`tools/typesupport` M8 plus the
+  adapter in M9), and **arrays of strings** (M7 plus M9; `sensor_msgs/JointState`'s `string[] name`
+  round-trips in CI's `-r` check).
+- **`wstring` is deliberately not implemented**, not a pending gap. The user's decision, 2026-09-25:
+  *"wstring은 사용하는 경우가 드물기 때문에 우리는 구현하지 않았다고 README.md에 명시하도록 하자."*
+  README says so as of `27ce815b`. Exactly one standard jazzy interface uses one
+  (`example_interfaces/msg/WString`), and it is declined by type, so its package still builds.
+  If it is ever wanted, TickLE Dev's research puts it at about half a day and the design is
+  settled: map it onto the existing variable `uint16` array machinery as `uint16_t[N+1]` with a
+  terminator (matching both TickLE's own string rule and `rosidl_runtime_c__U16String`, which is
+  null-terminated), two bytes per code unit, and a required capacity as for any unbounded field.
+  No core codec change. The vendors are worth knowing about here and do not constrain us: both
+  omit the terminator on the wire, and they disagree on the encoding - FastDDS and CycloneDDS's
+  legacy CDR send four bytes per character while CycloneDDS's XCDR2 sends two, and FastDDS's own
+  comment says it would prefer two but cannot change alone. TickLE is not CDR-compatible, so it
+  gains nothing from the four. `wstring[]` would stay out of scope, like bounded-string elements.
 - **Message size**: TickLE serializes within one datagram, no fragmentation
   (`tt_MAX_BUFFER_LENGTH`, DESIGN.md's "Interface serialization" section) - independent of the
   grammar limit above. A message using only supported grammar can still be individually too large
