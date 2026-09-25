@@ -84,7 +84,18 @@ for v in $VARIANTS; do
     for r in $(seq 1 "$REPS"); do
         for fw in tickle cyclonedds fastdds; do
             a="$args"; [ "$fw" = tickle ] && a="-Q $args"
-            say "$v $fw rep$r | $(cell "$v" "$fw" "$a")"
+            res=$(cell "$v" "$fw" "$a")
+            # Identity, asserted rather than optionally matched: TickLE's line must say which core
+            # build it ran. Every figure published before 2026-09-26 was core_build=debug (-O0)
+            # against vendor release packages, and nothing in the output said so. A reader that only
+            # greps the fields it wants cannot notice a field that is missing.
+            if [ "$fw" = tickle ]; then
+                cb=$(grep -oE 'core_build=[a-z]+' <<<"$res" | head -1 | cut -d= -f2)
+                if [ "${cb:-none}" != release ]; then
+                    say "$v $fw rep$r VOID(core_build=${cb:-absent}, wanted release)"; continue
+                fi
+            fi
+            say "$v $fw rep$r | $res"
         done
     done
 done
