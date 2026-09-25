@@ -2047,6 +2047,29 @@ and whether static sizing costs memory against DDS. Measured and read rather tha
 - Rejected on the way: a core-called grow callback, which would put allocation inside the publish
   path and cost the determinism that is the point of the principle.
 
+**(b) landed** in `435dbe42`: a standalone public header `rmw_tickle_c/publisher_payload.h`, carried
+through `rmw_publisher_options_t.rmw_specific_publisher_payload` (rclcpp's
+`rmw_implementation_payload`), with `cache_bytes` and `keep_all_max_sample_bytes`. The field is a
+bare `void*` shared with every rmw implementation, so the payload carries a magic and its own size,
+and a mismatch in either warns and falls back to the environment rather than misreading. Precedence:
+payload, then environment as the process default, then the derived default; `0` leaves a knob to the
+level below. One refinement on review: the payload may **lower** a bounded type's reservation, since
+under-reserving is safe in both policies now and buys memory, but is clamped to the type's own bound
+on the way up, where reserving past an exact maximum is pure waste.
+
+**(c) proposed for deferral** (TickLE Dev's recommendation, TickLE Plan agreeing; the user approved
+all three, so the deferral is theirs to grant). Three reasons:
+1. (b) removes the case that motivated it - a process-wide number forcing one size on forty
+   publishers is now a per-publisher number at creation.
+2. What (c) adds beyond (b) is only the case where the right size is unknown until after the
+   publisher exists. Neither session could name a real one: a ROS 2 application knows its topic and
+   QoS at creation, and a bounded type's size is known to the generator. "Samples got bigger than
+   expected" is answered by KEEP_ALL blocking, which is now correct.
+3. Its cost is not small. Migrating retained records remaps every slot (the index is
+   `seq % capacity`) and must stay correct while an ACKNACK can arrive for any of them - new
+   failure surface in the one path where a mistake silently loses data, which is the area that
+   produced the bug above.
+
 **A false alarm worth keeping: "LIFESPAN regressed at 261f39b8"** (TickLE Plan's, withdrawn). The
 2026-09-25 re-sweep read TickLE lifespan_expiry as lost 0 in 9/9 runs, and a rig bisect pinned that
 on `261f39b8`. TickLE Dev showed that both were the harness:
