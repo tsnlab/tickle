@@ -21,7 +21,6 @@
 #include <assert.h>
 #include <dirent.h>
 #include <stdio.h>
-#include <time.h>
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"

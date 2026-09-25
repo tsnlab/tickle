@@ -31,6 +31,7 @@
 
 #pragma once
 
+#include <stddef.h> // NULL, in the getcpu call below
 #include <stdint.h>
 #include <unistd.h>
 

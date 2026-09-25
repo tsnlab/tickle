@@ -57,6 +57,12 @@ check-rig-lock:
 lint-rmw:
 	./.github/scripts/lint_rmw.sh
 
+# Every gate above that can run on this machine, one line each, non-zero if any failed - so a
+# failing gate cannot be mistaken for a quiet one. See the script's own header for what it
+# deliberately does not cover.
+check-gates:
+	./.github/scripts/check_gates.sh
+
 headers-cpp:
 	$(MAKE) -C platform/linux headers-cpp
 

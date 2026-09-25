@@ -79,6 +79,17 @@ so a hand-edited generated file or a `.msg`/`.srv` edited without regenerating b
   [.clang-tidy](.clang-tidy)) are both enforced by `make lint` / CI
   ([check-all.yml](.github/workflows/check-all.yml)). Run `clang-format -i` on files you touch
   rather than hand-formatting.
+- **`make check-gates` runs every local gate at once** - `lint`, `lint-shell`, `check-doc-shas`,
+  `check-rig-lock`, the unit tests and `lint-rmw` - and prints PASS or FAIL per gate, exiting
+  non-zero if any failed. Prefer it to running them one at a time and reading the last line: a
+  gate's answer discarded by a redirect, or a failure swallowed by `&&`, has sent a red push to
+  `main` more than once. It does not cover what needs a runner (the conformance suite, the
+  interface-package builds, the rclcpp end-to-end checks), so green here means the local checks
+  agree, not that CI will pass.
+- **CI's clang-tidy findings are GitHub annotations, not log text.** `gh run view --log` shows only
+  `N clang-tidy-checks-failed` and never says what failed. To see it, run clang-tidy yourself over
+  the files that push changed - CI lints exactly those, not the whole tree, so a file CI has never
+  linted can carry a finding until the commit that touches it.
 - **`make lint` is the pre-push check, and it must be green.** It exits non-zero on a warning, not
   only on an error, because CI fails on any finding at all. It also prints which `clang-format` and
   `clang-tidy` it used, with versions - read that line. CI pins **19**; a current distro ships 21 or

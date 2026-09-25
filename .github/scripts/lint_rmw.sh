@@ -11,6 +11,10 @@
 # It needs a compile database for rmw_tickle, which needs ROS, so it builds one. It refuses rather
 # than passes when it cannot - a check that quietly does nothing reports success, which is the
 # failure it exists to prevent.
+# Seeing what CI itself found: cpp-linter reports findings as GitHub annotations, so `gh run view
+# --log` shows only "N clang-tidy-checks-failed" and never the finding. Re-run clang-tidy locally
+# over the files that push changed - this script for rmw_tickle, `make lint` for the rest, or
+# `make check-gates` for both.
 set -uo pipefail
 
 REPO="$(git rev-parse --show-toplevel)" || exit 1
