@@ -1,0 +1,27 @@
+=== B1 syscall count, 2026-09-25T17:52:08+09:00 ===
+
+### A  TickLE     p1, no shaping
+  result: sent=5 recv=5 rtt_avg_ms=0.344 
+  total syscalls: 77398
+  top calls: 
+
+### B  TickLE     p1, +10ms delay
+  result: sent=5 recv=5 rtt_avg_ms=10.076 
+  total syscalls: 77396
+  top calls: 
+C  CONTROL CycloneDDS p1, no shaping ABORT: not exactly one server
+
+=== done ===
+
+=== CONTROL, run separately after fixing the CycloneDDS env (LIB_PATH + CYCLONEDDS_URI) ===
+CycloneDDS reliable_latency_p1, 5 round trips, identical strace:
+  futex 234, epoll_pwait 35, clock_nanosleep 8, sendmsg 28, recvmsg 41, ... total in the hundreds
+  rtt_avg_ms=0.717
+
+=== TickLE syscall breakdown (arm B) ===
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 99.69    0.441188          11     38503           ppoll
+  0.08    0.000374          20        18           sendto
+  0.08    0.000360           6        60        40 recvfrom
+  0.02    0.000106           8        12           recvmsg
