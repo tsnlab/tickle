@@ -508,6 +508,30 @@ Lazy allocation therefore cannot move the P4 figure. The only lever is fewer una
 budget works because it blocks the writer sooner, not because it reserves less. Predicted peak RSS at depth 1024 is 4584 KB against CycloneDDS's 5544 - a win - and at 512,
 3184 KB.
 
+**MEASURED AND ACHIEVED (2026-09-25).** `experiments/keepall_bytes_arm.sh`, raw output
+`results/keepall_bytes_2026-09-25.txt`, plus a same-session before arm at `871129d8`:
+
+| | client peak RSS | send_mbps | arena_bytes |
+|---|---|---|---|
+| before (`871129d8`) | 7,386 KB [7384, 7388] | 948.38 | count bound, 2049 x 2824 |
+| after (`d96c7ac9`) | **2,251 KB** [2252, 2252, 2248] | 948.37 | 524,288 |
+
+**Memory -69.5%, throughput -0.001%.** Against CycloneDDS's 5,608 KB at c4, TickLE moves from
+**+31.7% (the campaign's one memory loss) to -59.9%**. Every cost check passes: `sent == recv` in
+every run, `write_fail=0`, `throttle_lag=0`, so the narrower window neither drops unacked samples on
+the byte bound nor refuses the writer.
+
+The before arm reproduces the campaign's 7,384 KB to within 2 KB, which is the identity evidence
+that it was built from the right tree.
+
+**Two things this run got right by instrument rather than by design.** `arena_bytes=` revealed that
+my "default" arm was not a before at all - the byte budget is already the default since `9a230a1b`,
+so both arms of the first run were the same configuration and identical for that reason rather than
+because the change does nothing. And at P1 the identity check VOIDed every budgeted run, reporting
+`arena_bytes=204900` where 524288 was demanded: the count bound binds first at a 76-byte sample, so
+`-M` changes nothing there. That void is the measurement of "small samples are unchanged" rather than
+a failure.
+
 **Why this is not simply "reduce the depth".** A smaller window is exactly where KEEP_ALL starts
 dropping unacked samples on the byte bound, which is a proven path rather than a theoretical one. A
 fixed byte budget with depth derived from it would win the large sizes without touching the small

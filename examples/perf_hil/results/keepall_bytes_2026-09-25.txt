@@ -1,0 +1,22 @@
+=== KEEP_ALL byte budget, 2026-09-25T21:16:12+09:00, repo d96c7ac9, budget 524288 ===
+--- building p1 and p4 on both rpis ---
+
+### p1, default count bound (no -M)
+DEF p1 rep1 | sent=865732 write_fail=0 send_mbps=105.273 throttle_lag=0 arena_bytes=204900 peak_rss_kb=1924 | server recv=865732 lost=0 lost=0 
+DEF p1 rep2 | sent=869133 write_fail=0 send_mbps=105.687 throttle_lag=0 arena_bytes=204900 peak_rss_kb=1924 | server recv=869133 lost=0 lost=0 
+DEF p1 rep3 | sent=866153 write_fail=0 send_mbps=105.324 throttle_lag=0 arena_bytes=204900 peak_rss_kb=1924 | server recv=866153 lost=0 lost=0 
+### p1, byte budget -M 524288
+BUD p1 rep1 VOID(arena_bytes=204900, wanted 524288)
+BUD p1 rep2 VOID(arena_bytes=204900, wanted 524288)
+BUD p1 rep3 VOID(arena_bytes=204900, wanted 524288)
+
+### p4, default count bound (no -M)
+DEF p4 rep1 | sent=211666 write_fail=0 send_mbps=948.264 throttle_lag=0 arena_bytes=524288 peak_rss_kb=2252 | server recv=211666 lost=0 lost=0 
+DEF p4 rep2 | sent=211666 write_fail=0 send_mbps=948.264 throttle_lag=0 arena_bytes=524288 peak_rss_kb=2252 | server recv=211666 lost=0 lost=0 
+DEF p4 rep3 | sent=211662 write_fail=0 send_mbps=948.246 throttle_lag=0 arena_bytes=524288 peak_rss_kb=2248 | server recv=211662 lost=0 lost=0 
+### p4, byte budget -M 524288
+BUD p4 rep1 | sent=211683 write_fail=0 send_mbps=948.340 throttle_lag=0 arena_bytes=524288 peak_rss_kb=2252 | server recv=211683 lost=0 lost=0 
+BUD p4 rep2 | sent=211691 write_fail=0 send_mbps=948.376 throttle_lag=0 arena_bytes=524288 peak_rss_kb=2252 | server recv=211691 lost=0 lost=0 
+BUD p4 rep3 | sent=211694 write_fail=0 send_mbps=948.389 throttle_lag=0 arena_bytes=524288 peak_rss_kb=2248 | server recv=211694 lost=0 lost=0 
+
+=== done ===
