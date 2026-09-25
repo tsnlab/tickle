@@ -97,6 +97,11 @@ bool rmw_tickle_check_callbacks_usable(const rosidl_typesupport_tickle_c_message
 // unacknowledged - its WhcHigh watermark is 500 kB (read from the installed libddsc 11.0.1's own
 // configuration defaults, 2026-09-25, not recalled). Measured against it at 2800-byte samples,
 // TickLE's unbudgeted KEEP_ALL held up to the whole 1024-sample ack window, ~2.9 MB.
+//
+// What the number rests on if that anchor moves: a KEEP_ALL budget is how long a writer may keep
+// sending while no acknowledgement arrives, measured in bytes - link rate times the longest ack stall
+// worth riding out. 512 KiB is ~42ms at the 100 Mbit/s the rig runs, and ~420ms at the 10 Mbit/s of
+// 10BASE-T1S, TickLE's own target. Re-derive from that, not from whatever the vendor ships next.
 #define RMW_TICKLE_KEEP_ALL_BYTES_DEFAULT (512ULL * 1024ULL)
 
 // A byte budget from the environment, or `fallback` when unset, malformed or out of range - a

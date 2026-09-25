@@ -67,6 +67,17 @@ size_t test_mock_send_last_len = 0;
 // needs all of several datagrams, not just the last one. NULL (the default) = not called.
 void (*test_mock_send_hook)(const void* buf, size_t len) = NULL;
 int test_mock_wake_signal_call_count = 0;
+// What tt_receive() was last asked to wait, and how often it was asked - for a test about how long
+// tt_Node_poll() decides to wait. And whether a timed-out wait moves the clock by that much: off by
+// default, because most tests rely on the clock standing still, and without it a positive-timeout
+// poll that times out never sees time pass.
+int64_t test_mock_receive_last_timeout = 0;
+int test_mock_receive_call_count = 0;
+bool test_mock_receive_advances_clock = false;
+// A backstop for a test whose failure mode is a loop that never returns: past this many calls
+// tt_receive() reports an interrupt, so the regression shows up as a failed assertion rather than a
+// hung test binary. 0 (the default) = no limit.
+int test_mock_receive_limit = 0;
 #else
 extern uint64_t test_mock_now;
 extern int32_t test_mock_node_id;
@@ -85,6 +96,10 @@ extern uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
 extern void (*test_mock_send_hook)(const void* buf, size_t len);
 extern size_t test_mock_send_last_len;
 extern int test_mock_wake_signal_call_count;
+extern int64_t test_mock_receive_last_timeout;
+extern int test_mock_receive_call_count;
+extern bool test_mock_receive_advances_clock;
+extern int test_mock_receive_limit;
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -106,6 +121,10 @@ static inline void test_mock_reset(void) {
     test_mock_send_last_len = 0;
     test_mock_send_hook = NULL;
     test_mock_wake_signal_call_count = 0;
+    test_mock_receive_last_timeout = 0;
+    test_mock_receive_call_count = 0;
+    test_mock_receive_advances_clock = false;
+    test_mock_receive_limit = 0;
 }
 
 #ifdef TEST_MOCK_DEFINE_STORAGE
@@ -195,11 +214,18 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     (void)node;
     (void)buf;
     (void)len;
-    (void)timeout;
 
     *ip = 0;
     *port = 0;
 
+    test_mock_receive_last_timeout = timeout;
+    test_mock_receive_call_count++;
+    if (test_mock_receive_limit > 0 && test_mock_receive_call_count > test_mock_receive_limit) {
+        return -3;
+    }
+    if (test_mock_receive_advances_clock && test_mock_receive_return == -1 && timeout > 0) {
+        test_mock_now += (uint64_t)timeout; // the whole wait elapsed with nothing arriving
+    }
     return test_mock_receive_return;
 }
 

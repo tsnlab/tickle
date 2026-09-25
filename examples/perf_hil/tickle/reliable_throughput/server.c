@@ -317,7 +317,9 @@ int main(int argc, char** argv) {
     // retry_interval_cfg_ns= is the interval libtickle itself was built with, 0 meaning dynamic -
     // asked of the library rather than read from this file's own config.h, so a harness built with
     // one -D against a library built with another reports the mode that ran, not the one it asked
-    // for. The recovery_* pair is the estimate the matched writer's proxy learned - read raw, so the interval
+    // for. In a fixed build the recovery_* pair is an upper bound on what a dynamic build would settle
+    // at, not a prediction of it - see tt_WriterProxy.probe_ns (tickle.h). The recovery_* pair is the
+    // estimate the matched writer's proxy learned - read raw, so the interval
     // it implies (srtt + 4 * rttvar, clamped) can be checked rather than trusted. The single writer
     // this scenario has is the first live slot.
     const struct tt_WriterProxy* first_writer = first_live_writer(&sub);

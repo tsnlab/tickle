@@ -91,10 +91,10 @@
 // MIN stops a fast, low-jitter link - loopback, same host - from driving the interval toward zero
 // and turning the retry timer into the storm it exists to prevent. 250us is where the rig measured
 // 86% of healthy recoveries completing, so the timer never fires sooner than a typical healthy
-// recovery could finish. Note what the timer's resolution actually is: a scheduled retry can only
-// fire when tt_Node_poll() wakes, and a poll with no deadline of its own wakes every
-// tt_RECEIVE_TIMEOUT (100us) - so 250us is about 2.5 ticks. If polling ever becomes event-driven,
-// this floor and the estimate start interacting with a different clock and both need re-checking.
+// recovery could finish. Timer resolution depends on how the caller polls. A caller passing a
+// negative timeout waits for the scheduler itself (tt_Node_poll(), tickle.h), so a retry fires at the
+// HAL's own resolution - nanoseconds on Linux. A caller polling in fixed positive slices - rmw_tickle
+// passes tt_RECEIVE_TIMEOUT, 100us - can only fire one when a slice ends, where 250us is ~2.5 slices.
 //
 // MAX follows a principle rather than a measured worst case: never wait longer than the Publisher
 // can still answer. A KEEP_LAST Publisher holds a sample for depth / send-rate, and at the rig's
@@ -253,8 +253,12 @@
 #ifndef tt_SERVER_DEFERRED_RESPONSE_TIMEOUT
 #define tt_SERVER_DEFERRED_RESPONSE_TIMEOUT (5 * tt_SECOND)
 #endif
+// A positive poll slice some callers pass explicitly (rmw_tickle's poll thread), and the most back-to-
+// back scheduler work a negative-timeout tt_Node_poll() runs before handing control back. It used to be
+// what a negative timeout waited, too; since 2026-09-25 that waits for the scheduler instead - see
+// tt_Node_poll() in tickle.h.
 #ifndef tt_RECEIVE_TIMEOUT
-#define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // Network socket default receive timeout
+#define tt_RECEIVE_TIMEOUT (100 * tt_MICROSECOND) // nanosecond
 #endif
 // EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
 // latency research" section) - tt_Node_poll()'s own inner loop favors an already-due scheduler

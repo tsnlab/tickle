@@ -440,6 +440,26 @@ static bool submessage_fits_datagram(struct tt_Node* node, const struct tt_Subme
     return false;
 }
 
+// Arms node_flush() if anything is waiting in tx_buffer and no flush is armed yet (2026-09-25). It used to
+// tick every tt_NODE_TX_INTERVAL unconditionally, which kept an idle node waking a thousand times a second
+// for an empty buffer. The flush is armed on the grid that tick ran on - the next tt_NODE_TX_INTERVAL
+// boundary of the clock, as the old tick started cycle-aligned and rescheduled from its own due time - so
+// a batched submessage waits exactly as long as it did before: 0 to one interval, not a full interval.
+static void node_flush(struct tt_Node* node, uint64_t time, void* param);
+
+static void ensure_flush_scheduled(struct tt_Node* node) {
+    if (node->flush_scheduled || node->tx_tail <= sizeof(struct tt_Header)) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    uint64_t due = now - (now % tt_NODE_TX_INTERVAL) + tt_NODE_TX_INTERVAL;
+    if (tt_Node_schedule(node, due, node_flush, NULL)) {
+        node->flush_scheduled = true;
+    } else {
+        TT_LOG_ERROR("Cannot schedule node_flush");
+    }
+}
+
 static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
                        const struct tt_Peer* peers, uint8_t peer_count) {
     // Set submessage header length
@@ -498,6 +518,9 @@ static bool end_encode(struct tt_Node* node, struct tt_SubmessageHeader* submess
     } else {
         ; // Case 3: Don't flush
     }
+    // Whatever is still in tx_buffer - batched here, or deferred past a flush that could not take it -
+    // leaves on the next flush tick.
+    ensure_flush_scheduled(node);
 
     return true;
 }
@@ -1216,7 +1239,6 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param);
 static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count);
 // Milestone 47 "goodbye" - see its own definition's doc comment.
 static void broadcast_goodbye(struct tt_Node* node);
-static void node_flush(struct tt_Node* node, uint64_t time, void* param);
 static void check_liveliness(struct tt_Node* node, uint64_t time, void* param);
 static void server_cache_clean(struct tt_Node* node, uint64_t time, void* param);
 static void clear_server_cache_slot(struct tt_Server* server, int slot);
@@ -1303,6 +1325,7 @@ static void reset_node_state(struct tt_Node* node) {
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
     node->tx_has_pending_update = false;
+    node->flush_scheduled = false;
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
@@ -1312,7 +1335,7 @@ static void reset_node_state(struct tt_Node* node) {
     node->scheduler_tail = 0;
 }
 
-// Arms node_update()/node_flush()'s first run, aligned to the next tt_NODE_CYCLE boundary.
+// Arms node_update()'s and check_liveliness()'s first run, aligned to the next tt_NODE_CYCLE boundary.
 static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
     uint64_t basetime = tt_get_ns();
     uint64_t rem = basetime % tt_NODE_CYCLE;
@@ -1324,11 +1347,8 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
         return tt_RET_OUT_OF_SCHEDULE;
     }
 
-    if (!tt_Node_schedule(node, basetime + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
-        TT_LOG_ERROR("Cannot schedule node_flush");
-        tt_close(node);
-        return tt_RET_OUT_OF_SCHEDULE;
-    }
+    // node_flush() is not armed here: nothing is waiting to be sent yet, and it is armed on demand the
+    // moment something is (ensure_flush_scheduled()).
 
     if (!tt_Node_schedule(node, basetime + tt_NODE_UPDATE_INTERVAL, check_liveliness, NULL)) {
         TT_LOG_ERROR("Cannot schedule check_liveliness");
@@ -4373,6 +4393,8 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
 // as before this feature existed.
 static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
+    UNUSED(time);
+    node->flush_scheduled = false;
 
     const struct tt_Peer* peers = NULL;
     uint8_t peer_count = 0;
@@ -4400,9 +4422,8 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     // flush_tx() already logs its own reason on failure, so nothing to add here.
     flush_tx(node, node->tx_tail, peers, peer_count);
 
-    if (!tt_Node_schedule(node, time + tt_NODE_TX_INTERVAL, node_flush, NULL)) {
-        TT_LOG_ERROR("Cannot schedule node_flush");
-    }
+    // Re-armed only if something is still waiting - a send that failed - never just to tick.
+    ensure_flush_scheduled(node);
 }
 
 // Sends every currently-retained sample (oldest first) straight to a Subscriber this Publisher's
@@ -6634,6 +6655,12 @@ static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
     return tt_RET_OK;
 }
 
+// Whether a scheduler entry is due at `now`.
+static bool scheduler_entry_due(struct tt_Node* node, uint64_t now) {
+    const struct tt_TCB* tcb = peek_scheduler(node);
+    return tcb != NULL && tcb->time <= now;
+}
+
 static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port,
                                   bool woke_for_scheduler, tt_ret_t* result) {
     if (len == -1) { // Timeout
@@ -6662,11 +6689,60 @@ static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip
     return true;
 }
 
-tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
-    // Set default timeout
-    if (timeout < 0) {
-        timeout = tt_RECEIVE_TIMEOUT;
+// One non-blocking pass: run everything due now, take whatever is already received, return. See
+// tt_Node_poll()'s timeout == 0.
+static tt_ret_t poll_once_nonblocking(struct tt_Node* node, uint64_t time) {
+    struct tt_TCB* tcb;
+    while ((tcb = peek_scheduler(node)) != NULL && tcb->time <= time) {
+        tcb->function(node, time, tcb->param);
+        pop_scheduler(node);
     }
+
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
+    if (len < 0) {
+        return tt_RET_TIMEOUT;
+    }
+    return drain_rx(node, process_datagram(node, len, ip, port));
+}
+
+// A negative-timeout poll returns once what fell due has run - every entry due by now, not just the
+// first, so a burst of simultaneous timers costs one return, not several - and, when entries keep
+// falling due (a max-rate publisher rescheduling itself), after at most tt_RECEIVE_TIMEOUT of that
+// work: the old slice. That keeps the only property of the old cadence anyone could legitimately
+// depend on - a bounded time to return under load - and drops the part nobody wanted, the same bound
+// when there is nothing to do.
+static bool poll_should_return_after_work(struct tt_Node* node, uint64_t poll_start) {
+    uint64_t now = tt_get_ns();
+    return !scheduler_entry_due(node, now) || now - poll_start >= (uint64_t)tt_RECEIVE_TIMEOUT;
+}
+
+// How long the I/O wait in tt_Node_poll() may last, and whether it ends for a scheduler entry. A
+// negative-timeout poll waits exactly until the next entry, or - with none - passes 0, which
+// tt_receive() takes as "no timeout" (hal.h): block until a datagram, a signal or tt_wake_signal(). A
+// positive one waits the rest of its budget, shortened to the next entry if that comes first.
+static int64_t poll_wait_length(const struct tt_TCB* tcb, uint64_t time, int64_t timeout, bool until_next_event,
+                                bool* woke_for_scheduler) {
+    if (until_next_event) {
+        *woke_for_scheduler = tcb != NULL;
+        return tcb != NULL ? (int64_t)(tcb->time - time) : 0;
+    }
+    if (tcb != NULL && tcb->time - time < (uint64_t)timeout) {
+        *woke_for_scheduler = true;
+        return (int64_t)(tcb->time - time);
+    }
+    *woke_for_scheduler = false;
+    return timeout;
+}
+
+tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
+    // Negative: wait exactly until the next scheduler entry is due, or indefinitely when there is none
+    // (see tt_Node_poll() in tickle.h). The loop below always bounded a wait by the next due entry, but
+    // that could only SHORTEN a fixed 100us slice, so an idle node woke ~10,000 times a second for
+    // nothing. Now the scheduler sets the wait, and returning once the due work has run keeps the
+    // caller's loop exactly as responsive: it regains control after every event, and only then.
+    const bool until_next_event = timeout < 0;
 
     // Milestone 17 (rmw_tickle/PLAN.md): send whatever tt_Server_send_response() queued since the
     // last call, before doing anything else this call - same "drain what's ready first" spirit as
@@ -6675,6 +6751,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     flush_pending_responses(node);
 
     uint64_t time = tt_get_ns();
+    const uint64_t poll_start = time;
 
     // timeout == 0: one non-blocking pass - run everything due now, drain whatever RX is already
     // waiting, return. No poll()/select() wait at all. For a caller that just wants to make
@@ -6683,19 +6760,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     // and where relying on broadcast self-receive to keep that poll() returning early breaks the
     // moment the publisher switches to unicast.
     if (timeout == 0) {
-        struct tt_TCB* tcb;
-        while ((tcb = peek_scheduler(node)) != NULL && tcb->time <= time) {
-            tcb->function(node, time, tcb->param);
-            pop_scheduler(node);
-        }
-
-        uint32_t ip = 0;
-        uint16_t port = 0;
-        int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
-        if (len < 0) {
-            return tt_RET_TIMEOUT;
-        }
-        return drain_rx(node, process_datagram(node, len, ip, port));
+        return poll_once_nonblocking(node, time);
     }
 
     // EXPERIMENTAL (branch experiment/poll-loop-io-interleave, rmw_tickle/PLAN.md's own "Further
@@ -6705,7 +6770,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     // own doc comment (config.h) for the full reasoning.
     uint32_t consecutive_scheduler_runs = 0;
 
-    while (timeout > 0) {
+    while (until_next_event || timeout > 0) {
         struct tt_TCB* tcb = peek_scheduler(node);
 
         if (tcb != NULL && tcb->time <= time && consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE) {
@@ -6713,6 +6778,9 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
             tcb->function(node, time, tcb->param);
             pop_scheduler(node);
             consecutive_scheduler_runs++;
+            if (until_next_event && poll_should_return_after_work(node, poll_start)) {
+                return tt_RET_TIMEOUT;
+            }
         } else if (tcb != NULL && tcb->time <= time) {
             // A scheduler entry is still due, but tt_SCHEDULER_IO_INTERLEAVE consecutive ones have
             // already run without a receive check - force one non-blocking peek before letting more
@@ -6728,16 +6796,19 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
         } else {
             // Run network I/O next
             consecutive_scheduler_runs = 0;
-            int64_t rest = timeout;
             bool woke_for_scheduler = false;
-            if (tcb != NULL && tcb->time - time < (uint64_t)timeout) {
-                rest = (int64_t)(tcb->time - time);
-                woke_for_scheduler = true;
-            }
+            int64_t rest = poll_wait_length(tcb, time, timeout, until_next_event, &woke_for_scheduler);
 
             uint32_t ip = 0;
             uint16_t port = 0;
             int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
+
+            // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was
+            // cut short by a signal (the HALs report EINTR as a timeout). Hand control back rather than
+            // wait again: under an indefinite wait that is what lets Ctrl-C reach the caller's loop.
+            if (until_next_event && len == -1 && !scheduler_entry_due(node, tt_get_ns())) {
+                return tt_RET_TIMEOUT;
+            }
 
             tt_ret_t result;
             if (handle_receive_result(node, len, ip, port, woke_for_scheduler, &result)) {
@@ -6746,7 +6817,9 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
         }
 
         uint64_t new_time = tt_get_ns();
-        timeout -= (int64_t)(new_time - time);
+        if (!until_next_event) {
+            timeout -= (int64_t)(new_time - time);
+        }
         time = new_time;
     }
 

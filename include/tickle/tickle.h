@@ -155,6 +155,12 @@ struct tt_Node {
     // unicast while this is true, since tx_buffer is one shared buffer flushed as a unit and an
     // UPDATE has to reach the whole segment, not just a couple of known peers. See node_flush().
     bool tx_has_pending_update;
+    // Core-owned: whether node_flush() is armed (2026-09-25). It used to reschedule itself every
+    // tt_NODE_TX_INTERVAL whether or not anything was waiting, so a node was never idle - a poll
+    // waiting for the next scheduler entry still woke a thousand times a second for it. It is now
+    // armed only when a submessage is left batched in tx_buffer, and on the same grid it always ran
+    // on, so a batched datagram leaves at exactly the instant it would have before.
+    bool flush_scheduled;
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
@@ -1230,6 +1236,11 @@ struct tt_WriterProxy {
     // links where the timer fires several times per recovery.) Timing from the first request
     // biases upward, which errs toward fewer premature retries - the direction that cannot
     // re-create the storm. probe_ns 0 = no probe outstanding.
+    //
+    // Read in a FIXED-interval build, the estimate is an upper bound on what dynamic mode settles at,
+    // not a prediction of it: a shorter interval makes recoveries complete sooner, which shortens the
+    // estimate again. Measured on the rig: the fixed 1ms build implied 1.23ms, dynamic settled at
+    // 0.35ms.
     uint32_t recovery_srtt_ns;
     uint32_t recovery_rttvar_ns;
     uint32_t probe_seq_no;
@@ -1571,6 +1582,9 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
                                   const char* endpoint_name);
 tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                    const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
+// Runs `function` at `time` from inside tt_Node_poll(). Call it from the thread that polls the node; from
+// any other thread, hold the lock that keeps that thread out of tt_Node_poll() and then call
+// tt_Node_interrupt(), or a poll already waiting will not see the new entry (see tt_Node_poll()).
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
 // Cancels every pending schedule entry matching (function, param) exactly. Returns true if any were removed.
@@ -1589,8 +1603,25 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
 
 /**
  * @node node to poll
- * @timeout wait timeout in nanoseconds
- * @return tt_ret_t
+ * @timeout nanoseconds to wait, with two special values:
+ *            0 - one non-blocking pass: run whatever is due, take whatever is already received.
+ *            negative - wait exactly until the next scheduler entry is due and run it, or until a
+ *                       datagram arrives, or until tt_Node_interrupt() - and return after the first of
+ *                       those. With nothing scheduled, wait indefinitely (2026-09-25, the user's
+ *                       decision: the scheduler already knows when the next thing is due, so there is
+ *                       nothing to wake up for in between; this used to be a fixed 100us slice, about
+ *                       10,000 wakes a second on an idle node). A signal also ends the wait, so Ctrl-C
+ *                       still reaches a caller's loop at once.
+ *
+ * The negative form relies on the rule every other part of this API already follows: the node is
+ * driven by one thread. Work raised from another thread - a tt_Node_schedule(), a
+ * tt_Server_send_response() - must be followed by tt_Node_interrupt() so the poll thread wakes and
+ * sees it; otherwise it waits until something else happens, which under an indefinite wait may be
+ * never. tt_Node_schedule() does not interrupt by itself: most calls come from the poll thread, where
+ * a wake-up on every insert would cost a syscall per scheduled sample, and a cross-thread call is
+ * already unsafe without the caller's own lock - the interrupt belongs with that lock.
+ * @return tt_RET_OK after processing a datagram, tt_RET_TIMEOUT when the wait ended without one
+ *         (including after running a due scheduler entry), tt_RET_INTERRUPTED, or an error.
  */
 tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
 

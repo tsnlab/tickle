@@ -402,14 +402,14 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     // scheduled event is due next), and re-arming a socket option that often is pure overhead -
     // ppoll() just takes the timeout as a plain argument, no socket mutation needed. ppoll(), not
     // plain poll(): poll()'s own timeout is a whole millisecond int, which silently rounds any
-    // shorter wait *up* to 1ms (a caller asking for e.g. tt_Node_poll()'s own default 100us
-    // effectively got throttled to roughly 10x that instead) - found the hard way benchmarking a
+    // shorter wait *up* to 1ms (a caller asking for a 100us slice effectively got throttled to
+    // roughly 10x that instead) - found the hard way benchmarking a
     // real publish/subscribe round trip (rmw_tickle/PLAN.md's rmw-perf.yml). ppoll() takes a real
     // struct timespec, so nothing shorter than a millisecond gets rounded at all.
     // Always poll, including for a negative timeout. Negative used to skip the poll and go
     // straight to a blocking recvfrom() on the well-known socket, which blocks exactly as
     // timeout == 0 does but sees neither the data socket nor the wake fd. tt_Node_poll() never
-    // takes that path (it normalises a negative timeout to tt_RECEIVE_TIMEOUT first), so nothing
+    // takes that path (it turns a negative timeout into a positive wait first), so nothing
     // relied on it, and leaving a path that reads only one of the two sockets would be a trap for
     // the next direct caller.
     int read_fd = node->hal.sock;
