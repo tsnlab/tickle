@@ -43,12 +43,16 @@ Framing, both verified rather than assumed where possible:
   16 for an INFO_DST). Ceiling **1396-1412 B**. This is arithmetic from the spec, **not measured**,
   which is why §7's gate exists.
 
-| id | payload | TickLE | DDS | the user's case |
-|---|---|---|---|---|
-| **P1** | 64 B | 1 pkt | 1 pkt | small data |
-| **P2** | 1388 B | 1 pkt | 1 pkt | fills one DDS packet |
-| **P3** | 1440 B | 1 pkt | **2 pkt** | fills one TickLE packet, DDS splits |
-| **P4** | 2800 B | **2 pkt** | 2 pkt | TickLE splits too |
+| id | sample (CDR) | `uint8[N]` | TickLE, 28 B framing | DDS, 60-76 B framing | the user's case |
+|---|---|---|---|---|---|
+| **P1** | 76 B | 64 | 104 B, 1 pkt | ~152 B, 1 pkt | small data |
+| **P2** | 1388 B | 1376 | 1416 B, 1 pkt | 1448-1464 B, 1 pkt | fills one DDS packet |
+| **P3** | 1440 B | 1428 | 1468 B, 1 pkt | 1500-1516 B, **2 pkt** | fills one TickLE packet, DDS splits |
+| **P4** | 2800 B | 2788 | 2828 B, **2 pkt** (needs the 4096 build) | 2860-2876 B, 2 pkt | TickLE splits too |
+
+Sizes are the **whole CDR sample**, not the payload array - rev 3 mixed the two in this table, which
+is the one place the sizes get implemented from (TickLE Dev). All four are verified by generating
+them: the generator emits `_Static_assert(sizeof(struct BenchData) == {76,1388,1440,2800})`.
 
 **P2 is sized to the most constrained framing, not to TickLE's.** 1472 - 76 = 1396, less headroom,
 gives 1388. TickLE then uses 1416 of its 1472, comfortably inside. Rev 1 used 1400, which was a
@@ -121,14 +125,28 @@ which is what stops the next hand-written codec.
 
 Baseline **Q0**, one factor at a time - the user confirmed no QoS cross is wanted.
 
-| id | reliability | history | durability |
-|---|---|---|---|
-| **Q0** | RELIABLE | KEEP_LAST 64 | VOLATILE |
-| Q1 | BEST_EFFORT | KEEP_LAST 64 | VOLATILE |
-| Q2 | RELIABLE | **KEEP_ALL** | VOLATILE |
+| id | reliability | history | durability | how each side selects it |
+|---|---|---|---|---|
+| **Q0** | RELIABLE | **KEEP_ALL** | VOLATILE | `-Q` for TickLE; the DDS harnesses' own default |
+| Q1 | BEST_EFFORT | KEEP_LAST | VOLATILE | the `best_effort_throughput` scenario |
+| Q2 | RELIABLE | **KEEP_LAST 64** | VOLATILE | TickLE's default; needs a matching option in both DDS harnesses |
 
-Q3 (depth 1024) and Q4 (TRANSIENT_LOCAL) from rev 1 are **cut for the hour budget**. They are the
-first thing to add if a second session is approved.
+**Q0 is KEEP_ALL, not KEEP_LAST, because KEEP_LAST is not runnable across all three as rev 3
+specified it.** Both DDS `reliable_throughput` harnesses are hard-coded KEEP_ALL with
+`resource_limits` and take only `-d -i -B`; TickLE defaults to KEEP_LAST and takes `-Q`. Rev 3's
+baseline would therefore have run TickLE at KEEP_LAST against DDS at KEEP_ALL and reported it as
+like-for-like - the exact defect §3a records and §3b exists to correct. KEEP_ALL is the only
+configuration in which all three make the same promise. Found by reading the harnesses before
+writing the sweep, not by running it.
+
+**Q2 exists because KEEP_LAST is what users actually get** - TickLE's default and rclcpp's - so
+without it the campaign would not measure the default configuration at all. Depth 64 specifically:
+both DDS harnesses' comments record KEEP_LAST(8) as the bisected cause of a real 53% loss, so a
+shallow depth would re-measure that finding instead of the default. If the DDS option is not cheap,
+Q2 becomes a TickLE-only datapoint, labelled as such rather than as a comparison.
+
+Depth 1024 and TRANSIENT_LOCAL are **cut for the hour budget**, and are the first things to add if a
+second session is approved.
 
 ## 6. Network conditions
 
@@ -149,12 +167,12 @@ hence the 1 ms.
 
 | # | shape | payload | QoS | network | what it is for |
 |---|---|---|---|---|---|
-| 1-4 | T | P1, P2, P3, P4 | Q0 | N0 | the core comparison across all four sizes |
+| 1-4 | T | P1, P2, P3, P4 | Q0 | N0 | the core comparison across all four sizes, KEEP_ALL so all three promise the same |
 | 5 | T | P1 | Q0 | N1 | loss at the small size |
 | 6 | T | P4 | Q0 | N1 | loss where TickLE is IP-fragmented - the §3 risk, measured |
 | 7 | T | P1 | Q0 | N3 | reorder against strict ordering |
 | 8 | T | P1 | Q1 | N0 | what reliability costs |
-| 9 | T | P1 | Q2 | N0 | KEEP_ALL, where TickLE's preallocation may lose on memory |
+| 9 | T | P1 | Q2 | N0 | KEEP_LAST 64 - the default configuration users get |
 | 10-11 | L | P1, P2 | Q0 | N0 | RTT at both comparable sizes |
 | 12 | L | P1 | Q0 | N2 | RTT under a real network delay |
 
