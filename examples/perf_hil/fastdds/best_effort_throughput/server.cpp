@@ -37,15 +37,6 @@ namespace {
     constexpr double default_safety_cap_s = 40.0;
     constexpr double safety_cap_buffer_s = 15.0;
 
-    struct stream_stats {
-        uint64_t received = 0;
-        uint64_t lost = 0;
-        uint32_t last_seq = 0;
-        bool first = true;
-        uint64_t first_recv_ns = 0;
-        uint64_t last_recv_ns = 0;
-    };
-
     auto parse_safety_cap(int argc, char** argv) -> double {
         double safety_cap_s = default_safety_cap_s;
         for (int i = 1; i < argc; i++) {
@@ -62,19 +53,7 @@ namespace {
         return safety_cap_s + safety_cap_buffer_s;
     }
 
-    void count_sample(stream_stats& stats, uint32_t seq) {
-        if (stats.first) {
-            stats.first = false;
-            stats.first_recv_ns = harness::now_ns();
-        } else if (seq > stats.last_seq + 1) {
-            stats.lost += (seq - stats.last_seq - 1);
-        }
-        stats.last_seq = seq;
-        stats.last_recv_ns = harness::now_ns();
-        stats.received++;
-    }
-
-    void receive_until(DataReader* reader, uint64_t deadline, stream_stats& stats) {
+    void receive_until(DataReader* reader, uint64_t deadline, harness::stream_stats& stats) {
         while (!harness::interrupted() && harness::now_ns() < deadline) {
             const eprosima::fastrtps::Duration_t timeout {1, 0};
             if (!reader->wait_for_unread_message(timeout)) {
@@ -84,23 +63,16 @@ namespace {
             SampleInfo info;
             while (reader->take_next_sample(&sample, &info) == ReturnCode_t::RETCODE_OK) {
                 if (info.valid_data) {
-                    count_sample(stats, sample.seq());
+                    harness::count_sample(stats, sample.seq());
                 }
             }
         }
     }
 
-    void report(const stream_stats& stats) {
-        const double elapsed_s =
-            stats.received > 0 ? static_cast<double>(stats.last_recv_ns - stats.first_recv_ns) / harness::ns_per_s_real
-                               : 0.0;
-        const uint64_t total = stats.received + stats.lost;
-        const double loss_pct =
-            total > 0 ? (harness::percent * static_cast<double>(stats.lost) / static_cast<double>(total)) : 0.0;
-        const double mbps = elapsed_s > 0.0
-                                ? ((static_cast<double>(stats.received) * sizeof(Bench) * harness::bits_per_byte) /
-                                   harness::bits_per_megabit / elapsed_s)
-                                : 0.0;
+    void report(const harness::stream_stats& stats) {
+        const double elapsed_s = harness::stream_elapsed_s(stats);
+        const double loss_pct = harness::stream_loss_pct(stats);
+        const double mbps = harness::mbps(stats.received, sizeof(Bench), elapsed_s);
 
         bench_stats_end(&harness::g_bench_stats);
 
@@ -142,7 +114,7 @@ auto main(int argc, char** argv) -> int {
         return 1;
     }
 
-    stream_stats stats;
+    harness::stream_stats stats;
     receive_until(reader, harness::now_ns() + harness::seconds_to_ns(safety_cap_s), stats);
     report(stats);
 

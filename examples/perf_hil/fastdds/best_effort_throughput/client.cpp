@@ -78,14 +78,6 @@ namespace {
         }
     }
 
-    // The pacing exactly as it always was: whole seconds, then the fraction in nanoseconds.
-    void pace(double interval_s) {
-        const auto whole_s = static_cast<time_t>(interval_s);
-        const struct timespec pace_ts = {
-            whole_s, static_cast<long>((interval_s - static_cast<double>(whole_s)) * harness::ns_per_s_real)};
-        nanosleep(&pace_ts, nullptr);
-    }
-
     auto send_until(DataWriter* writer, uint64_t deadline, double interval_s) -> uint64_t {
         uint32_t seq = 0;
         uint64_t sent = 0;
@@ -97,7 +89,7 @@ namespace {
                 sent++;
             }
             if (interval_s > 0.0) {
-                pace(interval_s);
+                harness::pace_seconds(interval_s);
             }
         }
         return sent;
@@ -146,9 +138,7 @@ auto main(int argc, char** argv) -> int {
     const uint64_t sent = send_until(writer, start + harness::seconds_to_ns(opts.duration_s), opts.interval_s);
 
     const double elapsed_s = static_cast<double>(harness::now_ns() - start) / harness::ns_per_s_real;
-    const double mbps = elapsed_s > 0.0 ? ((static_cast<double>(sent) * sizeof(Bench) * harness::bits_per_byte) /
-                                           harness::bits_per_megabit / elapsed_s)
-                                        : 0.0;
+    const double mbps = harness::mbps(sent, sizeof(Bench), elapsed_s);
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=best_effort_throughput role=client sent=%lu elapsed_s=%.3f "
            "send_mbps=%.3f %s\n",

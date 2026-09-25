@@ -22,6 +22,7 @@
 
 #include <array>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <time.h> // NOLINT(modernize-deprecated-headers) - clock_gettime()/nanosleep() are POSIX, not in <ctime>
 
@@ -65,6 +66,55 @@ namespace harness {
 
     inline auto seconds_to_ns(double seconds) -> uint64_t {
         return static_cast<uint64_t>(seconds * ns_per_s_real);
+    }
+
+    // The throughput clients' -i pacing, exactly as it always was: whole seconds, then the fraction in
+    // nanoseconds - not seconds_to_ns(), whose rounding could differ from it by a nanosecond.
+    inline void pace_seconds(double interval_s) {
+        const auto whole_s = static_cast<time_t>(interval_s);
+        const struct timespec pace_ts = {
+            whole_s, static_cast<long>((interval_s - static_cast<double>(whole_s)) * ns_per_s_real)};
+        nanosleep(&pace_ts, nullptr);
+    }
+
+    // Megabits per second of `samples` samples of `sample_size` bytes. The throughput harnesses have always
+    // passed sizeof(Bench) here, not BENCH_SAMPLE_BYTES; kept so their numbers stay comparable with every
+    // earlier run.
+    inline auto mbps(uint64_t samples, size_t sample_size, double elapsed_s) -> double {
+        return elapsed_s > 0.0 ? ((static_cast<double>(samples) * static_cast<double>(sample_size) * bits_per_byte) /
+                                  bits_per_megabit / elapsed_s)
+                               : 0.0;
+    }
+
+    // What a throughput server counts: every seq gap is loss, relative to the previous sample taken.
+    struct stream_stats {
+        uint64_t received = 0;
+        uint64_t lost = 0;
+        uint32_t last_seq = 0;
+        bool first = true;
+        uint64_t first_recv_ns = 0;
+        uint64_t last_recv_ns = 0;
+    };
+
+    inline void count_sample(stream_stats& stats, uint32_t seq) {
+        if (stats.first) {
+            stats.first = false;
+            stats.first_recv_ns = now_ns();
+        } else if (seq > stats.last_seq + 1) {
+            stats.lost += (seq - stats.last_seq - 1);
+        }
+        stats.last_seq = seq;
+        stats.last_recv_ns = now_ns();
+        stats.received++;
+    }
+
+    inline auto stream_elapsed_s(const stream_stats& stats) -> double {
+        return stats.received > 0 ? static_cast<double>(stats.last_recv_ns - stats.first_recv_ns) / ns_per_s_real : 0.0;
+    }
+
+    inline auto stream_loss_pct(const stream_stats& stats) -> double {
+        const uint64_t total = stats.received + stats.lost;
+        return total > 0 ? (percent * static_cast<double>(stats.lost) / static_cast<double>(total)) : 0.0;
     }
 
     // The shared instrumentation's storage (BenchStats.h). Armed at the very top of each main(), before
