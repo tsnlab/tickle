@@ -133,6 +133,28 @@ namespace harness {
         return stats.received > 0 ? static_cast<double>(stats.last_recv_ns - stats.first_recv_ns) / ns_per_s_real : 0.0;
     }
 
+    // What the two stalling servers (history_depth_burst_loss, lifespan_expiry) count. Unlike stream_stats,
+    // last_seq starts at 0 rather than at the first sample's own seq, so samples lost before the first one
+    // that arrives count too - see history_depth_burst_loss/server.cpp for the bug that choice fixed.
+    struct seq_gaps {
+        uint64_t received = 0;
+        uint64_t lost = 0;
+        uint32_t last_seq = 0;
+    };
+
+    inline void count_seq(seq_gaps& gaps, uint32_t seq) {
+        if (seq > gaps.last_seq + 1) {
+            gaps.lost += (seq - gaps.last_seq - 1);
+        }
+        gaps.last_seq = seq;
+        gaps.received++;
+    }
+
+    inline auto seq_gaps_loss_pct(const seq_gaps& gaps) -> double {
+        const uint64_t total = gaps.received + gaps.lost;
+        return total > 0 ? (percent * static_cast<double>(gaps.lost) / static_cast<double>(total)) : 0.0;
+    }
+
     inline auto stream_loss_pct(const stream_stats& stats) -> double {
         const uint64_t total = stats.received + stats.lost;
         return total > 0 ? (percent * static_cast<double>(stats.lost) / static_cast<double>(total)) : 0.0;
