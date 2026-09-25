@@ -100,9 +100,23 @@ int main(int argc, char** argv) {
         samples[i] = &batch[i];
     }
 
+    // Lifetime (2026-09-25): an absolute cap only until the first sample arrives, then an idle
+    // cap. It was absolute throughout - -d + 15 s from start - and that truncated the one cell that
+    // needed longer: P4 under 5% loss needs at least 16.8 s of wire time, so the server exited while
+    // the client was still retransmitting, leaving 200 samples undelivered and peer_acks_end=0 in
+    // what read as a protocol result. Any fixed figure only moves that cliff to a worse condition.
+    // "Don't hang forever" means "stop when nothing is arriving", so that is what it now checks.
+    // run_scenario.sh still ends the normal case with SIGINT as soon as the client finishes; these
+    // are only the backstops. Identical in all three frameworks' servers - a lifetime rule that
+    // differed would hand whichever lived longest the samples the other was cut off from.
     uint64_t start = now_ns();
     uint64_t deadline = start + (uint64_t)(safety_cap_s * 1e9);
-    while (!g_interrupted && now_ns() < deadline) {
+    const uint64_t idle_cap_ns = (uint64_t)(15.0 * 1e9);
+    while (!g_interrupted) {
+        uint64_t now = now_ns();
+        if (first ? now >= deadline : now - last_recv_ns >= idle_cap_ns) {
+            break;
+        }
         dds_return_t rc = dds_waitset_wait(waitset, NULL, 0, DDS_SECS(1));
         if (rc <= 0) {
             continue;

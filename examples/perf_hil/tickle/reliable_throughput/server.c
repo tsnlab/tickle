@@ -85,6 +85,17 @@ static uint32_t max_seq_seen = 0;
 // is the entire residual under KEEP_ALL - the missing seq_nos were always 1..3, never the tail and
 // never mid-stream, with every abandonment counter on both sides at zero.
 static uint32_t first_seq_seen = 0;
+// When the last sample arrived, for the idle-based lifetime in main(). 0 = none yet.
+static uint64_t g_last_rx_ns = 0;
+
+// Whether main()'s receive loop should stop - see the lifetime comment there. An absolute deadline
+// until the first sample, then an idle cap measured from the last one.
+static bool lifetime_over(uint64_t now, uint64_t deadline, uint64_t idle_cap_ns) {
+    if (g_last_rx_ns == 0) {
+        return now >= deadline;
+    }
+    return now - g_last_rx_ns >= idle_cap_ns;
+}
 
 static struct BenchCpuFreq g_cpu_freq;
 static struct BenchCpuPlace g_cpu_place;
@@ -105,6 +116,7 @@ static void stream_callback(struct tt_Subscriber* sub, uint64_t timestamp, uint1
     }
     received_bitmap[idx / 8] |= (uint8_t)(1U << (idx % 8));
     received++;
+    g_last_rx_ns = tt_get_ns();
     if (first_seq_seen == 0 || data->seq < first_seq_seen) {
         first_seq_seen = data->seq;
     }
@@ -249,11 +261,22 @@ int main(int argc, char** argv) {
 
     BenchCpuFreq_init(&g_cpu_freq);
     BenchCpuPlace_init(&g_cpu_place);
+    // Lifetime (2026-09-25): an absolute cap only until the first sample arrives, then an idle
+    // cap. It was absolute throughout - -d + 15 s from start - and that truncated the one cell that
+    // needed longer: P4 under 5% loss needs at least 16.8 s of wire time, so this server exited while
+    // the client was still retransmitting, leaving 200 samples undelivered and peer_acks_end=0 in
+    // what read as a protocol result. Any fixed figure only moves that cliff to a worse condition.
+    // "Don't hang forever" means "stop when nothing is arriving", so that is what it now checks.
+    // run_scenario.sh still ends the normal case with SIGINT as soon as the client finishes; these
+    // are only the backstops. Identical in all three frameworks' servers - a lifetime rule that
+    // differed would hand whichever lived longest the samples the other was cut off from.
     uint64_t deadline = tt_get_ns() + (uint64_t)(safety_cap_s * (double)tt_SECOND);
-    // 500ms (nanoseconds), so the deadline/g_interrupted check re-runs.
+    const uint64_t idle_cap_ns = (uint64_t)(safety_cap_buffer_s * (double)tt_SECOND);
+    // 500ms (nanoseconds), so the lifetime/g_interrupted check re-runs.
     const int64_t poll_timeout_ns = 500LL * 1000 * 1000;
     ret = tt_RET_OK;
-    while (!g_interrupted && tt_get_ns() < deadline && (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
+    while (!g_interrupted && !lifetime_over(tt_get_ns(), deadline, idle_cap_ns) &&
+           (ret == tt_RET_OK || ret == tt_RET_TIMEOUT)) {
         ret = tt_Node_poll(&node, poll_timeout_ns);
     }
 
