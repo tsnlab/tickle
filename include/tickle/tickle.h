@@ -85,6 +85,11 @@ struct tt_LockStats {
     uint64_t wait_ns;
 };
 
+// struct tt_Node.sched_inbox_state[] values.
+#define tt_SCHED_SLOT_EMPTY 0
+#define tt_SCHED_SLOT_WRITING 1
+#define tt_SCHED_SLOT_READY 2
+
 struct tt_Node {
     uint8_t id;
     uint32_t endpoint_count;
@@ -182,22 +187,30 @@ struct tt_Node {
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_freertos.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
-    // Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock(). state_lock guards
-    // everything in the node and its entities; it is recursive because user callbacks run with it
-    // held and may call back into core. sched_lock guards only the scheduler heap, so that
-    // tt_Node_schedule() from another thread never waits behind a datagram being processed.
-    // Order: state_lock before sched_lock, never the reverse.
-    tt_lock_t state_lock; // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
-    tt_lock_t sched_lock; // NOLINT(misc-include-cleaner)
+    // Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock(). One lock, guarding the
+    // node, its entities and the scheduler heap. User callbacks run with it held and may call back into
+    // core, so it is re-entrant - not through a recursive mutex but by recording its owner: re-entry by the
+    // owning thread is then a compare, not an atomic, which matters on the per-sample publish path.
+    tt_lock_t state_lock;  // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
+    uintptr_t state_owner; // tt_thread_self() of the holder, 0 when free; accessed through __atomic builtins
+    uint32_t state_depth;  // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
-    struct tt_LockStats sched_lock_stats;
+    // The scheduler inbox: tt_Node_schedule() from a thread that does not hold the state lock puts its entry
+    // here, without a lock, and the next look at the heap moves it in - see sched_inbox_push() (tickle.c).
+    // Each slot is claimed by compare-and-swap, as struct tt_Server.slot_state is.
+    struct tt_TCB sched_inbox[tt_SCHED_INBOX_LENGTH];
+    uint8_t sched_inbox_state[tt_SCHED_INBOX_LENGTH]; // tt_SCHED_SLOT_*, through __atomic builtins
+    uint32_t sched_inbox_pending;                     // READY slots, so an empty inbox costs one load
     // Set while a tt_Node_poll() is running, so a second concurrent one fails with tt_RET_BUSY instead
     // of sharing rx_buffer with the first. Accessed only through __atomic builtins.
     uint8_t poller_active;
     // What a poll blocked in tt_receive() is waiting until (UINT64_MAX: indefinitely), or 0 when no poll
-    // is waiting. Guarded by sched_lock, so tt_Node_schedule() from another thread can tell whether its
-    // new entry is earlier than the wait and must wake it.
-    uint64_t wait_until;
+    // is waiting, so a scheduler insert earlier than that wakes it. Two 32-bit halves under a sequence
+    // counter, because a 32-bit target has no 64-bit atomics - see wait_until_store() and poll_wait_io()
+    // (tickle.c) for the ordering that makes the wake race-free.
+    uint32_t wait_seq;
+    uint32_t wait_until_hi;
+    uint32_t wait_until_lo;
 
     // Opt-in graph introspection (tt_Node_set_discovery(), rmw_tickle/PLAN.md's Milestone 0(c)) -
     // NULL (the default - see reset_node_state()) unless a caller attaches its own, externally-
@@ -1675,8 +1688,9 @@ tt_ret_t tt_Node_interrupt(struct tt_Node* node);
 //
 // - Every public tt_* function may be called from any thread, concurrently with tt_Node_poll() on
 //   another. tt_Server_send_response() and tt_Node_interrupt() take no lock at all; tt_Node_schedule()
-//   takes only the scheduler's own lock; everything else takes the node's state lock for the length of
-//   the call. tt_Node_poll() holds nothing while it waits.
+//   takes the node's lock only if it is free (or already held by the caller), and otherwise hands its
+//   entry to the poll thread through a lock-free inbox; everything else takes the node's lock for the
+//   length of the call. tt_Node_poll() holds nothing while it waits.
 // - User callbacks (subscriber, client, server, discovery, writable, scheduled functions) run on the
 //   polling thread with the state lock held, as they always ran inside the one thread that drove the
 //   node. They may call back into core. A slow callback delays every other thread's call on this node
@@ -1689,6 +1703,10 @@ tt_ret_t tt_Node_interrupt(struct tt_Node* node);
 //   tt_ReliableCache_grow() and tt_Discovery_count() take a cache or table rather than a node, so the
 //   caller holds tt_Node_lock() around them when the cache or table belongs to a live node.
 void tt_Node_lock(struct tt_Node* node);
+// tt_Node_lock() giving up after timeout_ns; true if the lock was taken (and must be released with
+// tt_Node_unlock()). For an observer that must never block behind a wedged callback on the poll
+// thread - rmw_tickle's liveliness watchdog is one.
+bool tt_Node_lock_timed(struct tt_Node* node, uint64_t timeout_ns);
 void tt_Node_unlock(struct tt_Node* node);
 
 // Opts `node` into graph introspection: every UPDATE it processes from here on also records the

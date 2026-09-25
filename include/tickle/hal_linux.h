@@ -12,6 +12,8 @@
 
 #include <pthread.h>
 #include <stdbool.h> // rx_prefer_data
+#include <stdint.h>
+#include <time.h>
 
 #include <netinet/in.h>
 #include <tickle/config.h>
@@ -37,11 +39,29 @@ static inline bool tt_lock_try(tt_lock_t* lock) {
 static inline void tt_lock_acquire(tt_lock_t* lock) {
     pthread_mutex_lock(lock);
 }
+#define TT_LOCK_NS_PER_S 1000000000ULL
+
+// Waits at most timeout_ns for the lock; true if it was taken.
+static inline bool tt_lock_acquire_timed(tt_lock_t* lock, uint64_t timeout_ns) {
+    struct timespec deadline;
+    // pthread_mutex_timedlock() measures CLOCK_REALTIME; glibc defines it in bits/time.h, behind <time.h>
+    clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner)
+    uint64_t nsec = (uint64_t)deadline.tv_nsec + (timeout_ns % TT_LOCK_NS_PER_S);
+    deadline.tv_sec += (time_t)(timeout_ns / TT_LOCK_NS_PER_S) + (time_t)(nsec / TT_LOCK_NS_PER_S);
+    deadline.tv_nsec = (long)(nsec % TT_LOCK_NS_PER_S);
+    return pthread_mutex_timedlock(lock, &deadline) == 0;
+}
 static inline void tt_lock_release(tt_lock_t* lock) {
     pthread_mutex_unlock(lock);
 }
 static inline void tt_lock_destroy(tt_lock_t* lock) {
     pthread_mutex_destroy(lock);
+}
+// The calling thread, as a number no live thread shares and that is never 0. The node's state lock
+// records its owner with this, so a callback re-entering core on the thread that already holds it costs
+// a compare rather than an atomic (tickle.c, state_lock()).
+static inline uintptr_t tt_thread_self(void) {
+    return (uintptr_t)pthread_self();
 }
 #else
 typedef struct {
@@ -58,11 +78,19 @@ static inline bool tt_lock_try(tt_lock_t* lock) {
 static inline void tt_lock_acquire(tt_lock_t* lock) {
     (void)lock;
 }
+static inline bool tt_lock_acquire_timed(tt_lock_t* lock, uint64_t timeout_ns) {
+    (void)lock;
+    (void)timeout_ns;
+    return true;
+}
 static inline void tt_lock_release(tt_lock_t* lock) {
     (void)lock;
 }
 static inline void tt_lock_destroy(tt_lock_t* lock) {
     (void)lock;
+}
+static inline uintptr_t tt_thread_self(void) {
+    return 1;
 }
 #endif
 

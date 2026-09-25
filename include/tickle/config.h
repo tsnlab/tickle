@@ -285,6 +285,12 @@
 #ifndef tt_THREAD_SAFE
 #define tt_THREAD_SAFE 1
 #endif
+// How many timers other threads may have in flight to a node at once before tt_Node_schedule() falls back
+// from the lock-free inbox to taking the node's lock (struct tt_Node.sched_inbox). The poll thread empties
+// it every time it looks at the scheduler, so it only has to cover a burst between two looks.
+#ifndef tt_SCHED_INBOX_LENGTH
+#define tt_SCHED_INBOX_LENGTH 32
+#endif
 // Requested SO_SNDBUF/SO_RCVBUF size. The kernel silently clamps this to whatever
 // net.core.[rw]mem_max allows for an unprivileged process, so asking for more than that is
 // harmless - it's cheap insurance against drops under bursty send/receive on systems where the

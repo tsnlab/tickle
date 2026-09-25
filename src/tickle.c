@@ -1140,42 +1140,88 @@ static bool deadline_liveliness_incompatible(uint64_t requested_deadline_ns, uin
     return requested_lease_ns != 0 && (offered_lease_ns == 0 || offered_lease_ns > requested_lease_ns);
 }
 
-// Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock() in tickle.h for the contract,
-// and struct tt_Node.state_lock for what each lock guards. Taken with a try first so the uncontended case
-// costs one atomic and the contended one is counted, with how long it waited: whether the state lock is
-// worth splitting further is a measurement, not something to decide from here.
-// tt_lock_*: from the platform header hal.h selects (hal_linux.h, hal_freertos.h), which include-cleaner
-// cannot see through - the same reason struct tt_Node.hal carries a NOLINT.
-static void lock_counted(tt_lock_t* lock, struct tt_LockStats* stats) { // NOLINT(misc-include-cleaner)
-    if (!tt_lock_try(lock)) {                                           // NOLINT(misc-include-cleaner)
-        uint64_t start = tt_get_ns();
-        tt_lock_acquire(lock); // NOLINT(misc-include-cleaner)
-        stats->contended++;
-        stats->wait_ns += tt_get_ns() - start;
-    }
-    stats->acquisitions++;
+// Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock() in tickle.h for the contract.
+//
+// One lock per node, the state lock, and it tracks its own owner: a plain mutex plus the owning thread and a
+// depth, rather than a recursive mutex. Callbacks run with it held and routinely call back into core, and
+// on the publish path of a max-rate publisher that happens several times per sample; re-entry by the owner
+// is then a thread-id compare instead of an atomic. The rig showed why that matters: with a recursive mutex
+// and a separate scheduler lock, about five lock operations per sample cost ~215 ns on the Raspberry Pi -
+// uncontended, and in place about three times what a tight-loop microbenchmark of the same lock suggested.
+//
+// Taken with a try first so the uncontended case costs one atomic and the contended one is counted, with
+// how long it waited: whether the lock is worth splitting is a measurement, not something to decide here.
+// tt_lock_*/tt_thread_self: from the platform header hal.h selects (hal_linux.h, hal_freertos.h), which
+// include-cleaner cannot see through - the same reason struct tt_Node.hal carries a NOLINT.
+static bool state_lock_owned(struct tt_Node* node) {
+    return __atomic_load_n(&node->state_owner, __ATOMIC_RELAXED) == tt_thread_self(); // NOLINT(misc-include-cleaner)
+}
+
+// Called with the mutex just taken.
+static void state_lock_taken(struct tt_Node* node) {
+    __atomic_store_n(&node->state_owner, tt_thread_self(), __ATOMIC_RELAXED); // NOLINT(misc-include-cleaner)
+    node->state_depth = 1;
+    node->state_lock_stats.acquisitions++;
 }
 
 static void state_lock(struct tt_Node* node) {
-    lock_counted(&node->state_lock, &node->state_lock_stats);
+    if (state_lock_owned(node)) {
+        node->state_depth++; // re-entry from a callback, or a public call made inside another
+        return;
+    }
+    if (!tt_lock_try(&node->state_lock)) { // NOLINT(misc-include-cleaner)
+        uint64_t start = tt_get_ns();
+        tt_lock_acquire(&node->state_lock); // NOLINT(misc-include-cleaner)
+        node->state_lock_stats.contended++;
+        node->state_lock_stats.wait_ns += tt_get_ns() - start;
+    }
+    state_lock_taken(node);
+}
+
+// state_lock() without waiting: true if it is now held (by this thread, possibly re-entered).
+static bool state_try_lock(struct tt_Node* node) {
+    if (state_lock_owned(node)) {
+        node->state_depth++;
+        return true;
+    }
+    if (!tt_lock_try(&node->state_lock)) { // NOLINT(misc-include-cleaner)
+        return false;
+    }
+    state_lock_taken(node);
+    return true;
 }
 
 static void state_unlock(struct tt_Node* node) {
-    tt_lock_release(&node->state_lock); // NOLINT(misc-include-cleaner)
-}
-
-static void sched_lock(struct tt_Node* node) {
-    lock_counted(&node->sched_lock, &node->sched_lock_stats);
-}
-
-static void sched_unlock(struct tt_Node* node) {
-    tt_lock_release(&node->sched_lock); // NOLINT(misc-include-cleaner)
+    if (--node->state_depth == 0) {
+        __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
+        tt_lock_release(&node->state_lock); // NOLINT(misc-include-cleaner)
+    }
 }
 
 void tt_Node_lock(struct tt_Node* node) {
     if (node != NULL) {
         state_lock(node);
     }
+}
+
+bool tt_Node_lock_timed(struct tt_Node* node, uint64_t timeout_ns) {
+    if (node == NULL) {
+        return false;
+    }
+    if (state_lock_owned(node)) {
+        node->state_depth++;
+        return true;
+    }
+    if (!tt_lock_try(&node->state_lock)) { // NOLINT(misc-include-cleaner)
+        uint64_t start = tt_get_ns();
+        if (!tt_lock_acquire_timed(&node->state_lock, timeout_ns)) { // NOLINT(misc-include-cleaner)
+            return false;
+        }
+        node->state_lock_stats.contended++;
+        node->state_lock_stats.wait_ns += tt_get_ns() - start;
+    }
+    state_lock_taken(node);
+    return true;
 }
 
 void tt_Node_unlock(struct tt_Node* node) {
@@ -1225,49 +1271,153 @@ static void sched_sift_down(struct tt_Node* node, int32_t index) {
     node->scheduler[index] = moving;
 }
 
-// Only the scheduler's own lock: an insert never races a running entry, because a running entry has
-// already been taken out of the heap (run_due_entry()). That is what lets another thread schedule
-// without waiting behind a datagram the poll thread is processing.
-//
-// Wakes the poller only when it is blocked waiting for something later than this entry
-// (struct tt_Node.wait_until). An insert made while the poller is not waiting - which is every insert
-// made on the poll thread itself, from a callback or a datagram - costs nothing extra, because the
-// poll loop re-reads the heap before it next waits.
-bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
-                      void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
-    sched_lock(node);
-    if (node->scheduler_tail + 1 >= tt_MAX_SCHEDULER_LENGTH) {
-        sched_unlock(node);
-        return false;
-    }
-
+static void sched_heap_insert(struct tt_Node* node, uint64_t time,
+                              void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
     int32_t index = node->scheduler_tail;
     node->scheduler[index].time = time;
     node->scheduler[index].function = function;
     node->scheduler[index].param = param;
     node->scheduler_tail++;
     sched_sift_up(node, index);
-    bool wake = node->wait_until != 0 && time < node->wait_until;
-    sched_unlock(node);
+}
 
-    if (wake) {
+// struct tt_Node.wait_until, as a seqlock over two 32-bit halves. A 64-bit atomic would be simpler, but a
+// 32-bit target has none in hardware - rv32 builds of this file failed to link on __atomic_store_8, and
+// picolibc brings no libatomic - so the value is written under a sequence counter instead. Only the poller
+// writes it. The final store of the counter is sequentially consistent, and it is that store, paired with
+// the reader's first load, that carries the ordering poll_wait_io() and wake_if_waiting_past() rely on.
+static void wait_until_store(struct tt_Node* node, uint64_t value) {
+    uint32_t seq = __atomic_load_n(&node->wait_seq, __ATOMIC_RELAXED);
+    __atomic_store_n(&node->wait_seq, seq + 1, __ATOMIC_RELAXED); // odd: a write is in progress
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    __atomic_store_n(&node->wait_until_hi, (uint32_t)(value >> 32U), __ATOMIC_RELAXED);
+    __atomic_store_n(&node->wait_until_lo, (uint32_t)value, __ATOMIC_RELAXED);
+    __atomic_store_n(&node->wait_seq, seq + 2, __ATOMIC_SEQ_CST);
+}
+
+static uint64_t wait_until_load(struct tt_Node* node) {
+    uint32_t before = 0;
+    uint32_t after = 0;
+    uint32_t high = 0;
+    uint32_t low = 0;
+    do {
+        before = __atomic_load_n(&node->wait_seq, __ATOMIC_SEQ_CST);
+        high = __atomic_load_n(&node->wait_until_hi, __ATOMIC_RELAXED);
+        low = __atomic_load_n(&node->wait_until_lo, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        after = __atomic_load_n(&node->wait_seq, __ATOMIC_RELAXED);
+    } while ((before & 1U) != 0 || before != after);
+    return ((uint64_t)high << 32U) | low;
+}
+
+// Whether a poll blocked in tt_receive() is waiting for something later than `time`, and must be woken.
+// Paired with poll_wait_io()'s store of wait_until and its re-check of the inbox: both sides write, then
+// read the other's variable, all sequentially consistent, so at least one of them sees the other.
+static void wake_if_waiting_past(struct tt_Node* node, uint64_t time) {
+    uint64_t until = wait_until_load(node);
+    if (until != 0 && time < until) {
         tt_wake_signal(node);
     }
-    return true;
+}
+
+// The scheduler inbox: how a thread that does not hold the state lock schedules without taking it - the
+// user's own design, "put it in the scheduler and interrupt", made lock-free. A fixed ring of slots, each
+// claimed by compare-and-swap, the same way tt_Server_send_response() hands a response to the poll thread
+// (struct tt_Server.slot_state). The heap itself belongs to whoever holds the state lock; the poll thread
+// moves inbox entries into it (sched_drain_inbox()) each time it looks at the heap.
+static bool sched_inbox_push(struct tt_Node* node, uint64_t time,
+                             void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
+    for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
+        uint8_t expected = tt_SCHED_SLOT_EMPTY;
+        if (!__atomic_compare_exchange_n(&node->sched_inbox_state[i], &expected, tt_SCHED_SLOT_WRITING, false,
+                                         __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            continue;
+        }
+        node->sched_inbox[i].time = time;
+        node->sched_inbox[i].function = function;
+        node->sched_inbox[i].param = param;
+        __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_READY, __ATOMIC_RELEASE);
+        __atomic_fetch_add(&node->sched_inbox_pending, 1, __ATOMIC_SEQ_CST);
+        return true;
+    }
+    return false; // every slot busy: the caller falls back to the state lock
+}
+
+// Called with the state lock held. Costs one atomic load when the inbox is empty, which is almost always.
+static void sched_drain_inbox(struct tt_Node* node) {
+    if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_ACQUIRE) == 0) {
+        return;
+    }
+    for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
+        if (__atomic_load_n(&node->sched_inbox_state[i], __ATOMIC_ACQUIRE) != tt_SCHED_SLOT_READY) {
+            continue;
+        }
+        if (node->scheduler_tail + 1 >= tt_MAX_SCHEDULER_LENGTH) {
+            break; // heap full: leave the rest queued, the next drain tries again
+        }
+        struct tt_TCB tcb = node->sched_inbox[i];
+        __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELEASE);
+        __atomic_fetch_sub(&node->sched_inbox_pending, 1, __ATOMIC_RELEASE);
+        sched_heap_insert(node, tcb.time, tcb.function, tcb.param);
+    }
+}
+
+// Straight into the heap whenever the state lock can be had without waiting - held already (the poll
+// thread inside a callback, which for a self-rescheduling publisher is every sample, or any thread inside
+// a core call or tt_Node_lock()), or free. Only when another thread holds it does the entry go through the
+// inbox, without a lock and without waiting behind whatever that thread is doing; a full inbox, rare, then
+// waits for the lock after all. Either way a poll waiting for something later than `time` is woken
+// (wake_if_waiting_past()), so no caller has to remember tt_Node_interrupt().
+bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
+                      void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
+    if (!state_try_lock(node)) {
+        if (sched_inbox_push(node, time, function, param)) {
+            wake_if_waiting_past(node, time);
+            return true;
+        }
+        state_lock(node);
+    }
+    bool room = node->scheduler_tail + 1 < tt_MAX_SCHEDULER_LENGTH;
+    if (room) {
+        sched_heap_insert(node, time, function, param);
+    }
+    state_unlock(node);
+    if (room) {
+        wake_if_waiting_past(node, time);
+    }
+    return room;
 }
 
 static bool unschedule_locked(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
                               void* param);
 
-// The state lock as well as the scheduler's: entries run with the state lock held, so taking it here
-// waits out one that is running right now. Without it, an entry already taken out of the heap to run
-// would be neither found nor waited for, and its caller could free `param` under it.
+// Under the state lock, which entries run inside: an entry already taken out of the heap to run is waited
+// out, so after this returns `function` is neither pending nor running for `param` and it may be freed.
+// Entries still in the inbox are cancelled too. One being written into the inbox by another thread at this
+// very moment is not - that insert and this cancel are concurrent, and neither is ordered before the other.
 bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
                         void* param) {
     state_lock(node);
-    sched_lock(node);
+    sched_drain_inbox(node);
     bool removed = unschedule_locked(node, function, param);
-    sched_unlock(node);
+    // The drain above cannot always empty the inbox - not into a full heap - so what is still there is
+    // cancelled where it sits. Claimed the same way the drain claims a slot, so the two never both take it.
+    // Only READY slots are read: a WRITING one is still being filled by its producer. And a READY slot
+    // stays READY while the state lock is held, because only the drain (which needs the lock) empties one,
+    // so the fields read here are still the slot's when it is claimed below.
+    for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
+        if (__atomic_load_n(&node->sched_inbox_state[i], __ATOMIC_ACQUIRE) != tt_SCHED_SLOT_READY ||
+            node->sched_inbox[i].function != function || node->sched_inbox[i].param != param) {
+            continue;
+        }
+        uint8_t expected = tt_SCHED_SLOT_READY;
+        if (__atomic_compare_exchange_n(&node->sched_inbox_state[i], &expected, tt_SCHED_SLOT_WRITING, false,
+                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELEASE);
+            __atomic_fetch_sub(&node->sched_inbox_pending, 1, __ATOMIC_RELEASE);
+            removed = true;
+        }
+    }
     state_unlock(node);
     return removed;
 }
@@ -1294,8 +1444,7 @@ static bool unschedule_locked(struct tt_Node* node, void (*function)(struct tt_N
     return removed;
 }
 
-// Callers hold sched_lock: the pointer is into the heap, which another thread may reorder the moment
-// the lock is released.
+// Callers hold the state lock: the heap belongs to it.
 static struct tt_TCB* peek_scheduler(struct tt_Node* node) {
     if (node->scheduler_tail > 0) {
         return &node->scheduler[0];
@@ -1312,31 +1461,30 @@ static void pop_scheduler(struct tt_Node* node) {
     }
 }
 
-// When the earliest entry is due, or false when nothing is scheduled. A copy, taken under the lock:
-// another thread may insert the moment it is released.
+// When the earliest entry is due, or false when nothing is scheduled. A copy, taken under the lock.
 static bool sched_next_time(struct tt_Node* node, uint64_t* time) {
-    sched_lock(node);
+    state_lock(node);
+    sched_drain_inbox(node);
     const struct tt_TCB* tcb = peek_scheduler(node);
     if (tcb != NULL) {
         *time = tcb->time;
     }
-    sched_unlock(node);
+    state_unlock(node);
     return tcb != NULL;
 }
 
-// Runs the earliest entry if it is due at `now` and returns true; otherwise returns false and reports
-// when the next one is due (*has_next false when nothing is scheduled). One call answers both because
-// this sits on the per-sample path of a max-rate publisher: one state and one scheduler acquisition
-// per entry, not a peek and then another.
+// Runs the earliest entry if it is due at `now` and returns true; otherwise returns false and reports when
+// the next one is due (*has_next false when nothing is scheduled). One call answers both, because this sits
+// on the per-sample path of a max-rate publisher: one lock acquisition per entry, and the entry's own
+// reschedule inside it goes straight into the heap.
 //
-// The entry is copied out and popped before it runs. It used to run in place at scheduler[0] and be
-// popped afterwards, which was safe only while nothing else could reorder the heap during the call;
-// with inserts from other threads it no longer is. The state lock is taken first and held across the
-// run, so tt_Node_unschedule() on another thread either removes the entry before it is taken or waits
-// until it has finished.
+// The entry is copied out and popped before it runs. It used to run in place at scheduler[0] and be popped
+// afterwards, which was safe only while nothing else could reorder the heap during the call; with other
+// threads scheduling it no longer is. The state lock is held across the run, so tt_Node_unschedule() on
+// another thread either removes the entry before it is taken or waits until it has finished.
 static bool run_due_entry(struct tt_Node* node, uint64_t now, bool* has_next, uint64_t* next) {
     state_lock(node);
-    sched_lock(node);
+    sched_drain_inbox(node);
     const struct tt_TCB* head = peek_scheduler(node);
     *has_next = head != NULL;
     bool due = head != NULL && head->time <= now;
@@ -1344,12 +1492,9 @@ static bool run_due_entry(struct tt_Node* node, uint64_t now, bool* has_next, ui
     if (due) {
         tcb = *head;
         pop_scheduler(node);
+        tcb.function(node, now, tcb.param);
     } else if (head != NULL) {
         *next = head->time;
-    }
-    sched_unlock(node);
-    if (due) {
-        tcb.function(node, now, tcb.param);
     }
     state_unlock(node);
     return due;
@@ -1404,16 +1549,22 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
 // QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
 static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
 
-// The node's locks, ready and unheld. tt_Node_create() calls it; so does every unit test that builds a
-// node by hand on the mock HAL instead - a zeroed pthread mutex is a valid lock on glibc, but not a
-// recursive one, and the state lock has to be (see struct tt_Node.state_lock).
+// The node's lock and scheduler inbox, ready and empty. tt_Node_create() calls it; so does every unit test
+// that builds a node by hand on the mock HAL instead - a zeroed node is not ready for FreeRTOS, and a
+// zeroed inbox state array only happens to mean "empty".
 static void node_init_locks(struct tt_Node* node) {
-    tt_lock_init(&node->state_lock, /*recursive=*/true);  // NOLINT(misc-include-cleaner)
-    tt_lock_init(&node->sched_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner)
+    tt_lock_init(&node->state_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner) - re-entry: state_owner
+    __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
+    node->state_depth = 0;
     node->state_lock_stats = (struct tt_LockStats) {0};
-    node->sched_lock_stats = (struct tt_LockStats) {0};
+    for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
+        __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&node->sched_inbox_pending, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
-    node->wait_until = 0;
+    __atomic_store_n(&node->wait_seq, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
 }
 
 static void reset_node_state(struct tt_Node* node) {
@@ -7134,11 +7285,15 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
         return true;
     }
 
-    // Re-read under the scheduler lock, and record what this wait will wait until in the same critical
-    // section: an insert from another thread either lands before this read, and the wait below already
-    // covers it, or after, and then sees wait_until and wakes this wait (tt_Node_schedule()). Either
-    // way nothing earlier than the wait is missed - which under an indefinite wait would be forever.
-    sched_lock(node);
+    // Re-read the heap under the state lock, and publish what this wait will wait until before looking at
+    // the inbox one last time. A thread scheduling without the lock pushes into the inbox and then reads
+    // wait_until (wake_if_waiting_past()); this side writes wait_until and then reads the inbox. Both
+    // sequentially consistent, so either the insert is seen here and the wait is skipped, or wait_until is
+    // seen there and the wait is woken. A thread holding the state lock inserts into the heap directly and
+    // cannot interleave with the read below at all. Either way nothing earlier than the wait is missed -
+    // which under an indefinite wait would be forever.
+    state_lock(node);
+    sched_drain_inbox(node);
     const struct tt_TCB* head = peek_scheduler(node);
     has_next = head != NULL;
     next = has_next ? head->time : next;
@@ -7146,8 +7301,12 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
     if (!until_next_event && time + (uint64_t)timeout < until) {
         until = time + (uint64_t)timeout;
     }
-    node->wait_until = until;
-    sched_unlock(node);
+    wait_until_store(node, until);
+    state_unlock(node);
+    if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_SEQ_CST) != 0) {
+        wait_until_store(node, 0);
+        return false; // an entry arrived while this was deciding: loop, drain it, decide again
+    }
 
     bool woke_for_scheduler = false;
     int64_t rest = poll_wait_length(has_next, next, time, timeout, until_next_event, &woke_for_scheduler);
@@ -7156,9 +7315,7 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
     uint16_t port = 0;
     int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 
-    sched_lock(node);
-    node->wait_until = 0; // not waiting: an insert now is seen by the loop, no wake needed
-    sched_unlock(node);
+    wait_until_store(node, 0); // not waiting: an insert now is seen by the loop
 
     // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
     // by a signal (the HALs report EINTR as a timeout). Hand control back rather than wait again: under
@@ -7465,9 +7622,11 @@ static tt_ret_t node_destroy_locked(struct tt_Node* node) {
     // The node is fully torn down at this point; drop every pending scheduler entry
     // (including the node_update/node_flush ones just re-armed above) so nothing later
     // fires a callback into this now-destroyed node.
-    sched_lock(node);
-    node->scheduler_tail = 0;
-    sched_unlock(node);
+    node->scheduler_tail = 0; // the state lock is held (tt_Node_destroy())
+    for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
+        __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELAXED);
+    }
+    __atomic_store_n(&node->sched_inbox_pending, 0, __ATOMIC_RELAXED);
 
     tt_close(node);
 

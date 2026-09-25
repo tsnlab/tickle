@@ -21,6 +21,7 @@
 #if tt_THREAD_SAFE
 #include <FreeRTOS.h>
 #include <semphr.h>
+#include <task.h>
 
 typedef struct {
     StaticSemaphore_t storage;
@@ -43,6 +44,11 @@ static inline void tt_lock_acquire(tt_lock_t* lock) {
         xSemaphoreTake(lock->handle, portMAX_DELAY);
     }
 }
+static inline bool tt_lock_acquire_timed(tt_lock_t* lock, uint64_t timeout_ns) {
+    TickType_t ticks = pdMS_TO_TICKS((uint32_t)(timeout_ns / 1000000ULL));
+    return (lock->recursive ? xSemaphoreTakeRecursive(lock->handle, ticks) : xSemaphoreTake(lock->handle, ticks)) ==
+           pdTRUE;
+}
 static inline void tt_lock_release(tt_lock_t* lock) {
     if (lock->recursive) {
         xSemaphoreGiveRecursive(lock->handle);
@@ -52,6 +58,10 @@ static inline void tt_lock_release(tt_lock_t* lock) {
 }
 static inline void tt_lock_destroy(tt_lock_t* lock) {
     vSemaphoreDelete(lock->handle);
+}
+// See hal_linux.h's tt_thread_self(): the current task's handle, never NULL once the scheduler runs.
+static inline uintptr_t tt_thread_self(void) {
+    return (uintptr_t)xTaskGetCurrentTaskHandle();
 }
 #else
 typedef struct {
@@ -68,11 +78,19 @@ static inline bool tt_lock_try(tt_lock_t* lock) {
 static inline void tt_lock_acquire(tt_lock_t* lock) {
     (void)lock;
 }
+static inline bool tt_lock_acquire_timed(tt_lock_t* lock, uint64_t timeout_ns) {
+    (void)lock;
+    (void)timeout_ns;
+    return true;
+}
 static inline void tt_lock_release(tt_lock_t* lock) {
     (void)lock;
 }
 static inline void tt_lock_destroy(tt_lock_t* lock) {
     (void)lock;
+}
+static inline uintptr_t tt_thread_self(void) {
+    return 1;
 }
 #endif
 

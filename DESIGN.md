@@ -654,7 +654,7 @@ rather than a silent wire mismatch. The only caveat is `-Waddress-of-packed-memb
 the address of a packed 8-byte field for an alignment-sensitive consumer. Reading a message by
 value is unaffected.
 
-## Concurrency: thread-safe core, with two locks and one lock-free path
+## Concurrency: thread-safe core, one lock per node and two lock-free paths
 
 Since 2026-09-25 every public `tt_*` function may be called from any thread, concurrently with
 `tt_Node_poll()` on another (`tt_THREAD_SAFE`, `config.h`, default 1; the contract is "Threading"
@@ -665,20 +665,33 @@ single-threaded per node, with a lock once added (PR #11) and deliberately rever
 than left half-integrated, and a note that multi-threaded access should come back as a proper
 design decision or not at all. This is that decision.
 
-- **Two locks per node, and why not one.** `state_lock` guards everything a node and its endpoints
-  own; `sched_lock` guards only the scheduler heap. `tt_Node_schedule()` takes only the scheduler's
-  lock, so another thread can arm a timer without waiting behind a datagram being processed - the
-  user's own example of the shape they wanted ("put it in the scheduler and interrupt") needed
-  exactly that. Order: state before scheduler, never the reverse.
+- **One lock per node, re-entered for free.** `state_lock` guards everything a node and its
+  endpoints own, the scheduler heap included. Callbacks run inside it and routinely call back into
+  core, so it is re-entrant - not as a recursive mutex but by recording its owner: re-entry by the
+  owning thread is a thread-id compare (`tt_thread_self()`, HAL), not an atomic.
+- **Timers from other threads go through a lock-free inbox.** `tt_Node_schedule()` inserts into the
+  heap directly when the lock is free or already its caller's; when another thread holds it, the
+  entry goes into a fixed ring of slots claimed by compare-and-swap, and the poll thread moves it into
+  the heap the next time it looks - the user's own example of the shape they wanted ("put it in the
+  scheduler and interrupt"), made lock-free, and the same slot pattern `tt_Server_send_response()`
+  already used. A timer armed on another thread wakes a waiting poll by itself when it is earlier
+  than what the poll waits for: the poller publishes what it waits until (a seqlock over two 32-bit
+  halves, since a 32-bit target has no 64-bit atomics) and re-checks the inbox, the producer pushes
+  and then reads that value, both sequentially consistent, so no wake is lost.
+- **Why one lock and not two.** The first version had a separate scheduler lock and a recursive
+  state lock: about five lock operations per sample on a max-rate publisher, which the rig measured
+  at +215 ns a sample on the Raspberry Pi (M1, `examples/perf_hil/results/`). This version takes one
+  real acquisition per sample on that path; locally the lock overhead fell from +37 ns to about
+  +12 ns, with the scheduler restructuring itself measured at zero.
 - **Nothing is held while the poll waits.** `tt_Node_poll()` takes the state lock per received
   datagram and per due scheduler entry, never across `tt_receive()`. `rmw_tickle` used to hold its
   own node mutex across a whole poll call (up to 100 us); the locks here are held for one unit of
   work.
-- **The state lock is recursive, and user callbacks run inside it.** Callbacks fire from the middle
-  of processing, where node state is mid-update, and routinely call back into core (`rmw_tickle`'s
-  liveliness check reschedules itself; application callbacks publish). That is how they always ran
-  - inside the one thread that drove the node - so the semantics are unchanged; the cost is that a
-  slow callback delays other threads' calls on that node for as long as it runs.
+- **User callbacks run inside the lock.** Callbacks fire from the middle of processing, where node
+  state is mid-update, and routinely call back into core (`rmw_tickle`'s liveliness check reschedules
+  itself; application callbacks publish). That is how they always ran - inside the one thread that
+  drove the node - so the semantics are unchanged; the cost is that a slow callback delays other
+  threads' calls on that node for as long as it runs.
 - **A running scheduler entry is out of the heap.** Entries used to run in place at `scheduler[0]`
   and be popped afterwards, which was only safe while nothing could reorder the heap during the call.
   They are now copied and popped first, then run with the state lock held, so `tt_Node_unschedule()`
@@ -689,10 +702,12 @@ design decision or not at all. This is that decision.
 - **Compound reads use `tt_Node_lock()`/`tt_Node_unlock()`** - the state lock itself, nestable,
   for a caller that reads several node-owned fields that must agree (the `tt_Discovery` table,
   counters) or calls one of the two functions that take a cache or table rather than a node.
+  `tt_Node_lock_timed()` gives up after a timeout, for an observer that must never block behind a
+  wedged callback.
 - **Per platform, in the HAL.** `tt_lock_t` is a pthread mutex on Linux and a statically allocated
   FreeRTOS mutex on FreeRTOS, defined next to `struct tt_hal`; with `tt_THREAD_SAFE=0` it compiles to
   nothing, for a microcontroller build with one task.
-- **Measured before it is split further.** Each lock counts its acquisitions, contended acquisitions
+- **Measured before it is split further.** The lock counts its acquisitions, contended acquisitions
   and total wait (`struct tt_LockStats`). A per-endpoint split of the state lock would let receive
   processing for one endpoint overlap a publish on another, but it is the riskiest change in the
   series, so it waits for the rig to show contention worth it.
