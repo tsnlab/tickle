@@ -86,10 +86,20 @@ copy `libtickle.a` + `include/tickle/` into your project directly, if you'd rath
 
 - **The public headers need C11** (`-std=c11` or newer - they use an anonymous union in
   `tt_Header`). They are otherwise `-pedantic`-clean.
-- **The library never allocates or copies on your behalf.** Every struct you hand a
-  `tt_Node_create*` call (the node, the client/server/publisher/subscriber, its service/topic)
-  and every string (`endpoint_name`, `service->name`, `topic->name`) must outlive the endpoint -
-  string literals are fine, a freed buffer is not.
+- **The library never allocates or copies on your behalf**, on any path - there is no
+  `malloc()`/`free()` anywhere in `src/`. Every struct you hand a `tt_Node_create*` call (the node,
+  the client/server/publisher/subscriber, its service/topic) and every string (`endpoint_name`,
+  `service->name`, `topic->name`) must outlive the endpoint - string literals are fine, a freed
+  buffer is not.
+- **Bigger buffers are yours to provide, size, and free.** Most storage is embedded in the structs
+  and sized by `config.h`, so it needs nothing from you. Where the embedded size is the wrong
+  shape, you attach your own instead: a publisher's retained-sample cache
+  (`tt_Publisher.reliable_cache`), a subscriber's reorder buffer, and a server's or client's
+  response storage (`tt_Server_set_storage()` / `tt_Client_set_storage()`). A static array on a
+  microcontroller and a `malloc()` on Linux both work, because the library only ever holds the
+  pointer. **The sizes are yours too**: a cache's sample count and byte size are that publisher's
+  own DDS `RESOURCE_LIMITS`, which TickLE enforces and never chooses. See
+  [DESIGN.md](DESIGN.md)'s "The library never allocates; the caller owns every buffer".
 - **One `tt_Node` is single-threaded**: drive all of its calls from one thread (see
   [DESIGN.md](DESIGN.md), "Concurrency").
 - Delivery is BEST_EFFORT unless a publisher is given a reliable cache. What each mode promises
@@ -302,6 +312,12 @@ in its CMake cache and keeps linking them; build it afresh once, with the worksp
   refuses a type generated for a different value. Discovery and other control traffic
   always stays within 1472 bytes, so TickLE nodes built with the core default still see an
   `rmw_tickle` node.
+- **Your allocator is used.** `rmw_tickle` allocates its own storage with the allocator your
+  application passed in its init options (`rclcpp::InitOptions`), threaded through to every
+  publisher and subscription. An application that supplies a static-pool allocator therefore gets
+  TickLE's storage out of that pool, with no `malloc()` on any TickLE path. What `rmw_tickle` still
+  chooses is how much, from the QoS depth and the message type, because ROS 2's QoS has no
+  resource-limits field to carry it.
 - **Socket buffers.** `rmw_tickle` asks for 4 MiB receive buffers, which hold enough full-size
   datagrams. A stock kernel caps the request at `net.core.rmem_max` (about 208 KB), and
   `rmw_tickle` logs a warning naming that sysctl when the buffer it gets holds fewer than 16

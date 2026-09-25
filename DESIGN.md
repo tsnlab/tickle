@@ -43,7 +43,7 @@ classDiagram
         +tt_Client_call(request) int32_t
         +tt_Client_destroy() int32_t
     }
-    note for tt_Client "cache is NULL when idle, else points into\ncache_buf - fixed storage, no malloc/free\nper call (only one call outstanding at a time)"
+    note for tt_Client "cache is NULL when idle, else points into\ncache_buf, or the storage\ntt_Client_set_storage() attached - the library\nnever allocates either (only one call\noutstanding at a time)"
 
     class tt_Server {
         +tt_Endpoint endpoint
@@ -56,7 +56,7 @@ classDiagram
         +bool clean_scheduled[64]
         +tt_Server_destroy() int32_t
     }
-    note for tt_Server "cache[i] is NULL when slot i is unused, else\npoints into cache_buf[i]; clean_config[i]/\nclean_scheduled[i] track that slot's retry-\ndedup cleanup timer. Also fixed storage."
+    note for tt_Server "cache[i] is NULL when slot i is unused, else\npoints into cache_buf[i]; clean_config[i]/\nclean_scheduled[i] track that slot's retry-\ndedup cleanup timer. Caller-owned storage\ntoo, embedded or attached."
 
     class tt_Publisher {
         +tt_Endpoint endpoint
@@ -475,24 +475,48 @@ scheduler work, drain whatever RX is already waiting, return) rather than a no-o
 what it's for (cutting broadcast traffic when a topic has one or two subscribers) but is not a
 full-MTU throughput optimization - at line rate broadcast is still the faster choice.
 
-## No dynamic allocation after `tt_Node_create()`
+## The library never allocates; the caller owns every buffer
 
-The library never calls `malloc()`/`free()` on any path. Everything that could have been a
-heap object is a fixed buffer embedded in a struct:
+`src/` contains no `malloc()`, `calloc()`, `realloc()` or `free()` on any path, and that is a
+contract rather than a current property. It is what lets the same core run on a FreeRTOS target
+with no heap at all and inside a ROS 2 process that has one.
 
-- `tt_Client.cache` (the one outstanding call) and `tt_Server.cache[]` (up to
-  `tt_MAX_SERVER_CACHE_COUNT` cached responses, for retry-dedup) live in `cache_buf` /
-  `cache_buf[][]`. Both are naturally bounded (one outstanding call per client; a fixed slot
-  count per server), so going static adds no unbounded-growth risk - just a larger
-  `sizeof(struct tt_Server)` (~188KB, dominated by `cache_buf[64][tt_MAX_BUFFER_LENGTH * 2]`).
-- Discovery state per remote node is two plain arrays on `tt_Node` -
-  `update_last_modified[tt_MAX_ENDPOINT_COUNT]` and `update_seen[...]`. `process_update()` used
-  to `malloc()` a copy of each incoming announce, but only its `last_modified` and
-  seen/not-seen were ever read back, so a `uint64_t` + a `bool` per source is all it keeps.
+Storage comes from one of two places, and both are the caller's:
 
-The payoff: no allocation-failure branch to reason about, no heap fragmentation on a
-long-running embedded target, and `make sanitize` (ASan/UBSan) has nothing to leak-check in the
-library itself.
+- **Embedded in the struct**, sized by a compile-time macro. This is the default and needs no
+  caller effort: `tt_Server.cache_buf[][]` / `pending_response_buf[][]` (up to
+  `tt_MAX_SERVER_CACHE_COUNT` cached responses, for retry-dedup) and `tt_Client.cache_buf`
+  (the one outstanding call). Both are naturally bounded, so going static adds no
+  unbounded-growth risk - just a larger `sizeof()`, set by `tt_SERVER_CACHE_ENTRY_LENGTH`,
+  `tt_SERVER_PENDING_ENTRY_LENGTH` and `tt_CLIENT_CACHE_LENGTH`.
+- **Attached by the caller after create**, when the embedded size is the wrong shape: a
+  Publisher's retained-sample cache (`tt_Publisher.reliable_cache`, whose `index[]`/`capacity` and
+  `arena`/`arena_size` are both caller-supplied), a Subscriber's reorder buffer, and a Server's or
+  Client's response storage via `tt_Server_set_storage()` / `tt_Client_set_storage()`. The caller
+  allocates it however it likes, and **the caller frees it.** Core only ever holds the pointer.
+
+Discovery state per remote node stays in two plain arrays on `tt_Node`,
+`update_last_modified[tt_MAX_ENDPOINT_COUNT]` and `update_seen[...]`. `process_update()` used to
+`malloc()` a copy of each incoming announce, but only its `last_modified` and seen/not-seen were
+ever read back, so a `uint64_t` plus a `bool` per source is all it keeps.
+
+**The sizes are the caller's decision too**, not just the memory. A Publisher's `capacity`
+(samples) and `arena_size` (bytes) are DDS's `RESOURCE_LIMITS` for that Publisher, per instance:
+core enforces them - `KEEP_LAST` evicts oldest, `KEEP_ALL` refuses the write rather than evicting -
+but never chooses them. DDS's `max_instances` and `max_samples_per_instance` do not apply, because
+TickLE has no keyed topics.
+
+**How this reaches a ROS 2 application.** `rmw_tickle` is the caller there, and it allocates with
+the allocator the application itself supplied through `rmw_init_options_t.allocator`
+(`rclcpp::InitOptions`), threaded through context to node to publisher. So an application that
+passes a static-pool allocator gets TickLE's own storage out of that pool, with no `malloc` on any
+TickLE path. What `rmw_tickle` still chooses is how *much*, derived from the QoS depth and the
+type - ROS 2's `rmw_qos_profile_t` has no resource-limits field to carry it.
+
+The payoff: no allocation-failure branch to reason about anywhere in the library, no heap
+fragmentation on a long-running embedded target, `make sanitize` (ASan/UBSan) has nothing to
+leak-check in the library itself, and a caller that cares can account for every byte the
+middleware uses.
 
 ## Byte order: every node sends native, every receiver swaps
 
