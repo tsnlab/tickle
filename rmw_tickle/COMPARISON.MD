@@ -1054,3 +1054,32 @@ nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero
     which is what the DDS vendors do and is core work of real size. Raw output:
     `examples/perf_hil/results/a4_reassembly_2026-09-25.txt`, harness
     `examples/perf_hil/experiments/a4_reassembly_check.sh`.
+
+16. **[Harness, latent - low priority, never observed to fire]** The FastDDS
+    `liveliness_loss_detection` server reads three globals from `main()` that its listener thread
+    writes, with no synchronisation: `g_last_recv_ns`, `g_loss_detect_ns` and `g_loss_detected` are
+    plain `bool`/`uint64_t`. Inherited from the original and unchanged by the 2026-09-25 clang-tidy
+    sweep, which deliberately left it alone because fixing it is a behaviour change rather than a
+    lint fix (TickLE Dev).
+
+    **The three harnesses do not have the same shape, and that is the part worth recording**, because
+    the fairness rule ("fix it in all three or none") reaches a different conclusion once the shapes
+    are known:
+
+    | | the three shared globals | why |
+    |---|---|---|
+    | **FastDDS** | plain `bool` / `uint64_t` | listener runs on a middleware thread; nothing declares the sharing |
+    | **CycloneDDS** | `volatile bool` / `volatile uint64_t` | same threading, but the compiler may not cache the reads |
+    | **TickLE** | no shared globals of this kind | callbacks run on the node's own poll thread, so one thread touches them (`DESIGN.md`, "Concurrency") |
+
+    So FastDDS is the only one carrying the raw shape. `volatile` is not a synchronisation primitive
+    and does not make CycloneDDS's version correct under the C11 memory model, but it does remove the
+    practically observable failure here - a read hoisted out of the polling loop and cached in a
+    register, so the loop never sees the flag change. **Fixing FastDDS to match CycloneDDS makes the
+    two more alike, not less**, and TickLE needs nothing because its single-threaded contract already
+    excludes the race. That inverts the usual reason to defer: the fairness rule argues *for* this
+    change rather than against it.
+
+    It stays low priority because it has never been observed to fire: this scenario has produced a
+    `loss_detected` reading on every run of every session, and the 2026-09-25 identity run measured it
+    identical across both arms. Worth doing when something else touches that file.
