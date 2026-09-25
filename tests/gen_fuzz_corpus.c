@@ -81,6 +81,7 @@ static char names[MAX_ENDPOINTS][48];
 // fuzzer also starts from an announce that matches something - and captures what goes out.
 static int announce(int count) {
     memset(&sender, 0, sizeof(sender));
+    node_init_locks(&sender);
     sender.id = SENDER_ID;
     sender.tx_tail = sizeof(struct tt_Header);
     sender.tx_size = tt_MAX_BUFFER_LENGTH * 2;

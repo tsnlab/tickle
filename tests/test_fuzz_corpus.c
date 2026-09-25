@@ -42,6 +42,7 @@ int main(void) {
     }
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = 1; // the fuzz harness's own node id
 
     int seeds = 0;

@@ -130,6 +130,7 @@ static int8_t stub_server_callback(struct tt_Server* server, struct tt_Request* 
 
 static void init_node(struct tt_Node* node) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = 1;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;

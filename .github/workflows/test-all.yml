@@ -96,6 +96,14 @@ jobs:
         continue-on-error: true
         run: make sanitize
 
+      # Core is callable from several threads (tickle.h, "Threading"). The plain unit run checks the
+      # multi-threaded test's outcome; ThreadSanitizer checks the way there. Against the core as it was
+      # before locking, this test produced 14 race reports - see tests/test_thread_safety.c.
+      - name: Thread-safety test under ThreadSanitizer
+        id: tsan
+        continue-on-error: true
+        run: make tsan
+
       - name: Fuzz smoke (packet parser)
         id: fuzz
         continue-on-error: true
@@ -174,6 +182,7 @@ jobs:
             'Headers C/C++=${{ steps.headers.outcome }}' \
             'Unit tests=${{ steps.unit.outcome }}' \
             'Sanitizers=${{ steps.sanitize.outcome }}' \
+            'ThreadSanitizer=${{ steps.tsan.outcome }}' \
             'Fuzz smoke=${{ steps.fuzz.outcome }}' \
             'Same-host=${{ steps.itest_samehost.outcome }}' \
             'Integration Linux=${{ steps.itest_linux.outcome }}' \

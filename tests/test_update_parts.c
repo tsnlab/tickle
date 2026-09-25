@@ -93,6 +93,7 @@ static void on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, s
 
 static void init_bare_node(struct tt_Node* node, uint8_t id) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = id;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;

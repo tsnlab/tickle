@@ -74,6 +74,7 @@ static uint8_t sample[8];
 static void init(int endpoints) {
     test_mock_reset();
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = 1;
     node.tx_tail = sizeof(struct tt_Header);
     node.tx_size = tt_MAX_BUFFER_LENGTH * 2;

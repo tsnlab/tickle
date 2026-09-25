@@ -13,6 +13,68 @@
 #include <stdbool.h> // rx_prefer_data
 
 #include <lwip/sockets.h>
+#include <tickle/config.h>
+
+// See hal_linux.h's tt_lock_t - the same five operations over a FreeRTOS mutex, statically allocated
+// so a node needs no heap for it. Recursive and plain mutexes are separate object kinds in FreeRTOS,
+// with separate take/give calls, so the lock remembers which one it is.
+#if tt_THREAD_SAFE
+#include <FreeRTOS.h>
+#include <semphr.h>
+
+typedef struct {
+    StaticSemaphore_t storage;
+    SemaphoreHandle_t handle;
+    bool recursive;
+} tt_lock_t;
+
+static inline void tt_lock_init(tt_lock_t* lock, bool recursive) {
+    lock->recursive = recursive;
+    lock->handle =
+        recursive ? xSemaphoreCreateRecursiveMutexStatic(&lock->storage) : xSemaphoreCreateMutexStatic(&lock->storage);
+}
+static inline bool tt_lock_try(tt_lock_t* lock) {
+    return (lock->recursive ? xSemaphoreTakeRecursive(lock->handle, 0) : xSemaphoreTake(lock->handle, 0)) == pdTRUE;
+}
+static inline void tt_lock_acquire(tt_lock_t* lock) {
+    if (lock->recursive) {
+        xSemaphoreTakeRecursive(lock->handle, portMAX_DELAY);
+    } else {
+        xSemaphoreTake(lock->handle, portMAX_DELAY);
+    }
+}
+static inline void tt_lock_release(tt_lock_t* lock) {
+    if (lock->recursive) {
+        xSemaphoreGiveRecursive(lock->handle);
+    } else {
+        xSemaphoreGive(lock->handle);
+    }
+}
+static inline void tt_lock_destroy(tt_lock_t* lock) {
+    vSemaphoreDelete(lock->handle);
+}
+#else
+typedef struct {
+    char unused;
+} tt_lock_t;
+static inline void tt_lock_init(tt_lock_t* lock, bool recursive) {
+    (void)lock;
+    (void)recursive;
+}
+static inline bool tt_lock_try(tt_lock_t* lock) {
+    (void)lock;
+    return true;
+}
+static inline void tt_lock_acquire(tt_lock_t* lock) {
+    (void)lock;
+}
+static inline void tt_lock_release(tt_lock_t* lock) {
+    (void)lock;
+}
+static inline void tt_lock_destroy(tt_lock_t* lock) {
+    (void)lock;
+}
+#endif
 
 // FreeRTOS+lwIP hardware abstraction layer structure - same shape as hal_linux.h's, since
 // src/hal_freertos.c mirrors src/hal_linux.c almost line for line (lwIP's LWIP_COMPAT_SOCKETS

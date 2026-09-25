@@ -10,9 +10,61 @@
 
 #pragma once
 
+#include <pthread.h>
 #include <stdbool.h> // rx_prefer_data
 
 #include <netinet/in.h>
+#include <tickle/config.h>
+
+// The lock TickLE core uses to be callable from several threads (tt_THREAD_SAFE, config.h). Defined
+// per platform, next to struct tt_hal, because it is the one other thing core needs from the OS for
+// threading; everything above it is portable. A recursive lock is re-entrant from the thread that
+// holds it, which the node's state lock must be: user callbacks run with it held and may call back
+// into core, exactly as they could when core was single-threaded.
+#if tt_THREAD_SAFE
+typedef pthread_mutex_t tt_lock_t; // NOLINT(misc-include-cleaner) - <pthread.h> above
+
+static inline void tt_lock_init(tt_lock_t* lock, bool recursive) {
+    pthread_mutexattr_t attr; // NOLINT(misc-include-cleaner)
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, recursive ? PTHREAD_MUTEX_RECURSIVE : PTHREAD_MUTEX_NORMAL);
+    pthread_mutex_init(lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+static inline bool tt_lock_try(tt_lock_t* lock) {
+    return pthread_mutex_trylock(lock) == 0;
+}
+static inline void tt_lock_acquire(tt_lock_t* lock) {
+    pthread_mutex_lock(lock);
+}
+static inline void tt_lock_release(tt_lock_t* lock) {
+    pthread_mutex_unlock(lock);
+}
+static inline void tt_lock_destroy(tt_lock_t* lock) {
+    pthread_mutex_destroy(lock);
+}
+#else
+typedef struct {
+    char unused;
+} tt_lock_t;
+static inline void tt_lock_init(tt_lock_t* lock, bool recursive) {
+    (void)lock;
+    (void)recursive;
+}
+static inline bool tt_lock_try(tt_lock_t* lock) {
+    (void)lock;
+    return true;
+}
+static inline void tt_lock_acquire(tt_lock_t* lock) {
+    (void)lock;
+}
+static inline void tt_lock_release(tt_lock_t* lock) {
+    (void)lock;
+}
+static inline void tt_lock_destroy(tt_lock_t* lock) {
+    (void)lock;
+}
+#endif
 
 // Linux-specific hardware abstraction layer structure
 struct tt_hal {

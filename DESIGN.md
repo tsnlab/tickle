@@ -654,28 +654,63 @@ rather than a silent wire mismatch. The only caveat is `-Waddress-of-packed-memb
 the address of a packed 8-byte field for an alignment-sensitive consumer. Reading a message by
 value is unaffected.
 
-## Concurrency: single-threaded per node, by design (for now)
+## Concurrency: thread-safe core, with two locks and one lock-free path
 
-`struct tt_Node` and its endpoints have no internal locking - `tt_Node_poll()`,
-`tt_Client_call()`, `tt_Publisher_publish()`, etc. all mutate node-owned state
-(`tx_buffer`/`rx_buffer`, the scheduler array, the endpoint table) without synchronization, so
-a given node must be created, polled, and destroyed from a single thread. This isn't an
-oversight: a `tt_lock_t endpoint_lock` was added to `struct tt_Node` at one point (PR #11) and
-then deliberately removed again (PR #13, "revert") rather than left half-integrated. If
-multi-threaded access to one node becomes a real requirement, that's a design decision to
-revisit properly - including which operations actually need mutual exclusion - not something
-to bolt back on piecemeal.
+Since 2026-09-25 every public `tt_*` function may be called from any thread, concurrently with
+`tt_Node_poll()` on another (`tt_THREAD_SAFE`, `config.h`, default 1; the contract is "Threading"
+at `tt_Node_lock()` in `tickle.h`). The decision was the user's: core should be at least
+thread-safe, lock-free where it can be, and where locks are needed they should be fine-grained,
+because integrating with `rmw_tickle` is the point. Until then this section said the opposite -
+single-threaded per node, with a lock once added (PR #11) and deliberately reverted (PR #13) rather
+than left half-integrated, and a note that multi-threaded access should come back as a proper
+design decision or not at all. This is that decision.
 
-`tt_Node_interrupt()` is the one narrow exception, not a reversal of the above: it doesn't add
-any locking or let a second thread touch node-owned state, it only lets a second thread make a
-blocking `tt_Node_poll()` call return `tt_RET_INTERRUPTED` promptly instead of waiting out its
-timeout. Added for `rmw_tickle` (`rmw_tickle/PLAN.md`'s Milestone 0), which needs it precisely
-*because* it keeps everything above true: a node stays driven by one dedicated thread running
-`tt_Node_poll()` in a loop, and every other entry point is still reached from exactly one thread
-at a time - `rmw_tickle` just adds a mutex of its own around that single-thread rule, using this
-primitive so a call arriving on another thread (e.g. `rmw_publish()`) isn't stuck waiting for the
-poll thread's current, possibly long, timeout to expire on its own before it can acquire that
-mutex. `tt_receive()` polls a second fd alongside the real socket, so `tt_wake_signal()` (`hal.h`)
+- **Two locks per node, and why not one.** `state_lock` guards everything a node and its endpoints
+  own; `sched_lock` guards only the scheduler heap. `tt_Node_schedule()` takes only the scheduler's
+  lock, so another thread can arm a timer without waiting behind a datagram being processed - the
+  user's own example of the shape they wanted ("put it in the scheduler and interrupt") needed
+  exactly that. Order: state before scheduler, never the reverse.
+- **Nothing is held while the poll waits.** `tt_Node_poll()` takes the state lock per received
+  datagram and per due scheduler entry, never across `tt_receive()`. `rmw_tickle` used to hold its
+  own node mutex across a whole poll call (up to 100 us); the locks here are held for one unit of
+  work.
+- **The state lock is recursive, and user callbacks run inside it.** Callbacks fire from the middle
+  of processing, where node state is mid-update, and routinely call back into core (`rmw_tickle`'s
+  liveliness check reschedules itself; application callbacks publish). That is how they always ran
+  - inside the one thread that drove the node - so the semantics are unchanged; the cost is that a
+  slow callback delays other threads' calls on that node for as long as it runs.
+- **A running scheduler entry is out of the heap.** Entries used to run in place at `scheduler[0]`
+  and be popped afterwards, which was only safe while nothing could reorder the heap during the call.
+  They are now copied and popped first, then run with the state lock held, so `tt_Node_unschedule()`
+  from another thread either removes an entry before it is taken or waits until it has finished -
+  after it returns, the callback's `param` may be freed.
+- **One poller at a time,** enforced: a second concurrent `tt_Node_poll()` returns `tt_RET_BUSY`
+  instead of sharing `rx_buffer` with the first.
+- **Compound reads use `tt_Node_lock()`/`tt_Node_unlock()`** - the state lock itself, nestable,
+  for a caller that reads several node-owned fields that must agree (the `tt_Discovery` table,
+  counters) or calls one of the two functions that take a cache or table rather than a node.
+- **Per platform, in the HAL.** `tt_lock_t` is a pthread mutex on Linux and a statically allocated
+  FreeRTOS mutex on FreeRTOS, defined next to `struct tt_hal`; with `tt_THREAD_SAFE=0` it compiles to
+  nothing, for a microcontroller build with one task.
+- **Measured before it is split further.** Each lock counts its acquisitions, contended acquisitions
+  and total wait (`struct tt_LockStats`). A per-endpoint split of the state lock would let receive
+  processing for one endpoint overlap a publish on another, but it is the riskiest change in the
+  series, so it waits for the rig to show contention worth it.
+
+Tested by `tests/test_thread_safety.c` under ThreadSanitizer (`make tsan`): publisher threads,
+a timer thread and both nodes' poll threads at once, checking that every sample arrives in order,
+every timer runs exactly once unless cancelled, and a second poller is refused. The same test
+against the core as it was before this change produced 14 ThreadSanitizer race reports, a
+segmentation fault and a hang.
+
+`tt_Node_interrupt()` takes no lock at all. It predates the locks, and was added as the one narrow
+exception to the old single-thread rule: it doesn't touch node-owned state, it only lets a second
+thread make a blocking `tt_Node_poll()` call return `tt_RET_INTERRUPTED` promptly instead of waiting
+out its timeout. Added for `rmw_tickle` (`rmw_tickle/PLAN.md`'s Milestone 0), which then kept the old
+rule with a mutex of its own around every call, interrupting the poll thread so a call arriving on
+another thread (e.g. `rmw_publish()`) wasn't stuck behind the poll's timeout before it could take
+that mutex. With core thread-safe it is still what wakes an indefinitely waiting poll for work raised
+on another thread. `tt_receive()` polls a second fd alongside the real socket, so `tt_wake_signal()` (`hal.h`)
 has something to signal that wakes a blocked `poll()`/`select()` immediately - what that fd
 actually is differs by platform: FreeRTOS+lwIP uses a private loopback UDP socket (`hal_
 freertos.c`), but Linux uses `eventfd(2)` instead of the same trick, because `platform/linux/
@@ -687,7 +722,7 @@ to `tt_Node_interrupt()`," not "only if a call is currently blocked" - one sent 
 blocked is queued and delivered
 to whichever `tt_Node_poll()` call comes next instead of being dropped.
 
-## Deferred service responses: a second, narrower exception to "single-threaded per node"
+## Deferred service responses: the lock-free path
 
 `tt_Server_send_response()` (`tickle.h`/`tickle.c`, `rmw_tickle/PLAN.md`'s Milestone 17) is
 deliberately callable from a thread other than the one driving a node's own `tt_Node_poll()`

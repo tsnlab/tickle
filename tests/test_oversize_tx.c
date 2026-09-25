@@ -60,6 +60,7 @@ static uint8_t sample[8];
 // characters and a ~22-character endpoint name - which puts each UPDATE entity near 91 bytes.
 static void init_node_with_endpoints(int count) {
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = 1;
     node.tx_tail = sizeof(struct tt_Header);
     node.tx_size = tt_MAX_BUFFER_LENGTH * 2;

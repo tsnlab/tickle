@@ -38,6 +38,7 @@ static struct tt_Service test_service = {.name = "test_service"};
 
 static void init_node(struct tt_Node* node) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = LOCAL_NODE_ID;
     // Real baseline every other caller of encode()/start_encode() assumes (see tt_Node_create()'s
     // own reset_node_state()) - needed now that reply_with_own_announce()'s tests below exercise

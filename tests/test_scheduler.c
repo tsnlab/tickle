@@ -53,6 +53,7 @@ static void expect_drains_in_order(struct tt_Node* node, int expected_count) {
 static void test_pops_in_time_order_regardless_of_insert_order(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     const uint64_t times[] = {50, 10, 90, 30, 30, 70, 1, 100, 40};
     for (size_t i = 0; i < sizeof(times) / sizeof(times[0]); i++) {
@@ -67,6 +68,7 @@ static void test_pops_in_time_order_regardless_of_insert_order(void) {
 static void test_unschedule_middle_keeps_order(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     int marker = 0;
     tt_Node_schedule(&node, 10, noop_a, NULL);
@@ -88,6 +90,7 @@ static void test_unschedule_middle_keeps_order(void) {
 static void test_earliest_always_at_root(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     tt_Node_schedule(&node, 100, noop_a, NULL);
     EXPECT_EQ_U32(100, (uint32_t)peek_scheduler(&node)->time);

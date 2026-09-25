@@ -75,6 +75,7 @@ static void stub_response_free(struct tt_Response* response) {
 
 static void init_node_service_server(struct tt_Node* node, struct tt_Service* service, struct tt_Server* server) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = LOCAL_NODE_ID;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;

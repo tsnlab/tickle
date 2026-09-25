@@ -31,6 +31,7 @@
 
 static void init_node(struct tt_Node* node) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = LOCAL_NODE_ID;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;

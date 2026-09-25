@@ -75,6 +75,16 @@ struct tt_TCB {
 typedef void (*tt_DISCOVERY_CALLBACK)(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
                                       bool departed, void* param);
 
+// How often a node's lock was taken, how often a caller found it already held, and for how long those
+// callers waited in total (2026-09-25). Kept per lock so the rig can say where contention actually is
+// before any lock is split further - see "Threading" at tt_Node_lock(). Updated by whoever holds the
+// lock, so a reader on another thread may see a value one update stale, never a torn one.
+struct tt_LockStats {
+    uint64_t acquisitions;
+    uint64_t contended;
+    uint64_t wait_ns;
+};
+
 struct tt_Node {
     uint8_t id;
     uint32_t endpoint_count;
@@ -172,6 +182,18 @@ struct tt_Node {
     // tt_hal is defined indirectly via <tickle/hal.h>, which includes the
     // platform-specific HAL header (<tickle/hal_linux.h> or <tickle/hal_freertos.h>).
     struct tt_hal hal; // NOLINT(misc-include-cleaner)
+    // Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock(). state_lock guards
+    // everything in the node and its entities; it is recursive because user callbacks run with it
+    // held and may call back into core. sched_lock guards only the scheduler heap, so that
+    // tt_Node_schedule() from another thread never waits behind a datagram being processed.
+    // Order: state_lock before sched_lock, never the reverse.
+    tt_lock_t state_lock; // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
+    tt_lock_t sched_lock; // NOLINT(misc-include-cleaner)
+    struct tt_LockStats state_lock_stats;
+    struct tt_LockStats sched_lock_stats;
+    // Set while a tt_Node_poll() is running, so a second concurrent one fails with tt_RET_BUSY instead
+    // of sharing rx_buffer with the first. Accessed only through __atomic builtins.
+    uint8_t poller_active;
 
     // Opt-in graph introspection (tt_Node_set_discovery(), rmw_tickle/PLAN.md's Milestone 0(c)) -
     // NULL (the default - see reset_node_state()) unless a caller attaches its own, externally-
@@ -1582,12 +1604,14 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
                                   const char* endpoint_name);
 tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                    const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback);
-// Runs `function` at `time` from inside tt_Node_poll(). Call it from the thread that polls the node; from
-// any other thread, hold the lock that keeps that thread out of tt_Node_poll() and then call
-// tt_Node_interrupt(), or a poll already waiting will not see the new entry (see tt_Node_poll()).
+// Runs `function` at `time` from inside tt_Node_poll(). Callable from any thread. From a thread other
+// than the one polling, follow it with tt_Node_interrupt(), or a poll already waiting will not see the
+// new entry until it wakes for something else (see tt_Node_poll()).
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param);
 // Cancels every pending schedule entry matching (function, param) exactly. Returns true if any were removed.
+// Callable from any thread. On return, `function` is neither pending nor running for `param`: an entry
+// the poll thread is running at that moment finishes first, so `param` may be freed afterwards.
 bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
                         void* param);
 
@@ -1613,15 +1637,18 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
  *                       10,000 wakes a second on an idle node). A signal also ends the wait, so Ctrl-C
  *                       still reaches a caller's loop at once.
  *
- * The negative form relies on the rule every other part of this API already follows: the node is
- * driven by one thread. Work raised from another thread - a tt_Node_schedule(), a
- * tt_Server_send_response() - must be followed by tt_Node_interrupt() so the poll thread wakes and
- * sees it; otherwise it waits until something else happens, which under an indefinite wait may be
- * never. tt_Node_schedule() does not interrupt by itself: most calls come from the poll thread, where
- * a wake-up on every insert would cost a syscall per scheduled sample, and a cross-thread call is
- * already unsafe without the caller's own lock - the interrupt belongs with that lock.
+ * One thread polls a node at a time; a second concurrent tt_Node_poll() returns tt_RET_BUSY. Work
+ * raised from another thread - a tt_Node_schedule(), a tt_Server_send_response() - must be followed
+ * by tt_Node_interrupt() so the poll thread wakes and sees it; otherwise it waits until something
+ * else happens, which under an indefinite wait may be never. tt_Node_schedule() does not interrupt by
+ * itself: most calls come from the poll thread, where a wake-up on every insert would cost a syscall
+ * per scheduled sample.
+ *
+ * No lock is held while the poll waits. The node's state lock is taken per datagram and per due
+ * scheduler entry, and user callbacks run inside it - see "Threading" at tt_Node_lock().
  * @return tt_RET_OK after processing a datagram, tt_RET_TIMEOUT when the wait ended without one
- *         (including after running a due scheduler entry), tt_RET_INTERRUPTED, or an error.
+ *         (including after running a due scheduler entry), tt_RET_INTERRUPTED, tt_RET_BUSY, or an
+ *         error.
  */
 tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
 
@@ -1639,6 +1666,27 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
 // sees no difference either way; one that calls tt_Node_poll() only occasionally should account
 // for an earlier tt_Node_interrupt() still being able to cut its next, unrelated wait short.
 tt_ret_t tt_Node_interrupt(struct tt_Node* node);
+
+// Threading (2026-09-25, the user's decision: core is thread-safe, lock-free where it can be and with
+// fine-grained locks where it cannot). With tt_THREAD_SAFE (config.h, default 1):
+//
+// - Every public tt_* function may be called from any thread, concurrently with tt_Node_poll() on
+//   another. tt_Server_send_response() and tt_Node_interrupt() take no lock at all; tt_Node_schedule()
+//   takes only the scheduler's own lock; everything else takes the node's state lock for the length of
+//   the call. tt_Node_poll() holds nothing while it waits.
+// - User callbacks (subscriber, client, server, discovery, writable, scheduled functions) run on the
+//   polling thread with the state lock held, as they always ran inside the one thread that drove the
+//   node. They may call back into core. A slow callback delays every other thread's call on this node
+//   by as long as it takes, so keep them short.
+// - Creating and destroying the node itself is not concurrent-safe: no other thread may be using a node
+//   while tt_Node_create() or tt_Node_destroy() runs.
+// - Reading several node-owned fields that must agree with each other - the tt_Discovery table the
+//   node fills in, a Publisher's counters - needs the state lock held across the reads:
+//   tt_Node_lock()/tt_Node_unlock(). They nest, and any tt_* call may be made while holding them.
+//   tt_ReliableCache_grow() and tt_Discovery_count() take a cache or table rather than a node, so the
+//   caller holds tt_Node_lock() around them when the cache or table belongs to a live node.
+void tt_Node_lock(struct tt_Node* node);
+void tt_Node_unlock(struct tt_Node* node);
 
 // Opts `node` into graph introspection: every UPDATE it processes from here on also records the
 // announcing entity into `*discovery` (an otherwise-inert struct the caller owns - see its own

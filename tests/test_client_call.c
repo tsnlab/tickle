@@ -47,6 +47,7 @@ static void test_callback(struct tt_Client* client, int8_t return_code, struct t
 
 static void init_node_and_client(struct tt_Node* node, struct tt_Service* service, struct tt_Client* client) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = 1;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;

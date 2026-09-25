@@ -77,6 +77,7 @@ static void stub_subscriber_callback(struct tt_Subscriber* subscriber, uint64_t 
 
 static void init_node_and_topic(struct tt_Node* node, struct tt_Topic* topic) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = LOCAL_NODE_ID;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;

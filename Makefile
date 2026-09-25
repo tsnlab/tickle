@@ -10,9 +10,9 @@
 .DEFAULT_GOAL := all
 
 .PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp check-doc-shas check-rig-lock check-bench-shapes lint lint-rmw lint-shell clean test-linux test-freertos test-all \
-        install uninstall fuzz fuzz-corpus sanitize regen
+        install uninstall fuzz fuzz-corpus sanitize tsan regen
 
-all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize:
+all library examples set_bool uint64 ping_pong perf test lint clean fuzz fuzz-corpus sanitize tsan:
 	$(MAKE) -C platform/linux $@
 
 # Static lib + headers + a pkg-config file. Override PREFIX (default /usr/local) and/or DESTDIR

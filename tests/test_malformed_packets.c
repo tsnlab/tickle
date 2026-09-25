@@ -30,6 +30,7 @@
 
 static void init_node(struct tt_Node* node) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = LOCAL_NODE_ID;
 }
 
@@ -77,6 +78,7 @@ static void stub_response_free(struct tt_Response* response) {
 
 static void init_node_service_server(struct tt_Node* node, struct tt_Service* service, struct tt_Server* server) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = LOCAL_NODE_ID;
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
@@ -141,6 +143,7 @@ static void stub_topic_data_free(struct tt_Data* data) {
 
 static void init_node_topic_subscriber(struct tt_Node* node, struct tt_Topic* topic, struct tt_Subscriber* sub) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = LOCAL_NODE_ID;
 
     memset(topic, 0, sizeof(*topic));

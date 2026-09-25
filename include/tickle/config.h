@@ -272,6 +272,13 @@
 #ifndef tt_SCHEDULER_IO_INTERLEAVE
 #define tt_SCHEDULER_IO_INTERLEAVE 8
 #endif
+// Whether TickLE core may be called from more than one thread (2026-09-25). 1: every public tt_*
+// function is safe to call from any thread, concurrently with tt_Node_poll() on another - see
+// "Threading" in tickle.h. 0: the original single-thread contract, and the locks compile to nothing,
+// for a microcontroller build that only ever has one task touching the stack.
+#ifndef tt_THREAD_SAFE
+#define tt_THREAD_SAFE 1
+#endif
 // Requested SO_SNDBUF/SO_RCVBUF size. The kernel silently clamps this to whatever
 // net.core.[rw]mem_max allows for an unprivileged process, so asking for more than that is
 // harmless - it's cheap insurance against drops under bursty send/receive on systems where the

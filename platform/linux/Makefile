@@ -125,7 +125,7 @@ TEST_DIR = $(ROOT)/tests
 TEST_SRCS = $(wildcard $(TEST_DIR)/test_*.c)
 TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(OBJ)/tests/%,$(TEST_SRCS))
 
-.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize
+.PHONY: all library examples set_bool uint64 ping_pong perf test test-samehost headers-cpp lint lint-shell clean fuzz fuzz-corpus sanitize tsan
 
 all:
 	$(MAKE) library
@@ -194,6 +194,19 @@ test: $(TEST_BINS)
 
 $(OBJ)/tests/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
+
+# The one unit test that links tickle.c as its own translation unit instead of #including it: it drives
+# core through the public API from several threads at once and brings its own thread-safe HAL (see the
+# file's header). `make test` runs it like the others; `make tsan` runs it under ThreadSanitizer, which
+# is where it earns its keep - a plain run checks the outcome, TSan checks the way there.
+$(OBJ)/tests/test_thread_safety: $(TEST_DIR)/test_thread_safety.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c \
+                                 | $(OBJ)/tests
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c -lpthread -lm
+
+tsan:
+	$(MAKE) clean
+	$(MAKE) $(OBJ)/tests/test_thread_safety CFLAGS='-O1 -g -Wall -Wextra -fsanitize=thread'
+	TSAN_OPTIONS=halt_on_error=1 ./$(OBJ)/tests/test_thread_safety
 
 $(OBJ)/tests:
 	mkdir -p $@

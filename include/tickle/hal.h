@@ -91,6 +91,11 @@ typedef enum tt_ret_t {
                                    // generic error: it is the normal, expected outcome of flow
                                    // control, not a failure. See tt_Publisher.keep_all and
                                    // tt_Publisher_writable() (tickle.h).
+    tt_RET_BUSY = -15,             // tt_Node_poll() called while another thread is already polling
+                                   // the same node. One poller at a time is part of the threading
+                                   // contract ("Threading", tickle.h): the two would share rx_buffer.
+                                   // Nothing was done; the call is a caller bug, reported rather than
+                                   // allowed to corrupt a datagram mid-decode.
 } tt_ret_t;
 
 struct tt_Node;

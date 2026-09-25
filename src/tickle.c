@@ -1140,6 +1140,50 @@ static bool deadline_liveliness_incompatible(uint64_t requested_deadline_ns, uin
     return requested_lease_ns != 0 && (offered_lease_ns == 0 || offered_lease_ns > requested_lease_ns);
 }
 
+// Threading (tt_THREAD_SAFE, config.h) - see "Threading" at tt_Node_lock() in tickle.h for the contract,
+// and struct tt_Node.state_lock for what each lock guards. Taken with a try first so the uncontended case
+// costs one atomic and the contended one is counted, with how long it waited: whether the state lock is
+// worth splitting further is a measurement, not something to decide from here.
+// tt_lock_*: from the platform header hal.h selects (hal_linux.h, hal_freertos.h), which include-cleaner
+// cannot see through - the same reason struct tt_Node.hal carries a NOLINT.
+static void lock_counted(tt_lock_t* lock, struct tt_LockStats* stats) { // NOLINT(misc-include-cleaner)
+    if (!tt_lock_try(lock)) {                                           // NOLINT(misc-include-cleaner)
+        uint64_t start = tt_get_ns();
+        tt_lock_acquire(lock); // NOLINT(misc-include-cleaner)
+        stats->contended++;
+        stats->wait_ns += tt_get_ns() - start;
+    }
+    stats->acquisitions++;
+}
+
+static void state_lock(struct tt_Node* node) {
+    lock_counted(&node->state_lock, &node->state_lock_stats);
+}
+
+static void state_unlock(struct tt_Node* node) {
+    tt_lock_release(&node->state_lock); // NOLINT(misc-include-cleaner)
+}
+
+static void sched_lock(struct tt_Node* node) {
+    lock_counted(&node->sched_lock, &node->sched_lock_stats);
+}
+
+static void sched_unlock(struct tt_Node* node) {
+    tt_lock_release(&node->sched_lock); // NOLINT(misc-include-cleaner)
+}
+
+void tt_Node_lock(struct tt_Node* node) {
+    if (node != NULL) {
+        state_lock(node);
+    }
+}
+
+void tt_Node_unlock(struct tt_Node* node) {
+    if (node != NULL) {
+        state_unlock(node);
+    }
+}
+
 // scheduler[] is a binary min-heap keyed on TCB.time (heap[0] = earliest), sized by
 // scheduler_tail. schedule/pop/unschedule are all O(log N) sift operations with no array
 // memmove. Equal-time entries no longer keep strict FIFO order (heaps don't) - nothing in this
@@ -1181,9 +1225,14 @@ static void sched_sift_down(struct tt_Node* node, int32_t index) {
     node->scheduler[index] = moving;
 }
 
+// Only the scheduler's own lock: an insert never races a running entry, because a running entry has
+// already been taken out of the heap (run_due_entry()). That is what lets another thread schedule
+// without waiting behind a datagram the poll thread is processing.
 bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
                       void (*function)(struct tt_Node* node, uint64_t time, void* param), void* param) {
+    sched_lock(node);
     if (node->scheduler_tail + 1 >= tt_MAX_SCHEDULER_LENGTH) {
+        sched_unlock(node);
         return false;
     }
 
@@ -1193,12 +1242,29 @@ bool tt_Node_schedule(struct tt_Node* node, uint64_t time,
     node->scheduler[index].param = param;
     node->scheduler_tail++;
     sched_sift_up(node, index);
+    sched_unlock(node);
 
     return true;
 }
 
+static bool unschedule_locked(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
+                              void* param);
+
+// The state lock as well as the scheduler's: entries run with the state lock held, so taking it here
+// waits out one that is running right now. Without it, an entry already taken out of the heap to run
+// would be neither found nor waited for, and its caller could free `param` under it.
 bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
                         void* param) {
+    state_lock(node);
+    sched_lock(node);
+    bool removed = unschedule_locked(node, function, param);
+    sched_unlock(node);
+    state_unlock(node);
+    return removed;
+}
+
+static bool unschedule_locked(struct tt_Node* node, void (*function)(struct tt_Node* node, uint64_t time, void* param),
+                              void* param) {
     bool removed = false;
 
     for (int32_t i = 0; i < node->scheduler_tail; i++) {
@@ -1219,6 +1285,8 @@ bool tt_Node_unschedule(struct tt_Node* node, void (*function)(struct tt_Node* n
     return removed;
 }
 
+// Callers hold sched_lock: the pointer is into the heap, which another thread may reorder the moment
+// the lock is released.
 static struct tt_TCB* peek_scheduler(struct tt_Node* node) {
     if (node->scheduler_tail > 0) {
         return &node->scheduler[0];
@@ -1233,6 +1301,49 @@ static void pop_scheduler(struct tt_Node* node) {
         node->scheduler[0] = node->scheduler[node->scheduler_tail];
         sched_sift_down(node, 0);
     }
+}
+
+// When the earliest entry is due, or false when nothing is scheduled. A copy, taken under the lock:
+// another thread may insert the moment it is released.
+static bool sched_next_time(struct tt_Node* node, uint64_t* time) {
+    sched_lock(node);
+    const struct tt_TCB* tcb = peek_scheduler(node);
+    if (tcb != NULL) {
+        *time = tcb->time;
+    }
+    sched_unlock(node);
+    return tcb != NULL;
+}
+
+// Runs the earliest entry if it is due at `now` and returns true; otherwise returns false and reports
+// when the next one is due (*has_next false when nothing is scheduled). One call answers both because
+// this sits on the per-sample path of a max-rate publisher: one state and one scheduler acquisition
+// per entry, not a peek and then another.
+//
+// The entry is copied out and popped before it runs. It used to run in place at scheduler[0] and be
+// popped afterwards, which was safe only while nothing else could reorder the heap during the call;
+// with inserts from other threads it no longer is. The state lock is taken first and held across the
+// run, so tt_Node_unschedule() on another thread either removes the entry before it is taken or waits
+// until it has finished.
+static bool run_due_entry(struct tt_Node* node, uint64_t now, bool* has_next, uint64_t* next) {
+    state_lock(node);
+    sched_lock(node);
+    const struct tt_TCB* head = peek_scheduler(node);
+    *has_next = head != NULL;
+    bool due = head != NULL && head->time <= now;
+    struct tt_TCB tcb = {0};
+    if (due) {
+        tcb = *head;
+        pop_scheduler(node);
+    } else if (head != NULL) {
+        *next = head->time;
+    }
+    sched_unlock(node);
+    if (due) {
+        tcb.function(node, now, tcb.param);
+    }
+    state_unlock(node);
+    return due;
 }
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
@@ -1283,6 +1394,17 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
                               uint32_t tail, uint32_t sender_ip, uint16_t sender_port);
 // QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md) - see its own definition's comment.
 static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target);
+
+// The node's locks, ready and unheld. tt_Node_create() calls it; so does every unit test that builds a
+// node by hand on the mock HAL instead - a zeroed pthread mutex is a valid lock on glibc, but not a
+// recursive one, and the state lock has to be (see struct tt_Node.state_lock).
+static void node_init_locks(struct tt_Node* node) {
+    tt_lock_init(&node->state_lock, /*recursive=*/true);  // NOLINT(misc-include-cleaner)
+    tt_lock_init(&node->sched_lock, /*recursive=*/false); // NOLINT(misc-include-cleaner)
+    node->state_lock_stats = (struct tt_LockStats) {0};
+    node->sched_lock_stats = (struct tt_LockStats) {0};
+    __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
+}
 
 static void reset_node_state(struct tt_Node* node) {
     node->id = tt_NODE_ID_INVALID;
@@ -1364,6 +1486,9 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
         return tt_RET_INVALID_ARGUMENT;
     }
     reset_node_state(node);
+    // Before anything else can reach the node. Not concurrent-safe itself ("Threading", tickle.h): no
+    // other thread may hold a node that is being created.
+    node_init_locks(node);
 
     // Milestone 47 - this launch's own random entity_id base (struct tt_Node.entity_id_base's own
     // doc comment, tickle.h): tt_get_ns()'s low 32 bits, no separate RNG primitive needed - this
@@ -1405,8 +1530,8 @@ static bool valid_msg_size(uint32_t size) {
     return size > 0 && size <= tt_MAX_BUFFER_LENGTH;
 }
 
-tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
-                               const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+static tt_ret_t node_create_client_locked(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                                          const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
     if (node == NULL || client == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
         service->request_encode_size == NULL || service->request_encode == NULL || service->response_decode == NULL ||
@@ -1441,8 +1566,21 @@ tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, s
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
-                               const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+tt_ret_t tt_Node_create_client(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
+                               const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
+    struct tt_Node* locked_node = node;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = node_create_client_locked(node, client, service, endpoint_name, callback);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static tt_ret_t node_create_server_locked(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                                          const char* endpoint_name, tt_SERVER_CALLBACK callback) {
     if (node == NULL || server == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
         service->name == NULL || !valid_msg_size(service->request_size) || !valid_msg_size(service->response_size) ||
         service->request_decode == NULL || service->request_free == NULL || service->response_encode_size == NULL ||
@@ -1479,14 +1617,27 @@ tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, s
     return tt_RET_OK;
 }
 
+tt_ret_t tt_Node_create_server(struct tt_Node* node, struct tt_Server* server, struct tt_Service* service,
+                               const char* endpoint_name, tt_SERVER_CALLBACK callback) {
+    struct tt_Node* locked_node = node;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = node_create_server_locked(node, server, service, endpoint_name, callback);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
 // Caller storage must hold aligned structs: a tt_SubmessageHeader in a cache entry, the service's
 // response struct in a pending entry.
 static bool storage_aligned(const uint8_t* storage, uint32_t entry_length) {
     return ((uintptr_t)storage % 8U) == 0 && (entry_length % 8U) == 0;
 }
 
-tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
-                               uint8_t* pending_storage, uint32_t pending_entry_length) {
+static tt_ret_t server_set_storage_locked(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
+                                          uint8_t* pending_storage, uint32_t pending_entry_length) {
     if (server == NULL || server->service == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -1512,7 +1663,21 @@ tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage,
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length) {
+tt_ret_t tt_Server_set_storage(struct tt_Server* server, uint8_t* cache_storage, uint32_t cache_entry_length,
+                               uint8_t* pending_storage, uint32_t pending_entry_length) {
+    struct tt_Node* locked_node = server != NULL ? server->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result =
+        server_set_storage_locked(server, cache_storage, cache_entry_length, pending_storage, pending_entry_length);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static tt_ret_t client_set_storage_locked(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length) {
     if (client == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -1527,8 +1692,20 @@ tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage,
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
-                                  const char* endpoint_name) {
+tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage, uint32_t cache_length) {
+    struct tt_Node* locked_node = client != NULL ? client->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = client_set_storage_locked(client, cache_storage, cache_length);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                             const char* endpoint_name) {
     if (node == NULL || pub == NULL || topic == NULL || endpoint_name == NULL || topic->name == NULL ||
         !valid_msg_size(topic->data_size) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -1585,8 +1762,21 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
-                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
+                                  const char* endpoint_name) {
+    struct tt_Node* locked_node = node;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = node_create_publisher_locked(node, pub, topic, endpoint_name);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static tt_ret_t node_create_subscriber_locked(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                              const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
     if (node == NULL || sub == NULL || topic == NULL || endpoint_name == NULL || callback == NULL ||
         topic->name == NULL || !valid_msg_size(topic->data_size) || topic->data_decode == NULL ||
         topic->data_free == NULL) {
@@ -1646,6 +1836,19 @@ tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* s
     node->last_modified = tt_get_ns();
 
     return tt_RET_OK;
+}
+
+tt_ret_t tt_Node_create_subscriber(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
+                                   const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
+    struct tt_Node* locked_node = node;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = node_create_subscriber_locked(node, sub, topic, endpoint_name, callback);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
 }
 
 // Re-sends the still-outstanding call request verbatim. Failing to encode/flush isn't fatal here
@@ -1721,7 +1924,7 @@ static void call_retry(struct tt_Node* node, uint64_t time, void* param) {
     }
 }
 
-tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
+static tt_ret_t client_call_locked(struct tt_Client* client, struct tt_Request* request) {
     if (client == NULL || request == NULL || client->node == NULL || client->service == NULL ||
         client->service->request_encode_size == NULL || client->service->request_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -1828,7 +2031,19 @@ tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Client_destroy(struct tt_Client* client) {
+tt_ret_t tt_Client_call(struct tt_Client* client, struct tt_Request* request) {
+    struct tt_Node* locked_node = client != NULL ? client->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = client_call_locked(client, request);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static tt_ret_t client_destroy_locked(struct tt_Client* client) {
     if (client == NULL || client->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -1851,7 +2066,19 @@ tt_ret_t tt_Client_destroy(struct tt_Client* client) {
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Server_destroy(struct tt_Server* server) {
+tt_ret_t tt_Client_destroy(struct tt_Client* client) {
+    struct tt_Node* locked_node = client != NULL ? client->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = client_destroy_locked(client);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static tt_ret_t server_destroy_locked(struct tt_Server* server) {
     if (server == NULL || server->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -1873,6 +2100,18 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     broadcast_goodbye(server->node);
 
     return tt_RET_OK;
+}
+
+tt_ret_t tt_Server_destroy(struct tt_Server* server) {
+    struct tt_Node* locked_node = server != NULL ? server->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = server_destroy_locked(server);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
 }
 
 // Zero-copy standalone-packet publish: framing (Header + SubmessageHeader + DataHeader) built in
@@ -2469,7 +2708,7 @@ static bool append_piggybacked_heartbeat(struct tt_Node* node, struct tt_Publish
     return true;
 }
 
-tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
+static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
@@ -2610,6 +2849,18 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     return tt_RET_OK;
 }
 
+tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = publisher_publish_locked(pub, data);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
 // Oldest still-retained seq_no in cache, or 0 if nothing is retained yet (seq_no 0 never occurs on
 // the wire - tt_Publisher_publish()'s own data_header->seq_no = pub->seq_no + 1, starting from 1 -
 // so it doubles as "empty" here). Shared by send_heartbeat()'s own periodic announce and send_
@@ -2732,7 +2983,7 @@ static void send_initial_heartbeat(struct tt_Node* node, struct tt_Publisher* pu
 
 // See struct tt_Publisher.heartbeat_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly.
-uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
+static uint32_t publisher_unacked_bound_locked(const struct tt_Publisher* pub) {
     if (pub == NULL) {
         return tt_RELIABLE_BITMAP_BITS;
     }
@@ -2760,22 +3011,58 @@ uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
     return announced ? bound : tt_RELIABLE_BITMAP_BITS;
 }
 
+uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    uint32_t result = publisher_unacked_bound_locked(pub);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
 uint64_t tt_reliable_retry_interval_configured(void) {
     return reliable_retry_configured();
 }
 
-uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
+static uint32_t publisher_min_acked_seq_no_locked(const struct tt_Publisher* pub) {
     return min_peer_ack_seq_no(pub);
 }
 
-bool tt_Publisher_writable(const struct tt_Publisher* pub) {
+uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    uint32_t result = publisher_min_acked_seq_no_locked(pub);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static bool publisher_writable_locked(const struct tt_Publisher* pub) {
     if (pub == NULL) {
         return false;
     }
     return keep_all_writable(pub);
 }
 
-bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
+bool tt_Publisher_writable(const struct tt_Publisher* pub) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    bool result = publisher_writable_locked(pub);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static bool publisher_is_acked_by_all_peers_locked(const struct tt_Publisher* pub, uint32_t seq_no) {
     // Phase 2 - every matched Subscriber entity must have got this far, not merely every matched
     // node: two Subscriptions of one topic in one remote process each have their own entry.
     for (int i = 0; i < tt_MAX_ACK_ENTRIES; i++) {
@@ -2787,6 +3074,18 @@ bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t
         }
     }
     return true;
+}
+
+bool tt_Publisher_is_acked_by_all_peers(const struct tt_Publisher* pub, uint32_t seq_no) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    bool result = publisher_is_acked_by_all_peers_locked(pub, seq_no);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
 }
 
 tt_ret_t tt_ReliableCache_init(struct tt_ReliableCache* cache, struct tt_ReliableCacheIndex* index, uint16_t capacity,
@@ -2852,7 +3151,7 @@ tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_aren
     return tt_RET_OK;
 }
 
-tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns) {
+static tt_ret_t publisher_set_heartbeat_period_locked(struct tt_Publisher* pub, uint64_t period_ns) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -2875,10 +3174,22 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
     return tt_RET_OK;
 }
 
+tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = publisher_set_heartbeat_period_locked(pub, period_ns);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
 // See struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for why this needs an
 // explicit call rather than just setting that field directly - same reasoning as tt_Publisher_
 // set_heartbeat_period() above.
-tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t period_ns) {
+static tt_ret_t publisher_set_ack_solicit_period_locked(struct tt_Publisher* pub, uint64_t period_ns) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -2901,6 +3212,18 @@ tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t 
     return tt_RET_OK;
 }
 
+tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t period_ns) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = publisher_set_ack_solicit_period_locked(pub, period_ns);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
 // See its own doc comment (tickle.h) for what this is for. Builds its own dense peer list from
 // pub->peers[] rather than passing pub->peers/count_peers(pub->peers) straight through the way
 // send_heartbeat()/tt_Publisher_publish() do - those two rely on peers[] having no gap before the
@@ -2910,7 +3233,7 @@ tt_ret_t tt_Publisher_set_ack_solicit_period(struct tt_Publisher* pub, uint64_t 
 // Solicitation specifically must reach every *currently* matched peer correctly - unlike a
 // periodic announce, there's no "next period" for a missed one to be silently caught by - so this
 // one function is worth the extra O(tt_MAX_PEER_COUNT) filter to not depend on that assumption.
-tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
+static tt_ret_t publisher_request_ack_locked(struct tt_Publisher* pub) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -2938,6 +3261,18 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
     return tt_RET_OK;
 }
 
+tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = publisher_request_ack_locked(pub);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
 // Milestone 47 "goodbye" - broadcasts the node's own now-reduced entity list right away, instead
 // of waiting for node_update()'s own next periodic tick (up to tt_NODE_UPDATE_INTERVAL later).
 // Shared by every per-entity destroy function below (tt_Publisher_destroy()/tt_Subscriber_
@@ -2960,7 +3295,7 @@ static void broadcast_goodbye(struct tt_Node* node) {
     }
 }
 
-tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
+static tt_ret_t publisher_destroy_locked(struct tt_Publisher* pub) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -2983,6 +3318,18 @@ tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
     node->last_modified = tt_get_ns();
     broadcast_goodbye(node);
     return tt_RET_OK;
+}
+
+tt_ret_t tt_Publisher_destroy(struct tt_Publisher* pub) {
+    struct tt_Node* locked_node = pub != NULL ? pub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = publisher_destroy_locked(pub);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
 }
 
 // The complete delivery-order numbers for one Subscriber, emitted exactly once, whichever way it
@@ -3022,7 +3369,7 @@ static void report_delivery_counters(const struct tt_Subscriber* sub, uint32_t e
                 (unsigned long)sub->gap_evicted);
 }
 
-tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
+static tt_ret_t subscriber_destroy_locked(struct tt_Subscriber* sub) {
     if (sub == NULL || sub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -3049,6 +3396,18 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
     }
 
     return tt_RET_IILEGAL_ENDPOINT_ID;
+}
+
+tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub) {
+    struct tt_Node* locked_node = sub != NULL ? sub->node : NULL;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = subscriber_destroy_locked(sub);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
 }
 
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - encodes and unicasts one ACKNACK
@@ -6609,7 +6968,18 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
 // *result and returns true; on a timeout that was just a short wait for a due scheduler entry
 // (not the caller's real timeout), returns false so the caller keeps polling.
 // Decodes and dispatches one just-received datagram of `len` bytes now sitting in node->rx_buffer.
+static tt_ret_t process_datagram_locked(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port);
+
+// rx_buffer itself needs no lock - only the one poller touches it (struct tt_Node.poller_active) - but
+// everything a datagram updates does, so each one is processed under the state lock.
 static tt_ret_t process_datagram(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port) {
+    state_lock(node);
+    tt_ret_t result = process_datagram_locked(node, len, ip, port);
+    state_unlock(node);
+    return result;
+}
+
+static tt_ret_t process_datagram_locked(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port) {
     node->rx_tail = (uint32_t)len;
     node->rx_datagrams++;
     if (node->rx_via_data_port) {
@@ -6657,8 +7027,8 @@ static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
 
 // Whether a scheduler entry is due at `now`.
 static bool scheduler_entry_due(struct tt_Node* node, uint64_t now) {
-    const struct tt_TCB* tcb = peek_scheduler(node);
-    return tcb != NULL && tcb->time <= now;
+    uint64_t next = 0;
+    return sched_next_time(node, &next) && next <= now;
 }
 
 static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip, uint16_t port,
@@ -6692,10 +7062,9 @@ static bool handle_receive_result(struct tt_Node* node, int32_t len, uint32_t ip
 // One non-blocking pass: run everything due now, take whatever is already received, return. See
 // tt_Node_poll()'s timeout == 0.
 static tt_ret_t poll_once_nonblocking(struct tt_Node* node, uint64_t time) {
-    struct tt_TCB* tcb;
-    while ((tcb = peek_scheduler(node)) != NULL && tcb->time <= time) {
-        tcb->function(node, time, tcb->param);
-        pop_scheduler(node);
+    bool has_next = false;
+    uint64_t next = 0;
+    while (run_due_entry(node, time, &has_next, &next)) {
     }
 
     uint32_t ip = 0;
@@ -6724,15 +7093,15 @@ static tt_ret_t poll_once_nonblocking(struct tt_Node* node, uint64_t time) {
 // negative-timeout poll waits exactly until the next entry, or - with none - passes 0, which
 // tt_receive() takes as "no timeout" (hal.h): block until a datagram, a signal or tt_wake_signal(). A
 // positive one waits the rest of its budget, shortened to the next entry if that comes first.
-static int64_t poll_wait_length(const struct tt_TCB* tcb, uint64_t time, int64_t timeout, bool until_next_event,
+static int64_t poll_wait_length(bool has_next, uint64_t next, uint64_t time, int64_t timeout, bool until_next_event,
                                 bool* woke_for_scheduler) {
     if (until_next_event) {
-        *woke_for_scheduler = tcb != NULL;
-        return tcb != NULL ? (int64_t)(tcb->time - time) : 0;
+        *woke_for_scheduler = has_next;
+        return has_next ? (int64_t)(next - time) : 0;
     }
-    if (tcb != NULL && tcb->time - time < (uint64_t)timeout) {
+    if (has_next && next - time < (uint64_t)timeout) {
         *woke_for_scheduler = true;
-        return (int64_t)(tcb->time - time);
+        return (int64_t)(next - time);
     }
     *woke_for_scheduler = false;
     return timeout;
@@ -6740,7 +7109,7 @@ static int64_t poll_wait_length(const struct tt_TCB* tcb, uint64_t time, int64_t
 
 // tt_Node_poll()'s I/O step, when nothing is due: wait for a datagram, the next entry or an interrupt.
 // Returns true with *result set when the poll should end.
-static bool poll_wait_io(struct tt_Node* node, const struct tt_TCB* tcb, uint64_t time, int64_t timeout,
+static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uint64_t time, int64_t timeout,
                          bool until_next_event, bool did_work, tt_ret_t* result) {
     // A negative-timeout poll that has already run what fell due returns here instead of starting
     // another wait.
@@ -6750,7 +7119,7 @@ static bool poll_wait_io(struct tt_Node* node, const struct tt_TCB* tcb, uint64_
     }
 
     bool woke_for_scheduler = false;
-    int64_t rest = poll_wait_length(tcb, time, timeout, until_next_event, &woke_for_scheduler);
+    int64_t rest = poll_wait_length(has_next, next, time, timeout, until_next_event, &woke_for_scheduler);
 
     uint32_t ip = 0;
     uint16_t port = 0;
@@ -6771,7 +7140,23 @@ static bool poll_wait_io(struct tt_Node* node, const struct tt_TCB* tcb, uint64_
     return false;
 }
 
+static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout);
+
 tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
+    if (node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    // One poller at a time ("Threading", tickle.h): a second would share rx_buffer with the first.
+    uint8_t idle = 0;
+    if (!__atomic_compare_exchange_n(&node->poller_active, &idle, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        return tt_RET_BUSY;
+    }
+    tt_ret_t result = node_poll(node, timeout);
+    __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELEASE);
+    return result;
+}
+
+static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout) {
     // Negative: wait exactly until the next scheduler entry is due, or indefinitely when there is none
     // (see tt_Node_poll() in tickle.h). The loop below always bounded a wait by the next due entry, but
     // that could only SHORTEN a fixed 100us slice, so an idle node woke ~10,000 times a second for
@@ -6783,7 +7168,9 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     // last call, before doing anything else this call - same "drain what's ready first" spirit as
     // the scheduler/RX handling below, and importantly *before* this call might otherwise block in
     // tt_receive() for up to `timeout` with a real response already sitting there ready to go out.
+    state_lock(node);
     flush_pending_responses(node);
+    state_unlock(node);
 
     uint64_t time = tt_get_ns();
     const uint64_t poll_start = time;
@@ -6807,15 +7194,20 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     bool did_work = false; // a scheduler entry has run during this call
 
     while (until_next_event || timeout > 0) {
-        struct tt_TCB* tcb = peek_scheduler(node);
+        bool has_next = false;
+        uint64_t next = 0;
+        bool ran = false;
+        if (consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE) {
+            ran = run_due_entry(node, time, &has_next, &next); // runs one if due, else says when
+        } else {
+            has_next = sched_next_time(node, &next);
+        }
 
-        if (tcb != NULL && tcb->time <= time && consecutive_scheduler_runs < tt_SCHEDULER_IO_INTERLEAVE) {
+        if (ran) {
             // Run scheduler first
-            tcb->function(node, time, tcb->param);
-            pop_scheduler(node);
             consecutive_scheduler_runs++;
             did_work = true;
-        } else if (tcb != NULL && tcb->time <= time) {
+        } else if (has_next && next <= time) {
             // A scheduler entry is still due, but tt_SCHEDULER_IO_INTERLEAVE consecutive ones have
             // already run without a receive check - force one non-blocking peek before letting more
             // scheduler work run. Not the caller's own real wait (never blocks): if nothing's
@@ -6830,7 +7222,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
         } else {
             consecutive_scheduler_runs = 0;
             tt_ret_t result;
-            if (poll_wait_io(node, tcb, time, timeout, until_next_event, did_work, &result)) {
+            if (poll_wait_io(node, has_next, next, time, timeout, until_next_event, did_work, &result)) {
                 return result;
             }
         }
@@ -6855,8 +7247,8 @@ tt_ret_t tt_Node_interrupt(struct tt_Node* node) {
     return tt_wake_signal(node);
 }
 
-tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discovery, tt_DISCOVERY_CALLBACK callback,
-                               void* param) {
+static tt_ret_t node_set_discovery_locked(struct tt_Node* node, struct tt_Discovery* discovery,
+                                          tt_DISCOVERY_CALLBACK callback, void* param) {
     if (node == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -6864,6 +7256,19 @@ tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discov
     node->discovery_callback = discovery != NULL ? callback : NULL;
     node->discovery_callback_param = discovery != NULL ? param : NULL;
     return tt_RET_OK;
+}
+
+tt_ret_t tt_Node_set_discovery(struct tt_Node* node, struct tt_Discovery* discovery, tt_DISCOVERY_CALLBACK callback,
+                               void* param) {
+    struct tt_Node* locked_node = node;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    tt_ret_t result = node_set_discovery_locked(node, discovery, callback, param);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
 }
 
 uint32_t tt_Discovery_count(const struct tt_Discovery* discovery) {
@@ -6893,7 +7298,8 @@ const struct tt_DiscoveredEntity* tt_Discovery_find(const struct tt_Discovery* d
 }
 
 // See this function's own doc comment (tickle.h).
-bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
+static bool node_entity_alive_locked(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity,
+                                     uint64_t now) {
     if (node == NULL || entity == NULL || entity->node_id == tt_NODE_ID_INVALID) {
         return false;
     }
@@ -6922,7 +7328,35 @@ bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_Discovered
     return !(announce_stale && traffic_stale);
 }
 
+bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
+    struct tt_Node* locked_node = (struct tt_Node*)node;
+    if (locked_node != NULL) {
+        state_lock(locked_node);
+    }
+    bool result = node_entity_alive_locked(node, entity, now);
+    if (locked_node != NULL) {
+        state_unlock(locked_node);
+    }
+    return result;
+}
+
+static tt_ret_t node_destroy_locked(struct tt_Node* node);
+
 tt_ret_t tt_Node_destroy(struct tt_Node* node) {
+    if (node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    // Held across the teardown so a call already inside the node on another thread finishes first.
+    // Not released into a destroyed lock afterwards: the locks are left initialised, because a late
+    // tt_Node_interrupt() or a poll still unwinding must never touch a destroyed mutex, and on both
+    // platforms an idle one costs nothing to keep. tt_Node_create() initialises them again.
+    state_lock(node);
+    tt_ret_t result = node_destroy_locked(node);
+    state_unlock(node);
+    return result;
+}
+
+static tt_ret_t node_destroy_locked(struct tt_Node* node) {
     // One line, at the one moment the whole run's traffic is known. Cheap enough to be
     // unconditional, and the question it answers - did anything arrive at all - is the first one
     // asked whenever a node delivered nothing.
@@ -6996,7 +7430,9 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node) {
     // The node is fully torn down at this point; drop every pending scheduler entry
     // (including the node_update/node_flush ones just re-armed above) so nothing later
     // fires a callback into this now-destroyed node.
+    sched_lock(node);
     node->scheduler_tail = 0;
+    sched_unlock(node);
 
     tt_close(node);
 

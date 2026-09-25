@@ -43,6 +43,7 @@ static void count_entry(struct tt_Node* node, uint64_t time, void* param) {
 
 static void setup(struct tt_Node* node) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     test_mock_reset();
     test_mock_receive_advances_clock = true;
     entry_runs = 0;

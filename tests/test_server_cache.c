@@ -25,6 +25,7 @@
 
 static void init_node_and_server(struct tt_Node* node, struct tt_Server* server) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     memset(server, 0, sizeof(*server));
     server->node = node;
 }

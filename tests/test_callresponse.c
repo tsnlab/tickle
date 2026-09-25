@@ -55,6 +55,7 @@ static void test_callresponse_updates_latency_and_clears_cache(void) {
 
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = 1;
 
     struct tt_Service service;
@@ -104,6 +105,7 @@ static void test_callresponse_updates_latency_and_clears_cache(void) {
 // outstanding call at seq_no 7, and a response header the test then tweaks.
 static void setup_client(struct tt_Node* node, struct tt_Service* service, struct tt_Client* client) {
     memset(node, 0, sizeof(*node));
+    node_init_locks(node);
     node->id = 1;
     memset(service, 0, sizeof(*service));
     service->response_size = 1;
@@ -195,6 +197,7 @@ static void test_callresponse_ignores_unknown_endpoint(void) {
 
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = 1;
     node.endpoint_count = 0; // nothing registered
 

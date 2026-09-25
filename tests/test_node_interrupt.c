@@ -30,6 +30,7 @@
 static void test_interrupt_ends_poll_even_with_scheduler_wakeup_pending(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     tt_ret_t result = 1234; // a value none of tt_ret_t's own members use, so a bug leaving it
                             // untouched is easy to spot rather than accidentally matching.
@@ -41,6 +42,7 @@ static void test_interrupt_ends_poll_even_with_scheduler_wakeup_pending(void) {
 static void test_interrupt_ends_poll_with_no_scheduler_wakeup_pending(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     tt_ret_t result = 1234;
     bool ended = handle_receive_result(&node, -3, 0, 0, /*woke_for_scheduler=*/false, &result);
@@ -54,6 +56,7 @@ static void test_interrupt_ends_poll_with_no_scheduler_wakeup_pending(void) {
 static void test_plain_timeout_still_swallowed_on_scheduler_wakeup(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     tt_ret_t result = 1234;
     bool ended = handle_receive_result(&node, -1, 0, 0, /*woke_for_scheduler=*/true, &result);
@@ -63,6 +66,7 @@ static void test_plain_timeout_still_swallowed_on_scheduler_wakeup(void) {
 static void test_plain_timeout_ends_poll_without_scheduler_wakeup(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     tt_ret_t result = 1234;
     bool ended = handle_receive_result(&node, -1, 0, 0, /*woke_for_scheduler=*/false, &result);
@@ -73,6 +77,7 @@ static void test_plain_timeout_ends_poll_without_scheduler_wakeup(void) {
 static void test_io_error_unaffected(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
 
     tt_ret_t result = 1234;
     bool ended = handle_receive_result(&node, -2, 0, 0, /*woke_for_scheduler=*/false, &result);
@@ -85,6 +90,7 @@ static void test_io_error_unaffected(void) {
 static void test_node_poll_returns_interrupted(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     test_mock_reset();
     test_mock_receive_return = -3;
 
@@ -95,6 +101,7 @@ static void test_node_poll_returns_interrupted(void) {
 static void test_node_interrupt_calls_hal_wake_signal(void) {
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     test_mock_reset();
 
     tt_ret_t ret = tt_Node_interrupt(&node);

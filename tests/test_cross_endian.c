@@ -152,6 +152,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
 
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = LOCAL_NODE_ID;
     node.endpoint_count = 1;
     node.endpoints[0] = (struct tt_Endpoint*)&sub;
@@ -206,6 +207,7 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
 
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = LOCAL_NODE_ID;
     node.tx_tail = sizeof(struct tt_Header);
     node.tx_size = tt_MAX_BUFFER_LENGTH * 2;
@@ -312,6 +314,7 @@ static void test_reverse_endian_callrequest_reaches_server(void) {
 
     struct tt_Node node;
     memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
     node.id = LOCAL_NODE_ID;
     node.tx_tail = sizeof(struct tt_Header);
     node.tx_size = tt_MAX_BUFFER_LENGTH * 2;
