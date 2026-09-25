@@ -408,8 +408,21 @@ int main(int argc, char** argv) {
     // array now, not an embedded tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own
     // doc comment, tickle.h) - sized to MAX_RELIABLE_DEPTH so -K can actually reach past 64.
     // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena, both sized for MAX_RELIABLE_DEPTH
-    // samples of this scenario's own fixed BenchData shape, so -K still reaches 8192 - at ~820KB
-    // of static storage now instead of ~12MB.
+    // samples of this scenario's own fixed BenchData shape, so -K still reaches 8192.
+    //
+    // The arena scales with the payload shape, and this said "~820KB instead of ~12MB" when P1 was
+    // the only shape there was (2026-09-25). Computed from the macros below, per shape:
+    //
+    //     p1    76 B sample -> record  100 B -> arena    800 KB
+    //     p2  1292 B        -> record 1316 B -> arena 10,529 KB
+    //     p3  1424 B        -> record 1448 B -> arena 11,585 KB
+    //     p4  2800 B        -> record 2824 B -> arena 22,594 KB
+    //
+    // plus a fixed 192 KB of index slots. So the saving over the old embedded cache is real only
+    // at the small shape; at p4 this is nearly twice the ~12MB it replaced. **Read a memory figure
+    // from this scenario as a property of MAX_RELIABLE_DEPTH 8192 and the shape, not of libtickle**
+    // - and note that on a demand-paged host peak RSS tracks the pages actually touched, so most
+    // of that declaration is never resident. On a target without demand paging, all of it is.
     static struct tt_ReliableCacheIndex pub_cache_index[MAX_RELIABLE_DEPTH];
     static uint8_t pub_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(MAX_RELIABLE_DEPTH,
                                                                  tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];

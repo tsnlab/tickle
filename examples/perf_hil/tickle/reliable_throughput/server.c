@@ -219,6 +219,11 @@ int main(int argc, char** argv) {
     // Sized to hold a full tracking window of samples: the window is exactly how far ahead of its
     // oldest missing sample this Subscriber is allowed to get, so it is also the most it can ever
     // need to hold at once.
+    //
+    // That window is 4096 samples, so this scales with the payload shape exactly as the client's
+    // arena does (2026-09-25): 480 KB at p1, 5344 at p2, 5856 at p3, 11,360 at p4. The same
+    // caveat applies to reading a memory figure off it - it is a property of the window size and
+    // the shape, not of libtickle.
     static uint64_t reorder[BENCH_REORDER_SLOTS * BENCH_REORDER_SLOT_BYTES / sizeof(uint64_t)];
     sub.reorder_storage = reorder;
     sub.reorder_slots = BENCH_REORDER_SLOTS;
