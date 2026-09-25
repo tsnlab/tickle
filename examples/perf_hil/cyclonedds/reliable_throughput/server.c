@@ -37,8 +37,17 @@ int main(int argc, char** argv) {
     // too - identically for all three frameworks, which is what makes them comparable.
     bench_stats_begin(&g_bench_stats);
     double safety_cap_s = 30.0;
+    // -K <depth>: KEEP_LAST at that depth instead of the KEEP_ALL default (2026-09-25). The
+    // campaign's Q0 baseline uses KEEP_ALL for all three because that is the only configuration
+    // where all three make the same promise, but KEEP_LAST is what rclcpp and TickLE actually
+    // default to, so without this there is no cross-vendor cell for the configuration users get.
+    // Depth 64, not 8: this file's own notes record KEEP_LAST(8) as the bisected cause of a real
+    // 53% loss, so a shallow depth would re-measure that finding rather than the default.
+    int keep_last_depth = 0; // 0 = KEEP_ALL, unchanged default
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
+            keep_last_depth = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             safety_cap_s = atof(argv[++i]);
         }
     }
@@ -61,7 +70,11 @@ int main(int argc, char** argv) {
     // official example, not a discovery/matching problem.
     dds_qos_t* qos = dds_create_qos();
     dds_qset_reliability(qos, DDS_RELIABILITY_RELIABLE, DDS_SECS(10));
-    dds_qset_history(qos, DDS_HISTORY_KEEP_ALL, 0);
+    if (keep_last_depth > 0) {
+        dds_qset_history(qos, DDS_HISTORY_KEEP_LAST, keep_last_depth);
+    } else {
+        dds_qset_history(qos, DDS_HISTORY_KEEP_ALL, 0);
+    }
     dds_qset_resource_limits(qos, 4000, DDS_LENGTH_UNLIMITED, DDS_LENGTH_UNLIMITED);
     dds_entity_t reader = dds_create_reader(participant, topic, qos, NULL);
     dds_delete_qos(qos);
@@ -125,8 +138,9 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
 
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f %s\n",
-           (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps,
+           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d %s\n",
+           (unsigned long)received, (unsigned long)lost, loss_pct, elapsed_s, mbps, keep_last_depth > 0 ? 0 : 1,
+           keep_last_depth,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

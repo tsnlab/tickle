@@ -47,8 +47,17 @@ int main(int argc, char** argv) {
     double interval_s = 0.0;       // 0 = as fast as possible
     double drain_s = 3.0;          // cap on the teardown wait-for-acknowledgements below
     double max_blocking_ms = -1.0; // -B: RELIABILITY max_blocking_time; <0 keeps FastDDS's default (100ms)
+    // -K <depth>: KEEP_LAST at that depth instead of the KEEP_ALL default (2026-09-25). The
+    // campaign's Q0 baseline uses KEEP_ALL for all three because that is the only configuration
+    // where all three make the same promise, but KEEP_LAST is what rclcpp and TickLE actually
+    // default to, so without this there is no cross-vendor cell for the configuration users get.
+    // Depth 64, not 8: this file's own notes record KEEP_LAST(8) as the bisected cause of a real
+    // 53% loss, so a shallow depth would re-measure that finding rather than the default.
+    int keep_last_depth = 0; // 0 = KEEP_ALL, unchanged default
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
+            keep_last_depth = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = atof(argv[++i]);
@@ -82,7 +91,12 @@ int main(int argc, char** argv) {
     // same root cause CycloneDDS's own client.c doc comment already names.
     DataWriterQos wqos = DATAWRITER_QOS_DEFAULT;
     wqos.reliability().kind = RELIABLE_RELIABILITY_QOS;
-    wqos.history().kind = KEEP_ALL_HISTORY_QOS;
+    if (keep_last_depth > 0) {
+        wqos.history().kind = KEEP_LAST_HISTORY_QOS;
+        wqos.history().depth = keep_last_depth;
+    } else {
+        wqos.history().kind = KEEP_ALL_HISTORY_QOS;
+    }
     wqos.resource_limits().max_samples = 4000;
     if (max_blocking_ms >= 0.0) {
         // Field-wise, not a Duration_t constructor: the type lives in eprosima::fastrtps on FastDDS
@@ -148,9 +162,10 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d %s\n",
            (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained,
            BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations,
+           keep_last_depth > 0 ? 0 : 1, keep_last_depth,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

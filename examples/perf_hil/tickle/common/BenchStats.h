@@ -34,7 +34,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <sys/resource.h>
+#include <sys/resource.h> // NOLINT(misc-include-cleaner) - declares struct rusage via bits/types/
 
 #ifdef __cplusplus
 #include <cinttypes>
@@ -81,49 +81,49 @@ static inline const char* bench_stats_iface(void) {
 }
 
 static inline double bench_stats_cpu_seconds(void) {
-    struct rusage ru;
-    if (getrusage(RUSAGE_SELF, &ru) != 0) {
+    struct rusage usage; // NOLINT(misc-include-cleaner)
+    if (getrusage(RUSAGE_SELF, &usage) != 0) {
         return -1.0;
     }
-    return (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec / 1e6 + (double)ru.ru_stime.tv_sec +
-           (double)ru.ru_stime.tv_usec / 1e6;
+    return (double)usage.ru_utime.tv_sec + ((double)usage.ru_utime.tv_usec / 1e6) + (double)usage.ru_stime.tv_sec +
+           ((double)usage.ru_stime.tv_usec / 1e6);
 }
 
 // VmHWM is the kernel's own high-water mark for resident set size, so it does not depend on this
 // process sampling itself at the right moment - which a peak read from VmRSS at exit would.
 static inline uint64_t bench_stats_peak_rss_kb(void) {
-    FILE* f = fopen("/proc/self/status", "r");
+    FILE* file = fopen("/proc/self/status", "r");
     char line[256];
-    uint64_t kb = 0;
-    if (f == NULL) {
+    uint64_t hwm_kb = 0;
+    if (file == NULL) {
         return 0;
     }
-    while (fgets(line, (int)sizeof(line), f) != NULL) {
+    while (fgets(line, (int)sizeof(line), file) != NULL) {
         if (strncmp(line, "VmHWM:", 6) == 0) {
-            if (sscanf(line + 6, "%" SCNu64, &kb) != 1) {
-                kb = 0;
+            if (sscanf(line + 6, "%" SCNu64, &hwm_kb) != 1) {
+                hwm_kb = 0;
             }
             break;
         }
     }
-    fclose(f);
-    return kb;
+    fclose(file);
+    return hwm_kb;
 }
 
 static inline void bench_stats_read_net(const char* iface, struct BenchStatsCounters* out) {
-    FILE* f = fopen("/proc/net/dev", "r");
+    FILE* file = fopen("/proc/net/dev", "r");
     char line[512];
     char want[40];
     size_t want_len;
 
     memset(out, 0, sizeof(*out));
-    if (f == NULL) {
+    if (file == NULL) {
         return;
     }
     snprintf(want, sizeof(want), "%s:", iface);
     want_len = strlen(want);
 
-    while (fgets(line, (int)sizeof(line), f) != NULL) {
+    while (fgets(line, (int)sizeof(line), file) != NULL) {
         char* p = line;
         while (*p == ' ' || *p == '\t') {
             p++;
@@ -140,18 +140,18 @@ static inline void bench_stats_read_net(const char* iface, struct BenchStatsCoun
         }
         break;
     }
-    fclose(f);
+    fclose(file);
 }
 
-static inline void bench_stats_begin(struct BenchStats* s) {
-    memset(s, 0, sizeof(*s));
-    snprintf(s->iface, sizeof(s->iface), "%s", bench_stats_iface());
-    s->cpu_begin_s = bench_stats_cpu_seconds();
-    bench_stats_read_net(s->iface, &s->net_begin);
+static inline void bench_stats_begin(struct BenchStats* stats) {
+    memset(stats, 0, sizeof(*stats));
+    snprintf(stats->iface, sizeof(stats->iface), "%s", bench_stats_iface());
+    stats->cpu_begin_s = bench_stats_cpu_seconds();
+    bench_stats_read_net(stats->iface, &stats->net_begin);
 }
 
-static inline void bench_stats_end(struct BenchStats* s) {
-    bench_stats_read_net(s->iface, &s->net_end);
+static inline void bench_stats_end(struct BenchStats* stats) {
+    bench_stats_read_net(stats->iface, &stats->net_end);
 }
 
 static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
@@ -165,16 +165,16 @@ static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
 // actually delivered (sent for a publisher, received for a subscriber) and `sample_bytes` is the
 // CDR size of one sample, which is carried in the line so the payload-boundary gate is checkable
 // from the line alone rather than from which directory produced it.
-static inline const char* bench_stats_fields(struct BenchStats* s, int role, uint64_t samples, uint64_t sample_bytes,
-                                             char* buf, size_t buf_len) {
-    struct rusage ru;
+static inline const char* bench_stats_fields(struct BenchStats* stats, int role, uint64_t samples,
+                                             uint64_t sample_bytes, char* buf, size_t buf_len) {
+    struct rusage usage; // NOLINT(misc-include-cleaner)
     double utime_s = 0.0;
     double stime_s = 0.0;
     double cpu_s = 0.0;
-    uint64_t rx_bytes = bench_stats_delta(s->net_begin.rx_bytes, s->net_end.rx_bytes);
-    uint64_t rx_packets = bench_stats_delta(s->net_begin.rx_packets, s->net_end.rx_packets);
-    uint64_t tx_bytes = bench_stats_delta(s->net_begin.tx_bytes, s->net_end.tx_bytes);
-    uint64_t tx_packets = bench_stats_delta(s->net_begin.tx_packets, s->net_end.tx_packets);
+    uint64_t rx_bytes = bench_stats_delta(stats->net_begin.rx_bytes, stats->net_end.rx_bytes);
+    uint64_t rx_packets = bench_stats_delta(stats->net_begin.rx_packets, stats->net_end.rx_packets);
+    uint64_t tx_bytes = bench_stats_delta(stats->net_begin.tx_bytes, stats->net_end.tx_bytes);
+    uint64_t tx_packets = bench_stats_delta(stats->net_begin.tx_packets, stats->net_end.tx_packets);
     uint64_t wire_bytes_total = rx_bytes + tx_bytes;
     uint64_t wire_packets_total = rx_packets + tx_packets;
     uint64_t role_packets = (role == BENCH_ROLE_SENDER) ? tx_packets : rx_packets;
@@ -182,9 +182,9 @@ static inline const char* bench_stats_fields(struct BenchStats* s, int role, uin
     double megabytes = (double)samples * (double)sample_bytes / 1e6;
     char fail[64];
 
-    if (getrusage(RUSAGE_SELF, &ru) == 0) {
-        utime_s = (double)ru.ru_utime.tv_sec + (double)ru.ru_utime.tv_usec / 1e6;
-        stime_s = (double)ru.ru_stime.tv_sec + (double)ru.ru_stime.tv_usec / 1e6;
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+        utime_s = (double)usage.ru_utime.tv_sec + ((double)usage.ru_utime.tv_usec / 1e6);
+        stime_s = (double)usage.ru_stime.tv_sec + ((double)usage.ru_stime.tv_usec / 1e6);
         cpu_s = utime_s + stime_s;
     }
 
@@ -192,7 +192,7 @@ static inline const char* bench_stats_fields(struct BenchStats* s, int role, uin
     // fail for unrelated reasons: a wrong interface name, a kernel without VmHWM, a run that
     // delivered nothing. Only the last of those is a property of the run.
     fail[0] = '\0';
-    if (!s->net_begin.valid || !s->net_end.valid || wire_bytes_total == 0 || wire_packets_total == 0) {
+    if (!stats->net_begin.valid || !stats->net_end.valid || wire_bytes_total == 0 || wire_packets_total == 0) {
         snprintf(fail + strlen(fail), sizeof(fail) - strlen(fail), "%snet", fail[0] != '\0' ? "," : "");
     }
     if (cpu_s <= 0.0) {
@@ -217,7 +217,7 @@ static inline const char* bench_stats_fields(struct BenchStats* s, int role, uin
              megabytes > 0.0 ? cpu_s / megabytes : 0.0, peak_rss_kb, rx_bytes, rx_packets, tx_bytes, tx_packets,
              wire_bytes_total, wire_packets_total, samples > 0 ? (double)wire_bytes_total / (double)samples : 0.0,
              samples > 0 ? (double)wire_packets_total / (double)samples : 0.0,
-             samples > 0 ? (double)role_packets / (double)samples : 0.0, s->iface, fail[0] != '\0' ? "fail:" : "ok",
+             samples > 0 ? (double)role_packets / (double)samples : 0.0, stats->iface, fail[0] != '\0' ? "fail:" : "ok",
              fail);
     return buf;
 }
