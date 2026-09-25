@@ -23,6 +23,11 @@ import statistics
 import sys
 from collections import OrderedDict
 
+# Metrics are keyed "<role>.<name>" because BenchStats.h emits the same names on BOTH the client and
+# the server RESULT line. Collecting them without the role prefix put two values per repetition into
+# one list, so the "spread" became the client-server difference rather than the repetition spread -
+# and every verdict computed from it would have been wrong in a way no real data would reveal. Found
+# by a fabricated cell carrying both roles.
 # metric -> True when a higher value is better
 DIRECTION = {
     "send_mbps": True,
@@ -33,20 +38,31 @@ DIRECTION = {
     "peak_rss_kb": False,
     "wire_bytes_per_sample": False,
     "loss_pct": False,
+    "utime_s": False,
+    "stime_s": False,
 }
 # wire_packets_per_sample is deliberately NOT in DIRECTION. It is the boundary GATE, not a metric to
 # win: at P1/P2 all three are meant to read 1.0, and calling an intended three-way equality a draw
 # (or worse, a win) would be a verdict on the test design rather than on TickLE. The controlled test
 # with equal values is what caught that.
-GATE_METRIC = "wire_packets_per_sample"
+# The gate reads the CLIENT's own transmitted packets per sample. wire_packets_per_sample counts the
+# whole interface in both directions, so on a RELIABLE publisher it carries the returning ACKNACKs
+# and can never read 1.0 (TickLE Dev's correction - I had named the wrong field for this job). A
+# publisher also sends heartbeats, so a correct single datagram reads slightly above 1.0: the gate is
+# a band, not an equality.
+GATE_METRIC = "wire_role_packets_per_sample"
+GATE_ROLE = "client"
+ONE_DATAGRAM_MAX = 1.5   # below this is one datagram per sample
+TWO_DATAGRAM_MIN = 2.0   # at or above this is two
 VENDORS = ("cyclonedds", "fastdds")
 
 # What wire_packets_per_sample must read at N0, per OPTIMIZATION_PLAN.md section 9. None = not gated.
+# "one" = below ONE_DATAGRAM_MAX, "two" = at or above TWO_DATAGRAM_MIN.
 BOUNDARY = {
-    "p1": {"tickle": 1.0, "cyclonedds": 1.0, "fastdds": 1.0},
-    "p2": {"tickle": 1.0, "cyclonedds": 1.0, "fastdds": 1.0},
-    "p3": {"tickle": 1.0, "cyclonedds": 2.0, "fastdds": 2.0},
-    "p4": {"tickle": None, "cyclonedds": None, "fastdds": None},  # >= 2.0, checked separately
+    "p1": {"tickle": "one", "cyclonedds": "one", "fastdds": "one"},
+    "p2": {"tickle": "one", "cyclonedds": "one", "fastdds": "one"},
+    "p3": {"tickle": "one", "cyclonedds": "two", "fastdds": "two"},
+    "p4": {"tickle": "two", "cyclonedds": "two", "fastdds": "two"},
 }
 
 LINE = re.compile(
@@ -65,14 +81,21 @@ def parse(path):
         key = (int(m["num"]), m["shape"], m["payload"], m["qos"], m["net"].strip())
         fw = cells.setdefault(key, OrderedDict()).setdefault(m["fw"], {"void": [], "vals": {}})
         if not m["verdict"].startswith("ok"):
+            # fail:samples is a fact about the cell (nothing was delivered, so every per-sample
+            # figure is 0 by construction), not about the instrument. Both void the cell, and the
+            # distinction is kept so the write-up can say which (TickLE Dev).
             fw["void"].append(m["verdict"])
             continue
-        for k, v in re.findall(r"(\w+)=([-\d.]+)", m["fields"]):
-            if k in DIRECTION or k in ("sample_bytes", GATE_METRIC):
-                try:
-                    fw["vals"].setdefault(k, []).append(float(v))
-                except ValueError:
-                    pass
+        # Split the concatenated RESULT lines back into their roles before reading any number.
+        for chunk in re.split(r"(?=role=)", m["fields"]):
+            role_m = re.match(r"role=(\w+)", chunk)
+            role = role_m.group(1) if role_m else "client"
+            for k, v in re.findall(r"([A-Za-z_]\w*)=([-\d.]+)", chunk):
+                if k in DIRECTION or k in ("sample_bytes", GATE_METRIC):
+                    try:
+                        fw["vals"].setdefault(f"{role}.{k}", []).append(float(v))
+                    except ValueError:
+                        pass
     return cells
 
 
@@ -93,16 +116,16 @@ def boundary_verdict(payload, net, per_fw):
         return None
     bad = []
     for fw, data in per_fw.items():
-        got = data["vals"].get(GATE_METRIC)
+        got = data["vals"].get(f"{GATE_ROLE}.{GATE_METRIC}")
         if not got:
+            bad.append(f"{fw} has no {GATE_ROLE}.{GATE_METRIC}")
             continue
         observed = statistics.mean(got)
-        want = BOUNDARY.get(payload, {}).get(fw, "skip")
-        if payload == "p4":
-            if observed < 2.0:
-                bad.append(f"{fw} {observed:.2f} < 2.0")
-        elif want is not None and abs(observed - want) > 0.05:
-            bad.append(f"{fw} {observed:.2f} != {want}")
+        want = BOUNDARY.get(payload, {}).get(fw)
+        if want == "one" and observed >= ONE_DATAGRAM_MAX:
+            bad.append(f"{fw} {observed:.2f} >= {ONE_DATAGRAM_MAX}, wanted one datagram")
+        elif want == "two" and observed < TWO_DATAGRAM_MIN:
+            bad.append(f"{fw} {observed:.2f} < {TWO_DATAGRAM_MIN}, wanted two")
     return bad or None
 
 
@@ -149,7 +172,8 @@ def main(path):
         for fw, data in per_fw.items():
             if data["void"]:
                 print(f"   {fw:<11} VOID x{len(data['void'])}: {data['void'][0]}")
-        metrics = [m for m in DIRECTION if m in per_fw.get("tickle", {}).get("vals", {})]
+        tvals = per_fw.get("tickle", {}).get("vals", {})
+        metrics = [m for m in sorted(tvals) if m.split(".", 1)[1] in DIRECTION]
         for m in metrics:
             t = per_fw["tickle"]["vals"][m]
             vend = {v: per_fw[v]["vals"][m] for v in VENDORS
@@ -158,7 +182,7 @@ def main(path):
                 print(f"   {m:<24} tickle {fmt(t):<22} (no cross-vendor comparison: "
                       f"{2 - len(vend)} vendor(s) missing)")
                 continue
-            v, why = verdict(m, t, vend)
+            v, why = verdict(m.split(".", 1)[1], t, vend)
             if gate:
                 v, why = "VOID", "boundary gate"
             cols = "  ".join(f"{name[:6]} {fmt(vals)}" for name, vals in vend.items())
