@@ -420,6 +420,187 @@ with the table above.)*
    writer that never caught up rather than one that finished cleanly. CycloneDDS and TickLE
    reported `acked` in every cell.
 
+## 3c. The five-metric campaign: memory, CPU, bandwidth, latency, throughput (2026-09-25)
+
+The user's five questions asked together rather than one at a time, across payload sizes, QoS
+combinations and `tc`-shaped network conditions. 12 cells x 3 frameworks x 3 repetitions = 108 runs
+in one rig session, `instrument=ok` on all 189 RESULT lines. Design in
+`examples/perf_hil/OPTIMIZATION_PLAN.md`, harness `experiments/campaign_sweep.sh`, raw output and
+computed verdicts in `examples/perf_hil/results/campaign_2026-09-25_b9fad3c1*.txt`.
+
+**Totals: WIN 62, DRAW/TIE 9, LOSE 7, VOID 30.** A WIN means TickLE beat *both* vendors with no
+overlap between the three repetitions' ranges; inside the spread is a draw. The verdicts are
+computed by `experiments/campaign_summary.py`, not read off by eye.
+
+### What the campaign refuses to compare, and why that is most of the value
+
+Four rules void a cell. Each exists because a version of this comparison without it produced a
+number that looked fine and meant nothing.
+
+- **The payload-boundary gate.** At N0 the client's own packets-per-sample must match the datagram
+  split the payload was designed for. It fired on **c2**: at 1388 B, FastDDS sends 2.000 datagrams
+  per sample where the design says all three fit one. The size had been computed from an assumed
+  60-76 B of RTPS framing; FastDDS's measured framing is 209.6 B. That cell is void and the sizes
+  are corrected for the next session (see below).
+- **Incomplete delivery.** A RELIABLE cell where any framework's server received fewer samples than
+  its client sent cannot be compared. It fired on **c6**, and `loss_pct` did not: all three reported
+  `loss_pct=0.0` while FastDDS had delivered 1,641 of 4,987 samples (67% missing) and TickLE 13,802
+  of 14,002. `loss_pct` measures gaps between the sequence numbers that *arrived*; samples that
+  never arrived leave no gap to count, so it reads a clean zero across a 67%-vs-1.4% difference and
+  would have been scored a three-way TIE.
+- **History-policy mismatch.** It fired on **c9**: TickLE ran KEEP_LAST 64 while both DDS harnesses
+  were hard-coded KEEP_ALL, with nothing in the output saying so.
+- **Absolute CPU seconds are not a verdict metric at all.** Every throughput cell runs for a fixed
+  *duration*, so a framework that sends more samples necessarily burns more CPU seconds. At c1 that
+  inverts the ranking outright - FastDDS beats TickLE on absolute `stime_s` while doing a third of
+  the work in the same five seconds. `utime_s`/`stime_s` are reported and marked not-comparable;
+  `cpu_s_per_Msample` and `cpu_s_per_MB` are the normalised forms and are what "less CPU" means
+  here. This rule was changed **after** seeing data, which is stated rather than buried: the
+  argument does not depend on which way it fell, since a slower TickLE would have been handed a free
+  WIN by the same mechanism.
+
+### Memory: TickLE wins everywhere except one cell
+
+`peak_rss_kb`, median of 3 repetitions.
+
+| cell | condition | TickLE | CycloneDDS | FastDDS |
+|---|---|---|---|---|
+| c1 | P1, no shaping | **1,924** | 5,244 | 17,668 |
+| c3 | P3 (1440 B) | **4,656** | 6,216 | 23,008 |
+| c4 | P4 (2800 B) | 7,384 | **5,608** | 28,412 |
+| c5 | P1, 5% loss | **1,924** | 5,024 | 17,756 |
+| c7 | P1, reorder 5% | **1,924** | 5,308 | 16,864 |
+| c8 | P1, BEST_EFFORT | **1,668** | 4,976 | 14,212 |
+
+Server side, TickLE wins every cell including P4: 1,720-2,248 KB against CycloneDDS's 4,880-7,400
+and FastDDS's 14,340-16,428.
+
+**c4 is the one real memory loss, and it is understood.** TickLE's resident memory is
+`C + reliable_depth x record_bytes`, with C measured at 1,720/1,727/1,727/1,733 KB across the four
+payload shapes - a 13 KB spread against a 5,464 KB range, so the retention window is the whole
+story. At P4 the touched arena is 5,651 KB of a 7,384 KB peak. The default `reliable_depth` is 2048
+*samples* regardless of sample size, so the arena grows linearly with the payload; a fixed byte
+budget with depth derived from it would win the large sizes without touching the small ones. The
+trade is not free, since a narrower window is where KEEP_ALL begins dropping unacked samples on the
+byte bound.
+
+**A qualifier that has to travel with every memory number here.** These are *resident* pages on a
+demand-paged Linux host. TickLE's harness declares far more static storage than it touches: at P4,
+22.6 MB on the client and 11.4 MB on the server, against 7.4 and 1.7 measured. The server figure is
+the clean demonstration - its declared reorder window varies 24x across the payload shapes while its
+measured RSS goes 1,792 / 1,752 / 1,720 KB, flat and slightly *down*. On a target without demand
+paging the declared figure is the real one. This is the harness's `MAX_RELIABLE_DEPTH` choice rather
+than a libtickle property, so it does not invalidate the comparison, but "TickLE uses the least
+memory" means "resident, on Linux, at these depths".
+
+### CPU: TickLE wins every throughput cell, and loses every latency cell
+
+`cpu_s_per_Msample`, median of 3.
+
+| cell | condition | TickLE client | CycloneDDS | FastDDS | TickLE server | CycloneDDS | FastDDS |
+|---|---|---|---|---|---|---|---|
+| c1 | P1, no shaping | **5.75** | 6.85 | 20.8 | **3.75** | 10.9 | 20.3 |
+| c3 | P3 | **7.43** | 12.3 | 26.3 | **5.26** | 16.2 | 21.7 |
+| c4 | P4 | **12.5** | 14.2 | 30.4 | **8.35** | 19.5 | 23.3 |
+| c5 | P1, 5% loss | **6.17** | 12.9 | 37.3 | **4.36** | 15.1 | 48.9 |
+| c7 | P1, reorder 5% | **6.91** | 9.23 | 24.0 | **3.73** | 12.3 | 20.5 |
+| c8 | P1, BEST_EFFORT | **5.24** | 14.1 | 13.5 | **3.40** | 12.8 | 21.4 |
+
+The latency cells invert it completely: TickLE 6,509-6,523 against CycloneDDS's 195-213. See the
+latency section - it is the same finding from the other side.
+
+### Bandwidth: TickLE wins every comparable cell
+
+`wire_bytes_per_sample`, client, median of 3. Measured from `/proc/net/dev` rather than from any
+middleware's own statistics, so it counts retransmissions and control traffic.
+
+| cell | condition | sample | TickLE | CycloneDDS | FastDDS |
+|---|---|---|---|---|---|
+| c1 | P1, no shaping | 76 B | **147** | 180 | 286 |
+| c3 | P3 | 1440 B | **1,511** | 1,588 | 1,692 |
+| c4 | P4 | 2800 B | **2,914** | 2,950 | 3,099 |
+| c5 | P1, 5% loss | 76 B | **150** | 193 | 327 |
+| c7 | P1, reorder 5% | 76 B | **147** | 181 | 286 |
+| c8 | P1, BEST_EFFORT | 76 B | **146** | 178 | 254 |
+
+The per-framework framing this implies, measured rather than assumed: **TickLE 70.6 B, CycloneDDS
+104.1 B, FastDDS 209.6 B** per single-datagram sample, each including the 42 B of Ethernet+IP+UDP.
+TickLE's 70.6 - 42 = 28.6 B matches `DESIGN.md`'s stated 28 B DATA framing. FastDDS's 167.6 B above
+L4 is 2-3x the RTPS specification arithmetic and is most of why it loses this metric. Adding ~42 B
+per extra IP fragment, `sample + base framing <= 1514` predicts **all twelve observed packet counts
+with zero mismatches**, which is what makes this a model rather than an extrapolation.
+
+### Latency: TickLE wins mean and tail, at 30x the CPU
+
+`rtt_avg_ms` / `rtt_max_ms`, median of 3, 100 round trips each.
+
+| cell | condition | TickLE | CycloneDDS | FastDDS |
+|---|---|---|---|---|
+| c10 | P1, no shaping, mean | **0.204** | 0.358 | 0.282 |
+| c10 | P1, no shaping, **max** | **0.440** | 10.9 | 0.605 |
+| c11 | P2, no shaping, mean | **0.233** | 0.296 | 0.334 |
+| c11 | P2, no shaping, max | **0.659** | 1.29 | 0.711 |
+| c12 | P1, +10 ms delay, mean | 10.3 | 10.4 | **10.3** |
+| c12 | P1, +10 ms delay, max | **12.2** | 21.1 | 12.3 |
+
+c12's mean is a three-way draw by construction: a 10 ms injected delay dominates a 0.2 ms RTT, so
+that cell measures `netem`. The tail still separates - CycloneDDS's worst round trip is 21.1 ms
+against TickLE's 12.2, and at c10 CycloneDDS shows a 10.9 ms spike against TickLE's 0.44.
+
+**The cost of that latency is the campaign's other real loss.** TickLE's `stime_s` in the latency
+cells is 0.630, 0.631 and 0.622 s - across an 18x payload difference *and* a 50x RTT difference. It
+is neither per-byte work nor time spent waiting for the pong; ~0.63 s over a ~5 s run is 12.6% of
+one core burned whatever the traffic does, which is what a fixed-rate poll looks like. A tight poll
+is presumably what buys the RTT, so the open question is whether the same RTT survives a poll
+interval chosen for the target platform, not whether to give up the latency.
+
+### Throughput: TickLE wins every comparable cell, and by 28x under loss
+
+`send_mbps`, client, median of 3.
+
+| cell | condition | TickLE | CycloneDDS | FastDDS |
+|---|---|---|---|---|
+| c1 | P1, no shaping | **106** | 93.3 | 36.6 |
+| c3 | P3 | **938** | 812 | 502 |
+| c4 | P4 | **948** | 861 | 831 |
+| c5 | P1, **5% loss** | **95.8** | 3.39 | 9.31 |
+| c7 | P1, reorder 5% | **73.9** | 67.9 | 31.4 |
+| c8 | P1, BEST_EFFORT | **119** | 71.7 | 47.4 |
+
+c5 is the largest single result in the campaign. Under 5% packet loss TickLE keeps **90.6%** of its
+unshaped throughput; CycloneDDS keeps 3.5% and FastDDS 26.4%. This is RELIABLE + KEEP_ALL for all
+three, verified from the harnesses rather than assumed, with every sample delivered on all three
+sides (`sent == recv`).
+
+### The one thing the campaign predicted wrong, and what it cost
+
+The sweep's header pre-registered that TickLE should *lose* c6 - P4 under loss - "because a lost IP
+fragment costs it the whole datagram while RTPS retransmits one fragment". TickLE won it 4.5x. The
+prediction's mechanism was real (TickLE's throughput retention falls from 90.6% at P1 to 6.6% at P4,
+and its lead narrows from 9.9x to 4.5x) but its verdict was wrong, because both vendors degrade
+further still.
+
+Had the prediction not been written down first, that cell would have been recorded as a win and the
+6.6% would have gone unremarked. It did not: the cell is now void for incomplete delivery, and
+chasing *why* TickLE spends 47 transmissions per sample there led to the kernel's IP reassembly
+collapsing rather than to anything in TickLE - item 15 in section 6, deferred by the user.
+
+### What the next session fixes
+
+- **P2 and P3 are re-sized from the measured framing**: P2 1292 B (`uint8[1280]`), P3 1424 B
+  (`uint8[1412]`). P3's usable window is only 33.5 B wide - above CycloneDDS's 1409.9 B limit,
+  below TickLE's 1443.4 - so `check_bench_shapes.sh` now gates every shape against every
+  framework's measured limit, in both directions, rather than the size being re-derived by eye.
+- **Both DDS `reliable_throughput` harnesses take `-K <depth>`**, so the KEEP_LAST cell becomes a
+  real cross-vendor comparison instead of a TickLE-only one, and all three now report the history
+  they actually ran.
+- **All three servers use an idle-based lifetime** instead of an absolute `-d + 15` cap, which is
+  what truncated c6.
+- **c6 has to be re-run before it can be compared at all.** When it is, `tt_Publisher.retransmitted`
+  and `tt_Subscriber.gap_abandoned`/`gap_evicted` give a free cross-check of the reassembly finding
+  from inside TickLE: the prediction, written before the run, is `retransmitted` at about 46x `sent`
+  and `gap_abandoned = 0`.
+
 ## 4. Experiment: `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`
 
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
