@@ -32,12 +32,38 @@ jobs:
           # instead (installed by "Set up ROS 2" below), nothing extra needed for it here.
           sudo apt install -y bear gcc-riscv64-unknown-elf picolibc-riscv64-unknown-elf fastddsgen
 
-      # Tried twice. setup-ros looks up the ros-apt-source release with an unauthenticated
-      # api.github.com call; when that call is rate-limited the version comes back empty and the
-      # .deb URL 404s. That failed the whole job on 2026-09-24 twice (d1f2fc04, 82089b2f) - both
-      # times before any of our own checks had run, so nothing was checked at all. The step is
-      # not ours to fix, so it is retried once after a pause instead; a second failure still
-      # fails the job.
+      # setup-ros installs the ROS apt source by asking api.github.com for the latest
+      # ros-apt-source release, unauthenticated (src/setup-ros-ubuntu.ts,
+      # installRosAptSourcePackage). Unauthenticated api.github.com allows 60 requests an hour per
+      # IP and Actions runners share egress addresses, so when the quota is gone the response
+      # carries no tag_name, ROS_APT_SOURCE_VERSION is empty, and the .deb URL 404s. That failed
+      # this job three times in two days (d1f2fc04, 82089b2f, b3a043d0), always before any of our
+      # own checks had run - and, since the quota resets on the hour, the 60-second retry below
+      # could not help.
+      #
+      # The action skips the lookup entirely when the apt source is already configured: its
+      # isRosAptSourcePackageInstalled() runs `apt-cache policy` and looks for packages.ros.org.
+      # So install it here first, from a pinned version - a deliberate dependency instead of
+      # "whatever was latest, if the quota holds". The release download URL is not the API and is
+      # not rate-limited this way.
+      #
+      # To bump: check https://github.com/ros-infrastructure/ros-apt-source/releases and confirm
+      # the asset for this runner's Ubuntu codename exists.
+      - name: Install the ROS 2 apt source (pinned, so setup-ros does not look it up)
+        run: |
+          version=1.3.0
+          codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+          curl --fail --location --retry 3 --retry-delay 5 -o /tmp/ros2-apt-source.deb \
+            "https://github.com/ros-infrastructure/ros-apt-source/releases/download/$version/ros2-apt-source_$version.${codename}_all.deb"
+          sudo dpkg -i /tmp/ros2-apt-source.deb
+          rm -f /tmp/ros2-apt-source.deb
+          sudo apt-get update
+          # The exact condition setup-ros checks. Failing here says "the pin is stale" plainly,
+          # rather than letting the action fall back to the lookup this step exists to avoid.
+          apt-cache policy | grep -q 'packages.ros.org/ros2/ubuntu'
+
+      # Still retried once: the step above removes the rate-limited lookup, not every transient
+      # failure setup-ros can have (apt mirrors, network). A second failure still fails the job.
       - name: Set up ROS 2 (for rmw_tickle)
         id: setup_ros
         continue-on-error: true
