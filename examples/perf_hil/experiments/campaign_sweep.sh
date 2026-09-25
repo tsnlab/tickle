@@ -49,9 +49,19 @@ ssh_h() { ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}
 # --- network conditions (OPTIMIZATION_PLAN.md section 6) --------------------------------------
 # Applied on the client's eth0, which is also the measured and the data interface. reorder needs a
 # delay to have anything to reorder against, hence N3's 1ms.
+# `tc qdisc del root` legitimately fails when there is nothing to delete, so its exit status cannot
+# be the check - which is why it was `|| true`, and why a real failure (no NOPASSWD for tc, the same
+# shape as the sudo/tcpdump hole of 2026-09-24) would have left netem in place silently and shaped
+# every later measurement on this rig, including CI's. The qdisc is read back instead.
+tc_netem_present() { ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" 2>/dev/null | grep -q netem; }
 tc_apply() {
     case "$1" in
-        N0) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true ;;
+        N0) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true
+            if tc_netem_present; then
+                echo "FATAL: netem still on $RPI_CLIENT eth0 after del - the rig is left shaped" >&2
+                ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" >&2 || true
+                return 1
+            fi ;;
         N1) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem loss 5%" ;;
         N2) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 10ms 2ms" ;;
         N3) ssh_h "$RPI_CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay 1ms reorder 5% 50%" ;;
@@ -64,7 +74,19 @@ tc_describe() {
         N2) echo "delay 10ms jitter 2ms" ;; N3) echo "delay 1ms reorder 5%" ;;
     esac
 }
-trap 'tc_apply N0 || true' EXIT
+trap 'tc_apply N0 || echo "RIG LEFT SHAPED - clear it before any further measurement" >&2' EXIT
+
+# The EXIT trap covers a normal exit and SIGTERM (verified by driving a copy: SIGTERM ran the trap,
+# SIGKILL did not, because SIGKILL cannot be caught). So a SIGKILLed run leaves netem behind, and
+# the only place that can be caught is the start of the next one. Refusing is deliberate: silently
+# clearing it would hide that some earlier run died holding the rig shaped.
+if [ "$DRY_RUN" != 1 ] && tc_netem_present; then
+    say "REFUSING TO START: $RPI_CLIENT eth0 already has netem on it, so N0 would not be 'no shaping'."
+    ssh_h "$RPI_CLIENT" "tc qdisc show dev eth0" | tee -a "$OUT"
+    say "A previous run was probably SIGKILLed. Clear it and re-run:"
+    say "  ssh -i $SSH_KEY ci@$RPI_CLIENT 'sudo -n tc qdisc del dev eth0 root'"
+    exit 1
+fi
 
 # --- the matrix (OPTIMIZATION_PLAN.md section 7) ------------------------------------------------
 # shape|payload|qos|network|scenario|tickle_extra_args
