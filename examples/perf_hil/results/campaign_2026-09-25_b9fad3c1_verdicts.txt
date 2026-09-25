@@ -1,0 +1,184 @@
+
+== c1 T p1 Q0 [none]
+   client.stime_s           tickle 3.9[3.87..3.94]        cyclon 3.52[3.5..3.55]  fastdd 3.69[3.63..3.72] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 1.1[1.06..1.14]        cyclon 1.58[1.55..1.6]  fastdd 2.26[2.21..2.32] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 2.22[2.21..2.24]       cyclon 4.47[4.39..4.57]  fastdd 2.75[2.72..2.79] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 1.04[1.02..1.06]       cyclon 3.69[3.65..3.72]  fastdd 2.97[2.94..3.04] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.076                  cyclon 0.09  fastdd 0.277[0.273..0.285]      WIN
+   client.cpu_s_per_Msample tickle 5.75[5.75..5.76]       cyclon 6.86[6.85..6.88]  fastdd 21.1[20.7..21.6] WIN
+   client.peak_rss_kb       tickle 1923[1920..1924]       cyclon 5244[5232..5256]  fastdd 17643[17480..17780] WIN
+   client.send_mbps         tickle 106[106..106]          cyclon 93.3[93..93.7]  fastdd 36.1[35..36.8] WIN
+   client.wire_bytes_per_sample tickle 147                    cyclon 180  fastdd 286                       WIN
+   server.cpu_s_per_MB      tickle 0.049                  cyclon 0.144[0.143..0.147]  fastdd 0.267[0.26..0.273] WIN
+   server.cpu_s_per_Msample tickle 3.75[3.73..3.76]       cyclon 11[10.8..11.2]  fastdd 20.3[19.8..20.7] WIN
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   server.peak_rss_kb       tickle 1795[1792..1800]       cyclon 4887[4880..4892]  fastdd 14339[14328..14344] WIN
+   server.wire_bytes_per_sample tickle 133                    cyclon 166  fastdd 272                       WIN
+
+== c2 T p2 Q0 [none]
+   BOUNDARY GATE FAILED: fastdds 2.00 >= 1.5, wanted one datagram
+   -> this payload's cross-vendor comparison is VOID (section 9). Numbers below are
+      printed anyway: the observed packet count is how the right size is computed.
+   client.stime_s           tickle 2.31[2.27..2.34]       cyclon 2.34[2.3..2.4]  fastdd 3.85[3.8..3.92] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.792[0.769..0.831]    cyclon 1.13[1.1..1.17]  fastdd 1.9[1.83..1.96] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 1.58[1.57..1.6]        cyclon 3.25[3.23..3.28]  fastdd 2.33[2.28..2.37] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.622[0.612..0.635]    cyclon 2.44[2.42..2.47]  fastdd 2.41[2.39..2.43] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.005                  cyclon 0.007  fastdd 0.0187[0.018..0.019]    VOID  (boundary gate)
+   client.cpu_s_per_Msample tickle 7.36[7.35..7.37]       cyclon 9.17[9.08..9.29]  fastdd 25.9[25.7..26.2] VOID  (boundary gate)
+   client.peak_rss_kb       tickle 4551[4548..4552]       cyclon 6213[6144..6272]  fastdd 22696[22564..22788] VOID  (boundary gate)
+   client.send_mbps         tickle 936[936..936]          cyclon 829[822..838]  fastdd 494[488..499]   VOID  (boundary gate)
+   client.wire_bytes_per_sample tickle 1459                   cyclon 1499[1499..1499]  fastdd 1640         VOID  (boundary gate)
+   server.cpu_s_per_MB      tickle 0.004                  cyclon 0.011  fastdd 0.015                   VOID  (boundary gate)
+   server.cpu_s_per_Msample tickle 5.23[5.22..5.24]       cyclon 15[15..15.1]  fastdd 21.3[21.2..21.5] VOID  (boundary gate)
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           VOID  (boundary gate)
+   server.peak_rss_kb       tickle 1752[1748..1756]       cyclon 4884[4872..4896]  fastdd 14605[14604..14608] VOID  (boundary gate)
+   server.wire_bytes_per_sample tickle 1445                   cyclon 1483[1483..1483]  fastdd 1604         VOID  (boundary gate)
+
+== c3 T p3 Q0 [none]
+   client.stime_s           tickle 2.25[2.22..2.27]       cyclon 3.42[3.4..3.44]  fastdd 3.9[3.86..3.95] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.778[0.756..0.809]    cyclon 1.02[1.01..1.04]  fastdd 1.84[1.77..1.88] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 1.56[1.54..1.59]       cyclon 3.53[3.5..3.55]  fastdd 2.29[2.23..2.34] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.583[0.557..0.599]    cyclon 2.35[2.35..2.35]  fastdd 2.4[2.36..2.43] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.005                  cyclon 0.00867[0.008..0.009]  fastdd 0.0183[0.018..0.019] WIN
+   client.cpu_s_per_Msample tickle 7.43[7.43..7.44]       cyclon 12.2[12.2..12.3]  fastdd 26.5[26.2..27.1] WIN
+   client.peak_rss_kb       tickle 4656                   cyclon 6168[6072..6216]  fastdd 22947[22796..23036] WIN
+   client.send_mbps         tickle 938[938..938]          cyclon 812[805..819]  fastdd 498[486..506]   WIN
+   client.wire_bytes_per_sample tickle 1511                   cyclon 1588[1588..1588]  fastdd 1692         WIN
+   server.cpu_s_per_MB      tickle 0.004                  cyclon 0.011  fastdd 0.015                   WIN
+   server.cpu_s_per_Msample tickle 5.26[5.26..5.27]       cyclon 16.2[16.2..16.2]  fastdd 21.7[21.3..22.1] WIN
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   server.peak_rss_kb       tickle 1755[1748..1764]       cyclon 4893[4880..4916]  fastdd 14609[14604..14612] WIN
+   server.wire_bytes_per_sample tickle 1497                   cyclon 1553[1552..1553]  fastdd 1656         WIN
+
+== c4 T p4 Q0 [none]
+   client.stime_s           tickle 2.17[2.15..2.2]        cyclon 2.1[2.04..2.13]  fastdd 4.01[3.95..4.09] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.462[0.446..0.482]    cyclon 0.665[0.631..0.711]  fastdd 1.63[1.55..1.69] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 1.39[1.38..1.41]       cyclon 2.34[2.27..2.4]  fastdd 2.21[2.16..2.29] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.376[0.354..0.389]    cyclon 1.46[1.41..1.53]  fastdd 2.04[1.99..2.16] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.004                  cyclon 0.005  fastdd 0.011                   WIN
+   client.cpu_s_per_Msample tickle 12.5[12.4..12.5]       cyclon 14.2[14.1..14.2]  fastdd 30.4[30.2..30.7] WIN
+   client.peak_rss_kb       tickle 7384                   cyclon 5603[5544..5656]  fastdd 28428[28340..28532] LOSE  (cyclonedds is better with no overlap)
+   client.send_mbps         tickle 948[948..948]          cyclon 853[836..861]  fastdd 829[821..836]   WIN
+   client.wire_bytes_per_sample tickle 2914[2914..2914]       cyclon 2950[2950..2950]  fastdd 3099         WIN
+   server.cpu_s_per_MB      tickle 0.003                  cyclon 0.007  fastdd 0.008                   WIN
+   server.cpu_s_per_Msample tickle 8.35[8.34..8.35]       cyclon 19.5[19.5..19.6]  fastdd 23[22.4..23.3] WIN
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   server.peak_rss_kb       tickle 1720                   cyclon 4895[4880..4904]  fastdd 14883[14880..14884] WIN
+   server.wire_bytes_per_sample tickle 2878[2878..2878]       cyclon 2914[2914..2914]  fastdd 3046         WIN
+
+== c5 T p1 Q0 [loss 5%]
+   client.stime_s           tickle 3.81[3.78..3.86]       cyclon 0.221[0.197..0.24]  fastdd 1.74[1.67..1.82] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 1.05[1.01..1.09]       cyclon 0.12[0.118..0.123]  fastdd 1.12[1.08..1.15] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 2.25[2.23..2.28]       cyclon 0.231[0.194..0.251]  fastdd 0.29[0.271..0.302] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 1.18[1.16..1.22]       cyclon 0.164[0.157..0.17]  fastdd 3.49[3.4..3.55] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.081                  cyclon 0.168[0.16..0.174]  fastdd 0.485[0.462..0.502] WIN
+   client.cpu_s_per_Msample tickle 6.17[6.16..6.18]       cyclon 12.8[12.1..13.2]  fastdd 36.8[35.1..38.1] WIN
+   client.peak_rss_kb       tickle 1924                   cyclon 5007[4948..5048]  fastdd 17704[17496..17860] WIN
+   client.send_mbps         tickle 95.8[95.4..96.3]       cyclon 3.41[3.05..3.8]  fastdd 9.49[9.15..10] WIN
+   client.wire_bytes_per_sample tickle 150[150..150]          cyclon 193[192..194]  fastdd 328[325..333]   WIN
+   server.cpu_s_per_MB      tickle 0.0573[0.057..0.058]   cyclon 0.194[0.185..0.199]  fastdd 0.641[0.619..0.661] WIN
+   server.cpu_s_per_Msample tickle 4.36[4.35..4.37]       cyclon 14.8[14.1..15.2]  fastdd 48.7[47..50.2] WIN
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   server.peak_rss_kb       tickle 2249[2248..2252]       cyclon 7208[6664..7560]  fastdd 16433[16428..16444] WIN
+   server.wire_bytes_per_sample tickle 136                    cyclon 180[179..181]  fastdd 314[311..318]   WIN
+
+== c6 T p4 Q0 [loss 5%]
+   client.stime_s           tickle 7.55[7.49..7.66]       cyclon 0.09[0.085..0.094]  fastdd 0.289[0.277..0.309] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.592[0.551..0.613]    cyclon 0.0313[0.026..0.035]  fastdd 0.107[0.095..0.125] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 0.388[0.384..0.394]    cyclon 0.0867[0.08..0.093]  fastdd 0.06[0.049..0.068] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.079[0.069..0.086]    cyclon 0.0467[0.038..0.058]  fastdd 0.186[0.168..0.222] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.213[0.207..0.219]    cyclon 0.0147[0.014..0.015]  fastdd 0.027[0.026..0.028] LOSE  (cyclonedds is better with no overlap)
+   client.cpu_s_per_Msample tickle 595[579..612]          cyclon 41.4[38.6..42.8]  fastdd 75.3[71.5..77.9] LOSE  (cyclonedds is better with no overlap)
+   client.peak_rss_kb       tickle 7379[7372..7388]       cyclon 4931[4872..4980]  fastdd 28588[28476..28652] LOSE  (cyclonedds is better with no overlap)
+   client.send_mbps         tickle 61.3[59.3..62.7]       cyclon 12.8[12..14.2]  fastdd 14.7[13.3..16.8] WIN
+   client.wire_bytes_per_sample tickle 154012[150168..158135] cyclon 3252[3185..3295]  fastdd 3159[3135..3206] LOSE  (cyclonedds is better with no overlap)
+   server.cpu_s_per_MB      tickle 0.0123[0.012..0.013]   cyclon 0.0163[0.015..0.017]  fastdd 0.0517[0.049..0.055] WIN
+   server.cpu_s_per_Msample tickle 34.6[34.2..35.5]       cyclon 45.2[42.7..46.7]  fastdd 145[138..153] WIN
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   server.peak_rss_kb       tickle 13048                  cyclon 6117[5552..6400]  fastdd 26201[26036..26284] LOSE  (cyclonedds is better with no overlap)
+   server.wire_bytes_per_sample tickle 150167[146476..154926] cyclon 3216[3150..3259]  fastdd 9677[9267..10357] LOSE  (cyclonedds is better with no overlap)
+
+== c7 T p1 Q0 [delay 1ms reorder 5%]
+   client.stime_s           tickle 3.26[3.24..3.28]       cyclon 3.57[3.52..3.6]  fastdd 3.72[3.65..3.78] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.944[0.928..0.956]    cyclon 1.45[1.42..1.5]  fastdd 2.17[2.12..2.23] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 1.53[1.49..1.55]       cyclon 3.73[3.7..3.78]  fastdd 2.44[2.4..2.5] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.741[0.726..0.77]     cyclon 2.96[2.95..2.98]  fastdd 2.56[2.48..2.62] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.091                  cyclon 0.121[0.121..0.122]  fastdd 0.317[0.314..0.323] WIN
+   client.cpu_s_per_Msample tickle 6.92[6.91..6.93]       cyclon 9.22[9.18..9.25]  fastdd 24.1[23.8..24.5] WIN
+   client.peak_rss_kb       tickle 1919[1908..1924]       cyclon 5287[5232..5320]  fastdd 16865[16860..16872] WIN
+   client.send_mbps         tickle 73.9[73.8..73.9]       cyclon 67.9[67.7..68.1]  fastdd 31.2[30.6..31.6] WIN
+   client.wire_bytes_per_sample tickle 147[147..147]          cyclon 181[181..181]  fastdd 286[286..286]   WIN
+   server.cpu_s_per_MB      tickle 0.049                  cyclon 0.162[0.161..0.163]  fastdd 0.269[0.268..0.27] WIN
+   server.cpu_s_per_Msample tickle 3.73[3.73..3.74]       cyclon 12.3[12.2..12.4]  fastdd 20.5[20.4..20.5] WIN
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   server.peak_rss_kb       tickle 1789[1784..1792]       cyclon 4931[4880..4956]  fastdd 14341[14336..14344] WIN
+   server.wire_bytes_per_sample tickle 133[133..133]          cyclon 167[167..167]  fastdd 272             WIN
+
+== c8 T p1 Q1 [none]
+   client.stime_s           tickle 4.36[4.36..4.36]       cyclon 5.25[5.23..5.3]  fastdd 3.44[3.35..3.55] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.754[0.752..0.756]    cyclon 2.63[2.58..2.66]  fastdd 1.57[1.47..1.67] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 2.38[2.32..2.43]       cyclon 4.11[4.06..4.15]  fastdd 3.4[3.28..3.47] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.945[0.899..0.982]    cyclon 3.02[2.94..3.1]  fastdd 3.41[3.18..3.58] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.0687[0.068..0.069]   cyclon 0.185[0.185..0.186]  fastdd 0.177[0.171..0.181] WIN
+   client.cpu_s_per_Msample tickle 5.24[5.21..5.27]       cyclon 14.1[14..14.1]  fastdd 13.4[13..13.7] WIN
+   client.peak_rss_kb       tickle 1668                   cyclon 4963[4920..4992]  fastdd 14212        WIN
+   client.send_mbps         tickle 119[118..119]          cyclon 71.6[71.5..71.8]  fastdd 47.8[46.7..49.4] WIN
+   client.wire_bytes_per_sample tickle 146                    cyclon 178  fastdd 254                       WIN
+   server.cpu_s_per_MB      tickle 0.045                  cyclon 0.168[0.167..0.169]  fastdd 0.288[0.267..0.315] WIN
+   server.cpu_s_per_Msample tickle 3.4[3.4..3.41]         cyclon 12.8[12.7..12.8]  fastdd 21.9[20.3..23.9] WIN
+   server.loss_pct          tickle 0                      cyclon 0.2  fastdd 16.1[6.4..26]             WIN
+   server.peak_rss_kb       tickle 1665[1660..1668]       cyclon 4875[4864..4880]  fastdd 14340        WIN
+   server.wire_bytes_per_sample tickle 132                    cyclon 164[164..164]  fastdd 289[256..324]   WIN
+
+== c9 T p1 Q2 [none]
+   POLICY MISMATCH: tickle ran KEEP_LAST (keep_all=0) while cyclonedds, fastdds report no policy and are hard-coded KEEP_ALL at this SHA - two different promises
+   -> cross-vendor comparison is VOID: the cell's premise is that all three made
+      the same promise, and the output does not show that they did.
+   client.stime_s           tickle 4.12[4.11..4.13]       cyclon 3.52[3.48..3.54]  fastdd 3.71[3.59..3.81] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.884[0.879..0.892]    cyclon 1.58[1.55..1.62]  fastdd 2.21[2.1..2.31] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 2.27[2.23..2.3]        cyclon 4.41[4.36..4.48]  fastdd 2.69[2.6..2.8] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 1.1[1.06..1.12]        cyclon 3.63[3.59..3.66]  fastdd 2.85[2.77..2.89] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.0703[0.07..0.071]    cyclon 0.0907[0.09..0.091]  fastdd 0.283[0.278..0.286] VOID  (policy mismatch)
+   client.cpu_s_per_Msample tickle 5.35[5.33..5.36]       cyclon 6.89[6.87..6.93]  fastdd 21.5[21.1..21.7] VOID  (policy mismatch)
+   client.peak_rss_kb       tickle 1680[1672..1684]       cyclon 5277[5228..5360]  fastdd 17616[17460..17804] VOID  (policy mismatch)
+   client.send_mbps         tickle 114[113..114]          cyclon 92.7[92.2..93.1]  fastdd 35.3[34.8..36] VOID  (policy mismatch)
+   client.wire_bytes_per_sample tickle 146                    cyclon 180[180..180]  fastdd 286             VOID  (policy mismatch)
+   server.cpu_s_per_MB      tickle 0.047                  cyclon 0.143[0.142..0.144]  fastdd 0.264[0.26..0.267] VOID  (policy mismatch)
+   server.cpu_s_per_Msample tickle 3.6[3.59..3.6]         cyclon 10.9[10.8..11]  fastdd 20.1[19.8..20.3] VOID  (policy mismatch)
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           VOID  (policy mismatch)
+   server.peak_rss_kb       tickle 1796[1792..1800]       cyclon 4887[4876..4896]  fastdd 14344        VOID  (policy mismatch)
+   server.wire_bytes_per_sample tickle 132                    cyclon 166[166..166]  fastdd 272             VOID  (policy mismatch)
+
+== c10 L p1 Q0 [none]
+   client.stime_s           tickle 0.631[0.63..0.634]     cyclon 0.014[0.013..0.016]  fastdd 0.0177[0.015..0.022] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.02[0.019..0.022]     cyclon 0.006[0.004..0.007]  fastdd 0.0143[0.01..0.017] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 85.7[85.5..85.9]       cyclon 2.63[2.63..2.65]  fastdd 4.21[4.09..4.29] LOSE  (cyclonedds is better with no overlap)
+   client.cpu_s_per_Msample tickle 6516[6497..6529]       cyclon 200[200..201]  fastdd 320[311..326]   LOSE  (cyclonedds is better with no overlap)
+   client.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   client.peak_rss_kb       tickle 1665[1656..1672]       cyclon 4831[4824..4840]  fastdd 14343[14340..14344] WIN
+   client.rtt_avg_ms        tickle 0.204[0.201..0.206]    cyclon 0.325[0.258..0.359]  fastdd 0.283[0.28..0.286] WIN
+   client.wire_bytes_per_sample tickle 317[317..318]          cyclon 767[766..768]  fastdd 1051            WIN
+
+== c11 L p2 Q0 [none]
+   client.stime_s           tickle 0.633[0.631..0.635]    cyclon 0.0133[0.011..0.015]  fastdd 0.0177[0.016..0.019] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.0177[0.017..0.018]   cyclon 0.00667[0.005..0.008]  fastdd 0.018[0.016..0.019] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 4.69[4.68..4.7]        cyclon 0.145[0.141..0.154]  fastdd 0.256[0.252..0.261] LOSE  (cyclonedds is better with no overlap)
+   client.cpu_s_per_Msample tickle 6509[6495..6524]       cyclon 201[195..213]  fastdd 355[350..363]   LOSE  (cyclonedds is better with no overlap)
+   client.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   client.peak_rss_kb       tickle 1679[1672..1684]       cyclon 4848  fastdd 14603[14600..14608]      WIN
+   client.rtt_avg_ms        tickle 0.235[0.232..0.24]     cyclon 0.328[0.294..0.394]  fastdd 0.332[0.326..0.336] WIN
+   client.wire_bytes_per_sample tickle 2942[2941..2942]       cyclon 3517[3506..3523]  fastdd 3736[3735..3737] WIN
+
+== c12 L p1 Q0 [delay 10ms jitter 2ms]
+   client.stime_s           tickle 0.627[0.622..0.631]    cyclon 0.011[0.01..0.012]  fastdd 0.0177[0.016..0.02] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.0243[0.019..0.03]    cyclon 0.00867[0.007..0.01]  fastdd 0.0157[0.013..0.017] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 85.7[85.6..85.8]       cyclon 2.8[2.74..2.85]  fastdd 4.83[4.78..4.86] LOSE  (cyclonedds is better with no overlap)
+   client.cpu_s_per_Msample tickle 6513[6507..6517]       cyclon 213[208..217]  fastdd 367[364..370]   LOSE  (cyclonedds is better with no overlap)
+   client.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   client.peak_rss_kb       tickle 1668                   cyclon 4840[4832..4844]  fastdd 14337[14324..14348] WIN
+   client.rtt_avg_ms        tickle 10.2[10..10.3]         cyclon 10.5[10.4..10.6]  fastdd 10.3[10.2..10.3] DRAW  (better than both, but a range overlaps)
+   client.wire_bytes_per_sample tickle 316                    cyclon 795[791..802]  fastdd 1075[1072..1078] WIN
+
+== totals over comparable metric-cells: WIN 65  DRAW/TIE 10  LOSE 13  VOID 20
+Every LOSE and every DRAW is an optimisation target and needs a named hypothesis before
+any code change (OPTIMIZATION_PLAN.md section 9).
