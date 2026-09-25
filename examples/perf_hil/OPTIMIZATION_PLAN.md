@@ -298,7 +298,23 @@ output and computed verdicts are in `results/campaign_2026-09-25_b9fad3c1*.txt`.
 The LOSEs are not scattered. They fall into three targets, and each gets a named hypothesis and the
 measurement that would **disprove** it, before any code changes - section 9's rule.
 
-### A. The retransmission storm at P4 under loss (target A; c6 itself is VOID)
+### A. The retransmission storm at P4 under loss - ANSWERED, and deferred by the user
+
+**Resolved 2026-09-25: it is the kernel's IP reassembly, not TickLE.** At 5% loss with a 2800-byte
+sample, 97.4% of the receiving kernel's reassembly attempts fail; the 681,461 datagrams that never
+reassembled are 46.8 per delivered sample against 47.3 transmissions per sample from the interface
+counters - the same number, so the wire amplification *is* the reassembly failure. Both controls
+clean: no fragmentation at 76 bytes, and flawless fragmentation with nothing lost. A1, A2 and A3
+were all ruled out inside core first, each with a control. Full record in `COMPARISON.MD` item 15;
+harness `experiments/a4_reassembly_check.sh`, raw output
+`results/a4_reassembly_2026-09-25.txt`.
+
+**The user's decision is to leave OS IP fragmentation as it is and keep it on the to-do list**, so
+this is no longer an optimisation target. Nothing below is to be actioned; it is kept because the
+reasoning that got here is worth not repeating, and because the c6 cell still has to be re-run
+before it can be compared at all.
+
+#### Superseded working notes (kept for the record)
 
 **c6 as a campaign cell cannot be compared, and `loss_pct` did not say so.** All three servers capped
 themselves at `-d + 15` s absolute, and at c6 that truncated two of the three:
