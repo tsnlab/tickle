@@ -340,20 +340,60 @@ measurement artefact rather than a finding:
   above, and the answer is no - the peer stayed alive and the amplification got worse, not better.
   The truncation is real and separate: it is what makes c6 itself void.
 
-**Hypothesis A1 - the retransmit is window-wide rather than gap-wide.** A NACK causes the whole
-unacked window to be resent instead of only the missing sequence numbers. At depth 2048 and 2
-fragments that is 4096 packets per event, and 1,446,030 / 4096 = 353 such events over the run.
+**A1 and A2 are both ruled out at the unit level** (TickLE Dev, `38b8a503`), each with the control
+that separates a true negative from a test that cannot fail.
 
-**Hypothesis A2 - the ACKNACK bitmap cannot express the gaps.** `tt_RELIABLE_BITMAP_BITS` is 256
-bits against a 2048-sample window, so losses spread beyond 256 sequence numbers cannot all be named
-in one NACK, and the recovery degrades to resending from the oldest unacked sample.
+- *A1, the retransmit is window-wide rather than gap-wide.* 1024 samples into a 1024-deep cache, one
+  ACKNACK naming ten scattered positions (0, 1, 63, 64, 255, 256, 257, 511, 700, 1023): exactly
+  those ten go out and no others, checked per slot via each slot's own `retry` counter so that the
+  right *number* of wrong samples would still fail. Mutation-tested with a Publisher that also
+  resends each named sample's neighbour.
+- *A2, the ACKNACK bitmap cannot name gaps past bit 256.* `send_acknack_range()` sizes the bitmap to
+  the subscriber's own window (up to `tt_RELIABLE_BITMAP_MAX_BITS`, 4096), not to
+  `tt_RELIABLE_BITMAP_BITS`. A subscriber with a 1024-sample window names gaps at 5, 100, 255, 256,
+  300 and 700 in one ACKNACK. Mutation-tested with a bitmap capped at 256 bits, which fails with
+  exactly 256, 300 and 700 missing.
 
-A1 and A2 predict the same amplification and are told apart by *which* samples go out, not how many.
-**Disproof for both:** build the P4 harness with `-Dtt_RELIABLE_STATS` (the counters already exist,
-`include/tickle/reliable_stats.h`) and re-run c6. If retransmissions are gap-sized - within a small
-multiple of the ~1400 samples that 9.75% loss over 14,002 samples implies - both are wrong and the
-cost is somewhere else entirely. If A2 holds, raising `tt_RELIABLE_BITMAP_BITS` to cover the window
-should cut the amplification; if A1 holds, it will not move.
+**Hypothesis A3 - the subscriber's tracking window overflows while the watermark is stalled.** The
+campaign passed `-Q` and nothing else, and `run_scenario.sh` forwards the same arguments to both
+sides, so c6's server ran with the *default* window - `tt_RELIABLE_BITMAP_BITS`, 256 samples - while
+its reorder buffer is sized at 4096. A lost fragment stalls the watermark; samples arriving more
+than 256 beyond it have nowhere to be recorded and must be asked for again once it moves.
+
+**Two constraints A3 has to satisfy, both from data that already exists:**
+
+1. **c5 is the control, and it shows nothing.** P1 under the same 5% loss, the same `-Q`, the same
+   256-sample default window, the same 2048 depth - and 56x more samples in flight, so the publisher
+   runs *further* ahead of a stalled watermark, not less:
+
+   | | sample | fragments | sent | packets/sample | amplification |
+   |---|---|---|---|---|---|
+   | c5 | 76 B | 1 | 791,770 | **1.00** | 2.0x |
+   | c6 | 2800 B | 2 | 14,002 | 103.27 | 53.6x |
+
+   An identical window configuration produces no amplification at P1. So the window overflowing is
+   not sufficient on its own; something about the two-fragment sample is required as well, and the
+   loss rate does not cover it - 9.75% against 5% is a factor of 2 against an amplification of 50+.
+
+2. **The magnitude.** Arm B's 183.4 packets per sample at 2 fragments is ~92 transmissions per
+   sample against an ideal of 1.11. A3, modelled as "a sample d past the stalled watermark goes out
+   about d/256 times, averaged over a 2048 depth", predicts ~4x - short by a factor of 23. Any
+   proposed mechanism has to produce ~92, and that number is written here so a mechanism that
+   explains 4x can be recognised as partial rather than accepted as the answer.
+
+**Hypothesis A4 - the receive-side IP reassembly queue, not TickLE's retransmit logic at all.** At
+P4 the kernel IP-fragments the datagram. A lost fragment leaves its partner in the reassembly queue
+until `ipfrag_time` (30 s), and a queue reaching `ipfrag_high_thresh` makes the kernel drop *other*
+datagrams too - a receive-side collapse whose effective loss is nothing like 9.75%. At P1 there is
+no reassembly at all, which is exactly the axis c5 and c6 differ on. **Disproof:** `ReasmFails` and
+`ReasmReqds` from `/proc/net/snmp` on the server across a c6 run. If reassembly failures account for
+the bulk of it, the mechanism is not in TickLE's retransmit path and A3 is looking in the wrong
+file.
+
+**Queued for the next rig session**, all cheap: re-run c6 with `-w` matched to the client's depth
+(A3's direct disproof - the amplification should collapse), with `/proc/net/snmp` sampled either
+side (A4), and with `-Dtt_RELIABLE_STATS` so the retransmit counters are visible rather than
+inferred from interface totals.
 
 **What must not be read off this cell:** c6's throughput figures are over truncated runs for TickLE
 and FastDDS, so the 5x sample lead there is not a result. What is one, from arm B: even with a live
