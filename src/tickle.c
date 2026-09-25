@@ -2774,6 +2774,51 @@ tt_ret_t tt_ReliableCache_init(struct tt_ReliableCache* cache, struct tt_Reliabl
     return tt_RET_OK;
 }
 
+tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_arena, uint32_t new_arena_size) {
+    if (cache == NULL || new_arena == NULL || cache->arena == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    if (new_arena_size < cache->arena_size) {
+        return tt_RET_INVALID_ARGUMENT; // shrinking would have to drop retained samples
+    }
+    if (cache->arena_limit != 0 && new_arena_size > cache->arena_limit) {
+        return tt_RET_INVALID_ARGUMENT; // the limit is the caller's own, set once at init
+    }
+
+    uint16_t depth = reliable_cache_depth(cache);
+    if (depth == 0) {
+        // Nothing usable to migrate - the index was never set up. Take the arena anyway, so a
+        // caller that grows before its first publish is not a special case.
+        cache->arena = new_arena;
+        cache->arena_size = new_arena_size;
+        return tt_RET_OK;
+    }
+
+    // Repack in sequence order rather than copying the ring as it lies: the live records may be two
+    // runs with a gap between them, and the wrap fragment at the end is dead space this recovers.
+    // Only offsets change - each sample keeps its slot, because depth does not change.
+    uint32_t offset = 0;
+    if (cache->oldest_seq_no != 0) {
+        for (uint32_t seq_no = cache->oldest_seq_no; seq_no != 0 && seq_no <= cache->newest_seq_no; seq_no++) {
+            struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, seq_no);
+            if (entry->len == 0 || entry->seq_no != seq_no) {
+                continue; // a tombstone, or a slot already taken over by a later sample
+            }
+            _tt_memcpy(new_arena + offset, cache->arena + entry->offset, entry->len);
+            entry->offset = offset;
+            offset += entry->len;
+        }
+    }
+
+    cache->arena = new_arena;
+    cache->arena_size = new_arena_size;
+    cache->tail = offset;
+    if (offset == 0) {
+        cache->oldest_seq_no = 0; // everything retained turned out to be a tombstone
+    }
+    return tt_RET_OK;
+}
+
 tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t period_ns) {
     if (pub == NULL || pub->node == NULL) {
         return tt_RET_INVALID_ARGUMENT;

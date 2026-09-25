@@ -51,7 +51,11 @@ fi
 
 fail=0
 checked=0
-for f in rmw_tickle/rmw_tickle/src/*.c; do
+# Tests too, not only src/ (2026-09-25): cpp-linter checks every file a push CHANGED, tests
+# included, so a gate that skipped them reported clean for files CI was about to fail on - which is
+# exactly how this script's own existence came about, one directory further in. Four findings in
+# test_storage_budget.c turned Check all red this way.
+for f in rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c; do
     checked=$((checked + 1))
     out=$("$TIDY" -p build/rmw_tickle "$f" 2>&1 | grep -E "$(basename "$f"):[0-9]+:[0-9]+: (warning|error)")
     if [ -n "$out" ]; then

@@ -255,7 +255,7 @@ int main(void) {
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, DEFAULT_UNBOUNDED_RECORD) ==
-               pub_impl->reliable_cache->arena_size);
+               pub_impl->reliable_cache->arena_limit);
         assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity); // count bound intact
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
@@ -267,9 +267,9 @@ int main(void) {
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_RELIABLE_RECORD_BYTES(76)) ==
-               pub_impl->reliable_cache->arena_size);
+               pub_impl->reliable_cache->arena_limit);
         // ...and it is a real reduction, not a rounding difference.
-        assert(pub_impl->reliable_cache->arena_size <
+        assert(pub_impl->reliable_cache->arena_limit <
                tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, DEFAULT_UNBOUNDED_RECORD) / 10);
         // B1's guarantee is by count, and a narrower arena must not weaken it: still `depth` slots,
         // and still `depth + 1` records of room so the byte bound can't evict before the count one.
@@ -285,7 +285,7 @@ int main(void) {
             assert(NULL != pub);
             pub_impl = (rmw_tickle_publisher_t*)pub->data;
             assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, DEFAULT_UNBOUNDED_RECORD) ==
-                   pub_impl->reliable_cache->arena_size);
+                   pub_impl->reliable_cache->arena_limit);
             assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         }
         // A value past one datagram is a valid request for the most there can be, not nonsense: it
@@ -296,7 +296,7 @@ int main(void) {
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_MAX_BUFFER_LENGTH) ==
-               pub_impl->reliable_cache->arena_size);
+               pub_impl->reliable_cache->arena_limit);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
         // A type the generator CAN bound uses that number, and does not consult the environment -
@@ -311,7 +311,7 @@ int main(void) {
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE,
                                              tt_RELIABLE_RECORD_BYTES(BOUNDED_TYPE_MAX_ENCODED)) ==
-               pub_impl->reliable_cache->arena_size);
+               pub_impl->reliable_cache->arena_limit);
         assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity); // B1 intact
         assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
@@ -322,7 +322,7 @@ int main(void) {
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE,
                                              tt_RELIABLE_RECORD_BYTES(BOUNDED_TYPE_MAX_ENCODED)) ==
-               pub_impl->reliable_cache->arena_size); // the generated 76, not the environment's 512
+               pub_impl->reliable_cache->arena_limit); // the generated 76, not the environment's 512
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
         // KEEP_LAST must ignore it entirely - that is what keeps the variable's name honest.
@@ -332,7 +332,7 @@ int main(void) {
         pub = rmw_create_publisher(node, type_support, "keep_last_arena", &qos, &pub_opts);
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
-        assert(tt_RELIABLE_CACHE_ARENA_BYTES(10, tt_MAX_BUFFER_LENGTH) == pub_impl->reliable_cache->arena_size);
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(10, tt_MAX_BUFFER_LENGTH) == pub_impl->reliable_cache->arena_limit);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
     }

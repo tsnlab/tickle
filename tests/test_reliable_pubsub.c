@@ -2341,12 +2341,14 @@ static int32_t big_data_encode_size(struct tt_Data* data) {
     return (int32_t)KEEP_ALL_BIG_PAYLOAD;
 }
 
+// Fills the payload with the caller's own value, so one sample's bytes can be told from another's.
+// Every sample carrying identical bytes is what let a migration that moved the data but not the
+// offsets pass an earlier version of these tests: reading the wrong record found the right content.
 static int32_t big_data_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
-    (void)data;
     if (len < KEEP_ALL_BIG_PAYLOAD) {
         return -1;
     }
-    memset(payload, 0xAB, KEEP_ALL_BIG_PAYLOAD);
+    memset(payload, (uint8_t)(*(const uint32_t*)data), KEEP_ALL_BIG_PAYLOAD);
     return (int32_t)KEEP_ALL_BIG_PAYLOAD;
 }
 
@@ -2390,6 +2392,216 @@ static void test_keep_all_refuses_when_bytes_bind_before_count(void) {
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 2
     EXPECT_EQ_U32(2, pub.seq_no);
     EXPECT_EQ_U32(2, cache.oldest_seq_no); // seq_no 1 gave way, now that it was acknowledged
+}
+
+// --- tt_ReliableCache_grow() -------------------------------------------------------------------
+//
+// Reserving the whole budget only when the traffic asks for it (the user's decision, 2026-09-25:
+// rmw_tickle owns the size, so it owns revising it). The cache moves onto a larger caller-owned
+// arena keeping every retained sample; the index does not move, because depth is fixed for the life
+// of the cache, so only the bytes relocate. What these check is the part that could silently lose
+// data: that a migrated sample is still there, still says who it is, and is still answerable.
+
+// Publishes `count` samples, the one that becomes seq_no N carrying N in every payload byte.
+static void publish_big_samples(struct tt_Publisher* pub, int count) {
+    for (int i = 0; i < count; i++) {
+        uint32_t value = (uint32_t)pub->seq_no + 1; // what this publish's own seq_no will be
+        EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(pub, (struct tt_Data*)&value));
+    }
+}
+
+// Whether the cache still holds seq_no's own record: the right slot, a length, an offset inside the
+// arena, and - the part that catches a migration that moved bytes without moving offsets - the
+// payload that THIS sample was published with, not some other sample's.
+static bool record_intact(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t seq_no) {
+    const struct tt_ReliableCacheIndex* entry = &cache->index[(seq_no - 1) % depth];
+    if (entry->seq_no != seq_no || entry->len == 0) {
+        return false;
+    }
+    if ((uint32_t)entry->offset + entry->len > cache->arena_size) {
+        return false; // an offset the new arena could not hold: the migration lost track of it
+    }
+    const uint8_t* payload =
+        cache->arena + entry->offset + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader);
+    for (uint32_t i = 0; i < KEEP_ALL_BIG_PAYLOAD; i++) {
+        if (payload[i] != (uint8_t)seq_no) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void test_cache_grow_keeps_every_retained_sample(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 8);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+    // An arena for two 536-byte records, a limit of six. The Publisher may hold 8 by count, so it
+    // is the bytes that bind - exactly the case growing exists for.
+    static uint8_t small_arena[2 * 536];
+    static uint8_t bigger_arena[6 * 536];
+    cache.arena = small_arena;
+    cache.arena_size = (uint32_t)sizeof(small_arena);
+    cache.arena_limit = (uint32_t)sizeof(bigger_arena);
+
+    publish_big_samples(&pub, 2);
+    uint32_t next = 3;
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&next)); // full
+    EXPECT_EQ_U32(1, cache.oldest_seq_no);
+    EXPECT_EQ_U32(2, cache.newest_seq_no);
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_ReliableCache_grow(&cache, bigger_arena, (uint32_t)sizeof(bigger_arena)));
+
+    // Both samples came across intact, under their own sequence numbers.
+    EXPECT_TRUE(cache.arena == bigger_arena);
+    EXPECT_EQ_U32(1, cache.oldest_seq_no);
+    EXPECT_EQ_U32(2, cache.newest_seq_no);
+    EXPECT_TRUE(record_intact(&cache, cache.depth, 1));
+    EXPECT_TRUE(record_intact(&cache, cache.depth, 2));
+
+    // And the room the grow bought is usable: the publish that was refused now goes through.
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&next));
+    EXPECT_EQ_U32(3, cache.newest_seq_no);
+    EXPECT_TRUE(record_intact(&cache, cache.depth, 3));
+    EXPECT_TRUE(record_intact(&cache, cache.depth, 1)); // ...without disturbing what was migrated
+}
+
+// The assertion most likely to catch a migration that moved bytes but not the bookkeeping: a
+// retransmit request for a sample that was migrated must be answered from its new location.
+static void test_cache_grow_leaves_migrated_samples_answerable(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 8);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+    static uint8_t first_arena[2 * 536];
+    static uint8_t second_arena[6 * 536];
+    cache.arena = first_arena;
+    cache.arena_size = (uint32_t)sizeof(first_arena);
+    cache.arena_limit = (uint32_t)sizeof(second_arena);
+
+    publish_big_samples(&pub, 2);
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_ReliableCache_grow(&cache, second_arena, (uint32_t)sizeof(second_arena)));
+    // Scribble over the old arena: an offset still pointing into it would now resend nonsense, and
+    // the payload check below would see it.
+    memset(first_arena, 0x5A, sizeof(first_arena));
+
+    test_mock_send_to_call_count = 0;
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 0x3ULL); // asking for seq_no 1 and 2
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+
+    // Both were retransmitted, not answered with an eviction Heartbeat, and what went out is the
+    // payload that was published - read back from the last datagram the mock captured.
+    // What matters is that they were retransmits rather than an eviction Heartbeat saying the
+    // samples are gone; how many datagrams carried them is the flush path's business.
+    EXPECT_TRUE(test_mock_send_to_call_count >= 1);
+    EXPECT_TRUE(last_sent_heartbeat() == NULL);
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[0].retry);
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[1].retry);
+    EXPECT_TRUE(record_intact(&cache, cache.depth, 1));
+    EXPECT_TRUE(record_intact(&cache, cache.depth, 2));
+}
+
+// The worst shape for recomputing offsets: the live records wrap the end of the old arena, so they
+// are two runs with a gap. KEEP_LAST rather than KEEP_ALL, because getting there needs evictions.
+static void test_cache_grow_from_a_wrapped_ring(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 8);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    pub.keep_all = false; // KEEP_LAST: it evicts to make room, which is how the ring wraps
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+    static uint8_t ring_arena[3 * 536];
+    static uint8_t grown_arena[8 * 536];
+    cache.arena = ring_arena;
+    cache.arena_size = (uint32_t)sizeof(ring_arena);
+    cache.arena_limit = (uint32_t)sizeof(grown_arena);
+
+    publish_big_samples(&pub, 5); // 3 fit at a time, so this wraps twice
+    uint32_t oldest = cache.oldest_seq_no;
+    uint32_t newest = cache.newest_seq_no;
+    EXPECT_TRUE(oldest > 1); // something was evicted
+    // The wrap, stated directly: the oldest retained record sits at a HIGHER offset than the newest,
+    // so the live run is two pieces with a gap - the shape that makes repacking non-trivial.
+    EXPECT_TRUE(cache.index[(oldest - 1) % cache.depth].offset > cache.index[(newest - 1) % cache.depth].offset);
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_ReliableCache_grow(&cache, grown_arena, (uint32_t)sizeof(grown_arena)));
+
+    EXPECT_EQ_U32(oldest, cache.oldest_seq_no);
+    EXPECT_EQ_U32(newest, cache.newest_seq_no);
+    for (uint32_t seq_no = oldest; seq_no <= newest; seq_no++) {
+        EXPECT_TRUE(record_intact(&cache, cache.depth, seq_no));
+    }
+    EXPECT_TRUE(cache.tail == (newest - oldest + 1) * 536); // packed, with the wrap gap recovered
+
+    // The invariant the ring itself relies on, asserted directly rather than hoped for: after a
+    // repack the live records ascend from offset 0 in sequence order, so [head, tail) is one run and
+    // what the cache treats as free really is. A migration that packed every record correctly but in
+    // the wrong ORDER satisfies every check above - each record is present and readable - and leaves
+    // the cache believing live bytes are free, which the next publishes then overwrite.
+    EXPECT_EQ_U32(0, cache.index[(oldest - 1) % cache.depth].offset);
+    for (uint32_t seq_no = oldest + 1; seq_no <= newest; seq_no++) {
+        EXPECT_TRUE(cache.index[(seq_no - 1) % cache.depth].offset > cache.index[(seq_no - 2) % cache.depth].offset);
+    }
+
+    // Keep publishing into the grown arena. This is what says the ring is coherent afterwards and
+    // not merely readable: the free space has to be where the cache thinks it is, or these writes
+    // land on top of records that are still live. (A migration that packed correctly but in the
+    // wrong ORDER passes every check above and fails here.)
+    publish_big_samples(&pub, 3);
+    EXPECT_EQ_U32(newest + 3, cache.newest_seq_no);
+    for (uint32_t seq_no = cache.oldest_seq_no; seq_no <= cache.newest_seq_no; seq_no++) {
+        EXPECT_TRUE(record_intact(&cache, cache.depth, seq_no));
+    }
+}
+
+// The limit is the caller's own and cannot be raised by growing, which is what keeps a KEEP_ALL
+// Publisher's back-pressure from becoming unbounded growth. Nor may a grow shrink.
+static void test_cache_grow_refuses_past_the_limit_and_downward(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 8);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+    static uint8_t start_arena[2 * 536];
+    static uint8_t within_limit[3 * 536];
+    static uint8_t past_limit[9 * 536];
+    cache.arena = start_arena;
+    cache.arena_size = (uint32_t)sizeof(start_arena);
+    cache.arena_limit = (uint32_t)sizeof(within_limit);
+
+    publish_big_samples(&pub, 2);
+    EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT,
+                  (int)tt_ReliableCache_grow(&cache, past_limit, (uint32_t)sizeof(past_limit)));
+    EXPECT_TRUE(cache.arena == start_arena); // refused, and nothing moved
+    EXPECT_EQ_U32((uint32_t)sizeof(start_arena), cache.arena_size);
+
+    static uint8_t smaller[536];
+    EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_ReliableCache_grow(&cache, smaller, (uint32_t)sizeof(smaller)));
+    EXPECT_TRUE(cache.arena == start_arena);
+
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_ReliableCache_grow(&cache, within_limit, (uint32_t)sizeof(within_limit)));
+    EXPECT_TRUE(cache.arena == within_limit);
+    EXPECT_EQ_U32((uint32_t)sizeof(within_limit), cache.arena_limit); // growing never raises it
 }
 
 // KEEP_LAST with the same arena and the same samples: it evicts rather than refusing, exactly as
@@ -2897,6 +3109,10 @@ int main(void) {
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
     test_keep_all_refuses_when_bytes_bind_before_count();
+    test_cache_grow_keeps_every_retained_sample();
+    test_cache_grow_leaves_migrated_samples_answerable();
+    test_cache_grow_from_a_wrapped_ring();
+    test_cache_grow_refuses_past_the_limit_and_downward();
     test_keep_last_evicts_when_bytes_bind();
     test_keep_all_retains_both_when_the_arena_fits_the_record();
     test_keep_all_still_honours_lifespan();

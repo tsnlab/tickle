@@ -668,7 +668,14 @@ struct tt_ReliableCache {
     // so it needs no particular alignment - keep it that way.
     uint8_t* arena;
     uint32_t arena_size;
-    // Core-private bookkeeping (a caller sets only the five fields above; zero-init = empty).
+    // The largest arena_size this cache may ever reach, or 0 for "arena_size is final" (2026-09-25).
+    // Only tt_ReliableCache_grow() reads it, and nothing ever writes it after init: a caller that
+    // wants to reserve memory lazily sets it to the size it is willing to reach, hands over a
+    // smaller arena to start with, and grows into it. That the limit itself cannot be raised is the
+    // point - a KEEP_ALL Publisher that refuses a write must stay refused once its arena is at the
+    // limit, or back-pressure would turn into unbounded growth (see tt_Publisher_publish()).
+    uint32_t arena_limit;
+    // Core-private bookkeeping (a caller sets only the six fields above; zero-init = empty).
     uint32_t oldest_seq_no; // oldest retained sample, 0 = nothing retained (the arena is empty)
     uint32_t newest_seq_no; // newest sample handed to cache_reliable_sample(), cached or not
     uint32_t tail;          // arena offset just past the newest retained record
@@ -967,6 +974,24 @@ struct tt_Publisher { // extends endpoint
 // 0, or an arena too small for even one maximum-size record when the caller may publish one.
 tt_ret_t tt_ReliableCache_init(struct tt_ReliableCache* cache, struct tt_ReliableCacheIndex* index, uint16_t capacity,
                                uint8_t* arena, uint32_t arena_size);
+
+// Moves this cache onto a larger caller-owned arena, keeping every retained sample (2026-09-25).
+// For a caller that would rather reserve its full budget only if the traffic asks for it: start
+// small, set arena_limit at init, and call this when the arena fills.
+//
+// new_arena must be new_arena_size bytes and must not overlap the current one. The retained records
+// are copied into it in sequence order, packed from offset 0, so the wrap fragment the old ring may
+// have been wasting is recovered too. The old arena is untouched and still the caller's to free
+// once this returns tt_RET_OK.
+//
+// The index array does not move and its slots do not change: `depth` is fixed for the life of the
+// cache (see it above), so a sample keeps the slot it had and only the bytes behind it relocate.
+//
+// Refuses (tt_RET_INVALID_ARGUMENT, changing nothing) a new_arena_size that is smaller than the
+// current one - shrinking would have to drop samples - or larger than arena_limit. Call it only
+// from the same context as the Publisher's other calls; it is not safe against a concurrent
+// publish or poll.
+tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_arena, uint32_t new_arena_size);
 
 // Returns tt_RET_INVALID_ARGUMENT if pub->reliable_cache is still NULL (period_ns == 0 is always
 // accepted regardless, since disabling never needs a cache).

@@ -77,6 +77,7 @@ static void* const public_api[] = {
     (void*)tt_Server_destroy,
     // Caller-owned storage and discovery
     (void*)tt_ReliableCache_init,
+    (void*)tt_ReliableCache_grow,
     (void*)tt_Discovery_count,
     (void*)tt_Discovery_find,
     // Framing helpers tickle.h exposes

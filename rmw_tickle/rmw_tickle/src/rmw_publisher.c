@@ -267,6 +267,63 @@ static uint32_t clamp_record_bytes(unsigned long long payload) {
     return record > (uint32_t)tt_MAX_BUFFER_LENGTH ? (uint32_t)tt_MAX_BUFFER_LENGTH : record;
 }
 
+// How much of the arena to allocate up front, out of the `limit` the budget worked out. Small
+// enough that a publisher which never fills it costs little, large enough that an ordinary one
+// never grows: 64 KiB holds 44 full-size datagrams, or hundreds of typical samples. Growth doubles
+// from here, so reaching a 12 MiB limit takes eight reallocations at most.
+#define RMW_TICKLE_INITIAL_ARENA_BYTES (64U * 1024U)
+
+static uint32_t initial_arena_bytes(uint32_t limit) {
+    return limit < RMW_TICKLE_INITIAL_ARENA_BYTES ? limit : RMW_TICKLE_INITIAL_ARENA_BYTES;
+}
+
+// Doubles this publisher's arena toward its limit, keeping everything retained, and returns whether
+// it grew. Called only from publish_blocking() below, on the caller's thread and never from core's
+// publish path, which allocates nothing by design. The node mutex is held: tt_ReliableCache_grow()
+// is not safe against a concurrent poll.
+static bool grow_reliable_cache(rmw_tickle_publisher_t* pub_impl) {
+    struct tt_ReliableCache* cache = pub_impl->reliable_cache;
+    if (NULL == cache || NULL == cache->arena || cache->arena_size >= cache->arena_limit) {
+        return false; // nothing retained, or already at the limit the budget set
+    }
+    unsigned long long doubled = (unsigned long long)cache->arena_size * 2ULL;
+    uint32_t next = doubled < (unsigned long long)cache->arena_limit ? (uint32_t)doubled : cache->arena_limit;
+
+    rcutils_allocator_t* allocator = &pub_impl->allocator;
+    uint8_t* grown = (uint8_t*)allocator->allocate(next, allocator->state);
+    if (NULL == grown) {
+        return false; // out of memory is not this publisher's problem to report: it just blocks
+    }
+    uint8_t* previous = cache->arena;
+    if (tt_RET_OK != tt_ReliableCache_grow(cache, grown, next)) {
+        allocator->deallocate(grown, allocator->state);
+        return false;
+    }
+    allocator->deallocate(previous, allocator->state); // core copied out of it and never kept it
+    return true;
+}
+
+// Whether a KEEP_LAST publisher is retaining fewer samples than its depth promises because its
+// arena is smaller than its budget allows - the growth signal for the policy that never blocks.
+//
+// publish_blocking()'s trigger cannot serve here: keep_all_writable() returns true immediately for
+// KEEP_LAST ("never refuses a write"), so KEEP_LAST never sees tt_RET_WOULD_BLOCK and would sit at
+// the initial slice forever, evicting by bytes long before its depth (Plan caught this in review -
+// /rosout at depth 1000 would have retained about 290 logs where it retains 1000 today). The signal
+// instead is retention itself: enough samples published for the count bound to be the one binding,
+// and fewer than depth of them still held.
+static bool keep_last_wants_more_arena(const rmw_tickle_publisher_t* pub_impl) {
+    const struct tt_ReliableCache* cache = pub_impl->reliable_cache;
+    if (NULL == cache || pub_impl->tickle_publisher.keep_all || NULL == cache->arena ||
+        cache->arena_size >= cache->arena_limit) {
+        return false;
+    }
+    if (0 == cache->depth || cache->newest_seq_no < cache->depth) {
+        return false; // not enough published yet for depth to be what limits retention
+    }
+    return (cache->newest_seq_no - cache->oldest_seq_no + 1) < cache->depth;
+}
+
 // What to call this publisher's type in a diagnostic before anything has been created.
 static const char* type_name_of(const rmw_tickle_publisher_t* pub_impl) {
     return NULL != pub_impl->callbacks ? pub_impl->callbacks->ros_type_name : "?";
@@ -584,7 +641,13 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
                                type_name_of(pub_impl), (unsigned)arena_bytes,
                                (unsigned)tt_RELIABLE_RECORD_BYTES(largest));
     }
-    pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(arena_bytes, allocator->state);
+    // Reserved lazily: the limit is what the budget above worked out, but only the first slice of
+    // it is allocated now, and publish_blocking() grows toward the limit if the traffic ever asks
+    // (tt_ReliableCache_grow(), tickle.c). A KEEP_ALL publisher of an unbounded type would
+    // otherwise take 3 MB at creation whether it retains anything or not. The limit itself never
+    // moves, so back-pressure still arrives exactly where it did.
+    uint32_t initial_bytes = initial_arena_bytes(arena_bytes);
+    pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(initial_bytes, allocator->state);
     if (NULL == pub_impl->reliable_cache->arena) {
         RMW_SET_ERROR_MSG("failed to allocate reliable_cache arena");
         allocator->deallocate(pub_impl->reliable_cache->index, allocator->state);
@@ -592,7 +655,8 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
         pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
         return false;
     }
-    pub_impl->reliable_cache->arena_size = arena_bytes;
+    pub_impl->reliable_cache->arena_size = initial_bytes;
+    pub_impl->reliable_cache->arena_limit = arena_bytes;
     pub_impl->reliable_cache->capacity = (uint16_t)depth;
     pub_impl->reliable_cache->depth = (uint16_t)depth;
     pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
@@ -1029,6 +1093,21 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
         // that `expired` gives the deadline one attempt past its own expiry rather than reporting a
         // timeout straight out of the wait - a sample that became publishable in the same instant
         // should go out, not be reported as a failure.
+        // Before waiting: this publisher may have been allocated only the first slice of the budget
+        // it is entitled to (setup_reliable_cache()), and this is the moment that proves it needs
+        // more. Growing is bounded by the limit the budget fixed, so a KEEP_ALL publisher still
+        // blocks - just at the size it was always allowed, rather than at the size it happened to
+        // have been given. Retry immediately if it grew: the wait below is for an acknowledgement,
+        // which is not what was missing.
+        pthread_mutex_unlock(&pub_impl->node->context_impl->wait_mutex);
+        pthread_mutex_lock(&pub_impl->node->context_impl->node_mutex);
+        bool grew = grow_reliable_cache(pub_impl);
+        pthread_mutex_unlock(&pub_impl->node->context_impl->node_mutex);
+        if (grew) {
+            continue;
+        }
+        pthread_mutex_lock(&pub_impl->node->context_impl->wait_mutex);
+
         if (expired || 0 == pub_impl->max_blocking_ns) {
             pthread_mutex_unlock(&pub_impl->node->context_impl->wait_mutex);
             return publish_timed_out(pub_impl, pub_impl->max_blocking_ns);
@@ -1077,6 +1156,16 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     }
 
     rmw_ret_t ret = publish_blocking(pub_impl, tickle_buf);
+
+    // The KEEP_LAST half of lazy reservation (keep_last_wants_more_arena() above). Two field reads
+    // on the ordinary path; the lock and the allocation happen only when retention has actually
+    // fallen short, which for a given publisher can happen at most a handful of times - the arena
+    // doubles and the limit does not move.
+    if (RMW_RET_OK == ret && keep_last_wants_more_arena(pub_impl)) {
+        pthread_mutex_lock(&pub_impl->node->context_impl->node_mutex);
+        (void)grow_reliable_cache(pub_impl);
+        pthread_mutex_unlock(&pub_impl->node->context_impl->node_mutex);
+    }
     pthread_mutex_unlock(&pub_impl->publish_mutex);
     return ret;
 }
