@@ -610,9 +610,11 @@ static void test_reliable_new_gap_while_armed_gets_immediate_narrow_nack(void) {
     EXPECT_TRUE(acknack != NULL);
     EXPECT_EQ_U32(2, acknack->seq_no);          // base (cumulative ack) unchanged
     EXPECT_TRUE(acknack->bitmap[0] == 0x1CULL); // bits 2..4 = seq_no 4..6 only, not seq_no 2 again
-    for (int word = 1; word < tt_RELIABLE_BITMAP_WORDS; word++) {
-        EXPECT_TRUE(acknack->bitmap[word] == 0);
-    }
+    // One word on the wire, and that is the assertion: send_acknack() encodes only the words the
+    // request reaches into, so bitmap[1..] is not part of this submessage at all. Reading it here
+    // (as this loop used to, expecting zeros) tests whatever else is in the buffer - which was
+    // zeros until a test that publishes a non-zero payload ran first.
+    EXPECT_EQ_U32(1, (uint32_t)acknack->bitmap_words);
 
     tail = write_data(&node, 8, 800, 8); // contiguous with the highest received - no new gap
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
@@ -2322,6 +2324,104 @@ static void test_keep_all_unblocks_when_last_subscriber_leaves(void) {
 // Plan's addition 1: LIFESPAN still ends a gap under KEEP_ALL - an expired sample is "as if never
 // sent", so the Publisher reports it gone (1-c's eviction Heartbeat) rather than retransmitting it
 // forever.
+// A KEEP_ALL Publisher whose samples are larger than the arena reserved per record. Its promise is
+// that nothing unacknowledged is ever dropped, and keep_all_writable() enforces that by COUNT
+// (unacked <= keep_all_bound()), while cache_reliable_sample() enforces the arena by BYTES and
+// evicts to make room with no idea whether the Publisher is KEEP_ALL. The two agree only while
+// every sample fits the record the arena was sized for. This test drives the case where they do
+// not: rmw_tickle reserves 1472 bytes per sample for a KEEP_ALL type with no size bound while the
+// datagram is 65507, so a larger sample is not "sent but not retained" (that needs
+// length > arena_size, which cannot happen there) - it is retained, and it evicts an
+// unacknowledged sample to fit.
+#define KEEP_ALL_BIG_PAYLOAD 512
+
+static int32_t big_data_encode_size(struct tt_Data* data) {
+    (void)data;
+    return (int32_t)KEEP_ALL_BIG_PAYLOAD;
+}
+
+static int32_t big_data_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
+    (void)data;
+    if (len < KEEP_ALL_BIG_PAYLOAD) {
+        return -1;
+    }
+    memset(payload, 0xAB, KEEP_ALL_BIG_PAYLOAD);
+    return (int32_t)KEEP_ALL_BIG_PAYLOAD;
+}
+
+static void test_keep_all_evicts_unacked_when_bytes_bind_before_count(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    // Arena sized for 64-byte payloads (9 x 88 = 792 B), depth 8 - so the count bound is 8 samples
+    // but only one 536-byte record fits. Exactly the shape of a 1472-byte reservation meeting a
+    // 65507-byte datagram, at a size a unit test can hold.
+    TEST_RELIABLE_CACHE(cache, 8);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // window 1024 >> depth 8, so depth binds
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
+    EXPECT_EQ_U32(1, cache.oldest_seq_no);
+
+    // Nobody has acknowledged anything, and 2 unacknowledged is far below the bound of 8, so
+    // keep_all_writable() accepts this - the Publisher does not refuse.
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 2
+
+    // What the byte bound did to seq_no 1, which nobody acknowledged: it is gone.
+    EXPECT_EQ_U32(2, cache.oldest_seq_no);
+    EXPECT_EQ_U32(0, (uint32_t)cache.index[0].len); // seq_no 1's slot, now a tombstone
+
+    // And the Subscriber is told so: an ACKNACK for seq_no 1 gets an eviction Heartbeat, not the
+    // sample - the same "skip it, it is gone for good" answer a KEEP_LAST writer gives.
+    test_mock_send_to_call_count = 0;
+    struct tt_Header header;
+    init_header(&header);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL);
+    EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
+    const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
+    EXPECT_TRUE(heartbeat != NULL);
+    EXPECT_EQ_U32(2, heartbeat->first_available_seq_no); // seq_no 1 is unrecoverable
+}
+
+// The control for the test above: the same two publishes, the same payload, the same depth - only
+// the arena is sized for the record the samples actually need. Both are retained, so the eviction
+// above is the byte bound and not something else about the publishes.
+static void test_keep_all_retains_both_when_the_arena_fits_the_record(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    struct tt_ReliableCacheIndex index_storage[8];
+    uint8_t arena_storage[tt_RELIABLE_CACHE_ARENA_BYTES(8, tt_RELIABLE_RECORD_BYTES(KEEP_ALL_BIG_PAYLOAD))];
+    struct tt_ReliableCache cache;
+    memset(index_storage, 0, sizeof(index_storage));
+    memset(arena_storage, 0, sizeof(arena_storage));
+    memset(&cache, 0, sizeof(cache));
+    cache.index = index_storage;
+    cache.capacity = 8;
+    cache.depth = 8;
+    cache.arena = arena_storage;
+    cache.arena_size = (uint32_t)sizeof(arena_storage);
+
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    EXPECT_EQ_U32(1, cache.oldest_seq_no); // nothing evicted
+    EXPECT_TRUE(cache.index[0].len > 0);   // seq_no 1 still has its bytes
+    EXPECT_EQ_U32(1, (uint32_t)cache.index[0].seq_no);
+}
+
 static void test_keep_all_still_honours_lifespan(void) {
     test_mock_reset();
 
@@ -2771,6 +2871,8 @@ int main(void) {
     test_unknown_policy_still_terminates_on_eviction();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
+    test_keep_all_evicts_unacked_when_bytes_bind_before_count();
+    test_keep_all_retains_both_when_the_arena_fits_the_record();
     test_keep_all_still_honours_lifespan();
     test_keep_all_subscriber_never_gives_up();
     test_reliable_publish_caches_and_evicts();
