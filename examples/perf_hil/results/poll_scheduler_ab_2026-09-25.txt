@@ -1,0 +1,28 @@
+=== scheduler-driven poll A/B, 2026-09-25T18:42:09+09:00 ===
+before=9a230a1b (KEEP_ALL budget, no poll change)   after=69e63a34 (adds the poll change)
+
+--- building 9a230a1b on both rpis ---
+  identity: client HEAD=9a230a1b (wanted 9a230a1b)
+
+BEFORE c10 straced | sent=5 recv=5 rtt_avg_ms=0.349 wire_rx_packets=15 wire_tx_packets=15 ppoll=38508
+BEFORE c10 rep1     | sent=5 recv=5 rtt_avg_ms=0.230 rtt_max_ms=0.303 
+BEFORE c10 rep2     | sent=5 recv=5 rtt_avg_ms=0.234 rtt_max_ms=0.326 
+BEFORE c10 rep3     | sent=5 recv=5 rtt_avg_ms=0.238 rtt_max_ms=0.320 
+BEFORE c1  straced | sent=131570 send_mbps=15.999 wire_tx_packets=134367 ppoll=559
+BEFORE c1  rep1     | sent=876029 send_mbps=106.525 
+BEFORE c1  rep2     | sent=877012 send_mbps=106.645 
+BEFORE c1  rep3     | sent=873230 send_mbps=106.185 
+
+--- building 69e63a34 on both rpis ---
+  identity: client HEAD=69e63a34 (wanted 69e63a34)
+
+AFTER  c10 straced | sent=5 recv=5 rtt_avg_ms=0.370 wire_rx_packets=14 wire_tx_packets=14 ppoll=34
+AFTER  c10 rep1     | sent=5 recv=5 rtt_avg_ms=0.235 rtt_max_ms=0.305 
+AFTER  c10 rep2     | sent=5 recv=5 rtt_avg_ms=0.246 rtt_max_ms=0.304 
+AFTER  c10 rep3     | sent=5 recv=5 rtt_avg_ms=0.236 rtt_max_ms=0.299 
+AFTER  c1  straced | ppoll=555
+AFTER  c1  rep1     | sent=863456 send_mbps=104.996 
+AFTER  c1  rep2     | sent=862577 send_mbps=104.889 
+AFTER  c1  rep3     | sent=859994 send_mbps=104.575 
+
+=== done ===
