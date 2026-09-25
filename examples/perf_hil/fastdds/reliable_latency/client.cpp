@@ -10,13 +10,11 @@
  * block, the FastDDS harness had no compile-database entries for clang-tidy to use. The logic, the
  * timing and the RESULT line are unchanged.
  */
-#include <array>
-#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <time.h> // NOLINT(modernize-deprecated-headers) - clock_gettime()/nanosleep() are POSIX, not in <ctime>
+#include <time.h> // NOLINT(modernize-deprecated-headers) - nanosleep() is POSIX, not in <ctime>
 
 #include <fastdds/dds/core/policy/QosPolicies.hpp>
 #include <fastdds/dds/domain/DomainParticipant.hpp>
@@ -38,6 +36,7 @@
 
 #include "../../tickle/common/BenchStats.h" // shared instrumentation - see its own header
 #include "../../tickle/common/CpuFreq.h"
+#include "../harness_common.hpp"
 #include "Bench.h"
 #include "BenchPubSubTypes.h"
 
@@ -45,33 +44,11 @@ using namespace eprosima::fastdds::dds;
 
 namespace {
 
-    constexpr uint64_t ns_per_s = 1000000000ULL;
-    constexpr double ns_per_s_real = 1e9;
-    constexpr double ns_per_ms = 1e6;
-    constexpr double percent = 100.0;
     constexpr double default_interval_s = 1.0;
     constexpr double default_duration_s = 10.0;
     constexpr int32_t history_depth = 8;
     constexpr uint32_t response_wait_ns = 500U * 1000U * 1000U; // 500ms
     constexpr time_t discovery_wait_s = 2;                      // see the CycloneDDS client's identical comment
-
-    volatile sig_atomic_t g_interrupted = 0;
-
-    void handle_sigint(int signum) {
-        (void)signum;
-        g_interrupted = 1;
-    }
-
-    auto now_ns() -> uint64_t {
-        struct timespec ts {};
-        clock_gettime(CLOCK_MONOTONIC, &ts); // NOLINT(misc-include-cleaner) - glibc defines it in bits/time.h
-        return (static_cast<uint64_t>(ts.tv_sec) * ns_per_s) + static_cast<uint64_t>(ts.tv_nsec);
-    }
-
-    // Armed at the very top of main(), before any middleware setup, so the counters cover discovery too -
-    // identically for all three frameworks, which is what makes them comparable.
-    struct BenchStats g_bench_stats;
-    std::array<char, BENCH_STATS_FIELDS_MAX> g_bench_fields {};
 
     // CPU frequency around each round trip (2026-09-25). A tail excursion after the scheduler-driven poll
     // has two platform explanations besides the change itself: an ordinary loss recovery, or the ondemand
@@ -117,7 +94,7 @@ namespace {
             stats.max_ms = rtt_ms;
         }
         stats.sum_ms += rtt_ms;
-        BenchCpuFreq_sample(&g_rtt_freq, now_ns(), 0);
+        BenchCpuFreq_sample(&g_rtt_freq, harness::now_ns(), 0);
         if (new_max) {
             stats.cpu_mhz_at_max = BenchCpuFreq_last_mhz(&g_rtt_freq);
         }
@@ -142,7 +119,7 @@ namespace {
     void ping_once(DataWriter* writer, DataReader* reader, uint32_t seq, rtt_stats& stats) {
         Bench req;
         req.seq(seq);
-        req.send_ns(now_ns());
+        req.send_ns(harness::now_ns());
         writer->write(&req);
         stats.transmitted++;
 
@@ -152,15 +129,16 @@ namespace {
         }
         Bench resp;
         if (take_newest(reader, resp) && resp.seq() == req.seq()) {
-            record_rtt(stats, static_cast<double>(now_ns() - resp.send_ns()) / ns_per_ms);
+            record_rtt(stats, static_cast<double>(harness::now_ns() - resp.send_ns()) / harness::ns_per_ms);
         }
     }
 
     void report(const rtt_stats& stats) {
         const uint64_t lost = stats.transmitted - stats.received;
-        const double loss_pct = stats.transmitted > 0
-                                    ? (percent * static_cast<double>(lost) / static_cast<double>(stats.transmitted))
-                                    : 0.0;
+        const double loss_pct =
+            stats.transmitted > 0
+                ? (harness::percent * static_cast<double>(lost) / static_cast<double>(stats.transmitted))
+                : 0.0;
         const double avg = stats.received > 0 ? stats.sum_ms / static_cast<double>(stats.received) : 0.0;
 
         printf("\n--- fastdds reliable_latency statistics ---\n");
@@ -169,25 +147,24 @@ namespace {
         if (stats.received > 0) {
             printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", stats.min_ms, avg, stats.max_ms);
         }
-        bench_stats_end(&g_bench_stats);
+        bench_stats_end(&harness::g_bench_stats);
         printf("RESULT: framework=fastdds scenario=reliable_latency sent=%lu recv=%lu loss_pct=%.0f "
                "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f "
                "cpu_mhz_at_rtt_max=%.1f %s\n",
                static_cast<unsigned long>(stats.transmitted), static_cast<unsigned long>(stats.received), loss_pct,
                stats.min_ms, avg, stats.max_ms, BenchCpuFreq_mean_mhz(&g_rtt_freq), BenchCpuFreq_min_mhz(&g_rtt_freq),
                BenchCpuFreq_max_mhz(&g_rtt_freq), stats.cpu_mhz_at_max,
-               bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, stats.transmitted, BENCH_SAMPLE_BYTES,
-                                  g_bench_fields.data(), g_bench_fields.size()));
+               harness::bench_fields(BENCH_ROLE_SENDER, stats.transmitted));
     }
 
 } // namespace
 
 auto main(int argc, char** argv) -> int {
-    bench_stats_begin(&g_bench_stats);
+    bench_stats_begin(&harness::g_bench_stats);
     BenchCpuFreq_init(&g_rtt_freq);
     const client_options opts = parse_options(argc, argv);
 
-    std::signal(SIGINT, handle_sigint);
+    harness::install_sigint_handler();
 
     DomainParticipant* const participant =
         DomainParticipantFactory::get_instance()->create_participant(0, PARTICIPANT_QOS_DEFAULT);
@@ -225,13 +202,11 @@ auto main(int argc, char** argv) -> int {
 
     rtt_stats stats;
     uint32_t seq = 0;
-    const uint64_t deadline = now_ns() + static_cast<uint64_t>(opts.duration_s * ns_per_s_real);
-    const auto interval_ns = static_cast<uint64_t>(opts.interval_s * ns_per_s_real);
-    while (g_interrupted == 0 && now_ns() < deadline) {
+    const uint64_t deadline = harness::now_ns() + harness::seconds_to_ns(opts.duration_s);
+    const uint64_t interval_ns = harness::seconds_to_ns(opts.interval_s);
+    while (!harness::interrupted() && harness::now_ns() < deadline) {
         ping_once(writer, reader, ++seq, stats);
-        const struct timespec sleep_ts = {static_cast<time_t>(interval_ns / ns_per_s),
-                                          static_cast<long>(interval_ns % ns_per_s)};
-        nanosleep(&sleep_ts, nullptr);
+        harness::sleep_ns(interval_ns);
     }
 
     report(stats);
