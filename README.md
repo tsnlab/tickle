@@ -275,11 +275,18 @@ source ~/tickle_ifaces_ws/install/setup.bash
 CI runner). To build only some, name them instead, and the packages they depend on are added. After
 that, a default `rclcpp::Node` starts and runs with no extra parameters, and actions work through
 `rclcpp_action` (`example_interfaces/action/Fibonacci` is checked in CI). The one type that is
-declined is `example_interfaces/msg/WString`, since TickLE has no `wstring`. Your own interface
+declined is `example_interfaces/msg/WString`, since TickLE has no `wstring` (below). Your own interface
 packages get TickLE typesupport the same way, by building them with `rmw_tickle`'s install sourced. A package of
 yours that was configured before the workspace existed has the installed interface packages cached
 in its CMake cache and keeps linking them; build it afresh once, with the workspace sourced.
 
+- **No `wstring`.** A message with a `wstring` field gets no TickLE typesupport: it is declined,
+  the reason is written into the generated file, and every other type in its package still builds.
+  That is a decision, not a gap waiting to be filled. Of all the standard jazzy interfaces exactly
+  one uses a `wstring` (`example_interfaces/msg/WString`, a demo type), and the DDS implementations
+  do not encode one the same way - FastDDS and CycloneDDS's legacy CDR spend four bytes per
+  character for interoperability with each other, CycloneDDS's XCDR2 two. ROS 2 messages carry text
+  as UTF-8 in a plain `string`, which TickLE does support; use that.
 - **Unbounded arrays get a fixed capacity.** TickLE stores a sequence in a fixed buffer, so every
   unbounded array has a default capacity, chosen per message: a `LaserScan` holds 4096 beams, an
   `Image` 64000 bytes of pixels, a `JointState` 24 joints. Your own values take precedence: put a
