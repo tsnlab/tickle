@@ -1996,8 +1996,27 @@ record is right.
 `sensor_msgs/Image` is a real instance, since its `string encoding` makes it unbounded.
 `rclcpp`'s own default is KEEP_LAST, so this needs a deliberate KEEP_ALL.
 **Workaround today**: `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` sizes the arena for the samples
-actually sent. **Fix approved** (the user, 2026-09-25, "모두 승인"), because it changes when
-publish blocks: make the refusal byte-aware, so KEEP_ALL blocks rather than drops. Sizing the arena for a full datagram
+actually sent. **Fixed** in `3d757c40`, approved by the user first because it changes when publish
+blocks: the refusal is byte-aware, so KEEP_ALL blocks rather than drops. Once the sample is encoded
+and its size is known, `tt_Publisher_publish()` asks whether caching it would evict anything below
+the slowest acknowledgement; if it would, it rolls back and returns `tt_RET_WOULD_BLOCK` having sent
+nothing, cached nothing and left `seq_no` alone. `reliable_cache_admits()` answers by mirroring
+`cache_reliable_sample()`'s own loop, and the arena arithmetic both use is now one function -
+two copies deciding in two places is how this went wrong in the first place.
+`tt_Publisher.blocked_record_bytes` remembers the refused size so `tt_Publisher_writable()` answers
+about the sample the caller will actually retry, and `publish_refused_bytes` counts these apart.
+
+**Verified independently by TickLE Plan, by mutation rather than by reading** - the lesson from
+having been wrong twice on this same question. Disabling the post-encode refusal fails 8 assertions
+in `tests/test_reliable_pubsub.c`; disabling only the `keep_all_writable()` half fails 1; the suite
+passes with both in place. The test that was the evidence for the bug is now inverted: the second
+oversized publish is refused, `seq_no` 1 is still retained, and an ACKNACK unblocks it.
+`test_keep_last_evicts_when_bytes_bind()` holds the other side, since KEEP_LAST must still evict.
+
+**Known residue**: a sample larger than the *whole* arena is still sent without being cached (core's
+B1) rather than refused, because no amount of eviction could ever retain it and refusing would block
+that publisher forever. It cannot arise at the rmw default, where the arena is 3.07 MB against a
+65507-byte maximum sample, but a caller that attaches a very small arena can reach it. Sizing the arena for a full datagram
 instead is the 536 MB case the 1472 default exists to avoid.
 
 **Two wrong readings preceded this, both recorded because the pattern matters.** TickLE Dev first
