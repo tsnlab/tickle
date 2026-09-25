@@ -69,6 +69,9 @@ struct tt_ReliableStats {
     uint64_t ack_solicit_sent;           // Phase 3 (d): watermark-triggered ACK solicitations sent
     uint64_t ack_solicit_suppressed;     // Phase 3 (d): ...and ones the min-gap throttle dropped
     uint64_t publish_refused;            // Phase 3: publishes refused with tt_RET_WOULD_BLOCK (KEEP_ALL)
+    uint64_t publish_refused_bytes;      // ...of which because the arena, not the count bound, was full -
+                                         // i.e. samples larger than the record the arena was sized for
+                                         // (tt_Publisher.blocked_record_bytes, tickle.h)
     uint64_t writable_callbacks;         // Phase 3: refusal-to-writable transitions (callback fires)
     uint64_t writable_no_peers;          // ...of which because the last matched Subscriber went away, not
                                          // because acks arrived - i.e. KEEP_ALL ceasing to apply rather

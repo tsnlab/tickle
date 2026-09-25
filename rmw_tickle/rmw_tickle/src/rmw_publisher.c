@@ -249,16 +249,15 @@ static uint64_t resolve_max_blocking_ns(void) {
 // typo in the environment - could only reserve for a sample TickLE cannot put in a datagram, and
 // the clamp means neither can ever make the arena larger than it was before any of this existed.
 //
-// Under-reserving is NOT free, and this comment said it was until 2026-09-25. It claimed a sample
-// that does not fit is sent but not retained (cache_reliable_sample()'s oversize branch, tickle.c),
-// so that a wrong number here cost retention and never correctness. That branch needs
-// length > arena_size - the WHOLE arena - which one sample cannot reach: the arena is (depth + 1)
-// records, and depth is at least 2048 here. What actually happens is that the sample is retained
-// and takes the room of several, so the byte bound binds long before the count bound, and
-// cache_reliable_sample() evicts the oldest to fit - without knowing this Publisher is KEEP_ALL,
-// because it takes the cache, not the Publisher. keep_all_writable() (tickle.c) guards the promise
-// by COUNT only, so it does not refuse the write that causes it. tests/test_reliable_pubsub.c's
-// test_keep_all_evicts_unacked_when_bytes_bind_before_count() drives exactly that.
+// Under-reserving costs throughput, not retention, and this comment claimed the opposite until
+// 2026-09-25. It said a sample that does not fit is sent but not retained (cache_reliable_sample()'s
+// oversize branch, tickle.c) - but that branch needs length > arena_size, the WHOLE arena, which one
+// sample cannot reach when the arena is (depth + 1) records and depth is at least 2048 here. What
+// really happens is that a larger sample is retained and takes the room of several, so the arena
+// fills long before the count bound does. Until the byte-aware refusal landed that silently evicted
+// an unacknowledged sample; now tt_Publisher_publish() refuses instead (tt_RET_WOULD_BLOCK,
+// counted as publish_refused_bytes), which is what KEEP_ALL promises. So a number too small here
+// means this Publisher blocks sooner than its depth suggests - at arena_size / real record size.
 static uint32_t clamp_record_bytes(unsigned long long payload) {
     if (payload > (unsigned long long)tt_MAX_BUFFER_LENGTH) {
         return (uint32_t)tt_MAX_BUFFER_LENGTH;
@@ -515,13 +514,12 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
         (NULL == pub_impl->callbacks ||
          ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED == pub_impl->callbacks->tickle_max_encoded_size)) {
         // resolve_keep_all_record_bytes() says why: said out loud, because the cost is otherwise
-        // invisible until a reader misses a sample nobody acknowledged.
+        // invisible until this publisher starts blocking far below its depth.
         RCUTILS_LOG_WARN_NAMED("rmw_tickle",
                                "KEEP_ALL publisher of %s: its type has no size bound, so only %u bytes are reserved "
-                               "per sample; a larger one is retained but takes the room of several, and the cache "
-                               "then drops the oldest unacknowledged sample to fit - which KEEP_ALL otherwise "
-                               "promises never to do. Set RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES to the largest sample "
-                               "this publisher sends (reserves that much per sample, depth %u)",
+                               "per sample; a larger one takes the room of several, so publishing blocks once the "
+                               "cache is full rather than at depth %u. Set RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES to "
+                               "the largest sample this publisher sends (it reserves that much per sample)",
                                NULL != pub_impl->callbacks ? pub_impl->callbacks->ros_type_name : "?",
                                (unsigned)resolve_keep_all_record_bytes(pub_impl), (unsigned)depth);
     }

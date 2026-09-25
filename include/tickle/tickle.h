@@ -813,6 +813,13 @@ struct tt_Publisher { // extends endpoint
     tt_PUBLISHER_WRITABLE_CALLBACK writable_callback;
     void* writable_callback_param;
     // Core-private: set when a publish was refused, cleared when the callback fires.
+    // The record size a publish was already refused for, or 0 (2026-09-25). KEEP_ALL's promise has
+    // two bounds - the unacknowledged COUNT, which keep_all_bound() sets, and the arena's BYTES -
+    // and only the first can be checked before a sample is encoded. When the second refuses one,
+    // this remembers how big it was, so tt_Publisher_writable() and the writable callback answer
+    // about the sample the caller will actually retry rather than about the count alone. Cleared by
+    // the next publish that is admitted.
+    uint32_t blocked_record_bytes;
     bool writable_pending;
 
     // NULL (tt_Node_create_publisher()'s own default): no retained-sample storage at all - both

@@ -2325,14 +2325,15 @@ static void test_keep_all_unblocks_when_last_subscriber_leaves(void) {
 // sent", so the Publisher reports it gone (1-c's eviction Heartbeat) rather than retransmitting it
 // forever.
 // A KEEP_ALL Publisher whose samples are larger than the arena reserved per record. Its promise is
-// that nothing unacknowledged is ever dropped, and keep_all_writable() enforces that by COUNT
-// (unacked <= keep_all_bound()), while cache_reliable_sample() enforces the arena by BYTES and
-// evicts to make room with no idea whether the Publisher is KEEP_ALL. The two agree only while
-// every sample fits the record the arena was sized for. This test drives the case where they do
-// not: rmw_tickle reserves 1472 bytes per sample for a KEEP_ALL type with no size bound while the
-// datagram is 65507, so a larger sample is not "sent but not retained" (that needs
-// length > arena_size, which cannot happen there) - it is retained, and it evicts an
-// unacknowledged sample to fit.
+// that nothing unacknowledged is ever dropped, and it is enforced in two places and two units:
+// keep_all_writable() bounds the unacknowledged run by COUNT before a sample is encoded, and the
+// arena bounds it by BYTES at cache_reliable_sample(), which evicts to make room and cannot consult
+// the policy - it takes the cache, not the Publisher. Until 2026-09-25 only the count was checked,
+// so a Publisher whose samples were larger than the record its arena was sized for accepted the
+// write and then evicted a sample nobody had acknowledged. That is the case rmw_tickle creates by
+// reserving 1472 bytes per sample for an unbounded type while the datagram is 65507: 46 full-size
+// samples fill the VOLATILE arena, against a count bound of 2048. It now refuses instead, which is
+// what KEEP_ALL means.
 #define KEEP_ALL_BIG_PAYLOAD 512
 
 static int32_t big_data_encode_size(struct tt_Data* data) {
@@ -2349,14 +2350,14 @@ static int32_t big_data_encode(struct tt_Data* data, uint8_t* payload, const uin
     return (int32_t)KEEP_ALL_BIG_PAYLOAD;
 }
 
-static void test_keep_all_evicts_unacked_when_bytes_bind_before_count(void) {
+static void test_keep_all_refuses_when_bytes_bind_before_count(void) {
     test_mock_reset();
 
     struct tt_Node node;
     struct tt_Topic topic;
     struct tt_Publisher pub;
     // Arena sized for 64-byte payloads (9 x 88 = 792 B), depth 8 - so the count bound is 8 samples
-    // but only one 536-byte record fits. Exactly the shape of a 1472-byte reservation meeting a
+    // while only one 536-byte record fits. The same shape as a 1472-byte reservation meeting a
     // 65507-byte datagram, at a size a unit test can hold.
     TEST_RELIABLE_CACHE(cache, 8);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // window 1024 >> depth 8, so depth binds
@@ -2367,25 +2368,49 @@ static void test_keep_all_evicts_unacked_when_bytes_bind_before_count(void) {
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
     EXPECT_EQ_U32(1, cache.oldest_seq_no);
 
-    // Nobody has acknowledged anything, and 2 unacknowledged is far below the bound of 8, so
-    // keep_all_writable() accepts this - the Publisher does not refuse.
-    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 2
+    // Two unacknowledged samples are far below the count bound of 8, so the count alone would
+    // accept this - and accepting it would evict seq_no 1, which nobody has acknowledged.
+    EXPECT_EQ_INT((int)tt_RET_WOULD_BLOCK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_TRUE(!tt_Publisher_writable(&pub)); // and it says so, for the sample it refused
 
-    // What the byte bound did to seq_no 1, which nobody acknowledged: it is gone.
-    EXPECT_EQ_U32(2, cache.oldest_seq_no);
-    EXPECT_EQ_U32(0, (uint32_t)cache.index[0].len); // seq_no 1's slot, now a tombstone
+    // Nothing was sent, cached or counted for the refused sample, and seq_no 1 is still there.
+    EXPECT_EQ_U32(1, pub.seq_no);
+    EXPECT_EQ_U32(1, cache.oldest_seq_no);
+    EXPECT_EQ_U32(1, cache.newest_seq_no);
+    EXPECT_TRUE(cache.index[0].len > 0);
 
-    // And the Subscriber is told so: an ACKNACK for seq_no 1 gets an eviction Heartbeat, not the
-    // sample - the same "skip it, it is gone for good" answer a KEEP_LAST writer gives.
-    test_mock_send_to_call_count = 0;
+    // An ACKNACK acking everything below 2 makes seq_no 1 evictable, and the same publish goes
+    // through - the stall is the flow control working, not a deadlock.
     struct tt_Header header;
     init_header(&header);
-    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 1, 1ULL);
+    uint32_t tail = write_acknack(&node, ENDPOINT_ID, 2, 0ULL);
     EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
-    const struct tt_HeartbeatHeader* heartbeat = last_sent_heartbeat();
-    EXPECT_TRUE(heartbeat != NULL);
-    EXPECT_EQ_U32(2, heartbeat->first_available_seq_no); // seq_no 1 is unrecoverable
+
+    EXPECT_TRUE(tt_Publisher_writable(&pub));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 2
+    EXPECT_EQ_U32(2, pub.seq_no);
+    EXPECT_EQ_U32(2, cache.oldest_seq_no); // seq_no 1 gave way, now that it was acknowledged
+}
+
+// KEEP_LAST with the same arena and the same samples: it evicts rather than refusing, exactly as
+// before any of this - the byte bound is only a refusal when the policy promises not to drop.
+static void test_keep_last_evicts_when_bytes_bind(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    TEST_RELIABLE_CACHE(cache, 8);
+    init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
+    pub.keep_all = false; // KEEP_LAST, everything else identical
+    topic.data_encode_size = big_data_encode_size;
+    topic.data_encode = big_data_encode;
+
+    uint32_t value = 42;
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_U32(2, pub.seq_no);
+    EXPECT_EQ_U32(2, cache.oldest_seq_no); // seq_no 1 evicted by bytes, which KEEP_LAST may do
 }
 
 // The control for the test above: the same two publishes, the same payload, the same depth - only
@@ -2871,7 +2896,8 @@ int main(void) {
     test_unknown_policy_still_terminates_on_eviction();
     test_keep_all_writable_callback_fires_once();
     test_keep_all_unblocks_when_last_subscriber_leaves();
-    test_keep_all_evicts_unacked_when_bytes_bind_before_count();
+    test_keep_all_refuses_when_bytes_bind_before_count();
+    test_keep_last_evicts_when_bytes_bind();
     test_keep_all_retains_both_when_the_arena_fits_the_record();
     test_keep_all_still_honours_lifespan();
     test_keep_all_subscriber_never_gives_up();

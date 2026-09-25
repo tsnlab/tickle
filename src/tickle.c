@@ -1539,6 +1539,7 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
     pub->writable_callback = NULL;
     pub->writable_callback_param = NULL;
     pub->writable_pending = false;
+    pub->blocked_record_bytes = 0;
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         pub->peers[i].node_id = tt_NODE_ID_INVALID;
     }
@@ -1928,6 +1929,10 @@ static uint32_t keep_all_bound(const struct tt_Publisher* pub) {
     return window < depth ? window : depth;
 }
 
+// Defined with the rest of the cache arithmetic below; keep_all_writable() needs it here.
+static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length,
+                                  uint32_t acked_through);
+
 // Whether a KEEP_ALL Publisher may accept one more sample: refused only when accepting it would
 // push the unacknowledged run past keep_all_bound(), i.e. would force cache_reliable_sample() to
 // evict something nobody has acknowledged yet.
@@ -1961,7 +1966,21 @@ static bool keep_all_writable(const struct tt_Publisher* pub) {
     uint32_t min_ack = min_peer_ack_seq_no(pub);
     uint32_t acked_through = min_ack > 0 ? min_ack - 1 : 0; // ack_seq_no means "everything below it"
     uint32_t unacked_after_this = pub->seq_no + 1 - acked_through;
-    return unacked_after_this <= keep_all_bound(pub);
+    if (unacked_after_this > keep_all_bound(pub)) {
+        return false;
+    }
+    // The byte half of the same promise (2026-09-25). The count above is not enough on its own: the
+    // arena holds (depth + 1) records of whatever size it was sized for, so a Publisher whose
+    // samples are larger than that fills it long before the count bound, and cache_reliable_sample()
+    // would then evict an unacknowledged sample to fit. blocked_record_bytes is the record a publish
+    // was already refused for (0 before any refusal), so this asks the question the caller will
+    // actually ask again rather than guessing a size.
+    if (pub->blocked_record_bytes != 0 &&
+        !reliable_cache_admits(pub->reliable_cache, reliable_cache_depth(pub->reliable_cache),
+                               pub->blocked_record_bytes, acked_through)) {
+        return false;
+    }
+    return true;
 }
 
 // Phase 3 - fires the writable callback exactly once per refusal-to-writable transition: a KEEP_ALL
@@ -2133,22 +2152,87 @@ static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cach
 // record has to be evicted first. Records are never split (struct tt_ReliableCache.arena's own doc
 // comment): when the space before the end of the arena is too small, the write wraps to offset 0
 // and the tail fragment is simply wasted until the ring passes it.
-static uint32_t reliable_cache_write_offset(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length) {
-    if (cache->oldest_seq_no == 0) {
-        return 0; // empty - the whole arena is free (the caller already rejected length > arena_size)
+// How many bytes of arena the submessage now sitting at submessage_header will need. Shared with
+// tt_Publisher_publish()'s KEEP_ALL admission check, so the two cannot disagree about the size of
+// the record one of them is deciding about and the other is writing.
+static uint32_t reliable_record_length(const struct tt_Node* node,
+                                       const struct tt_SubmessageHeader* submessage_header) {
+    return (uint32_t)ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+}
+
+// Where a length-byte record goes in an arena whose live records occupy [head, tail) - or
+// UINT32_MAX when something has to be evicted first. Takes the two fields eviction moves as plain
+// arguments rather than reading the cache, so reliable_cache_admits() below can ask the same
+// question about a state it only simulates. One definition on purpose: the byte bound and the count
+// bound already disagreed once (2026-09-25) because they were decided in two different places.
+static uint32_t reliable_cache_offset_in(uint32_t arena_size, bool empty, uint32_t head, uint32_t tail,
+                                         uint32_t length) {
+    if (empty) {
+        return 0; // the whole arena is free (callers reject length > arena_size before asking)
     }
-    uint32_t head = reliable_cache_slot(cache, depth, cache->oldest_seq_no)->offset;
-    if (cache->tail == head) {
+    if (tail == head) {
         return UINT32_MAX; // the live records fill the arena exactly - evict before anything fits
                            // (tail == head reads as "empty" everywhere else, hence this first)
     }
-    if (cache->tail > head) { // live bytes are one contiguous [head, tail) run
-        if (length <= cache->arena_size - cache->tail) {
-            return cache->tail;
+    if (tail > head) { // live bytes are one contiguous [head, tail) run
+        if (length <= arena_size - tail) {
+            return tail;
         }
         return length <= head ? 0 : UINT32_MAX; // wrap to the front if the free head fragment fits
     }
-    return length <= head - cache->tail ? cache->tail : UINT32_MAX; // live run wraps: free is [tail, head)
+    return length <= head - tail ? tail : UINT32_MAX; // live run wraps: free is [tail, head)
+}
+
+static uint32_t reliable_cache_write_offset(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length) {
+    bool empty = cache->oldest_seq_no == 0;
+    uint32_t head = empty ? 0 : reliable_cache_slot(cache, depth, cache->oldest_seq_no)->offset;
+    return reliable_cache_offset_in(cache->arena_size, empty, head, cache->tail, length);
+}
+
+// Whether a length-byte record can be cached without evicting a sample that nobody has acknowledged
+// yet - the question KEEP_ALL's promise actually turns on, and the half keep_all_writable() used to
+// miss (2026-09-25): it bounds the unacknowledged run by COUNT while the arena bounds it by BYTES,
+// and cache_reliable_sample() evicts to make room without knowing the policy, because it takes the
+// cache and not the Publisher.
+//
+// Mirrors that function's own "ask for an offset, evict the oldest, ask again" loop against a copy
+// of the two fields eviction moves, so it answers about the arithmetic the real write will use.
+static bool reliable_cache_admits(const struct tt_ReliableCache* cache, uint16_t depth, uint32_t length,
+                                  uint32_t acked_through) {
+    if (length > cache->arena_size) {
+        return true; // B1: a sample this large is sent without being cached at all, so it evicts
+                     // nothing - a different loss (it can never be retransmitted), reported by
+                     // not_cached_oversize, and not one refusing the publish forever would fix
+    }
+    uint32_t oldest = cache->oldest_seq_no;
+    uint32_t tail = cache->tail;
+    for (;;) {
+        if (oldest == 0) {
+            return true; // nothing retained: the whole arena is free
+        }
+        uint32_t head = reliable_cache_slot(cache, depth, oldest)->offset;
+        if (reliable_cache_offset_in(cache->arena_size, false, head, tail, length) != UINT32_MAX) {
+            return true;
+        }
+        if (oldest > acked_through) {
+            return false; // the next eviction would take a sample nobody has acknowledged
+        }
+        // What reliable_cache_evict_oldest() would do next, without doing it.
+        if (oldest == cache->newest_seq_no) {
+            oldest = 0;
+            tail = 0;
+            continue;
+        }
+        oldest++;
+        while (oldest != 0 && !reliable_cache_slot_live(cache, depth, oldest)) {
+            if (oldest == cache->newest_seq_no) {
+                oldest = 0;
+                tail = 0;
+                break;
+            }
+            oldest++;
+        }
+    }
 }
 
 // "cache first, then flush" order tt_Client_call() already uses for its own single-slot cache.
@@ -2166,7 +2250,7 @@ static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHead
         return; // index[]/capacity/arena never set up (struct tt_ReliableCache's own doc comment) -
                 // nothing to cache into, same safe no-op every other clamp site below shares
     }
-    uint32_t length = (uint32_t)ROUNDUP((uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header);
+    uint32_t length = reliable_record_length(node, submessage_header);
 
     // Index room first, regardless of whether the bytes will fit below: this sample's own slot,
     // (seq_no - 1) % depth, is currently held by the sample exactly `depth` back, which KEEP_LAST
@@ -2264,6 +2348,54 @@ static void encode_and_send_heartbeat(struct tt_Node* node, struct tt_Publisher*
 // Whether this publish should carry a piggybacked Heartbeat (tt_Publisher.heartbeat_piggyback_every).
 // Only when it flushes anyway: a batching publisher leaves the send to node_flush(), and a
 // Heartbeat buried in a batch arrives no sooner than the batch does.
+// The zero-copy path, taken when the topic offers it, tx_buffer is empty (nothing batched to
+// coalesce with) and the message is big enough that a second one could not share the packet anyway -
+// i.e. batching has nothing to gain. True when it published, leaving the result in *result; false
+// when this publish must fall through to the staging copy path, having changed nothing. A reliable
+// or durable Publisher always falls through: it needs the encoded bytes at a known tx_buffer
+// location to retain, and this path publishes straight from the caller's own tt_Data. Split out of
+// tt_Publisher_publish() to keep its cognitive complexity under clang-tidy's threshold.
+static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data, uint32_t old_tx_tail,
+                                 tt_ret_t* result) {
+    if (pub->topic->data_encode_inplace == NULL || old_tx_tail != sizeof(struct tt_Header) ||
+        pub->reliable_cache != NULL) {
+        return false;
+    }
+    const uint8_t* body = NULL;
+    int32_t body_len = pub->topic->data_encode_inplace(data, &body);
+    uint32_t standalone_len = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) +
+                              sizeof(struct tt_DataHeader) + (body_len >= 0 ? (uint32_t)body_len : 0);
+    bool fills_packet =
+        standalone_len + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) > tt_MAX_BUFFER_LENGTH;
+    if (body_len >= 0 && (body_len % 4) == 0 && fills_packet) {
+        *result = publish_zerocopy(pub, body, (uint32_t)body_len);
+        return true;
+    }
+    return false; // declined, unaligned, or small enough to want batching
+}
+
+// 0 when the encoded sample at submessage_header may be cached, or its record size when caching it
+// would evict a sample nobody has acknowledged - which KEEP_ALL promises not to do. The count-based
+// refusal in tt_Publisher_publish() cannot answer this: it runs before anything is encoded, and it
+// is the arena rather than the index that a sample larger than the reserved record overflows.
+// Returning the size rather than setting it keeps this a question; the caller decides. Split out of
+// tt_Publisher_publish() to keep its cognitive complexity under clang-tidy's threshold, the same
+// reasoning check_and_cache_sample() below was split out for.
+static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, const struct tt_Node* node,
+                                              const struct tt_SubmessageHeader* submessage_header) {
+    if (!pub->keep_all || pub->reliable_cache == NULL || !any_peer_ack_matched(pub)) {
+        return 0; // KEEP_LAST may evict, an unretained Publisher has nothing to evict, and with no
+                  // matched Subscriber there is nobody whose acknowledgement could ever arrive
+    }
+    uint32_t record = reliable_record_length(node, submessage_header);
+    uint32_t min_ack = min_peer_ack_seq_no(pub);
+    if (reliable_cache_admits(pub->reliable_cache, reliable_cache_depth(pub->reliable_cache), record,
+                              min_ack > 0 ? min_ack - 1 : 0)) {
+        return 0;
+    }
+    return record;
+}
+
 // The encoded DATA submessage at submessage_header, checked and then retained. False (logged and
 // counted by submessage_fits_datagram()) when no datagram could ever carry it - checked before
 // caching, not only at end_encode(): a sample that can never be sent must not be retained either,
@@ -2343,18 +2475,9 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
     // bytes at a known tx_buffer location to save into reliable_cache - zero-copy publishes
     // straight from the caller's own tt_Data, nothing to retain for a later retransmit or backlog
     // delivery.
-    if (pub->topic->data_encode_inplace != NULL && old_tx_tail == sizeof(struct tt_Header) &&
-        pub->reliable_cache == NULL) {
-        const uint8_t* body = NULL;
-        int32_t body_len = pub->topic->data_encode_inplace(data, &body);
-        uint32_t standalone_len = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) +
-                                  sizeof(struct tt_DataHeader) + (body_len >= 0 ? (uint32_t)body_len : 0);
-        bool fills_packet =
-            standalone_len + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) > tt_MAX_BUFFER_LENGTH;
-        if (body_len >= 0 && (body_len % 4) == 0 && fills_packet) {
-            return publish_zerocopy(pub, body, (uint32_t)body_len);
-        }
-        // declined, unaligned, or small enough to want batching - use the staging copy path
+    tt_ret_t zerocopy_result = tt_RET_OK;
+    if (try_publish_zerocopy(pub, data, old_tx_tail, &zerocopy_result)) {
+        return zerocopy_result;
     }
 
     // Header and SubmessageHeader
@@ -2395,10 +2518,23 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         return tt_RET_PROTOCOL_ERROR;
     }
 
+    // The byte half of KEEP_ALL's promise, now that the encoded size is known (2026-09-25).
+    uint32_t refused_record = keep_all_refused_record_bytes(pub, node, submessage_header);
+    if (refused_record != 0) {
+        rollback(node, old_tx_tail);
+        pub->blocked_record_bytes = refused_record; // what keep_all_writable() asks about from now on
+        pub->writable_pending = true;
+        RSTAT_INC(publish_refused);
+        RSTAT_INC(publish_refused_bytes);
+        solicit_ack_throttled(pub); // same bounded-stall reasoning as the count-based refusal above
+        return tt_RET_WOULD_BLOCK;
+    }
+
     if (!check_and_cache_sample(node, pub, submessage_header)) {
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
     }
+    pub->blocked_record_bytes = 0; // this one was admitted; nothing outstanding to re-ask about
 
     // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
     // it for why immediate is the default now): mirrors tt_Client_call()'s own peer decision and
