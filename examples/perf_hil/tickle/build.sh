@@ -46,6 +46,18 @@ if [ "${TICKLE_RELIABLE_STATS:-0}" = "1" ]; then
     STATS_DEFINE="-Dtt_RELIABLE_STATS"
 fi
 
+# TICKLE_THREAD_UNSAFE=1 builds libtickle.a and the example with -Dtt_THREAD_SAFE=0, i.e. with the
+# locking compiled out entirely. It exists for one measurement: the M1 re-run showed core's locks
+# costing +250 ns a sample on the rig while TickLE Dev measured the same code at +12 ns on x86, and
+# neither the lock-pair cost (8-12 ns here) nor the acquisition count (~1.1 a sample) explains 250.
+# Flipping this flag against the same commit is the strongest A/B available - no checkout, no other
+# code difference - so it isolates whether the cost is the THREAD_SAFE path at all. Own prefix, for
+# the same reason as the flags below: it changes how libtickle.a itself is compiled.
+if [ "${TICKLE_THREAD_UNSAFE:-0}" = "1" ]; then
+    INSTALL_PREFIX="${INSTALL_PREFIX}_nothread"
+    STATS_DEFINE="${STATS_DEFINE:-} -Dtt_THREAD_SAFE=0"
+fi
+
 # TICKLE_DYNAMIC_RETRY picks the ACKNACK retry interval explicitly, in both directions: 1 builds with
 # tt_RELIABLE_RETRY_INTERVAL 0 (dynamic), 0 builds with the old fixed 1ms. Unset takes config.h's
 # default, which is dynamic since 2026-09-25 (the user's decision). It used to be that 0 and unset

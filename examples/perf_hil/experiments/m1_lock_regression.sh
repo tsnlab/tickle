@@ -21,7 +21,7 @@
 set -uo pipefail
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 PIN="taskset -c 1-3"; REPS=${REPS:-3}
-BASE=97e1a278; LOCKED=db0f8be3
+BASE=${BASE:-97e1a278}; LOCKED=${LOCKED:-db0f8be3}
 CYCLONE_LATENCY_CPU=230
 OUT=${OUT:-/tmp/m1_locks.txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }

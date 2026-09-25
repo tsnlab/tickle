@@ -1,0 +1,40 @@
+=== M1 lock regression, 2026-09-25T23:59:58+09:00 ===
+baseline=97e1a278  locked=1765dc21  (CycloneDDS latency CPU reference: 230)
+
+--- building 97e1a278 ---
+  locks in core: 0
+BASE1 reliable_throughput_p1 rep1 | sent=862521 write_fail=0 send_mbps=104.883 cpu_s_per_Msample=5.804 peak_rss_kb=1920 
+BASE1 reliable_throughput_p1 rep2 | sent=872088 write_fail=0 send_mbps=106.046 cpu_s_per_Msample=5.740 peak_rss_kb=1924 
+BASE1 reliable_throughput_p1 rep3 | sent=866551 write_fail=0 send_mbps=105.373 cpu_s_per_Msample=5.776 peak_rss_kb=1924 
+BASE1 reliable_throughput_p2 rep1 | sent=450788 write_fail=0 send_mbps=931.869 cpu_s_per_Msample=7.129 peak_rss_kb=2248 
+BASE1 reliable_throughput_p2 rep2 | sent=450736 write_fail=0 send_mbps=931.761 cpu_s_per_Msample=7.169 peak_rss_kb=2248 
+BASE1 reliable_throughput_p2 rep3 | sent=450761 write_fail=0 send_mbps=931.813 cpu_s_per_Msample=7.127 peak_rss_kb=2244 
+BASE1 reliable_latency_p1 rep1 | sent=100 recv=100 rtt_avg_ms=0.214 rtt_max_ms=0.462 cpu_s_per_Msample=157.420 peak_rss_kb=1660 
+BASE1 reliable_latency_p1 rep2 | sent=100 recv=100 rtt_avg_ms=0.211 rtt_max_ms=0.345 cpu_s_per_Msample=157.930 peak_rss_kb=1664 
+BASE1 reliable_latency_p1 rep3 | sent=100 recv=100 rtt_avg_ms=0.214 rtt_max_ms=0.467 cpu_s_per_Msample=160.460 peak_rss_kb=1668 
+
+--- building 1765dc21 ---
+  locks in core: 53
+LOCK  reliable_throughput_p1 rep1 | sent=833745 write_fail=0 send_mbps=101.383 cpu_s_per_Msample=6.004 peak_rss_kb=1936 
+LOCK  reliable_throughput_p1 rep2 | sent=825834 write_fail=0 send_mbps=100.421 cpu_s_per_Msample=6.062 peak_rss_kb=1936 
+LOCK  reliable_throughput_p1 rep3 | sent=833858 write_fail=0 send_mbps=101.397 cpu_s_per_Msample=6.004 peak_rss_kb=1920 
+LOCK  reliable_throughput_p2 rep1 | sent=450713 write_fail=0 send_mbps=931.714 cpu_s_per_Msample=7.407 peak_rss_kb=2248 
+LOCK  reliable_throughput_p2 rep2 | sent=450763 write_fail=0 send_mbps=931.817 cpu_s_per_Msample=7.356 peak_rss_kb=2248 
+LOCK  reliable_throughput_p2 rep3 | sent=450722 write_fail=0 send_mbps=931.733 cpu_s_per_Msample=7.404 peak_rss_kb=2248 
+LOCK  reliable_latency_p1 rep1 | sent=100 recv=100 rtt_avg_ms=0.213 rtt_max_ms=0.481 cpu_s_per_Msample=138.870 peak_rss_kb=1688 
+LOCK  reliable_latency_p1 rep2 | sent=22 recv=22 rtt_avg_ms=0.219 rtt_max_ms=0.345 cpu_s_per_Msample=513.636 peak_rss_kb=1684 
+LOCK  reliable_latency_p1 rep3 | sent=100 recv=100 rtt_avg_ms=0.212 rtt_max_ms=0.321 cpu_s_per_Msample=132.730 peak_rss_kb=1688 
+
+--- building 97e1a278 ---
+  locks in core: 0
+BASE2 reliable_throughput_p1 rep1 | sent=869338 write_fail=0 send_mbps=105.712 cpu_s_per_Msample=5.758 peak_rss_kb=1912 
+BASE2 reliable_throughput_p1 rep2 | sent=859127 write_fail=0 send_mbps=104.470 cpu_s_per_Msample=5.827 peak_rss_kb=1924 
+BASE2 reliable_throughput_p1 rep3 | sent=868754 write_fail=0 send_mbps=105.640 cpu_s_per_Msample=5.762 peak_rss_kb=1916 
+BASE2 reliable_throughput_p2 rep1 | sent=450718 write_fail=0 send_mbps=931.724 cpu_s_per_Msample=7.130 peak_rss_kb=2248 
+BASE2 reliable_throughput_p2 rep2 | sent=450771 write_fail=0 send_mbps=931.834 cpu_s_per_Msample=7.137 peak_rss_kb=2248 
+BASE2 reliable_throughput_p2 rep3 | sent=450771 write_fail=0 send_mbps=931.834 cpu_s_per_Msample=7.171 peak_rss_kb=2248 
+BASE2 reliable_latency_p1 rep1 | sent=100 recv=100 rtt_avg_ms=0.210 rtt_max_ms=0.322 cpu_s_per_Msample=162.080 peak_rss_kb=1680 
+BASE2 reliable_latency_p1 rep2 | sent=100 recv=100 rtt_avg_ms=0.216 rtt_max_ms=0.527 cpu_s_per_Msample=158.060 peak_rss_kb=1676 
+BASE2 reliable_latency_p1 rep3 | sent=100 recv=100 rtt_avg_ms=0.211 rtt_max_ms=0.357 cpu_s_per_Msample=135.300 peak_rss_kb=1676 
+
+=== done ===
