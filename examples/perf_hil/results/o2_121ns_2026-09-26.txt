@@ -1,0 +1,5 @@
+=== 121ns falsification at -O2, 2026-09-26 ===
+identity: peek_scheduler calls A=0 B=0 (optimised), retry_interval_cfg_ns=1000000 both arms
+A 97e1a278 release/fixed/nolock  5.230 5.242 5.242  mean 5.2380
+B current  release/fixed/nolock  5.227 5.225 5.244  mean 5.2320
+code cost -6 ns, against +121 ns at -O0
