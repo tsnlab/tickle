@@ -77,6 +77,13 @@ INFORMATIONAL = ("utime_s", "stime_s")
 # and can never read 1.0 (TickLE Dev's correction - I had named the wrong field for this job). A
 # publisher also sends heartbeats, so a correct single datagram reads slightly above 1.0: the gate is
 # a band, not an equality.
+# The history policy each side actually ran, as opposed to the one the cell asked for. A cell whose
+# whole premise is "all three made the same promise" has to check that from the output, because the
+# alternative is comparing KEEP_LAST against KEEP_ALL and calling it like-for-like - which is the
+# defect that made the first Q0 baseline unrunnable (f1311d5a), caught by reading the harnesses
+# rather than by any measurement.
+POLICY = ("keep_all", "keep_last_depth")
+
 GATE_METRIC = "wire_role_packets_per_sample"
 GATE_ROLE = "client"
 ONE_DATAGRAM_MAX = 1.5   # below this is one datagram per sample
@@ -106,7 +113,8 @@ def parse(path):
         if not m:
             continue
         key = (int(m["num"]), m["shape"], m["payload"], m["qos"], m["net"].strip())
-        fw = cells.setdefault(key, OrderedDict()).setdefault(m["fw"], {"void": [], "vals": {}})
+        fw = cells.setdefault(key, OrderedDict()).setdefault(
+            m["fw"], {"void": [], "vals": {}, "policy": {}})
         if not m["verdict"].startswith("ok"):
             # fail:samples is a fact about the cell (nothing was delivered, so every per-sample
             # figure is 0 by construction), not about the instrument. Both void the cell, and the
@@ -118,6 +126,8 @@ def parse(path):
             role_m = re.match(r"role=(\w+)", chunk)
             role = role_m.group(1) if role_m else "client"
             for k, v in re.findall(r"([A-Za-z_]\w*)=([-\d.]+)", chunk):
+                if k in POLICY:
+                    fw["policy"][k] = v
                 if k in DIRECTION or k in INFORMATIONAL or k in ("sample_bytes", GATE_METRIC):
                     try:
                         fw["vals"].setdefault(f"{role}.{k}", []).append(float(v))
@@ -137,8 +147,58 @@ def fmt(vals):
     return f(mean) if lo == hi else f"{f(mean)}[{f(lo)}..{f(hi)}]"
 
 
-def boundary_verdict(payload, net, per_fw):
-    """The section-9 gate. Only meaningful at N0, where no tc is shaping anything."""
+def policy_verdict(per_fw):
+    """VOID a cell whose frameworks did not run the same history policy.
+
+    Not the same check as the boundary gate, and the first version of it was wrong in a way its own
+    control caught: "the vendor did not report keep_all" is not grounds to void, because at this
+    campaign's SHA both DDS reliable_throughput harnesses are hard-coded KEEP_ALL with no option -
+    verified by reading them, which is how the unrunnable first Q0 baseline was found (f1311d5a).
+    A silent vendor therefore *means* KEEP_ALL, and that is exactly what a Q0 cell wants.
+
+    So the mismatch is specifically: TickLE ran KEEP_LAST (keep_all=0) while a vendor reported
+    nothing and is therefore KEEP_ALL. That is cell 9, whose premise was "the default configuration
+    users get" and which compares two different promises. Once both harnesses report keep_all and
+    keep_last_depth (TickLE Dev, 5fddc985), the reported values are compared directly instead and
+    this source-derived assumption stops being load-bearing.
+    """
+    seen = {fw: d["policy"].get("keep_all") for fw, d in per_fw.items() if d["vals"]}
+    if "tickle" not in seen or seen.get("tickle") is None:
+        return None
+    reported = {fw: v for fw, v in seen.items() if v is not None}
+    if len(reported) > 1 and len(set(reported.values())) > 1:
+        return [", ".join(f"{fw} keep_all={v}" for fw, v in reported.items()) + " - not the same policy"]
+    if seen["tickle"] == "0":
+        silent = [fw for fw, v in seen.items() if fw != "tickle" and v is None]
+        if silent:
+            return [f"tickle ran KEEP_LAST (keep_all=0) while {', '.join(silent)} report no policy "
+                    f"and are hard-coded KEEP_ALL at this SHA - two different promises"]
+    return None
+
+
+def boundary_verdict(shape, payload, net, per_fw):
+    """The section-9 gate. Only meaningful at N0, where no tc is shaping anything, and only on the
+    throughput cells.
+
+    It does NOT apply to the latency cells, and applying it there VOIDed all three of them - the
+    whole latency metric, one of the five the campaign exists to answer - for a reason that is not
+    real. A latency cell sends 100 samples, so a per-sample packet count is dominated by fixed
+    discovery traffic instead of by datagram splitting, which is the only thing this gate is about:
+
+        c10, a 76-byte sample that nothing can possibly fragment
+          tickle      sent=100  wire_tx_packets=112  ->  1.12 per sample
+          cyclonedds  sent=100  wire_tx_packets=225  ->  2.25
+          fastdds     sent=100  wire_tx_packets=228  ->  2.28
+
+        c1, the same 76-byte sample in a throughput cell
+          cyclonedds  sent=741843  wire_tx_packets=741888  ->  1.000
+
+    The same fixed overhead amortises to nothing over 741k samples and to 125 extra packets over
+    100. There is no n=100 measurement that would substitute, so the latency cells are simply not
+    gated; their payload boundary is checked by the throughput cell at the same payload.
+    """
+    if shape != "T":
+        return None
     if net != "none":
         return None
     bad = []
@@ -191,8 +251,15 @@ def main(path):
     for key, per_fw in cells.items():
         num, shape, payload, qos, net = key
         print(f"\n== c{num} {shape} {payload} {qos} [{net}]")
-        gate = boundary_verdict(payload, net, per_fw)
-        if gate:
+        gate = boundary_verdict(shape, payload, net, per_fw)
+        pol = policy_verdict(per_fw)
+        if pol:
+            print(f"   POLICY MISMATCH: {'; '.join(pol)}")
+            print("   -> cross-vendor comparison is VOID: the cell's premise is that all three made")
+            print("      the same promise, and the output does not show that they did.")
+        void_reason = "boundary gate" if gate else ("policy mismatch" if pol else None)
+        gate = gate or pol
+        if gate and void_reason == "boundary gate":
             print(f"   BOUNDARY GATE FAILED: {'; '.join(gate)}")
             print("   -> this payload's cross-vendor comparison is VOID (section 9). Numbers below are")
             print("      printed anyway: the observed packet count is how the right size is computed.")
@@ -216,8 +283,8 @@ def main(path):
                       f"{2 - len(vend)} vendor(s) missing)")
                 continue
             v, why = verdict(m.split(".", 1)[1], t, vend)
-            if gate:
-                v, why = "VOID", "boundary gate"
+            if void_reason:
+                v, why = "VOID", void_reason
             cols = "  ".join(f"{name[:6]} {fmt(vals)}" for name, vals in vend.items())
             print(f"   {m:<24} tickle {fmt(t):<22} {cols:<44} {v}{'  (' + why + ')' if why else ''}")
             wins += v == "WIN"; draws += v in ("DRAW", "TIE"); losses += v == "LOSE"; voids += v == "VOID"
