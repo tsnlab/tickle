@@ -1080,6 +1080,17 @@ nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero
     excludes the race. That inverts the usual reason to defer: the fairness rule argues *for* this
     change rather than against it.
 
+    **The failure mode is narrower than first written, and the loop's own structure is why**
+    (TickLE Dev). The polling loop at `server.cpp:147` calls `nanosleep()` on every iteration
+    (`:149`), which is an opaque external call, so the compiler cannot keep `g_loss_detected` in a
+    register across it. The hoisted-read failure is therefore ruled out by the loop's structure
+    independently of `volatile` - which also means `volatile` is buying CycloneDDS less here than the
+    table above implies. What remains is the formal C++ data race only: no happens-before between the
+    listener thread's store and `main`'s load. On this ARM64 target that can at most delay visibility
+    by one poll period; it cannot lose the flag. So the risk is lower than "never observed" alone
+    would suggest, and the distinctive signature below is kept in case that reading is wrong rather
+    than because it is expected.
+
     It stays low priority because it has never been observed to fire: this scenario has produced a
     `loss_detected` reading on every run of every session, and the 2026-09-25 identity run measured it
     identical across both arms. Worth doing when something else touches that file.
