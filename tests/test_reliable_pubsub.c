@@ -2405,7 +2405,7 @@ static void test_keep_all_refuses_when_bytes_bind_before_count(void) {
 // Publishes `count` samples, the one that becomes seq_no N carrying N in every payload byte.
 static void publish_big_samples(struct tt_Publisher* pub, int count) {
     for (int i = 0; i < count; i++) {
-        uint32_t value = (uint32_t)pub->seq_no + 1; // what this publish's own seq_no will be
+        uint32_t value = pub->seq_no + 1; // what this publish's own seq_no will be (already uint32_t)
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(pub, (struct tt_Data*)&value));
     }
 }
