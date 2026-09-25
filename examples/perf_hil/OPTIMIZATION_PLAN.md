@@ -66,6 +66,57 @@ the MTU. TickLE Dev flagged rev 1 for using 1442 B - tuned to TickLE's ceiling -
 size, which would have been exactly that unearned claim. P2 is the like-for-like large size; P3 is
 the boundary case the user asked for.
 
+## 3a. What the rig measured, and what it says about the sizes above (2026-09-25)
+
+The §3 framing figures above are spec arithmetic. The first campaign session measured them, and
+§7's gate did the job it exists for: **P2 is mis-sized**. FastDDS sends 2.000 datagrams per sample
+at P2, where the design says all three fit one, so every P2 cell in that session is VOID.
+
+Per-sample overhead is *not* constant across sizes, so a one-point correction would have been
+another guess. The structure is `overhead = base framing + ~42 B per extra IP fragment` - a second
+fragment carries Ethernet+IP only, not UDP and the RTPS/TickLE headers again. Base framing, taken
+from each framework's P1 cell, where packets per sample is 1.000:
+
+| | TickLE | CycloneDDS | FastDDS |
+|---|---|---|---|
+| base framing, measured | **70.6 B** | **104.1 B** | **209.6 B** |
+| §3's assumption | 28 B | 60-76 B | 60-76 B |
+| largest sample in one frame | 1443.4 B | 1409.9 B | **1304.4 B** |
+
+The per-fragment cost falls out independently in all three (TickLE P4 +42.4, CycloneDDS P3/P4
++44.1/+44.8, FastDDS P2/P3 +41.9, P4 at 2.979 pkt +88.8). The resulting rule
+`sample + base framing <= 1514` - 1500 MTU + 14 B Ethernet, since the interface counters include L2
+- then predicts **all twelve observed packet counts with zero mismatches**, which is why this is a
+model rather than an extrapolation.
+
+Note what the measured numbers are *not*: TickLE's 70.6 B is not a refutation of the 28 B DATA
+framing, and FastDDS's 209.6 B is not RTPS framing. Both include Ethernet+IP+UDP (42 B) and each
+implementation's own per-sample control traffic. 70.6 - 42 = 28.6 B is TickLE's DATA framing,
+matching `DESIGN.md` exactly. FastDDS's 167.6 B above L4 is the figure that is 2-3x the RTPS
+arithmetic in §3, and worth its own look - it is most of why FastDDS loses the wire-bytes metric.
+
+**Consequences, both deferred to the next session rather than patched mid-campaign:**
+
+- A fair P2 needs `sample <= 1304`, so `uint8[N]` with **N <= 1292** instead of 1376. N = 1280
+  (sample 1292 B) leaves 12 B of margin. P2's cells are not to be carried into `COMPARISON.MD` from
+  the session that used 1376.
+- **P3 is correct but has 3.4 B of headroom.** At 1440 B TickLE's frame is 1510.6 against 1514. It
+  works, and for exactly the intended reason - 1440 sits between CycloneDDS's 1409.9 and TickLE's
+  1443.4 - but any future change to TickLE's framing flips that cell silently, and it would read as
+  a TickLE regression in packet count rather than as a test that lost its premise. Either move P3
+  to ~1400, or have `check_bench_shapes.sh` assert the computed frame size against these
+  per-framework limits so the premise is gated rather than re-measured.
+
+**One metric was withdrawn, after seeing data** (`3d6550f4`). `utime_s` and `stime_s` were verdict
+metrics; they cannot be. Every throughput cell runs for a fixed *duration*, so a framework that
+sends more samples necessarily burns more CPU seconds. At c1 that inverts the ranking outright -
+FastDDS beats TickLE on absolute `stime_s` while doing a third of the work in the same five
+seconds. They are still reported per cell, marked not-comparable; `cpu_s_per_Msample` and
+`cpu_s_per_MB` are the normalised forms and remain the verdict metrics. The change is post-hoc and
+removes a TickLE LOSE, which is the direction to be suspicious of - the reason to accept it is that
+it does not depend on which way it fell: had TickLE been the slow one, the same metric would have
+handed it a free WIN by the same mechanism.
+
 **P4 needs a second TickLE build** with `-Dtt_MAX_BUFFER_LENGTH=4096`, so a 2828 B datagram leaves
 the node and the kernel IP-fragments it. The DDS vendors need no such change: they fragment at the
 protocol level (`DATA_FRAG`) automatically. **That is a genuine mechanism difference, not a
