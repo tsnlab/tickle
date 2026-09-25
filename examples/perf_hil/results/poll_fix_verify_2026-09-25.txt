@@ -1,0 +1,40 @@
+=== poll fix verification, 2026-09-25T18:56:49+09:00 ===
+before=9a230a1b (no poll change)   after=6f01de6f (poll change + per-entry clock fix)
+
+--- building 9a230a1b ---
+  identity: HEAD=9a230a1b (wanted 9a230a1b)
+
+BEFORE c1  rep1  | sent=872271 send_mbps=106.068 
+BEFORE c1  rep2  | sent=878484 send_mbps=106.824 
+BEFORE c1  rep3  | sent=873889 send_mbps=106.265 
+BEFORE c10 rep1 | sent=5 recv=5 rtt_avg_ms=0.230 rtt_max_ms=0.300 
+BEFORE c10 rep2 | sent=5 recv=5 rtt_avg_ms=0.236 rtt_max_ms=0.300 
+BEFORE c10 rep3 | sent=5 recv=5 rtt_avg_ms=0.237 rtt_max_ms=0.312 
+BEFORE c10 rep4 | sent=5 recv=5 rtt_avg_ms=0.241 rtt_max_ms=0.314 
+BEFORE c10 rep5 | sent=5 recv=5 rtt_avg_ms=0.229 rtt_max_ms=0.313 
+BEFORE c10 rep6 | sent=5 recv=5 rtt_avg_ms=0.246 rtt_max_ms=0.327 
+BEFORE c10 rep7 | sent=5 recv=5 rtt_avg_ms=0.238 rtt_max_ms=0.339 
+BEFORE c10 rep8 | sent=5 recv=5 rtt_avg_ms=0.227 rtt_max_ms=0.296 
+BEFORE c10 rep9 | sent=5 recv=5 rtt_avg_ms=0.239 rtt_max_ms=0.314 
+BEFORE c10 rep10 | sent=5 recv=5 rtt_avg_ms=0.236 rtt_max_ms=0.295 
+BEFORE c10 strace| rtt_avg_ms=0.340 wire_rx_packets=13 ppoll=38505
+
+--- building 6f01de6f ---
+  identity: HEAD=6f01de6f (wanted 6f01de6f)
+
+AFTER  c1  rep1  | sent=867242 send_mbps=105.457 
+AFTER  c1  rep2  | sent=872645 send_mbps=106.114 
+AFTER  c1  rep3  | sent=871525 send_mbps=105.977 
+AFTER  c10 rep1 | sent=5 recv=5 rtt_avg_ms=0.254 rtt_max_ms=0.353 
+AFTER  c10 rep2 | sent=5 recv=5 rtt_avg_ms=0.245 rtt_max_ms=0.309 
+AFTER  c10 rep3 | sent=5 recv=5 rtt_avg_ms=0.252 rtt_max_ms=0.330 
+AFTER  c10 rep4 | sent=5 recv=5 rtt_avg_ms=0.244 rtt_max_ms=0.337 
+AFTER  c10 rep5 | sent=5 recv=5 rtt_avg_ms=0.775 rtt_max_ms=3.029 
+AFTER  c10 rep6 | sent=5 recv=5 rtt_avg_ms=0.235 rtt_max_ms=0.307 
+AFTER  c10 rep7 | sent=5 recv=5 rtt_avg_ms=0.246 rtt_max_ms=0.316 
+AFTER  c10 rep8 | sent=5 recv=5 rtt_avg_ms=0.242 rtt_max_ms=0.301 
+AFTER  c10 rep9 | sent=5 recv=5 rtt_avg_ms=0.253 rtt_max_ms=0.329 
+AFTER  c10 rep10 | sent=5 recv=5 rtt_avg_ms=0.247 rtt_max_ms=0.307 
+AFTER  c10 strace| rtt_avg_ms=0.359 wire_rx_packets=13 ppoll=38
+
+=== done ===
