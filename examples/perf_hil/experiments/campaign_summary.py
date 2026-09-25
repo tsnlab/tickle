@@ -83,6 +83,7 @@ INFORMATIONAL = ("utime_s", "stime_s")
 # defect that made the first Q0 baseline unrunnable (f1311d5a), caught by reading the harnesses
 # rather than by any measurement.
 POLICY = ("keep_all", "keep_last_depth")
+BEST_EFFORT_QOS = "Q1"
 
 GATE_METRIC = "wire_role_packets_per_sample"
 GATE_ROLE = "client"
@@ -114,7 +115,7 @@ def parse(path):
             continue
         key = (int(m["num"]), m["shape"], m["payload"], m["qos"], m["net"].strip())
         fw = cells.setdefault(key, OrderedDict()).setdefault(
-            m["fw"], {"void": [], "vals": {}, "policy": {}})
+            m["fw"], {"void": [], "vals": {}, "policy": {}, "delivery": {}})
         if not m["verdict"].startswith("ok"):
             # fail:samples is a fact about the cell (nothing was delivered, so every per-sample
             # figure is 0 by construction), not about the instrument. Both void the cell, and the
@@ -126,6 +127,8 @@ def parse(path):
             role_m = re.match(r"role=(\w+)", chunk)
             role = role_m.group(1) if role_m else "client"
             for k, v in re.findall(r"([A-Za-z_]\w*)=([-\d.]+)", chunk):
+                if k in ("sent", "recv"):
+                    fw["delivery"][k] = float(v)
                 if k in POLICY:
                     fw["policy"][k] = v
                 if k in DIRECTION or k in INFORMATIONAL or k in ("sample_bytes", GATE_METRIC):
@@ -145,6 +148,35 @@ def fmt(vals):
     lo, hi, mean = rng(vals)
     f = (lambda x: f"{x:.0f}") if abs(hi) >= 1000 else (lambda x: f"{x:.3g}")
     return f(mean) if lo == hi else f"{f(mean)}[{f(lo)}..{f(hi)}]"
+
+
+def delivery_verdict(qos, per_fw):
+    """VOID a cell where any framework's server did not receive everything its client sent.
+
+    loss_pct does not catch this. At c6 all three frameworks reported loss_pct=0.0 while FastDDS had
+    delivered 1641 of 4987 samples - 67% missing - and TickLE 13802 of 14002. loss_pct measures gaps
+    between the sequence numbers that *arrived*; samples that never arrived at all, because the
+    server stopped before them, leave no gap to count. A metric reading a clean zero on both sides
+    of a 67%-vs-1.4% difference is worse than no metric, because it reads as a TIE.
+
+    All three servers capped themselves at -d + 15 s absolute (TickLE Dev, fixed in 0da3cad5 for all
+    three at once), so this is a harness truncation rather than a middleware property, and the cell
+    cannot be compared until it is re-run.
+
+    It does NOT apply to the BEST_EFFORT cell, where sent != recv is the whole point of the QoS
+    rather than a fault - the first version of this check voided c8 for delivering exactly what
+    BEST_EFFORT promises. Same over-reach as the policy rule's first version, caught the same way,
+    by running it over cells whose answers were already known.
+    """
+    if qos == BEST_EFFORT_QOS:
+        return None                       # samples are meant to be droppable here
+    short = []
+    for fw, d in per_fw.items():
+        sent, recv = d["delivery"].get("sent"), d["delivery"].get("recv")
+        if sent is None or recv is None or sent == recv:
+            continue
+        short.append(f"{fw} delivered {recv:.0f} of {sent:.0f} ({(sent - recv) / sent * 100:.1f}% missing)")
+    return short or None
 
 
 def policy_verdict(per_fw):
@@ -253,12 +285,19 @@ def main(path):
         print(f"\n== c{num} {shape} {payload} {qos} [{net}]")
         gate = boundary_verdict(shape, payload, net, per_fw)
         pol = policy_verdict(per_fw)
+        deliv = delivery_verdict(qos, per_fw)
+        if deliv:
+            print(f"   INCOMPLETE DELIVERY: {'; '.join(deliv)}")
+            print("   -> cross-vendor comparison is VOID: loss_pct reads 0 for a server that stopped")
+            print("      early, so every per-sample figure here is over a truncated run.")
         if pol:
             print(f"   POLICY MISMATCH: {'; '.join(pol)}")
             print("   -> cross-vendor comparison is VOID: the cell's premise is that all three made")
             print("      the same promise, and the output does not show that they did.")
-        void_reason = "boundary gate" if gate else ("policy mismatch" if pol else None)
-        gate = gate or pol
+        void_reason = ("boundary gate" if gate else
+                       "incomplete delivery" if deliv else
+                       "policy mismatch" if pol else None)
+        gate = gate or deliv or pol
         if gate and void_reason == "boundary gate":
             print(f"   BOUNDARY GATE FAILED: {'; '.join(gate)}")
             print("   -> this payload's cross-vendor comparison is VOID (section 9). Numbers below are")

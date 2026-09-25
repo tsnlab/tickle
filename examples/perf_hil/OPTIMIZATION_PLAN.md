@@ -292,21 +292,42 @@ ACKNACK against discovery), which step 6 will want - not something to run 108 ti
 
 ## 9a. Optimisation targets from the 2026-09-25 campaign
 
-108/108 runs, `instrument=ok` on all 189 RESULT lines. WIN 65, DRAW/TIE 10, LOSE 13, VOID 20. Raw
+108/108 runs, `instrument=ok` on all 189 RESULT lines. WIN 62, DRAW/TIE 9, LOSE 7, VOID 30. Raw
 output and computed verdicts are in `results/campaign_2026-09-25_b9fad3c1*.txt`.
 
-The 13 LOSEs are not scattered. They fall into three targets, and each gets a named hypothesis and
-the measurement that would **disprove** it, before any code changes - section 9's rule.
+The LOSEs are not scattered. They fall into three targets, and each gets a named hypothesis and the
+measurement that would **disprove** it, before any code changes - section 9's rule.
 
-### A. The retransmission storm at P4 under loss (c6, 6 of the 13)
+### A. The retransmission storm at P4 under loss (target A; c6 itself is VOID)
 
-| | wire B/sample | amplification | packets/sample |
+**c6 as a campaign cell cannot be compared, and `loss_pct` did not say so.** All three servers capped
+themselves at `-d + 15` s absolute, and at c6 that truncated two of the three:
+
+| | sent | recv | missing | reported loss_pct |
+|---|---|---|---|---|
+| TickLE | 14,002 | 13,802 | 1.4% | **0.0** |
+| CycloneDDS | 2,807 | 2,807 | 0% | 0.0 |
+| FastDDS | 4,987 | 1,641 | **67%** | **0.0** |
+
+`loss_pct` measures gaps between the sequence numbers that *arrived*; samples that never arrived
+at all leave no gap to count, so it reads a clean zero across a 67%-vs-1.4% difference and would
+have been scored a TIE. The summariser now voids any RELIABLE cell with `sent != recv` (not the
+BEST_EFFORT cell, where dropping is the promise). TickLE Dev fixed the cap in all three frameworks
+at once (`0da3cad5`) - fixing only TickLE's would have handed it samples the other two were still
+cut off from.
+
+**The storm survives that, because it does not rest on c6.** It rests on arm B of
+`experiments/c6_server_lifetime_check.sh`, where the server was given `-d 60`, `peer_acks_end=1`
+throughout, and the client still spent **183 packets per 2800-byte sample**:
+
+| arm | peer_acks_end | packets/sample | amplification |
 |---|---|---|---|
-| **TickLE** | **150,065** | **53.6x** | **103.3** |
-| CycloneDDS | 3,235 | 1.2x | 2.73 |
-| FastDDS | 3,132 | 1.1x | 2.28 |
+| A control, no loss, `-d 60` | 1 | 2.01 | 1.0x |
+| **B, 5% loss, `-d 60`** | **1** | **183.4** | **95.4x** |
+| C, 5% loss, `-d 5` (campaign) | 0 | 149.3 | 77.6x |
 
-A 2-fragment datagram at 5% per-packet loss is lost 1-(1-0.05)^2 = 9.75% of the time, so the ideal
+Arm A reproduces c4 exactly (211,686 against 211,690 samples), so the longer lifetime changes
+nothing by itself. A 2-fragment datagram at 5% per-packet loss is lost 1-(1-0.05)^2 = 9.75% of the time, so the ideal
 cost is 1/(1-0.0975) = 1.11 transmissions, i.e. **~2.2 packets per sample**. TickLE spends 103.
 
 **Two things were excluded before this became a target**, because each would have made it a
@@ -315,13 +336,9 @@ measurement artefact rather than a finding:
 - *Does `/proc/net/dev` count packets netem drops?* If it did, every N1 cell would be inflated.
   `experiments/netem_counter_check.sh`, two arms: no netem `tx_packets +100` (the control - the
   counter can see packets), `loss 100%` `tx_packets +0`. The counter reflects the wire.
-- *Did the server exit mid-drain, leaving the client retransmitting to a dead peer?* c6 was the only
-  cell of 108 with `sent != recv` and `peer_acks_end=0`, and `server.c` caps itself at `-d + 15` =
-  20 s while c6 needs >= 16.8 s of wire time. `experiments/c6_server_lifetime_check.sh`, three arms:
-  a no-loss control at `-d 60` reproduces c4 exactly (211,686 vs 211,690 samples, 2.01 pkt/sample),
-  so the longer lifetime changes nothing by itself; and **at `-d 60` under loss the peer stays alive
-  (`peer_acks_end=1`) and the amplification is 95.4x, 183 packets per sample.** The storm is not the
-  dead peer.
+- *Did the server exit mid-drain, leaving the client retransmitting to a dead peer?* That is arm B
+  above, and the answer is no - the peer stayed alive and the amplification got worse, not better.
+  The truncation is real and separate: it is what makes c6 itself void.
 
 **Hypothesis A1 - the retransmit is window-wide rather than gap-wide.** A NACK causes the whole
 unacked window to be resent instead of only the missing sequence numbers. At depth 2048 and 2
@@ -338,12 +355,13 @@ multiple of the ~1400 samples that 9.75% loss over 14,002 samples implies - both
 cost is somewhere else entirely. If A2 holds, raising `tt_RELIABLE_BITMAP_BITS` to cover the window
 should cut the amplification; if A1 holds, it will not move.
 
-**What must not be read off this cell yet:** TickLE still delivers 5x the samples at c6 (62.7 Mbps
-against 12.0 and 13.8), and that win is real on a 1 Gbps link with bandwidth to waste. On
+**What must not be read off this cell:** c6's throughput figures are over truncated runs for TickLE
+and FastDDS, so the 5x sample lead there is not a result. What is one, from arm B: even with a live
+peer and complete delivery, the cost of that throughput is 95x the wire bytes. On
 10Base-T1S at 10 Mbps, 2.10 GB is 28 minutes of wire time. The throughput win and the bandwidth loss
 are the same behaviour seen from two sides, and the target platform is the one where it is a loss.
 
-### B. A fixed-rate poll in the latency path (c10, c11, c12, 6 of the 13)
+### B. A fixed-rate poll in the latency path (c10, c11, c12, 6 of the 7 LOSEs)
 
 | | stime_s per run | stime per sample | rtt_avg_ms |
 |---|---|---|---|
@@ -367,7 +385,7 @@ the 100 samples, B1 is wrong and the cost is per-sample work in the send/receive
 (0.204 against 0.358 and 0.284). A tight poll buys that. The question for section 7 is whether the
 same RTT survives a poll interval chosen for the target platform, not whether to keep the latency.
 
-### C. Memory at P4 (c4, 1 of the 13) - already modelled
+### C. Memory at P4 (c4, the remaining LOSE) - already modelled
 
 `peak_rss_kb` = C + reliable_depth x record_bytes, with C = 1720/1727/1727/1733 KB across the four
 shapes - a 13 KB spread against a 5464 KB range, so the retention window is the whole story. At P4
@@ -391,9 +409,9 @@ ones. **Disproof:** if c4's memory advantage at depth 1024 comes with any increa
 - **The 20 VOIDs**: c2 (FastDDS splits at the old P2 of 1388 B) and c9 (TickLE ran KEEP_LAST against
   two vendors hard-coded to KEEP_ALL). Both are fixed for the next session by the re-sized P2/P3
   (1957a4b1) and `-K` on both DDS harnesses (5fddc985), not by optimising anything.
-- **The server's `-d + 15` cap**, which is a real harness defect - it explains c6's
-  `peer_acks_end=0` and its 200 undelivered samples and nothing else - but it is harness work, not
-  a TickLE optimisation.
+- **The server's `-d + 15` cap**, now fixed in all three frameworks (`0da3cad5`): an absolute cap
+  until the first sample arrives, then an idle cap measured from the last one. It is harness work,
+  not a TickLE optimisation, and c6 has to be re-run before it can be compared at all.
 
 ## 10. Sequence
 
