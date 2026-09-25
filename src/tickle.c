@@ -3795,8 +3795,14 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
 // maybe_arm_acknack_retry() so the first retry and every later one use the same interval.
 // The configured interval: tt_RELIABLE_DEADLINE when set, else tt_RELIABLE_RETRY_INTERVAL - which
 // may be 0, meaning dynamic.
+// Chosen by the preprocessor rather than a conditional expression: with the dynamic default both
+// macros are 0, and `0 != 0 ? 0 : 0` is a conditional with identical branches.
 static uint64_t reliable_retry_configured(void) {
-    return tt_RELIABLE_DEADLINE != 0 ? (uint64_t)tt_RELIABLE_DEADLINE : (uint64_t)tt_RELIABLE_RETRY_INTERVAL;
+#if tt_RELIABLE_DEADLINE != 0
+    return (uint64_t)tt_RELIABLE_DEADLINE;
+#else
+    return (uint64_t)tt_RELIABLE_RETRY_INTERVAL;
+#endif
 }
 
 // One proxy's interval, given the configured value. A non-zero configured value is the caller's

@@ -79,10 +79,16 @@
 // case for it: at 250us recoveries the fixed 1ms barely fires (4% of ACKNACKs were timer-driven),
 // while at the 2-4ms recoveries of a collapsing link it fired about three times per recovery, and
 // every firing re-requested samples already in flight - 92% of ACKNACKs there were timer-driven.
-// The shipped default stays at 1ms until a rig run shows dynamic does not make the healthy case
-// worse; see the three constants below for how the dynamic value is bounded.
+// See the three constants below for how the dynamic value is bounded.
+//
+// Dynamic is the shipped default since 2026-09-25, the user's decision: if our own estimate is good
+// enough, deriving the value beats any fixed one a caller would have to guess. What the rig showed,
+// against the old fixed 1ms, same QoS on every arm: at a healthy link (c5) 1.75% more throughput for
+// 0.62% more bytes per sample - 1.12% more delivered per byte, so not a regression; under high RTT,
+// 42.6% less retransmit bandwidth for 14.0% less throughput, a genuine trade. A build that needs the
+// old behaviour sets 1ms here explicitly.
 #ifndef tt_RELIABLE_RETRY_INTERVAL
-#define tt_RELIABLE_RETRY_INTERVAL (1 * tt_MILLISECOND) // nanosecond, 0 = dynamic
+#define tt_RELIABLE_RETRY_INTERVAL 0 // nanosecond, 0 = dynamic (the default); any other value is used as-is
 #endif
 // Dynamic retry interval (tt_RELIABLE_RETRY_INTERVAL 0) - an RFC 6298-style estimate, srtt + 4 *
 // rttvar, over request-to-recovery times. INITIAL is used until a proxy has a first sample, so

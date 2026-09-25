@@ -46,15 +46,30 @@ if [ "${TICKLE_RELIABLE_STATS:-0}" = "1" ]; then
     STATS_DEFINE="-Dtt_RELIABLE_STATS"
 fi
 
-# TICKLE_DYNAMIC_RETRY=1: build libtickle.a and the example with tt_RELIABLE_RETRY_INTERVAL 0, the
-# dynamic ACKNACK retry interval (config.h, 2026-09-25). Its own prefix for the same reason as the
-# two above - it changes how libtickle.a itself is compiled. The server's RESULT line reports which
-# mode it ran and the estimate it learned, so a cell says what it measured rather than relying on
-# whoever built it remembering.
-if [ "${TICKLE_DYNAMIC_RETRY:-0}" = "1" ]; then
+# TICKLE_DYNAMIC_RETRY picks the ACKNACK retry interval explicitly, in both directions: 1 builds with
+# tt_RELIABLE_RETRY_INTERVAL 0 (dynamic), 0 builds with the old fixed 1ms. Unset takes config.h's
+# default, which is dynamic since 2026-09-25 (the user's decision). It used to be that 0 and unset
+# were the same thing - the fixed default - and the A/B scripts pass 0 to mean "the fixed arm", so
+# when the default flipped, 0 had to become explicit or those scripts would have compared dynamic
+# against dynamic and reported no difference. Each explicit mode gets its own prefix for the same
+# reason as the two above: it changes how libtickle.a itself is compiled. The server's RESULT line
+# reports which mode it ran (retry_interval_cfg_ns=) and the estimate it learned, so a cell says what
+# it measured rather than relying on whoever built it remembering.
+case "${TICKLE_DYNAMIC_RETRY:-}" in
+1)
     INSTALL_PREFIX="${INSTALL_PREFIX}_dynretry"
     STATS_DEFINE="$STATS_DEFINE -Dtt_RELIABLE_RETRY_INTERVAL=0"
-fi
+    ;;
+0)
+    INSTALL_PREFIX="${INSTALL_PREFIX}_fixedretry"
+    STATS_DEFINE="$STATS_DEFINE -Dtt_RELIABLE_RETRY_INTERVAL=1000000"
+    ;;
+"") ;;
+*)
+    echo "TICKLE_DYNAMIC_RETRY must be 0 (fixed 1ms), 1 (dynamic) or unset (config.h's default)" >&2
+    exit 1
+    ;;
+esac
 
 # Anything that changes how libtickle.a itself is compiled gets a from-scratch build into its own
 # prefix, bracketed by `make clean`. Not belt and braces: object files in the repo build dir are
