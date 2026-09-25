@@ -1,0 +1,77 @@
+=== spinner arm: clock or per-core idle, 2026-09-25T20:05:38+09:00 ===
+
+--- building old ---
+  until_next_event in core: 0
+
+  A OLD nospin: client core freq now 1500000 kHz
+A OLD nospin run1 | rtt_avg_ms=0.209 rtt_max_ms=0.500 cpu_mhz_mean=1599.0 cpu_mhz_min=1500.0 retransmitted=0 
+A OLD nospin run2 | rtt_avg_ms=0.208 rtt_max_ms=0.405 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run3 | rtt_avg_ms=0.208 rtt_max_ms=0.461 cpu_mhz_mean=1599.0 cpu_mhz_min=1500.0 retransmitted=0 
+A OLD nospin run4 | rtt_avg_ms=0.212 rtt_max_ms=0.508 cpu_mhz_mean=1599.0 cpu_mhz_min=1500.0 retransmitted=0 
+A OLD nospin run5 | rtt_avg_ms=0.205 rtt_max_ms=0.316 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run6 | rtt_avg_ms=0.210 rtt_max_ms=0.523 cpu_mhz_mean=1599.0 cpu_mhz_min=1500.0 retransmitted=0 
+A OLD nospin run7 | rtt_avg_ms=0.206 rtt_max_ms=0.299 cpu_mhz_mean=1597.0 cpu_mhz_min=1500.0 retransmitted=0 
+A OLD nospin run8 | rtt_avg_ms=0.204 rtt_max_ms=0.358 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run9 | rtt_avg_ms=0.205 rtt_max_ms=0.312 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run10 | rtt_avg_ms=0.210 rtt_max_ms=0.457 cpu_mhz_mean=1607.0 cpu_mhz_min=1500.0 retransmitted=0 
+A OLD nospin run11 | rtt_avg_ms=0.207 rtt_max_ms=0.376 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run12 | rtt_avg_ms=0.207 rtt_max_ms=0.441 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run13 | rtt_avg_ms=0.208 rtt_max_ms=0.467 cpu_mhz_mean=1608.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run14 | rtt_avg_ms=0.205 rtt_max_ms=0.306 cpu_mhz_mean=1608.0 cpu_mhz_min=1600.0 retransmitted=0 
+A OLD nospin run15 | rtt_avg_ms=0.205 rtt_max_ms=0.291 cpu_mhz_mean=1600.0 cpu_mhz_min=1600.0 retransmitted=0 
+
+  D OLD spin  : client core freq now 2400000 kHz
+D OLD spin   run1 | rtt_avg_ms=0.191 rtt_max_ms=0.419 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run2 | rtt_avg_ms=0.188 rtt_max_ms=0.269 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run3 | rtt_avg_ms=0.191 rtt_max_ms=0.409 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run4 | rtt_avg_ms=0.188 rtt_max_ms=0.266 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run5 | rtt_avg_ms=0.187 rtt_max_ms=0.273 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run6 | rtt_avg_ms=0.190 rtt_max_ms=0.408 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run7 | rtt_avg_ms=0.188 rtt_max_ms=0.256 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run8 | rtt_avg_ms=0.189 rtt_max_ms=0.322 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run9 | rtt_avg_ms=0.187 rtt_max_ms=0.261 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run10 | rtt_avg_ms=0.188 rtt_max_ms=0.279 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run11 | rtt_avg_ms=0.189 rtt_max_ms=0.278 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run12 | rtt_avg_ms=0.189 rtt_max_ms=0.419 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run13 | rtt_avg_ms=0.189 rtt_max_ms=0.411 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run14 | rtt_avg_ms=0.188 rtt_max_ms=0.279 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+D OLD spin   run15 | rtt_avg_ms=0.187 rtt_max_ms=0.261 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+
+--- building new ---
+  until_next_event in core: 11
+
+  B NEW nospin: client core freq now 2400000 kHz
+B NEW nospin run1 | rtt_avg_ms=0.210 rtt_max_ms=0.322 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run2 | rtt_avg_ms=0.211 rtt_max_ms=0.350 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run3 | rtt_avg_ms=0.215 rtt_max_ms=0.443 cpu_mhz_mean=1508.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run4 | rtt_avg_ms=0.212 rtt_max_ms=0.319 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run5 | rtt_avg_ms=0.213 rtt_max_ms=0.407 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run6 | rtt_avg_ms=0.214 rtt_max_ms=0.496 cpu_mhz_mean=1508.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run7 | rtt_avg_ms=0.210 rtt_max_ms=0.338 cpu_mhz_mean=1509.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run8 | rtt_avg_ms=0.215 rtt_max_ms=0.495 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run9 | rtt_avg_ms=0.212 rtt_max_ms=0.427 cpu_mhz_mean=1509.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run10 | rtt_avg_ms=0.213 rtt_max_ms=0.431 cpu_mhz_mean=1510.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run11 | rtt_avg_ms=0.209 rtt_max_ms=0.302 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run12 | rtt_avg_ms=0.212 rtt_max_ms=0.366 cpu_mhz_mean=1509.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run13 | rtt_avg_ms=0.214 rtt_max_ms=0.537 cpu_mhz_mean=1503.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run14 | rtt_avg_ms=0.211 rtt_max_ms=0.325 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+B NEW nospin run15 | rtt_avg_ms=0.212 rtt_max_ms=0.335 cpu_mhz_mean=1500.0 cpu_mhz_min=1500.0 retransmitted=0 
+
+  C NEW spin  : client core freq now 2400000 kHz
+C NEW spin   run1 | rtt_avg_ms=0.193 rtt_max_ms=0.446 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run2 | rtt_avg_ms=0.192 rtt_max_ms=0.437 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run3 | rtt_avg_ms=0.193 rtt_max_ms=0.468 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run4 | rtt_avg_ms=0.192 rtt_max_ms=0.453 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run5 | rtt_avg_ms=0.191 rtt_max_ms=0.363 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run6 | rtt_avg_ms=0.193 rtt_max_ms=0.453 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run7 | rtt_avg_ms=0.195 rtt_max_ms=0.472 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run8 | rtt_avg_ms=0.191 rtt_max_ms=0.270 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run9 | rtt_avg_ms=0.191 rtt_max_ms=0.315 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run10 | rtt_avg_ms=0.189 rtt_max_ms=0.271 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run11 | rtt_avg_ms=0.191 rtt_max_ms=0.404 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run12 | rtt_avg_ms=0.189 rtt_max_ms=0.258 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run13 | rtt_avg_ms=0.190 rtt_max_ms=0.263 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run14 | rtt_avg_ms=0.191 rtt_max_ms=0.442 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+C NEW spin   run15 | rtt_avg_ms=0.190 rtt_max_ms=0.382 cpu_mhz_mean=2400.0 cpu_mhz_min=2400.0 retransmitted=0 
+
+=== done ===
