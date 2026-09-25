@@ -1,0 +1,14 @@
+=== default rclcpp::Node memory, 2026-09-25T10:23:22+09:00, repo 878460f7 ===
+node: /tmp/p2_all_ws/install/rmw_tickle_interfaces_check/lib/rmw_tickle_interfaces_check/default_node
+tt_MAX_BUFFER_LENGTH in rmw_tickle: tt_MAX_BUFFER_LENGTH=65507
+rmw_tickle           rep1 peak_rss=17208 kB (16.8 MB) rss_at_end=17208 kB OK
+rmw_fastrtps_cpp     rep1 peak_rss=35836 kB (35.0 MB) rss_at_end=35836 kB OK
+rmw_cyclonedds_cpp   rep1 peak_rss=22412 kB (21.9 MB) rss_at_end=22412 kB OK
+rmw_tickle           rep2 peak_rss=17216 kB (16.8 MB) rss_at_end=17216 kB OK
+rmw_fastrtps_cpp     rep2 peak_rss=35868 kB (35.0 MB) rss_at_end=35868 kB OK
+rmw_cyclonedds_cpp   rep2 peak_rss=22184 kB (21.7 MB) rss_at_end=22184 kB OK
+rmw_tickle           rep3 peak_rss=17268 kB (16.9 MB) rss_at_end=17268 kB OK
+rmw_fastrtps_cpp     rep3 peak_rss=35940 kB (35.1 MB) rss_at_end=35940 kB OK
+rmw_cyclonedds_cpp   rep3 peak_rss=22248 kB (21.7 MB) rss_at_end=22248 kB OK
+
+=== done 2026-09-25T10:23:51+09:00 ===
