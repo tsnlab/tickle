@@ -813,3 +813,47 @@ nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero
       report both modes. Loss columns are unaffected.
     Standing consequence for methodology: 3 reps is not enough for either measurement, and any
     future band quoted from them should say its n.
+
+15. **[Design decision, deferred by the user 2026-09-25 - measured, recorded, not acted on]** Large
+    messages under `rmw_tickle` are fragmented by the OS IP layer. Both DDS vendors fragment at the
+    protocol level (`DATA_FRAG`) and never enter the kernel's reassembly path at all. Under packet
+    loss that difference is not marginal: at a 2800-byte sample with 5% per-packet loss,
+    **97.4% of the receiving kernel's reassembly attempts fail** and roughly one datagram in 47
+    survives.
+
+    | arm | ReasmReqds | ReasmOKs | ReasmFails | delivered | packets/sample |
+    |---|---|---|---|---|---|
+    | P1 (76 B) + 5% loss, control | 0 | 0 | 0 | 782,171 | 1.005 |
+    | P4 (2800 B) + no loss, control | 423,388 | 211,694 | 0 | 211,694 | 2.014 |
+    | **P4 + 5% loss** | 1,399,370 | 17,341 | **1,362,922** | 14,565 | 94.626 |
+
+    Both controls matter. Nothing can fragment at 76 bytes and nothing does, so the counter is
+    measuring this traffic and not something else on the host; and fragmentation with nothing lost
+    is flawless, `ReasmOKs` equalling the delivered sample count exactly. **Neither fragmentation
+    alone nor loss alone does anything.** `ReasmFails` counts fragments, so 1,362,922 / 2 = 681,461
+    datagrams never reassembled - 46.8 per delivered sample, against 47.3 transmissions per sample
+    from the interface counters. The same number: the wire amplification *is* the reassembly
+    failure, not a retransmission decision TickLE makes.
+
+    Why 97% rather than the 9.75% that two-fragment arithmetic predicts: an orphaned fragment is
+    held for `ipfrag_time` (30 s) against `ipfrag_high_thresh` (4 MB, ~3000 orphans). At ~148,000
+    datagrams/s with 5% loss orphaning ~14,400/s, that budget fills in ~0.2 s and stays full, after
+    which the kernel drops queues that would have completed. A feedback loop, which is why the
+    magnitude is 47x and not 2x. `ipfrag_max_dist` (64) is a second candidate that may dominate -
+    the kernel discards an incomplete queue when fragments from one source arrive more than 64 IP
+    IDs apart - and separating the two needs a host sysctl change, which was not made.
+
+    Three hypotheses inside TickLE were ruled out first, each with a control, and recording that is
+    the point: the Publisher retransmits exactly the samples an ACKNACK names and no others; the
+    ACKNACK bitmap is sized to the subscriber's window rather than capped at 256 bits; and a
+    far-ahead arrival makes core abandon the gap and jump the watermark rather than re-request
+    (`jump_abandoned_seq=0` in every arm, so nothing was abandoned either). All three were looking
+    in core for something that was never there.
+
+    **The user's decision (2026-09-25): leave it as it is and keep this on the list.** The options,
+    recorded so the next person does not re-derive them: (a) accept it, if the real 10Base-T1S loss
+    rate is far below 5%; (b) tune `ipfrag_high_thresh`/`ipfrag_max_dist` on the host, which is not
+    controllable on every deployment target; (c) implement protocol-level fragmentation in TickLE,
+    which is what the DDS vendors do and is core work of real size. Raw output:
+    `examples/perf_hil/results/a4_reassembly_2026-09-25.txt`, harness
+    `examples/perf_hil/experiments/a4_reassembly_check.sh`.
