@@ -1996,8 +1996,8 @@ record is right.
 `sensor_msgs/Image` is a real instance, since its `string encoding` makes it unbounded.
 `rclcpp`'s own default is KEEP_LAST, so this needs a deliberate KEEP_ALL.
 **Workaround today**: `RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES` sizes the arena for the samples
-actually sent. **Proposed fix, the user's to take** because it changes when publish blocks: make
-the refusal byte-aware, so KEEP_ALL blocks rather than drops. Sizing the arena for a full datagram
+actually sent. **Fix approved** (the user, 2026-09-25, "모두 승인"), because it changes when
+publish blocks: make the refusal byte-aware, so KEEP_ALL blocks rather than drops. Sizing the arena for a full datagram
 instead is the 536 MB case the 1472 default exists to avoid.
 
 **Two wrong readings preceded this, both recorded because the pattern matters.** TickLE Dev first
@@ -2006,6 +2006,27 @@ is `length > cache->arena_size`, which cannot fire at this N. TickLE Plan then c
 "the guarantee holds, the limit just binds sooner", which was also wrong, from reading the refusal
 path and the drop path but never the eviction path between them. What settled it was a test with a
 control, not more reading.
+
+**Who owns the memory, and the three changes approved on 2026-09-25.** The question was whether
+TickLE's no-dynamic-allocation principle was what forced the KEEP_ALL and cache-budget compromises,
+and whether static sizing costs memory against DDS. Measured and read rather than argued:
+- **A default `rclcpp::Node` costs less under rmw_tickle than under either DDS**: 16.8 MB against
+  CycloneDDS's 21.7 and FastDDS's 35.0, at N = 65507 with the large capacity profile, reproducible
+  to about 0.5% (`rmw_memory_footprint.sh`, `42802c1b`). So static sizing is not a memory problem.
+- **The principle was never what blocked anything, and it did not need changing.** Core contains no
+  allocation at all; the caller owns every buffer, and `rmw_tickle` already allocates - with the
+  allocator the *application* supplied via `rmw_init_options_t.allocator`. Only the *size* is
+  rmw's own choice, because `rmw_qos_profile_t` carries no resource limits. Written up as a
+  contract in DESIGN.md and README (`5f627819`).
+- **Approved, in this order:** (a) the byte-aware KEEP_ALL refusal above; (b) read
+  `rmw_publisher_options_t.rmw_specific_publisher_payload` (rclcpp's `rmw_implementation_payload`)
+  so an application can set the limits **per publisher** - today's env vars are process-wide, so one
+  large-sample topic raises the budget for every publisher in the process; (c) a caller-driven
+  runtime resize, where core gains a function that migrates retained records into caller-supplied
+  replacement buffers and rmw decides when to call it, core still allocating nothing. **(b) may
+  make (c) unnecessary**, so (c) is reconsidered after (b) rather than assumed.
+- Rejected on the way: a core-called grow callback, which would put allocation inside the publish
+  path and cost the determinism that is the point of the principle.
 
 **A false alarm worth keeping: "LIFESPAN regressed at 261f39b8"** (TickLE Plan's, withdrawn). The
 2026-09-25 re-sweep read TickLE lifespan_expiry as lost 0 in 9/9 runs, and a rig bisect pinned that
