@@ -1280,7 +1280,7 @@ static void test_ack_watermark_solicits_once_then_throttles(void) {
         EXPECT_TRUE(!publish_and_check_solicit(&pub));
     }
 
-    test_mock_now += tt_RELIABLE_RETRY_INTERVAL; // the gap elapses
+    test_mock_now += TEST_RETRY_INTERVAL; // the gap elapses
     EXPECT_TRUE(publish_and_check_solicit(&pub));
 }
 

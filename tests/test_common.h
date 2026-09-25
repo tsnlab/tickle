@@ -44,6 +44,30 @@ extern int test_failures;
         }                                                                                                        \
     } while (0)
 
+// The ACKNACK retry interval a test should expect before any recovery has been timed: the fixed
+// tt_RELIABLE_RETRY_INTERVAL, or - when that is 0, meaning dynamic - the value dynamic mode starts
+// from. Tests used tt_RELIABLE_RETRY_INTERVAL directly, which in a dynamic build advanced the mock
+// clock by zero and waited for a gap that could never elapse.
+// Chosen by the preprocessor rather than a ?: so the default build, where the two are equal, is not a
+// conditional with identical branches.
+#if tt_RELIABLE_RETRY_INTERVAL != 0
+#define TEST_RETRY_INTERVAL ((uint64_t)tt_RELIABLE_RETRY_INTERVAL)
+#else
+#define TEST_RETRY_INTERVAL ((uint64_t)tt_RELIABLE_RETRY_INITIAL)
+#endif
+
+// The same for nanosecond-scale values, which do not fit 32 bits once they pass ~4.29s.
+#define EXPECT_EQ_U64(expected, actual)                                                      \
+    do {                                                                                     \
+        uint64_t expected_value_ = (expected);                                               \
+        uint64_t actual_value_ = (actual);                                                   \
+        if (expected_value_ != actual_value_) {                                              \
+            fprintf(stderr, "%s:%d: expected %llu, got %llu\n", __FILE__, __LINE__,          \
+                    (unsigned long long)expected_value_, (unsigned long long)actual_value_); \
+            test_failures++;                                                                 \
+        }                                                                                    \
+    } while (0)
+
 #define EXPECT_EQ_INT(expected, actual)                                                                          \
     do {                                                                                                         \
         int expected_value_ = (expected);                                                                        \

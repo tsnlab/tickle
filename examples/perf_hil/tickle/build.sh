@@ -46,6 +46,16 @@ if [ "${TICKLE_RELIABLE_STATS:-0}" = "1" ]; then
     STATS_DEFINE="-Dtt_RELIABLE_STATS"
 fi
 
+# TICKLE_DYNAMIC_RETRY=1: build libtickle.a and the example with tt_RELIABLE_RETRY_INTERVAL 0, the
+# dynamic ACKNACK retry interval (config.h, 2026-09-25). Its own prefix for the same reason as the
+# two above - it changes how libtickle.a itself is compiled. The server's RESULT line reports which
+# mode it ran and the estimate it learned, so a cell says what it measured rather than relying on
+# whoever built it remembering.
+if [ "${TICKLE_DYNAMIC_RETRY:-0}" = "1" ]; then
+    INSTALL_PREFIX="${INSTALL_PREFIX}_dynretry"
+    STATS_DEFINE="$STATS_DEFINE -Dtt_RELIABLE_RETRY_INTERVAL=0"
+fi
+
 # Anything that changes how libtickle.a itself is compiled gets a from-scratch build into its own
 # prefix, bracketed by `make clean`. Not belt and braces: object files in the repo build dir are
 # reused across `make install` calls regardless of CPPFLAGS, so without the clean a prefix named

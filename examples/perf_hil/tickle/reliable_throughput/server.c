@@ -170,6 +170,17 @@ static const double default_safety_cap_s = 40.0;
 static uint32_t window_samples = 0;
 static const double safety_cap_buffer_s = 15.0;
 
+// The first writer proxy in use, for reporting its recovery estimate. This scenario has one writer;
+// falls back to slot 0, whose zeroed estimate then reads as "no sample", if none was ever matched.
+static const struct tt_WriterProxy* first_live_writer(const struct tt_Subscriber* sub) {
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        if (sub->writers[i].node_id != tt_NODE_ID_INVALID) {
+            return &sub->writers[i];
+        }
+    }
+    return &sub->writers[0];
+}
+
 int main(int argc, char** argv) {
     // Armed at the very top, before any middleware setup, so the counters cover discovery
     // too - identically for all three frameworks, which is what makes them comparable.
@@ -303,6 +314,13 @@ int main(int argc, char** argv) {
 
     bench_stats_end(&g_bench_stats);
 
+    // retry_interval_cfg_ns= is the interval libtickle itself was built with, 0 meaning dynamic -
+    // asked of the library rather than read from this file's own config.h, so a harness built with
+    // one -D against a library built with another reports the mode that ran, not the one it asked
+    // for. The recovery_* pair is the estimate the matched writer's proxy learned - read raw, so the interval
+    // it implies (srtt + 4 * rttvar, clamped) can be checked rather than trusted. The single writer
+    // this scenario has is the first live slot.
+    const struct tt_WriterProxy* first_writer = first_live_writer(&sub);
     // gap_abandoned=/gap_evicted= (2026-09-25) are the samples this Subscriber stopped waiting for
     // without delivering - core counts them in every build now, where before a RELIABLE Subscriber
     // could drop samples with every production counter at zero. They separate "never arrived"
@@ -310,12 +328,15 @@ int main(int argc, char** argv) {
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
-           "cpu_migrations=%u gap_abandoned=%u gap_evicted=%u %s\n",
+           "cpu_migrations=%u gap_abandoned=%u gap_evicted=%u retry_interval_cfg_ns=%llu recovery_srtt_ns=%u "
+           "recovery_rttvar_ns=%u %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
            BenchCpuFreq_mean_mhz(&g_cpu_freq), BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq),
            g_cpu_freq.samples, BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place),
            g_cpu_place.migrations, sub.gap_abandoned, sub.gap_evicted,
+           (unsigned long long)tt_reliable_retry_interval_configured(), first_writer->recovery_srtt_ns,
+           first_writer->recovery_rttvar_ns,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("server");

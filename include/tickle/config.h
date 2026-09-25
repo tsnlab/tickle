@@ -72,8 +72,46 @@
 // retry for a lost ACKNACK/retransmit waited the full 5ms - long enough for a depth-64 Publisher
 // cache (~4.8ms at 13K msg/s, ~0.34ms at max rate) to evict the sample first. 1ms keeps a ~4x
 // margin over that RTT.
+//
+// 0 means dynamic (2026-09-25, the user's decision): each writer proxy derives its own interval
+// from how long its recoveries actually take, so the timer stops firing before a recovery could
+// have completed. Any other value is the caller's explicit choice and is used as-is. The measured
+// case for it: at 250us recoveries the fixed 1ms barely fires (4% of ACKNACKs were timer-driven),
+// while at the 2-4ms recoveries of a collapsing link it fired about three times per recovery, and
+// every firing re-requested samples already in flight - 92% of ACKNACKs there were timer-driven.
+// The shipped default stays at 1ms until a rig run shows dynamic does not make the healthy case
+// worse; see the three constants below for how the dynamic value is bounded.
 #ifndef tt_RELIABLE_RETRY_INTERVAL
-#define tt_RELIABLE_RETRY_INTERVAL (1 * tt_MILLISECOND) // nanosecond
+#define tt_RELIABLE_RETRY_INTERVAL (1 * tt_MILLISECOND) // nanosecond, 0 = dynamic
+#endif
+// Dynamic retry interval (tt_RELIABLE_RETRY_INTERVAL 0) - an RFC 6298-style estimate, srtt + 4 *
+// rttvar, over request-to-recovery times. INITIAL is used until a proxy has a first sample, so
+// dynamic mode starts from exactly the fixed default and moves only on evidence.
+//
+// MIN stops a fast, low-jitter link - loopback, same host - from driving the interval toward zero
+// and turning the retry timer into the storm it exists to prevent. 250us is where the rig measured
+// 86% of healthy recoveries completing, so the timer never fires sooner than a typical healthy
+// recovery could finish. Note what the timer's resolution actually is: a scheduled retry can only
+// fire when tt_Node_poll() wakes, and a poll with no deadline of its own wakes every
+// tt_RECEIVE_TIMEOUT (100us) - so 250us is about 2.5 ticks. If polling ever becomes event-driven,
+// this floor and the estimate start interacting with a different clock and both need re-checking.
+//
+// MAX follows a principle rather than a measured worst case: never wait longer than the Publisher
+// can still answer. A KEEP_LAST Publisher holds a sample for depth / send-rate, and at the rig's
+// fastest small-message rate (174k samples/s, depth 2048) that is ~12ms - so a retry later than that
+// asks for a sample that is provably gone, which is the same waste this feature exists to remove.
+// 10ms sits under every small-message retention the rig measured (11.8-16.9ms). Slower regimes are
+// not clamped by it in practice: where retention is long it is because the link is slow, and the
+// estimate is large for the same reason. A KEEP_ALL Publisher never evicts an unacknowledged sample,
+// so for it the bound is merely conservative.
+#ifndef tt_RELIABLE_RETRY_INITIAL
+#define tt_RELIABLE_RETRY_INITIAL (1 * tt_MILLISECOND) // nanosecond
+#endif
+#ifndef tt_RELIABLE_RETRY_MIN
+#define tt_RELIABLE_RETRY_MIN (250 * tt_MICROSECOND) // nanosecond
+#endif
+#ifndef tt_RELIABLE_RETRY_MAX
+#define tt_RELIABLE_RETRY_MAX (10 * tt_MILLISECOND) // nanosecond
 #endif
 // Phase 3 (rmw_tickle/PLAN.md) - how often a Subscriber logs that a KEEP_ALL gap is still stuck.
 // KEEP_ALL switches off the tt_RELIABLE_RETRY give-up, so without this a genuinely unrecoverable

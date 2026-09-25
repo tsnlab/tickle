@@ -1064,6 +1064,13 @@ bool tt_Publisher_writable(const struct tt_Publisher* pub);
 // with peers[], so a caller must not pair the two arrays by index.
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub);
 
+// The ACKNACK retry interval this library was built with (2026-09-25): tt_RELIABLE_DEADLINE when set,
+// else tt_RELIABLE_RETRY_INTERVAL - 0 meaning dynamic. A function rather than the macro because it
+// answers for how libtickle itself was compiled, which a caller's own view of config.h cannot: an
+// application built with one -D against a library built with another would otherwise report the
+// mode it asked for, not the mode it ran.
+uint64_t tt_reliable_retry_interval_configured(void);
+
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic ACK solicitation - see
 // struct tt_Publisher.ack_solicit_period_ns's own doc comment (tickle.h) for what it's for and how
 // it differs from tt_Publisher_set_heartbeat_period() above. Same "active scheduler operation, no
@@ -1208,6 +1215,25 @@ struct tt_WriterProxy {
     // Phase 3 - tt_get_ns() of the last "still waiting" warning for this writer, so a stuck
     // KEEP_ALL gap is visible in a log at a fixed cadence rather than per retry or never.
     uint64_t stuck_warned_ns;
+    // Request-to-recovery estimate for the dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL
+    // 0, config.h), RFC 6298-style, in nanoseconds. Maintained in every build - so the estimate can
+    // be read, and tested, whether or not it is steering the timer. 0/0 = no sample yet.
+    //
+    // The probe is the watermark sample: ack_seq_no is named in every ACKNACK that requests
+    // anything, so it is always a sample that was definitely asked for. The time runs from the
+    // FIRST ACKNACK that named it to its arrival - a retry of the same request keeps the first
+    // timestamp. There is no Karn's rule here, and none is needed rather than none is used: Karn
+    // exists because a TCP retransmission is indistinguishable from the original segment, so an ACK
+    // cannot be attributed to either send. Here the ACKNACK names the sequence number and the DATA
+    // that comes back carries it, so the timing is of a named sample and nothing is ambiguous.
+    // (Discarding repeated-request samples would also have starved the estimate on exactly the
+    // links where the timer fires several times per recovery.) Timing from the first request
+    // biases upward, which errs toward fewer premature retries - the direction that cannot
+    // re-create the storm. probe_ns 0 = no probe outstanding.
+    uint32_t recovery_srtt_ns;
+    uint32_t recovery_rttvar_ns;
+    uint32_t probe_seq_no;
+    uint64_t probe_ns;
     // Back-pointer to the owning Subscriber - this entry's own stable address (never moves once
     // claimed; embedded in struct tt_Subscriber.writers[], which lives as long as the Subscriber
     // itself) is what acknack_retry() is scheduled against (tt_Node_schedule(..., acknack_retry,

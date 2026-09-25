@@ -651,7 +651,7 @@ static uint64_t scheduled_acknack_retry_time(const struct tt_Node* node, const s
 static void test_reliable_acknack_retry_uses_reliable_retry_interval(void) {
     test_mock_reset();
     _Static_assert(tt_RELIABLE_DEADLINE == 0, "this test assumes no tt_RELIABLE_DEADLINE override");
-    _Static_assert(tt_RELIABLE_RETRY_INTERVAL < tt_CALL_RETRY_INTERVAL, "reliable retry must be shorter than RPC's");
+    _Static_assert(TEST_RETRY_INTERVAL < tt_CALL_RETRY_INTERVAL, "reliable retry must be shorter than RPC's");
     test_mock_now = 10 * tt_MILLISECOND;
 
     struct tt_Node node;
@@ -670,14 +670,14 @@ static void test_reliable_acknack_retry_uses_reliable_retry_interval(void) {
     struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
     EXPECT_TRUE(proxy != NULL);
     EXPECT_TRUE(proxy->acknack_scheduled);
-    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + tt_RELIABLE_RETRY_INTERVAL);
+    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + TEST_RETRY_INTERVAL);
 
-    test_mock_now += tt_RELIABLE_RETRY_INTERVAL; // the timer fires; the gap is still open
+    test_mock_now += TEST_RETRY_INTERVAL; // the timer fires; the gap is still open
     tt_Node_unschedule(&node, acknack_retry, proxy);
     int sends_before = test_mock_send_to_call_count;
     acknack_retry(&node, test_mock_now, proxy);
     EXPECT_EQ_U32((uint32_t)sends_before + 1, (uint32_t)test_mock_send_to_call_count); // re-sent
-    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + tt_RELIABLE_RETRY_INTERVAL);
+    EXPECT_TRUE(scheduled_acknack_retry_time(&node, proxy) == test_mock_now + TEST_RETRY_INTERVAL);
 }
 
 // Milestone 60 (rmw_tickle/PLAN.md) - receive-side de-duplication regression: TickLE Plan's own
@@ -1492,6 +1492,157 @@ static void test_gap_abandoned_counts_only_what_was_never_delivered(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(399, (uint32_t)subscriber_callback_count);
     EXPECT_EQ_U32(1, sub.gap_abandoned);
+}
+
+// Dynamic ACKNACK retry interval (tt_RELIABLE_RETRY_INTERVAL 0, the user's decision 2026-09-25).
+// These call retry_interval_for() with the configured value as an argument, so the dynamic path is
+// exercised here even though this build's default is the fixed 1ms - otherwise the branch the
+// whole feature consists of could not be tested in the default build.
+
+// A non-zero configured value is the caller's explicit choice: it wins whatever the estimate says.
+// Zero with no sample yet is the fixed starting value, so dynamic mode starts from today's behaviour.
+static void test_retry_interval_explicit_value_wins(void) {
+    struct tt_WriterProxy proxy;
+    memset(&proxy, 0, sizeof(proxy));
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, &proxy));
+
+    proxy.recovery_srtt_ns = 3000000; // an estimate that would otherwise give ~3ms+
+    proxy.recovery_rttvar_ns = 100000;
+    EXPECT_EQ_U64(5 * tt_MILLISECOND, retry_interval_for(5 * tt_MILLISECOND, &proxy));
+    EXPECT_EQ_U64(3000000ULL + 400000ULL, retry_interval_for(0, &proxy)); // srtt + 4 * rttvar
+}
+
+// The estimate converges on a steady recovery time, its variance term counts when recoveries jitter,
+// and both bounds hold - a fast link cannot drive the interval under the floor, a slow one cannot
+// push it past the ceiling.
+static void test_retry_interval_estimate_converges_and_is_bounded(void) {
+    struct tt_WriterProxy proxy;
+
+    memset(&proxy, 0, sizeof(proxy));
+    for (int i = 0; i < 64; i++) {
+        note_recovery_sample(&proxy, 400000); // a steady 400us
+    }
+    EXPECT_EQ_U32(400000, proxy.recovery_srtt_ns);
+    EXPECT_EQ_U32(0, proxy.recovery_rttvar_ns); // no jitter left to account for
+    EXPECT_EQ_U64(400000, retry_interval_for(0, &proxy));
+
+    memset(&proxy, 0, sizeof(proxy));
+    for (int i = 0; i < 64; i++) {
+        note_recovery_sample(&proxy, (i % 2) == 0 ? 200000 : 600000); // 400us on average, jittering
+    }
+    uint64_t jittery = retry_interval_for(0, &proxy);
+    EXPECT_TRUE(jittery > 2 * (uint64_t)proxy.recovery_srtt_ns); // the variance term, not srtt alone
+    EXPECT_TRUE(jittery < (uint64_t)tt_RELIABLE_RETRY_MAX);
+
+    memset(&proxy, 0, sizeof(proxy));
+    note_recovery_sample(&proxy, 10000); // 10us: loopback-fast
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_MIN, retry_interval_for(0, &proxy));
+
+    memset(&proxy, 0, sizeof(proxy));
+    note_recovery_sample(&proxy, 100 * tt_MILLISECOND); // far slower than anything should wait
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_MAX, retry_interval_for(0, &proxy));
+}
+
+// End to end: the recovery is timed from the FIRST ACKNACK that named the watermark, a timer retry of
+// the same request keeps that timestamp, and the sample's arrival folds exactly that span into the
+// estimate. This is the case that decides whether the estimate can ever learn a slow link: a retry
+// that restarted the probe would measure only the last interval and keep the timer short forever.
+static void test_recovery_probe_times_from_the_first_request(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+    EXPECT_EQ_U64(0, proxy->probe_ns); // nothing requested yet
+
+    test_mock_now = 1 * tt_MILLISECOND;
+    tail = write_data(&node, 3, 300, 3); // 2 is missing: an immediate ACKNACK names it
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, proxy->probe_seq_no);
+    EXPECT_EQ_U64(1 * tt_MILLISECOND, proxy->probe_ns);
+
+    test_mock_now = 2 * tt_MILLISECOND;
+    acknack_retry(&node, tt_get_ns(), proxy);           // the timer asks again...
+    EXPECT_EQ_U64(1 * tt_MILLISECOND, proxy->probe_ns); // ...and the probe keeps the first request
+
+    test_mock_now = 4 * tt_MILLISECOND;
+    tail = write_data(&node, 2, 200, 2); // recovered, 3ms after it was first asked for
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(3000000, proxy->recovery_srtt_ns);
+    EXPECT_EQ_U32(1500000, proxy->recovery_rttvar_ns);
+    EXPECT_EQ_U64(0, proxy->probe_ns);                                    // done, not re-timed
+    EXPECT_EQ_U64(3000000ULL + 6000000ULL, retry_interval_for(0, proxy)); // 9ms, under the 10ms cap
+}
+
+// Only a request that names the watermark can time its recovery. A narrow request for a gap further
+// ahead (low_bit > 0) does not ask for ack_seq_no, so it must not start a probe; a full one must.
+// And a probe left behind by a watermark that moved on without its sample (a give-up, a jump, an
+// eviction) is replaced by the next request rather than timing the wrong sample.
+static void test_recovery_probe_only_times_the_watermark(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_WriterProxy* proxy = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(proxy != NULL);
+    proxy->keep_all = tt_WRITER_KEEP_ALL_NO;
+    proxy->sender_ip = TEST_SENDER_IP;
+    proxy->sender_port = TEST_SENDER_PORT;
+    proxy->ack_seq_no = 5;
+    bitmap_set_bit(proxy->received_bitmap, 8); // something arrived ahead, so there is a range to ask about
+
+    test_mock_now = 7 * tt_MILLISECOND;
+    send_acknack_range(&node, proxy, 3, 8); // narrow: positions 3..8 only, not the watermark
+    EXPECT_EQ_U64(0, proxy->probe_ns);
+    send_acknack_range(&node, proxy, 0, 8); // names ack_seq_no itself
+    EXPECT_EQ_U32(5, proxy->probe_seq_no);
+    EXPECT_EQ_U64(7 * tt_MILLISECOND, proxy->probe_ns);
+
+    // The watermark moves on without 5 ever arriving; the next request re-targets the probe.
+    proxy->ack_seq_no = 6;
+    test_mock_now = 9 * tt_MILLISECOND;
+    send_acknack_range(&node, proxy, 0, 7);
+    EXPECT_EQ_U32(6, proxy->probe_seq_no);
+    EXPECT_EQ_U64(9 * tt_MILLISECOND, proxy->probe_ns);
+    EXPECT_EQ_U32(0, proxy->recovery_srtt_ns); // and nothing was sampled for the abandoned 5
+}
+
+// A writer slot reused by a different writer must not inherit the departed one's estimate: the new
+// writer may be on a different path entirely.
+static void test_recovery_estimate_resets_when_a_slot_is_reused(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+
+    struct tt_WriterProxy* first = find_or_create_writer_proxy(&sub, REMOTE_NODE_ID, 0, NULL);
+    EXPECT_TRUE(first != NULL);
+    note_recovery_sample(first, 3000000);
+    first->probe_seq_no = 9;
+    first->probe_ns = 123;
+    first->node_id = tt_NODE_ID_INVALID; // the writer departs; its slot is free
+
+    struct tt_WriterProxy* second = find_or_create_writer_proxy(&sub, (uint8_t)(REMOTE_NODE_ID + 1), 0, NULL);
+    EXPECT_TRUE(second == first); // the same slot, reused
+    EXPECT_EQ_U32(0, second->recovery_srtt_ns);
+    EXPECT_EQ_U32(0, second->recovery_rttvar_ns);
+    EXPECT_EQ_U64(0, second->probe_ns);
 }
 
 // QoS roadmap #6 (LIFESPAN) - a cached sample past pub->lifespan_duration_ns must not be
@@ -2332,7 +2483,7 @@ static void test_keep_all_sustains_on_clean_link(void) {
         // nothing would. Then let the loop carry on - no retry, no second chance.
         uint32_t tail = write_acknack(&node, ENDPOINT_ID, pub.seq_no + 1, 0ULL);
         EXPECT_TRUE(process_acknack(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
-        test_mock_now += tt_RELIABLE_RETRY_INTERVAL; // let the solicitation throttle reopen
+        test_mock_now += TEST_RETRY_INTERVAL; // let the solicitation throttle reopen
     }
 
     // Before the fix this stopped at 64 no matter how long the loop ran.
@@ -3422,6 +3573,11 @@ int main(void) {
     test_retransmit_is_exactly_the_named_set_across_a_wide_window();
     test_acknack_names_every_gap_across_a_wide_window();
     test_gap_abandoned_counts_only_what_was_never_delivered();
+    test_retry_interval_explicit_value_wins();
+    test_retry_interval_estimate_converges_and_is_bounded();
+    test_recovery_probe_times_from_the_first_request();
+    test_recovery_probe_only_times_the_watermark();
+    test_recovery_estimate_resets_when_a_slot_is_reused();
     test_process_acknack_skips_expired_sample();
     test_process_acknack_ignored_for_besteffort_publisher();
     test_process_acknack_ignored_for_durable_only_publisher();

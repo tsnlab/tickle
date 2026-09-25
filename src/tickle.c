@@ -1223,7 +1223,11 @@ static void clear_server_cache_slot(struct tt_Server* server, int slot);
 // QoS roadmap #5 (RELIABILITY/RELIABLE, rmw_tickle/PLAN.md) - see each definition's own comment.
 static void acknack_retry(struct tt_Node* node, uint64_t time, void* param);
 static uint16_t reliable_cache_depth(const struct tt_ReliableCache* cache);
-static uint64_t reliable_retry_interval(void);
+static uint64_t reliable_retry_interval(const struct tt_WriterProxy* proxy);
+static uint64_t reliable_retry_configured(void);
+static uint64_t reliable_retry_interval_publisher(void);
+static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now);
+static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_ns);
 static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy);
 static void advance_ack_seq_no(struct tt_WriterProxy* proxy);
 static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy* proxy);
@@ -2026,8 +2030,9 @@ static void notify_writable_if_pending(struct tt_Publisher* pub) {
 // path below and the refusal path in tt_Publisher_publish() can't drift apart on the throttle.
 static void solicit_ack_throttled(struct tt_Publisher* pub) {
     uint64_t now = tt_get_ns();
-    uint64_t min_gap =
-        pub->ack_solicit_period_ns > reliable_retry_interval() ? pub->ack_solicit_period_ns : reliable_retry_interval();
+    uint64_t min_gap = pub->ack_solicit_period_ns > reliable_retry_interval_publisher()
+                           ? pub->ack_solicit_period_ns
+                           : reliable_retry_interval_publisher();
     if (pub->last_ack_solicit_ns != 0 && now - pub->last_ack_solicit_ns < min_gap) {
         RSTAT_INC(ack_solicit_suppressed);
         return;
@@ -2735,6 +2740,10 @@ uint32_t tt_Publisher_unacked_bound(const struct tt_Publisher* pub) {
     return announced ? bound : tt_RELIABLE_BITMAP_BITS;
 }
 
+uint64_t tt_reliable_retry_interval_configured(void) {
+    return reliable_retry_configured();
+}
+
 uint32_t tt_Publisher_min_acked_seq_no(const struct tt_Publisher* pub) {
     return min_peer_ack_seq_no(pub);
 }
@@ -3247,6 +3256,12 @@ static struct tt_WriterProxy* find_or_create_writer_proxy(struct tt_Subscriber* 
             proxy->retry = 0;
             proxy->acknack_scheduled = false;
             proxy->heartbeat_last_seq_no = 0;
+            // A reused slot must not inherit a departed writer's recovery estimate: a new writer
+            // may be on a different path entirely.
+            proxy->recovery_srtt_ns = 0;
+            proxy->recovery_rttvar_ns = 0;
+            proxy->probe_seq_no = 0;
+            proxy->probe_ns = 0;
             if (out_created != NULL) {
                 *out_created = true;
             }
@@ -3366,9 +3381,15 @@ static void send_acknack_range(struct tt_Node* node, struct tt_WriterProxy* prox
     bool unicast = old_tx_tail == sizeof(struct tt_Header);
     if (!end_encode(node, submessage_header, true, unicast ? &target : NULL, unicast ? 1 : 0)) {
         rollback(node, old_tx_tail);
+        return;
+    }
+    // Only a request that names the watermark itself can time its recovery: a narrow request for a
+    // newly opened gap further ahead (low_bit > 0) does not ask for ack_seq_no at all.
+    if (low_bit == 0 && high_bit >= 0) {
+        note_watermark_requested(proxy, tt_get_ns());
     }
 #ifdef tt_RELIABLE_STATS
-    else {
+    {
         uint64_t now = tt_get_ns();
         g_rstats.acknack_sent++;
         g_rstats.acknack_bits_sent += rstat_popcount_bitmap(requested, wire_words);
@@ -3393,8 +3414,88 @@ static void send_acknack(struct tt_Node* node, struct tt_WriterProxy* proxy) {
 // The reliable Subscriber's ACKNACK retry cadence - tt_RELIABLE_DEADLINE when set, otherwise
 // tt_RELIABLE_RETRY_INTERVAL (config.h, Phase 1-b). Shared by acknack_retry() and
 // maybe_arm_acknack_retry() so the first retry and every later one use the same interval.
-static uint64_t reliable_retry_interval(void) {
+// The configured interval: tt_RELIABLE_DEADLINE when set, else tt_RELIABLE_RETRY_INTERVAL - which
+// may be 0, meaning dynamic.
+static uint64_t reliable_retry_configured(void) {
     return tt_RELIABLE_DEADLINE != 0 ? (uint64_t)tt_RELIABLE_DEADLINE : (uint64_t)tt_RELIABLE_RETRY_INTERVAL;
+}
+
+// One proxy's interval, given the configured value. A non-zero configured value is the caller's
+// explicit choice and wins outright. 0 derives it from this proxy's own recovery estimate (see
+// tt_WriterProxy.recovery_srtt_ns): srtt + 4 * rttvar, clamped to [tt_RELIABLE_RETRY_MIN,
+// tt_RELIABLE_RETRY_MAX], or tt_RELIABLE_RETRY_INITIAL until there is a first sample.
+//
+// The configured value is a parameter rather than read here so the dynamic path can be exercised
+// by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
+// untestable in the default build.
+static uint64_t retry_interval_for(uint64_t configured, const struct tt_WriterProxy* proxy) {
+    if (configured != 0) {
+        return configured;
+    }
+    if (proxy == NULL || proxy->recovery_srtt_ns == 0) {
+        return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+    }
+    uint64_t interval = (uint64_t)proxy->recovery_srtt_ns + (4ULL * proxy->recovery_rttvar_ns);
+    if (interval < (uint64_t)tt_RELIABLE_RETRY_MIN) {
+        return (uint64_t)tt_RELIABLE_RETRY_MIN;
+    }
+    if (interval > (uint64_t)tt_RELIABLE_RETRY_MAX) {
+        return (uint64_t)tt_RELIABLE_RETRY_MAX;
+    }
+    return interval;
+}
+
+static uint64_t reliable_retry_interval(const struct tt_WriterProxy* proxy) {
+    return retry_interval_for(reliable_retry_configured(), proxy);
+}
+
+// A Publisher has no recovery estimate of its own - it is the Subscriber that times recoveries - so
+// in dynamic mode its ACK-solicitation throttle keeps the fixed starting value it always had.
+static uint64_t reliable_retry_interval_publisher(void) {
+    uint64_t configured = reliable_retry_configured();
+    return configured != 0 ? configured : (uint64_t)tt_RELIABLE_RETRY_INITIAL;
+}
+
+// Folds one request-to-recovery time into proxy's estimate, RFC 6298-style: on the first sample
+// srtt = R and rttvar = R/2, then rttvar = 3/4 rttvar + 1/4 |srtt - R| and srtt = 7/8 srtt + 1/8 R.
+// R is clamped to at least 1ns so a first sample can never leave srtt at the 0 that means "none".
+// RFC 6298's gains, as the shifts they are: srtt moves 1/8 of the way to each sample and rttvar 1/4
+// of the way to each deviation. Named so the arithmetic below reads as the RFC does.
+#define RECOVERY_SRTT_KEEP 7U // srtt = (7 * srtt + R) / 8
+#define RECOVERY_SRTT_DIV 8U
+#define RECOVERY_RTTVAR_KEEP 3U // rttvar = (3 * rttvar + |srtt - R|) / 4
+#define RECOVERY_RTTVAR_DIV 4U
+
+static void note_recovery_sample(struct tt_WriterProxy* proxy, uint64_t sample_ns) {
+    uint32_t sample = UINT32_MAX;
+    if (sample_ns == 0) {
+        sample = 1U;
+    } else if (sample_ns < UINT32_MAX) {
+        sample = (uint32_t)sample_ns;
+    }
+    if (proxy->recovery_srtt_ns == 0) {
+        proxy->recovery_srtt_ns = sample;
+        proxy->recovery_rttvar_ns = sample / 2U;
+        return;
+    }
+    uint32_t err =
+        proxy->recovery_srtt_ns > sample ? proxy->recovery_srtt_ns - sample : sample - proxy->recovery_srtt_ns;
+    proxy->recovery_rttvar_ns =
+        (uint32_t)((((uint64_t)RECOVERY_RTTVAR_KEEP * proxy->recovery_rttvar_ns) + err) / RECOVERY_RTTVAR_DIV);
+    proxy->recovery_srtt_ns =
+        (uint32_t)((((uint64_t)RECOVERY_SRTT_KEEP * proxy->recovery_srtt_ns) + sample) / RECOVERY_SRTT_DIV);
+}
+
+// An ACKNACK naming the watermark just went out. Starts a probe on it unless one is already running
+// for this same watermark - a retry keeps the first request's timestamp, which is the whole point
+// (see tt_WriterProxy.probe_ns). A probe left behind by a watermark that moved on without its sample
+// arriving (a give-up, a jump, an eviction) no longer matches ack_seq_no, and is simply replaced.
+static void note_watermark_requested(struct tt_WriterProxy* proxy, uint64_t now) {
+    if (proxy->probe_ns != 0 && proxy->probe_seq_no == proxy->ack_seq_no) {
+        return;
+    }
+    proxy->probe_seq_no = proxy->ack_seq_no;
+    proxy->probe_ns = now != 0 ? now : 1U;
 }
 
 // Scheduled (tt_Node_schedule()) while proxy has an outstanding gap (proxy->received_bitmap !=
@@ -3475,7 +3576,7 @@ static void acknack_retry(struct tt_Node* node, uint64_t time, void* param) {
                        proxy->keep_all == tt_WRITER_KEEP_ALL_YES ? "KEEP_ALL" : "policy not yet known");
     }
 
-    if (!tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(), acknack_retry, proxy)) {
+    if (!tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
         TT_LOG_ERROR("Cannot schedule acknack_retry");
         proxy->acknack_scheduled = false;
     }
@@ -3546,7 +3647,7 @@ static void maybe_arm_acknack_retry(struct tt_Node* node, struct tt_WriterProxy*
         RSTAT_INC(acknack_immediate);
         send_acknack(node, proxy);
         proxy->retry = 0;
-        if (tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(), acknack_retry, proxy)) {
+        if (tt_Node_schedule(node, tt_get_ns() + reliable_retry_interval(proxy), acknack_retry, proxy)) {
             proxy->acknack_scheduled = true;
         } else {
             TT_LOG_ERROR("Cannot schedule acknack_retry");
@@ -3768,6 +3869,10 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     struct new_gap_range new_gap = {-1, -1};
     bool is_new = true;
     if (seq_no == proxy->ack_seq_no) {
+        if (proxy->probe_ns != 0 && proxy->probe_seq_no == seq_no) {
+            note_recovery_sample(proxy, tt_get_ns() - proxy->probe_ns);
+            proxy->probe_ns = 0;
+        }
         advance_ack_seq_no(proxy);
     } else {
         // NOTE: deliberately *not* fast-forwarding past a wide gap here, on every arrival that's
