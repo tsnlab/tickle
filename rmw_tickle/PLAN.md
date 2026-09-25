@@ -26,7 +26,9 @@ from scratch each time:
    relative to `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp` at the `rmw` layer specifically - not
    assumed to follow automatically from point 2 just because `rmw_tickle` wraps TickLE core.
 5. **The key difference between the two layers**: TickLE core stays embedded-conscious (small
-   footprint, deliberately minimal threading - DESIGN.md's own "Concurrency: single-threaded per
+   footprint, deliberately minimal threading - DESIGN.md's own "Concurrency" section (which described
+   a single-threaded-per-node core until 2026-09-26; see the Threading row below for what replaced it,
+   and note that the no-malloc invariant is unchanged) - single-threaded per
    node, by design" section). `rmw_tickle` is not under that same constraint - its own target is
    `rmw`/ROS 2 environment optimization, a Linux/desktop-class deployment, not a microcontroller -
    so `rmw_tickle` should use threads aggressively where doing so improves performance, rather
@@ -44,7 +46,7 @@ absorbing the difference into `rmw_tickle` when no such primitive is needed:
 
 | Area | TickLE | rmw_tickle |
 |---|---|---|
-| Threading | Stays single-threaded per `tt_Node` - driven by exactly one thread | Owns all lock/thread management. A background thread per node drives `tt_Node_poll()`; a per-node mutex serializes every other entry point (`rmw_publish`, ...) against it |
+| Threading | **Thread-safe since 2026-09-26** (`tt_THREAD_SAFE=1` by default; `0` compiles the locks out for single-task MCU builds). Every public `tt_*` may be called from any thread, concurrently with the poll. One owner-tracked lock per node guards the node, its entities and the scheduler heap; re-entry by the owner is free, and user callbacks run on the poll thread inside it and may call back into core. `tt_Node_poll()` holds nothing while waiting, and a second concurrent poller gets `tt_RET_BUSY`. Lock-free paths: `tt_Server_send_response()` (slot state), `tt_Node_interrupt()`, and `tt_Node_schedule()`'s inbox when the lock is held elsewhere. A timer armed on another thread wakes a waiting poll by itself. `tt_Node_lock`/`unlock` (nestable) exist for compound reads such as the discovery table; `tt_Node_lock_timed` for observers that must not block behind a wedged callback. HAL: `tt_lock_t`, `tt_lock_acquire_timed`, `tt_thread_self` | **Owns no lock around core.** `node_mutex` is gone. The poll thread calls `tt_Node_poll(-1)` holding nothing; entry points call core directly and take `tt_Node_lock` only where rmw state must agree with core's. Lock order: node lock before `wait_mutex`. Idle wakes follow core's (periodic tasks only), which the watchdog's 3 s threshold tolerates because an idle node still returns once a second |
 | Memory | Stays malloc-free (`src/` calls neither `malloc` nor `free` - a hard existing invariant) | Free to use `rcutils_allocator_t`-based allocation throughout, per the `rmw` contract |
 | Interface coverage | N/A | Supports only the `.msg`/`.srv` subset `tools/typesupport` already generates, plus TickLE's own single-datagram size ceiling - see "Supported subset" below |
 | QoS | N/A | Rejects anything outside the currently-supported set explicitly (`RMW_RET_UNSUPPORTED`-equivalent), rather than silently downgrading it - see "QoS roadmap" below |
