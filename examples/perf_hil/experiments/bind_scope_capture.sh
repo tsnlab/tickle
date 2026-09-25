@@ -55,7 +55,7 @@ set -e
 cd ~/tickle
 git fetch --quiet origin
 git reset --hard --quiet "$SHA"
-git clean -fdq
+git clean -fdqx
 make examples >/tmp/bindscope_build.log 2>&1 || { tail -20 /tmp/bindscope_build.log; exit 1; }
 test -x platform/linux/publisher
 echo "rig HEAD is now $(git rev-parse --short HEAD)"

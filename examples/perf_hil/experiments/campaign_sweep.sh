@@ -157,7 +157,7 @@ VARIANTS="$(needed_variants | paste -sd' ')"
 pids=()
 for host in "${HOSTS[@]}"; do
     ssh_h "$host" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
+cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
 cd examples/perf_hil
 for v in $VARIANTS; do
   scen=\${v%_p[0-9]}; size=\${v##*_}

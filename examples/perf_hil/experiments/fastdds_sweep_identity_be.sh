@@ -66,7 +66,7 @@ build() {
     say ""; say "--- building $sha on both rpis ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdq && git checkout -q $sha
+cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx && git checkout -q $sha
 cd examples/perf_hil/fastdds
 for s in $ALL; do rm -f \"\$s/client\" \"\$s/server\"; done
 miss=

@@ -29,7 +29,7 @@ git -C "$REPO" fetch -q origin
 SHA="$(git -C "$REPO" rev-parse origin/main)"
 say "=== lifespan recheck, $(date -Is), main $SHA, ${REPS} reps ==="
 for h in "${HOSTS[@]}"; do
-    ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
+    ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
 cd examples/perf_hil && for fw in tickle cyclonedds fastdds; do (cd \$fw && ./build.sh lifespan_expiry >/tmp/lsrecheck_build.log 2>&1) || { echo BUILD FAILED \$fw; exit 1; }; done" &
 done
 wait

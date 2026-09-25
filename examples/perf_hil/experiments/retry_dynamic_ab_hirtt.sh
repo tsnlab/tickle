@@ -63,7 +63,7 @@ build() {   # $1 = 0 (fixed) | 1 (dynamic)
     say "--- building with TICKLE_DYNAMIC_RETRY=$dyn on both rpis ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
+cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
 cd examples/perf_hil/tickle
 TICKLE_DYNAMIC_RETRY=$dyn ./build.sh reliable_throughput p1 > /tmp/retryab_build.log 2>&1 \
   || { echo \"BUILD FAILED on \$(hostname)\"; tail -8 /tmp/retryab_build.log; exit 1; }

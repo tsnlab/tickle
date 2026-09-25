@@ -49,7 +49,7 @@ pids=(); bad=0
 say "--- building p1 and p4 on both rpis ---"
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
+cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
 cd examples/perf_hil/tickle
 for s in p1 p4; do
   ./build.sh reliable_throughput \$s > /tmp/kb_build_\$s.log 2>&1

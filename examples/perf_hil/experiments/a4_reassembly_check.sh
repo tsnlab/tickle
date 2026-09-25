@@ -71,7 +71,7 @@ say "--- building the stats variants on both rpis ---"
 pids=()
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
+cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
 cd examples/perf_hil/tickle
 for s in p1 p4; do TICKLE_RELIABLE_STATS=1 ./build.sh reliable_throughput \$s > /tmp/a4_build_\$s.log 2>&1 \
   || { echo \"BUILD FAILED \$s on \$(hostname)\"; tail -8 /tmp/a4_build_\$s.log; exit 1; }
