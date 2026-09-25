@@ -11,11 +11,21 @@
 #   - instrument=ok is required. A counter reading zero sets instrument=fail:<which> on the harness
 #     side; idle eth0 is a measured byte-identical zero delta, so a zero byte count cannot be a quiet
 #     link. Any cell without instrument=ok is VOID.
-#   - The boundary gate: at N0, wire_packets_per_sample must be 1.0 for all three at P1 and P2,
-#     1.0 for TickLE and 2.0 for both vendors at P3, and >= 2.0 for all three at P4. RTPS framing is
-#     spec arithmetic, not a measurement, and this is what checks it. A size that misses its intended
-#     split makes that size's cross-vendor comparison VOID - the numbers are still printed, with the
-#     verdict, because the observed packet count is how the right size gets computed next time.
+#   - The boundary gate: at N0, the CLIENT's own client.wire_role_packets_per_sample must read
+#     below 1.5 ("one datagram") for all three at P1 and P2, below 1.5 for TickLE and at or above
+#     2.0 for both vendors at P3, and at or above 2.0 for all three at P4. Three things about the
+#     shape of that rule, all of which cost a wrong version first:
+#       * it reads the role-split client metric, not wire_packets_per_sample, which counts the whole
+#         interface in both directions and so carries the returning ACKNACKs on a RELIABLE publisher
+#         (TickLE Dev's correction);
+#       * it is a band and not an equality, because a publisher also sends heartbeats, so a correct
+#         single datagram reads slightly above 1.0 and never exactly 1.0;
+#       * it is a gate, not a metric to win - at P1/P2 all three are meant to read the same, and
+#         calling that three-way equality a TickLE draw would be a verdict on the test design.
+#     RTPS framing is spec arithmetic, not a measurement, and this is what checks it. A size that
+#     misses its intended split makes that size's cross-vendor comparison VOID - the numbers are
+#     still printed, with the verdict, because the observed packet count is how the right size gets
+#     computed next time.
 #   - A cell is also VOID with no RESULT line, a fired leftover guard, or a framework that did not
 #     end drained=acked where that is expected.
 #   - TickLE wins a cell only by beating BOTH vendors outside the spread of the three repetitions.
