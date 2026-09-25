@@ -26,7 +26,6 @@
 // actual transition isn't) - see rmw_tickle/PLAN.md's own note on this same gap.
 
 #include <assert.h>
-#include <pthread.h> // node_mutex around the direct discovery-table injection below
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -259,7 +258,7 @@ int main(void) {
     // public (rmw_tickle_c/rmw_tickle.h), the same header Milestone 30's own test_liveliness_lost_
     // watchdog.c already reaches into directly for an equivalent reason (proving something no
     // black-box rmw API call alone can induce). Injecting one synthetic discovered entity per
-    // event, straight into context_impl->discovery.entities[] under node_mutex (the exact same
+    // event, straight into context_impl->discovery.entities[] under the node lock (the exact same
     // table process_update()/decode_update_entities() would populate from a real remote UPDATE,
     // tickle.c), is that same technique applied here: check_publisher_qos_incompatible()/check_
     // subscription_qos_incompatible() (rmw_publisher.c/rmw_subscription.c) can't tell the
@@ -282,7 +281,7 @@ int main(void) {
     rmw_event_t offered_qos_event = rmw_get_zero_initialized_event();
     assert(RMW_RET_OK == rmw_publisher_event_init(&offered_qos_event, offered_pub, RMW_EVENT_OFFERED_QOS_INCOMPATIBLE));
 
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     struct tt_DiscoveredEntity* sub_slot = &context_impl->discovery.entities[0];
     sub_slot->node_id = FAKE_REMOTE_NODE_ID; // any value other than tt_NODE_ID_INVALID - discovery never records
                                              // this process's own local entities, so which remote id it names is
@@ -294,7 +293,7 @@ int main(void) {
     sub_slot->alive = true;
     snprintf(sub_slot->type, sizeof(sub_slot->type), "test_events/msg/FakeMsg");
     snprintf(sub_slot->name, sizeof(sub_slot->name), "offered_qos_pub_topic");
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
 
     events_storage[0] = &offered_qos_event;
     events.event_count = 1;
@@ -324,7 +323,7 @@ int main(void) {
     assert(RMW_RET_OK ==
            rmw_publisher_event_init(&liveliness_offered_event, liveliness_pub, RMW_EVENT_OFFERED_QOS_INCOMPATIBLE));
 
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     struct tt_DiscoveredEntity* manual_sub_slot = &context_impl->discovery.entities[2];
     manual_sub_slot->node_id = FAKE_REMOTE_NODE_ID;
     manual_sub_slot->endpoint_id = 0;
@@ -333,7 +332,7 @@ int main(void) {
     manual_sub_slot->alive = true;
     snprintf(manual_sub_slot->type, sizeof(manual_sub_slot->type), "test_events/msg/FakeMsg");
     snprintf(manual_sub_slot->name, sizeof(manual_sub_slot->name), "offered_liveliness_pub_topic");
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
 
     events_storage[0] = &liveliness_offered_event;
     events.event_count = 1;
@@ -362,7 +361,7 @@ int main(void) {
     assert(RMW_RET_OK ==
            rmw_subscription_event_init(&requested_qos_event, requested_sub, RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE));
 
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     struct tt_DiscoveredEntity* pub_slot = &context_impl->discovery.entities[1];
     pub_slot->node_id = FAKE_REMOTE_NODE_ID;
     pub_slot->endpoint_id = 0;
@@ -371,7 +370,7 @@ int main(void) {
     pub_slot->alive = true;
     snprintf(pub_slot->type, sizeof(pub_slot->type), "test_events/msg/FakeMsg");
     snprintf(pub_slot->name, sizeof(pub_slot->name), "requested_qos_sub_topic");
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
 
     events_storage[0] = &requested_qos_event;
     events.event_count = 1;

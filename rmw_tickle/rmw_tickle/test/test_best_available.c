@@ -14,14 +14,13 @@
 // against context_impl->discovery at entity-creation time. Same synthetic-discovered-entity
 // injection technique test_events.c already established (struct tt_DiscoveredEntity is public,
 // rmw_tickle_c/rmw_tickle.h - injecting straight into context_impl->discovery.entities[] under
-// node_mutex is indistinguishable from a real remote UPDATE to anything that reads this table) -
+// the node lock is indistinguishable from a real remote UPDATE to anything that reads this table) -
 // applied here *before* rmw_create_publisher()/rmw_create_subscription() runs, since resolution
 // happens once at creation time, not on an ongoing basis. rmw_publisher_get_actual_qos()/rmw_
 // subscription_get_actual_qos() (both just return pub_impl->qos/sub_impl->qos, set from the
 // already-resolved qos_profile) is how each case's own resolved value is observed.
 
 #include <assert.h>
-#include <pthread.h> // node_mutex around the direct discovery-table injection below
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -139,7 +138,7 @@ static int next_discovery_slot = 0;
 static void inject_discovered_entity(rmw_tickle_context_impl_t* context_impl, uint8_t kind, const char* topic_name,
                                      uint8_t qos_bits, uint64_t deadline_duration_ns,
                                      uint64_t liveliness_lease_duration_ns) {
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[next_discovery_slot++];
     entity->node_id = FAKE_REMOTE_NODE_ID;
     entity->endpoint_id = 0;
@@ -150,7 +149,7 @@ static void inject_discovered_entity(rmw_tickle_context_impl_t* context_impl, ui
     entity->alive = true;
     snprintf(entity->type, sizeof(entity->type), "test_best_available/msg/FakeMsg");
     snprintf(entity->name, sizeof(entity->name), "%s", topic_name);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
 }
 
 int main(void) {

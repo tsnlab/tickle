@@ -191,7 +191,7 @@ rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node, rcutils_strin
 
 // The actual scan, shared by count_matching() below and rmw_tickle_count_matching_locked()
 // (rmw_tickle.h - RMW_EVENT_LIVELINESS_CHANGED's own periodic check, rmw_subscription.c). Assumes
-// context_impl->node_mutex is already held by the caller - see rmw_tickle_count_matching_locked()'s
+// the node lock is already held by the caller - see rmw_tickle_count_matching_locked()'s
 // own doc comment for why that one can't take it itself. Only ever counts *alive* discovery
 // entries - Milestone 62 (rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 3) switched
 // this from reading struct tt_DiscoveredEntity.alive directly to tt_Node_entity_alive() (tickle.h),
@@ -298,7 +298,7 @@ static bool qos_incompatible(bool requested_reliable, bool requested_durable, bo
 // currently-alive discovered remote Subscribers on `topic_name` request something this Publisher
 // (offering `offered_*`) doesn't. Same "poll-thread-only, no locking of its own" rule as count_
 // matching_locked() - called only from check_publisher_qos_incompatible() (rmw_publisher.c),
-// which already holds context_impl->node_mutex via the same tt_Node_schedule()-callback contract
+// which already holds the node lock via the same tt_Node_schedule()-callback contract
 // that function's own doc comment explains.
 size_t rmw_tickle_count_incompatible_subscribers_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                                         bool offered_reliable, bool offered_durable,
@@ -364,10 +364,9 @@ size_t rmw_tickle_count_incompatible_publishers_locked(rmw_tickle_context_impl_t
 // 34), never a specific rmw_tickle_node_t.
 static size_t count_matching_via_context_impl(rmw_tickle_context_impl_t* context_impl, const char* topic_name,
                                               uint8_t kind) {
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     size_t matched = count_matching_locked(context_impl, topic_name, kind);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return matched;
 }
 
@@ -537,7 +536,7 @@ static size_t add_name_type_entry(struct name_type_entry* entries, size_t count,
 // distinct (name, type) pair among BOTH given kinds ("for which a publisher and/or a subscription
 // exists" per rmw_get_topic_names_and_types()'s own doc comment - Publisher+Subscriber for
 // topics, Server+Client for services), local endpoints and remote discovery alike. Caller must
-// already hold context_impl->node_mutex for as long as the raw name/type pointers gathered here
+// already hold the node lock for as long as the raw name/type pointers gathered here
 // stay in use - build_names_and_types() below strdup()s them before any caller may unlock.
 static size_t collect_graph_wide_name_types(rmw_tickle_context_impl_t* context_impl, uint8_t kind_a, uint8_t kind_b,
                                             struct name_type_entry* entries) {
@@ -707,12 +706,11 @@ rmw_ret_t rmw_get_topic_names_and_types(const rmw_node_t* node, rcutils_allocato
     rmw_tickle_context_impl_t* context_impl = node_impl->context_impl;
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
 
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     size_t entry_count =
         collect_graph_wide_name_types(context_impl, tt_KIND_TOPIC_PUBLISHER, tt_KIND_TOPIC_SUBSCRIBER, entries);
     ret = build_names_and_types(entries, entry_count, allocator, topic_names_and_types);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return ret;
 }
 
@@ -727,12 +725,11 @@ rmw_ret_t rmw_get_service_names_and_types(const rmw_node_t* node, rcutils_alloca
     rmw_tickle_context_impl_t* context_impl = node_impl->context_impl;
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
 
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     size_t entry_count =
         collect_graph_wide_name_types(context_impl, tt_KIND_SERVICE_SERVER, tt_KIND_SERVICE_CLIENT, entries);
     ret = build_names_and_types(entries, entry_count, allocator, service_names_and_types);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return ret;
 }
 
@@ -812,12 +809,11 @@ rmw_ret_t rmw_get_subscriber_names_and_types_by_node(const rmw_node_t* node, rcu
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_TOPIC_SUBSCRIBER, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, topic_names_and_types);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return ret;
 }
 
@@ -838,12 +834,11 @@ rmw_ret_t rmw_get_publisher_names_and_types_by_node(const rmw_node_t* node, rcut
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_TOPIC_PUBLISHER, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, topic_names_and_types);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return ret;
 }
 
@@ -863,12 +858,11 @@ rmw_ret_t rmw_get_service_names_and_types_by_node(const rmw_node_t* node, rcutil
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_SERVICE_SERVER, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, service_names_and_types);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return ret;
 }
 
@@ -888,12 +882,11 @@ rmw_ret_t rmw_get_client_names_and_types_by_node(const rmw_node_t* node, rcutils
     }
 
     struct name_type_entry entries[tt_MAX_NAME_TYPE_ENTRIES];
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     size_t entry_count =
         collect_by_node_name_types(context_impl, tt_KIND_SERVICE_CLIENT, node_name, node_namespace, entries);
     ret = build_names_and_types(entries, entry_count, allocator, service_names_and_types);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return ret;
 }
 
@@ -943,13 +936,12 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
                                                   uint8_t kind, rmw_endpoint_type_t endpoint_type,
                                                   rcutils_allocator_t* allocator,
                                                   rmw_topic_endpoint_info_array_t* info_array) {
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
 
     size_t match_count = count_matching_locked(context_impl, topic_name, kind);
     rmw_ret_t ret = rmw_topic_endpoint_info_array_init_with_size(info_array, match_count, allocator);
     if (ret != RMW_RET_OK) {
-        pthread_mutex_unlock(&context_impl->node_mutex);
+        tt_Node_unlock(&context_impl->tickle_node);
         return ret; // already set its own error message
     }
 
@@ -964,7 +956,7 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
                                            details.type_name, endpoint_type, context_impl->tickle_node.id, endpoint->id,
                                            details.qos, &info_array->info_array[index]);
         if (ret != RMW_RET_OK) {
-            pthread_mutex_unlock(&context_impl->node_mutex);
+            tt_Node_unlock(&context_impl->tickle_node);
             fini_topic_endpoint_info_array_ignore_result(info_array, allocator);
             return ret;
         }
@@ -984,14 +976,14 @@ static rmw_ret_t get_topic_endpoint_info_by_topic(rmw_tickle_context_impl_t* con
         ret = populate_topic_endpoint_info(allocator, "", "", entity->type, endpoint_type, entity->node_id,
                                            entity->endpoint_id, &qos, &info_array->info_array[index]);
         if (ret != RMW_RET_OK) {
-            pthread_mutex_unlock(&context_impl->node_mutex);
+            tt_Node_unlock(&context_impl->tickle_node);
             fini_topic_endpoint_info_array_ignore_result(info_array, allocator);
             return ret;
         }
         index++;
     }
 
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return RMW_RET_OK;
 }
 
@@ -1062,8 +1054,7 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
     const char* type_name = client_impl->service.name;
     const char* service_name = client->service_name;
 
-    tt_Node_interrupt(&context_impl->tickle_node);
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
 
     bool found = false;
     for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count && !found; ++i) {
@@ -1084,7 +1075,7 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
         }
     }
 
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     *is_available = found;
     return RMW_RET_OK;
 }

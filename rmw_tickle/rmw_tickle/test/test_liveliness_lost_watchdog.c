@@ -15,13 +15,12 @@
 // this actually fires needs a real, genuine stall - not something reachable through the public rmw
 // API alone - so this file reaches into rmw_tickle_c/rmw_tickle.h directly (a legitimate public
 // header of this package, not a private implementation detail) to hold node_impl->context_impl->
-// node_mutex from this test's own thread for longer than the watchdog's own stale threshold, the
+// the node lock from this test's own thread for longer than the watchdog's own stale threshold, the
 // same mutex poll_thread's own loop (rmw_node.c's poll_thread_main()) needs to reacquire before it
 // can call tt_Node_poll() again - a real, if externally-induced, stall of poll_thread's own
 // progress, not a forged timestamp standing in for one.
 
 #include <assert.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -161,7 +160,7 @@ int main(void) {
     assert(RMW_RET_TIMEOUT == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &short_timeout));
     assert(NULL == events.events[0]); // rmw_wait() nulls out anything not ready
 
-    // Induce a real stall: hold node_impl->context_impl->node_mutex (rmw_tickle_c/rmw_tickle.h) from this thread for
+    // Induce a real stall: hold the node lock (rmw_tickle_c/rmw_tickle.h) from this thread for
     // longer than the watchdog's own stale threshold - poll_thread_main() (rmw_node.c) needs this
     // exact mutex before it can call tt_Node_poll() again, so holding it externally genuinely
     // blocks poll_thread's own progress, the same way an unrelated bug wedging *anything* that
@@ -174,13 +173,13 @@ int main(void) {
     uint64_t stale_threshold_ns = (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
     uint64_t hang_duration_ns = stale_threshold_ns + tt_SECOND; // +1s margin over the bare floor
 
-    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_Node_lock(&node_impl->context_impl->tickle_node);
     struct timespec hang_duration = {
         .tv_sec = (time_t)(hang_duration_ns / tt_SECOND),
         .tv_nsec = (long)(hang_duration_ns % tt_SECOND),
     };
     nanosleep(&hang_duration, NULL);
-    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    tt_Node_unlock(&node_impl->context_impl->tickle_node);
 
     // The watchdog may have been blocked on this same mutex (inside mark_automatic_publishers_
     // lost(), rmw_node.c) waiting for the unlock() just above - rmw_wait() with a real timeout (rather
@@ -201,7 +200,7 @@ int main(void) {
     assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
     // QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - MANUAL_BY_TOPIC. Unlike the AUTOMATIC
-    // case above, this doesn't need any node_impl->context_impl->node_mutex trickery at all: check_manual_publishers_
+    // case above, this doesn't need any the node lock trickery at all: check_manual_publishers_
     // lost() (rmw_node.c) checks each manual Publisher's own last_asserted_ns independently of
     // poll_thread's health, so a plain wait (no assertion at all) past the lease is a real,
     // unforced test of the actual obligation this QoS kind imposes.

@@ -66,7 +66,7 @@
 // something went wrong server-side.
 #define RMW_TICKLE_SERVER_CALLBACK_ERROR ((int8_t)-1)
 
-// Runs on the poll thread, context_impl->node_mutex already held (rmw_tickle.h's own threading
+// Runs on the poll thread, the node lock already held (rmw_tickle.h's own threading
 // model). See this file's own module doc comment for the full deferred-response design.
 static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* request, struct tt_Response* response,
                               tt_RequestId request_id) {
@@ -248,8 +248,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
         return NULL;
     }
 
-    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_Node_lock(&node_impl->context_impl->tickle_node);
     tt_ret_t ret = tt_Node_create_server(&node_impl->context_impl->tickle_node, &svc->tickle_server, &svc->service,
                                          svc->rmw_service.service_name, server_callback);
     if (ret == tt_RET_OK) {
@@ -261,7 +260,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node, const rosidl_service_t
             tt_Server_destroy(&svc->tickle_server);
         }
     }
-    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    tt_Node_unlock(&node_impl->context_impl->tickle_node);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create_server()/tt_Server_set_storage() failed");
         allocator->deallocate(svc->response_cache, allocator->state);
@@ -288,10 +287,9 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
 
     rmw_tickle_service_t* svc = (rmw_tickle_service_t*)service->data;
 
-    tt_Node_interrupt(&svc->node->context_impl->tickle_node);
-    pthread_mutex_lock(&svc->node->context_impl->node_mutex);
+    tt_Node_lock(&svc->node->context_impl->tickle_node);
     tt_Server_destroy(&svc->tickle_server);
-    pthread_mutex_unlock(&svc->node->context_impl->node_mutex);
+    tt_Node_unlock(&svc->node->context_impl->tickle_node);
 
     pthread_mutex_destroy(&svc->request_mutex);
 

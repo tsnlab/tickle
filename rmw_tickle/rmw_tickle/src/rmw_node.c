@@ -40,17 +40,9 @@
 #include "rmw/validate_node_name.h"
 #include "rmw_tickle_c/rmw_tickle.h"
 
-// tt_RECEIVE_TIMEOUT (config.h, 100us) is what tt_Node_poll() itself substitutes for any
-// negative timeout - passed explicitly here (rather than -1, matching examples/*/*.c's own
-// top-level poll loops) so this file doesn't depend on that substitution as an implicit,
-// undocumented-at-the-call-site default. A macro (matching rmw_tickle.h's own RMW_TICKLE_*
-// constants), not a `static const` variable - readability-identifier-naming's ConstantCase
-// (lower_case) applies to the latter but not to a macro (MacroDefinitionCase: UPPER_CASE).
-#define RMW_TICKLE_POLL_TIMEOUT_NS tt_RECEIVE_TIMEOUT
-
 // rmw_tickle/PLAN.md's Milestone 6: "graph-changed guard condition wired to 0(c)'s callback".
-// Runs on the poll thread, context_impl->node_mutex already held (tt_Node_set_discovery()'s own
-// contract - this fires from inside whichever tt_Node_poll() call just processed the UPDATE).
+// Runs on the poll thread, inside core's node lock (tt_Node_set_discovery()'s own contract - this fires
+// from inside whichever tt_Node_poll() call just processed the UPDATE).
 // node_id/endpoint_id/kind/departed aren't needed here - rmw's own contract is just "something in
 // the graph changed, go re-query it", not "here's exactly what changed" (rmw_get_node_names() et
 // al. are the re-query), so this simply triggers the guard condition unconditionally on every
@@ -73,13 +65,6 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
     pthread_mutex_unlock(&context_impl->wait_mutex);
 }
 
-// A deliberate, measured gap between one tt_Node_poll() cycle's unlock() and the next cycle's
-// lock() - see poll_thread_main()'s own comment on why. 1us was enough to fully restore publish()
-// throughput in that same benchmark (measured, not guessed) - negligible next to RMW_TICKLE_POLL_
-// TIMEOUT_NS's own ~1ms-rounded-up cadence (config.h/hal_linux.c), so it doesn't meaningfully
-// delay receive/flush responsiveness either, but real (nanosleep, not sched_yield()) - see below.
-#define RMW_TICKLE_POLL_THREAD_YIELD_NS tt_MICROSECOND
-
 // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 30, implementing
 // Milestone 28(b)'s own design sketch). How stale poll_thread_last_return_ns may get before
 // watchdog_thread_main() below calls it a hang - reuses the exact same floor rmw_qos.c's own
@@ -101,7 +86,7 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
 // mechanism the way poll_thread's own tt_Node_interrupt() gives it.
 #define RMW_TICKLE_WATCHDOG_SHUTDOWN_POLL_NS (50 * tt_MILLISECOND)
 // QoS roadmap #3 (LIVELINESS) follow-up, Milestone 32 - how long check_manual_publishers_lost()
-// below waits for context_impl->node_mutex before giving up for this cycle - see its own doc
+// below waits for the node lock before giving up for this cycle - see its own doc
 // comment for why this needs pthread_mutex_timedlock() specifically, neither a plain trylock() nor
 // an untimed lock(). Generous next to poll_thread's own microsecond-scale hold per tt_Node_poll()
 // call, tiny next to RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS itself.
@@ -128,7 +113,7 @@ static void broadcast_wait_cond(rmw_tickle_context_impl_t* context_impl) {
 // the one shared tt_Node, never actually per-logical-node). Called *only* once node_stale has
 // already been computed true by the caller, lock-free, before this - a deliberate "decide first,
 // act after" split: this function's own pthread_mutex_lock() below may have to wait out however
-// long node_mutex is actually held (a real hang could be seconds), and by the time it returns,
+// long the node lock is actually held (a real hang could be seconds), and by the time it returns,
 // poll_thread may already have resumed and refreshed poll_thread_last_return_ns back to a fresh
 // value - but that no longer matters, since the "was it stale" decision was already made and
 // handed in, not re-derived here. (A version of this function that re-checked staleness itself
@@ -136,7 +121,7 @@ static void broadcast_wait_cond(rmw_tickle_context_impl_t* context_impl) {
 // poll_thread wins the reacquire race the instant the lock frees, erasing the staleness signal
 // before this function's own re-check could see it.)
 static void mark_automatic_publishers_lost(rmw_tickle_context_impl_t* context_impl) {
-    pthread_mutex_lock(&context_impl->node_mutex);
+    tt_Node_lock(&context_impl->tickle_node);
     bool marked_any = false;
     for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count; i++) {
         struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
@@ -155,7 +140,7 @@ static void mark_automatic_publishers_lost(rmw_tickle_context_impl_t* context_im
             marked_any = true;
         }
     }
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     if (marked_any) {
         broadcast_wait_cond(context_impl);
     }
@@ -181,12 +166,7 @@ static void mark_automatic_publishers_lost(rmw_tickle_context_impl_t* context_im
 // MANUAL_CHECK_TIMEOUT_NS is generous next to poll_thread's own ~microsecond-scale hold, but tiny
 // next to RMW_TICKLE_WATCHDOG_CHECK_INTERVAL_NS, so a miss here just tries again next cycle.
 static void check_manual_publishers_lost(rmw_tickle_context_impl_t* context_impl) {
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - see rmw_wait_set.c's own comment
-    deadline.tv_nsec += RMW_TICKLE_WATCHDOG_MANUAL_CHECK_TIMEOUT_NS;
-    deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;
-    deadline.tv_nsec %= (long)tt_SECOND;
-    if (pthread_mutex_timedlock(&context_impl->node_mutex, &deadline) != 0) {
+    if (!tt_Node_lock_timed(&context_impl->tickle_node, RMW_TICKLE_WATCHDOG_MANUAL_CHECK_TIMEOUT_NS)) {
         return;
     }
     uint64_t now = tt_get_ns();
@@ -209,7 +189,7 @@ static void check_manual_publishers_lost(rmw_tickle_context_impl_t* context_impl
         }
         pub_impl->liveliness_lost_latched = manual_stale;
     }
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     if (marked_any) {
         broadcast_wait_cond(context_impl);
     }
@@ -253,45 +233,30 @@ static void* watchdog_thread_main(void* arg) {
     return NULL;
 }
 
+// Since 2026-09-25 TickLE core is thread-safe (tickle.h, "Threading"), so this thread holds nothing: it
+// waits in tt_Node_poll() until the next scheduler entry is due or a datagram or an interrupt arrives,
+// and every other rmw entry point calls core directly, taking core's own node lock (tt_Node_lock()) where
+// it needs several reads to agree. Before, this loop took the context's node_mutex around a 100 us poll,
+// released it for 1 us so other threads had a chance at it, and relocked - about 10,000 wakes a second
+// on an idle node, and every rmw_publish() first interrupted this thread to get the mutex back.
+//
+// tt_RET_INTERRUPTED (rmw_destroy_node() stopping this thread, or a timer armed from another thread
+// waking the wait so it can run on time), tt_RET_TIMEOUT and tt_RET_OK all just mean "loop back and check
+// poll_thread_running again" - there is nothing this thread could usefully do differently for any
+// other tt_Node_poll() result either.
 static void* poll_thread_main(void* arg) {
     rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)arg;
     while (context_impl->poll_thread_running) {
-        pthread_mutex_lock(&context_impl->node_mutex);
-        // tt_RET_INTERRUPTED (another entry point below wants `node_mutex`, or rmw_destroy_node()
-        // is stopping this thread) and tt_RET_TIMEOUT/tt_RET_OK (nothing due, or ordinary receive/
-        // scheduler work) all just mean "loop back and check poll_thread_running again" here -
-        // there's nothing this thread could usefully do differently for any other tt_Node_poll()
-        // failure either, so no per-code special-casing beyond the loop condition itself.
-        tt_Node_poll(&context_impl->tickle_node, RMW_TICKLE_POLL_TIMEOUT_NS);
-        pthread_mutex_unlock(&context_impl->node_mutex);
+        tt_Node_poll(&context_impl->tickle_node, -1);
 
         // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST. The one piece of
         // information watchdog_thread_main() below needs and can't get any other way: proof this
         // thread is still actually looping, not wedged inside tt_Node_poll() (or anywhere else in
         // this loop) - see rmw_tickle_context_impl_t.poll_thread_last_return_ns's own doc comment.
+        // An idle node still returns at least once a second, for its own periodic announce and
+        // liveliness check (tt_NODE_UPDATE_INTERVAL), well inside RMW_TICKLE_WATCHDOG_STALE_
+        // THRESHOLD_NS's 3 s.
         atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
-
-        // Found the hard way, benchmarking a real sustained publish rate (rmw_tickle/PLAN.md's
-        // rmw-perf.yml): without a real gap here, this thread's own unlock()-then-immediately-
-        // relock() pattern starves any *other* thread blocked in pthread_mutex_lock() on the same
-        // mutex (rmw_publish() et al.) for tens to hundreds of milliseconds at a time - glibc's
-        // mutex makes no fairness guarantee, and a thread re-locking a mutex it just released can
-        // win the race against a parked waiter's own futex wake+reschedule far more often than
-        // intuition suggests, especially under this call pattern's extremely short critical
-        // section and high call frequency (~1000/s). Measured: publish() throughput at ~1000Hz
-        // dropped to single digits/sec without this; a plain sched_yield() here did *not* fix it
-        // (Linux's CFS scheduler treats it as close to a no-op) - only an actual timed sleep,
-        // forcing a real scheduler-mediated handoff, did. The cost is negligible: this thread's
-        // own poll cadence is already ~1ms (RMW_TICKLE_POLL_TIMEOUT_NS rounds up to tt_receive()'s
-        // own 1ms poll() minimum - see hal_linux.c), so 1us more here is in the noise, and doesn't
-        // touch actual network receive latency either way (a real incoming packet or tt_Node_
-        // interrupt() still wakes tt_Node_poll() itself promptly; this sleep only delays how soon
-        // *this thread* loops back to call it again).
-        struct timespec yield_duration = {
-            .tv_sec = 0,
-            .tv_nsec = RMW_TICKLE_POLL_THREAD_YIELD_NS,
-        };
-        nanosleep(&yield_duration, NULL);
     }
     return NULL;
 }
@@ -304,18 +269,12 @@ static void* poll_thread_main(void* arg) {
 // found (zeroed, from rmw_init()'s own allocation), safe to retry on a later rmw_create_node()
 // call.
 static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
-    if (pthread_mutex_init(&context_impl->node_mutex, NULL) != 0) {
-        RMW_SET_ERROR_MSG("failed to initialize node mutex");
-        return RMW_RET_ERROR;
-    }
-
     // tt_Node_create() reads its setup (node id, bind address, broadcast address) entirely from
     // the process-wide _tt_CONFIG (rmw_init()'s own TICKLE_BROADCAST_ADDR handling, or its
     // compiled-in defaults) - see tickle.h's "Lifetime / ownership" note.
     tt_ret_t ret = tt_Node_create(&context_impl->tickle_node);
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_create() failed");
-        pthread_mutex_destroy(&context_impl->node_mutex);
         return RMW_RET_ERROR;
     }
 
@@ -325,7 +284,6 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
     if (ret != tt_RET_OK) {
         RMW_SET_ERROR_MSG("tt_Node_set_discovery() failed");
         tt_Node_destroy(&context_impl->tickle_node);
-        pthread_mutex_destroy(&context_impl->node_mutex);
         return RMW_RET_ERROR;
     }
 
@@ -339,7 +297,6 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
         RMW_SET_ERROR_MSG("failed to start poll thread");
         context_impl->poll_thread_running = false;
         tt_Node_destroy(&context_impl->tickle_node);
-        pthread_mutex_destroy(&context_impl->node_mutex);
         return RMW_RET_ERROR;
     }
 
@@ -360,10 +317,10 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
 // node_count is about to drop from 1 to 0 (the caller, rmw_destroy_node() below, already holds
 // registry_mutex).
 static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
-    // Same tt_Node_interrupt()-then-lock pattern rmw_publish() et al. use - see rmw_tickle.h's own
-    // rmw_tickle_context_impl_t doc comment. poll_thread_running is set first so the thread's own
-    // loop condition is already false by the time it next wakes, whichever of the (possibly
-    // several) tt_Node_poll() calls the interrupt actually cuts short.
+    // poll_thread_running is set first so the thread's own loop condition is already false by the
+    // time the interrupt ends its wait - an indefinite one, so nothing else would. An interrupt sent
+    // while the thread is between two polls is latched, not lost (tt_Node_interrupt(), tickle.h), and
+    // ends the next one.
     context_impl->poll_thread_running = false;
     tt_Node_interrupt(&context_impl->tickle_node);
     pthread_join(context_impl->poll_thread, NULL);
@@ -379,7 +336,6 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     }
 
     tt_Node_destroy(&context_impl->tickle_node);
-    pthread_mutex_destroy(&context_impl->node_mutex);
 }
 
 // For rmw_context_fini(): stops the shared TickLE node if nodes are still registered on this

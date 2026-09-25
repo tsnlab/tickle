@@ -26,7 +26,6 @@
 // create_node() already started is running concurrently.
 
 #include <assert.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -202,10 +201,9 @@ int main(void) {
     // See this file's own top comment on why the interrupt-then-lock pattern is needed here -
     // tickle_node is otherwise only ever touched by this node's own background poll thread.
     struct tt_Publisher pub;
-    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_Node_lock(&node_impl->context_impl->tickle_node);
     tt_ret_t tt_ret = tt_Node_create_publisher(&node_impl->context_impl->tickle_node, &pub, &topic, topic_name);
-    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    tt_Node_unlock(&node_impl->context_impl->tickle_node);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
@@ -214,11 +212,10 @@ int main(void) {
     assert(0U == count); // a publisher isn't a subscriber
 
     struct tt_Subscriber sub;
-    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_Node_lock(&node_impl->context_impl->tickle_node);
     tt_ret = tt_Node_create_subscriber(&node_impl->context_impl->tickle_node, &sub, &topic, topic_name,
                                        fake_subscriber_callback);
-    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    tt_Node_unlock(&node_impl->context_impl->tickle_node);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_publishers(node, topic_name, &count));
@@ -253,11 +250,10 @@ int main(void) {
     };
 
     struct tt_Client client;
-    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_Node_lock(&node_impl->context_impl->tickle_node);
     tt_ret = tt_Node_create_client(&node_impl->context_impl->tickle_node, &client, &service, service_name,
                                    fake_client_callback);
-    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    tt_Node_unlock(&node_impl->context_impl->tickle_node);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_clients(node, service_name, &count));
@@ -266,11 +262,10 @@ int main(void) {
     assert(0U == count); // a client isn't a server
 
     struct tt_Server server;
-    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_Node_lock(&node_impl->context_impl->tickle_node);
     tt_ret = tt_Node_create_server(&node_impl->context_impl->tickle_node, &server, &service, service_name,
                                    fake_server_callback);
-    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    tt_Node_unlock(&node_impl->context_impl->tickle_node);
     assert(tt_RET_OK == tt_ret);
 
     assert(RMW_RET_OK == rmw_count_clients(node, service_name, &count));
@@ -278,13 +273,12 @@ int main(void) {
     assert(RMW_RET_OK == rmw_count_services(node, service_name, &count));
     assert(1U == count);
 
-    tt_Node_interrupt(&node_impl->context_impl->tickle_node);
-    pthread_mutex_lock(&node_impl->context_impl->node_mutex);
+    tt_Node_lock(&node_impl->context_impl->tickle_node);
     assert(tt_RET_OK == tt_Client_destroy(&client));
     assert(tt_RET_OK == tt_Server_destroy(&server));
     assert(tt_RET_OK == tt_Subscriber_destroy(&sub));
     assert(tt_RET_OK == tt_Publisher_destroy(&pub));
-    pthread_mutex_unlock(&node_impl->context_impl->node_mutex);
+    tt_Node_unlock(&node_impl->context_impl->tickle_node);
 
     assert(RMW_RET_OK == rmw_destroy_node(node));
     assert(RMW_RET_OK == rmw_shutdown(&context));

@@ -161,7 +161,7 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
 // discovered endpoints" - resolved once, not re-evaluated later). `entity_kind` must be
 // RMW_TICKLE_ENTITY_PUBLISHER or _SUBSCRIPTION - services/clients never reach here (rmw_tickle_
 // validate_qos_profile() already rejects BEST_AVAILABLE for that kind). Caller must already hold
-// context_impl->node_mutex (the same lock every other context_impl->discovery.entities[] reader in
+// the node lock (the same lock every other context_impl->discovery.entities[] reader in
 // this package already requires - rmw_graph.c) - this function itself never locks/unlocks. Fields
 // that weren't requested as BEST_AVAILABLE pass through `requested` unchanged.
 rmw_qos_profile_t rmw_tickle_resolve_best_available(const rmw_qos_profile_t* requested,
@@ -240,20 +240,22 @@ struct rmw_tickle_context_impl_t {
     // tickle_node_t alongside it, now shared by every entry in nodes[] below. See rmw_tickle_
     // node_t's own doc comment for why a logical node no longer needs (or gets) its own.
     //
-    // rmw_tickle/PLAN.md's threading model ("TickLE" row: "Stays single-threaded per tt_Node...";
-    // "rmw_tickle" row: "Owns all lock/thread management. A background thread drives tt_Node_
-    // poll(); a mutex serializes every other entry point (rmw_publish, ...) against it"). poll_
-    // thread loops tt_Node_poll(&tickle_node, tt_RECEIVE_TIMEOUT), holding node_mutex only around
-    // each individual call (not across iterations, and not while blocked in the syscall underneath
-    // it for longer than that short timeout - see rmw_node.c) - every other rmw_tickle_c entry
-    // point that touches tickle_node (rmw_publish() et al.) must tt_Node_interrupt(&tickle_node)
-    // *then* lock node_mutex before doing so, the same pattern rmw_destroy_node() itself uses to
-    // stop poll_thread (now gated on nodes[] actually emptying out, not unconditional - see rmw_
-    // node.c). tt_Node_interrupt() is the one tt_Node_* call explicitly safe to make without
-    // holding node_mutex first (see tickle.h's own doc comment on it).
+    // Threading (2026-09-25). TickLE core is thread-safe (tickle.h, "Threading"), so this package no
+    // longer owns a lock around it. poll_thread waits in tt_Node_poll(&tickle_node, -1) holding
+    // nothing - until the next scheduler entry, a datagram or an interrupt - and every other entry
+    // point (rmw_publish() et al.) calls core directly. Where rmw needs several reads of node-owned
+    // state to agree, or its own per-entity state to stay consistent with core's across a call, it
+    // takes core's node lock itself: tt_Node_lock(&tickle_node)/tt_Node_unlock(). That lock is
+    // re-entrant and user callbacks run inside it, so code on the poll thread (discovery, writable
+    // and scheduled callbacks) may take it too - which the node_mutex it replaces forbade.
+    //
+    // It replaced a context-wide node_mutex held around every 100 us poll call and taken by every
+    // entry point after interrupting poll_thread to get it - the model PLAN.md's threading table
+    // described ("rmw_tickle owns all lock/thread management ... a mutex serializes every other
+    // entry point against it"). Lock order is unchanged: the node lock before wait_mutex, never the
+    // reverse (publish_attempt(), rmw_publisher.c).
     struct tt_Node tickle_node;
-    pthread_t poll_thread;      // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
-    pthread_mutex_t node_mutex; // NOLINT(misc-include-cleaner)
+    pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
     volatile bool poll_thread_running;
 
     // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 28(b)'s own
@@ -305,30 +307,28 @@ struct rmw_tickle_context_impl_t {
 };
 
 // TickLE specific node data. Milestone 34 shrank this to a thin name/namespace wrapper - no
-// transport identity of its own (tickle_node/poll_thread/node_mutex/discovery all moved up to
+// transport identity of its own (tickle_node/poll_thread/discovery all moved up to
 // rmw_tickle_context_impl_t, shared by every rmw_tickle_node_t under the same context) - see that
 // struct's own doc comment for why a logical "node" never needed one in the first place. Every
 // rmw_tickle_publisher_t/_subscriber_t/_client_t/_service_t still keeps its own `node` pointer
 // back to whichever one of these actually created it (for e.g. rmw_publisher_get_actual_qos()-
 // style per-entity bookkeeping, and now also owning_node_name/_namespace's own attribution), and
-// reaches the shared tt_Node/mutex via node->context_impl->tickle_node / ->node_mutex.
+// reaches the shared tt_Node via node->context_impl->tickle_node.
 struct rmw_tickle_node_t {
     rmw_node_t rmw_node; // RMW node structure (must be first)
     rmw_tickle_context_impl_t* context_impl;
     rcutils_allocator_t allocator;
 };
 
-// rmw_graph.c's own count_matching()'s core scan, exposed lock-free for QoS roadmap #3
+// rmw_graph.c's own count_matching()'s core scan, without taking the node lock, for QoS roadmap #3
 // (LIVELINESS)'s own RMW_EVENT_LIVELINESS_CHANGED periodic check (rmw_subscription.c) to call
 // directly. That check runs from a tt_Node_schedule() callback, which fires from *inside*
-// tt_Node_poll() - already called with context_impl->node_mutex held by poll_thread (rmw_tickle_
-// context_impl_t's own doc comment above) - so it must NOT take that mutex itself the way count_
-// matching() (used by rmw_count_publishers()/_subscribers(), called from an arbitrary application
-// thread) does; doing so would self-deadlock (node_mutex is a plain, non-recursive pthread_mutex_t
-// - rmw_node.c's own rmw_create_node()). Never call this from anywhere except the poll thread
-// itself. Takes context_impl directly, not a specific rmw_tickle_node_t (Milestone 34) - the scan
-// itself was always process-wide (tickle_node.endpoints[]/discovery, both now inherently context-
-// scoped), never actually filtered by which logical node a caller happened to reach it through.
+// tt_Node_poll() with core's node lock already held. Taking it again would now be harmless - the lock
+// is re-entrant (tickle.h, "Threading"), where the node_mutex it replaced was not and self-deadlocked -
+// but pointless. Call it with the node lock held: from the poll thread, or inside tt_Node_lock(). Takes context_impl
+// directly, not a specific rmw_tickle_node_t (Milestone 34) - the scan itself was always process-wide
+// (tickle_node.endpoints[]/discovery, both now inherently context- scoped), never actually filtered by which logical
+// node a caller happened to reach it through.
 size_t rmw_tickle_count_matching_locked(rmw_tickle_context_impl_t* context_impl, const char* topic_name, uint8_t kind);
 
 // rmw_context_fini()'s guard against nodes nobody destroyed (rmw_node.c): stops the shared TickLE
@@ -525,10 +525,10 @@ typedef struct rmw_tickle_publisher_t {
     // publish() calls on this *same* Publisher around this shared buffer (rmw's own contract:
     // "Publishers are thread-safe objects... safe to call this function using the same publisher
     // concurrently", rmw/rmw.h's own rmw_publish() doc comment) - a separate, narrower lock than
-    // context_impl->node_mutex, acquired *before* it and released *after* it: rmw_publish() still
-    // only holds node_mutex around the actual tt_Publisher_publish() call itself, unchanged: this
+    // the node lock, acquired *before* it and released *after* it: rmw_publish() still
+    // only holds the node lock around the actual tt_Publisher_publish() call itself, unchanged: this
     // lock's own job is purely to stop two threads racing on the shared scratch buffer during the
-    // to_tickle() conversion that happens before node_mutex is ever taken.
+    // to_tickle() conversion that happens before the node lock is ever taken.
     void* publish_scratch_buf;
     pthread_mutex_t publish_mutex;
 
@@ -539,9 +539,9 @@ typedef struct rmw_tickle_publisher_t {
     //
     // Bumped by publisher_writable_callback() (rmw_publisher.c) every time core reports this
     // Publisher writable again, and read by rmw_publish()'s own wait loop to tell a real wakeup
-    // from a spurious one. Guarded by context_impl->wait_mutex, *not* node_mutex: the callback
-    // already runs with node_mutex held (it fires from inside tt_Node_poll()), and the waiter must
-    // be able to sleep with node_mutex released, so wait_mutex is the only lock both sides can
+    // from a spurious one. Guarded by context_impl->wait_mutex, *not* the node lock: the callback
+    // already runs with the node lock held (it fires from inside tt_Node_poll()), and the waiter must
+    // be able to sleep with the node lock released, so wait_mutex is the only lock both sides can
     // share. A counter rather than a flag because the transition can happen and be consumed more
     // than once across a single wait.
     uint64_t writable_generation;

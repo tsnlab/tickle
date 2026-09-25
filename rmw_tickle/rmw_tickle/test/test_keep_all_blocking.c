@@ -194,14 +194,14 @@ static uint32_t fill_until_blocked(rmw_publisher_t* pub, rmw_ret_t* final_ret) {
 struct unblocker_args {
     rmw_tickle_publisher_t* pub_impl;
     uint32_t delay_ms;
-    bool took_node_mutex;
+    bool took_node_lock;
 };
 
-// The thread that proves rmw_publish() is not holding node_mutex while it waits. It does exactly
-// what the poll thread would do on a real incoming ACKNACK: take node_mutex, advance the slowest
+// The thread that proves rmw_publish() is not holding the node lock while it waits. It does exactly
+// what the poll thread would do on a real incoming ACKNACK: take the node lock, advance the slowest
 // peer's ack_seq_no, and fire the Publisher's own writable callback under that lock.
 //
-// If rmw_publish() ever went back to waiting with node_mutex held, this thread would block on
+// If rmw_publish() ever went back to waiting with the node lock held, this thread would block on
 // pthread_mutex_lock() forever and the test would hang rather than fail - which is why the caller
 // also asserts on elapsed time, so the deadlock shows up as a bounded failure in CI.
 static void* unblocker_main(void* param) {
@@ -210,13 +210,13 @@ static void* unblocker_main(void* param) {
     nanosleep(&nap, NULL);
 
     rmw_tickle_context_impl_t* context_impl = args->pub_impl->node->context_impl;
-    pthread_mutex_lock(&context_impl->node_mutex);
-    args->took_node_mutex = true;
+    tt_Node_lock(&context_impl->tickle_node);
+    args->took_node_lock = true;
     // Far enough that the blocked write, and plenty after it, fit under the bound again.
     args->pub_impl->tickle_publisher.peer_acks[0].ack_seq_no = args->pub_impl->tickle_publisher.seq_no;
     args->pub_impl->tickle_publisher.writable_callback(&args->pub_impl->tickle_publisher,
                                                        args->pub_impl->tickle_publisher.writable_callback_param);
-    pthread_mutex_unlock(&context_impl->node_mutex);
+    tt_Node_unlock(&context_impl->tickle_node);
     return NULL;
 }
 
@@ -282,7 +282,7 @@ int main(void) {
 
     // Case 3: the same stall, but the slowest peer catches up mid-wait. The blocked write must
     // then succeed rather than time out - and, critically, the thread delivering that progress has
-    // to be able to take node_mutex while rmw_publish() is waiting. See unblocker_main().
+    // to be able to take the node lock while rmw_publish() is waiting. See unblocker_main().
     //
     // Runs with blocking set well above the unblock delay so a pass can only come from the wakeup
     // path, never from the deadline expiring and the retry happening to find room.
@@ -298,7 +298,7 @@ int main(void) {
             assert(RMW_RET_OK == rmw_publish(pub, &msg, NULL)); // fill it right up to the bound
         }
 
-        struct unblocker_args args = {.pub_impl = pub_impl, .delay_ms = UNBLOCK_DELAY_MS, .took_node_mutex = false};
+        struct unblocker_args args = {.pub_impl = pub_impl, .delay_ms = UNBLOCK_DELAY_MS, .took_node_lock = false};
         pthread_t unblocker; // NOLINT(misc-include-cleaner) - <pthread.h> above; glibc declares it via a private header
         assert(0 == pthread_create(&unblocker, NULL, unblocker_main, &args));
 
@@ -307,7 +307,7 @@ int main(void) {
         uint64_t elapsed = monotonic_ms() - started;
         assert(0 == pthread_join(unblocker, NULL));
 
-        assert(args.took_node_mutex); // node_mutex was reachable while rmw_publish() waited
+        assert(args.took_node_lock); // the node lock was reachable while rmw_publish() waited
         assert(RMW_RET_OK == ret);
         assert(elapsed < MAX_CREDIBLE_WAIT_MS);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
