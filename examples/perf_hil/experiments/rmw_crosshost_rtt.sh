@@ -254,9 +254,11 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # too: every rmw would see extra peers, and rmw_tickle would broadcast above tt_UNICAST_PEER_THRESHOLD.
     local procs
     procs="pong_procs=$(sh_ "$SERVER" "n=0; for q in /proc/[0-9]*; do [ \"\$(readlink \$q/exe 2>/dev/null)\" = $BIN/pong_node ] && n=\$((n+1)); done; echo \$n") ping_procs_before=$(sh_ "$CLIENT" "n=0; for q in /proc/[0-9]*; do [ \"\$(readlink \$q/exe 2>/dev/null)\" = $BIN/ping_node ] && n=\$((n+1)); done; echo \$n")"
+    # LOOP: (274c7b8e on, both wait modes) is the ping's own loop accounting - iterations_per_rtt, and in poll mode
+    # spin_some_us and sleep_us - kept in the row after RESULT's fields, whose order it does not change.
     # The ping's own log (stderr) is kept per row with the pong's in $OUT.logs, for questions such as which peers
     # rmw_tickle's publisher registered.
-    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^ping_utime_s' | tr '\n' ' ' || true)
+    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
     res="$res $procs"
     local pongcpu
     # pong_cpu_ns: summed run time of every pong thread from /proc/PID/task/*/schedstat (ns), because the
