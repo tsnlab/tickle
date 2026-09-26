@@ -15,93 +15,118 @@ Every experiment in this document, all three frameworks side by side. **✅ = be
 ❌ = worst in that row.** Lower is better for latency, CPU, memory and bandwidth; higher is better
 for throughput. Each row's explanation is in section 2 below, linked from its own name.
 
-**⚪ means the row is deliberately not scored.** Four rows carry it (5, 32, 33, 34). That is not
-missing data - it is this document's central rule, that a comparison which cannot be made fairly is
-worth more unmade than made wrongly. §4.3 gives the four conditions that void a cell, and the real
-result each one caught.
+**⚪ means a cell is deliberately not scored.** It appears in rows 5, 17, 44, 45, 46 and in
+FastDDS's cells of every P4 + 5% loss row. That is not missing data. It is this document's central
+rule: a comparison that cannot be made fairly is worth more unmade than made wrongly. §4.3 gives the
+conditions that void a cell and the real result each one caught.
 
 **How each framework is configured, and where the settings still differ, is in section 4.4.** Read
 it before quoting a margin.
 
-**Two measurement generations are mixed here and the `meas.` column says which.** `R` rows are the
-current release-optimised core (2026-09-26), the single-packet scope the user narrowed to. `C` rows
-come from the 108-run campaign of 2026-09-25, whose TickLE core was built `-O0` - a build defect
-found afterwards. `C` rows therefore **understate TickLE**, and are kept because they cover
-conditions (loss, reorder, 2800 B payloads) the release pass does not yet. `S` rows are the
-2026-09-24/25 nine-scenario QoS sweep. Comparing a number across generations is not valid; within a
-row it is, because all three frameworks in any one row were measured in the same session.
+**Where the numbers come from (the `meas.` column).**
+- **`F` rows** come from one 12-cell campaign on 2026-09-26, TickLE core `bceddf2a`: release build,
+  DATA_FRAG with a seq_no per datagram, `sendmmsg`, reorder slots equal to the window. All three
+  frameworks ran in the same session, interleaved by framework, 3 repetitions, and every cell was
+  scored by `campaign_summary.py`. **Totals: WIN 87, DRAW/TIE 11, LOSE 0, VOID 10.** The ten ties
+  are `loss_pct` reading 0 for every framework. The one draw is row 5. The ten VOIDs are c9
+  (row 17), which the fairness audit explains (§4.4 item 3). Raw rows and verdicts are in
+  `examples/perf_hil/results/campaign_final_bceddf2a_2026-09-26*.txt`.
+- **`S` rows** are the 2026-09-24/25 nine-scenario QoS sweep and the cross-host `rmw` measurement.
+  They were not part of this campaign and predate the release-build fix.
+
+Comparing a number across the two is not valid. Within a row it is, because all three frameworks in
+any one row were measured in the same session.
 
 | # | Metric | Condition | TickLE | FastDDS | CycloneDDS | meas. |
 |---|---|---|---|---|---|---|
 | | **[Latency](#21-latency)** (ms) | | | | | |
-| 1 | RTT mean | P1 76 B | ✅ **0.209** | 0.287 | ❌ 0.360 | R |
-| 2 | RTT max (tail) | P1 76 B | ✅ **0.324** | 0.579 | ❌ 10.79 | R |
-| 3 | RTT mean | P2 1292 B | ✅ **0.231** | ❌ 0.319 | 0.277 | R |
-| 4 | RTT max (tail) | P2 1292 B | ✅ **0.357** | 0.607 | ❌ 0.814 | R |
-| 5 | RTT mean | +10 ms netem | ⚪ 10.3 | ⚪ 10.3 | ⚪ 10.4 | C |
-| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 21.1 | C |
+| 1 | RTT mean | P1 76 B | ✅ **0.208** | 0.291 | ❌ 0.362 | F |
+| 2 | RTT max (tail) | P1 76 B | ✅ **0.473** | 0.603 | ❌ 10.8 | F |
+| 3 | RTT mean | P2 1292 B | ✅ **0.232** | ❌ 0.318 | 0.277 | F |
+| 4 | RTT max (tail) | P2 1292 B | ✅ **0.340** | 0.604 | ❌ 0.806 | F |
+| 5 | RTT mean | +10 ms netem | ⚪ 10.2 | ⚪ 10.2 | ⚪ 10.4 | F |
+| 6 | RTT max (tail) | +10 ms netem | ✅ **12.1** | 12.3 | ❌ 21.1 | F |
 | | **[Throughput](#22-throughput)** (Mbps) | | | | | |
-| 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 36.3 | 92.3 | R |
-| 8 | RELIABLE | P2 1292 B | ✅ **932** | ❌ 563 | 833 | R |
-| 9 | BEST_EFFORT | P1, max rate | ✅ **117.7** | ❌ 48.4 | 71.7 | S |
-| 10 | RELIABLE | P1, **5% loss** | ✅ **95.8** | 9.31 | ❌ 3.39 | C |
-| 11 | RELIABLE | P1, 5% reorder | ✅ **73.9** | ❌ 31.4 | 67.9 | C |
-| 12 | retention under loss | 5% loss / unshaped | ✅ **90.6%** | 26.4% | ❌ 3.5% | C |
+| 7 | RELIABLE | P1 76 B | ✅ **116** | ❌ 36.6 | 93.8 | F |
+| 8 | RELIABLE | P2 1292 B | ✅ **932** | ❌ 570 | 844 | F |
+| 9 | RELIABLE | P3 1424 B | ✅ **938** | ❌ 487 | 796 | F |
+| 10 | RELIABLE | P4 2800 B | ✅ **940** | ❌ 830 | 857 | F |
+| 11 | BEST_EFFORT | P1, max rate | ✅ **121** | ❌ 47.5 | 71.7 | F |
+| 12 | RELIABLE | P1, **5% loss** | ✅ **107** | 8.0 | ❌ 2.5 | F |
+| 13 | RELIABLE | P4, **5% loss** | ✅ **849** | ⚪ delivery failed (38%) | ❌ 11.7 | F |
+| 14 | RELIABLE | P1, 5% reorder | ✅ **74.4** | ❌ 31.5 | 68.0 | F |
+| 15 | retention under loss | P1: 5% loss / unshaped | ✅ **92.2%** | 21.9% | ❌ 2.6% | F |
+| 16 | retention under loss | P4: 5% loss / unshaped | ✅ **90.3%** | ⚪ delivery failed (38%) | ❌ 1.4% | F |
+| 17 | RELIABLE KEEP_LAST 64 | P1 (c9) | ⚪ not compared | ⚪ not compared | ⚪ not compared | F |
 | | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | | |
-| 13 | throughput, client | P1 76 B | ✅ **5.27** | ❌ 20.9 | 6.88 | R |
-| 14 | throughput, server | P1 76 B | ✅ **3.34** | ❌ 20.0 | 10.8 | R |
-| 15 | throughput, client | P2 1292 B | ✅ **6.58** | ❌ 21.8 | 8.60 | R |
-| 16 | throughput, server | P2 1292 B | ✅ **4.82** | ❌ 20.5 | 14.3 | R |
-| 17 | latency | P1 76 B | ✅ **156.3** | ❌ 382.6 | 234.0 | R |
-| 18 | latency | P2 1292 B | ✅ **153.0** | ❌ 362.7 | 233.8 | R |
-| 19 | throughput, client | P1, 5% loss | ✅ **6.17** | ❌ 37.3 | 12.9 | C |
+| 18 | throughput, client | P1 76 B | ✅ **5.2** | ❌ 20.8 | 6.9 | F |
+| 19 | throughput, server | P1 76 B | ✅ **2.9** | ❌ 19.9 | 10.9 | F |
+| 20 | throughput, client | P2 1292 B | ✅ **6.6** | ❌ 21.5 | 8.5 | F |
+| 21 | throughput, server | P2 1292 B | ✅ **4.2** | ❌ 20.5 | 14.3 | F |
+| 22 | throughput, client | P4 2800 B | ✅ **12.4** | ❌ 30.4 | 14.1 | F |
+| 23 | throughput, server | P4 2800 B | ✅ **8.7** | ❌ 23.4 | 19.5 | F |
+| 24 | latency | P1 76 B | ✅ **156** | ❌ 383 | 235 | F |
+| 25 | latency | P2 1292 B | ✅ **155** | ❌ 397 | 233 | F |
+| 26 | throughput, client | P1, 5% loss | ✅ **5.6** | ❌ 37.3 | 13.8 | F |
+| 27 | throughput, client | P4, 5% loss | ✅ **14.6** | ⚪ delivery failed (38%) | ❌ 40.9 | F |
 | | **[Memory](#24-memory)** (peak RSS, KB) | | | | | |
-| 20 | throughput, client | P1 76 B | ✅ **1,904** | ❌ 17,760 | 5,264 | R |
-| 21 | throughput, client | P2 1292 B | ✅ **2,216** | ❌ 22,408 | 6,388 | R |
-| 22 | latency, client | P1 76 B | ✅ **1,644** | ❌ 14,344 | 4,836 | R |
-| 23 | throughput, client | **P4 2800 B** | 7,384 | ❌ 28,412 | ✅ **5,608** | C |
-| 24 | server, range over all conditions | P1–P4 | ✅ **1,720–2,248** | ❌ 14,340–16,428 | 4,880–7,400 | C |
+| 28 | throughput, client | P1 76 B | ✅ **1,900** | ❌ 17,560 | 5,244 | F |
+| 29 | throughput, client | P2 1292 B | ✅ **2,212** | ❌ 22,192 | 6,400 | F |
+| 30 | throughput, client | P4 2800 B | ✅ **2,276** | ❌ 28,316 | 5,576 | F |
+| 31 | latency, client | P1 76 B | ✅ **1,644** | ❌ 14,340 | 4,828 | F |
+| 32 | server, range | P1–P4 | ✅ **1,728–2,436** | ❌ 14,344–14,884 | 4,860–4,892 | F |
+| 33 | server | P4, 5% loss | ✅ **2,436** | ⚪ delivery failed (38%) | ❌ 6,400 | F |
 | | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | | |
-| 25 | wire bytes | P1 76 B | ✅ **147** | ❌ 286 | 180 | R |
-| 26 | wire bytes | P2 1292 B | ✅ **1,363** | ❌ 1,502 | 1,397 | R |
-| 27 | wire bytes | P1, 5% loss | ✅ **150** | ❌ 327 | 193 | C |
-| 28 | framing overhead | single datagram | ✅ **70.6** | ❌ 209.6 | 104.1 | C |
+| 34 | wire bytes | P1 76 B | ✅ **147** | ❌ 286 | 180 | F |
+| 35 | wire bytes | P2 1292 B | ✅ **1,363** | ❌ 1,502 | 1,397 | F |
+| 36 | wire bytes | P3 1424 B | ✅ **1,495** | ❌ 1,676 | 1,585 | F |
+| 37 | wire bytes | P4 2800 B | ✅ **2,933** | ❌ 3,099 | 2,950 | F |
+| 38 | wire bytes | P1, 5% loss | ✅ **151** | ❌ 329 | 197 | F |
+| 39 | wire bytes | P4, 5% loss | ✅ **3,025** | ⚪ delivery failed (38%) | ❌ 3,202 | F |
+| 40 | framing overhead | single datagram | ✅ **70.7** | ❌ 210.1 | 104.2 | F |
 | | **[QoS mechanics](#26-qos-mechanics)** | | | | | |
-| 29 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | S |
-| 30 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | S |
-| 31 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | S |
-| 32 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | S |
-| 33 | LIVELINESS detection | lease 2.0 s | ⚪ not comparable | ⚪ 1999 ms | ⚪ 2000 ms | S |
-| 34 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | S |
+| 41 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | S |
+| 42 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | S |
+| 43 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | S |
+| 44 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | S |
+| 45 | LIVELINESS detection | lease 2.0 s | ⚪ not comparable | ⚪ 1999 ms | ⚪ 2000 ms | S |
+| 46 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | S |
 | | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | | |
-| 35 | RTT, BEST_EFFORT | Bench | ❌ 0.524 | 0.516 | ✅ **0.440** | S |
-| 36 | RTT, RELIABLE | Bench | ❌ 0.523 | ❌ 0.523 | ✅ **0.449** | S |
+| 47 | RTT, BEST_EFFORT | Bench | ❌ 0.524 | 0.516 | ✅ **0.440** | S |
+| 48 | RTT, RELIABLE | Bench | ❌ 0.523 | ❌ 0.523 | ✅ **0.449** | S |
 
 ### Where TickLE does not come first, stated up front
 
-Three places, and they are the honest reading of the table:
+- **Rows 47-48, the `rmw` layer.** CycloneDDS is faster through ROS 2 (~0.44 ms against
+  ~0.52 ms), and this is the number that matters to anyone choosing an `rmw` implementation. TickLE's
+  *core* wins latency outright (rows 1-4), so the gap is in `rmw_tickle`'s layer, not the engine.
+  Those rows are older than every core change on this page. They are to be re-measured once
+  `rmw_tickle` carries DATA_FRAG.
+- **Row 5** is a draw by construction, not a win. A 10 ms injected delay swamps a 0.2 ms round
+  trip, so that cell measures `netem`. It stays in the table because the tail (the next row) still
+  separates the three.
 
-- **Row 23, memory at a 2800 B payload.** CycloneDDS wins it; TickLE is second. TickLE's RSS is
-  `C + reliable_depth x record_bytes` and the default depth is 2048 *samples* regardless of sample
-  size, so the retention arena grows linearly with the payload. Understood, with a known fix
-  (§2.4).
-- **Rows 35-36, the `rmw` layer.** CycloneDDS is genuinely faster through ROS 2 (~0.44 ms against
-  ~0.52 ms), and this is the number that matters to anyone choosing an `rmw` implementation. Note
-  what it contrasts with: TickLE's *core* wins latency outright (rows 1-4). The gap is in
-  `rmw_tickle`'s wrapper, not the engine, and those rows were measured before the release-build fix
-  that moved every core number on this page (§2.7).
-- **Row 5** is a three-way draw by construction, not a win: a 10 ms injected delay swamps a 0.2 ms
-  round trip, so that cell measures `netem`. It is left in because the *tail* (row 6) still
-  separates the three, which is the part `netem` does not decide.
+Everything else in the F rows is a TickLE win: every scored metric at P1, P2, P3 and P4, with and
+without loss. Two results changed since the previous version of this table, and both are worth
+saying out loud:
+- **P4 memory is now a TickLE win** (it was CycloneDDS's). This comes from the KEEP_ALL byte budget
+  and reorder slots sized to the window, not from DATA_FRAG.
+- **Throughput retention under 5% loss at P4 is 90.3%**, against 92.2% at P1 in the same run. It
+  was 6.6% in the 2026-09-25 campaign, when a lost IP fragment cost TickLE the whole sample. The
+  change that closed the gap is the seq_no per datagram (`DATAFRAG_PLAN.md` section 14).
 
-There is one more loss that no longer appears in the table, and removing it deserves saying out
-loud: in the 2026-09-25 campaign TickLE burned **33x** CycloneDDS's CPU in the latency cells. Rows
-17-18 now read the other way - 34% *below* CycloneDDS. The cause was not a tuning choice but two
-defects, a fixed-rate poll and an `-O0` build; both are described in §2.3.
+**FastDDS at P4 + 5% loss delivered 38% of what it sent**, within the same 3 s drain cap every
+framework gets. The cause is FastDDS's shipped transport default: it hands the kernel one datagram per
+sample to IP-fragment (`DATAFRAG_PLAN.md` section 15). Under the scoring rule the user chose, its
+per-sample figures from that cell are not scored, and the failure is stated here instead.
 
 ## 2. Each experiment explained
 
-One subsection per group of rows in the table above.
+One subsection per group of rows in the table above. **The figures quoted inside these subsections are
+the ones measured when each finding was made, and many predate the current build. Section 1 has
+the current figures.** What these subsections still carry is the explanation: what was measured,
+why it came out that way, and where a number is weaker than it looks.
+
 ### 2.1 Latency
 
 Table rows 1-6. **The release-build re-measurement (2026-09-26, rows 1-4 of the master table)
@@ -155,10 +180,10 @@ useful direction. The poll was not buying anything - it woke on a fixed 100 us t
 there was work, so `ppoll` was called 38,505 times per latency run. Waiting for the next scheduler
 entry instead took that to **38 calls** with the RTT unchanged (`experiments/poll_fix_verify.sh`).
 Combined with the `-O0` build fix, latency-cell CPU went from 33x CycloneDDS's to 34% below it
-(master table rows 17-18). The full argument is in §2.3.
+(master table rows 24-25). The full argument is in §2.3.
 ### 2.2 Throughput
 
-Table rows 7-12. The two deep dives that follow (§2.2a, §2.2b) are where the RELIABLE-under-loss numbers come from.
+Table rows 7-17. The two deep dives that follow (§2.2a, §2.2b) are where the RELIABLE-under-loss numbers come from.
 
 `send_mbps`, client, median of 3.
 
@@ -470,7 +495,7 @@ trade.** Two causes, found separately overnight on 2026-09-25/26:
    `core_build=` so this cannot recur silently.
 
 Neither is a tuning choice and neither trades latency for CPU, which is what the old heading
-implied. Master table rows 13-18 are the post-fix figures: TickLE now wins the latency CPU cells it
+implied. Master table rows 18-27 are the current figures: TickLE now wins the latency CPU cells it
 used to lose 33x, by 34%.
 ### 2.4 Memory
 
@@ -529,7 +554,7 @@ with zero mismatches**, which is what makes this a model rather than an extrapol
 
 ### 2.6 QoS mechanics
 
-Table rows 29-34, from the nine-scenario matrix.
+Table rows 41-46, from the nine-scenario matrix.
 
 **Notation** (unified 2026-09-21, the user's own explicit request - every cell in this section
 uses one of these fixed templates so results are directly, visually comparable at a glance,
@@ -631,7 +656,7 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 
 ### 2.7 The rmw layer
 
-Table rows 35-36. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
+Table rows 47-48. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
 
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
 (`RMW_IMPLEMENTATION` + `rclcpp`), not either framework's own native API:
@@ -695,7 +720,7 @@ nothing measurable over BEST_EFFORT for any of the three. 18/18 runs clean, zero
 
 ### 2.8 The five-metric campaign (2026-09-25)
 
-Where rows 5-12, 19, 23-24 and 27-28 come from.
+The 2026-09-25 campaign, which the F rows of section 1 have since replaced; kept for its method and its findings.
 
 The user's five questions asked together rather than one at a time, across payload sizes, QoS
 combinations and `tc`-shaped network conditions. 12 cells x 3 frameworks x 3 repetitions = 108 runs
