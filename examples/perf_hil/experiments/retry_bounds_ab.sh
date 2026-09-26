@@ -11,11 +11,26 @@
 #     allowed only if it correlates with low recovery_rttvar_ns. A difference at HIGH rttvar would
 #     mean the clamps were binding when both of us believed they were not - the more interesting
 #     outcome, and the reason this arm exists at all rather than only arm 2.
-#   ARM 2, netem delay 20ms, is the arm that tests the claim. True recovery is then ~40ms+, above
-#     the OLD 10ms ceiling and below the NEW ~2.5s one. Prediction: BEFORE shows retry storms -
-#     retransmitted per recovered sample >> 1 and wire_bytes_per_sample up; AFTER shows ~1.
-#     If BEFORE does NOT storm, the generality argument for the change is unsupported on this rig
-#     and must be reported as such, not quietly dropped.
+#   ARM 2, netem delay 20ms PLUS loss 5%, is the arm that tests the claim. The first version of
+#     this script used delay alone, which injects no loss: 0-1 retransmissions per 61,000 samples,
+#     so the arm meant to exercise the retry ceiling had nothing to time. Delay pushes true recovery
+#     (~40ms) above the OLD 10ms ceiling; loss creates the recoveries to measure.
+#     Prediction: BEFORE shows retry storms - retransmitted per recovered sample >> 1 and
+#     wire_bytes_per_sample up; AFTER shows ~1. If BEFORE does NOT storm, the generality argument
+#     for the change is unsupported on this rig and must be reported as such, not quietly dropped.
+#
+#   WHAT THIS ARM CAN AND CANNOT SEPARATE, stated before running. AFTER carries two changes: the
+#   relative ceiling (08e568af) and the estimator fix (37190fda, which stops a sample that overtook
+#   the original on the other socket being timed as a recovery - Karn's ambiguity). They are not
+#   separable here, and that is a property of the defect rather than a shortcut: on a delayed link
+#   the contaminated estimator is *itself* what drove srtt to tens of microseconds, and a ceiling
+#   of 64*srtt on a contaminated srtt is tighter than the fixed 10ms it replaced. So this measures
+#   the change as shipped against the behaviour as shipped, which is the question that matters, and
+#   not the ceiling in isolation, which on this link is not a question that has an answer.
+#   DIAGNOSTIC that shows the mechanism directly: recovery_srtt_ns. BEFORE should read tens of us
+#   under 20ms of injected one-way delay - about a thousandfold too small, which is the
+#   contamination. AFTER should read ~40ms, i.e. the real round trip. If AFTER still reads under
+#   tt_RELIABLE_RETRY_GRANULARITY (100us) the estimator fix is not in the build.
 #   CONTROL against my own harness: both arms assert core_build=release AND retry_interval_cfg_ns=0
 #     on every RESULT line. The change only acts in dynamic mode, so an arm that silently ran fixed
 #     retry would show "no difference" for the wrong reason - which is exactly how an earlier -O2
@@ -23,7 +38,7 @@
 set -uo pipefail
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 OUT=${OUT:-/tmp/retry_bounds_ab_$(date +%Y-%m-%d).txt}
-BEFORE=${BEFORE:-ba76dfbf}; AFTER=${AFTER:-08e568af}
+BEFORE=${BEFORE:-ba76dfbf}; AFTER=${AFTER:-$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)" rev-parse --short origin/main)}
 REPS=${REPS:-3}
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -47,14 +62,15 @@ set_delay() {
     if [ "$ms" = "0" ]; then
         sh_ "$CLIENT" "sudo -n tc qdisc del dev eth0 root" >/dev/null 2>&1 || true
     else
-        sh_ "$CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay ${ms}ms" >/dev/null 2>&1
+        sh_ "$CLIENT" "sudo -n tc qdisc replace dev eth0 root netem delay $ms" >/dev/null 2>&1
     fi
     local q; q=$(sh_ "$CLIENT" "tc qdisc show dev eth0 | head -1")
     say "  qdisc now: $q"
     if [ "$ms" = "0" ]; then
         case "$q" in *netem*) say "  NETEM STILL PRESENT - stopping"; exit 1;; esac
     else
-        case "$q" in *"delay ${ms}ms"*) ;; *) say "  NETEM NOT APPLIED - stopping"; exit 1;; esac
+        case "$q" in *"delay 20ms"*) ;; *) say "  NETEM NOT APPLIED - stopping"; exit 1;; esac
+        case "$q" in *"loss 5%"*) ;; *) say "  NETEM LOSS NOT APPLIED - stopping"; exit 1;; esac
     fi
 }
 cleanup() { kill_servers; set_delay 0 >/dev/null 2>&1 || true; }
@@ -62,7 +78,7 @@ trap cleanup EXIT
 
 : > "$OUT"; say() { echo "$*" | tee -a "$OUT"; }
 say "=== relative retry bounds A/B, $(date -Is) ==="
-say "before=$BEFORE (fixed [250us,10ms])   after=$AFTER (srtt+max(G,4rttvar), ceiling 64*srtt)"
+say "before=$BEFORE (fixed [250us,10ms], contaminated estimator)   after=$AFTER (srtt+max(G,4rttvar), ceiling 64*srtt, Karn fix)"
 say "reps=$REPS  measured G (ppoll p99, wake_granularity_2026-09-26.txt): 57.4us both Pis"
 
 build() {
@@ -104,9 +120,17 @@ arm() {
             *core_build=release*) ;;
             *) say "$tag $scen rep$r | IDENTITY FAIL: core_build not release -> $line"; continue;;
         esac
-        case "$line" in
-            *retry_interval_cfg_ns=0*) ;;
-            *) say "$tag $scen rep$r | IDENTITY FAIL: retry not dynamic -> $line"; continue;;
+        # reliable_latency's server RESULT carries no retry_interval_cfg_ns, so the dynamic-mode
+        # assertion can only be made on the throughput scenario. Said here rather than silently
+        # skipped: the latency cells are RTT evidence only, and they exercise no retries at all
+        # (retransmitted=0 in every rep of the voided first run), so they cannot confirm which
+        # retry mode produced them.
+        case "$scen" in
+            reliable_throughput_*)
+                case "$line" in
+                    *retry_interval_cfg_ns=0*) ;;
+                    *) say "$tag $scen rep$r | IDENTITY FAIL: retry not dynamic -> $line"; continue;;
+                esac;;
         esac
         say "$tag $scen rep$r | $(grep -oE '(sent|recv|send_mbps|rtt_avg_ms|rtt_max_ms|retransmitted|gap_abandoned|wire_bytes_per_sample|recovery_srtt_ns|recovery_rttvar_ns)=[0-9.]+' <<<"$line" | tr '\n' ' ')"
     done
@@ -119,8 +143,8 @@ for sha in "$BEFORE" "$AFTER"; do
     set_delay 0
     arm "$tag" reliable_throughput_p1
     arm "$tag" reliable_latency_p1
-    say ""; say "### ARM 2 netem delay 20ms ($tag)"
-    set_delay 20
+    say ""; say "### ARM 2 netem delay 20ms + loss 5% ($tag)"
+    set_delay "20ms loss 5%"
     arm "$tag" reliable_throughput_p1
     arm "$tag" reliable_latency_p1
     set_delay 0
