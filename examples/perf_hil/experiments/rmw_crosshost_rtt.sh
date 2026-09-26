@@ -177,14 +177,18 @@ freqs() { echo "$(sh_ "$CLIENT" 'cat /sys/devices/system/cpu/cpufreq/policy0/sca
 
 # CAPTURE=1 (2026-09-26, RMW_PERF_PLAN.md section 6): tcpdump on both Pis for every run, so a round trip can be
 # split into ping side, wire and pong side on one clock per host, for every rmw alike - no stamps needed. The
-# capture ends itself (-G/-W: no kill needed, and sudo here allows tcpdump but not kill). On the pong host the
-# CLOCK_REALTIME - CLOCK_MONOTONIC offset is sampled around the run, to align pcap times with rx_wake stamps.
+# capture ends itself (-G/-W: no kill needed, and sudo here allows tcpdump but not kill). On both hosts the
+# CLOCK_REALTIME - CLOCK_MONOTONIC offset is sampled around the run: pcap times are REALTIME and the ping's
+# send_ns is MONOTONIC, so the client's offset puts the ping's own send stack on one clock, and the server's
+# aligns pcap times with rx_wake stamps. The snap length keeps the whole Bench sample (send_ns, seq), which
+# rmw_pcap_split.py matches packets by - 128 bytes could cut it off behind a longer RTPS header.
+# CAP_S covers 1 s lead, the pong's 4 s, discovery and the ping's 10 s, with room to spare.
 CAPTURE=${CAPTURE:-0}
-CAP_S=22
+CAP_S=30
 cap_start() { # $1 tag
     local h
     for h in "$CLIENT" "$SERVER"; do
-        sh_ "$h" "rm -f /tmp/rmwx_cap.pcap; sudo -n tcpdump -i eth0 -n -s 128 --time-stamp-precision=nano -G $CAP_S -W 1 -w /tmp/rmwx_cap.pcap udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
+        sh_ "$h" "rm -f /tmp/rmwx_cap.pcap; sudo -n tcpdump -i eth0 -n -s 256 --time-stamp-precision=nano -G $CAP_S -W 1 -w /tmp/rmwx_cap.pcap udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
     done
     sleep 1
 }
@@ -197,7 +201,13 @@ cap_collect() { # $1 file stem
         scp -q -i "$K" -o BatchMode=yes "ci@$h:/tmp/rmwx_cap.pcap" "$OUT.pcaps/${1}_${role}.pcap" 2>/dev/null || say "  (no pcap from $role)"
     done
 }
-clock_offset() { sh_ "$SERVER" "python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_REALTIME)-time.clock_gettime_ns(time.CLOCK_MONOTONIC))'"; }
+clock_offset() { # prints client=<ns> server=<ns>, REALTIME - MONOTONIC on each host
+    local h role
+    for h in "$CLIENT" "$SERVER"; do
+        role=client; [ "$h" = "$SERVER" ] && role=server
+        printf '%s=%s ' "$role" "$(sh_ "$h" "python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_REALTIME)-time.clock_gettime_ns(time.CLOCK_MONOTONIC))'")"
+    done
+}
 
 BIN=/home/ci/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong
 one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
@@ -231,7 +241,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     sleep 1
     if [ "$CAPTURE" = 1 ]; then
         local off1; off1=$(clock_offset)
-        say "  clock_offset_ns before=$off0 after=$off1 ($rmw $qos rep$rep)"
+        say "  clock_offset_ns stem=${rmw}_${msg}_${qos}_rep${rep} before: ${off0}after: ${off1}"
         cap_collect "${rmw}_${msg}_${qos}_rep${rep}"
     fi
     case "$rmw" in rmw_tickle*)
