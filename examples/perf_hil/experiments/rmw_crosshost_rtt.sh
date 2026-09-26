@@ -45,6 +45,10 @@ WAITS=${WAITS:-poll}
 # $OUT.sysstamp/<stem>_<role>/. rmw_pcap_split.py joins those with the pcaps (use with CAPTURE=1). "off" rows
 # are the control: the layer's own cost is the on - off RTT difference, pre-registered below.
 SYSSTAMP_ARMS=${SYSSTAMP_ARMS:-off}
+# STAMPS=1 (2026-09-26, fdba1d22 on): ping and pong write per-sample application stamps (--stamps), collected into
+# $OUT.stamps/<stem>_{ping,pong}.txt - the ping's reply_ns and the pong's callback and publish-return times, which
+# split the application ends of each path. Needs a build that has --stamps.
+STAMPS=${STAMPS:-0}
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -246,14 +250,17 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     env=$(env_for "$rmw")
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${SSTSTEM}" sstenv=""
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${SSTSTEM}" sstenv="" stampflag=""
+    local stamprm=""
+    # removed before each start too, so an interrupted row's file can never be collected as this row's
+    [ "$STAMPS" = 1 ] && stampflag="--stamps /tmp/rmwx_stamps.txt" && stamprm="rm -f /tmp/rmwx_stamps.txt;"
     if [ "$SST" = on ]; then
         sstenv="rm -f /tmp/rmwx_sst.*; export LD_PRELOAD=/tmp/rmwx_libsysstamp.so SYSSTAMP_FILE=/tmp/rmwx_sst;"
     fi
     if [ "$CAPTURE" = 1 ]; then cap_start "$stem"; off0=$(clock_offset); fi
     local dumpenv=""
     case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
-    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm nohup taskset -c 1-3 $pre $BIN/pong_node $flag $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
     sleep 4
     if [ "$TRACE" = 1 ]; then
         # $! is strace; the pong is its child, found by parentage and verified by /proc/PID/exe, not by name
@@ -275,7 +282,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # spin_some_us and sleep_us - kept in the row after RESULT's fields, whose order it does not change.
     # The ping's own log (stderr) is kept per row with the pong's in $OUT.logs, for questions such as which peers
     # rmw_tickle's publisher registered.
-    res=$(sh_ "$CLIENT" "$env; $sstenv timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
+    res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
     res="$res $procs"
     local pongcpu
     # pong_cpu_ns: summed run time of every pong thread from /proc/PID/task/*/schedstat (ns), because the
@@ -284,9 +291,21 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
-    if [ "$SST" = on ]; then
-        # the pong writes its records from a destructor as it exits, so wait for it to be gone (up to 5 s)
+    if [ "$SST" = on ] || [ "$STAMPS" = 1 ]; then
+        # the pong writes its sysstamp records and its stamps as it exits, so wait for it to be gone (up to 5 s)
         sh_ "$SERVER" "for i in 1 2 3 4 5 6 7 8 9 10; do [ -d /proc/$pongpid ] || break; sleep 0.5; done" || true
+    fi
+    if [ "$STAMPS" = 1 ]; then
+        local sh sr
+        mkdir -p "$OUT.stamps"
+        for sh in "$CLIENT" "$SERVER"; do
+            sr=ping; [ "$sh" = "$SERVER" ] && sr=pong
+            scp -q -i "$K" -o BatchMode=yes "ci@$sh:/tmp/rmwx_stamps.txt" "$OUT.stamps/${stem}_${sr}.txt" 2>/dev/null \
+                || say "  (no stamps from $sr)"
+            sh_ "$sh" "rm -f /tmp/rmwx_stamps.txt" || true
+        done
+    fi
+    if [ "$SST" = on ]; then
         local h role
         for h in "$CLIENT" "$SERVER"; do
             role=ping; [ "$h" = "$SERVER" ] && role=pong

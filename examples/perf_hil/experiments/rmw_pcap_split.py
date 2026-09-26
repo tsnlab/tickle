@@ -167,12 +167,65 @@ def print_split(label, xs):
         print(f"   {label:26s} n/a")
 
 
+def load_stamps(path):
+    """A --stamps file (fdba1d22): {seq: (first_ns, second_ns)} on CLOCK_MONOTONIC, and the file's own
+    REALTIME - MONOTONIC offset, the mean of the values read at its start and end."""
+    rows, offs = {}, []
+    for line in path.read_text().splitlines():
+        if line.startswith("# realtime_minus_monotonic_ns_"):
+            offs.append(int(line.split()[-1]))
+        elif line and not line.startswith("#"):
+            seq, first, second = (int(x) for x in line.split())
+            rows[seq] = (first, second)
+    return rows, (sum(offs) // len(offs) if offs else None)
+
+
+def app_split(stem, keys, sent, back, arr, dep, matches, stamps_dir):
+    """The application ends of each path, from the ping's and pong's own per-sample stamps (--stamps): when the
+    reply reached the ping's callback, and when the ping reached the pong's callback and its publish returned.
+    Joined with the pcaps always, and with sysstamp's records when the row has them."""
+    ping_f, pong_f = stamps_dir / f"{stem}_ping.txt", stamps_dir / f"{stem}_pong.txt"
+    if not ping_f.exists() or not pong_f.exists():
+        print("   stamps: none for this row")
+        return
+    ping_rows, ping_off = load_stamps(ping_f)
+    pong_rows, pong_off = load_stamps(pong_f)
+    if ping_off is None or pong_off is None:
+        print("   stamps: VOID, a file has no clock offset")
+        return
+    seq_of = {struct.pack("<Q", send): seq for seq, (send, _) in ping_rows.items()}
+    seg = {k: [] for k in ("ping tap->app (reply)", "pong tap->callback", "pong callback->tap",
+                           "pong recv->callback", "pong callback->send", "pong send->publish ret",
+                           "ping recv->app (reply)")}
+    for k in keys:
+        seq = seq_of.get(k)
+        if seq is None or seq not in pong_rows or ping_rows[seq][1] == 0:
+            continue
+        reply = ping_rows[seq][1] + ping_off
+        callback, pub_ret = (x + pong_off for x in pong_rows[seq])
+        seg["ping tap->app (reply)"].append(reply - back[k])
+        seg["pong tap->callback"].append(callback - arr[k])
+        seg["pong callback->tap"].append(dep[k] - callback)
+        m = matches.get(k)
+        if m:
+            _, pr, pss, prr = m
+            seg["pong recv->callback"].append(callback - pr[3])
+            seg["pong callback->send"].append(pss[2] - callback)
+            seg["pong send->publish ret"].append(pub_ret - pss[3])
+            seg["ping recv->app (reply)"].append(reply - prr[3])
+    print(f"   stamps: {len(seg['pong tap->callback'])} of {len(keys)} samples joined")
+    for label, xs in seg.items():
+        print_split(label, xs)
+
+
 def kernel_split(stem, keys, sent, back, arr, dep, coff, rtt, sst_dir):
-    """RMW_PERF_PLAN.md section 8: each side of the round trip split at the kernel boundary."""
+    """RMW_PERF_PLAN.md section 8: each side of the round trip split at the kernel boundary. Returns the
+    matched records per key, for app_split()."""
     ping_dir, pong_dir = sst_dir / f"{stem}_ping", sst_dir / f"{stem}_pong"
+    matches = {}
     if not ping_dir.is_dir() or not pong_dir.is_dir():
         print("   sysstamp: none for this row")
-        return
+        return matches
     ping_r, pong_r = sysstamp_records(ping_dir), sysstamp_records(pong_dir)
     seg = {k: [] for k in ("ping app->send", "ping send->tap", "pong tap->wake", "pong tap->recv",
                            "pong recv->send (user)", "pong send->tap", "ping tap->wake", "ping tap->recv")}
@@ -187,6 +240,7 @@ def kernel_split(stem, keys, sent, back, arr, dep, coff, rtt, sst_dir):
         prr = first_call(ping_r, kh, "recv", back[k])
         if not (ps and pr and pss and prr):
             continue
+        matches[k] = (ps, pr, pss, prr)
         seg["ping app->send"].append(ps[2] - send_ns_rt)
         seg["ping send->tap"].append(sent[k][0] - ps[2])
         w = wake_before(pong_r, pr, arr[k])
@@ -209,6 +263,7 @@ def kernel_split(stem, keys, sent, back, arr, dep, coff, rtt, sst_dir):
     if to_recv:
         print(f"   {'ping recv->app (mean)':26s} {rtt * 1e3 - statistics.fmean(to_recv) / 1000:7.1f} us"
               "   (app rtt_avg minus send_ns-to-receive-return)")
+    return matches
 
 
 def stats(xs):
@@ -293,7 +348,8 @@ def main():
         print(f"   ping_recv  mean {recv / 1000:7.1f} us   (app rtt_avg minus send_ns-to-echo-at-tap)")
         if bad:
             print(f"   WARNING: {bad} negative segments - offsets or matching are wrong for this row")
-        kernel_split(stem, full, sent, back, arr, dep, coff, rtt, out.with_suffix(out.suffix + ".sysstamp"))
+        matches = kernel_split(stem, full, sent, back, arr, dep, coff, rtt, out.with_suffix(out.suffix + ".sysstamp"))
+        app_split(stem, full, sent, back, arr, dep, matches, out.with_suffix(out.suffix + ".stamps"))
 
 
 if __name__ == "__main__":
