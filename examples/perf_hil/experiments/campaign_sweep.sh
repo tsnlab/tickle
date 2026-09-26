@@ -131,6 +131,15 @@ needed_variants() {
 say "=== campaign sweep, $(date -Is), OPTIMIZATION_PLAN.md rev 4 ==="
 say "repo $(git -C "$REPO" rev-parse --short origin/main), ${REPS} reps, -d ${DUR}, out $OUT"
 say ""
+# CELLS="1 5 3 4 6" runs only those combinations (1-based, in MATRIX order), keeping each cell's
+# number so its label still matches the published c-numbers. Added 2026-09-26 to re-establish c6
+# (p4 under loss) - VOID in the original campaign - without re-running all twelve.
+if [ -n "${CELLS:-}" ]; then
+    kept=()
+    for i in $CELLS; do kept+=("${MATRIX[$((i - 1))]}"); done
+    read -ra CELL_NUMS <<<"$CELLS"
+    MATRIX=("${kept[@]}")
+fi
 say "--- plan: ${#MATRIX[@]} combinations x 3 frameworks x ${REPS} reps = $(( ${#MATRIX[@]} * 3 * REPS )) runs ---"
 i=0
 for spec in "${MATRIX[@]}"; do
@@ -229,6 +238,11 @@ cell() {
     local verdict=ok
     [ -n "$res" ] || verdict="VOID(no RESULT line)"
     [ "$left" = none ] || verdict="VOID(leftover $left)"
+    # Every TickLE figure published before 2026-09-26 was an -O0 core against -O2 DDS packages.
+    # A TickLE row that does not state core_build=release is void, not assumed.
+    if [ "$fw" = tickle ] && [ -n "$res" ]; then
+        case "$res" in *core_build=release*) ;; *) verdict="VOID(core_build not release)" ;; esac
+    fi
     case "$res" in *instrument=ok*) ;; *instrument=fail*) verdict="VOID($(grep -oE 'instrument=fail:[a-z,]+' <<<"$res" | head -1))" ;;
         *) [ -n "$res" ] && verdict="VOID(no instrument= field)" ;; esac
     say "$(printf 'c%-2s %s %-2s %-2s %-22s %-10s rep%s | %s | %s' \
@@ -240,9 +254,12 @@ say "--- runs ---"
 current_net=""
 for rep in $(seq 1 "$REPS"); do
     num=0
+    idx=0
     for spec in "${MATRIX[@]}"; do
         IFS='|' read -r shape payload qos net scenario extra <<<"$spec"
         num=$((num + 1))
+        [ -n "${CELLS:-}" ] && num="${CELL_NUMS[$idx]}"
+        idx=$((idx + 1))
         if [ "$net" != "$current_net" ]; then
             tc_apply "$net"; current_net="$net"
             say "  [tc: $(tc_describe "$net")]"

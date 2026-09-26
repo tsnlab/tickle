@@ -247,3 +247,51 @@ pool and one send-any-record routine for publish, retransmit and backlog - new t
 (2) discovery onto DATA/FRAG, UPDATE/UPDATE_PART removed, `tt_VERSION` 7; (3) `sendmmsg`;
 (4) the byte-budgeted depth in the harness. Step 1 is pushed alone so the p4 bandwidth row can be
 measured on a real build early.
+
+## 7. The c6 baseline: what the void cell already says, and the corrected pre-registration
+
+Written before the release re-run of c6 is launched. Section 5 item 1's expectation - "TickLE loses
+or barely survives" - was written without opening the void cell's own data, and that data says
+something sharper. Campaign 2026-09-25, `-O0` TickLE core, p4 under 5% loss, client, median of 3:
+
+| c6 (p4 + 5% loss) | TickLE | FastDDS | CycloneDDS |
+|---|---:|---:|---:|
+| `send_mbps` (5 s send window) | **61.9** | 13.8 | 12.2 |
+| `wire_bytes_per_sample` | **153,732** | 3,136 | 3,275 |
+| `wire_packets_per_sample` | **106.9** | 2.3 | 3.3 |
+| `cpu_s_per_Msample` | **594.9** | 76.6 | 42.8 |
+| `peak_rss_kb` | 7,376 | 28,636 | **4,940** |
+
+**TickLE did not win c6. It won one metric and lost three by one to two orders of magnitude**: 47x
+the bandwidth per sample, 14x CycloneDDS's CPU, and more memory. The throughput "win" is also not
+what it looks like. `send_mbps` counts samples *accepted* during the 5 s window; TickLE's client
+then used 8.1 s of CPU (utime 0.611 + stime 7.499) retransmitting them afterwards. At the time
+TickLE's KEEP_ALL buffer was 2048 samples, ~5.7 MB at p4, against CycloneDDS's ~500 kB write-history
+bound, so TickLE could accept roughly ten times as much before blocking. **That was a history-depth
+mismatch - a QoS difference - measured as a throughput difference**, which is the thing the user's
+standing rule (identical QoS for every framework) forbids.
+
+**Correction to section 3 and to the implementation order in 6.6: the byte budget already exists.**
+`9a230a1b` (2026-09-25 18:16) gave the TickLE harness a 512 KiB VOLATILE KEEP_ALL byte budget,
+reached by blocking, mirroring `RMW_TICKLE_KEEP_ALL_BYTES_DEFAULT`. The campaign ran at 14:28 the same
+day, before it. So step (4) of 6.6 is not work to do; it is a measurement not yet taken. It also
+repairs the depth mismatch above, since 512 KiB is the same order as CycloneDDS's bound.
+
+**Pre-registration for the release baseline (no DATA_FRAG, 512 KiB budget in force):**
+
+- **Memory, p4: TickLE now wins.** Predicted RSS near 2.2 MB against CycloneDDS's ~5 MB. If it does
+  not fall, the budget is not reaching the arena and that is a harness defect to find first.
+- **Throughput, c6: TickLE's advantage shrinks sharply and probably reverses.** With matched buffers
+  TickLE blocks after ~180 unacknowledged samples, and each of them still needs dozens of
+  transmissions to survive kernel reassembly.
+- **Bandwidth and CPU, c6: still lost by more than 10x.** The byte budget does not touch the
+  mechanism, which is one lost IP fragment destroying the whole sample. **These two rows are what
+  DATA_FRAG is for**: independently delivered fragments should take packets per sample from ~107
+  to about 2.2-2.5, near CycloneDDS's 3.3.
+- **If TickLE instead wins c6 throughput, bandwidth and CPU on this baseline**, the reassembly
+  collapse was an `-O0` or buffer-depth artefact, DATA_FRAG's p4 case rests on wire efficiency
+  alone, and that is reported as such.
+
+Cells run: c1 and c5 (p1 unshaped and under loss, the 90.6% retention reference), c3 (p3, not yet
+measured at release), c4 and c6 (p4 unshaped and under loss). `core_build=release` asserted on every
+TickLE row, which the campaign script did not do until today.
