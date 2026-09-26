@@ -41,6 +41,9 @@ PH="$(cd "$HERE/.." && pwd)"
 REPO="$(cd "$PH/../.." && pwd)"
 REPS="${REPS:-3}"
 DUR="${DUR:-5}"
+# FWS limits the frameworks (2026-09-27): "tickle" alone for a TickLE-only A/B such as WIRE_PLAN's bundle against its
+# parent, where the vendors do not change. The default is all three.
+FWS="${FWS:-tickle cyclonedds fastdds}"
 DRY_RUN="${DRY_RUN:-0}"
 OUT="${OUT:-/tmp/tickle_campaign_$(date +%Y%m%d-%H%M%S).txt}"
 
@@ -164,6 +167,7 @@ fi
 # --- build every variant once, up front (section 7's time budget depends on this) ---------------
 # SHA=<full sha> pins the build (2026-09-26), for runs queued behind others while main keeps moving.
 SHA="${SHA:-$(git -C "$REPO" rev-parse origin/main)}"
+say "FWS=$FWS"
 say "--- deploying $SHA and building $(needed_variants | wc -l) variant(s) x 3 frameworks on both rpis ---"
 VARIANTS="$(needed_variants | paste -sd' ')"
 # `wait` with no arguments returns 0 however the background jobs ended, so a BUILD FAILED on either
@@ -177,7 +181,7 @@ cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdq
 cd examples/perf_hil
 for v in $VARIANTS; do
   scen=\${v%_p[0-9]}; size=\${v##*_}
-  for fw in tickle cyclonedds fastdds; do
+  for fw in $FWS; do
     (cd \$fw && TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
       || { echo \"BUILD FAILED: \$fw \$scen \$size\"; tail -8 /tmp/campaign_build_\${fw}_\$v.log; exit 1; }
   done
@@ -196,7 +200,7 @@ for pid in "${pids[@]}"; do wait "$pid" || build_failed=1; done
 # these are the exact paths the sweep is about to execute, not a guess at what a build emits.
 missing=""
 for host in "${HOSTS[@]}"; do
-    absent="$(ssh_h "$host" "for v in $VARIANTS; do for fw in tickle cyclonedds fastdds; do
+    absent="$(ssh_h "$host" "for v in $VARIANTS; do for fw in $FWS; do
   for b in client server; do d=~/tickle/examples/perf_hil/\$fw/\$v/\$b
     [ -x \"\$d\" ] || echo \"\$fw/\$v/\$b\"; done; done; done" 2>&1)"
     [ -z "$absent" ] || missing+="$host: $(tr '\n' ' ' <<<"$absent")"
@@ -356,7 +360,7 @@ for rep in $(seq 1 "$REPS"); do
             tc_apply "$net"; current_net="$net"
             say "  [tc: $(tc_describe "$net")]"
         fi
-        for fw in tickle cyclonedds fastdds; do
+        for fw in $FWS; do
             cell "$num" "$shape" "$payload" "$qos" "$net" "$scenario" "$extra" "$fw" "$rep"
         done
     done

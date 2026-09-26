@@ -16,6 +16,16 @@ DUR=${DUR:-5}
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/../../.." && pwd)
 TK="$REPO/examples/perf_hil/tickle"
+# SHA=<commit> (2026-09-27): build from a git worktree of that commit under its own HOME (so build.sh's install
+# prefix cannot collide with another build), for WIRE_PLAN's bundle against its parent. Unset: this checkout.
+BHOME=$HOME
+if [ -n "${SHA:-}" ]; then
+    SHA=$(git -C "$REPO" rev-parse "$SHA") || exit 1
+    WT=/tmp/wirinv_wt_${SHA:0:8}; BHOME=/tmp/wirinv_home_${SHA:0:8}
+    [ -d "$WT" ] || git -C "$REPO" worktree add -q --detach "$WT" "$SHA" || exit 1
+    mkdir -p "$BHOME"
+    TK="$WT/examples/perf_hil/tickle"
+fi
 NS1=wirinv-ns1
 NS2=wirinv-ns2
 MATRIX=(
@@ -61,12 +71,12 @@ say() { echo "$*" | tee -a "$OUT"; }
 
 : > "$OUT"
 mkdir -p "$OUT.pcaps"
-say "=== wire inventory (WIRE_PLAN W0), $(date -Is), HEAD $(git -C "$REPO" rev-parse --short HEAD), -d $DUR, capture cap $CAP_PACKETS packets ==="
+say "=== wire inventory (WIRE_PLAN W0), $(date -Is), core ${SHA:-HEAD $(git -C "$REPO" rev-parse --short HEAD)}, -d $DUR, capture cap $CAP_PACKETS packets ==="
 for cell in "${MATRIX[@]}"; do
     IFS='|' read -r shape payload qos net scenario extra <<< "$cell"
     name="${scenario}_${payload}_${qos}_${net}"
     [[ "$name" =~ $FILTER ]] || continue
-    "$TK/build.sh" "$scenario" "$payload" > /tmp/wire_inventory_build.log 2>&1 || { say "$name | VOID(build failed)"; continue; }
+    HOME=$BHOME "$TK/build.sh" "$scenario" "$payload" > /tmp/wire_inventory_build.log 2>&1 || { say "$name | VOID(build failed)"; continue; }
     dir="$TK/${scenario}_${payload}"
     args="-d $DUR"; [ "$shape" = L ] && args="-i 0.1 -d 10"
     args="$args $extra $(common_args "$scenario" "$payload" "$qos")"
