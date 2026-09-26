@@ -4,6 +4,8 @@
 # with departed=1 on a (false) departure, or at its safety cap with departed=0. Two cases:
 #   data  lease 2 s, the client publishing at 10 Hz
 #   idle  lease 1 s, the client publishing once an hour (-i 3600): only the node's own summaries keep the lease
+#   data1 lease 1 s, the client publishing at 10 Hz (2026-09-27, LIVELINESS_PLAN 10's summary skip): the node's
+#         short-lease summaries give way to its data, so under loss the lease rides on the data and the 1 s summary
 # each on the core before the change (the control) and after it.
 #
 # HOW TO READ IT (LIVELINESS_PLAN section 4 and amendment 1, written before running):
@@ -17,6 +19,8 @@
 # the before commit). Processes are stopped by netns membership (ip netns pids), never by name.
 #
 # CASES="idle" runs only that case (default "data idle").
+# Every row carries client_tx_pps, the client veth's transmitted packets per second of the run: 10 Hz data plus
+# the node's summaries, so it shows whether a build skips its summaries under traffic (the identity of the arm).
 # Usage: BEFORE=<sha> AFTER=<sha> liveliness_l3.sh [reps] [seconds]   Output: $OUT (default /tmp/liveliness_l3.txt)
 set -u
 REPS=${1:-2}
@@ -53,6 +57,7 @@ DA=$(build "$AFTER") || { say "BUILD FAILED (after), see /tmp/l3_build_${AFTER:0
 run() { # $1 arm, $2 dir, $3 case, $4 rep
     local arm=$1 dir=$2 kind=$3 rep=$4 lease=2.0 cargs="" res
     [ "$kind" = idle ] && { lease=1.0; cargs="-i 3600"; }
+    [ "$kind" = data1 ] && lease=1.0
     cleanup
     sudo -n ip netns add "$NS1" && sudo -n ip netns add "$NS2" || exit 1
     sudo -n ip link add l3v1 type veth peer name l3v2
@@ -68,12 +73,14 @@ run() { # $1 arm, $2 dir, $3 case, $4 rep
     # shellcheck disable=SC2024,SC2086 # as above; cargs is a list of flags
     (cd "$dir" && sudo -n ip netns exec "$NS1" ./client -T "$lease" $cargs > /tmp/l3_client.log 2>&1) &
     wait "$spid"
+    local txp
+    txp=$(sudo -n ip netns exec "$NS1" cat /sys/class/net/l3v1/statistics/tx_packets 2>/dev/null)
     kill_ns "$NS1"
     wait
     res=$(grep '^RESULT:' /tmp/l3_server.log | head -1)
     local verdict=ok
     [ -n "$res" ] || verdict="VOID(no RESULT)"
-    say "$arm $kind lease=$lease rep$rep | $verdict | ${res#RESULT: }"
+    say "$arm $kind lease=$lease rep$rep | $verdict | ${res#RESULT: } client_tx_pps=$(awk -v n="${txp:-0}" -v s="$SECS" 'BEGIN{printf "%.2f", n / s}')"
 }
 for rep in $(seq 1 "$REPS"); do
     for kind in ${CASES:-data idle}; do
