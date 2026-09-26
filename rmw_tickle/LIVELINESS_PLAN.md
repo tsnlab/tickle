@@ -314,5 +314,8 @@ The control is the lease/3 core (`af87e150`), which section 8 showed can fail th
 - **Pass:** the after core has no false departure in any case, and the control fails idle 4 times in 10, so the test can fail.
 - **The skip is visible in data1.** The after client sends 1.8 fewer packets per second: its short-lease summaries give
   way to the data. Idle does not skip (6.5/s = the lease/6 cadence).
-- **The ride-ahead change (section 11.1, `3015e15d`)** is re-run the same way (data1 and idle) against `397d927c`,
-  started 04:10.
+- **The ride-ahead change (section 11.1, `3015e15d`)** was re-run the same way (data1 and idle, 10 x 120 s) against
+  `397d927c`: **0/20 departures** in either arm. client_tx_pps is 12.05 against 12.01 in data1 and 6.56 against 6.55
+  idle. That is as expected: the 1 s summary still goes as its own datagram, now just ahead of the next send, so only
+  its timing changes, not the count. Raw rows are `results/liveliness_l3t_2026-09-27.txt`. Its L2 on the rig (the
+  no-mode criterion of section 11) follows the rig queue.
