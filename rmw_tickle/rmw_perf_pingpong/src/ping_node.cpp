@@ -143,6 +143,28 @@ namespace {
         stats.sum_ms += rtt_ms;
     }
 
+    // What poll mode spends (2026-09-26, RMW_PERF_PLAN §7): the wait loop's iterations, and how long its
+    // spin_some() calls and its sleeps really took - the sleep asks for 100 us and the kernel's timer slack
+    // decides the rest. Printed per round trip on a LOOP: line after RESULT.
+    constexpr double ns_per_us = 1000.0;
+
+    struct loop_stats {
+        uint64_t iterations = 0;
+        uint64_t spin_ns = 0;
+        uint64_t sleep_ns = 0;
+    };
+
+    // A line of its own after RESULT, so RESULT's fields stay as every parser knows them: iterations of the
+    // wait loop per round trip, and in poll mode the mean spin_some() and the mean real sleep, in us.
+    auto print_loop_stats(const loop_stats& loop, uint64_t transmitted) -> void {
+        const double per_rtt =
+            transmitted > 0 ? static_cast<double>(loop.iterations) / static_cast<double>(transmitted) : 0.0;
+        const double iterations = loop.iterations > 0 ? static_cast<double>(loop.iterations) : 1.0;
+        std::printf("LOOP: iterations_per_rtt=%.2f spin_some_us=%.1f sleep_us=%.1f\n", per_rtt,
+                    static_cast<double>(loop.spin_ns) / iterations / ns_per_us,
+                    static_cast<double>(loop.sleep_ns) / iterations / ns_per_us);
+    }
+
     // Spins until the reply has arrived or the deadline passes.
     //
     // poll (the default, and every row before 2026-09-26): spin_some() and a 100 us sleep, with the round
@@ -153,13 +175,18 @@ namespace {
     // reply wakes the executor, as the native client waits in tt_Node_poll(); the caller then reads the
     // round trip at the callback.
     auto wait_for_reply(rclcpp::executors::SingleThreadedExecutor& executor, const std::atomic<bool>& got_reply,
-                        uint64_t wait_deadline, bool blocking) -> void {
+                        uint64_t wait_deadline, bool blocking, loop_stats& loop) -> void {
         while (rclcpp::ok() && !got_reply && now_ns() < wait_deadline) {
+            loop.iterations++;
             if (blocking) {
                 executor.spin_once(std::chrono::nanoseconds(wait_deadline - now_ns()));
             } else {
+                const uint64_t spin_start = now_ns();
                 executor.spin_some();
+                const uint64_t sleep_start = now_ns();
                 std::this_thread::sleep_for(std::chrono::microseconds(spin_poll_us));
+                loop.spin_ns += sleep_start - spin_start;
+                loop.sleep_ns += now_ns() - sleep_start;
             }
         }
     }
@@ -208,6 +235,7 @@ namespace {
 
         uint64_t transmitted = 0;
         rtt_stats rtt;
+        loop_stats loop;
 
         uint64_t seq = 0;
         const uint64_t start = now_ns();
@@ -223,7 +251,7 @@ namespace {
             transmitted++;
 
             const uint64_t wait_deadline = now_ns() + (reply_wait_ms * ns_per_ms); // 500ms, matching the native client
-            wait_for_reply(executor, got_reply, wait_deadline, blocking);
+            wait_for_reply(executor, got_reply, wait_deadline, blocking, loop);
             if (got_reply && Traits::seq(reply_msg) == seq) {
                 const uint64_t end_ns = blocking ? reply_ns : now_ns();
                 add_rtt(rtt, static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms));
@@ -258,6 +286,7 @@ namespace {
                     rmw_impl, reliable ? "reliable" : "best_effort", blocking ? "block" : "poll",
                     static_cast<unsigned long>(transmitted), static_cast<unsigned long>(received), loss_pct, rtt_min_ms,
                     avg, rtt_max_ms);
+        print_loop_stats(loop, transmitted);
 
         return 0;
     }

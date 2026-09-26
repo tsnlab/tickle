@@ -27,6 +27,15 @@
 #   The loop is ~240 us of every row, for every vendor. poll also inverted the minimum: rmw_tickle 0.28
 #   against CycloneDDS 0.18-0.23 in poll, 0.063-0.066 against 0.068-0.075 in block. The rig decides.
 #
+# SEEN with the LOOP: line, 2 reps at ac2dd490 (x86 veth, poll mode): iterations per round trip,
+# spin_some() mean, real sleep mean
+#   rmw_tickle          2.14-2.21   5.5 us    160 us   -> 0.373-0.385 ms
+#   rmw_cyclonedds_cpp  2.00-2.01   41-42 us  156-161  -> 0.422-0.426
+#   rmw_fastrtps_cpp    2.02-2.03   43-46 us  155-159  -> 0.431-0.450
+#   A poll row is iterations x (spin + sleep). rmw_tickle's spin_some() is ~8x cheaper, so its cycle is
+#   shorter and its reply is caught one iteration later more often: the poll-mode gap between vendors
+#   is where each one's true round trip falls on the loop's grid, not a cost in the round trip.
+#
 # Usage: rmw_ping_wait_mode.sh <reps>   Results: $OUT (default /tmp/rmw_ping_wait_mode.txt)
 set -u
 REPS=${1:?usage: rmw_ping_wait_mode.sh <reps>}
@@ -65,7 +74,7 @@ run_one() { # <rmw> <wait mode>
     # shellcheck disable=SC2024
     sudo -n ip netns exec "$NS1" bash -c "$env; timeout -s INT 12 ros2 run rmw_perf_pingpong ping_node -d 4 -i 0.01 --wait $mode" >/tmp/rpw_ping.log 2>&1
     wait "$pong"
-    echo "rmw=$rmw mode=$mode $(grep -h '^RESULT' /tmp/rpw_ping.log | tr ' ' '\n' | grep -E '^(wait|sent|recv|rtt_min_ms|rtt_avg_ms|rtt_max_ms)=' | paste -sd' ')" >>"$OUT"
+    echo "rmw=$rmw mode=$mode $(grep -h '^RESULT' /tmp/rpw_ping.log | tr ' ' '\n' | grep -E '^(wait|sent|recv|rtt_min_ms|rtt_avg_ms|rtt_max_ms)=' | paste -sd' ') $(grep -h '^LOOP:' /tmp/rpw_ping.log | sed 's/^LOOP: //')" >>"$OUT"
 }
 
 : >"$OUT"
