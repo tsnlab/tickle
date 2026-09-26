@@ -738,3 +738,31 @@ logged: main ae11b2cb, R1d edbc2037. Pong whole-run CPU; mean over reps, paired 
   second (9.2), and a CPU kept busier leaves the deep idle states less often, so it wakes faster for the next datagram.
   That is a hypothesis, consistent with R1's +12% CPU and with R1d's null result, but not measured (the idle
   residency was not recorded). It is not a gain to ship: the same effect costs any rmw the same CPU.
+
+## 10. Poll mode at 50 and 100 us: where rmw_tickle's reply waits on the ping (pre-registered 2026-09-27, before the run)
+
+COMPARISON rows 59-63 are the only rmw RTT rows TickLE loses: poll wait with a 50 or 100 us sleep. There rmw_tickle's
+ping catches the reply on its 3rd loop iteration (3.02), and CycloneDDS's on its 2nd (2.01), section 8.3. rmw_tickle's
+cycle is ~163 us and its block-mode RTT ~0.25 ms. If the reply were visible to `spin_some()` as soon as it reaches the
+ping host, the 2nd check at ~326 us would already see it. That it does not means ~80 us or more pass on the ping
+between the reply's arrival and the moment `spin_some()` can take it. This run finds where.
+
+**Run:** `rmw_crosshost_rtt.sh`, current `main`, all three rmws, WAITS=poll POLL_SLEEPS="100 0", bench, both QoS,
+2 repetitions, CAPTURE=1 STAMPS=1 SYSSTAMP_ARMS="off on". Busy poll (0) is the control: there TickLE wins. Split
+with `rmw_pcap_split.py` into
+- the reply's arrival at the ping host (pcap),
+- the ping's receive syscall on its receiving thread (sysstamp),
+- the ping's application seeing it (stamps, `reply_ns`).
+
+**How to read it:**
+- **The gap is between the arrival and the receive syscall:** the ping's poll thread wakes late while the main thread
+  sleeps. That points at the poll thread's wait: the executor-poll lease, or the park timer. Its fix is in rmw_tickle's
+  poll-thread handover.
+- **The gap is between the receive syscall and `reply_ns`:** delivered but not seen. The candidates are `spin_some()`
+  → `rmw_wait(0)` not reporting a ready subscription the poll thread queued, or a guard condition not triggered.
+  The fix is in `rmw_wait`'s readiness check.
+- **No gap (the reply is seen at the first check after its arrival):** then 3 against 2 iterations is the cycle
+  arithmetic alone. It means rmw_tickle's true poll-mode RTT exceeds 326 us for a reason upstream of the ping (the
+  pong's turnaround in poll mode), which the same pcaps split.
+- **Control:** at busy poll, rmw_tickle's arrival-to-seen gap must be a few us. If it is not, the instrument
+  (sysstamp) is the cause, and the `on` / `off` RTT difference says by how much.
