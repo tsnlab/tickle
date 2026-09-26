@@ -246,6 +246,12 @@ struct tt_Node {
     // here rather than in a tt_receive() out-parameter so the HAL contract in hal.h stays as it
     // is; both backends set it, and nothing outside the self-sent accounting reads it.
     bool rx_via_data_port;
+    // Whether the submessage being processed right now was addressed to this node by id, rather than to
+    // everyone (tt_SUBMESSAGE_ID_ALL). A retransmission is addressed to the node that asked for it
+    // (retransmit_one_sample()), so this is how a reliable Subscriber tells the sample its ACKNACK
+    // brought back from the original that was merely late - see note_recovery_sample(). Set per
+    // submessage on the poll thread, under the state lock.
+    bool rx_targeted;
     // Of rx_self_sent, the ones carrying a DATA submessage rather than only an announce.
     uint64_t rx_self_sent_data;
     // Of those, the ones that arrived as unicast - addressed to this node's own data port rather

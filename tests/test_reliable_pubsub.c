@@ -1148,6 +1148,14 @@ static void test_process_acknack_retransmits_cached_sample(void) {
     EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
     EXPECT_EQ_U32(1, (uint32_t)cache.index[0].retry);
     EXPECT_EQ_U32(1, pub.retransmitted);
+
+    // Addressed to the node that asked, not to everyone like the cached original: that is how the
+    // requester tells this copy from a late original when it times the recovery (tt_Node.rx_targeted).
+    const struct tt_SubmessageHeader* resent =
+        (const struct tt_SubmessageHeader*)(test_mock_send_last_buf + sizeof(struct tt_Header));
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA, resent->type);
+    EXPECT_EQ_INT(header.source, resent->receiver);
+    EXPECT_TRUE(resent->receiver != tt_SUBMESSAGE_ID_ALL);
 }
 
 // Milestone 62 (rmw_tickle/PLAN.md) - find_resendable_cache_entry()'s own direct-index math
@@ -1581,12 +1589,47 @@ static void test_recovery_probe_times_from_the_first_request(void) {
     EXPECT_EQ_U64(1 * tt_MILLISECOND, proxy->probe_ns); // ...and the probe keeps the first request
 
     test_mock_now = 4 * tt_MILLISECOND;
-    tail = write_data(&node, 2, 200, 2); // recovered, 3ms after it was first asked for
+    tail = write_data(&node, 2, 200, 2); // recovered, 3ms after it was first asked for...
+    node.rx_targeted = true;             // ...by a retransmission, addressed to this node
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    node.rx_targeted = false;
     EXPECT_EQ_U32(3000000, proxy->recovery_srtt_ns);
     EXPECT_EQ_U32(1500000, proxy->recovery_rttvar_ns);
     EXPECT_EQ_U64(0, proxy->probe_ns);                                    // done, not re-timed
-    EXPECT_EQ_U64(3000000ULL + 6000000ULL, retry_interval_for(0, proxy)); // 9ms, under the 10ms cap
+    EXPECT_EQ_U64(3000000ULL + 6000000ULL, retry_interval_for(0, proxy)); // srtt + 4 * rttvar
+}
+
+// Karn's ambiguity. The requested sample can come back as the retransmission its ACKNACK caused, or as
+// the original, which was only late - on the rig, microseconds after the request. Timing the original
+// put 12.6 us into the estimate under 20 ms of injected delay. Only a copy addressed to this node (a
+// retransmission, tt_Node.rx_targeted) is timed; the original ends the probe without a sample.
+static void test_recovery_probe_ignores_a_late_original(void) {
+    test_mock_reset();
+
+    struct tt_Node node;
+    struct tt_Topic topic;
+    struct tt_Subscriber sub;
+    init_node_and_topic(&node, &topic);
+    init_subscriber_registered_on_node(&sub, &node, &topic);
+    struct tt_Header header;
+    init_header(&header);
+
+    uint32_t tail = write_data(&node, 1, 100, 1);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    struct tt_WriterProxy* proxy = remote_writer_proxy(&sub);
+    EXPECT_TRUE(proxy != NULL);
+
+    test_mock_now = 1 * tt_MILLISECOND;
+    tail = write_data(&node, 3, 300, 3); // 3 overtook 2: an immediate ACKNACK names 2
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(2, proxy->probe_seq_no);
+
+    test_mock_now = 1 * tt_MILLISECOND + 12600; // 12.6 us later the original arrives, addressed to all
+    tail = write_data(&node, 2, 200, 2);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_EQ_U32(0, proxy->recovery_srtt_ns); // not a recovery: nothing learned
+    EXPECT_EQ_U64(0, proxy->probe_ns);         // but the probe is over
+    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_INITIAL, retry_interval_for(0, proxy));
 }
 
 // Only a request that names the watermark can time its recovery. A narrow request for a gap further
@@ -3582,6 +3625,7 @@ int main(void) {
     test_retry_interval_explicit_value_wins();
     test_retry_interval_estimate_converges_and_is_bounded();
     test_recovery_probe_times_from_the_first_request();
+    test_recovery_probe_ignores_a_late_original();
     test_recovery_probe_only_times_the_watermark();
     test_recovery_estimate_resets_when_a_slot_is_reused();
     test_process_acknack_skips_expired_sample();

@@ -4435,8 +4435,18 @@ static bool update_reliable_ack(struct tt_Node* node, struct tt_Subscriber* sub,
     struct new_gap_range new_gap = {-1, -1};
     bool is_new = true;
     if (seq_no == proxy->ack_seq_no) {
+        // Karn's ambiguity, and the reason for rx_targeted: the requested sample can arrive as the
+        // retransmission the ACKNACK caused, or as its original, which was only late - overtaken by a
+        // later sample on the other socket, say - and then arrives microseconds after the request. Timing
+        // the second as a recovery put 12.6 us into the estimate under 20 ms of injected delay on the rig,
+        // and with the ceiling at 64 x srtt that would have clamped real recoveries hard. Only a copy
+        // addressed to this node is a retransmission, so only that one is timed; the original just ends
+        // the probe. (The sequence number does say which REQUEST a copy answers - it cannot say which copy
+        // arrived. The first version of this estimator assumed the one covered the other.)
         if (proxy->probe_ns != 0 && proxy->probe_seq_no == seq_no) {
-            note_recovery_sample(proxy, tt_get_ns() - proxy->probe_ns);
+            if (node->rx_targeted) {
+                note_recovery_sample(proxy, tt_get_ns() - proxy->probe_ns);
+            }
             proxy->probe_ns = 0;
         }
         advance_ack_seq_no(proxy);
@@ -6574,6 +6584,12 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
         return false;
     }
     _tt_memcpy(buf, cache->arena + cache_entry->offset, cache_entry->len);
+    // Addressed to the node that asked, where the cached original is addressed to everyone. It goes to
+    // that node alone anyway (unicast, below), so nothing else changes - but it is what lets that node
+    // tell this copy from the original that was only late, which its retry-interval estimate depends on
+    // (tt_Node.rx_targeted). No wire change: a node of an older build sees a submessage addressed to
+    // itself and processes it exactly as before.
+    ((struct tt_SubmessageHeader*)buf)->receiver = target->node_id;
     if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
         RSTAT_INC(retransmit_tx_fail);
         rollback(node, old_tx_tail);
@@ -7067,6 +7083,7 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
     }
 
     const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
+    node->rx_targeted = submessage_header->receiver == node->id;
     if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
         !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port,
                             self_sent)) {
