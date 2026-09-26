@@ -647,7 +647,8 @@ runs from the entity's last sign of life, and the verdict is taken when it runs 
 - **A busy node's traffic stands in for those extra summaries.** A summary at the short-lease cadence is
   skipped when, since the last tick, every peer the node knows has had a datagram from it - a broadcast,
   or one addressed to that peer (a summary alone does not count). The `tt_NODE_UPDATE_INTERVAL` summary,
-  which carries the discovery generation, always goes. Under traffic the last sign of life before a node
+  which carries the discovery generation, always goes - under traffic just ahead of the next send, in a
+  datagram of its own, rather than at its tick. Under traffic the last sign of life before a node
   stops is then its data, as with DDS; MANUAL writers are untouched, since only their own DATA and
   HEARTBEAT assert them. Counted in `tt_Node.summaries_skipped`.
 

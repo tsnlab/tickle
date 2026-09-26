@@ -1320,6 +1320,77 @@ static void test_short_lease_summaries_give_way_to_traffic(void) {
     duo_stop();
 }
 
+// L2's own measure (LIVELINESS_PLAN.md 10): a node publishing every 100 ms with a 1 s lease is killed 95 ms
+// after its last sample, at ten phases across the once-a-second summary's cycle. Each lapse must come one
+// lease after the last DATA: the once-a-second summary rides ahead of a data send, so it is never the last
+// datagram. Sent on its own, it is at the phase where it falls between the last sample and the kill.
+static int late_lapses_after_a_kill(void) {
+    int late = 0;
+    for (int phase = 0; phase < 10; phase++) {
+        static struct tt_Node one;
+        static struct tt_Node two;
+        duo_start(&one, &two);
+        struct tt_Publisher pub;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+        pub.liveliness_lease_duration_ns = tt_SECOND;
+        liveliness_duo_start(&one, &two, &pub, NULL);
+        uint64_t last =
+            duo_run_publishing(&one, &two, test_mock_now + (5 * tt_SECOND) + ((uint64_t)phase * 100 * tt_MILLISECOND),
+                               &pub, 100 * tt_MILLISECOND);
+        duo_run_until(&one, &two, last + (95 * tt_MILLISECOND));
+        duo_drop = drop_everything_from_one;
+        duo_run_until(&one, &two, test_mock_now + (2 * tt_SECOND));
+        EXPECT_EQ_INT(1, watched_departures[0]);
+        late += watched_departed_at[0] > last + tt_SECOND + tt_MILLISECOND;
+        duo_stop();
+    }
+    return late;
+}
+
+// LIVELINESS_PLAN.md 11.1, three nodes (whitebox): node 1's data goes to node 2 only. Node 3, which no data
+// reaches, still gets every summary: none is skipped and none waits to ride - both need every known peer
+// reached. The contrast: once node 3 is reached too, summaries are skipped and the 1 s one rides.
+static void run_summary_ticks(struct tt_Node* node, const struct tt_Peer* reached, uint8_t reached_count,
+                              uint64_t* time) {
+    uint64_t interval = summary_interval(node);
+    for (int tick = 0; tick < 12; tick++) {
+        note_reached(node, reached, reached_count);
+        node_update(node, *time, NULL);
+        *time += interval;
+        node->tx_tail = sizeof(struct tt_Header); // the summaries are not what is tested: keep tx_buffer empty
+        node->tx_summary_alone_len = 0;
+    }
+}
+
+static void test_a_peer_no_data_reaches_keeps_every_summary(void) {
+    static struct tt_Node node;
+    init_node(&node);
+    node.id = 1;
+    test_mock_reset();
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub, &live_topic_a, "live_ep"));
+    pub.liveliness_lease_duration_ns = tt_SECOND; // summaries every lease/6: the skip is armed
+    node.update_seen[2] = true;
+    node.update_seen[3] = true;
+    struct tt_Peer peers[2] = {{.node_id = 2, .ip = 2, .port = 1}, {.node_id = 3, .ip = 3, .port = 1}};
+    uint64_t time = tt_SECOND;
+    node_update(&node, time, NULL); // arms the skip at the short cadence
+    time += summary_interval(&node);
+
+    run_summary_ticks(&node, peers, 1, &time); // data to node 2 only
+    EXPECT_EQ_U64(0, node.summaries_skipped);
+    EXPECT_EQ_U64(0, node.summaries_ridden);
+    EXPECT_EQ_INT(0, node.summary_rides);
+
+    run_summary_ticks(&node, peers, 2, &time); // data to both
+    EXPECT_TRUE(node.summaries_skipped > 0);
+    EXPECT_TRUE(node.summaries_ridden > 0); // the 1 s one went just ahead of a send
+}
+
+static void test_a_killed_node_lapses_one_lease_after_its_data(void) {
+    EXPECT_EQ_INT(0, late_lapses_after_a_kill());
+}
+
 // The skip's rule, with a peer the duo cannot show: a datagram addressed to node 2 says nothing to node 3,
 // which still needs its summary. A broadcast reaches both; each tick starts a fresh record; a node that knows
 // no peer never skips.
@@ -1371,6 +1442,8 @@ int main(void) {
     test_an_idle_short_lease_is_kept_by_faster_summaries();
     test_short_lease_summaries_give_way_to_traffic();
     test_a_summary_is_skipped_only_when_every_peer_was_reached();
+    test_a_killed_node_lapses_one_lease_after_its_data();
+    test_a_peer_no_data_reaches_keeps_every_summary();
     test_a_node_is_not_kept_alive_past_the_lease_cap();
     test_four_lost_summaries_never_lapse_an_idle_lease();
 

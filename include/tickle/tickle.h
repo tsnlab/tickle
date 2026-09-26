@@ -272,6 +272,11 @@ struct tt_Node {
     // tx_tail when tx_buffer holds a summary and nothing else, 0 otherwise: a flush of exactly that is not
     // traffic for the skip, or each summary would cancel the next and an idle node's cadence would halve.
     uint32_t tx_summary_alone_len;
+    // Set when the tt_NODE_UPDATE_INTERVAL summary falls due while the node's traffic reaches every peer: it
+    // then goes just ahead of the next send instead of on its own, so a node that stops under traffic stops
+    // on its data (LIVELINESS_PLAN.md 10). node_update() sends it on its own if no send came by the next tick.
+    // Under the state lock, as every send is.
+    uint8_t summary_rides;
     uint32_t reached_nodes[tt_MAX_ENDPOINT_COUNT / 32];
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
@@ -348,6 +353,7 @@ struct tt_Node {
     // sender receiving its own traffic back.
     uint64_t tx_datagrams;
     uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
+    uint64_t summaries_ridden;  // once-a-second summaries sent just ahead of a data send
     uint64_t rx_datagrams;
     uint64_t rx_self_sent;
     // Submessages refused because no datagram could ever carry them (larger than

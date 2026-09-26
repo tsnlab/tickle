@@ -385,9 +385,15 @@ struct tx_datagram {
 // Records who a datagram sent now reaches, for node_update()'s summary skip: every peer when it is
 // broadcast (no peers), otherwise the peers it is addressed to. A link's broadcast of an addressed datagram
 // also reaches that link's other peers; they are not counted, which only means a summary goes out anyway.
+static void send_summary_ahead(struct tt_Node* node);
+
 static void note_reached(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
     if (!node->summary_skip_armed) {
         return;
+    }
+    if (node->summary_rides != 0) {
+        node->summary_rides = 0;
+        send_summary_ahead(node); // its own datagram, just ahead of this one
     }
     if (peers == NULL || peer_count == 0) {
         node->reached_everyone = 1;
@@ -1981,6 +1987,7 @@ static void reset_node_state(struct tt_Node* node) {
 
     node->tx_datagrams = 0;
     node->summaries_skipped = 0;
+    node->summaries_ridden = 0;
     node->tx_dropped_oversize = 0;
     node->rx_datagrams = 0;
     node->rx_self_sent = 0;
@@ -2020,6 +2027,7 @@ static void reset_node_state(struct tt_Node* node) {
     node->tx_summary_alone_len = 0;
     node->reached_everyone = 0;
     node->summary_skip_armed = 0;
+    node->summary_rides = 0;
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT / 32; i++) {
         node->reached_nodes[i] = 0;
     }
@@ -5513,6 +5521,37 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
 // receiver that has applied this generation takes it as liveliness only; one that has not asks for the list
 // (process_discovery_summary()). The full list is still broadcast at once on every change (announce_soon(),
 // broadcast_goodbye()). Batched, as the announce was: it is broadcast-only content.
+static void fill_summary(const struct tt_Node* node, struct tt_HeartbeatHeader* summary) {
+    uint32_t generation = (uint32_t)node->last_modified;
+    summary->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
+    summary->first_available_seq_no = generation;
+    summary->last_seq_no = generation;
+    summary->entity_id = tt_DISCOVERY_ENTITY_ID;
+    summary->flags = tt_HEARTBEAT_FLAG_FINAL;
+    memset(summary->reserved, 0, sizeof(summary->reserved));
+}
+
+// The summary as a datagram of its own, built apart from tx_buffer, which may hold the very send it goes
+// ahead of (note_reached(), tt_Node.summary_rides). Broadcast, as the batched one is.
+static void send_summary_ahead(struct tt_Node* node) {
+    tt_ALIGNAS(4) uint8_t
+        datagram[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_HeartbeatHeader)];
+    struct tt_Header* header = (struct tt_Header*)datagram;
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = node->id;
+    struct tt_SubmessageHeader* submessage = (struct tt_SubmessageHeader*)(datagram + sizeof(struct tt_Header));
+    submessage->type = tt_SUBMESSAGE_TYPE_HEARTBEAT;
+    submessage->receiver = tt_SUBMESSAGE_ID_ALL;
+    submessage->length = (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_HeartbeatHeader));
+    fill_summary(
+        node, (struct tt_HeartbeatHeader*)(datagram + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)));
+    uint32_t skip = to_single_form(datagram, (uint32_t)sizeof(datagram), 0);
+    struct tx_datagram dgram = {datagram + skip, (uint32_t)sizeof(datagram) - skip, NULL, 0};
+    (void)send_datagram(node, &dgram, NULL, 0);
+    node->summaries_ridden++;
+}
+
 static void send_discovery_summary(struct tt_Node* node) {
     uint32_t old_tx_tail = node->tx_tail;
     struct tt_SubmessageHeader* submessage_header =
@@ -5523,13 +5562,7 @@ static void send_discovery_summary(struct tt_Node* node) {
         rollback(node, old_tx_tail);
         return; // start_encode()/encode() logged why; the next interval tries again
     }
-    uint32_t generation = (uint32_t)node->last_modified;
-    summary->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
-    summary->first_available_seq_no = generation;
-    summary->last_seq_no = generation;
-    summary->entity_id = tt_DISCOVERY_ENTITY_ID;
-    summary->flags = tt_HEARTBEAT_FLAG_FINAL;
-    memset(summary->reserved, 0, sizeof(summary->reserved));
+    fill_summary(node, summary);
     if (!end_encode(node, submessage_header, false, NULL, 0)) {
         rollback(node, old_tx_tail);
         return;
@@ -5586,13 +5619,24 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     // has already reached every peer since the last one: under traffic the last sign of life is then the
     // data, as with DDS, rather than a summary tens of ms after it. The tt_NODE_UPDATE_INTERVAL summary, which
     // also carries the discovery generation, always goes.
+    // That summary, when the traffic reaches every peer, rides just ahead of the next send rather than going
+    // on its own, so it is not the last datagram before a node that stops.
     uint64_t interval = summary_interval(node);
     bool reached = every_peer_reached(node) && node->summary_skip_armed; // always cleared; unarmed, it recorded nothing
     node->summary_skip_armed = interval < tt_NODE_UPDATE_INTERVAL;
+    // A rider still waiting found no send since the last tick, so `reached` is false and it goes below.
+    node->summary_rides = 0;
     bool keeps_the_second = interval >= tt_NODE_UPDATE_INTERVAL || node->summary_sent_ns == 0 ||
                             time - node->summary_sent_ns + interval > tt_NODE_UPDATE_INTERVAL;
-    if (keeps_the_second || !reached) {
+    if (!reached) {
         send_discovery_summary(node);
+        node->summary_sent_ns = time;
+    } else if (keeps_the_second) {
+        if (interval < tt_NODE_UPDATE_INTERVAL) {
+            node->summary_rides = 1;
+        } else {
+            send_discovery_summary(node);
+        }
         node->summary_sent_ns = time;
     } else {
         node->summaries_skipped++;

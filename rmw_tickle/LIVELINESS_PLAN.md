@@ -270,3 +270,26 @@ WIRE_PLAN 8.1a's receive fix, which changes no summary behaviour. Raw rows are
   criteria plus one more, fixed now, before that run:
   - no mode: every rep within 5 ms of the median at every lease.
   L3's data1 case is re-run with it.
+
+### 11.1 The ride-ahead change (Dev, 2026-09-27)
+
+**What it does.**
+- When the 1 s summary falls due while the node's traffic reaches every peer, it no longer goes at its tick. It goes
+  just ahead of the node's next send: its own datagram, broadcast, built apart from tx_buffer
+  (`send_summary_ahead()`).
+- A node that stops under traffic therefore stops on its data.
+- With no send by the next tick there was no traffic, and the summary goes on its own as before.
+- It is gated like the skip (`summary_skip_armed`), so a node without short leases pays nothing. New counter
+  `tt_Node.summaries_ridden`.
+
+**Why a datagram of its own, not a ride inside the data datagram.** The summary is broadcast-only content, and the
+data may be unicast to some peers. So it goes microseconds ahead of the data instead of inside it. The last
+datagram before a kill is then the data in every case.
+
+**Tests.**
+- A kill 95 ms after the last sample, at ten phases across the 1 s cycle: every lapse comes one lease after the last
+  DATA. Without the ride, 1 phase in 10 is late, which is the residual above, reproduced.
+- Three nodes (whitebox): a peer that no data goes to still receives every summary.
+- Mutants:
+  - a rider never sent fails the summary count;
+  - the ride sent at the tick fails the kill-phase test.
