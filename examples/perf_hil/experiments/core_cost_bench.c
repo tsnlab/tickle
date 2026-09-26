@@ -24,6 +24,9 @@
 // Usage: core_cost_bench [samples] (default 200000).
 // NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 #define _GNU_SOURCE
+#include <pthread.h>
+#include <sched.h> // cpu_set_t, sched_getaffinity(), pthread_setaffinity_np()
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -76,7 +79,8 @@ static uint32_t wire_count;
 static uint32_t wire_dropped; // no room left: reported, and a run that drops is not to be read
 static uint8_t acting = 1;    // whose sends are being captured
 static int32_t next_node_id = 1;
-static uint64_t clock_calls;
+static _Thread_local uint64_t clock_calls; // per thread: -p's publisher does not count in the phases
+static _Thread_local bool discard_sends;   // -p's publisher: its datagrams are not captured
 
 uint64_t tt_get_ns(void) {
     clock_calls++;
@@ -123,6 +127,9 @@ static uint8_t destination(uint32_t ip) {
 
 static int32_t capture(uint32_t ip, const void* head, size_t head_len, const void* body, size_t body_len) {
     size_t len = head_len + body_len;
+    if (discard_sends) {
+        return (int32_t)len;
+    }
     if (wire_count >= WIRE_MAX || arena_used + len > ARENA_BYTES) {
         wire_dropped++;
         return (int32_t)len;
@@ -261,10 +268,11 @@ struct options {
     bool discovery;
     bool micro;
     bool client; // publish from a self-rescheduling entry under tt_Node_poll(-1), as the throughput clients do
+    bool concurrent_publisher; // -p: another thread publishes on the reader node through the receive phase
 };
 
 static bool parse(int argc, char** argv, struct options* opt) {
-    *opt = (struct options) {DEFAULT_SAMPLES, 1, 0, false, false, false};
+    *opt = (struct options) {DEFAULT_SAMPLES, 1, 0, false, false, false, false};
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
             opt->samples = (uint32_t)strtoul(argv[++i], NULL, ARG_BASE);
@@ -276,6 +284,8 @@ static bool parse(int argc, char** argv, struct options* opt) {
             opt->discovery = true;
         } else if (strcmp(argv[i], "-m") == 0) {
             opt->micro = true;
+        } else if (strcmp(argv[i], "-p") == 0) {
+            opt->concurrent_publisher = true;
         } else if (strcmp(argv[i], "-c") == 0) {
             opt->client = true;
         } else if (i == 1 && argv[i][0] != '-') {
@@ -474,11 +484,71 @@ static void print_brackets(uint32_t samples) {
 }
 #endif
 
+// -p (OPTIMIZATION_PLAN.md 11.4): what a thread publishing on the node pays while the node drains - each
+// tt_Publisher_publish() timed. Tight, so it contends for the state lock as hard as it can: a bound, not a
+// typical rate. On its own CPU, the lowest in the process's mask; the draining thread takes the highest.
+#define PUBLISH_SAMPLES_MAX 4000000U
+#define PERCENT 100U
+#define P99 99U
+static struct tt_Publisher back_pub;
+static _Atomic bool publisher_stop;
+static uint32_t* publish_ns;
+static uint32_t publish_count;
+
+static int pin_to(bool lowest) {
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (sched_getaffinity(0, sizeof(mask), &mask) != 0) {
+        return -1;
+    }
+    int chosen = -1;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) {
+        if (CPU_ISSET(cpu, &mask) && (chosen < 0 || !lowest)) {
+            chosen = cpu;
+        }
+    }
+    cpu_set_t one;
+    CPU_ZERO(&one);
+    CPU_SET(chosen, &one);
+    return pthread_setaffinity_np(pthread_self(), sizeof(one), &one) == 0 ? chosen : -1;
+}
+
+static void* publish_loop(void* arg) {
+    (void)arg;
+    discard_sends = true;
+    (void)pin_to(true);
+    struct BenchData sample;
+    memset(&sample, 0, sizeof(sample));
+    while (!atomic_load(&publisher_stop) && publish_count < PUBLISH_SAMPLES_MAX) {
+        sample.seq++;
+        uint64_t start = now_ns();
+        (void)tt_Publisher_publish(&back_pub, (struct tt_Data*)&sample);
+        publish_ns[publish_count++] = (uint32_t)(now_ns() - start);
+    }
+    return NULL;
+}
+
+static int compare_u32(const void* left, const void* right) {
+    uint32_t lhs = *(const uint32_t*)left;
+    uint32_t rhs = *(const uint32_t*)right;
+    return (lhs > rhs) - (lhs < rhs);
+}
+
+static void print_publish_latency(void) {
+    if (publish_count == 0) {
+        printf("PUBLISH: calls=0\n");
+        return;
+    }
+    qsort(publish_ns, publish_count, sizeof(publish_ns[0]), compare_u32);
+    printf("PUBLISH: calls=%u p50_ns=%u p99_ns=%u max_ns=%u\n", publish_count, publish_ns[publish_count / 2],
+           publish_ns[(uint64_t)publish_count * P99 / PERCENT], publish_ns[publish_count - 1]);
+}
+
 int main(int argc, char** argv) {
     struct options opt;
     if (!parse(argc, argv, &opt) || (opt.client && opt.writers != 1)) {
-        fprintf(stderr, "usage: %s [-n samples] [-w writers 1-%d] [-e extra 0-%d] [-D] [-m] [-c, with -w 1]\n", argv[0],
-                MAX_WRITERS, MAX_EXTRA);
+        fprintf(stderr, "usage: %s [-n samples] [-w writers 1-%d] [-e extra 0-%d] [-D] [-m] [-c, with -w 1] [-p]\n",
+                argv[0], MAX_WRITERS, MAX_EXTRA);
         return 1;
     }
     wire = calloc(WIRE_MAX, sizeof(*wire));
@@ -498,12 +568,26 @@ int main(int argc, char** argv) {
     uint64_t send_clock = clock_calls - clock_before;
     uint32_t sent = wire_count;
 
+    pthread_t publisher; // NOLINT(misc-include-cleaner) - <pthread.h> above
+    if (opt.concurrent_publisher) {
+        acting = reader;
+        publish_ns = calloc(PUBLISH_SAMPLES_MAX, sizeof(*publish_ns));
+        if (publish_ns == NULL || pin_to(false) < 0 ||
+            tt_Node_create_publisher(&nodes[reader], &back_pub, &BenchTopic, "back") != tt_RET_OK ||
+            pthread_create(&publisher, NULL, publish_loop, NULL) != 0) {
+            return 1;
+        }
+    }
     received = 0;
     clock_before = clock_calls;
     start = now_ns();
     deliver(reader);
     uint64_t recv_ns = now_ns() - start;
     uint64_t recv_clock = clock_calls - clock_before;
+    if (opt.concurrent_publisher) {
+        atomic_store(&publisher_stop, true);
+        (void)pthread_join(publisher, NULL);
+    }
 
     printf("RESULT: samples=%u client=%d writers=%u extra=%u discovery=%d datagrams=%u received=%llu dropped=%u "
            "send_ns_per_sample=%.2f recv_ns_per_sample=%.2f send_clock_per_sample=%.3f "
@@ -514,6 +598,9 @@ int main(int argc, char** argv) {
 #ifdef BENCH_CP_ENABLED
     print_brackets(opt.samples);
 #endif
+    if (opt.concurrent_publisher) {
+        print_publish_latency();
+    }
     if (opt.micro) {
         micro(reader, &sub, &pubs[opt.writers], (uint8_t)opt.writers);
     }

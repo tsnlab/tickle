@@ -699,3 +699,32 @@ publishing thread can wait, which is an rmw latency question. It gets its own en
   broken on purpose: exit 1, no results written.
 - The D1 and D3 figures stand: each was taken with a binary built for it. The bench builds by then compiled, and
   the clock-read counts and empty-poll times moved as each change predicts.
+
+### 11.4 D4 - the state lock per drain chunk, not per datagram (pre-registered 2026-09-27, before code; off main until the rig has judged it)
+
+**Why.** The state lock is now the largest remaining stage of a received datagram: ~16 ns of ~59 on the PC (brackets,
+11). Each datagram of a drain takes and releases it, so that a publishing thread can get in between any two.
+
+**Change.**
+- `drain_rx()` keeps the lock across up to `tt_RX_LOCK_CHUNK` (8) datagrams, and only while the HAL holds them already
+  read: a new `tt_rx_buffered()` returns hal_linux's recvmmsg batch remainder, and 0 on the other HALs.
+- No syscall is ever made under the lock: the next recvmmsg happens after the lock is released.
+- The first datagram of a wakeup is processed as today.
+
+**Hold-time bound, stated in advance.** One chunk: 8 x one datagram's processing. That is ~0.5 us on the PC (~60 ns
+each) and ~1.5-2 us on the Pi (by the ratio of the campaign's per-sample CPU). A publishing thread waits at most one
+chunk, where today it waits at most one datagram.
+
+**Measured in the bench before the rig.**
+- New `-p`: a second thread publishes on the draining node, on its own topic, throughout the receive phase. The
+  call's latency distribution (p50, p99, max) is recorded.
+- Prototype on a branch, `d4-state-lock-chunk`, benched against `92128fab`.
+
+**PASS, all of:**
+1. bench recv better beyond 2 x SE (predicted -8 to -13 ns per datagram in a drain, 7/8 of a lock pair);
+2. bench send not WORSE;
+3. publish-call p99 under `-p` not WORSE by more than **+1 us**, and p50 not WORSE beyond 2 x SE;
+4. unit and tsan green;
+5. on the rig, the native campaign and the rmw block RTT not WORSE (WIRE_PLAN 8.3's reading).
+
+A failure on any of these, and it is recorded here and not merged.

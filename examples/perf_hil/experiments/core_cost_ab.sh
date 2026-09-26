@@ -6,7 +6,9 @@
 #
 # Usage: core_cost_ab.sh [-r ROUNDS] [-n SAMPLES] [-c CPU] REF... ; results to OUT (default
 # /tmp/core_cost_ab.txt), one RESULT line per run prefixed with the ref and round. BENCH_ARGS passes the
-# bench's own flags to every run: -c (the clients' scheduler-driven send), -w N writers, -D, -e N.
+# bench's own flags to every run: -c (the clients' scheduler-driven send), -w N writers, -D, -e N, and -p
+# (a publishing thread on the draining node, whose call latency is summarised too - give -c two CPUs,
+# e.g. -c 14,15).
 #
 # Reading it: per ref, the median of send_ns_per_sample and recv_ns_per_sample over the rounds, and the
 # clock reads per sample (exact, not timed). A difference is real when it exceeds the rounds' spread
@@ -56,7 +58,7 @@ build() { # ref -> binary path
     # reach, and a compile error left D3's binary standing in for D2's.
     rm -f "$bin"
     if ! gcc -O2 -DNDEBUG -I"$tree/include" -I"$SHAPE" -DTICKLE_C="\"$tree/src/tickle.c\"" \
-        -o "$bin" "$HERE/core_cost_bench.c" "$SHAPE/Bench.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm >&2; then
+        -o "$bin" "$HERE/core_cost_bench.c" "$SHAPE/Bench.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm -lpthread >&2; then
         echo "build of $ref failed" >&2
         return 1
     fi
@@ -74,7 +76,9 @@ echo "core_cost_ab $(date -Is) rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_ar
 for round in $(seq "$ROUNDS"); do
     for ref in "$@"; do
         # shellcheck disable=SC2086 # BENCH_ARGS is a list of the bench's own flags
-        line="$(taskset -c "$CPU" "${BIN[$ref]}" "$SAMPLES" ${BENCH_ARGS:-} 2>/dev/null | grep '^RESULT' || echo "RESULT: failed")"
+        line="$(taskset -c "$CPU" "${BIN[$ref]}" "$SAMPLES" ${BENCH_ARGS:-} 2>/dev/null |
+            grep -E '^(RESULT|PUBLISH):' | tr '\n' ' ' || echo "RESULT: failed")"
+        [ -n "$line" ] || line="RESULT: failed"
         echo "ref=$ref round=$round $line" >>"$OUT"
     done
 done
@@ -87,7 +91,7 @@ for line in open(path):
     m = re.match(r"ref=(\S+) round=\d+ RESULT: (.*)", line)
     if not m or "failed" in m.group(2):
         continue
-    kv = dict(p.split("=") for p in m.group(2).split())
+    kv = dict(p.split("=", 1) for p in m.group(2).split() if "=" in p)
     rows.setdefault(m.group(1), []).append(kv)
 for ref in refs:
     r = rows.get(ref, [])
@@ -99,5 +103,10 @@ for ref in refs:
           f"recv median {statistics.median(v):.1f} ns (spread {max(v)-min(v):.1f}) "
           f"clock/sample send {r[0]['send_clock_per_sample']} recv {r[0]['recv_clock_per_sample']} "
           f"datagrams {r[0]['datagrams']} v{r[0]['tt_version']}")
+    if "p99_ns" in r[0]:
+        p50 = [float(x["p50_ns"]) for x in r]
+        p99 = [float(x["p99_ns"]) for x in r]
+        print(f"{ref}: publish p50 median {statistics.median(p50):.0f} ns, p99 median {statistics.median(p99):.0f} ns "
+              f"(max of p99 {max(p99):.0f})")
 EOF
 echo "AB_DONE"
