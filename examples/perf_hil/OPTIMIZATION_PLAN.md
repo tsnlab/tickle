@@ -728,3 +728,20 @@ chunk, where today it waits at most one datagram.
 5. on the rig, the native campaign and the rmw block RTT not WORSE (WIRE_PLAN 8.3's reading).
 
 A failure on any of these, and it is recorded here and not merged.
+
+### 11.5 D5 - the summary skip's gate inlined at the send (pre-registered 2026-09-27, before code)
+
+**Why.** On the Pi, core's scheduler-driven RELIABLE send (`core_cost_pi.sh`, `-c -R`) still pays +4 to +6 ns per
+sample for LIVELINESS_PLAN 10's summary skip with the skip unarmed, as in every campaign cell (WIRE_PLAN 8.6). The
+disassembly says why: `note_reached()` is not inlined. Each flush, and each zero-copy send, makes a real call only
+to find the gate closed, plus a compare and a store of `tx_summary_alone_len`.
+
+**Change.** The gate moves to the call sites: `note_reached()` becomes an inline test of `summary_skip_armed` in
+front of the out-of-line body. `flush_tx()` compares and clears `tx_summary_alone_len` only when armed, and
+`send_discovery_summary()` sets it only when armed. No behaviour change: unarmed, nothing was recorded before either.
+
+**PASS, all of:**
+- PC bench (`core_cost_ab.sh`, default and `-c -R`): send not WORSE than its parent, and within 1 ns of an
+  ablation arm with the skip's send-side code removed entirely;
+- unit and tsan green, with the summary-skip tests and mutants (LIVELINESS_PLAN 10, 11.1) failing as before;
+- after the 08:00 report, the Pi `-c -R` bench against the parent.
