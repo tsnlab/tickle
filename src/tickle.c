@@ -1985,6 +1985,25 @@ static bool valid_sample_size(uint32_t size) {
     return size > 0 && size <= tt_MAX_SAMPLE_LENGTH;
 }
 
+// A new local Publisher or Client learns its peers from remote announces (register_subscriber_peer_on_
+// publisher(), register_server_peer_on_client()) - but process_announce() skips the periodic resend of an
+// announce it has already acted on, and a remote node whose endpoints do not change resends the same one
+// forever. So a matching endpoint announced BEFORE this one was created was never matched to it, and never
+// would be: its Publisher broadcast every sample. Seen on the rig (2026-09-26): 4 of 7 rmw_tickle ping
+// runs registered no peer in 10 s and broadcast all 100 pings, the other 3 unicast from the first second.
+//
+// Marks every remote node's last acted-on announce as not acted on - the stored generation inverted,
+// which can never equal the real one - so its next periodic resend, within tt_NODE_UPDATE_INTERVAL, is
+// decoded in full and matched against the new endpoint. update_seen[] is left alone: this is not a first
+// contact, and nothing is replied. A partial announce in progress is unaffected.
+static void reprocess_known_announces(struct tt_Node* node) {
+    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        if (node->update_seen[i]) {
+            node->update_generation[i] = ~node->update_generation[i];
+        }
+    }
+}
+
 static tt_ret_t node_create_client_locked(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
                                           const char* endpoint_name, tt_CLIENT_CALLBACK callback) {
     if (node == NULL || client == NULL || service == NULL || endpoint_name == NULL || callback == NULL ||
@@ -2017,6 +2036,7 @@ static tt_ret_t node_create_client_locked(struct tt_Node* node, struct tt_Client
     }
 
     node->last_modified = tt_get_ns();
+    reprocess_known_announces(node);
 
     return tt_RET_OK;
 }
@@ -2214,6 +2234,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Pub
     }
 
     node->last_modified = tt_get_ns();
+    reprocess_known_announces(node);
 
     return tt_RET_OK;
 }

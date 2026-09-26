@@ -392,6 +392,108 @@ static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
     EXPECT_TRUE(found_node3);
 }
 
+static int32_t fake_encode_size(struct tt_Data* data) {
+    (void)data;
+    return 4;
+}
+
+// NOLINTNEXTLINE(readability-non-const-parameter) - must match tt_DATA_ENCODE's own fixed signature
+static int32_t fake_encode(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
+    (void)data;
+    (void)payload;
+    (void)len;
+    return 4;
+}
+
+// A Publisher created AFTER the remote Subscriber was announced still learns it, from the next periodic
+// resend of that same announce - which the dedup would otherwise skip forever, since the remote's endpoints
+// never change. On the rig this left 4 of 7 rmw_tickle pings broadcasting every sample (2026-09-26).
+static void test_publisher_created_after_the_announce_learns_the_peer_from_its_resend(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Topic topic = {.name = "late_topic",
+                             .data_size = 4,
+                             .data_encode_size = fake_encode_size,
+                             .data_encode = fake_encode};
+    const uint32_t endpoint_id = tt_hash_id("late_topic", "late_pub");
+
+    struct tt_Header header;
+    init_header(&header, REMOTE_NODE_ID);
+    uint32_t tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_TOPIC_SUBSCRIBER, "t", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // no Publisher yet
+
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&node, &pub, &topic, "late_pub"));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers)); // control: nothing is learned at creation itself
+
+    tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_TOPIC_SUBSCRIBER, "t", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // the same resend
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
+
+    // ...and the resend after that is a plain duplicate again: the stored generation is the real one.
+    EXPECT_EQ_U32(100, node.update_generation[REMOTE_NODE_ID]);
+}
+
+static int32_t fake_request_encode_size(struct tt_Request* request) {
+    (void)request;
+    return 4;
+}
+
+// NOLINTNEXTLINE(readability-non-const-parameter) - must match the service codec's fixed signature
+static int32_t fake_request_encode(struct tt_Request* request, uint8_t* payload, const uint32_t len) {
+    (void)request;
+    (void)payload;
+    (void)len;
+    return 4;
+}
+
+static int32_t fake_response_decode(struct tt_Response* response, const uint8_t* payload, const uint32_t len,
+                                    bool is_native) {
+    (void)response;
+    (void)payload;
+    (void)is_native;
+    return (int32_t)len;
+}
+
+static void fake_response_free(struct tt_Response* response) {
+    (void)response;
+}
+
+static void fake_client_callback(struct tt_Client* client, int8_t return_code, struct tt_Response* response) {
+    (void)client;
+    (void)return_code;
+    (void)response;
+}
+
+// The Client mirror of the test above: a Server announced before the Client existed is learned from the
+// resend.
+static void test_client_created_after_the_announce_learns_the_peer_from_its_resend(void) {
+    struct tt_Node node;
+    init_node(&node);
+    struct tt_Service service = {.name = "late_service",
+                                 .request_size = 4,
+                                 .response_size = 4,
+                                 .request_encode_size = fake_request_encode_size,
+                                 .request_encode = fake_request_encode,
+                                 .response_decode = fake_response_decode,
+                                 .response_free = fake_response_free};
+    const uint32_t endpoint_id = tt_hash_id("late_service", "late_client");
+
+    struct tt_Header header;
+    init_header(&header, REMOTE_NODE_ID);
+    uint32_t tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_SERVICE_SERVER, "s", "srv");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282)); // no Client yet
+
+    struct tt_Client client;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node, &client, &service, "late_client", fake_client_callback));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(client.peers));
+
+    tail = write_update_one_entity(node.rx_buffer, 100, endpoint_id, tt_KIND_SERVICE_SERVER, "s", "srv");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(client.peers));
+}
+
 int main(void) {
     test_publisher_learns_subscriber_peer_from_update();
     test_client_learns_server_peer_from_update();
@@ -404,6 +506,8 @@ int main(void) {
     test_reply_skipped_when_tx_buffer_has_pending_content();
     test_source_dropping_endpoint_forgets_its_peer();
     test_farewell_from_one_source_leaves_other_peers_intact();
+    test_publisher_created_after_the_announce_learns_the_peer_from_its_resend();
+    test_client_created_after_the_announce_learns_the_peer_from_its_resend();
 
     if (test_result() != 0) {
         return 1;

@@ -369,6 +369,12 @@ number, `tt_VERSION`, which moves independently.
 
 ### Fixed
 
+- A Publisher or Client created after a matching remote endpoint had been announced never learned it,
+  and a Publisher without peers broadcasts every sample: `process_announce()` skips the periodic resend of
+  an announce it has already acted on, and a remote node whose endpoints do not change resends the same
+  one indefinitely. Creating a Publisher or Client now marks every known node's last announce as not acted
+  on, so its next resend (within `tt_NODE_UPDATE_INTERVAL`) is matched against the new endpoint. Seen on
+  the rig: 4 of 7 `rmw_tickle` ping runs broadcast all 100 pings (2026-09-26).
 - `rmw_tickle`'s `publication_sequence_number` was core's 16-bit callback `seq_no`, so it wrapped to 0
   every 65,536 messages, breaking ROS's contract that it increases (DATAFRAG_PLAN.md 13.5). It is now
   the publisher's own 64-bit count, starting at 1 and advancing only for a message that was sent.
