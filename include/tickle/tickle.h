@@ -261,23 +261,17 @@ struct tt_Node {
     // When a summary last went out. A summary at the short-lease cadence is skipped when every known peer has
     // had a datagram from this node since the last tick (LIVELINESS_PLAN.md 10), but never so that two are
     // more than tt_NODE_UPDATE_INTERVAL apart.
-    uint64_t summary_sent_ns;
     // Who has had a datagram from this node since the last summary tick: a broadcast reaches everyone, an
     // addressed send its peers (a bit per node id). Every send and node_update() run under the state lock, so
     // plain accesses: an atomic read-modify-write here cost ~8 ns a send on the PC (core_cost_bench.c).
-    uint8_t reached_everyone;
     // Whether the summaries run at the short-lease cadence, the only case with anything to skip: while false,
     // sends record nothing (note_reached()), so a node without short leases pays one branch a send.
-    uint8_t summary_skip_armed;
     // tx_tail when tx_buffer holds a summary and nothing else, 0 otherwise: a flush of exactly that is not
     // traffic for the skip, or each summary would cancel the next and an idle node's cadence would halve.
-    uint32_t tx_summary_alone_len;
     // Set when the tt_NODE_UPDATE_INTERVAL summary falls due while the node's traffic reaches every peer: it
     // then goes just ahead of the next send instead of on its own, so a node that stops under traffic stops
     // on its data (LIVELINESS_PLAN.md 10). node_update() sends it on its own if no send came by the next tick.
     // Under the state lock, as every send is.
-    uint8_t summary_rides;
-    uint32_t reached_nodes[tt_MAX_ENDPOINT_COUNT / 32];
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
@@ -302,11 +296,9 @@ struct tt_Node {
     // again when a wait returns with data and every tt_RX_CLOCK_REFRESH datagrams of a drain
     // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
     // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
-    uint64_t rx_clock_ns;
     // Responses tt_Server_send_response() has made READY since the poll last looked, from any thread: a poll
     // takes the state lock for flush_pending_responses() only when this is non-zero (OPTIMIZATION_PLAN.md 11,
     // D3). Accessed only through __atomic builtins.
-    uint32_t responses_ready;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Node_schedule() from a thread that does not hold the state lock puts its entry
@@ -348,8 +340,6 @@ struct tt_Node {
     // on it can be handed by the kernel to the sender's own socket, which shows up here as a
     // sender receiving its own traffic back.
     uint64_t tx_datagrams;
-    uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
-    uint64_t summaries_ridden;  // once-a-second summaries sent just ahead of a data send
     uint64_t rx_datagrams;
     uint64_t rx_self_sent;
     // Submessages refused because no datagram could ever carry them (larger than
@@ -415,6 +405,19 @@ struct tt_Node {
     // that another fragment already completed. Not a loss; counted so it is not mistaken for one.
     uint64_t frag_duplicate;
 #endif
+
+    // LAYOUT ABLATION ONLY (WIRE_PLAN.md 8.9 follow-up): the fields added since 8f3811f4, moved here so every
+    // earlier field sits at its 8f3811f4 offset. Not for merge.
+    uint64_t summary_sent_ns;
+    uint8_t reached_everyone;
+    uint8_t summary_skip_armed;
+    uint32_t tx_summary_alone_len;
+    uint8_t summary_rides;
+    uint32_t reached_nodes[tt_MAX_ENDPOINT_COUNT / 32];
+    uint64_t rx_clock_ns;
+    uint32_t responses_ready;
+    uint64_t summaries_skipped;
+    uint64_t summaries_ridden;
 };
 
 struct tt_Endpoint {
