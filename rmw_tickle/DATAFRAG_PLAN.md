@@ -592,3 +592,44 @@ Theory at 5% datagram loss, datagrams sent per delivered sample:
 - **A 4-fragment diagnostic shape** (about 5.6 KB), TickLE only, run on the current build *before* the
   change lands and again after: 4.911 toward 4.211. This is the scaling case the design exists for.
   At p4 the saving is 5%, at 4 fragments 14%, and at the 40 fragments of a large rmw message 86%.
+
+### 13.4 Corrections from Dev's review (2026-09-26), adopted
+
+Section 13.1 said KEEP_LAST depth, HEARTBEAT `first_available` and eviction "only need monotonic
+ids, since eviction is per record". That was true only because a record *is* a sample today. Under
+per-datagram seq_no a record is a datagram, so Dev found four places where the design has to make it
+true:
+
+1. **`tt_ReliableCache.depth` counts seqs, not records** (`index[(seq-1) % depth]`). Left alone,
+   KEEP_LAST depth would silently mean datagrams: a depth-64 writer at p4 would retain 32 samples.
+   Core's count bound will count samples, which keeps DDS's meaning of depth, and the index capacity
+   must cover depth x maximum fragments per sample. The same seq-distance assumption sits in
+   `rmw_publisher.c:321-324` ("writable" as `newest - oldest + 1 < depth`) and moves with rmw's FRAG
+   step.
+2. **KEEP_LAST eviction must evict whole samples**, advancing to the next sample's first datagram, so
+   the eviction HEARTBEAT's `first_available` is always a sample start.
+3. **A baseline jump or a give-up can land mid-sample** (`jump_ack_baseline()`,
+   `advance_past_unavailable()`). The receiver must discard fragments until the next sample start,
+   or it would deliver a torn sample. Nothing does this today.
+4. See 13.5.
+
+**One deviation from 13.1's receive side, adopted.** A single assembly buffer per subscriber fails
+when two writers each have a sample mid-assembly on the same subscriber. The node-level pool stays as
+the assembly store, but **only in-order fragments enter it**. Out-of-order datagrams wait in the
+reorder buffer, one per slot. **A full pool never evicts.** The arriving fragment is left
+un-received, so the ACKNACK asks for it again, which is the reorder buffer's existing fallback. A
+fragment whose seq has been acknowledged is therefore never discarded, which per-datagram resend
+needs and whole-sample resend did not.
+
+Tracking window and KEEP_ALL's unacknowledged bound become datagram counts. That is what an ACKNACK
+can name, so it is correct, and it is to be documented. Dev estimates 5-6 hours with tests, plus a
+lossy-link simulation over 1, 2, 4 and 10 fragments, checked against the 13.3 model.
+
+### 13.5 A live rmw bug found in the review, independent of this change
+
+The core subscriber callback passes `seq_no` as `uint16_t` (`tt_SUBSCRIBER_CALLBACK`,
+`tickle.h:1356`), and rmw_tickle copies it straight into `publication_sequence_number`
+(`rmw_subscription.c:137`). **The ROS-visible publication sequence number wraps to 0 after 65,535
+messages**, which already breaks the `rmw/types.h` contract (`psn2 > psn1`, gap = messages sent in
+between) on any long-running topic, with or without fragments. The rmw-side contiguous message
+counter of 13.2 fixes it, so that counter is required regardless of this change.

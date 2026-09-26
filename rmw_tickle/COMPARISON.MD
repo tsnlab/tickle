@@ -1146,6 +1146,13 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
    smaller is. Candidate fixes: size-check at subscriber creation, or stop re-requesting samples
    the buffer cannot hold.
 
+18. **[rmw_tickle, correctness - found 2026-09-26 (Dev), fix planned]** `publication_sequence_number`
+   wraps to 0 after 65,535 messages. The core subscriber callback passes `seq_no` as `uint16_t`
+   (`tickle.h:1356`), and rmw copies it straight into the ROS-visible field (`rmw_subscription.c:137`),
+   which breaks `rmw/types.h`'s requirement that it increase per publisher, with the gap equal to the
+   number of messages sent in between. It fires on any long-running topic, fragmented or not. The fix
+   is the rmw-side contiguous message counter planned in `DATAFRAG_PLAN.md` 13.2.
+
 ## 4. Design philosophy and measurement rules
 
 Last, deliberately. Everything above is what was measured; this is why it was measured that way,
