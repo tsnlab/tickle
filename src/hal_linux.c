@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <ifaddrs.h>
 #include <poll.h>
+#include <stddef.h> // offsetof
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,6 +42,7 @@
 #include <sys/uio.h> // NOLINT(misc-include-cleaner)
 #include <tickle/config.h>
 #include <tickle/hal.h>
+#include <tickle/hal_linux.h> // tt_RX_BATCH, struct tt_mmsghdr
 #include <tickle/tickle.h>
 
 #include "consts.h"
@@ -255,6 +257,12 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.data_sock = -1;
     node->hal.rx_prefer_data = false;
     node->hal.rx_idle = 0;
+    node->hal.rx_count = 0;
+    node->hal.rx_next = 0;
+    node->hal.rx_headers_for = NULL;
+    node->hal.rx_batch_calls = 0;
+    node->hal.rx_batch_datagrams = 0;
+    node->hal.rx_batch_full = 0;
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -376,6 +384,8 @@ tt_ret_t tt_bind(struct tt_Node* node) {
 }
 
 void tt_close(struct tt_Node* node) {
+    node->hal.rx_count = 0; // anything a batch still held belonged to the sockets closed below
+    node->hal.rx_next = 0;
     if (node->hal.data_sock >= 0 && close(node->hal.data_sock) < 0) {
         TT_LOG_WARNING("Cannot close data socket: %s", strerror(errno));
     }
@@ -475,7 +485,109 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
 #define TT_RX_IDLE_WELL_KNOWN 1U
 #define TT_RX_IDLE_DATA 2U
 
+// Hands out the next datagram the last recvmmsg() read and held back, or -1 when none is waiting.
+static int32_t rx_take_pending(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    if (hal->rx_next >= hal->rx_count) {
+        return -1;
+    }
+    uint16_t slot = hal->rx_next++;
+    size_t copy = (size_t)hal->rx_len[slot] < len ? (size_t)hal->rx_len[slot] : len;
+    memcpy(buf, hal->rx_batch[slot], copy);
+    *ip = hal->rx_ip[slot];
+    *port = hal->rx_port[slot];
+    node->rx_via_data_port = hal->rx_from_data;
+    return (int32_t)copy;
+}
+
+// One recvmmsg() on fd, without waiting: the first datagram into buf, up to tt_RX_BATCH - 1 more held in
+// struct tt_hal.rx_batch for rx_take_pending(). Returns the first datagram's length, -1 when nothing is
+// waiting, -2 on an I/O error.
+_Static_assert(sizeof(struct tt_mmsghdr) == sizeof(struct mmsghdr), "struct tt_mmsghdr must match struct mmsghdr");
+_Static_assert(offsetof(struct tt_mmsghdr, msg_len) == offsetof(struct mmsghdr, msg_len),
+               "struct tt_mmsghdr must match struct mmsghdr");
+
+#if tt_RX_BATCH > 1
+// Points recvmmsg()'s headers at this node's own buffers. Once per node, or again if it has moved.
+static void rx_headers_setup(struct tt_hal* hal) {
+    memset(hal->rx_msgs, 0, sizeof(hal->rx_msgs));
+    for (int i = 0; i < tt_RX_BATCH; i++) {
+        if (i > 0) {
+            hal->rx_iov[i].iov_base = hal->rx_batch[i - 1];
+            hal->rx_iov[i].iov_len = sizeof(hal->rx_batch[0]);
+        }
+        hal->rx_msgs[i].msg_hdr.msg_name = &hal->rx_addr[i];
+        hal->rx_msgs[i].msg_hdr.msg_namelen = sizeof(hal->rx_addr[i]);
+        hal->rx_msgs[i].msg_hdr.msg_iov = &hal->rx_iov[i];
+        hal->rx_msgs[i].msg_hdr.msg_iovlen = 1;
+    }
+    hal->rx_headers_for = hal;
+}
+#endif
+
+static int32_t rx_fill(struct tt_Node* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+    node->rx_via_data_port = (socket_fd == hal->data_sock);
+#if tt_RX_BATCH == 1
+    // No batching: recvfrom(), which the control arm measured slightly cheaper than a one-slot recvmmsg().
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
+    int32_t ret = (int32_t)recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+    if (ret < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
+    }
+    *ip = ntohl(addr.sin_addr.s_addr);
+    *port = ntohs(addr.sin_port);
+    return ret;
+#else
+    if (hal->rx_headers_for != hal) {
+        rx_headers_setup(hal);
+    }
+    hal->rx_iov[0].iov_base = buf; // the caller's buffer takes the first datagram, saving it a copy
+    hal->rx_iov[0].iov_len = len;
+    struct sockaddr_in* addrs = hal->rx_addr;
+    int got = recvmmsg(socket_fd, (struct mmsghdr*)hal->rx_msgs, tt_RX_BATCH, MSG_DONTWAIT, NULL);
+    if (got < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers, see below
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
+    }
+    if (got == 0) {
+        return -1;
+    }
+    hal->rx_batch_calls++;
+    hal->rx_batch_datagrams += (uint64_t)got;
+    if (got == tt_RX_BATCH) {
+        hal->rx_batch_full++;
+    } else {
+        // A batch that came back short emptied the socket: the drain need not spend a syscall on it
+        // to find that out (tt_try_receive()'s rx_idle). Anything arriving since is still reported by
+        // the next ppoll(), which is level-triggered.
+        hal->rx_idle |= (socket_fd == hal->data_sock) ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
+    }
+    for (int i = 1; i < got; i++) {
+        hal->rx_len[i - 1] = (int32_t)hal->rx_msgs[i].msg_len;
+        hal->rx_ip[i - 1] = ntohl(addrs[i].sin_addr.s_addr);
+        hal->rx_port[i - 1] = ntohs(addrs[i].sin_port);
+        hal->rx_msgs[i].msg_hdr.msg_namelen = sizeof(addrs[i]); // the kernel wrote it; ready it for next time
+    }
+    hal->rx_msgs[0].msg_hdr.msg_namelen = sizeof(addrs[0]);
+    hal->rx_count = (uint16_t)(got - 1);
+    hal->rx_next = 0;
+    hal->rx_from_data = (socket_fd == hal->data_sock);
+    *ip = ntohl(addrs[0].sin_addr.s_addr);
+    *port = ntohs(addrs[0].sin_port);
+    return (int32_t)hal->rx_msgs[0].msg_len;
+#endif
+}
+
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+    // What the last batch read comes first, and without a wait: holding it behind ppoll() would delay
+    // datagrams that have already arrived.
+    int32_t pending = rx_take_pending(node, buf, len, ip, port);
+    if (pending >= 0) {
+        return pending;
+    }
     node->hal.rx_idle = 0; // a timeout or an interrupt leaves no readiness to go on
     // Wait for readability with ppoll() instead of arming SO_RCVTIMEO via setsockopt() before
     // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
@@ -562,21 +674,11 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 #endif
     }
 
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(struct sockaddr_in);
-    node->rx_via_data_port = (read_fd == node->hal.data_sock);
-    int32_t ret = (int32_t)recvfrom(read_fd, buf, len, 0, (struct sockaddr*)&addr, &addr_len);
-
-    *ip = ntohl(addr.sin_addr.s_addr);
-    *port = ntohs(addr.sin_port);
-
+    // ppoll() said read_fd is readable, so this reads at least one datagram without waiting - and every
+    // other one already queued on that socket, up to tt_RX_BATCH, in the same syscall.
+    int32_t ret = rx_fill(node, read_fd, buf, len, ip, port);
     if (ret < 0) {
-        // EAGAIN/EWOULDBLOCK live in glibc-private headers; <errno.h> (included above) is the correct public header.
-        // NOLINTNEXTLINE(misc-include-cleaner)
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return -1; // Timeout
-        }
-        return -2; // I/O error
+        return ret; // -1 nothing after all (Timeout), -2 I/O error
     }
 
 #if TT_RX_DROP_PERCENT > 0
@@ -603,8 +705,10 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 // very next ppoll() reports it. When every socket is idle this answers without a syscall, and clears the
 // bits so the next drain - one not preceded by a wait, like a non-blocking poll - asks both again.
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
-    struct sockaddr_in addr;
-    socklen_t addr_len = sizeof(struct sockaddr_in);
+    int32_t pending = rx_take_pending(node, buf, len, ip, port);
+    if (pending >= 0) {
+        return pending;
+    }
     // MSG_DONTWAIT makes just this call non-blocking regardless of the socket's own mode - no
     // poll() first, no socket-option re-arm. Both sockets are candidates, because broadcasts land on
     // the well-known one and unicast on this node's own data socket, and the same alternation
@@ -623,14 +727,11 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
         if ((node->hal.rx_idle & bit) != 0) {
             continue;
         }
-        addr_len = sizeof(struct sockaddr_in);
-        node->rx_via_data_port = (order[i] == node->hal.data_sock);
-        ret = (int32_t)recvfrom(order[i], buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+        ret = rx_fill(node, order[i], buf, len, ip, port);
+        if (ret == -2) {
+            return -2; // I/O error
+        }
         if (ret < 0) {
-            // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers, see above
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                return -2; // I/O error
-            }
             node->hal.rx_idle |= bit;
         }
     }
@@ -638,9 +739,6 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
         node->hal.rx_idle = 0; // drained: the next drain session asks every socket again
         return -1;             // Nothing waiting
     }
-
-    *ip = ntohl(addr.sin_addr.s_addr);
-    *port = ntohs(addr.sin_port);
     return ret;
 }
 

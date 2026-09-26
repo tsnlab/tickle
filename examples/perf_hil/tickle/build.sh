@@ -88,6 +88,14 @@ if [ "${TICKLE_RELIABLE_STATS:-0}" = "1" ]; then
     STATS_DEFINE="-Dtt_RELIABLE_STATS"
 fi
 
+# TICKLE_RX_BATCH=N (2026-09-26): tt_RX_BATCH, the datagrams one recvmmsg() reads (hal_linux.h), for the
+# arms that size it. Own prefix, as for every define that changes libtickle.a; the reliable_throughput
+# server's RESULT line reports rx_batch= and how full the batches ran.
+if [ -n "${TICKLE_RX_BATCH:-}" ]; then
+    INSTALL_PREFIX="${INSTALL_PREFIX}_rxbatch${TICKLE_RX_BATCH}"
+    STATS_DEFINE="${STATS_DEFINE:-} -Dtt_RX_BATCH=$TICKLE_RX_BATCH"
+fi
+
 # TICKLE_THREAD_UNSAFE=1 builds libtickle.a and the example with -Dtt_THREAD_SAFE=0, i.e. with the
 # locking compiled out entirely. It exists for one measurement: the M1 re-run showed core's locks
 # costing +250 ns a sample on the rig while TickLE Dev measured the same code at +12 ns on x86, and

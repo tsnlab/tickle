@@ -16,7 +16,35 @@
 #include <time.h>
 
 #include <netinet/in.h>
+#include <sys/socket.h> // struct msghdr, for struct tt_mmsghdr, and struct iovec
 #include <tickle/config.h>
+
+// Datagrams one recvmmsg() may read (tt_receive()/tt_try_receive(), hal_linux.c). The first lands in the
+// caller's buffer; the other tt_RX_BATCH - 1 wait in struct tt_hal.rx_batch until asked for, so a
+// backlogged receiver pays one syscall per batch rather than one per datagram. 1 is the plain recvfrom()
+// path, exactly as before batching.
+//
+// 32 (2026-09-26, experiments/veth_rx_batch.sh): the rig's server drained ~30 datagrams per wake-up
+// (1.066 receive syscalls a sample, CORE_HEADROOM.md), so 32 takes a typical drain in one call. On a
+// receiver that keeps up, batches run short and the change costs nothing measurable; on a backlogged one
+// receive syscalls fell from 1.08 to 0.06 a sample at 16. Costs (tt_RX_BATCH - 1) x tt_MAX_BUFFER_LENGTH
+// of node memory - 45 KB at the 1472-byte datagram. A build with a larger datagram (rmw_tickle's 65507)
+// would pay 2 MB, all of it resident where the node is zeroed on creation (rmw_init.c), so it stays at 1
+// until measured on its own terms; -Dtt_RX_BATCH overrides either default.
+#ifndef tt_RX_BATCH
+#if tt_MAX_BUFFER_LENGTH > tt_CONTROL_MAX_LENGTH
+#define tt_RX_BATCH 1
+#else
+#define tt_RX_BATCH 32
+#endif
+#endif
+
+// glibc's struct mmsghdr, which it declares only under _GNU_SOURCE - a define this public header cannot
+// require of everything that includes it. hal_linux.c checks the two layouts are the same.
+struct tt_mmsghdr {
+    struct msghdr msg_hdr;
+    unsigned int msg_len;
+};
 
 // The lock TickLE core uses to be callable from several threads (tt_THREAD_SAFE, config.h). Defined
 // per platform, next to struct tt_hal, because it is the one other thing core needs from the OS for
@@ -133,4 +161,26 @@ struct tt_hal {
     // ones ppoll() did not report ready, and any a non-blocking read has since found empty. drain_rx()
     // then reads only what is there - see tt_try_receive().
     uint8_t rx_idle;
+    // Datagrams the last recvmmsg() read beyond the one it returned, handed out before any further wait
+    // or read (rx_next of rx_count), all from one socket (rx_from_data). A pending datagram is always
+    // returned before ppoll() is entered, so batching never holds one back behind a wait.
+    uint16_t rx_count;
+    uint16_t rx_next;
+    bool rx_from_data;
+    int32_t rx_len[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1];
+    uint32_t rx_ip[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1];
+    uint16_t rx_port[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1];
+    uint8_t rx_batch[tt_RX_BATCH > 1 ? tt_RX_BATCH - 1 : 1][tt_MAX_BUFFER_LENGTH];
+    // recvmmsg()'s headers, set up once (rx_fill(), hal_linux.c) rather than per call: a call touches only
+    // the entries the kernel filled. rx_headers_for is the node they were set up in, so a node that has
+    // been moved since re-points them instead of writing through stale pointers.
+    struct tt_mmsghdr rx_msgs[tt_RX_BATCH];
+    struct iovec rx_iov[tt_RX_BATCH]; // NOLINT(misc-include-cleaner) - <sys/socket.h> above provides it
+    struct sockaddr_in rx_addr[tt_RX_BATCH];
+    const void* rx_headers_for;
+    // How full the batches run, for sizing tt_RX_BATCH: recvmmsg() calls that read something, the
+    // datagrams they read, and how many of them came back with every slot filled.
+    uint64_t rx_batch_calls;
+    uint64_t rx_batch_datagrams;
+    uint64_t rx_batch_full;
 };

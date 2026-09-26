@@ -237,6 +237,15 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **Linux HAL reads with `recvmmsg()`** (`tt_RX_BATCH`, hal_linux.h): one call takes up to 32 datagrams
+  already queued, the first straight into the caller's buffer and the rest held in the node until
+  `tt_try_receive()` asks - always before the next wait, so batching never holds a datagram back. A batch
+  that comes back short marks its socket drained, sparing the drain loop the EAGAIN read that used to end
+  it. On a backlogged receiver (veth, `experiments/veth_rx_batch.sh`) receive syscalls fell from 1.08 to
+  0.06 a sample; on one that keeps up, batches run short and CPU per sample is unchanged within noise, as
+  is round-trip latency. Costs 31 x `tt_MAX_BUFFER_LENGTH` of node memory (45 KB at 1472), so a build with
+  a larger datagram - `rmw_tickle` - keeps `tt_RX_BATCH` 1, the plain `recvfrom()` path, until measured.
+  The public HAL interface is unchanged; FreeRTOS is untouched.
 - **Fragmentation follows the control datagram, not `tt_MAX_BUFFER_LENGTH`.** `tt_FRAG_ENABLED` is on
   whenever `tt_MAX_SAMPLE_LENGTH > tt_CONTROL_MAX_LENGTH` and can be overridden (`-Dtt_FRAG_ENABLED=0`),
   and a sample goes as one `DATA` only if it fits `tt_CONTROL_MAX_LENGTH`. A build with a large datagram -
