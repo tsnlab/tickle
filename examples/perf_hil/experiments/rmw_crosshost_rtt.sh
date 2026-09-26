@@ -159,7 +159,9 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # per-process totals, not per-message costs, and compare only between rmw implementations run alike.
     res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag -m $msg 2>/dev/null; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^ping_utime_s' | tr '\n' ' ' || true)
     local pongcpu
-    pongcpu=$(sh_ "$SERVER" "[ -d /proc/$pongpid ] && awk -v t=\$(getconf CLK_TCK) '{printf \"pong_cpu_s=%.2f \", (\$14+\$15)/t}' /proc/$pongpid/stat && awk '/VmHWM/{printf \"pong_maxrss_kb=%s\", \$2}' /proc/$pongpid/status" 2>/dev/null || true)
+    # pong_cpu_ns: summed run time of every pong thread from /proc/PID/task/*/schedstat (ns), because the
+    # tick-based utime+stime (pong_cpu_s, 10 ms granularity) cannot separate rmw_tickle from CycloneDDS.
+    pongcpu=$(sh_ "$SERVER" "[ -d /proc/$pongpid ] && awk -v t=\$(getconf CLK_TCK) '{printf \"pong_cpu_s=%.2f \", (\$14+\$15)/t}' /proc/$pongpid/stat && cat /proc/$pongpid/task/*/schedstat | awk '{s+=\$1} END{printf \"pong_cpu_ns=%d \", s}' && awk '/VmHWM/{printf \"pong_maxrss_kb=%s\", \$2}' /proc/$pongpid/status" 2>/dev/null || true)
     res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
