@@ -1181,6 +1181,16 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
    number of messages sent in between. It fires on any long-running topic, fragmented or not. The fix
    is the rmw-side contiguous message counter planned in `DATAFRAG_PLAN.md` 13.2.
 
+19. **[TickLE core, robustness - found 2026-09-26 (Dev), not triggered in any measured cell]** The
+   dynamic retry-interval estimator can diverge when recoveries include a re-request wait. It times
+   each recovery from the *first* request, with no Karn's rule, so a sample whose repair was lost
+   feeds a sample that includes the wait for the next request. Longer intervals then mean longer
+   waits, which mean longer intervals. In a 10-fragment unit simulation with the re-request deferred,
+   delivery fell to 170/200 and the interval grew from 77 us to 1.24 ms. Adding Karn's rule fixes
+   delivery but collapses the interval to its floor in a zero-latency simulation. Candidates to test
+   before trusting the estimator at high loss: Karn's rule with backoff, or excluding samples whose
+   seq was named more than once. See `DATAFRAG_PLAN.md` 16.1.
+
 ## 4. Design philosophy and measurement rules
 
 Last, deliberately. Everything above is what was measured; this is why it was measured that way,

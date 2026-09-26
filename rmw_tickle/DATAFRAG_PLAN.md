@@ -799,3 +799,37 @@ give-up and retry-count semantics count timer ticks today and must keep their me
 - **If duplicates fall but first-recovery time rises** (server `recovery_srtt_ns` up, or throughput
   under loss down), the suppression is holding back legitimate re-requests, and the interval test is
   wrong rather than the idea.
+
+### 16.1 The fix tripped its kill criterion; duplicates are a hedge, not waste (2026-09-26)
+
+Dev built the suppression, measured it on veth against section 16's pre-registration, and **did not
+push it.** The rule: a timer ACKNACK does not name a gap detected since the previous tick. Results:
+- Duplicates went where predicted: 0.22 → 0 per loss (dynamic, 250 us one-way), 0.51 → 0 (fixed
+  1 ms), and `frag_duplicate` 1,379 → 17.
+- **Throughput fell in every arm:** −15% to −35% samples sent in 4 s.
+- `recovery_srtt_ns` rose from 542/606 us to 908/711 us.
+
+That is the kill criterion written down before the code existed: fewer duplicates, slower
+recovery.
+
+**Reading (Dev's, and I agree with it):** the early re-request is half waste and half hedge. It goes
+out uniformly within (0, I] of the first request. About half the time that is too early and makes
+a duplicate. It also covers the ~10% of recoveries whose first request or first repair is itself
+lost. Deferring it moves the re-request to (I, 2I], 1.5 I on average instead of 0.5 I. A lost repair
+then holds the watermark longer, and the KEEP_ALL writer blocks behind it. On these links the
+~2.5-5% of wire bytes buys recovery latency, and removing it costs more than it saves.
+
+**Decision (Plan): the suppression is closed.** Section 14's `frag_duplicate` is recorded as the price
+of fast repair, not as waste. Dev's refined variant, re-requesting at [I, 1.25 I], still waits longer
+than today on a lossy repair, and it is not pursued now. **The trade could reverse on a link where
+bandwidth, not latency, is the binding constraint, such as 10BASE-T1S at 10 Mbit/s. That is where
+this should be revisited**, with both of Dev's saved patches (`~/tickle-dev-suppression-tick-
+deferral*.patch`) as the starting point.
+
+**A latent sensitivity found on the way, recorded as COMPARISON.MD to-do 19:** the dynamic interval
+estimator times a recovery from the *first* request, with no Karn's rule. A recovery whose repair was
+lost therefore includes the wait for the re-request. In Dev's 10-fragment unit simulation, lengthening
+that wait was enough to make the estimator's loop diverge: delivery fell to 170/200, the interval grew
+from 77 us to 1.24 ms, and 255 gaps were abandoned. Today's wait is short enough that this does not
+occur in any measured cell. But anything that lengthens it, such as higher loss where more repairs are
+lost, is the same mechanism.
