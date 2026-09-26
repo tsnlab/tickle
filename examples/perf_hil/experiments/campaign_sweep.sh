@@ -140,6 +140,7 @@ if [ -n "${CELLS:-}" ]; then
     read -ra CELL_NUMS <<<"$CELLS"
     MATRIX=("${kept[@]}")
 fi
+say "TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} (p4 TickLE rows must report sample_path=${TICKLE_P4_PATH:-frag}; p1-p3 datagram)"
 say "--- plan: ${#MATRIX[@]} combinations x 3 frameworks x ${REPS} reps = $(( ${#MATRIX[@]} * 3 * REPS )) runs ---"
 i=0
 for spec in "${MATRIX[@]}"; do
@@ -171,7 +172,7 @@ cd examples/perf_hil
 for v in $VARIANTS; do
   scen=\${v%_p[0-9]}; size=\${v##*_}
   for fw in tickle cyclonedds fastdds; do
-    (cd \$fw && ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
+    (cd \$fw && TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} ./build.sh \$scen \$size >/tmp/campaign_build_\${fw}_\$v.log 2>&1) \
       || { echo \"BUILD FAILED: \$fw \$scen \$size\"; tail -8 /tmp/campaign_build_\${fw}_\$v.log; exit 1; }
   done
 done
@@ -242,6 +243,16 @@ cell() {
     # A TickLE row that does not state core_build=release is void, not assumed.
     if [ "$fw" = tickle ] && [ -n "$res" ]; then
         case "$res" in *core_build=release*) ;; *) verdict="VOID(core_build not release)" ;; esac
+    fi
+    # sample_path= (e9be3434) says how TickLE carried a sample: one datagram, DATA_FRAG, or one
+    # datagram split by the kernel. p1-p3 must say datagram - anything else means the fragmentation
+    # path was entered where nothing needs fragmenting, which DATAFRAG_PLAN section 5 item 5 calls a
+    # defect. p4 must say whatever TICKLE_P4_PATH built, so an ipfrag comparison arm cannot silently
+    # run the frag build (the rig build did not pass TICKLE_P4_PATH until this change).
+    if [ "$fw" = tickle ] && [ -n "$res" ] && [ "$verdict" = ok ]; then
+        want=datagram
+        [ "$payload" = p4 ] && want="${TICKLE_P4_PATH:-frag}"
+        case "$res" in *"sample_path=$want"*) ;; *) verdict="VOID(sample_path not $want)" ;; esac
     fi
     case "$res" in *instrument=ok*) ;; *instrument=fail*) verdict="VOID($(grep -oE 'instrument=fail:[a-z,]+' <<<"$res" | head -1))" ;;
         *) [ -n "$res" ] && verdict="VOID(no instrument= field)" ;; esac

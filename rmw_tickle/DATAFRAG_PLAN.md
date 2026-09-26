@@ -350,3 +350,39 @@ matters, because under the current rule any framework's incompleteness voids the
 three. If it holds, c6 will stay VOID after DATA_FRAG even with TickLE at 100%. The rule will need
 an explicit, pre-registered decision about whether one vendor's failure to deliver makes a cell
 incomparable or makes it a loss for that vendor. That decision is not made here.
+
+## 9. Step 1 on the rig: DATA_FRAG for user data, before sendmmsg (pre-registered 2026-09-26)
+
+Build `e9be3434`: `FRAG_FIRST` (21 B) and `FRAG_CONT` (10 B), unpadded, an 8-slot pool, and one send
+path for publish, retransmit and backlog. Discovery is unchanged and the wire version is still 6.
+Off-rig, on a private netns with veth, Dev reproduced the c6 failure on the ipfrag build
+(drained=timeout, 94.7 packets per sample). The frag build delivered everything under the same 5%
+loss at 2.10 packets per sample, and measured 2931.5 B/sample at 0% loss, which matches section
+6.3's prediction to the byte. Dev also measured the cost: the send rate at 0% loss fell 18%, because
+there is one syscall per datagram until step 3 (`sendmmsg`).
+
+**Order decided (Plan): `sendmmsg` before step 2.** Discovery traffic is about one announce per
+second and cannot move a p4 number, whereas a p4 CPU row read without `sendmmsg` would have to be
+read again. This run is the "FRAG without `sendmmsg`" arm that section 6.5 said to measure
+separately. It is not the build p4 will be tabled on.
+
+Cells 1, 2, 3, 4 and 6, all three frameworks, 3 repetitions, release. Each TickLE row is asserted
+`core_build=release`, and `sample_path=datagram` at p1-p3 and `sample_path=frag` at p4.
+
+Written before launch:
+
+- **c1, c2, c3: no change** from the baseline in section 8, within each metric's spread across
+  repetitions. Every row must report `sample_path=datagram`. Any other value makes the row VOID,
+  and that would be section 5 item 5's defect: fragmentation entered where nothing needs it.
+- **c4 bandwidth: about 2931 B/sample, under CycloneDDS's 2,950.** This row is decided by bytes on
+  the wire and syscall batching cannot move it, so it is final on this build.
+- **c4 CPU: expected to move against TickLE.** The baseline was 11.5 against CycloneDDS's 14.2, and
+  one syscall per datagram costs roughly the 18% seen on veth, possibly enough to lose the client
+  CPU row. **If it loses here, that is the known cost `sendmmsg` exists to remove, not a verdict on
+  FRAG.** If it does not lose, `sendmmsg` is still worth doing but p4 no longer depends on it.
+- **c6, criterion 1: TickLE `drained=acked` in all three repetitions, 100% delivered.** This is
+  the criterion the baseline failed, and it is the one this build exists to meet.
+- **c6, criterion 2: packets per sample in 2.1-2.5, with a narrow spread across repetitions**,
+  against the baseline's unstable 20-90.
+- **c6 may still be VOID** if FastDDS again delivers only part of its samples. That is the open
+  rule question in section 8. TickLE's criteria 1 and 2 are read from TickLE's own rows either way.
