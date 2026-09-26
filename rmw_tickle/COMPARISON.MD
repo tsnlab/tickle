@@ -20,6 +20,9 @@ missing data - it is this document's central rule, that a comparison which canno
 worth more unmade than made wrongly. §4.3 gives the four conditions that void a cell, and the real
 result each one caught.
 
+**How each framework is configured, and where the settings still differ, is in section 4.4.** Read
+it before quoting a margin.
+
 **Two measurement generations are mixed here and the `meas.` column says which.** `R` rows are the
 current release-optimised core (2026-09-26), the single-packet scope the user narrowed to. `C` rows
 come from the 108-run campaign of 2026-09-25, whose TickLE core was built `-O0` - a build defect
@@ -1245,7 +1248,83 @@ number that looked fine and meant nothing.
   WIN by the same mechanism.
 
 
-### 4.4 The one thing the campaign predicted wrong, and what it cost
+### 4.4 Fairness: what each framework is configured with, and where they differ
+
+Audited on 2026-09-26 at the user's request, from each harness's source and cross-checked against the
+settings its own RESULT line reports. The principle has three parts:
+- **The DDS QoS policies are set to the same values for all three frameworks.**
+- **Everything that is not a QoS policy is left at each product's shipped default.** For the
+  vendors that means heartbeat periods, transport limits and so on. For TickLE it means the defaults
+  `rmw_tickle` ships.
+- **The environment is identical.**
+
+What follows is what the code actually does, including the places where it falls short of that
+principle.
+
+**QoS per scenario, as set in the harnesses:**
+
+| Scenario (cells) | QoS | TickLE | CycloneDDS | FastDDS |
+|---|---|---|---|---|
+| `reliable_throughput` (c1-c7) | reliability / history / durability | RELIABLE / KEEP_ALL / VOLATILE | same | same |
+| | KEEP_ALL bound | 512 KiB of history, capped at 2,048 samples (so 2,048 at p1, about 180 at p4) | `resource_limits` 4,000 samples, plus the library's own ~500 kB write-history watermark | `resource_limits` 4,000 samples, no byte bound |
+| | `max_blocking_time` | 100 ms | **10 s** | 100 ms (library default) |
+| | drain cap at teardown | 3 s | 3 s | 3 s |
+| `best_effort_throughput` (c8) | reliability / history | BEST_EFFORT / no history | BEST_EFFORT / KEEP_LAST 1 (default) | same as CycloneDDS |
+| `reliable_throughput` KEEP_LAST (c9) | history | KEEP_LAST 64 | **KEEP_ALL** (not passed `-K`) | **KEEP_ALL** (not passed `-K`) |
+| `reliable_latency` (c10-c12) | reliability / history | RELIABLE / KEEP_LAST 8 | same | same |
+
+**Environment, identical for all three:**
+- Same two Raspberry Pi 5s, same session, interleaved by framework, same CPU governor.
+- Every process pinned to cores 1-3 (`taskset -c 1-3`), away from the NIC interrupt core.
+- Data restricted to the test link: eth0 for CycloneDDS (`CYCLONEDDS_URI`) and FastDDS (profile XML).
+  TickLE uses its link broadcast.
+- Release builds on all three sides. TickLE rows assert `core_build=release`; the vendors are apt
+  release packages.
+- Identical payload sizes, gated against every framework's measured limit by `check_bench_shapes.sh`.
+- The same idle-based server lifetime and 3 s drain cap.
+- `tc netem` applied to the client's egress, read back before each cell.
+
+**Where the settings differ, and which way each difference cuts:**
+
+1. **The KEEP_ALL bound is not identical.** It is equal in bytes for TickLE and CycloneDDS (about
+   512 kB), while FastDDS may hold 4,000 samples whatever their size (about 11 MB at p4). At p1,
+   TickLE holds the fewest samples of the three (2,048 against 4,000).
+   - For throughput under loss, a deeper history lets more data stay in flight, so this cuts
+     **against TickLE**.
+   - For memory, it cuts **in TickLE's favour against FastDDS at p2-p4.** FastDDS's peak RSS grows
+     from 17.4 MB at p1 to 28.3 MB at p4, and up to about 11 MB of that can be the history TickLE is
+     not allowed to keep. Subtracting all of it still leaves FastDDS at about 17 MB against TickLE's
+     2.2 MB, so **the verdict holds, but the margin shown against FastDDS at p2-p4 is inflated.**
+2. **`max_blocking_time` is 10 s for CycloneDDS and 100 ms for the others.** It matters only when a
+   writer's history is full. Every harness counts only successful writes, so no direction has been
+   shown. It is still a QoS difference and is to be aligned.
+3. **c9 does not compare KEEP_LAST.** TickLE runs KEEP_LAST 64 while both DDS harnesses run their
+   KEEP_ALL default, because the campaign never passes them `-K`, although both accept it now. The
+   summariser's policy rule voids the cell, so it is not scored unfairly, but it is not compared at
+   all.
+4. **Not a QoS difference, recorded so it is not mistaken for one:**
+   - FastDDS sends a p4 sample as one UDP datagram for the kernel to fragment, because its transport
+     default `maxMessageSize` is 65,500 B (DATAFRAG_PLAN section 12). That is FastDDS as shipped.
+     Adding a tuned-FastDDS arm would be the user's decision.
+   - CycloneDDS's `SPDPInterval` is shortened to 1 s. That affects only how quickly the two sides
+     discover each other, not anything measured after they match.
+   - TickLE runs `rmw_tickle`'s shipped defaults: the dynamic retry interval, piggybacked heartbeats,
+     reorder slots equal to the tracking window, and the 512 KiB KEEP_ALL budget. The vendors run
+     theirs.
+
+**Conclusion of the audit: no setting was found that decides a verdict in TickLE's favour.** One
+difference (item 1, memory against FastDDS at p2-p4) makes a TickLE margin look larger than it is,
+and items 1-3 are departures from "identical QoS" whichever way they cut. The planned correction
+is to pass all three frameworks the same explicit bounds, and to re-run the affected cells:
+- the KEEP_ALL bound as the same number of samples per payload shape, matching TickLE's 512 KiB
+  budget
+- `max_blocking_time` 100 ms for all three
+- KEEP_LAST 64 for all three at c9
+
+The FastDDS harness needs a flag for its sample bound for this, since it is a compile-time constant
+today. Until those runs exist, the table in section 1 comes from the settings above.
+
+### 4.5 The one thing the campaign predicted wrong, and what it cost
 
 The sweep's header pre-registered that TickLE should *lose* c6 - P4 under loss - "because a lost IP
 fragment costs it the whole datagram while RTPS retransmits one fragment". TickLE won it 4.5x. The

@@ -664,3 +664,39 @@ The rig runs queue in order behind the 12-cell campaign: FastDDS's delayed count
 4-fragment "before" arm (pinned to `3f564c7b`, whose core is identical to `8c4dad8f`'s), the "after"
 arm on `bceddf2a`, then cells 1-6 on `bceddf2a`, pinned. Those last are the p1-p4 figures the
 COMPARISON.MD table takes.
+
+## 14. Per-datagram seq_no on the rig: 13.3 read against its pre-registration (2026-09-26)
+
+`results/frag_count_before_2026-09-26.txt` (`3f564c7b`, whole-sample retransmission, core identical to
+`8c4dad8f`) and `results/frag_count_after_2026-09-26.txt` (`bceddf2a`, per-datagram). TickLE only, p4
+(2,800 B), 3 repetitions per arm, `drained=acked` in all 24 rows. Every row asserts `datagram_bytes=`
+and `core_build=release`.
+
+Client datagrams per delivered sample (`wire_role_packets_per_sample`):
+
+| arm | model | before, measured | model | after, measured |
+|---|---:|---:|---:|---:|
+| 2 fragments, 0% | 2.0 | 2.015 | 2.0 | 2.018 |
+| 2 fragments, 5% | 2.216 | **2.211-2.223** | 2.105 | **2.079-2.084** |
+| 4 fragments, 0% | 4.0 | 4.016 | 4.0 | 4.025 |
+| 4 fragments, 5% | 4.911 | **4.857-5.107** | 4.211 | **4.045-4.046** |
+
+- **The "before" arm confirms the whole-sample model at both fragment counts**, so section 13's
+  premise holds on the rig.
+- **The "after" arm is per-datagram, with the 4-fragment gap between the arms (about 4.9 → 4.05, no
+  overlap) as claimed.** Both "after" readings sit *below* the per-datagram model (by 1% and 4%).
+  That is not explained, so it is not claimed as a further gain: the direction and size of the change
+  are the claim, not the residual.
+- **Not predicted, and larger than anything claimed: throughput under loss.** At 4 fragments and 5%
+  loss the rate went from 46-103 to **527-536 Mbps**. At 2 fragments (p4) it went from 688-756 to
+  **830-857 Mbps**, about **90% of the lossless 940**. The 13.3 pre-registration explicitly did not
+  claim that this change would close the retention gap (70.5% in section 11, against the 90.6%
+  target). This run says it came close to closing it. That is recorded as an unpredicted result,
+  to be confirmed in the full cross-vendor campaign running now on the same build, not as a
+  pre-registered success.
+- `frag_duplicate` did not fall to about 0 at 2 fragments (10.5k-11.2k per run, about 5.7% of
+  samples), although it did at 4 fragments (0.2%). Section 13.3 predicted about 0. **This prediction
+  failed**, and the cause, whether a duplicate datagram or a counter that now counts something else,
+  is open and has gone to Dev.
+- The FastDDS delayed counter read (section 12's follow-up) is in
+  `results/fastdds_c6_delayed_2026-09-26.txt` and is read separately.

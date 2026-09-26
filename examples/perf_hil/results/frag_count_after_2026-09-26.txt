@@ -1,0 +1,15 @@
+=== fragment-count scaling, 2026-09-26T14:02:15+09:00, SHA bceddf2afaf0580434d0195c225268fd21be3d22, 3 reps ===
+frag2 loss0 rep1 | sent=209724 send_mbps=939.564 drained=acked wire_role_packets_per_sample=2.018 recv=209724 frag_abandoned=0 frag_duplicate=5 wire_role_packets_per_sample=2.018 
+frag2 loss0 rep2 | sent=209748 send_mbps=939.671 drained=acked wire_role_packets_per_sample=2.018 recv=209748 frag_abandoned=0 frag_duplicate=4 wire_role_packets_per_sample=2.018 
+frag2 loss0 rep3 | sent=209756 send_mbps=939.707 drained=acked wire_role_packets_per_sample=2.018 recv=209756 frag_abandoned=0 frag_duplicate=9 wire_role_packets_per_sample=2.018 
+frag2 loss5 rep1 | sent=185295 send_mbps=830.122 drained=acked wire_role_packets_per_sample=2.084 recv=185295 frag_abandoned=0 frag_duplicate=10941 wire_role_packets_per_sample=2.084 
+frag2 loss5 rep2 | sent=191386 send_mbps=857.409 drained=acked wire_role_packets_per_sample=2.079 recv=191386 frag_abandoned=0 frag_duplicate=10553 wire_role_packets_per_sample=2.079 
+frag2 loss5 rep3 | sent=189246 send_mbps=847.822 drained=acked wire_role_packets_per_sample=2.084 recv=189246 frag_abandoned=0 frag_duplicate=11243 wire_role_packets_per_sample=2.084 
+frag4 loss0 rep1 | sent=198392 send_mbps=888.796 drained=acked wire_role_packets_per_sample=4.025 recv=198392 frag_abandoned=0 frag_duplicate=31 wire_role_packets_per_sample=4.025 
+frag4 loss0 rep2 | sent=198448 send_mbps=889.047 drained=acked wire_role_packets_per_sample=4.025 recv=198448 frag_abandoned=0 frag_duplicate=13 wire_role_packets_per_sample=4.025 
+frag4 loss0 rep3 | sent=198448 send_mbps=889.047 drained=acked wire_role_packets_per_sample=4.025 recv=198448 frag_abandoned=0 frag_duplicate=13 wire_role_packets_per_sample=4.025 
+frag4 loss5 rep1 | sent=117543 send_mbps=526.593 drained=acked wire_role_packets_per_sample=4.045 recv=117543 frag_abandoned=0 frag_duplicate=833 wire_role_packets_per_sample=4.045 
+frag4 loss5 rep2 | sent=119644 send_mbps=536.005 drained=acked wire_role_packets_per_sample=4.046 recv=119644 frag_abandoned=0 frag_duplicate=1009 wire_role_packets_per_sample=4.046 
+frag4 loss5 rep3 | sent=118407 send_mbps=530.463 drained=acked wire_role_packets_per_sample=4.046 recv=118407 frag_abandoned=0 frag_duplicate=983 wire_role_packets_per_sample=4.046 
+
+=== done ===
