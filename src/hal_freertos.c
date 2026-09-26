@@ -81,6 +81,14 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
     return true;
 }
 
+// One netif on this target (see tt_resolve_link() above).
+int32_t tt_link_mtu(uint32_t addr) {
+    if (netif_default == NULL || ntohl(ip4_addr_get_u32(netif_ip4_addr(netif_default))) != addr) {
+        return -1;
+    }
+    return (int32_t)netif_default->mtu;
+}
+
 tt_ret_t tt_bind(struct tt_Node* node) {
     // See hal_linux.c's own tt_bind() comment on this same line - node->hal.sock relies on the
     // identical "only touched after it's known-good" convention.

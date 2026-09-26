@@ -514,6 +514,11 @@ struct _tt_Config {
         uint32_t resolved_netmask;   // host byte order
         uint32_t resolved_broadcast; // host byte order
         bool resolved;
+        // The resolved interface's MTU (tt_link_mtu(), hal.h), -1 when unknown, and whether it is
+        // below the 1500 bytes tt_ETHERNET_UDP_PAYLOAD assumes. Recorded rather than only logged, so
+        // a caller - or a test - can see it.
+        int32_t resolved_mtu;
+        bool mtu_below_assumed;
     } links[tt_MAX_LINK_COUNT];
     // 0 means "no links configured explicitly": tt_bind() then synthesises exactly one from the
     // addr/broadcast/tt_UNICAST_PEER_THRESHOLD fields above, so every existing caller - and every

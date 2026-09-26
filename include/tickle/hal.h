@@ -152,6 +152,11 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 // every interface's address, netmask and broadcast together, so this asks it rather than guessing.
 bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, uint32_t* bcast);
 
+// The MTU of the local interface that owns `addr` (host byte order), or -1 when it cannot be told.
+// Asked once per resolved link at node creation, so core can say when the link is narrower than the
+// 1500-byte Ethernet MTU tt_ETHERNET_UDP_PAYLOAD assumes (config.h) - see resolve_links() (tickle.c).
+int32_t tt_link_mtu(uint32_t addr);
+
 // Non-blocking single receive: pulls one datagram if one is already waiting, without any poll()
 // wait. tt_Node_poll() uses this to drain whatever else the kernel has buffered after tt_receive()
 // hands it the first packet, so a saturated receiver pays one poll() per drain rather than one

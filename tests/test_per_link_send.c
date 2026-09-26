@@ -188,7 +188,40 @@ static void test_single_link_node_still_uses_plain_broadcast(void) {
     EXPECT_EQ_U32((uint32_t)tt_UNICAST_PEER_THRESHOLD, (uint32_t)_tt_CONFIG.links[0].unicast_threshold);
 }
 
+// check_link_mtu(): a resolved link narrower than the 1500-byte MTU tt_ETHERNET_UDP_PAYLOAD assumes is
+// recorded as such (and warned about); a standard or wider one, an unknown MTU, and an unresolved link
+// are not.
+static void test_link_mtu_below_the_assumed_1500_is_reported(void) {
+    test_mock_reset();
+    struct _tt_Link link = {.broadcast = "192.168.10.255", .resolved_addr = LINK_A_ADDR, .resolved = true};
+
+    test_mock_link_mtu = 1420; // a VPN tunnel
+    check_link_mtu(&link);
+    EXPECT_EQ_INT(1420, link.resolved_mtu);
+    EXPECT_TRUE(link.mtu_below_assumed);
+
+    test_mock_link_mtu = 1500; // standard Ethernet: exactly what is assumed
+    check_link_mtu(&link);
+    EXPECT_TRUE(!link.mtu_below_assumed);
+
+    test_mock_link_mtu = 9000; // jumbo: the assumption is conservative, not violated
+    check_link_mtu(&link);
+    EXPECT_TRUE(!link.mtu_below_assumed);
+
+    test_mock_link_mtu = -1; // the HAL cannot tell
+    check_link_mtu(&link);
+    EXPECT_TRUE(!link.mtu_below_assumed);
+
+    test_mock_link_mtu = 1420;
+    link.resolved = false; // no interface owns it - nothing to ask
+    check_link_mtu(&link);
+    EXPECT_EQ_INT(-1, link.resolved_mtu);
+    EXPECT_TRUE(!link.mtu_below_assumed);
+    test_mock_link_mtu = -1;
+}
+
 int main(void) {
+    test_link_mtu_below_the_assumed_1500_is_reported();
     test_peer_is_matched_to_its_own_link();
     test_each_link_decides_on_its_own_count_and_threshold();
     test_link_with_no_peers_is_not_broadcast_to();

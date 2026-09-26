@@ -26,10 +26,12 @@
 bool test_mock_link_resolves = false;
 uint32_t test_mock_link_addr = 0;
 uint32_t test_mock_link_netmask = 0;
+int32_t test_mock_link_mtu = -1;
 #else
 extern bool test_mock_link_resolves;
 extern uint32_t test_mock_link_addr;
 extern uint32_t test_mock_link_netmask;
+extern int32_t test_mock_link_mtu;
 #endif
 #ifdef TEST_MOCK_DEFINE_STORAGE
 struct _tt_Config _tt_CONFIG = {
@@ -157,6 +159,11 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
     *netmask = test_mock_link_netmask;
     *bcast = test_mock_link_addr | ~test_mock_link_netmask;
     return true;
+}
+
+int32_t tt_link_mtu(uint32_t addr) {
+    (void)addr;
+    return test_mock_link_mtu;
 }
 
 tt_ret_t tt_bind(struct tt_Node* node) {

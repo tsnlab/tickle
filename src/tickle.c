@@ -228,11 +228,30 @@ static uint8_t link_count(void) {
 //
 // Idempotent: re-resolving an already-resolved link asks the OS the same question and gets the
 // same answer, so a second node in the same process costs one getifaddrs and changes nothing.
+// tt_ETHERNET_UDP_PAYLOAD (config.h) sizes control messages and every "fits one datagram" decision for a
+// 1500-byte Ethernet MTU, and nothing checked that the link actually has one. A narrower link - a VPN
+// tunnel at 1420, PPPoE at 1492 - still delivers, through IP fragmentation, which is why this warns
+// rather than refusing the node: but a fragmented control message is lost whenever any one fragment is,
+// and nothing else would say so. A wider link (jumbo frames) is fine; the assumption is conservative
+// there. An unresolved link - the default limited broadcast, owned by no interface - has no MTU to ask.
+// Large rmw samples are fragmented on purpose (the user's decision), and are not what this is about.
+#define tt_ASSUMED_MTU (tt_ETHERNET_UDP_PAYLOAD + 20 + 8) // + IPv4 and UDP headers
+static void check_link_mtu(struct _tt_Link* link) {
+    link->resolved_mtu = link->resolved ? tt_link_mtu(link->resolved_addr) : -1;
+    link->mtu_below_assumed = link->resolved_mtu > 0 && link->resolved_mtu < tt_ASSUMED_MTU;
+    if (link->mtu_below_assumed) {
+        TT_LOG_WARNING("Link %s has MTU %d, below the %d bytes this build assumes (tt_ETHERNET_UDP_PAYLOAD %d): "
+                       "control messages near that size will be IP-fragmented, and lost whenever any fragment is",
+                       link->broadcast, (int)link->resolved_mtu, (int)tt_ASSUMED_MTU, (int)tt_ETHERNET_UDP_PAYLOAD);
+    }
+}
+
 static tt_ret_t resolve_links(void) {
     for (uint8_t i = 0; i < link_count(); i++) {
         struct _tt_Link* link = &_tt_CONFIG.links[i];
         link->resolved =
             tt_resolve_link(link->broadcast, &link->resolved_addr, &link->resolved_netmask, &link->resolved_broadcast);
+        check_link_mtu(link);
         if (!link->resolved) {
             // Two different situations, and the whole point of separating them is that one is a
             // configuration error and the other is the default.

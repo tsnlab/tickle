@@ -108,6 +108,11 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
     return true;
 }
 
+int32_t tt_link_mtu(uint32_t addr) {
+    (void)addr;
+    return -1;
+}
+
 tt_ret_t tt_bind(struct tt_Node* node) {
     (void)node;
     return tt_RET_OK;

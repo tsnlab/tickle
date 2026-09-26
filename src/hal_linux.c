@@ -29,8 +29,10 @@
 #include <unistd.h>
 
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <sys/eventfd.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 // struct iovec (tt_send_iov, below) - clang-tidy's IWYU mapping doesn't know this glibc symbol's
 // real (portable, POSIX-specified) home, so it flags both this include and the struct itself as
@@ -190,6 +192,36 @@ bool tt_resolve_link(const char* broadcast, uint32_t* addr, uint32_t* netmask, u
 
     freeifaddrs(ifaddrs);
     return found;
+}
+
+int32_t tt_link_mtu(uint32_t addr) {
+    struct ifaddrs* ifaddrs = NULL;
+    if (getifaddrs(&ifaddrs) != 0) {
+        return -1;
+    }
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    bool found = false;
+    for (struct ifaddrs* ifaddr = ifaddrs; ifaddr != NULL && !found; ifaddr = ifaddr->ifa_next) {
+        if (ifaddr->ifa_addr == NULL || ifaddr->ifa_addr->sa_family != AF_INET ||
+            ntohl(((struct sockaddr_in*)ifaddr->ifa_addr)->sin_addr.s_addr) != addr) {
+            continue;
+        }
+        snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifaddr->ifa_name);
+        found = true;
+    }
+    freeifaddrs(ifaddrs);
+    if (!found) {
+        return -1;
+    }
+    int query_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (query_fd < 0) {
+        return -1;
+    }
+    // SIOCGIFMTU: glibc defines it in bits/ioctls.h, reached through <sys/ioctl.h> above
+    int32_t mtu = ioctl(query_fd, SIOCGIFMTU, &ifr) == 0 ? (int32_t)ifr.ifr_mtu : -1; // NOLINT(misc-include-cleaner)
+    close(query_fd);
+    return mtu;
 }
 
 // Says what receive buffer the kernel actually granted, which is rarely what was asked for: an
