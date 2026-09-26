@@ -1,0 +1,19 @@
+=== recv_wake_cost on 10.1.1.213, 2026-09-27T00:29:01+09:00, source md5 60090fc70f57 ===
+aarch64
+-- pass 1
+recvfrom  send -> receive returned: median  11.22 us  p10  10.70  p90  12.45
+ppoll3    send -> receive returned: median  14.04 us  p10  13.48  p90  15.35
+epoll3    send -> receive returned: median  13.57 us  p10  13.07  p90  14.87
+recvmsg   send -> receive returned: median  11.26 us  p10  10.74  p90  12.54
+epoll3    send -> receive returned: median  13.59 us  p10  13.09  p90  14.91
+ppoll3    send -> receive returned: median  14.02 us  p10  13.46  p90  15.37
+recvfrom  send -> receive returned: median  11.24 us  p10  10.72  p90  12.48
+-- pass 2
+recvfrom  send -> receive returned: median  11.22 us  p10  10.70  p90  12.50
+ppoll3    send -> receive returned: median  14.00 us  p10  13.45  p90  15.35
+epoll3    send -> receive returned: median  13.54 us  p10  13.05  p90  14.83
+recvmsg   send -> receive returned: median  11.30 us  p10  10.74  p90  12.56
+epoll3    send -> receive returned: median  13.57 us  p10  13.06  p90  14.87
+ppoll3    send -> receive returned: median  14.00 us  p10  13.43  p90  15.31
+recvfrom  send -> receive returned: median  11.22 us  p10  10.70  p90  12.50
+=== done ===

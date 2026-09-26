@@ -479,3 +479,18 @@ The prediction ("at least as large in us on the Pi as the PC's -47") **did not h
 The likely reason is the ping side: at a 100 ms gap it sleeps outside `rmw_wait()` far longer than the 10 ms
 lease, so it takes the role back every round trip and only the pong gains fully. That was a prediction, not
 a criterion, and it is recorded as missed.
+
+**8.5 addendum: epoll does not close the gap on the Pi (2026-09-27).** `recv_wake_cost.c` with Dev's epoll3 arm, on the
+server Pi, 2 passes interleaved (`results/recv_wake_cost_rpi_2026-09-27.txt`). Medians:
+- recvfrom 11.22 us, recvmsg 11.26-11.30 (the control pair agrees);
+- **epoll3 13.54-13.59 us, +2.35**;
+- ppoll3 14.00-14.04, +2.8.
+
+The pre-registered bar was epoll3 within ~0.5 us of recvfrom, and it misses by a wide margin. So a persistent epoll set
+is not worth doing. This agrees with the bpftrace split: the cost is the second syscall, not the kind of wait. Only a
+blocking receive on the data socket would recover the ~2.8 us, and that needs the well-known socket and the wake
+path handled another way. Deferred: ~1% of the round trip for a large change.
+
+Next for the rmw rows, in order:
+1. the ping-side executor lease (keep the role across a regular caller gap), guarded on idle CPU and timer latency;
+2. further wire versions (W5, W1) wait for the user's ruling on WIRE_PLAN's rule reading.
