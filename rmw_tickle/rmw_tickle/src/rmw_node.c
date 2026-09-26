@@ -16,16 +16,22 @@
 // however many rmw_create_node() calls share that context - see that struct's own doc comment for
 // why a logical "node" never needed its own transport identity in the first place.
 
+#include <poll.h> // poll() - executor-driven receive's park
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h> // offsetof - mark_automatic_publishers_lost()'s own tt_Publisher -> rmw_tickle_publisher_t recovery
 #include <stdint.h>
+#include <stdio.h> // fprintf() - executor-driven receive's shutdown line
 #include <string.h>
 #include <time.h>
+#include <unistd.h> // read(), write(), close()
 
-#include <tickle/config.h> // tt_RECEIVE_TIMEOUT, tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL
-#include <tickle/hal.h>    // tt_ret_t/tt_RET_OK, tt_get_ns()
+#include <sys/eventfd.h>
+#include <sys/timerfd.h>
+#include <tickle/config.h>    // tt_RECEIVE_TIMEOUT, tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL
+#include <tickle/hal.h>       // tt_ret_t/tt_RET_OK, tt_get_ns()
+#include <tickle/hal_linux.h> // tt_thread_self()
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h" // rcutils_allocator_t
@@ -82,6 +88,7 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
 }
 
 // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 30, implementing
@@ -124,6 +131,7 @@ static void broadcast_wait_cond(rmw_tickle_context_impl_t* context_impl) {
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
 }
 
 // Bumps liveliness_lost on every AUTOMATIC Publisher (liveliness_lease_ns == 0) across every
@@ -263,9 +271,60 @@ static void* watchdog_thread_main(void* arg) {
 // waking the wait so it can run on time), tt_RET_TIMEOUT and tt_RET_OK all just mean "loop back and check
 // poll_thread_running again" - there is nothing this thread could usefully do differently for any
 // other tt_Node_poll() result either.
+void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl) {
+    if (atomic_load(&context_impl->executor_polling) &&
+        __atomic_load_n(&context_impl->tickle_node.poller_thread, __ATOMIC_RELAXED) != tt_thread_self()) {
+        (void)tt_Node_interrupt(&context_impl->tickle_node);
+    }
+}
+
+// Executor-driven receive: whether an rmw_wait() holds the poll role, or released it less than a lease ago.
+static bool executor_holds_poll(rmw_tickle_context_impl_t* context_impl) {
+    if (atomic_load(&context_impl->executor_polling)) {
+        return true;
+    }
+    uint64_t left = atomic_load(&context_impl->executor_left_ns);
+    return 0 != left && tt_get_ns() - left < RMW_TICKLE_EXECUTOR_POLL_LEASE_NS;
+}
+
+static void drain_fd(int descriptor) {
+    uint64_t count = 0;
+    if (read(descriptor, &count, sizeof(count)) < 0) {
+        return; // non-blocking: nothing to read is fine
+    }
+}
+
+// Executor-driven receive (rmw_tickle_context_impl_t.executor_polling): while an rmw_wait() holds the poll
+// role, or released it less than a lease ago, the poll thread stays out of its way, parked in poll() on the
+// lease timer and the shutdown eventfd with no timeout. Returns whether it parked, so the caller re-checks
+// before polling. Announces each park on handover_cond, for an executor waiting to take the role.
+static bool park_for_polling_executor(rmw_tickle_context_impl_t* context_impl) {
+    if (!executor_holds_poll(context_impl)) {
+        return false;
+    }
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    atomic_store(&context_impl->poll_thread_parked, true);
+    pthread_cond_broadcast(&context_impl->handover_cond);
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+    while (context_impl->poll_thread_running && executor_holds_poll(context_impl)) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - struct pollfd/POLLIN: <poll.h> above, via a glibc-private header
+        struct pollfd fds[2] = {{.fd = context_impl->park_timer_fd, .events = POLLIN, .revents = 0},
+                                {.fd = context_impl->park_wake_fd, .events = POLLIN, .revents = 0}};
+        (void)poll(fds, 2, -1); // NOLINT(misc-include-cleaner) - <poll.h> above
+        drain_fd(context_impl->park_timer_fd);
+        drain_fd(context_impl->park_wake_fd);
+    }
+    atomic_store(&context_impl->poll_thread_parked, false);
+    atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
+    return true;
+}
+
 static void* poll_thread_main(void* arg) {
     rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)arg;
     while (context_impl->poll_thread_running) {
+        if (context_impl->executor_poll_enabled && park_for_polling_executor(context_impl)) {
+            continue;
+        }
         tt_Node_poll(&context_impl->tickle_node, -1);
 
         // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST. The one piece of
@@ -311,6 +370,16 @@ static rmw_ret_t start_shared_tickle_node(rmw_tickle_context_impl_t* context_imp
     // enormous).
     atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
 
+    context_impl->park_timer_fd = -1;
+    context_impl->park_wake_fd = -1;
+    if (context_impl->executor_poll_enabled) {
+        // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_MONOTONIC: <time.h> above, via a glibc-private header
+        context_impl->park_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        context_impl->park_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+        if (context_impl->park_timer_fd < 0 || context_impl->park_wake_fd < 0) {
+            context_impl->executor_poll_enabled = false; // degrade to the poll thread alone
+        }
+    }
     context_impl->poll_thread_running = true;
     if (pthread_create(&context_impl->poll_thread, NULL, poll_thread_main, context_impl) != 0) {
         RMW_SET_ERROR_MSG("failed to start poll thread");
@@ -342,7 +411,25 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
     // ends the next one.
     context_impl->poll_thread_running = false;
     tt_Node_interrupt(&context_impl->tickle_node);
+    if (context_impl->park_wake_fd >= 0) {
+        uint64_t one = 1;
+        if (write(context_impl->park_wake_fd, &one, sizeof(one)) < 0) { // a parked poll thread
+            (void)fprintf(stderr, "rmw_tickle: could not wake the parked poll thread\n");
+        }
+    }
     pthread_join(context_impl->poll_thread, NULL);
+    if (context_impl->park_timer_fd >= 0) {
+        close(context_impl->park_timer_fd);
+        context_impl->park_timer_fd = -1;
+    }
+    if (context_impl->park_wake_fd >= 0) {
+        close(context_impl->park_wake_fd);
+        context_impl->park_wake_fd = -1;
+    }
+    // One line, so a measurement can confirm which library ran and whether the path was taken.
+    (void)fprintf(stderr, "rmw_tickle: executor_poll=%d executor_poll_waits=%llu\n",
+                  context_impl->executor_poll_enabled ? 1 : 0,
+                  (unsigned long long)atomic_load(&context_impl->executor_poll_waits));
 
     // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
     // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Node_

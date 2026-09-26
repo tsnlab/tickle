@@ -71,6 +71,7 @@ static void client_callback(struct tt_Client* tt_client, int8_t return_code, str
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
 }
 
 rmw_client_t* rmw_create_client(const rmw_node_t* node, const rosidl_service_type_support_t* type_support,

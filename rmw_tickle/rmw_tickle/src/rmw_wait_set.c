@@ -35,10 +35,14 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <time.h>
 
-#include <tickle/config.h> // tt_SECOND
+#include <sys/timerfd.h>   // timerfd_settime() - executor-driven receive
+#include <tickle/config.h> // tt_SECOND, tt_MILLISECOND
+#include <tickle/hal.h>    // tt_get_ns()
+#include <tickle/tickle.h> // tt_Node_poll(), tt_Node_interrupt()
 #include <tickle/trace.h>  // TT_TRACE
 
 #include "rcutils/allocator.h"
@@ -242,6 +246,96 @@ static void finalize_all(rmw_subscriptions_t* subscriptions, rmw_guard_condition
     check_events(events, true);
 }
 
+// Executor-driven receive (rmw_tickle_context_impl_t.executor_polling): one pass of rmw_wait()'s readiness
+// check, under wait_mutex. Returns RMW_RET_OK if something is ready, RMW_RET_TIMEOUT if `expired` and
+// nothing is, both with the wait set finalized; RMW_RET_ERROR (nothing finalized) to keep waiting.
+static rmw_ret_t check_once(rmw_tickle_context_impl_t* context_impl, rmw_subscriptions_t* subscriptions,
+                            rmw_guard_conditions_t* guard_conditions, rmw_services_t* services, rmw_clients_t* clients,
+                            rmw_events_t* events, bool expired) {
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    bool ready = check_subscriptions(subscriptions, false) || check_guard_conditions(guard_conditions, false) ||
+                 check_services(services, false) || check_clients(clients, false) || check_events(events, false);
+    if (ready || expired) {
+        finalize_all(subscriptions, guard_conditions, services, clients, events);
+    }
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+    if (ready) {
+        return RMW_RET_OK;
+    }
+    return expired ? RMW_RET_TIMEOUT : RMW_RET_ERROR;
+}
+
+// Executor-driven receive: arms the parked poll thread's lease timer to fire `in_ns` from now, or disarms it
+// with 0. Relative: tt_get_ns() is not the timerfd's clock.
+static void set_park_timer(rmw_tickle_context_impl_t* context_impl, uint64_t in_ns) {
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h> above, via a glibc-private header
+    struct itimerspec timer = {{0, 0}, {(time_t)(in_ns / tt_SECOND), (long)(in_ns % tt_SECOND)}};
+    (void)timerfd_settime(context_impl->park_timer_fd, 0, &timer, NULL);
+}
+
+// Executor-driven receive: after interrupting the poll thread's own poll, waits for it to park - a millisecond
+// at most, then the caller simply tries again.
+static void wait_for_poll_thread_to_park(rmw_tickle_context_impl_t* context_impl) {
+    pthread_mutex_lock(&context_impl->wait_mutex);
+    if (!atomic_load(&context_impl->poll_thread_parked)) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline); // NOLINT(misc-include-cleaner) - <time.h>
+        deadline.tv_nsec += (long)tt_MILLISECOND;
+        deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;
+        deadline.tv_nsec %= (long)tt_SECOND;
+        (void)pthread_cond_timedwait(&context_impl->handover_cond, &context_impl->wait_mutex, &deadline);
+    }
+    pthread_mutex_unlock(&context_impl->wait_mutex);
+}
+
+// Executor-driven receive: waits by polling the node on this thread, so a message is received, delivered
+// and found ready here, with no poll thread -> executor wake in between. Returns false without waiting if
+// another rmw_wait() holds the role; the caller then waits on wait_cond as before. deadline_ns is
+// CLOCK_MONOTONIC, UINT64_MAX for no timeout.
+static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscriptions_t* subscriptions,
+                            rmw_guard_conditions_t* guard_conditions, rmw_services_t* services, rmw_clients_t* clients,
+                            rmw_events_t* events, uint64_t deadline_ns, rmw_ret_t* result) {
+    bool idle = false;
+    if (!atomic_compare_exchange_strong(&context_impl->executor_polling, &idle, true)) {
+        return false;
+    }
+    atomic_fetch_add(&context_impl->executor_poll_waits, 1);
+    set_park_timer(context_impl, 0); // taken back within the lease: the poll thread stays parked
+    bool interrupted = false;
+    while (true) {
+        uint64_t now = tt_get_ns();
+        *result =
+            check_once(context_impl, subscriptions, guard_conditions, services, clients, events, now >= deadline_ns);
+        if (RMW_RET_ERROR != *result) {
+            break;
+        }
+        int64_t rest = UINT64_MAX == deadline_ns ? -1 : (int64_t)(deadline_ns - now);
+        tt_ret_t polled = tt_Node_poll(&context_impl->tickle_node, rest);
+        if (tt_RET_BUSY == polled) {
+            // The poll thread is still inside its own poll: end it once, and wait for it to park
+            // (rmw_node.c's park_for_polling_executor() announces that on handover_cond).
+            if (!interrupted) {
+                (void)tt_Node_interrupt(&context_impl->tickle_node);
+                interrupted = true;
+            }
+            wait_for_poll_thread_to_park(context_impl);
+        } else {
+            // The node is being polled: what the watchdog wants to know (LIVELINESS_LOST, rmw_node.c).
+            atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
+        }
+    }
+    // Released: the lease starts now. Nobody is woken; the parked poll thread's timer is set for the end of
+    // the lease, and taking the role again disarms it (rmw_node.c's park_for_polling_executor()).
+    uint64_t left = tt_get_ns();
+    atomic_store(&context_impl->executor_left_ns, left);
+    atomic_store(&context_impl->executor_polling, false);
+    set_park_timer(context_impl, RMW_TICKLE_EXECUTOR_POLL_LEASE_NS);
+    if (RMW_RET_OK == *result) {
+        TT_TRACE(tt_TRACE_EXEC_WAKE);
+    }
+    return true;
+}
+
 rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
                    rmw_services_t* services, rmw_clients_t* clients, rmw_events_t* events, rmw_wait_set_t* wait_set,
                    const rmw_time_t* wait_timeout) {
@@ -262,6 +356,18 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
         deadline.tv_nsec += (long)wait_timeout->nsec;
         deadline.tv_sec += deadline.tv_nsec / (long)tt_SECOND;
         deadline.tv_nsec %= (long)tt_SECOND;
+    }
+
+    if (!poll_only && context_impl->executor_poll_enabled) {
+        uint64_t deadline_ns = UINT64_MAX;
+        if (NULL != wait_timeout) {
+            deadline_ns = tt_get_ns() + ((uint64_t)wait_timeout->sec * tt_SECOND) + (uint64_t)wait_timeout->nsec;
+        }
+        rmw_ret_t result = RMW_RET_ERROR;
+        if (wait_by_polling(context_impl, subscriptions, guard_conditions, services, clients, events, deadline_ns,
+                            &result)) {
+            return result;
+        }
     }
 
     pthread_mutex_lock(&context_impl->wait_mutex);

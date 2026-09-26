@@ -86,5 +86,6 @@ rmw_ret_t rmw_trigger_guard_condition(const rmw_guard_condition_t* guard_conditi
     pthread_mutex_lock(&guard->context_impl->wait_mutex);
     pthread_cond_broadcast(&guard->context_impl->wait_cond);
     pthread_mutex_unlock(&guard->context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(guard->context_impl);
     return RMW_RET_OK;
 }

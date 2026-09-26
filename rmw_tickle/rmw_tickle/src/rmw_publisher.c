@@ -63,6 +63,7 @@ static void check_publisher_deadline(struct tt_Node* node, uint64_t time, void* 
         pthread_mutex_lock(&context_impl->wait_mutex);
         pthread_cond_broadcast(&context_impl->wait_cond);
         pthread_mutex_unlock(&context_impl->wait_mutex);
+        rmw_tickle_poke_polling_executor(context_impl);
     }
     // Deadline monitoring simply stops here on a reschedule failure (tt_MAX_SCHEDULER_LENGTH
     // exhausted) - no logging facility in this package to report it through, and no return path
@@ -110,6 +111,7 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
         pthread_mutex_lock(&context_impl->wait_mutex);
         pthread_cond_broadcast(&context_impl->wait_cond);
         pthread_mutex_unlock(&context_impl->wait_mutex);
+        rmw_tickle_poke_polling_executor(context_impl);
     }
     // current can also fall back to 0 (the remote Subscriber departed, or a QoS change made it
     // compatible again) - matching real DDS's own total_count being cumulative regardless, this
@@ -172,6 +174,7 @@ static void publisher_writable_callback(struct tt_Publisher* pub, void* param) {
     pub_impl->writable_generation++;
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
 }
 
 // How long rmw_publish() may block when a KEEP_ALL Publisher refuses a write, in nanoseconds.

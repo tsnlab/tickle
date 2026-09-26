@@ -265,6 +265,26 @@ struct rmw_tickle_context_impl_t {
     pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
     volatile bool poll_thread_running;
 
+    // Executor-driven receive (RMW_PERF_PLAN.md, 2026-09-26; RMW_TICKLE_EXECUTOR_POLL=1). A blocking
+    // rmw_wait() polls the node itself instead of sleeping on wait_cond, so a message is received,
+    // delivered and found ready on the thread that returns it - no poll thread -> executor wake on the
+    // way. One rmw_wait() at a time holds the role (executor_polling); the others wait on wait_cond as
+    // before. Meanwhile the poll thread parks in poll() on park_timer_fd and park_wake_fd, with no timeout:
+    // the polling executor runs core's timers and feeds the watchdog. Releasing the role wakes nobody - it
+    // arms park_timer_fd for RMW_TICKLE_EXECUTOR_POLL_LEASE_NS later, and taking it again disarms it - so a
+    // spin() loop pays two timerfd_settime() calls a message and no thread switch, and only an executor
+    // that stays away longer than the lease (a long callback, a caller sleeping outside rmw_wait()) gets the
+    // poll thread back.
+    bool executor_poll_enabled;
+#define RMW_TICKLE_EXECUTOR_POLL_LEASE_NS (10ULL * 1000ULL * 1000ULL) // 10 ms
+    atomic_bool executor_polling;
+    _Atomic uint64_t executor_left_ns;    // when the role was last released, 0: never held
+    _Atomic uint64_t executor_poll_waits; // rmw_wait() calls that polled; printed at shutdown
+    atomic_bool poll_thread_parked;       // the poll thread is parked (announced on handover_cond)
+    pthread_cond_t handover_cond;         // NOLINT(misc-include-cleaner) - under wait_mutex
+    int park_timer_fd;                    // CLOCK_MONOTONIC timerfd: the lease, armed on release
+    int park_wake_fd;                     // eventfd: ends a park at shutdown
+
     // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 28(b)'s own
     // design, implemented in Milestone 30). A same-thread self-check from inside poll_thread can
     // never see poll_thread itself hang - the check only runs if poll_thread is still healthy
@@ -782,6 +802,11 @@ typedef struct rmw_tickle_subscriber_t {
     // Subscription can enforce its own age floor with no coordination needed.
     uint64_t lifespan_ns;
 } rmw_tickle_subscriber_t;
+
+// Executor-driven receive: after any change another thread makes that could make a wait set ready (a
+// guard condition, an event, a queue fed outside the poll), wakes an rmw_wait() that is polling the node
+// itself. A no-op unless one is, and on the thread that is doing the polling (rmw_node.c).
+void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl);
 
 // Recomputes a Subscription's RMW_EVENT_LIVELINESS_CHANGED counts, and wakes rmw_wait() if they changed.
 // Node lock held (rmw_subscription.c).

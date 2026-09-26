@@ -105,6 +105,7 @@ static int8_t server_callback(struct tt_Server* tt_server, struct tt_Request* re
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
 
     return tt_CALL_DEFERRED;
 }

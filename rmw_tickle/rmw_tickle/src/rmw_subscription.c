@@ -57,6 +57,7 @@ static void wake_wait_cond(rmw_tickle_context_impl_t* context_impl) {
     pthread_mutex_lock(&context_impl->wait_mutex);
     pthread_cond_broadcast(&context_impl->wait_cond);
     pthread_mutex_unlock(&context_impl->wait_mutex);
+    rmw_tickle_poke_polling_executor(context_impl);
 }
 
 // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Caller must already hold queue_mutex.

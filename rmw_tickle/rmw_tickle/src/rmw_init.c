@@ -209,8 +209,18 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // rmw_tickle.h) - a separate, dedicated mutex from wait_mutex above (a different lock-nesting
     // contract, guarding a different concern, not worth conflating just because both happen to be
     // context-level).
+    if (pthread_cond_init(&impl->handover_cond, NULL) != 0) {
+        RMW_SET_ERROR_MSG("failed to initialize context handover_cond");
+        pthread_cond_destroy(&impl->wait_cond);
+        pthread_mutex_destroy(&impl->wait_mutex);
+        options->allocator.deallocate(impl, options->allocator.state);
+        return RMW_RET_ERROR;
+    }
+    const char* executor_poll = getenv("RMW_TICKLE_EXECUTOR_POLL");
+    impl->executor_poll_enabled = NULL != executor_poll && '1' == executor_poll[0];
     if (pthread_mutex_init(&impl->registry_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize context registry_mutex");
+        pthread_cond_destroy(&impl->handover_cond);
         pthread_cond_destroy(&impl->wait_cond);
         pthread_mutex_destroy(&impl->wait_mutex);
         options->allocator.deallocate(impl, options->allocator.state);
@@ -374,6 +384,7 @@ rmw_ret_t rmw_context_fini(rmw_context_t* const context) {
         impl->allocator.deallocate((void*)impl->nodes, impl->allocator.state);
     }
     pthread_mutex_destroy(&impl->registry_mutex);
+    pthread_cond_destroy(&impl->handover_cond);
     pthread_cond_destroy(&impl->wait_cond);
     pthread_mutex_destroy(&impl->wait_mutex);
     context->options.allocator.deallocate(context->impl, context->options.allocator.state);
