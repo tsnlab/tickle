@@ -522,3 +522,73 @@ Follow-up, queued after the full campaign:
 1. Re-read the server's counters 35 s after arm C ends.
 2. Run arm C with a 30 s drain cap for FastDDS alone, as a diagnostic arm and not a scored one, to
    tell "slow" apart from "lost".
+
+## 13. Decision (the user, 2026-09-26): every DATA and DATA_FRAG takes its own seq_no
+
+The user's decision, translated: *"DATA and DATA_FRAG each get their own seq_no, and where that
+conflicts with rmw's sample-number policy, prepare a compensating measure. Resending everything
+because one DATA or DATA_FRAG went missing is not logical, and TickLE already has a mechanism that
+retransmits with seq_no and a bitmap, so making the most of it is the good approach."*
+
+This replaces sections 4 and 6's recovery rule, "sample-granular ACKNACK, resend every fragment of
+the sample". The wire shapes of section 6.3 (`FRAG_FIRST` 21 B, `FRAG_CONT` 10 B) are unchanged.
+What changes is what their seq_no counts.
+
+### 13.1 Design
+
+- **One seq space per writer, one seq_no per datagram.** DATA, FRAG_FIRST and each FRAG_CONT
+  consume consecutive seq_no. A sample is identified by the seq_no of its first datagram, so sample
+  identifiers are monotonic and skip by the fragment count. `frag_index`/`frag_count` locate a
+  fragment within its sample.
+- **Recovery is the existing mechanism, unchanged in kind.** The ACKNACK bitmap names missing
+  datagrams, and the writer resends exactly those. Nothing resends a whole sample for one lost piece.
+- **Reassembly rides the reorder buffer.** Out-of-order datagrams wait in the reorder slots (slots
+  equal to the window, as now, but a slot holds one datagram of at most 1472 B). In-order fragments
+  accumulate in one sample-sized assembly buffer per subscriber until the last one arrives. The
+  separate reassembly pool and its eviction rule go away, and with them the duplicate-CONT waste
+  Dev found in 8c4dad8f (about 4.5% of samples at 5% loss).
+- **Core wire cost: +0 B.** p4 bandwidth keeps its +19 B margin over CycloneDDS.
+- **What only needs "monotonic", checked against the code:** KEEP_LAST depth (records, not seqs),
+  HEARTBEAT first_available (always a record's first datagram, since eviction is per record),
+  the durability backlog (resends records), and deduplication. The harness's loss accounting uses
+  the payload's own counter, so it is unaffected.
+- **Core API:** the subscriber callback's `seq_no` becomes "monotonic, not contiguous across
+  fragmented samples". `tickle.h` must say so.
+- **Best-effort:** a lost datagram loses its sample, which is unavoidable, as the user noted. The
+  seq_no gap now tells the receiver at once, so the partial sample is dropped immediately rather
+  than held.
+- **Window:** the tracking window counts datagrams, so at p4 a 256-bit window covers 128 samples.
+  Whether the default needs widening is a measurement, not a guess.
+
+### 13.2 The rmw compensation
+
+ROS 2's `publication_sequence_number` contract (`rmw/types.h`) requires `psn2 - psn1 - 1` to be the
+number of messages the publisher sent in between, and 0 exactly when they were consecutive. That is
+contiguous per message, which a per-datagram seq_no is not. A receiver cannot rebuild a contiguous
+count across lost messages, whose fragment counts it never saw. So **rmw_tickle carries its own
+contiguous per-publisher message counter** in its own per-message header, and fills
+`publication_sequence_number` from it. The cost falls only on rmw (about 4 B per message), and ROS
+semantics stay out of core, per the user's principle that core does not depend on ROS 2. Until it
+lands, rmw_tickle must not report core's seq_no as the publication sequence number.
+
+### 13.3 How the measurement will be read, pre-registered
+
+Theory at 5% datagram loss, datagrams sent per delivered sample:
+
+| fragments | whole-sample resend | per-datagram resend |
+|---:|---:|---:|
+| 2 (p4) | 2.216 | 2.105 |
+| 4 | 4.911 | 4.211 |
+
+- **p1-p3: no change.** Nothing fragments there, so per-datagram and per-sample seq_no coincide.
+  Any movement is a defect.
+- **p4 unshaped: bandwidth unchanged at about 2,933 B/sample.**
+- **c6: client transmitted datagrams per sample falls from 2.19-2.21 toward 2.105**, and
+  `frag_duplicate` falls to about 0. If it does not fall, the retransmission is still not
+  per-datagram, whatever the code says.
+- **c6 retention (70.5% on the rig) should improve somewhat, but this change is not claimed to close
+  the gap.** Retransmission was already near the whole-sample optimum, and Dev's veth run points at
+  Pi CPU rather than protocol. The claim is only the one above.
+- **A 4-fragment diagnostic shape** (about 5.6 KB), TickLE only, run on the current build *before* the
+  change lands and again after: 4.911 toward 4.211. This is the scaling case the design exists for.
+  At p4 the saving is 5%, at 4 fragments 14%, and at the 40 fragments of a large rmw message 86%.
