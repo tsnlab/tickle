@@ -22,10 +22,10 @@
 #     arm in this directory came back VOID.
 set -uo pipefail
 K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
-PIN="taskset -c 1-3"
 OUT=${OUT:-/tmp/retry_bounds_ab_$(date +%Y-%m-%d).txt}
 BEFORE=${BEFORE:-ba76dfbf}; AFTER=${AFTER:-08e568af}
 REPS=${REPS:-3}
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
 server_pids() {
     # shellcheck disable=SC2016  # $p must expand on the rig
@@ -84,18 +84,17 @@ done" &
     say "  identity: HEAD=$head (wanted $sha)"
     [ "$head" = "$sha" ] || { say "  IDENTITY FAIL - stopping"; exit 1; }
 }
+# Orchestration is run_scenario.sh, not hand-rolled SSH (2026-09-26). The first version of this
+# script started the server with its own -d and read its log directly; the server then exited
+# before the client had finished and its RESULT line was never produced, so every rep failed the
+# retry_interval_cfg_ns identity check - which lives on the SERVER line. run_scenario.sh already
+# SIGINTs the server after the client returns and reads the log afterwards, for exactly that
+# reason, and prints both RESULT lines.
 one_run() {
-    local dir="tickle/examples/perf_hil/tickle/$1"
-    kill_servers; [ -z "$(server_pids)" ] || { echo "ABORT-server"; return; }
-    sh_ "$SERVER" "cd ~/$dir; nohup $PIN ./server -d 6 -Q > /tmp/rba_srv.log 2>&1 < /dev/null &"
-    sleep 3
-    [ "$(server_pids | wc -l)" = 1 ] || { echo "ABORT-nserver"; return; }
-    local c s
-    c=$(sh_ "$CLIENT" "cd ~/$dir && $PIN ./client -d 5 -Q" 2>&1 | grep -m1 '^RESULT:')
-    sleep 3
-    s=$(sh_ "$SERVER" "grep -m1 '^RESULT:' /tmp/rba_srv.log" 2>&1)
-    kill_servers
-    echo "CLIENT $c ## SERVER $s"
+    local scen="$1" out
+    out=$(cd "$REPO/examples/perf_hil/tickle" && timeout 180 ./run_scenario.sh "$scen" -d 5 -Q 2>/dev/null \
+        | grep '^RESULT:' | tr '\n' ' ')
+    echo "$out"
 }
 arm() {
     local tag="$1" scen="$2" r line
