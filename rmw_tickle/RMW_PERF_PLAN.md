@@ -213,3 +213,61 @@ are small and are listed as measurable candidates, not as explanations:
 **What the source does not explain is the poll-mode difference** (~250 against ~160 us), because
 `rmw_wait(0)` is cheap in both rmw_tickle and Cyclone. It is measured, not argued: the queued captures
 give ping_send, pong_turn, wire and ping_recv per rmw and mode, with wire as the cross-rmw control.
+
+## 8. Both wait modes, and each path split at the kernel boundary (pre-registered 2026-09-26, before the run)
+
+**User decisions (2026-09-26):**
+- Both wait modes are test cases. An application can wait either way (a `spin_some()` loop is poll;
+  `spin()` or `spin_once(timeout)` is block), so both are scored, as separate rows.
+- For all three rmw implementations, measure precisely the path from the data's creation out to the
+  kernel, and the path from the kernel in to the application. That locates rmw_tickle's latency.
+
+**Findings since section 7:**
+- **Poll mode is the loop's grid, not a cost in rmw_tickle** (Dev, `274c7b8e`, veth). rmw_tickle's
+  `spin_some()` takes 5.5 us against the vendors' 41-46 us. Its cycle (~165 us) is shorter, so on the
+  rig its reply is caught one iteration later. The rig rows now carry the `LOOP:` line (`f5e99582`), and
+  the prediction is iterations_per_rtt ≈ 3 for rmw_tickle and ≈ 2 for the vendors.
+- **rmw_tickle's ping broadcast every sample in 4 of 7 runs.** It was a peer-registration race, not the
+  wait mode:
+  - in those runs the ping's publisher never registered the pong's subscriber (`rx_self_sent_data=100`,
+    no "Publisher peer registered" line);
+  - in the other 3 it registered at once;
+  - no leftover processes: `pong_procs=1` and `ping_procs_before=0` on every row.
+
+  Broadcasting costs the ping ~9 us of send time (20.1 against 11.5 us, tap split). Handed to Dev.
+- **Tap split, block mode, BEST_EFFORT rep 1 (mean us):**
+
+  | rmw | ping_send | pong_turn | ping_recv | wire (control) |
+  |---|---:|---:|---:|---:|
+  | rmw_tickle | 11.5 | 43.2 | 31.2 | 168.1 |
+  | rmw_cyclonedds_cpp | 20.5 | 55.1 | 43.1 | 169.3 |
+  | rmw_fastrtps_cpp | 30.1 | 73.0 | 51.5 | 171.5 |
+
+  rmw_tickle is lowest in every segment. The wire control agrees within 3.4 us, except CycloneDDS
+  RELIABLE at ~152 us, 16 us below the others. That misses the 10 us pre-registration and is reported as
+  it is. It is a candidate for interrupt coalescing (Cyclone's RELIABLE sends a second packet close
+  behind the data), not yet tested. The wire is ~2/3 of every round trip on this rig, the same for all
+  three.
+
+**The session (`f4e8e35f`):**
+- Bench, CAPTURE=1, `WAITS="poll block"`, `SYSSTAMP_ARMS="off on"`, 2 repetitions, all three rmws,
+  interleaved.
+- `experiments/sysstamp` (LD_PRELOAD) timestamps every socket and wait call on the capture's clock.
+- Per sample, `rmw_pcap_split.py` gives:
+  - ping: app→send entry (user tx) and send entry→tap (kernel tx);
+  - pong: tap→wake, tap→recv return (kernel rx + wake), recv→send (user: rmw rx, executor, callback,
+    rmw tx) and send→tap;
+  - ping: tap→wake, tap→recv return, and recv→app as a mean.
+
+**How to read it, written before running:**
+- **CONTROL 1, the layer's own cost.** In block mode, the on - off difference in mean RTT must be
+  <= 10 us for every rmw. The grid makes poll mode unusable for this check. If the difference is
+  larger, the kernel-boundary segments are reported with that cost stated, and differences between
+  rmws smaller than it are not read.
+- **CONTROL 2.** Wire agrees across rmws as before.
+- **The reading.** Take a segment where rmw_tickle is slower than the best vendor by more than 5 us:
+  - if it is a user segment (app→send, pong recv→send, recv→app), it is rmw_tickle or core code;
+  - if it is a kernel segment (send→tap, tap→recv), it is the socket usage: broadcast against unicast,
+    ppoll+recvfrom against a blocking recvmsg, and socket options.
+- If no segment exceeds the best vendor by more than 5 us in block mode, the block-mode comparison has
+  no path left to fix, and the work goes to poll mode's grid and to the broadcast race.
