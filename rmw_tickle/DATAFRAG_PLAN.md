@@ -295,3 +295,58 @@ repairs the depth mismatch above, since 512 KiB is the same order as CycloneDDS'
 Cells run: c1 and c5 (p1 unshaped and under loss, the 90.6% retention reference), c3 (p3, not yet
 measured at release), c4 and c6 (p4 unshaped and under loss). `core_build=release` asserted on every
 TickLE row, which the campaign script did not do until today.
+
+## 8. The release baseline, read against section 7's pre-registration (2026-09-26)
+
+`results/c6_baseline_2026-09-26.txt` and `_verdicts.txt`: cells 1, 5, 3, 4 and 6, all three
+frameworks, 3 repetitions, release builds, `core_build=release` asserted on every TickLE row, verdicts
+by `campaign_summary.py`. **Totals: WIN 36, DRAW/TIE 4, LOSE 0, VOID 10** - the ties are `loss_pct`
+reading 0 for everyone, and all ten VOIDs are c6.
+
+**p1, p3 and p4 unshaped are clean sweeps, p4 memory included.** At c4, TickLE's client RSS is
+2,219 KB against CycloneDDS's 5,584 and FastDDS's 28,181. The pre-registration said about 2.2 MB,
+and the byte budget accounts for the whole of it. The one p4 row TickLE lost in the campaign is now
+a win, with no DATA_FRAG involved. The p4 unshaped bandwidth row holds at 2,914 against 2,950, the
+same row DATA_FRAG puts at risk (section 6.3).
+
+**c6 is VOID again, and this time the cause is visible in the data.**
+
+| c6 (p4 + 5% loss) | sent | delivered | client `drained=` |
+|---|---:|---:|---|
+| TickLE | 15,363-15,911 | 98.8% | `timeout`, all 3 reps |
+| FastDDS | 4,380-6,828 | 28.8% | `timeout`, all 3 reps, 45-47 `write_fail` |
+| CycloneDDS | 386-1,889 | **100%** | `acked`, all 3 reps |
+
+This is not the harness truncating the server, which is what voided the original c6. TickLE's client
+reports `drained=timeout`: its reliable recovery at p4 could not finish within the harness's 3 s
+drain cap (`default_drain_s`, `tickle/reliable_throughput/client.c:56`), and about 185 samples were
+still unacknowledged when it gave up. FastDDS appears to stop delivering on its own: its server's
+active span is ~3 s, and its writer records 45 refused writes. CycloneDDS delivered everything, but
+only 386-1,889 samples, against TickLE's ~15,700.
+
+Section 7's pre-registration, item by item:
+- **p4 memory becomes a TickLE win**: confirmed, 2,219 against 5,584.
+- **c6 throughput lead shrinks sharply and probably reverses**: **wrong**. TickLE accepted 70 Mbps
+  against CycloneDDS's 3.9 and FastDDS's 16.4. The mechanism I predicted - matched buffers make
+  TickLE block early - did not dominate. Recorded as a failed prediction, not reinterpreted.
+- **c6 bandwidth and CPU still lost by more than 10x**: directionally right, but these are VOID
+  figures and not verdicts. TickLE's client wire bytes per sample range 27,667-128,408 across three
+  reps, against CycloneDDS's 3,372-6,584 and FastDDS's 3,161-3,245. A 5x spread within one
+  framework's own repetitions is itself the finding: TickLE's p4 recovery under loss is unstable as
+  well as expensive.
+
+**What this adds to DATA_FRAG's acceptance bar for c6.** The metric the void hides is the one that
+decides the cell: whether the reliable writer finishes. CycloneDDS does, and TickLE does not. So,
+before any throughput, bandwidth or CPU comparison at c6:
+
+1. TickLE must report `drained=acked` in every repetition, i.e. deliver 100% within the same drain
+   cap. That is what makes c6 a comparable cell at all.
+2. Then wire packets per sample should fall from today's unstable 20-90 into the 2.2-2.5 range, and
+   stay there across repetitions. The spread matters as much as the median.
+
+FastDDS's shortfall is FastDDS's. Its server active span and its refused writes look like its own
+behaviour rather than the harness, but that is inferred from two fields and not verified. It
+matters, because under the current rule any framework's incompleteness voids the cell for all
+three. If it holds, c6 will stay VOID after DATA_FRAG even with TickLE at 100%. The rule will need
+an explicit, pre-registered decision about whether one vendor's failure to deliver makes a cell
+incomparable or makes it a loss for that vendor. That decision is not made here.
