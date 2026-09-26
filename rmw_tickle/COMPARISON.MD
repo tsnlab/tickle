@@ -670,6 +670,11 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 
 Table rows 48-51. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
 
+**Current status (2026-09-26):** these are the only rows where TickLE is not first. The re-measurement on
+the current build, what has been ruled out (CPU frequency, by a pre-registered test), what the traces
+show, and the hypotheses being tested are in [`RMW_PERF_PLAN.md`](RMW_PERF_PLAN.md). The text below is the
+history of how the `rmw` comparison was set up, and its figures predate that plan.
+
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
 (`RMW_IMPLEMENTATION` + `rclcpp`), not either framework's own native API:
 
