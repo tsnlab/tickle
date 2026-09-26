@@ -183,6 +183,28 @@ Read against the pre-registration (real if the difference exceeds twice the comb
 regression is gone in `5f70c3cc`. Cell 11 was not re-run at n=10. Its 3-repetition move (+3 us) was
 inside its own ranges.
 
-The fix changed the receive path, so the CPU saving has to be shown to survive it. c1 on `5f70c3cc`
-(receive calls per sample and `stime_s`) is queued. This item closes when that row matches the
-`ef0c7ea0` figures above.
+### c1 on `5f70c3cc`: the saving survives the fix, and item 3 is closed (2026-09-26)
+
+The fix changed the receive path, so the CPU saving had to be shown to survive it. The rows are in
+`results/lat10_recvmmsg_2026-09-26/c1_fix.txt`: 3 repetitions, 0 void. TickLE server:
+
+| TickLE server, c1 | `559b91f6` before | `ef0c7ea0` | `5f70c3cc` (3 reps) | pre-registered |
+|---|---:|---:|---:|---|
+| receive calls per sample | 1.066 | 0.137 | **0.235** | <= 0.8, **met** |
+| `stime_s` | 1.992 | 1.847 | **1.805-1.824** | falls, **met** |
+| `cpu_s_per_Msample` | 2.987 | 2.529 | 2.551-2.569 | - |
+| send Mbps (client) | 115.7 | 116.0 | 113.9-114.5 | - |
+
+How the call count is read. `rx_batch_calls` counts `recvmmsg()` calls only (`hal_linux.c` `rx_fill`).
+Since the fix, the read that ends a wait is a `recvfrom()` that the counter does not see. So the calls
+per sample are `(rx_batch_calls + recv - rx_batch_datagrams) / recv`. For example, rep 1 gives
+(107,311 + 936,321 - 823,932) / 936,321 = 0.235. That is more calls than `ef0c7ea0` made, which is the
+fix's design: one plain read per wake, then batches. It is still 4.5 times fewer than before, and
+`stime_s` is lower than on `ef0c7ea0`.
+
+The client's send rate is about 1.5% below the earlier sessions. Throughput is not this item's
+criterion, and c1's scoring against the vendors is unaffected. The difference is noted and was not
+pursued.
+
+**Item 3 is closed:** the CPU saving holds on `5f70c3cc` and latency does not regress. `rx_batch_full` was
+5-16 per run, so N=32 still never binds, and the sizing choice for N is left to Dev as recorded above.
