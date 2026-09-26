@@ -129,7 +129,7 @@ needed_variants() {
 }
 
 say "=== campaign sweep, $(date -Is), OPTIMIZATION_PLAN.md rev 4 ==="
-say "repo $(git -C "$REPO" rev-parse --short origin/main), ${REPS} reps, -d ${DUR}, out $OUT"
+say "repo $(git -C "$REPO" rev-parse --short "${SHA:-origin/main}"), ${REPS} reps, -d ${DUR}, out $OUT"
 say ""
 # CELLS="1 5 3 4 6" runs only those combinations (1-based, in MATRIX order), keeping each cell's
 # number so its label still matches the published c-numbers. Added 2026-09-26 to re-establish c6
@@ -157,7 +157,8 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 # --- build every variant once, up front (section 7's time budget depends on this) ---------------
-SHA="$(git -C "$REPO" rev-parse origin/main)"
+# SHA=<full sha> pins the build (2026-09-26), for runs queued behind others while main keeps moving.
+SHA="${SHA:-$(git -C "$REPO" rev-parse origin/main)}"
 say "--- deploying $SHA and building $(needed_variants | wc -l) variant(s) x 3 frameworks on both rpis ---"
 VARIANTS="$(needed_variants | paste -sd' ')"
 # `wait` with no arguments returns 0 however the background jobs ended, so a BUILD FAILED on either

@@ -633,3 +633,34 @@ The core subscriber callback passes `seq_no` as `uint16_t` (`tt_SUBSCRIBER_CALLB
 messages**, which already breaks the `rmw/types.h` contract (`psn2 > psn1`, gap = messages sent in
 between) on any long-running topic, with or without fragments. The rmw-side contiguous message
 counter of 13.2 fixes it, so that counter is required regardless of this change.
+
+### 13.6 As built: `bceddf2a` (Dev), and where it differs from 13.4
+
+- **KEEP_LAST depth counts datagrams, not samples.** This overrules 13.4 item 1. Every index lookup,
+  eviction and backlog walk uses depth as the ring modulus, so a separate sample bound would touch
+  all of them for no change in behaviour. What is guaranteed instead: KEEP_LAST **evicts whole
+  samples**, so the old end is always a sample's first datagram. Depth is documented as datagrams.
+  rmw's FRAG step sizes depth as history x fragments, so ROS's per-sample meaning of depth is kept at
+  the rmw layer. For a core user this is a semantic difference from DDS, and it is stated here so
+  that it is a known one. The benchmark's KEEP_LAST cell (c9) is p1 and never fragments, so it is
+  unaffected.
+- Receive side as described in 13.4, with two fixes found in testing:
+  - **Reorder slots are offset per writer.** Every writer counts from 1, so two writers at similar
+    seqs collided on every fragment.
+  - **A continuation that overtakes its writer's very first datagram is left unrecorded and is
+    requested again.** It carries no endpoint id, so nothing is tracking that writer yet. Only a
+    writer's first sample is exposed to this.
+- Each of these has a test that fails under mutation: stored-before-recorded, torn-sample drop after
+  a give-up, KEEP_ALL counting a sample's datagrams (`blocked_datagrams`), per-writer slot offset,
+  and first-sample CONT. A random loss/reorder/duplicate drive of 20,000 samples under ASan/UBSan
+  found no memory errors and no torn samples.
+- Unit lossy-link simulation, 5% loss both ways, datagrams sent per sample, measured against the
+  per-datagram model: 1 fragment 1.06 vs 1.05, 2 fragments 2.12 vs 2.11, 4 fragments 4.25 vs 4.21,
+  10 fragments 10.57 vs 10.53. The whole-sample model predicts 4.91 and 16.70 for the last two.
+- rmw has no fragments yet, since its `tt_MAX_SAMPLE_LENGTH` defaults to the datagram, so its psn
+  does not change until its FRAG step brings the 13.2 counter.
+
+The rig runs queue in order behind the 12-cell campaign: FastDDS's delayed counter read, the
+4-fragment "before" arm (pinned to `3f564c7b`, whose core is identical to `8c4dad8f`'s), the "after"
+arm on `bceddf2a`, then cells 1-6 on `bceddf2a`, pinned. Those last are the p1-p4 figures the
+COMPARISON.MD table takes.
