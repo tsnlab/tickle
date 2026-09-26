@@ -2935,6 +2935,12 @@ Recorded as one entry rather than scattered across the commits that happened to 
 
 **Consequence for every same-host number this project holds, restated because it is easy to under-count.** The failure was not confined to the runs that visibly delivered nothing. Roughly 10% of the stream went to the sender in runs that *passed and were recorded as clean*. That means every same-host `rmw_tickle` figure - `COMPARISON.MD` §5's latency table, the `compare_rmw_perf.sh` comparisons, and the CI benchmark history on `gh-pages` accumulated before `82a6a02d` - was taken through a transport that was quietly misdelivering a tenth of its traffic. Those numbers are not merely imprecise, they are measured through a different system than the one that exists now. TickLE Plan's own re-measurement obligation, to be run in one rig session once A2 lands: `COMPARISON.MD` §3b's Mbps cells for all three frameworks under `taskset -c 1-3` (lifting the provisional ◊ marks), and the §5 same-host latency table. The two-host HIL figures are unaffected - two hosts never shared a port - and are the reason the rig's own scenario results still stand.
 
+### Discovery summary announce (2026-09-26, the user's decision)
+
+The periodic announce shrinks to a small summary (node ID and generation), and a receiver that sees an
+unknown generation pulls the full list. The design, risks and pre-registered measurements are in
+[`DISCOVERY_PLAN.md`](DISCOVERY_PLAN.md).
+
 ## Build order
 
 0 and 1 in parallel → 2 → 3 and 4 (parallel) and 5 (parallel, only needs 2) → 6 (only needs 0) →
