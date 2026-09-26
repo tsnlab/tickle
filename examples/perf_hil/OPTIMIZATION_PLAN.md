@@ -758,3 +758,12 @@ samples, send ns per sample:
 - The summary-skip mutants still fail with D5 in place: an addressed send counted as everyone, a summary alone
   counted as traffic, and no ride.
 - The Pi `-c -R` check follows the 08:00 report.
+
+**D5 on the Pi (Plan, 2026-09-27, `core_cost_pi.sh -c -R`, 10 rounds, `/tmp/core_cost_pi_d5_2026-09-27.txt`),
+partly met.**
+- Send vs `8f3811f4`: parent `19bde1fd` +5.75 +- 1.02 ns, D5 `6f019b1d` +3.76 +- 1.25 ns. D5 moves the send about
+  -2 ns on ARM, where "no residual" was predicted.
+- recv is -30 / -29 ns in both.
+- D5 stays on main: it is behaviour-neutral and not WORSE.
+- **Open, not urgent:** ~+4 ns of ARM send residual since `8f3811f4` remains unattributed. The PC shows none of it.
+  It is apart from the campaign client's +40-50 ns, which is outside the core loop (WIRE_PLAN 8.6).
