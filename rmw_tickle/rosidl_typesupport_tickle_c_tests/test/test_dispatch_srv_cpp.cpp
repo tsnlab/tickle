@@ -31,7 +31,7 @@
 #include "rosidl_typesupport_tickle_c_tests/srv/simple_service.h"   // the C structs to_tickle/from_tickle actually use
 #include "rosidl_typesupport_tickle_c_tests/srv/simple_service.hpp" // the C++ type a real rclcpp app passes
 
-int main() {
+auto main() -> int {
     // The exact handle a real rclcpp::Client<SimpleService>()/Service<SimpleService>() call
     // resolves internally, before ever reaching rmw_create_client()/rmw_create_service() - see
     // rosidl_typesupport_cpp/service_type_support.hpp's own declaration.
