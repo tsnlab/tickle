@@ -30,9 +30,24 @@ sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
 say "=== syscall batching headroom, $(date -Is) ==="
 say "head=$(git -C "$REPO" rev-parse --short origin/main)"
 
+# Build both first: `git clean -fdqx` from earlier experiments leaves only sources behind, and the
+# first version of this script straced a framework whose binaries did not exist. strace then left
+# the PREVIOUS framework's counts in /tmp/sc_cli.txt and the script printed them again under the new
+# name - two byte-identical blocks that would read as "the two frameworks behave the same". The
+# md5 check below is what makes that impossible to publish rather than merely unlikely.
+for fw in tickle cyclonedds; do
+    say ""; say "--- building $fw ---"
+    for h in "$CLIENT" "$SERVER"; do
+        sh_ "$h" "cd ~/tickle/examples/perf_hil/$fw && TICKLE_CORE_BUILD=release ./build.sh reliable_throughput p1 >/tmp/sc_build_$fw.log 2>&1 || { echo BUILD-FAIL; tail -5 /tmp/sc_build_$fw.log; }" | sed 's/^/    /' | tee -a "$OUT"
+    done
+done
+
+prev_cli=""; prev_srv=""
 for fw in tickle cyclonedds; do
     dir="tickle/examples/perf_hil/$fw/reliable_throughput_p1"
     say ""; say "--- $fw ---"
+    sh_ "$CLIENT" "rm -f /tmp/sc_cli.txt"; sh_ "$SERVER" "rm -f /tmp/sc_srv.txt"
+    if ! sh_ "$CLIENT" "test -x ~/$dir/client"; then say "  NO CLIENT BINARY at $dir - skipping, not reporting"; continue; fi
     sh_ "$SERVER" "pkill -INT -x server" >/dev/null 2>&1 || true; sleep 2
     sh_ "$SERVER" "cd ~/$dir; nohup strace -c -f -o /tmp/sc_srv.txt taskset -c 1-3 ./server -d 12 -Q > /tmp/sc_srv.log 2>&1 < /dev/null &"
     sleep 3
@@ -41,6 +56,13 @@ for fw in tickle cyclonedds; do
     sent=$(grep -oE 'sent=[0-9]+' <<<"$res" | head -1 | cut -d= -f2)
     recv=$(sh_ "$SERVER" "grep -m1 '^RESULT:' /tmp/sc_srv.log" 2>/dev/null | grep -oE 'recv=[0-9]+' | head -1 | cut -d= -f2)
     say "  client sent=$sent   server recv=${recv:-?}"
+    cli_md5=$(sh_ "$CLIENT" "md5sum /tmp/sc_cli.txt 2>/dev/null | cut -d' ' -f1")
+    srv_md5=$(sh_ "$SERVER" "md5sum /tmp/sc_srv.txt 2>/dev/null | cut -d' ' -f1")
+    if [ -z "$cli_md5" ] || [ "$cli_md5" = "$prev_cli" ] || [ "$srv_md5" = "$prev_srv" ]; then
+        say "  IDENTITY FAIL: strace output missing or identical to the previous framework's - not reporting"
+        continue
+    fi
+    prev_cli="$cli_md5"; prev_srv="$srv_md5"
     say "  client syscalls:"
     sh_ "$CLIENT" "awk 'NR<=4 || /send|recv|poll|ioctl|futex/' /tmp/sc_cli.txt" | sed 's/^/    /' | tee -a "$OUT"
     say "  server syscalls:"
