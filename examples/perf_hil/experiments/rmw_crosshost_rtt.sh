@@ -57,6 +57,19 @@ lib_for() {
     esac
 }
 
+# TRACE=1 (2026-09-26): one repetition of bench/best_effort per rmw, with the pong under strace -f -tt -T,
+# the traces copied to $OUT.traces/. For decomposing where each rmw spends a round trip, not for timing:
+# strace slows every syscall, so its RTTs are never reported as figures. SKIP_BUILD=1 reuses the rig's
+# build only if both Pis are at exactly $SHA and the binaries exist.
+TRACE=${TRACE:-0}
+if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
+if [ "${SKIP_BUILD:-0}" = 1 ]; then
+    for h in "$CLIENT" "$SERVER"; do
+        at=$(sh_ "$h" "git -C \$HOME/tickle rev-parse HEAD; test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/pong_node && echo bin-ok")
+        case "$at" in "$SHA"*bin-ok*) ;; *) say "SKIP_BUILD refused: $h is not at $SHA with binaries built"; exit 1 ;; esac
+    done
+    say "--- SKIP_BUILD: both rpis already at $SHA with binaries ---"
+else
 say "--- building rmw_tickle + rmw_perf_pingpong (Release) at $SHA on both rpis ---"
 pids=()
 for h in "$CLIENT" "$SERVER"; do
@@ -94,14 +107,21 @@ for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/pong_node" || bad=1
 done
 [ "$bad" = 0 ] || { say "BUILD FAILED - not running"; exit 1; }
+fi
 
 BIN=/home/ci/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong
 one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local rmw="$1" msg="$2" qos="$3" rep="$4" flag="" env pongpid maps res verdict=ok
     [ "$qos" = reliable ] && flag="--reliable"
     env=$(env_for "$rmw")
-    pongpid=$(sh_ "$SERVER" "$env; nohup taskset -c 1-3 $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    local pre=""
+    [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
+    pongpid=$(sh_ "$SERVER" "$env; nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
     sleep 4
+    if [ "$TRACE" = 1 ]; then
+        # $! is strace; the pong is its child, found by parentage and verified by /proc/PID/exe, not by name
+        pongpid=$(sh_ "$SERVER" "for c in \$(cat /proc/$pongpid/task/$pongpid/children 2>/dev/null); do [ \"\$(readlink /proc/\$c/exe)\" = $BIN/pong_node ] && echo \$c; done" | head -1)
+    fi
     maps=$(sh_ "$SERVER" "grep -o '/[^ ]*librmw_[a-z_]*\.so' /proc/$pongpid/maps 2>/dev/null | sort -u | tr '\n' ' '" || true)
     res=$(sh_ "$CLIENT" "$env; timeout 60 taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag -m $msg 2>/dev/null" | grep '^RESULT:' || true)
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
@@ -110,10 +130,15 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     case "$res" in *"framework=$rmw "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
     say "$rmw $msg $qos rep$rep | $verdict | ${res#RESULT: }"
+    if [ "$TRACE" = 1 ]; then
+        sleep 1; mkdir -p "$OUT.traces"
+        scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
+    fi
 }
 for rep in $(seq 1 "$REPS"); do
     for msg in $MSGS; do
-        for qos in best_effort reliable; do
+        qoses="best_effort reliable"; [ "$TRACE" = 1 ] && qoses=best_effort
+        for qos in $qoses; do
             for rmw in rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp; do
                 one "$rmw" "$msg" "$qos" "$rep"
             done

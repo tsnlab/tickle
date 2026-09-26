@@ -35,8 +35,11 @@ same session, so a row is always comparable. Across rows of different letters it
   transport `maxMessageSize` set to 1472**, the user's decision for a fair evaluation. This makes
   FastDDS fragment in RTPS instead of handing the kernel oversized datagrams. **Totals: WIN 27,
   DRAW/TIE 3, LOSE 0, and every framework delivered everything**, including at P4 under 5% loss.
-- **`S` rows** are the 2026-09-24/25 QoS-mechanics sweep and the old cross-host `rmw` measurement.
-  Neither campaign covered them.
+- **`M` rows** are the cross-host `rmw` round trip of 2026-09-26 (`rmw_crosshost_rtt.sh`, `4342a5d0`).
+  Each of `rmw_tickle`, `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp` is driven through `rclcpp` by the
+  same ping/pong nodes, on the eth0 link only, 3 repetitions interleaved, 100 round trips each. Every
+  row's pong process was checked to have mapped the expected `librmw_*.so`. 36 rows, 0 void.
+- **`S` rows** are the 2026-09-24/25 QoS-mechanics sweep. Neither campaign covered them.
 
 Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` and
 `campaign_tuned_fastdds_2026-09-26*`.
@@ -97,8 +100,10 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 46 | LIVELINESS detection | lease 2.0 s | ⚪ not comparable | ⚪ 1999 ms | ⚪ 2000 ms | S |
 | 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | S |
 | | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | | |
-| 48 | RTT, BEST_EFFORT | Bench | ❌ 0.524 | 0.516 | ✅ **0.440** | S |
-| 49 | RTT, RELIABLE | Bench | ❌ 0.523 | ❌ 0.523 | ✅ **0.449** | S |
+| 48 | RTT mean, BEST_EFFORT | Bench (64 B) | ❌ 0.508 | 0.472 | ✅ **0.425** | M |
+| 49 | RTT mean, RELIABLE | Bench (64 B) | ❌ 0.504 | 0.490 | ✅ **0.432** | M |
+| 50 | RTT mean, BEST_EFFORT | Array1k | ❌ 0.515 | 0.511 | ✅ **0.448** | M |
+| 51 | RTT mean, RELIABLE | Array1k | 0.506 | ❌ 0.523 | ✅ **0.443** | M |
 
 **FastDDS as shipped (`maxMessageSize` 65,500), at the same cells, for reference.** Aligned campaign,
 same QoS:
@@ -113,8 +118,12 @@ loss. Both are shown so neither configuration's weakness is hidden.
 
 ### Where TickLE does not come first, stated up front
 
-- **Rows 48-49, the `rmw` layer.** CycloneDDS was faster through ROS 2 (~0.44 ms against ~0.52 ms).
-  Those rows are older than every core change on this page, and they are being re-measured now.
+- **Rows 48-51, the `rmw` layer: CycloneDDS is faster through ROS 2, by about 0.08 ms per round trip**
+  (0.425-0.448 ms against TickLE's 0.504-0.515). This was re-measured on the current build, and the gap
+  barely moved from the old 0.52 ms. TickLE's *core* wins the same round trip natively (0.207 ms
+  against CycloneDDS's 0.259, row 1), so `rmw_tickle`'s own layer adds about 0.30 ms where
+  CycloneDDS's adds about 0.17. That difference is the target of the `rmw_tickle` optimisation, which
+  is the next step of the user's instruction.
 - **Row 5** is a draw by construction, not a win. A 10 ms injected delay swamps a 0.2 ms round
   trip, so that cell measures `netem`. The next row, the tail, still separates the three.
 
@@ -659,7 +668,7 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 
 ### 2.7 The rmw layer
 
-Table rows 48-49. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
+Table rows 48-51. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
 
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
 (`RMW_IMPLEMENTATION` + `rclcpp`), not either framework's own native API:
