@@ -1,0 +1,54 @@
+=== syscall batching headroom, 2026-09-26T10:39:28+09:00 ===
+head=c0d333c7
+
+--- building tickle ---
+
+--- building cyclonedds ---
+
+--- tickle ---
+  client sent=   server recv=94143
+  client syscalls:
+    % time     seconds  usecs/call     calls    errors syscall
+    ------ ----------- ----------- --------- --------- ------------------
+     89.16    0.886089           8    102746           sendto
+      7.54    0.074911           9      8285           ppoll
+      2.87    0.028476           4      5927      3111 recvfrom
+      0.02    0.000169           9        18           recvmsg
+      0.00    0.000008           8         1           ioctl
+      0.00    0.000006           6         1           futex
+  server syscalls:
+    % time     seconds  usecs/call     calls    errors syscall
+    ------ ----------- ----------- --------- --------- ------------------
+     95.13    0.687954           4    148448     49958 recvfrom
+      3.62    0.026178           9      2828           sendto
+      0.77    0.005590          10       543         1 ppoll
+      0.02    0.000137           7        18           recvmsg
+      0.00    0.000007           7         1           ioctl
+      0.00    0.000000           0         1           futex
+
+--- cyclonedds ---
+  client sent=56215   server recv=56215
+  client syscalls:
+    % time     seconds  usecs/call     calls    errors syscall
+    ------ ----------- ----------- --------- --------- ------------------
+     73.78    4.214448         794      5307       988 futex
+     16.80    0.959386        1803       532           epoll_pwait
+      9.31    0.531791           9     57925           sendmsg
+      0.05    0.003071           5       538           recvmsg
+      0.00    0.000153          30         5           epoll_ctl
+      0.00    0.000019           9         2           sendto
+      0.00    0.000017           2         6         3 ioctl
+      0.00    0.000014          14         1           epoll_create1
+  server syscalls:
+    % time     seconds  usecs/call     calls    errors syscall
+    ------ ----------- ----------- --------- --------- ------------------
+     95.48   11.485651          66    173760     34052 futex
+      2.49    0.299433           7     41548           recvmsg
+      1.92    0.230736           5     41540           epoll_pwait
+      0.07    0.008232          15       533           sendmsg
+      0.00    0.000207          41         5           epoll_ctl
+      0.00    0.000036          36         1           epoll_create1
+      0.00    0.000020           3         6         3 ioctl
+      0.00    0.000000           0         2           sendto
+
+=== done ===
