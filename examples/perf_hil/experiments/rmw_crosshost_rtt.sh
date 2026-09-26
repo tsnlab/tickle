@@ -153,7 +153,14 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         pongpid=$(sh_ "$SERVER" "for c in \$(cat /proc/$pongpid/task/$pongpid/children 2>/dev/null); do [ \"\$(readlink /proc/\$c/exe)\" = $BIN/pong_node ] && echo \$c; done" | head -1)
     fi
     maps=$(sh_ "$SERVER" "grep -o '/[^ ]*librmw_[a-z_]*\.so' /proc/$pongpid/maps 2>/dev/null | sort -u | tr '\n' ' '" || true)
-    res=$(sh_ "$CLIENT" "$env; timeout 60 taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag -m $msg 2>/dev/null" | grep '^RESULT:' || true)
+    # CPU and peak memory, measured from outside and identically for all three (2026-09-26): the ping is
+    # wrapped in /usr/bin/time, the pong's /proc/PID/stat and /status are read just before it is stopped.
+    # The pong's figures cover its whole life (4 s idle before the ping starts, 10 s of pings), so they are
+    # per-process totals, not per-message costs, and compare only between rmw implementations run alike.
+    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag -m $msg 2>/dev/null; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^ping_utime_s' | tr '\n' ' ' || true)
+    local pongcpu
+    pongcpu=$(sh_ "$SERVER" "[ -d /proc/$pongpid ] && awk -v t=\$(getconf CLK_TCK) '{printf \"pong_cpu_s=%.2f \", (\$14+\$15)/t}' /proc/$pongpid/stat && awk '/VmHWM/{printf \"pong_maxrss_kb=%s\", \$2}' /proc/$pongpid/status" 2>/dev/null || true)
+    res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
     case "$maps" in *"$(lib_for "$rmw")"*) ;; *) verdict="VOID(pong loaded: ${maps:-nothing})" ;; esac
