@@ -54,6 +54,11 @@ STAMPS=${STAMPS:-0}
 # (RMW_PERF_PLAN 8.1). Unset, the ping is invoked exactly as before (no --poll-sleep-us, i.e. 100). Set, each
 # poll row passes --poll-sleep-us N, is labelled poll_sleep_us=N, and asserts the LOOP line reports that N.
 POLL_SLEEPS=${POLL_SLEEPS:-}
+# BPF_ARMS="off on" (2026-09-26, RMW_PERF_PLAN 8.2): "on" attaches experiments/pong_rx_split.bt to the pong under
+# sudo bpftrace (granted by the user that day), one line per ping: the kernel receive path from the NIC IRQ to the
+# receive syscall's return, and the handoff to the thread that sends the reply. Collected into $OUT.bpf/<stem>.txt.
+# "off" rows are the control for bpftrace's own cost (on - off RTT, block mode).
+BPF_ARMS=${BPF_ARMS:-off}
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -84,7 +89,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -165,6 +170,13 @@ for h in "$CLIENT" "$SERVER"; do
 done
 [ "$bad" = 0 ] || { say "BUILD FAILED - not running"; exit 1; }
 fi
+BPF_IRQ=""
+case " $BPF_ARMS " in *" on "*)
+    scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/pong_rx_split.bt" "ci@$SERVER:/tmp/rmwx_pong_rx_split.bt"
+    BPF_IRQ=$(sh_ "$SERVER" "awk -F: '/eth0/ {gsub(/ /, \"\", \$1); print \$1}' /proc/interrupts")
+    [ -n "$BPF_IRQ" ] || { say "bpftrace: no eth0 IRQ found on the pong host - not running"; exit 1; }
+    say "--- bpftrace arm: pong_rx_split.bt md5 $(md5sum "$REPO/examples/perf_hil/experiments/pong_rx_split.bt" | cut -c1-12), eth0 IRQ $BPF_IRQ ---" ;;
+esac
 case " $SYSSTAMP_ARMS " in *" on "*)
     for h in "$CLIENT" "$SERVER"; do
         scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/sysstamp/sysstamp.c" "ci@$h:/tmp/rmwx_sysstamp.c"
@@ -255,7 +267,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     env=$(env_for "$rmw")
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}" sstenv="" stampflag=""
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}" sstenv="" stampflag=""
     local stamprm=""
     # removed before each start too, so an interrupted row's file can never be collected as this row's
     [ "$STAMPS" = 1 ] && stampflag="--stamps /tmp/rmwx_stamps.txt" && stamprm="rm -f /tmp/rmwx_stamps.txt;"
@@ -272,6 +284,13 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         pongpid=$(sh_ "$SERVER" "for c in \$(cat /proc/$pongpid/task/$pongpid/children 2>/dev/null); do [ \"\$(readlink /proc/\$c/exe)\" = $BIN/pong_node ] && echo \$c; done" | head -1)
     fi
     maps=$(sh_ "$SERVER" "grep -o '/[^ ]*librmw_[a-z_]*\.so' /proc/$pongpid/maps 2>/dev/null | sort -u | tr '\n' ' '" || true)
+    local bpfpid=""
+    if [ "$BPF" = on ]; then
+        # timeout's own PID from its launch ($!): stopping it after the ping stops bpftrace through sudo. 40 s is
+        # only the ceiling if this script dies; the ping takes ~12 s.
+        bpfpid=$(sh_ "$SERVER" "rm -f /tmp/rmwx_bpf.txt; nohup timeout 40 sudo -n bpftrace /tmp/rmwx_pong_rx_split.bt $pongpid $BPF_IRQ > /tmp/rmwx_bpf.txt 2>&1 < /dev/null & echo \$!")
+        sh_ "$SERVER" "for i in \$(seq 1 20); do grep -q '^# pong_rx_split' /tmp/rmwx_bpf.txt 2>/dev/null && break; sleep 0.5; done" || true
+    fi
     # CPU and peak memory, measured from outside and identically for all three (2026-09-26): the ping is
     # wrapped in /usr/bin/time, the pong's /proc/PID/stat and /status are read just before it is stopped.
     # The pong's figures cover its whole life (4 s idle before the ping starts, 10 s of pings), so they are
@@ -290,6 +309,12 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # rmw_tickle's publisher registered.
     res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
     res="$res $procs"
+    if [ "$BPF" = on ]; then
+        sh_ "$SERVER" "[ \"\$(readlink /proc/$bpfpid/exe)\" = /usr/bin/timeout ] && kill -TERM $bpfpid; for i in \$(seq 1 20); do [ -d /proc/$bpfpid ] || break; sleep 0.5; done" || true
+        mkdir -p "$OUT.bpf"
+        scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_bpf.txt" "$OUT.bpf/$stem.txt" 2>/dev/null || say "  (no bpftrace output)"
+        grep -q '^# pong_rx_split' "$OUT.bpf/$stem.txt" 2>/dev/null || { [ "$verdict" = ok ] && verdict="VOID(bpftrace did not attach)"; }
+    fi
     local pongcpu
     # pong_cpu_ns: summed run time of every pong thread from /proc/PID/task/*/schedstat (ns), because the
     # tick-based utime+stime (pong_cpu_s, 10 ms granularity) cannot separate rmw_tickle from CycloneDDS.
@@ -343,7 +368,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         case "$res" in *"LOOP: poll_sleep_us=$PSLEEP "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not sleep $PSLEEP us)" ;; esac
     fi
     case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -375,8 +400,11 @@ for rep in $(seq 1 "$REPS"); do
                 PSLEEP=""; [ "$PS" != - ] && PSLEEP="$PS"
                 for SST in $SYSSTAMP_ARMS; do
                   SSTSTEM=""; [ "$SST" = on ] && SSTSTEM="_sst"
-                  for rmw in $RMWS; do
-                    one "$rmw" "$msg" "$qos" "$rep"
+                  for BPF in $BPF_ARMS; do
+                    BPFSTEM=""; [ "$BPF" = on ] && BPFSTEM="_bpf"
+                    for rmw in $RMWS; do
+                      one "$rmw" "$msg" "$qos" "$rep"
+                    done
                   done
                 done
               done
