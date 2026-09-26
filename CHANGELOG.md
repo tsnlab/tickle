@@ -292,6 +292,11 @@ number, `tt_VERSION`, which moves independently.
   unicast (more than `tt_UNICAST_PEER_THRESHOLD` requests in one tick: one broadcast). Changes are still
   broadcast at once. New `tt_Node.discovery_reply_tick`/`discovery_reply_count`. Nodes of version 7 and 8
   do not interoperate. See DESIGN.md's "The periodic summary".
+  An unanswered request is re-sent every `tt_DISCOVERY_REQUEST_RETRY` (10 ms), `tt_DISCOVERY_REQUEST_ATTEMPTS`
+  (4) times in all, from a fixed `tt_Node.discovery_requests[tt_DISCOVERY_PENDING_REQUESTS]` table.
+- **A node is presumed dead after `tt_LIVELINESS_SILENCE_NS`** (new, config.h): 3.5 update intervals of
+  silence instead of 3, so two lost summaries in a row can no longer declare a live node dead when the
+  nodes' schedulers drift across each other.
 - **Wire protocol `tt_VERSION` 6 -> 7.** The discovery announce is now a `DATA` sample of a built-in
   endpoint (`tt_DISCOVERY_ENDPOINT_ID`, `tt_DISCOVERY_ENTITY_ID`) whose `seq_no` is the announce
   generation (the low 32 bits of `last_modified`), with a `tt_AnnounceHeader` + entities payload. A

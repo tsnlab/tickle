@@ -438,10 +438,14 @@ on the discovery endpoint:
   as an announce does, so leases and `tt_NODE_UPDATE_INTERVAL` are unchanged.
 - **A generation already applied** makes a summary liveliness only; nothing is sent back.
 - **Any other generation** - a change whose broadcast was lost, a node that joined later, one that
-  restarted, an announce left incomplete - draws one request. The request is re-sent only on a later
-  summary that still shows an unapplied generation, so the request rate is the summary rate: a lost
-  request or reply costs one interval, and nothing can storm. No per-peer "request outstanding" state
-  is kept; the summary cadence is the bound.
+  restarted, an announce left incomplete - draws one request. While the list has not arrived, the
+  request is re-sent every `tt_DISCOVERY_REQUEST_RETRY` (10 ms), `tt_DISCOVERY_REQUEST_ATTEMPTS` (4)
+  times in all; a summary arriving meanwhile adds nothing. After that the next summary starts over.
+  A lost request or reply therefore costs milliseconds, not the rest of an interval, and nothing can
+  storm: at most four requests per peer per summary. Open requests are kept in a fixed table of
+  `tt_DISCOVERY_PENDING_REQUESTS` (8) slots served by one scheduler entry; a request that finds the
+  table full is still sent, only not retried. Added after M5 (5% loss) saw a node wait 2 s for a list
+  across two losses, where the first version re-asked only on the next summary.
 - **A request is answered unicast**, up to `tt_UNICAST_PEER_THRESHOLD` in one `tt_NODE_TX_INTERVAL`
   tick. One more is answered by a single broadcast of the list, and the rest of that tick's requests
   by nothing further - so a burst of new nodes costs one broadcast, not one unicast each.
@@ -450,6 +454,13 @@ on the discovery endpoint:
   The pull only covers what the push missed.
 - A request or answer goes out from an empty transmit buffer: anything batched there is flushed as
   the broadcast it was going to be.
+- **A node is presumed dead after `tt_LIVELINESS_SILENCE_NS`** of silence: `tt_LIVELINESS_MISS_THRESHOLD`
+  (3) intervals and half of one more, so exactly three missed summaries. The limit used to be a whole
+  number of intervals, which put it where the next summary lands after only two losses; every node's
+  periodic tasks run a little late and reschedule from when they ran, so the check and that summary
+  drift across each other and either can come first. M5 showed it as false deaths at 5% loss, now that
+  one summary a second is the only sign of life an idle node gives (a v7 announce of 32 endpoints was
+  two datagrams, so it took twice the losses).
 
 `tests/test_peer_discovery.c` checks each rule on two simulated nodes, with the loss that exercises
 it, and each check was run against a code change that breaks its rule.

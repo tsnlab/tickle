@@ -394,7 +394,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     // effect on the peer/update_seen tables, not the timeout arithmetic itself (already covered by
     // tests/test_liveliness.c).
     node.update_last_seen[REMOTE_NODE_ID] = 0;
-    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1, NULL);
+    check_liveliness(&node, tt_LIVELINESS_SILENCE_NS + 1, NULL);
     EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]); // confirms the false-positive cleanup actually ran
 
     // Same as above - re-set so the recovering peer's own reply_with_own_announce() (a real, but
@@ -447,7 +447,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
 
     node.update_last_seen[REMOTE_NODE_ID] = 0;
-    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1, NULL);
+    check_liveliness(&node, tt_LIVELINESS_SILENCE_NS + 1, NULL);
     EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
 
     node.update_seen[REMOTE_NODE_ID] = true; // suppress reply_with_own_announce()'s own unrelated send, see above

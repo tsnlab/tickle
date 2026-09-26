@@ -125,7 +125,7 @@ static void test_data_refreshes_node_liveliness(void) {
     EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
 
     // Far past the threshold, but DATA arrived just now.
-    uint64_t late = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) * 10;
+    uint64_t late = tt_LIVELINESS_SILENCE_NS * 10;
     test_mock_now = late;
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     uint32_t len =
@@ -147,7 +147,7 @@ static void test_acknack_refreshes_node_liveliness(void) {
 
     receive_update(&node, 0, 100);
 
-    uint64_t late = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) * 10;
+    uint64_t late = tt_LIVELINESS_SILENCE_NS * 10;
     test_mock_now = late;
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_AckNackHeader)];
     uint32_t len = liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_ACKNACK,
@@ -181,13 +181,13 @@ static void test_traffic_does_not_move_the_detection_schedule(void) {
     EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
 
     // Just inside three intervals from the ANNOUNCE: alive, because the announce clock governs.
-    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) - 1, NULL);
+    check_liveliness(&node, tt_LIVELINESS_SILENCE_NS - 1, NULL);
     EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
 
     // Just past it: dead. The traffic veto has long since expired (its guard is one interval and
     // the last packet was two intervals ago), so it cannot hold a genuinely silent node alive -
     // and, being the smaller of the two windows, it can never delay this moment either.
-    check_liveliness(&node, ((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1, NULL);
+    check_liveliness(&node, tt_LIVELINESS_SILENCE_NS + 1, NULL);
     EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
@@ -202,7 +202,7 @@ static void test_self_sent_packet_does_not_refresh(void) {
     node.update_seen[LOCAL_NODE_ID] = true;
     node.update_last_seen[LOCAL_NODE_ID] = 0;
 
-    uint64_t late = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) * 10;
+    uint64_t late = tt_LIVELINESS_SILENCE_NS * 10;
     test_mock_now = late;
     uint8_t buf[sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)];
     uint32_t len =
@@ -212,8 +212,8 @@ static void test_self_sent_packet_does_not_refresh(void) {
     EXPECT_EQ_U32(0, (uint32_t)node.update_last_seen[LOCAL_NODE_ID]);
 }
 
-// A node heard from once, then never again: once tt_LIVELINESS_MISS_THRESHOLD full intervals
-// pass with no announce at all, it must be forgotten - peer-table entries dropped and update_
+// A node heard from once, then never again: once tt_LIVELINESS_SILENCE_NS passes with no
+// announce at all, it must be forgotten - peer-table entries dropped and update_
 // seen[] cleared so a later announce from the same id is treated as first contact again.
 static void test_expires_peer_after_missed_intervals(void) {
     struct tt_Node node;
@@ -225,7 +225,7 @@ static void test_expires_peer_after_missed_intervals(void) {
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
 
-    uint64_t past_threshold = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1;
+    uint64_t past_threshold = tt_LIVELINESS_SILENCE_NS + 1;
     check_liveliness(&node, past_threshold, NULL);
 
     EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
@@ -242,7 +242,7 @@ static void test_does_not_expire_before_threshold(void) {
 
     receive_update(&node, 0, 100);
 
-    uint64_t before_threshold = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) - 1;
+    uint64_t before_threshold = tt_LIVELINESS_SILENCE_NS - 1;
     check_liveliness(&node, before_threshold, NULL);
 
     EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);

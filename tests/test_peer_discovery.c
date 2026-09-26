@@ -571,11 +571,20 @@ static void duo_capture(const void* buf, size_t len) {
     }
 }
 
+// How late each node's scheduler runs a due entry, as a real poll wake-up is. A periodic entry reschedules
+// from the time it actually ran, so a node's lateness accumulates into a drift of its own.
+static uint64_t duo_late[3];
+
 static void duo_run_due(struct tt_Node* node) {
     bool has_next = false;
     uint64_t next = 0;
     duo_acting = node->id;
-    while (run_due_entry(node, test_mock_now, &has_next, &next)) {
+    while (true) {
+        uint64_t head = UINT64_MAX;
+        if (!sched_next_time(node, &head) || head + duo_late[node->id] > test_mock_now) {
+            return;
+        }
+        (void)run_due_entry(node, test_mock_now, &has_next, &next);
     }
 }
 
@@ -599,8 +608,12 @@ static void duo_run_until(struct tt_Node* one, struct tt_Node* two, uint64_t unt
     while (true) {
         uint64_t next_one = UINT64_MAX;
         uint64_t next_two = UINT64_MAX;
-        (void)sched_next_time(one, &next_one);
-        (void)sched_next_time(two, &next_two);
+        if (sched_next_time(one, &next_one)) {
+            next_one += duo_late[1];
+        }
+        if (sched_next_time(two, &next_two)) {
+            next_two += duo_late[2];
+        }
         uint64_t next = next_one < next_two ? next_one : next_two;
         if (next > until) {
             test_mock_now = until;
@@ -703,6 +716,7 @@ static void duo_start(struct tt_Node* one, struct tt_Node* two) {
     duo_seen_send_to = 0;
     duo_drop = NULL;
     memset(duo_sent, 0, sizeof(duo_sent));
+    memset(duo_late, 0, sizeof(duo_late));
     duo_reset_counts();
     init_node(one);
     init_node(two);
@@ -818,9 +832,10 @@ static void test_a_missed_change_is_pulled_on_the_next_summary(void) {
     duo_stop();
 }
 
-// Rule 3's bound (DISCOVERY_PLAN.md section 4, first risk): a node whose lists never arrive is asked once
-// per summary - never more - and the asking stops as soon as a list gets through.
-static void test_requests_come_one_per_summary_until_a_list_arrives(void) {
+// Rule 3's bound (DISCOVERY_PLAN.md section 4, first risk): a node whose lists never arrive is asked
+// tt_DISCOVERY_REQUEST_ATTEMPTS times per summary - the request and its retries, never more - and the asking
+// stops as soon as a list gets through.
+static void test_requests_are_bounded_per_summary_until_a_list_arrives(void) {
     static struct tt_Node one;
     static struct tt_Node two;
     duo_start(&one, &two);
@@ -835,7 +850,7 @@ static void test_requests_come_one_per_summary_until_a_list_arrives(void) {
     duo_run_until(&one, &two, test_mock_now + (5 * tt_SECOND));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
     EXPECT_TRUE(duo_summaries[1] >= 4);
-    EXPECT_EQ_INT(duo_summaries[1], duo_requests[2]);     // one request per summary
+    EXPECT_EQ_INT(duo_summaries[1] * tt_DISCOVERY_REQUEST_ATTEMPTS, duo_requests[2]);
     EXPECT_EQ_INT(duo_requests[2], duo_lists_unicast[1]); // each answered, and each answer lost
 
     duo_drop = NULL;
@@ -917,6 +932,128 @@ static void test_requests_beyond_the_threshold_are_answered_by_one_broadcast(voi
     test_mock_send_hook = NULL;
 }
 
+static int datagrams_to_drop;
+
+static bool drop_node_one_summaries_counted(const struct duo_datagram* datagram) {
+    if (datagram->from == 1 && datagram->summaries > 0 && datagrams_to_drop > 0) {
+        datagrams_to_drop--;
+        return true;
+    }
+    return false;
+}
+
+static bool drop_first_unicast_list_from_one(const struct duo_datagram* datagram) {
+    if (datagram->from == 1 && datagram->lists > 0 && datagram->unicast && datagrams_to_drop > 0) {
+        datagrams_to_drop--;
+        return true;
+    }
+    return false;
+}
+
+// A lost request or reply is asked for again within tt_DISCOVERY_REQUEST_RETRY, not at the next summary (M5,
+// 2026-09-26: one node waited 2 s for a list at 5% loss, two losses in a row). Node 1's change broadcast and
+// its first unicast answer are both lost; node 2 still knows the new list within the retry delay of its
+// first request. Control: 5 ms after that request, it does not yet.
+static void test_a_lost_answer_is_asked_for_again_at_once(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
+
+    duo_reset_counts();
+    duo_drop = drop_node_one_broadcast_lists;
+    struct tt_Subscriber sub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    duo_run_until(&one, &two, test_mock_now + (5 * tt_MILLISECOND));
+    duo_drop = drop_first_unicast_list_from_one;
+    datagrams_to_drop = 1;
+    while (duo_requests[2] == 0) {
+        duo_run_until(&one, &two, test_mock_now + tt_MILLISECOND);
+    }
+    uint64_t asked = test_mock_now;
+    duo_run_until(&one, &two, asked + (5 * tt_MILLISECOND));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers)); // control: the first answer was lost
+    duo_run_until(&one, &two, asked + tt_DISCOVERY_REQUEST_RETRY + (2 * tt_MILLISECOND));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    EXPECT_EQ_INT(2, duo_requests[2]);
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND)); // and it ends there
+    EXPECT_EQ_INT(2, duo_requests[2]);
+    duo_stop();
+}
+
+static int requests_sent;
+
+static void count_requests(const void* buf, size_t len) {
+    struct duo_datagram datagram;
+    memset(&datagram, 0, sizeof(datagram));
+    datagram.len = (uint32_t)len;
+    memcpy(datagram.bytes, buf, len);
+    duo_classify(&datagram);
+    requests_sent += datagram.requests;
+}
+
+// A summary that arrives while a request for the same generation is still open adds nothing: the retry
+// timer owns that request. A summary showing a newer generation is asked for at once.
+static void test_a_summary_while_a_request_is_open_sends_nothing_more(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    test_mock_send_hook = count_requests;
+    requests_sent = 0;
+    static struct tt_Node node;
+    init_node(&node);
+
+    EXPECT_TRUE(process_discovery_summary(&node, REMOTE_NODE_ID, 7, 0xc0a80a02U, 8282));
+    EXPECT_EQ_INT(1, requests_sent);
+    test_mock_now += tt_DISCOVERY_REQUEST_RETRY / 2;
+    EXPECT_TRUE(process_discovery_summary(&node, REMOTE_NODE_ID, 7, 0xc0a80a02U, 8282));
+    EXPECT_EQ_INT(1, requests_sent);
+    EXPECT_TRUE(process_discovery_summary(&node, REMOTE_NODE_ID, 8, 0xc0a80a02U, 8282));
+    EXPECT_EQ_INT(2, requests_sent);
+    test_mock_send_hook = NULL;
+}
+
+// Node 2's view of node 1 over 6 s after `lost` of node 1's summaries are lost in a row, over 20 trials
+// that start the loss at different points of the two schedulers' drift. Returns how many trials saw node 1
+// presumed dead at any point.
+static int false_death_trials(int lost, uint64_t late_one, uint64_t late_two) {
+    int deaths = 0;
+    for (int trial = 0; trial < 20; trial++) {
+        static struct tt_Node one;
+        static struct tt_Node two;
+        duo_start(&one, &two);
+        duo_late[1] = late_one;
+        duo_late[2] = late_two;
+        struct tt_Publisher pub;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
+        duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + ((uint64_t)trial * tt_SECOND / 2));
+        datagrams_to_drop = lost;
+        duo_drop = drop_node_one_summaries_counted;
+        bool died = false;
+        uint64_t end = test_mock_now + (6 * tt_SECOND);
+        while (test_mock_now < end) {
+            duo_run_until(&one, &two, test_mock_now + (100 * tt_MICROSECOND));
+            died |= !two.update_seen[1];
+        }
+        deaths += died;
+        duo_stop();
+    }
+    return deaths;
+}
+
+// Two summaries lost in a row never make a node presumed dead, however the two nodes' schedulers drift
+// (M5's mid-run dips, 2026-09-26). Each node's periodic tasks run a little late and reschedule from when they
+// ran; with the limit at exactly tt_LIVELINESS_MISS_THRESHOLD intervals this gave 12 false deaths in 40
+// trials, and none in the same trials without drift. Control: three summaries lost do make it dead.
+static void test_two_lost_summaries_never_presume_a_node_dead(void) {
+    const uint64_t late_one = 100 * tt_MICROSECOND;
+    const uint64_t late_two = 170 * tt_MICROSECOND;
+    EXPECT_EQ_INT(0, false_death_trials(2, late_one, late_two));
+    EXPECT_EQ_INT(0, false_death_trials(1, late_one, late_two));
+    EXPECT_EQ_INT(20, false_death_trials(3, 0, 0)); // control
+}
+
 int main(void) {
     test_publisher_learns_subscriber_peer_from_update();
     test_client_learns_server_peer_from_update();
@@ -934,8 +1071,11 @@ int main(void) {
     test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_ends();
     test_steady_state_is_summaries_that_keep_the_peer_alive();
     test_a_missed_change_is_pulled_on_the_next_summary();
-    test_requests_come_one_per_summary_until_a_list_arrives();
+    test_requests_are_bounded_per_summary_until_a_list_arrives();
     test_requests_beyond_the_threshold_are_answered_by_one_broadcast();
+    test_a_lost_answer_is_asked_for_again_at_once();
+    test_a_summary_while_a_request_is_open_sends_nothing_more();
+    test_two_lost_summaries_never_presume_a_node_dead();
 
     if (test_result() != 0) {
         return 1;

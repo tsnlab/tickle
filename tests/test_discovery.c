@@ -218,7 +218,7 @@ static void test_liveliness_timeout_tombstones_not_frees(void) {
     EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
 
     reset_callback_observations();
-    uint64_t past_threshold = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1;
+    uint64_t past_threshold = tt_LIVELINESS_SILENCE_NS + 1;
     check_liveliness(&node, past_threshold, NULL);
 
     EXPECT_EQ_INT(1, callback_calls);
@@ -274,7 +274,7 @@ static void test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full(void) 
     }
     EXPECT_EQ_U32(tt_MAX_DISCOVERED_ENTITIES, tt_Discovery_count(&discovery));
 
-    uint64_t past_threshold = (tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL) + 1;
+    uint64_t past_threshold = tt_LIVELINESS_SILENCE_NS + 1;
     check_liveliness(&node, past_threshold, NULL);
     EXPECT_EQ_U32(0, tt_Discovery_count(&discovery)); // all tombstoned now, none alive
 

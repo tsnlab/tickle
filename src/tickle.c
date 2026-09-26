@@ -1930,6 +1930,8 @@ static void reset_node_state(struct tt_Node* node) {
     node->endpoints_changed_ns = 0;
     node->discovery_reply_tick = 0;
     node->discovery_reply_count = 0;
+    memset(node->discovery_requests, 0, sizeof(node->discovery_requests));
+    node->discovery_retry_scheduled = false;
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
@@ -5543,14 +5545,14 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
         // A node heard only through parts of an announce it never finished (update_seen still
         // false) has entities recorded all the same - each part is applied as it arrives - so it
         // expires by the same clocks as one that completed.
-        // Both clocks must have gone quiet. The announce clock keeps the timing exactly what it
-        // always was - tt_LIVELINESS_MISS_THRESHOLD announce intervals - and the traffic clock is a
-        // veto for a node still transmitting while its announces are being lost.
+        // Both clocks must have gone quiet. The announce clock - tt_LIVELINESS_SILENCE_NS, that many
+        // summaries missed (see its comment for the half interval) - governs, and the traffic clock is a
+        // veto for a node still transmitting while its summaries are being lost.
         //
         // Guard of one announce interval against a main threshold of three: it can never be the
         // condition that governs, so it cannot delay detection of a genuinely dead node, whose
         // traffic stops at the same moment its announces do.
-        if (time - node->update_last_seen[i] > (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL &&
+        if (time - node->update_last_seen[i] > tt_LIVELINESS_SILENCE_NS &&
             time - node->traffic_last_seen[i] > (uint64_t)tt_NODE_UPDATE_INTERVAL) {
             TT_LOG_WARNING("Node %d presumed dead (no announce for %d consecutive intervals)", i,
                            tt_LIVELINESS_MISS_THRESHOLD);
@@ -7426,9 +7428,8 @@ static void flush_pending_broadcast(struct tt_Node* node) {
 }
 
 // Asks `source` for its endpoint list (rmw_tickle/DISCOVERY_PLAN.md rule 3): an ACKNACK of the built-in
-// discovery endpoint naming the generation its summary showed, unicast. Sent once per summary that shows a
-// generation not yet applied, so the request rate is the summary rate, and a lost request or reply costs one
-// interval, as a lost announce did.
+// discovery endpoint naming the generation its summary showed, unicast. request_discovery_list() decides
+// when: on a summary showing a generation not yet applied, and again on a timer while the list is missing.
 static void send_discovery_request(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                    uint16_t sender_port) {
     flush_pending_broadcast(node);
@@ -7451,16 +7452,94 @@ static void send_discovery_request(struct tt_Node* node, uint8_t source, uint32_
     }
 }
 
+static bool discovery_generation_applied(const struct tt_Node* node, uint8_t source, uint32_t generation) {
+    return node->update_seen[source] && node->update_generation[source] == generation;
+}
+
+static void discovery_request_retry(struct tt_Node* node, uint64_t time, void* param);
+
+static void arm_discovery_request_retry(struct tt_Node* node, uint64_t due_ns) {
+    if (node->discovery_retry_scheduled) {
+        return;
+    }
+    if (tt_Node_schedule(node, due_ns, discovery_request_retry, NULL)) {
+        node->discovery_retry_scheduled = true;
+    } else {
+        TT_LOG_ERROR("Cannot schedule discovery_request_retry"); // the next summary asks again
+    }
+}
+
+// Re-sends each open request whose list has not arrived within tt_DISCOVERY_REQUEST_RETRY, and closes the
+// ones answered or out of attempts - the peer's next summary asks again after that. Runs only while some
+// request is open.
+static void discovery_request_retry(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(param);
+    node->discovery_retry_scheduled = false;
+    uint64_t next = UINT64_MAX;
+    for (int i = 0; i < tt_DISCOVERY_PENDING_REQUESTS; i++) {
+        struct tt_DiscoveryRequest* request = &node->discovery_requests[i];
+        if (request->attempts == 0) {
+            continue;
+        }
+        if (discovery_generation_applied(node, request->source, request->generation)) {
+            request->attempts = 0;
+            continue;
+        }
+        if (time - request->sent_ns >= tt_DISCOVERY_REQUEST_RETRY) {
+            if (request->attempts >= tt_DISCOVERY_REQUEST_ATTEMPTS) {
+                request->attempts = 0;
+                continue;
+            }
+            send_discovery_request(node, request->source, request->generation, request->ip, request->port);
+            request->attempts++;
+            request->sent_ns = time;
+        }
+        uint64_t due = request->sent_ns + tt_DISCOVERY_REQUEST_RETRY;
+        next = due < next ? due : next;
+    }
+    if (next != UINT64_MAX) {
+        arm_discovery_request_retry(node, next);
+    }
+}
+
+// Asks `source` for its list, and keeps the request open so discovery_request_retry() can ask again. A
+// request already open for this source and generation is left to the retry: another summary adds nothing.
+static void request_discovery_list(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
+                                   uint16_t sender_port) {
+    struct tt_DiscoveryRequest* slot = NULL;
+    for (int i = 0; i < tt_DISCOVERY_PENDING_REQUESTS; i++) {
+        struct tt_DiscoveryRequest* request = &node->discovery_requests[i];
+        if (request->attempts != 0 && request->source == source) {
+            if (request->generation == generation) {
+                return;
+            }
+            slot = request; // a newer generation replaces the one asked for
+            break;
+        }
+        if (request->attempts == 0 && slot == NULL) {
+            slot = request;
+        }
+    }
+    uint64_t now = tt_get_ns();
+    send_discovery_request(node, source, generation, sender_ip, sender_port);
+    if (slot == NULL) {
+        return; // every slot busy: sent, not retried - the next summary asks again
+    }
+    *slot = (struct tt_DiscoveryRequest) {generation, sender_ip, sender_port, source, 1, now};
+    arm_discovery_request_retry(node, now + tt_DISCOVERY_REQUEST_RETRY);
+}
+
 // A discovery summary from `source` (send_discovery_summary()). Liveliness first, whatever else it says -
 // exactly what an announce refreshes (rule 1). A generation already applied needs nothing more (rule 2); any
-// other - a change missed, a node never heard in full - is asked for (rule 3).
+// other - a change missed, a node never heard in full - is asked for (rule 3), and asked again within
+// tt_DISCOVERY_REQUEST_RETRY if the list does not come.
 static bool process_discovery_summary(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
                                       uint16_t sender_port) {
     node->update_last_seen[source] = tt_get_ns();
-    if (node->update_seen[source] && node->update_generation[source] == generation) {
+    if (discovery_generation_applied(node, source, generation)) {
         return true;
     }
-    send_discovery_request(node, source, generation, sender_ip, sender_port);
+    request_discovery_list(node, source, generation, sender_ip, sender_port);
     return true;
 }
 

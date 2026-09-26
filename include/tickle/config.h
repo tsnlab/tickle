@@ -466,9 +466,35 @@
 // dead; too high a value delays noticing a real departure (a crash, a pulled cable - anything
 // that skips tt_Node_destroy()'s own farewell UPDATE). 3 matches the conventional heartbeat-miss
 // default other discovery protocols use for the same reason.
+// A request for a peer's endpoint list (DISCOVERY_PLAN.md rule 3) that has not brought the list within
+// tt_DISCOVERY_REQUEST_RETRY is sent again, up to tt_DISCOVERY_REQUEST_ATTEMPTS times in all; after that the
+// peer's next summary starts over. A lost request or reply then costs a few ms, not the rest of a summary
+// interval: M5 (5% loss, 2026-09-26) saw one node wait 2 s for a list, two losses in a row. The answer goes
+// out at once, so the retry delay only has to cover a round trip and a flush tick. Requests to at most
+// tt_DISCOVERY_PENDING_REQUESTS peers are tracked at a time; one more is still sent, just not retried.
+#ifndef tt_DISCOVERY_REQUEST_RETRY
+#define tt_DISCOVERY_REQUEST_RETRY (10 * tt_MILLISECOND)
+#endif
+#ifndef tt_DISCOVERY_REQUEST_ATTEMPTS
+#define tt_DISCOVERY_REQUEST_ATTEMPTS 4
+#endif
+#ifndef tt_DISCOVERY_PENDING_REQUESTS
+#define tt_DISCOVERY_PENDING_REQUESTS 8
+#endif
+
 #ifndef tt_LIVELINESS_MISS_THRESHOLD
 #define tt_LIVELINESS_MISS_THRESHOLD 3
 #endif
+
+// How long a node must be silent to be presumed dead: tt_LIVELINESS_MISS_THRESHOLD intervals and half of
+// one more. The half is what makes it mean "that many summaries missed" (DISCOVERY_PLAN.md M5, 2026-09-26).
+// A whole number of intervals put the limit exactly where the next summary lands after one fewer loss, and
+// every node's periodic tasks run a little late and reschedule from when they ran, so the two drift across
+// each other: with two summaries lost in a row, whether the check or the third summary came first was a
+// coin toss, and 5% loss on eight nodes produced false deaths within 40 s. Reproduced in
+// test_peer_discovery.c (two lost summaries, schedulers 100/170 us late: 12 false deaths in 40 trials).
+#define tt_LIVELINESS_SILENCE_NS \
+    ((((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * 2U) + 1U) * (uint64_t)tt_NODE_UPDATE_INTERVAL / 2U)
 
 // Fixed capacity of an opt-in struct tt_Discovery (tickle.h, tt_Node_set_discovery()) - the
 // number of distinct remote entities (across every node it's ever heard an UPDATE from) it can

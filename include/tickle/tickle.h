@@ -133,6 +133,17 @@ struct tt_FragSlot {
 };
 #endif
 
+// A request for a peer's endpoint list not yet answered (struct tt_Node.discovery_requests); attempts == 0
+// marks a free slot.
+struct tt_DiscoveryRequest {
+    uint32_t generation; // the one the peer's summary showed
+    uint32_t ip;
+    uint16_t port;
+    uint8_t source;
+    uint8_t attempts; // requests sent so far, tt_DISCOVERY_REQUEST_ATTEMPTS at most
+    uint64_t sent_ns;
+};
+
 struct tt_Node {
     uint8_t id;
     uint32_t endpoint_count;
@@ -230,6 +241,10 @@ struct tt_Node {
     // into a single broadcast, and the rest wait for it.
     uint64_t discovery_reply_tick;
     uint8_t discovery_reply_count;
+    // Requests for a peer's list not yet answered (tt_DISCOVERY_REQUEST_RETRY, config.h). One scheduler
+    // entry, discovery_request_retry(), serves them all while any is open.
+    struct tt_DiscoveryRequest discovery_requests[tt_DISCOVERY_PENDING_REQUESTS];
+    bool discovery_retry_scheduled;
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
