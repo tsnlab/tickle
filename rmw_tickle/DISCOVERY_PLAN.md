@@ -44,17 +44,20 @@ A summary is ~28 bytes on the wire, whatever the node's endpoint count.
    lease math and `tt_NODE_UPDATE_INTERVAL` do not change.
 2. **Known generation:** a summary whose generation matches the one already applied for that node is
    liveliness only. Nothing is sent back.
-3. **Unknown generation, or unknown node:** one ACKNACK to the sender. At most one outstanding request
-   per peer; it is re-sent only on a later summary that still shows an unapplied generation. So a lost
-   request or reply costs at most one interval, the same bound as today, and nothing can storm.
+3. **Unknown generation, or unknown node:** one ACKNACK to the sender for each such summary. The summary
+   cadence itself bounds requests to one per peer per interval. A lost request or reply is simply
+   retried on the next summary, so it costs at most one interval, the same bound as today, and nothing
+   can storm. (Dev, in implementation: a per-peer "request outstanding" mark would need a timeout to
+   clear it after a loss, and that timeout would be the next summary. So there is no mark.)
 4. **Answering a request:** the full announce, unicast to the requester. If more requests for the same
    generation arrive than `tt_UNICAST_PEER_THRESHOLD` before the next flush, it is broadcast once instead.
 5. **Changes are still pushed:** the full list is broadcast when an endpoint is created or destroyed.
    The pull only covers a receiver that missed it, joined later, or restarted.
 6. **First contact:** a node that hears an unknown node's full announce still answers with its own full
    announce, unicast, as `reply_with_own_announce()` does. That keeps start-up at one exchange.
-7. **Embedded-conscious core** (PLAN.md goal 5): no allocation. The only new per-peer state is the
-   request-outstanding mark; the applied generation per source is already kept (`update_generation`).
+7. **Embedded-conscious core** (PLAN.md goal 5): no allocation. The only new state is two per-node
+   fields for rule 4's reply rate; the applied generation per source is already kept
+   (`update_generation`).
 8. **Wire:** no new submessage types, but HEARTBEAT/ACKNACK on endpoint 0 is a new meaning, and a
    tt_VERSION 7 node would never see a periodic list again. So tt_VERSION goes 7 → 8.
 
@@ -101,9 +104,28 @@ the user before it continues.
 
 **Controls (mutants the tests must catch):**
 - no request on an unknown generation (M4's dropped-broadcast case never converges);
-- a request per summary instead of one outstanding (request count exceeds one per peer per generation
-  per interval);
+- two requests per summary (requests must equal summaries while a list is missing, and stop once it
+  arrives);
 - a summary that does not refresh liveliness (peers expire).
 
 **M6, the rig.** The rmw rows are re-run: non-data bytes/s fall from ~390 B/s, and the RTT rows do not
 move beyond their spread.
+
+## 6. M1 result, today's code (2026-09-26)
+
+`discovery_scaling/discovery_scaling.sh`, core `41fa005f`, built from a snapshot of that commit, never from
+the shared working tree. N idle nodes of E publishers in private netns on one bridge; veth byte counters
+over 30 s after a 5 s warm-up; 2 repetitions, 18 rows, 0 void. The repetitions agree within 1%.
+`results/discovery_scaling_M1_2026-09-26.txt`. Per node, bytes/s received / sent (rep 1):
+
+| | E = 0 | E = 4 | E = 32 |
+|---|---:|---:|---:|
+| N = 2 | 122 / 74 | 385 / 350 | 2,393 / 2,344 |
+| N = 8 | 560 / 77 | 2,505 / 356 | 16,455 / 2,352 |
+| N = 16 | 1,151 / 78 | 5,299 / 364 | **35,213** / 2,364 |
+
+- One announce is ~74 + 71·E bytes, with ROS-length endpoint names.
+- Received per node is (N - 1) × one announce, exactly as section 1 estimated: 15 × 2,345 = 35,175
+  against 35,213 measured.
+- **The premise holds**, so the change proceeds. M2's pass criteria are unchanged: at E = 32 and N ≥ 8,
+  at most 1/3 of these; at N = 2 and E = 4, within +10% of 385 B/s received.

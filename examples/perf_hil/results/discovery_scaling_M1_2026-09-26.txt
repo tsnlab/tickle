@@ -1,0 +1,20 @@
+=== discovery scaling, 2026-09-26T21:05:34+09:00, core 41fa005f, warm-up 5s, window 30s ===
+N=2 E=0 rep1 | ok | rx_bytes_per_node_s=122 rx_pkts_per_node_s=1 tx_bytes_per_node_s=74 tx_pkts_per_node_s=1
+N=2 E=4 rep1 | ok | rx_bytes_per_node_s=385 rx_pkts_per_node_s=1 tx_bytes_per_node_s=350 tx_pkts_per_node_s=1
+N=2 E=32 rep1 | ok | rx_bytes_per_node_s=2393 rx_pkts_per_node_s=2 tx_bytes_per_node_s=2344 tx_pkts_per_node_s=2
+N=8 E=0 rep1 | ok | rx_bytes_per_node_s=560 rx_pkts_per_node_s=7 tx_bytes_per_node_s=77 tx_pkts_per_node_s=1
+N=8 E=4 rep1 | ok | rx_bytes_per_node_s=2505 rx_pkts_per_node_s=7 tx_bytes_per_node_s=356 tx_pkts_per_node_s=1
+N=8 E=32 rep1 | ok | rx_bytes_per_node_s=16455 rx_pkts_per_node_s=14 tx_bytes_per_node_s=2352 tx_pkts_per_node_s=2
+N=16 E=0 rep1 | ok | rx_bytes_per_node_s=1151 rx_pkts_per_node_s=15 tx_bytes_per_node_s=78 tx_pkts_per_node_s=1
+N=16 E=4 rep1 | ok | rx_bytes_per_node_s=5299 rx_pkts_per_node_s=15 tx_bytes_per_node_s=364 tx_pkts_per_node_s=1
+N=16 E=32 rep1 | ok | rx_bytes_per_node_s=35213 rx_pkts_per_node_s=30 tx_bytes_per_node_s=2364 tx_pkts_per_node_s=2
+N=2 E=0 rep2 | ok | rx_bytes_per_node_s=118 rx_pkts_per_node_s=1 tx_bytes_per_node_s=74 tx_pkts_per_node_s=1
+N=2 E=4 rep2 | ok | rx_bytes_per_node_s=399 rx_pkts_per_node_s=1 tx_bytes_per_node_s=350 tx_pkts_per_node_s=1
+N=2 E=32 rep2 | ok | rx_bytes_per_node_s=2394 rx_pkts_per_node_s=2 tx_bytes_per_node_s=2345 tx_pkts_per_node_s=2
+N=8 E=0 rep2 | ok | rx_bytes_per_node_s=556 rx_pkts_per_node_s=7 tx_bytes_per_node_s=76 tx_pkts_per_node_s=1
+N=8 E=4 rep2 | ok | rx_bytes_per_node_s=2489 rx_pkts_per_node_s=7 tx_bytes_per_node_s=353 tx_pkts_per_node_s=1
+N=8 E=32 rep2 | ok | rx_bytes_per_node_s=16465 rx_pkts_per_node_s=14 tx_bytes_per_node_s=2352 tx_pkts_per_node_s=2
+N=16 E=0 rep2 | ok | rx_bytes_per_node_s=1146 rx_pkts_per_node_s=15 tx_bytes_per_node_s=77 tx_pkts_per_node_s=1
+N=16 E=4 rep2 | ok | rx_bytes_per_node_s=5300 rx_pkts_per_node_s=15 tx_bytes_per_node_s=361 tx_pkts_per_node_s=1
+N=16 E=32 rep2 | ok | rx_bytes_per_node_s=35215 rx_pkts_per_node_s=30 tx_bytes_per_node_s=2363 tx_pkts_per_node_s=2
+=== done ===
