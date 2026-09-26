@@ -690,3 +690,24 @@ hundred ns, the RTT gain is an indirect kernel cost, and this says so.
 - pong whole-run CPU not WORSE beyond 2 x SE, at both gaps;
 - pong `park_wakes` per run no more than +10% over main, at both gaps;
 - 8.6's timer-latency tests green.
+
+**R1d result (2026-09-27, branch `r1d-claim-disarm-predicted`): FAIL, and it answers where R1's gain came from.**
+
+`experiments/rmw_lib_ab.sh`, 5 interleaved reps. Both libraries are copied in place run by run, and each run's md5 is
+logged: main ae11b2cb, R1d edbc2037. Pong whole-run CPU; mean over reps, paired difference +- SE:
+
+| | gap 5 ms | gap 100 ms |
+|---|---|---|
+| RTT median | 44.94 -> 45.24 us (+0.30 +- 0.35) | 121.8 -> 126.5 us (+4.7 +- 6.0) |
+| pong CPU | 39.21 -> 38.86 ms (-0.35 +- 0.35) | 24.26 -> 24.46 ms (+0.20 +- 0.38) |
+| pong `park_wakes` per run | 2.6 -> 4.0 | 2.0 -> 3.0 (every rep) |
+
+- **No RTT gain at either gap, and one more parked-thread wake per run.** FAIL on the pre-registered bars.
+- **The claim's disarm is not where R1's gain was.** Stamped before and after, in main, ~975 round trips:
+  - the claim's `timerfd_settime()` costs 0.44 us on the pong and 0.48 us on the ping (median, p90 0.47 / 0.63);
+  - the release's costs 0.51 / 0.52 us.
+  - R1d removes the claim's syscall on both sides, and the RTT does not move.
+- **So R1's -4.6 us most likely did not come from syscalls saved.** It came with ~55 extra parked-thread wakes a
+  second (9.2), and a CPU kept busier leaves the deep idle states less often, so it wakes faster for the next datagram.
+  That is a hypothesis, consistent with R1's +12% CPU and with R1d's null result, but not measured (the idle
+  residency was not recorded). It is not a gain to ship: the same effect costs any rmw the same CPU.
