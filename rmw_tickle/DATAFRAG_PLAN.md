@@ -216,3 +216,34 @@ peer is wrongly declared dead.
   2) returns the sender to one syscall per sample and should land with FRAG or immediately after.
   p4 CPU is to be measured on the FRAG build both without and with `sendmmsg`, so each piece's cost
   is visible rather than bundled.
+
+### 6.6 Amendment (Dev, 2026-09-26): one wire mechanism, two receive strategies
+
+Section 6.2 as first written would have regressed something that works today. UPDATE_PART's parts are
+each independently decodable - whole entities per part, processed on arrival - which is how a node
+on core defaults, with no reassembly memory and a 1472 B datagram, discovers an rmw node whose
+announce spans several datagrams. Byte-splitting discovery and reassembling it in the pool would
+require every node to hold a pool as large as the largest possible announce
+(`tt_MAX_ENDPOINT_COUNT` entities with names), which is far more than the 3.3 KB removed, and it
+would fall on exactly the nodes that cannot afford it.
+
+So the wire is one mechanism (`FRAG_FIRST`/`FRAG_CONT`) and the receive side has two strategies,
+chosen by endpoint:
+
+- **User data** is byte-split and reassembled in the node pool. The pool exists only when
+  `tt_MAX_SAMPLE_LENGTH > tt_MAX_BUFFER_LENGTH`, so it costs nothing at the MCU default.
+- **The built-in discovery endpoint** is split by the sender at entity boundaries, so each fragment
+  carries whole entities, and the discovery handler processes each on arrival with no pool - today's
+  UPDATE_PART semantics on the FRAG wire. A continuation is recognised as discovery by its reserved
+  `entity_id`, so no extra field is needed.
+
+This also settles 6.4: discovery does not pass through the subscriber delivery path, so there is no
+DATA deduplication in front of it. Any announce or fragment refreshes liveliness first, and the entity
+list is re-applied only when `timestamp` (`last_modified`) changes. The test for it is kept anyway,
+with its control.
+
+Order, each piece verified alone and the wire version bumped once: (1) FRAG for user data plus the
+pool and one send-any-record routine for publish, retransmit and backlog - new types only, no bump;
+(2) discovery onto DATA/FRAG, UPDATE/UPDATE_PART removed, `tt_VERSION` 7; (3) `sendmmsg`;
+(4) the byte-budgeted depth in the harness. Step 1 is pushed alone so the p4 bandwidth row can be
+measured on a real build early.
