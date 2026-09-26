@@ -10,6 +10,7 @@
 
 // NOLINTNEXTLINE(misc-include-cleaner) -- picolibc routes EINTR/EAGAIN/EWOULDBLOCK through <sys/errno.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -272,64 +273,76 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
     return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
 }
 
+// tt_receive()'s wait: select() on both sockets and the wake socket for up to `timeout` (0 = no
+// timeout), and pick which socket the read that follows should use. Returns 0 when a datagram is ready
+// (with *read_fd set), otherwise the value tt_receive() returns: -1 timeout, -2 I/O error, -3 woken by
+// tt_wake_signal(). Split out of tt_receive() for its size, not its behaviour.
+static int32_t wait_readable(struct tt_Node* node, int64_t timeout, int* read_fd) {
+    struct timeval wait_time;
+    struct timeval* wait_time_ptr;
+    if (timeout == 0) {
+        wait_time_ptr = NULL; // select()'s own NULL timeout means "block until data arrives"
+    } else {
+        wait_time.tv_sec = (long)(timeout / tt_SECOND);
+        wait_time.tv_usec = (long)((timeout % tt_SECOND) / tt_MICROSECOND);
+        wait_time_ptr = &wait_time;
+    }
+
+    fd_set readfds;
+    FD_ZERO(&readfds);
+    FD_SET(node->hal.sock, &readfds);
+    FD_SET(node->hal.wake_sock, &readfds);
+    FD_SET(node->hal.data_sock, &readfds);
+    int maxfd = node->hal.sock > node->hal.wake_sock ? node->hal.sock : node->hal.wake_sock;
+    if (node->hal.data_sock > maxfd) {
+        maxfd = node->hal.data_sock;
+    }
+
+    int select_ret = select(maxfd + 1, &readfds, NULL, NULL, wait_time_ptr);
+    if (select_ret == 0) {
+        return -1; // Timeout
+    }
+    if (select_ret < 0) {
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        if (errno == EINTR) {
+            return -1; // Treat an interrupted wait like a timeout; the caller just polls again
+        }
+        return -2; // I/O error
+    }
+    if (FD_ISSET(node->hal.wake_sock, &readfds)) {
+        // tt_wake_signal() - see hal_linux.c's tt_receive() for the reasoning (identical here,
+        // just select() instead of poll()).
+        uint8_t discard;
+        struct sockaddr_in from;
+        socklen_t from_len = sizeof(from);
+        (void)recvfrom(node->hal.wake_sock, &discard, sizeof(discard), 0, (struct sockaddr*)&from, &from_len);
+        return -3; // Interrupted
+    }
+    // Broadcasts land on the well-known socket, unicast on this node's own. They alternate
+    // when both are ready - see hal_linux.c's own comment on why a fixed preference starves
+    // the other socket outright rather than merely delaying it.
+    bool well_known_ready = FD_ISSET(node->hal.sock, &readfds) != 0;
+    bool data_ready = FD_ISSET(node->hal.data_sock, &readfds) != 0;
+    if (data_ready && (!well_known_ready || node->hal.rx_prefer_data)) {
+        *read_fd = node->hal.data_sock;
+    }
+    if (well_known_ready && data_ready) {
+        node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
+    }
+    return 0;
+}
+
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
-    // Which socket this call will read from - see the select() below. Defaults to the well-known
-    // one so the non-polling path behaves exactly as it did before data_sock existed.
+    // Which socket this call will read from - see wait_readable(). Defaults to the well-known one so
+    // the non-polling path behaves exactly as it did before data_sock existed.
     int read_fd = node->hal.sock;
     // Same "0 for no timeout" (block until data arrives) contract fix as hal_linux.c's poll()
     // rewrite, using lwIP's select() (LWIP_COMPAT_SOCKETS aliases it the same as the real thing)
     // since lwIP doesn't provide poll().
     if (timeout >= 0) {
-        struct timeval wait_time;
-        struct timeval* wait_time_ptr;
-        if (timeout == 0) {
-            wait_time_ptr = NULL; // select()'s own NULL timeout means "block until data arrives"
-        } else {
-            wait_time.tv_sec = (long)(timeout / tt_SECOND);
-            wait_time.tv_usec = (long)((timeout % tt_SECOND) / tt_MICROSECOND);
-            wait_time_ptr = &wait_time;
-        }
-
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(node->hal.sock, &readfds);
-        FD_SET(node->hal.wake_sock, &readfds);
-        FD_SET(node->hal.data_sock, &readfds);
-        int maxfd = node->hal.sock > node->hal.wake_sock ? node->hal.sock : node->hal.wake_sock;
-        if (node->hal.data_sock > maxfd) {
-            maxfd = node->hal.data_sock;
-        }
-
-        int select_ret = select(maxfd + 1, &readfds, NULL, NULL, wait_time_ptr);
-        if (select_ret == 0) {
-            return -1; // Timeout
-        }
-        if (select_ret < 0) {
-            // NOLINTNEXTLINE(misc-include-cleaner)
-            if (errno == EINTR) {
-                return -1; // Treat an interrupted wait like a timeout; the caller just polls again
-            }
-            return -2; // I/O error
-        }
-        if (FD_ISSET(node->hal.wake_sock, &readfds)) {
-            // tt_wake_signal() - see hal_linux.c's tt_receive() for the reasoning (identical here,
-            // just select() instead of poll()).
-            uint8_t discard;
-            struct sockaddr_in from;
-            socklen_t from_len = sizeof(from);
-            (void)recvfrom(node->hal.wake_sock, &discard, sizeof(discard), 0, (struct sockaddr*)&from, &from_len);
-            return -3; // Interrupted
-        }
-        // Broadcasts land on the well-known socket, unicast on this node's own. They alternate
-        // when both are ready - see hal_linux.c's own comment on why a fixed preference starves
-        // the other socket outright rather than merely delaying it.
-        bool well_known_ready = FD_ISSET(node->hal.sock, &readfds) != 0;
-        bool data_ready = FD_ISSET(node->hal.data_sock, &readfds) != 0;
-        if (data_ready && (!well_known_ready || node->hal.rx_prefer_data)) {
-            read_fd = node->hal.data_sock;
-        }
-        if (well_known_ready && data_ready) {
-            node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
+        int32_t waited = wait_readable(node, timeout, &read_fd);
+        if (waited != 0) {
+            return waited;
         }
     }
 

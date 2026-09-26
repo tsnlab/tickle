@@ -93,12 +93,12 @@ run_gate "check-rig-lock" make check-rig-lock
 run_gate "check-bench-shapes" make check-bench-shapes
 run_gate "test (unit)" make test
 run_gate "tsan (thread safety)" make tsan
-# CI lints the FreeRTOS HAL header on its own with include-cleaner on; `make -C platform/freertos lint`
+# CI lints the FreeRTOS HAL files on their own with include-cleaner on; `make -C platform/freertos lint`
 # does not (see lint-headers-ci there). Needs the FreeRTOS/lwIP submodules.
 if [ -f third_party/FreeRTOS-Kernel/include/FreeRTOS.h ]; then
-    run_lint_gate "lint-freertos-header (as CI)" make -C platform/freertos lint-headers-ci "${lint_vars[@]}"
+    run_lint_gate "lint-freertos-hal (as CI)" make -C platform/freertos lint-headers-ci "${lint_vars[@]}"
 else
-    name="lint-freertos-header (as CI)"
+    name="lint-freertos-hal (as CI)"
     skip_gate "FreeRTOS/lwIP submodules not checked out"
 fi
 name="lint-rmw"
