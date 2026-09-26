@@ -1178,6 +1178,7 @@ static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
     uint64_t announced = watched_arrived_at[0];
 
     (void)duo_run_publishing(&one, &two, test_mock_now + (3 * tt_SECOND), &automatic, 100 * tt_MILLISECOND);
+    EXPECT_TRUE(one.summaries_skipped > 0); // the node's summaries gave way to its data: MANUAL is unmoved
     EXPECT_EQ_INT(1, watched_departures[0]);
     EXPECT_TRUE(watched_departed_at[0] > announced + tt_SECOND &&
                 watched_departed_at[0] <= announced + tt_SECOND + tt_MILLISECOND);
@@ -1293,6 +1294,54 @@ static void test_an_idle_short_lease_is_kept_by_faster_summaries(void) {
     duo_stop();
 }
 
+// LIVELINESS_PLAN.md 10: under traffic the short-lease summaries give way to the data. A node publishing
+// every 100 ms with a 1 s lease sends only its once-a-second summary - not one every lease/6 - and its lease
+// holds; once it falls idle the lease/6 summaries resume at once and the lease still holds.
+static void test_short_lease_summaries_give_way_to_traffic(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    pub.liveliness_lease_duration_ns = tt_SECOND;
+    liveliness_duo_start(&one, &two, &pub, NULL);
+
+    int before = duo_summaries[1];
+    (void)duo_run_publishing(&one, &two, test_mock_now + (10 * tt_SECOND), &pub, 100 * tt_MILLISECOND);
+    int streaming = duo_summaries[1] - before;
+    EXPECT_TRUE(streaming >= 9 && streaming <= 11); // one a second, where lease/6 would be ~60
+    EXPECT_TRUE(one.summaries_skipped >= 45);
+    EXPECT_EQ_INT(0, watched_departures[0]);
+
+    before = duo_summaries[1];
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND));
+    EXPECT_TRUE(duo_summaries[1] - before >= 17); // idle: ~6 a second again
+    EXPECT_EQ_INT(0, watched_departures[0]);
+    duo_stop();
+}
+
+// The skip's rule, with a peer the duo cannot show: a datagram addressed to node 2 says nothing to node 3,
+// which still needs its summary. A broadcast reaches both; each tick starts a fresh record; a node that knows
+// no peer never skips.
+static void test_a_summary_is_skipped_only_when_every_peer_was_reached(void) {
+    static struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node.id = 1;
+    EXPECT_TRUE(!every_peer_reached(&node)); // no peer known
+    node.update_seen[2] = true;
+    node.update_seen[3] = true;
+    struct tt_Peer two = {.node_id = 2, .ip = 2, .port = 1};
+    struct tt_Peer both[2] = {{.node_id = 2, .ip = 2, .port = 1}, {.node_id = 3, .ip = 3, .port = 1}};
+
+    note_reached(&node, &two, 1);
+    EXPECT_TRUE(!every_peer_reached(&node)); // node 3 has heard nothing
+    note_reached(&node, both, 2);
+    EXPECT_TRUE(every_peer_reached(&node));
+    EXPECT_TRUE(!every_peer_reached(&node)); // the record was cleared by the tick
+    note_reached(&node, NULL, 0);
+    EXPECT_TRUE(every_peer_reached(&node)); // a broadcast
+}
+
 int main(void) {
     test_publisher_learns_subscriber_peer_from_update();
     test_client_learns_server_peer_from_update();
@@ -1319,6 +1368,8 @@ int main(void) {
     test_a_manual_lease_is_not_kept_by_other_topics_data();
     test_a_lease_longer_than_the_node_limit_is_not_cut_short();
     test_an_idle_short_lease_is_kept_by_faster_summaries();
+    test_short_lease_summaries_give_way_to_traffic();
+    test_a_summary_is_skipped_only_when_every_peer_was_reached();
     test_a_node_is_not_kept_alive_past_the_lease_cap();
     test_four_lost_summaries_never_lapse_an_idle_lease();
 

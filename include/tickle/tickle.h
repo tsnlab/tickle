@@ -258,6 +258,18 @@ struct tt_Node {
     // shortest lease any
     // of this node's own endpoints announce (summary_interval()).
     uint64_t next_summary_ns;
+    // When a summary last went out. A summary at the short-lease cadence is skipped when every known peer has
+    // had a datagram from this node since the last tick (LIVELINESS_PLAN.md 10), but never so that two are
+    // more than tt_NODE_UPDATE_INTERVAL apart.
+    uint64_t summary_sent_ns;
+    // Who has had a datagram from this node since the last summary tick: a broadcast reaches everyone, an
+    // addressed send its peers (a bit per node id). Set from any sending thread and read and cleared by
+    // node_update(), so accessed only through __atomic builtins.
+    uint8_t reached_everyone;
+    // tx_tail when tx_buffer holds a summary and nothing else, 0 otherwise: a flush of exactly that is not
+    // traffic for the skip, or each summary would cancel the next and an idle node's cadence would halve.
+    uint32_t tx_summary_alone_len;
+    uint32_t reached_nodes[tt_MAX_ENDPOINT_COUNT / 32];
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
@@ -321,6 +333,7 @@ struct tt_Node {
     // on it can be handed by the kernel to the sender's own socket, which shows up here as a
     // sender receiving its own traffic back.
     uint64_t tx_datagrams;
+    uint64_t summaries_skipped; // short-lease summaries not sent: the node's traffic had reached every peer
     uint64_t rx_datagrams;
     uint64_t rx_self_sent;
     // Submessages refused because no datagram could ever carry them (larger than

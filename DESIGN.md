@@ -644,6 +644,12 @@ runs from the entity's last sign of life, and the verdict is taken when it runs 
 - **An idle node's summary is its only sign of life**, so it goes out every `tt_NODE_UPDATE_INTERVAL` or
   every sixth of the shortest lease its own endpoints announce, whichever is sooner (at least one
   `tt_NODE_TX_INTERVAL`).
+- **A busy node's traffic stands in for those extra summaries.** A summary at the short-lease cadence is
+  skipped when, since the last tick, every peer the node knows has had a datagram from it - a broadcast,
+  or one addressed to that peer (a summary alone does not count). The `tt_NODE_UPDATE_INTERVAL` summary,
+  which carries the discovery generation, always goes. Under traffic the last sign of life before a node
+  stops is then its data, as with DDS; MANUAL writers are untouched, since only their own DATA and
+  HEARTBEAT assert them. Counted in `tt_Node.summaries_skipped`.
 
 Before this the lease ran from the last announce and traffic only held off the verdict for half a lease,
 and a sweep once a second took it. On the rig that gave a bimodal detection time (the two clocks' phase,

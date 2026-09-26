@@ -382,6 +382,20 @@ struct tx_datagram {
     uint32_t body_len;
 };
 
+// Records who a datagram sent now reaches, for node_update()'s summary skip: every peer when it is
+// broadcast (no peers), otherwise the peers it is addressed to. A link's broadcast of an addressed datagram
+// also reaches that link's other peers; they are not counted, which only means a summary goes out anyway.
+static void note_reached(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
+    if (peers == NULL || peer_count == 0) {
+        __atomic_store_n(&node->reached_everyone, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    for (uint8_t i = 0; i < peer_count; i++) {
+        uint8_t id = peers[i].node_id;
+        __atomic_fetch_or(&node->reached_nodes[id / 32U], 1U << (id % 32U), __ATOMIC_RELAXED);
+    }
+}
+
 // One datagram to one address; ip 0 is the HAL's own broadcast address, as for tt_send_iov().
 static bool send_datagram_to(struct tt_Node* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port) {
     node->tx_datagrams++;
@@ -549,6 +563,10 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
 
     uint32_t skip = to_single_form(node->tx_buffer, len, 0);
     struct tx_datagram dgram = {node->tx_buffer + skip, len - skip, NULL, 0};
+    if (len != node->tx_summary_alone_len) {
+        note_reached(node, peers, peer_count);
+    }
+    node->tx_summary_alone_len = 0;
     if (!send_datagram(node, &dgram, peers, peer_count)) {
         TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
@@ -668,6 +686,7 @@ static bool send_fragments(struct tt_Node* node, const struct tt_DataHeader* dat
             framing + skip, framing_length - skip, cdr + frag_payload_offset(index), length, 0, 0};
     }
 
+    note_reached(node, peers, peer_count);
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
     uint8_t destination_count = tx_destinations(peers, peer_count, destinations);
     for (uint8_t dest = 0; dest < destination_count; dest++) {
@@ -1956,6 +1975,7 @@ static void reset_node_state(struct tt_Node* node) {
     node->discovery_callback_param = NULL;
 
     node->tx_datagrams = 0;
+    node->summaries_skipped = 0;
     node->tx_dropped_oversize = 0;
     node->rx_datagrams = 0;
     node->rx_self_sent = 0;
@@ -1991,6 +2011,12 @@ static void reset_node_state(struct tt_Node* node) {
     node->liveliness_check_ns = 0;
     memset(node->liveliness_flags, 0, sizeof(node->liveliness_flags));
     node->next_summary_ns = 0;
+    node->summary_sent_ns = 0;
+    node->tx_summary_alone_len = 0;
+    __atomic_store_n(&node->reached_everyone, 0, __ATOMIC_RELAXED);
+    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT / 32; i++) {
+        __atomic_store_n(&node->reached_nodes[i], 0, __ATOMIC_RELAXED);
+    }
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
@@ -2765,13 +2791,19 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     const uint8_t* head = framing + skip;
     uint32_t head_len = (uint32_t)sizeof(framing) - skip;
     if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
+        note_reached(node, pub->peers, peer_count);
         for (uint8_t i = 0; i < peer_count; i++) {
             if (tt_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
                 return tt_RET_IO_ERROR;
             }
         }
-    } else if (tt_send_iov(node, head, head_len, body, body_len, 0, 0) < 0) {
-        return tt_RET_IO_ERROR;
+    } else {
+        if (link_count() <= 1) {
+            note_reached(node, NULL, 0); // the HAL's one broadcast address; with several links it is not every link
+        }
+        if (tt_send_iov(node, head, head_len, body, body_len, 0, 0) < 0) {
+            return tt_RET_IO_ERROR;
+        }
     }
 
     pub->seq_no++;
@@ -5489,6 +5521,8 @@ static void send_discovery_summary(struct tt_Node* node) {
         return;
     }
     node->tx_has_pending_update = true; // broadcast-only, like the announce it replaces
+    bool alone = (uint32_t)((uint8_t*)submessage_header - node->tx_buffer) == sizeof(struct tt_Header);
+    node->tx_summary_alone_len = alone ? node->tx_tail : 0;
 }
 
 // How often this node's summary goes out: every tt_NODE_UPDATE_INTERVAL, or a tt_LIVELINESS_LEASE_DIVISOR-th of
@@ -5506,12 +5540,48 @@ static uint64_t summary_interval(const struct tt_Node* node) {
     return interval < tt_NODE_TX_INTERVAL ? tt_NODE_TX_INTERVAL : interval;
 }
 
+// Whether every peer this node knows of has had a datagram from it since the last summary tick, and clears
+// the record for the next one. Each such datagram asserted this node's AUTOMATIC liveliness at its receiver
+// (source_last_heard()), as the summary would have; MANUAL writers assert with their own DATA and HEARTBEAT.
+// False with no peer known, so a node alone keeps announcing itself.
+static bool every_peer_reached(struct tt_Node* node) {
+    bool everyone = __atomic_exchange_n(&node->reached_everyone, 0, __ATOMIC_RELAXED) != 0;
+    uint32_t reached[tt_MAX_ENDPOINT_COUNT / 32];
+    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT / 32; i++) {
+        reached[i] = __atomic_exchange_n(&node->reached_nodes[i], 0, __ATOMIC_RELAXED);
+    }
+    bool any_peer = false;
+    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        if (i == node->id || (!node->update_seen[i] && node->update_part_received[i] == 0)) {
+            continue;
+        }
+        any_peer = true;
+        if (!everyone && (reached[i / 32] & (1U << (i % 32))) == 0) {
+            return false;
+        }
+    }
+    return any_peer;
+}
+
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
-    send_discovery_summary(node);
+    // At the short-lease cadence (LIVELINESS_PLAN.md 10) a summary is skipped when the node's own traffic
+    // has already reached every peer since the last one: under traffic the last sign of life is then the
+    // data, as with DDS, rather than a summary tens of ms after it. The tt_NODE_UPDATE_INTERVAL summary, which
+    // also carries the discovery generation, always goes.
+    uint64_t interval = summary_interval(node);
+    bool reached = every_peer_reached(node);
+    bool keeps_the_second = interval >= tt_NODE_UPDATE_INTERVAL || node->summary_sent_ns == 0 ||
+                            time - node->summary_sent_ns + interval > tt_NODE_UPDATE_INTERVAL;
+    if (keeps_the_second || !reached) {
+        send_discovery_summary(node);
+        node->summary_sent_ns = time;
+    } else {
+        node->summaries_skipped++;
+    }
 
-    node->next_summary_ns = time + summary_interval(node);
+    node->next_summary_ns = time + interval;
     if (!tt_Node_schedule(node, node->next_summary_ns, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
     }

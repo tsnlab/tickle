@@ -222,3 +222,20 @@ summaries are 667 ms apart and the last datagram is almost always data, hence +0
 - Under traffic, the last sign of life is then the data, as in DDS, and fewer packets go out.
 - L2 is re-run with the same criteria. L3's idle case is unaffected (no data means every summary goes), and its data
   case is re-run too.
+
+**Implemented (Dev, 2026-09-27).** "Sent any datagram" had to become "reached every peer": a datagram addressed to
+one peer asserts nothing at another, whose lease would then run on the 1 s summary alone.
+- Each send records who it reaches (`note_reached()`): a broadcast, everyone; an addressed send, its peers (a bit
+  per node id). `node_update()` skips a short-lease summary only when every known peer is in that record, then
+  clears it. A node that knows no peer never skips.
+- A datagram holding only a summary is not counted, or each summary would cancel the next and halve an idle
+  node's cadence. The first build did exactly that, and the existing idle-lease test caught it.
+- The 1 s summary goes whenever skipping it would leave two more than `tt_NODE_UPDATE_INTERVAL` apart.
+- New counter `tt_Node.summaries_skipped`.
+- Tests: 100 ms data with a 1 s lease sends 9-11 summaries in 10 s, not ~60, with at least 45 skipped and no
+  lapse; idle afterwards, at least 17 in 3 s and no lapse; a peer not addressed keeps its summaries (whitebox,
+  three nodes); the MANUAL test now also asserts that summaries were skipped while its lease lapsed on time.
+  Mutants caught: always send; a summary alone counts as traffic; the 1 s summary skipped too; an addressed
+  send counted as reaching everyone.
+- **Residual, stated in advance:** the 1 s summary still goes under traffic, so once a second the last datagram
+  before a kill can be a summary up to one data period after the last sample.

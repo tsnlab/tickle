@@ -10,6 +10,10 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **Short-lease summaries give way to traffic** (LIVELINESS_PLAN.md 10). A summary at the lease/6 cadence
+  is skipped when every known peer has had a datagram from the node since the last tick; the
+  `tt_NODE_UPDATE_INTERVAL` summary always goes. Under traffic a lease then runs from the data, as with DDS.
+  New counter `tt_Node.summaries_skipped`. No wire change.
 - **`tt_Node_next_due()`**: when the node's earliest scheduled entry falls due, for a caller that waits on
   something other than `tt_Node_poll()` and must still run the node's timers on time (rmw_tickle's parked
   poll thread, RMW_PERF_PLAN.md 8.6). Until the next `tt_Node_poll()` starts, a `tt_Node_schedule()` from
