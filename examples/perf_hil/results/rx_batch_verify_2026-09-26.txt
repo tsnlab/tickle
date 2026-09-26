@@ -1,0 +1,18 @@
+=== receive-probe verification, 2026-09-26T17:19:10+09:00 ===
+before=559b91f68255f74bd581d410c9aa86a76316fe92   after=ef0c7ea014db15e5bb037cfe096fbc7ca0eaf555 (recvmmsg, up to 32 datagrams a call)
+
+--- building 559b91f68255f74bd581d410c9aa86a76316fe92 ---
+  identity: HEAD=559b91f68255f74bd581d410c9aa86a76316fe92 (wanted 559b91f68255f74bd581d410c9aa86a76316fe92)
+  BEFORE rep1 CLEAN   recv=949291 utime_s=0.818 stime_s=1.981 cpu_s_per_Msample=2.948 peak_rss_kb=1780 
+  BEFORE rep2 CLEAN   recv=941848 utime_s=0.725 stime_s=2.054 cpu_s_per_Msample=2.951 peak_rss_kb=1772 
+  BEFORE rep3 CLEAN   recv=950105 utime_s=0.793 stime_s=2.017 cpu_s_per_Msample=2.957 peak_rss_kb=1780 
+  BEFORE STRACE  recv=135266  recv_syscalls=144535  eagain=728  per_sample=1.069
+
+--- building ef0c7ea014db15e5bb037cfe096fbc7ca0eaf555 ---
+  identity: HEAD=ef0c7ea014db15e5bb037cfe096fbc7ca0eaf555 (wanted ef0c7ea014db15e5bb037cfe096fbc7ca0eaf555)
+  AFTER rep1 CLEAN   recv=947058 utime_s=0.497 stime_s=1.874 cpu_s_per_Msample=2.503 peak_rss_kb=1812 
+  AFTER rep2 CLEAN   recv=940439 utime_s=0.468 stime_s=1.881 cpu_s_per_Msample=2.498 peak_rss_kb=1824 
+  AFTER rep3 CLEAN   recv=945922 utime_s=0.511 stime_s=1.859 cpu_s_per_Msample=2.506 peak_rss_kb=1828 
+  AFTER STRACE  recv=937479  recv_syscalls=52550  eagain=1  per_sample=0.056
+
+=== done ===

@@ -142,3 +142,9 @@ result for less memory. That is a sizing choice, recorded, and not a defect.
 morning's poll change, the settling run is 10 repetitions per arm. **Pre-registered: the drift is real
 if |mean_after - mean_before| exceeds twice the combined standard error, and not resolved otherwise.**
 A real regression fires the kill criterion, whatever the CPU saving.
+
+Strace cross-check (`results/rx_batch_verify_2026-09-26.txt`, same build pair): receive syscalls per sample
+**1.069 → 0.056**, EAGAIN 728 → 1; unstraced server `cpu_s_per_Msample` 2.95 → 2.50 (-15%), matching the
+campaign. The straced figure is lower than the counter's 0.137 because strace slows the receiver and
+fuller batches result - both are far inside the <= 0.8 pre-registration. The latency item stays open until
+the 10-repetition pair reports.
