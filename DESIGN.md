@@ -438,6 +438,11 @@ would have left 6 B of margin, inside the noise.
   sent, by one routine used by publish, retransmission and durability backlog alike, and each
   fragment's CDR is sent straight from where the record lies through the HAL's scatter-gather send.
   Nothing is copied to be split.
+- All of a sample's fragments to one destination go in one `tt_send_batch()`, which is one
+  `sendmmsg()` on Linux. A fragmented sample therefore costs the single send system call it cost
+  whole: strace on veth counted 60,199 `sendmmsg` calls for 60,199 p4 samples. The same call
+  carries one datagram to several unicast peers. One datagram to one destination is not batched
+  and keeps the path it always had, which is what p1 to p3 use.
 - The original is padded to 4 as the cached record is, so an original and its retransmission always
   agree on the fragment count. Otherwise a retransmission could never complete a slot the original
   had started.

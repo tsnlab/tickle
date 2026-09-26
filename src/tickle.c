@@ -333,6 +333,16 @@ static bool send_datagram_to(struct tt_Node* node, const struct tx_datagram* dgr
     return tt_send_to(node, dgram->head, dgram->head_len, ip, port) >= 0;
 }
 
+// Where one datagram goes, as ip/port with ip 0 meaning the HAL's own broadcast address. The routing
+// below decides these once, and the send that follows is the only thing that differs between one
+// destination and several.
+struct tx_destination {
+    uint32_t ip;
+    uint16_t port;
+};
+// Every link's broadcast, or every peer: the most either rule below can produce.
+#define TX_MAX_DESTINATIONS (tt_MAX_LINK_COUNT > tt_MAX_PEER_COUNT ? tt_MAX_LINK_COUNT : tt_MAX_PEER_COUNT)
+
 // Broadcast, when there is no addressable peer set: either nobody is known yet, or the caller has
 // batched submessages for different peers into one buffer and cannot aim it. Goes out on every
 // link, because this is how a node is discovered at all and its peers may be on any of them.
@@ -341,25 +351,24 @@ static bool send_datagram_to(struct tt_Node* node, const struct tx_datagram* dgr
 // optimisation: it keeps the single-link case - every deployment that has not configured links[],
 // which is all of them today - on exactly the path it used before per-link existed, rather than on
 // a new one that happens to be equivalent.
-static bool broadcast_all_links(struct tt_Node* node, const struct tx_datagram* dgram) {
+static uint8_t broadcast_destinations(struct tx_destination* out) {
     if (link_count() <= 1) {
-        return send_datagram_to(node, dgram, 0, 0);
+        out[0] = (struct tx_destination) {0, 0};
+        return 1;
     }
     for (uint8_t i = 0; i < link_count(); i++) {
-        if (!send_datagram_to(node, dgram, _tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port)) {
-            return false;
-        }
+        out[i] = (struct tx_destination) {_tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port};
     }
-    return true;
+    return link_count();
 }
 
 // One link's share of an addressed buffer: unicast to its peers while there are few enough of
 // them, one broadcast once there are not. Per link rather than across the whole peer set because
 // the right answer differs by medium - five subscribers on a 10Base-T1S segment and one on
 // Ethernet want opposite answers, and a single count across both loses on whichever it is not
-// sized for.
-static bool send_to_link(struct tt_Node* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
-                         uint8_t peer_count, uint8_t link_index) {
+// sized for. Appends to out[] after the `written` entries already there and returns the new count.
+static uint8_t link_destinations(const struct tt_Peer* peers, uint8_t peer_count, uint8_t link_index,
+                                 struct tx_destination* out, uint8_t written) {
     uint8_t on_link = 0;
     for (uint8_t i = 0; i < peer_count; i++) {
         if (link_of_ip(peers[i].ip) == link_index) {
@@ -367,41 +376,60 @@ static bool send_to_link(struct tt_Node* node, const struct tx_datagram* dgram, 
         }
     }
     if (on_link == 0) {
-        return true; // nobody known on this link, and this buffer is for known peers
+        return written; // nobody known on this link, and this buffer is for known peers
     }
 
     if (on_link > _tt_CONFIG.links[link_index].unicast_threshold) {
         if (link_count() <= 1) {
-            return send_datagram_to(node, dgram, 0, 0);
+            out[written] = (struct tx_destination) {0, 0};
+        } else {
+            out[written] =
+                (struct tx_destination) {_tt_CONFIG.links[link_index].resolved_broadcast, (uint16_t)_tt_CONFIG.port};
         }
-        return send_datagram_to(node, dgram, _tt_CONFIG.links[link_index].resolved_broadcast,
-                                (uint16_t)_tt_CONFIG.port);
+        return (uint8_t)(written + 1);
     }
 
-    for (uint8_t i = 0; i < peer_count; i++) {
-        if (link_of_ip(peers[i].ip) != link_index) {
-            continue;
-        }
-        if (!send_datagram_to(node, dgram, peers[i].ip, peers[i].port)) {
-            return false;
+    for (uint8_t i = 0; i < peer_count && written < TX_MAX_DESTINATIONS; i++) {
+        if (link_of_ip(peers[i].ip) == link_index) {
+            out[written++] = (struct tx_destination) {peers[i].ip, peers[i].port};
         }
     }
-    return true;
+    return written;
 }
 
-// One datagram to the peers a flush would send it to: broadcast when peer_count is 0, otherwise each
-// link's share of them (send_to_link()).
+// Where a flush sends its datagram: broadcast when peer_count is 0, otherwise each link's share of the
+// peers (link_destinations()). Returns how many destinations were written to out[].
+static uint8_t tx_destinations(const struct tt_Peer* peers, uint8_t peer_count, struct tx_destination* out) {
+    if (peer_count == 0) {
+        return broadcast_destinations(out);
+    }
+    uint8_t written = 0;
+    for (uint8_t i = 0; i < link_count(); i++) {
+        written = link_destinations(peers, peer_count, i, out, written);
+    }
+    return written;
+}
+
+// One datagram to the destinations a flush would send it to. To one destination it goes exactly as it always
+// has, through send_datagram_to(); to several - peers on one link, or one broadcast per link - it goes as one
+// tt_send_batch(), so that sending the same bytes to more peers stops costing a system call per peer.
 static bool send_datagram(struct tt_Node* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
                           uint8_t peer_count) {
-    if (peer_count == 0) {
-        return broadcast_all_links(node, dgram);
+    struct tx_destination destinations[TX_MAX_DESTINATIONS];
+    uint8_t count = tx_destinations(peers, peer_count, destinations);
+    if (count == 0) {
+        return true; // addressed peers, none on any link: nothing to send, as before
     }
-    for (uint8_t i = 0; i < link_count(); i++) {
-        if (!send_to_link(node, dgram, peers, peer_count, i)) {
-            return false;
-        }
+    if (count == 1) {
+        return send_datagram_to(node, dgram, destinations[0].ip, destinations[0].port);
     }
-    return true;
+    struct tt_OutDatagram batch[TX_MAX_DESTINATIONS];
+    for (uint8_t i = 0; i < count; i++) {
+        batch[i] = (struct tt_OutDatagram) {dgram->head,     dgram->head_len,    dgram->body,
+                                            dgram->body_len, destinations[i].ip, destinations[i].port};
+    }
+    node->tx_datagrams += count;
+    return tt_send_batch(node, batch, count) >= 0;
 }
 
 static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count) {
@@ -490,10 +518,16 @@ _Static_assert(1 + ((FRAG_MAX_CDR - FRAG_FIRST_PAYLOAD + FRAG_CONT_PAYLOAD - 1) 
 _Static_assert(FRAG_FIRST_PAYLOAD + tt_FRAG_FIRST_SHORTFALL == FRAG_CONT_PAYLOAD,
                "fragment 0 must carry exactly tt_FRAG_FIRST_SHORTFALL fewer bytes - the receiver relies on it");
 
-// Sends one sample as fragments, each its own datagram, to the peers a flush would use (send_datagram()).
-// The CDR is read from where it lies - tx_buffer, the reliable cache or the caller's own memory - and
-// only the framing is built here. receiver goes into every fragment's submessage header, as a DATA's
-// would carry it. Only for a sample that no DATA could carry, so there are always at least two.
+// Sends one sample as fragments, each its own datagram, to the destinations a flush would use
+// (tx_destinations()). The CDR is read from where it lies - tx_buffer, the reliable cache or the caller's
+// own memory - and only the framing is built here, once for every destination. receiver goes into every
+// fragment's submessage header, as a DATA's would carry it. Only for a sample that no DATA could carry, so
+// there are always at least two.
+//
+// All of a sample's fragments to one destination go in one tt_send_batch() - one sendmmsg() on Linux -
+// which is what returns a fragmented sample to the single send system call it cost before it had to be
+// fragmented (DATAFRAG_PLAN.md 6.5, step 3). Destination by destination, so each receiver gets a sample's
+// fragments back to back.
 static bool send_fragments(struct tt_Node* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
                            uint32_t cdr_len, uint8_t receiver, const struct tt_Peer* peers, uint8_t peer_count) {
     if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
@@ -503,46 +537,55 @@ static bool send_fragments(struct tt_Node* node, const struct tt_DataHeader* dat
     }
     uint32_t count = 1 + ((cdr_len - FRAG_FIRST_PAYLOAD + FRAG_CONT_PAYLOAD - 1) / FRAG_CONT_PAYLOAD);
 
-    tt_ALIGNAS(4) uint8_t framing[FRAG_FRAMING_LENGTH + sizeof(struct tt_FragFirstHeader)];
-    struct tt_Header* header = (struct tt_Header*)framing;
-    header->magic_value = NATIVE_MAGIC_VALUE;
-    header->version = tt_VERSION;
-    header->source = node->id;
-    struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)(framing + sizeof(struct tt_Header));
-    submessage_header->receiver = receiver;
-
-    submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_FIRST;
-    submessage_header->length =
-        (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragFirstHeader) + FRAG_FIRST_PAYLOAD);
-    struct tt_FragFirstHeader* first = (struct tt_FragFirstHeader*)(framing + FRAG_FRAMING_LENGTH);
-    _tt_memcpy(&first->data, data_header, sizeof(struct tt_DataHeader));
-    first->frag_count = (uint8_t)count;
-    struct tx_datagram dgram = {framing, FRAG_FRAMING_LENGTH + sizeof(struct tt_FragFirstHeader), cdr,
-                                FRAG_FIRST_PAYLOAD};
-    if (!send_datagram(node, &dgram, peers, peer_count)) {
-        return false;
+    // One framing per fragment: header, submessage header, and the fragment header.
+    uint8_t framings[tt_FRAG_MAX_COUNT][FRAG_FRAMING_LENGTH + sizeof(struct tt_FragFirstHeader)];
+    struct tt_OutDatagram batch[tt_FRAG_MAX_COUNT];
+    uint32_t offset = 0;
+    for (uint32_t index = 0; index < count; index++) {
+        uint8_t* framing = framings[index];
+        struct tt_Header* header = (struct tt_Header*)framing;
+        header->magic_value = NATIVE_MAGIC_VALUE;
+        header->version = tt_VERSION;
+        header->source = node->id;
+        struct tt_SubmessageHeader* submessage_header =
+            (struct tt_SubmessageHeader*)(framing + sizeof(struct tt_Header));
+        submessage_header->receiver = receiver;
+        uint32_t fragment_header_length;
+        uint32_t length;
+        if (index == 0) {
+            struct tt_FragFirstHeader* first = (struct tt_FragFirstHeader*)(framing + FRAG_FRAMING_LENGTH);
+            _tt_memcpy(&first->data, data_header, sizeof(struct tt_DataHeader));
+            first->frag_count = (uint8_t)count;
+            submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_FIRST;
+            fragment_header_length = sizeof(struct tt_FragFirstHeader);
+            length = FRAG_FIRST_PAYLOAD;
+        } else {
+            struct tt_FragContHeader* cont = (struct tt_FragContHeader*)(framing + FRAG_FRAMING_LENGTH);
+            cont->entity_id = data_header->entity_id;
+            cont->seq_no = data_header->seq_no;
+            cont->frag_index = (uint8_t)index;
+            cont->frag_count = (uint8_t)count;
+            submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_CONT;
+            fragment_header_length = sizeof(struct tt_FragContHeader);
+            length = cdr_len - offset < FRAG_CONT_PAYLOAD ? cdr_len - offset : FRAG_CONT_PAYLOAD;
+        }
+        submessage_header->length = (uint16_t)(sizeof(struct tt_SubmessageHeader) + fragment_header_length + length);
+        batch[index] =
+            (struct tt_OutDatagram) {framing, FRAG_FRAMING_LENGTH + fragment_header_length, cdr + offset, length, 0, 0};
+        offset += length;
     }
 
-    uint32_t entity_id = data_header->entity_id;
-    uint32_t seq_no = data_header->seq_no;
-    struct tt_FragContHeader* cont = (struct tt_FragContHeader*)(framing + FRAG_FRAMING_LENGTH);
-    submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_CONT;
-    uint32_t offset = FRAG_FIRST_PAYLOAD;
-    for (uint32_t index = 1; index < count; index++) {
-        uint32_t length = cdr_len - offset < FRAG_CONT_PAYLOAD ? cdr_len - offset : FRAG_CONT_PAYLOAD;
-        submessage_header->length =
-            (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader) + length);
-        cont->entity_id = entity_id;
-        cont->seq_no = seq_no;
-        cont->frag_index = (uint8_t)index;
-        cont->frag_count = (uint8_t)count;
-        dgram.head_len = FRAG_FRAMING_LENGTH + sizeof(struct tt_FragContHeader);
-        dgram.body = cdr + offset;
-        dgram.body_len = length;
-        if (!send_datagram(node, &dgram, peers, peer_count)) {
+    struct tx_destination destinations[TX_MAX_DESTINATIONS];
+    uint8_t destination_count = tx_destinations(peers, peer_count, destinations);
+    for (uint8_t dest = 0; dest < destination_count; dest++) {
+        for (uint32_t index = 0; index < count; index++) {
+            batch[index].ip = destinations[dest].ip;
+            batch[index].port = destinations[dest].port;
+        }
+        node->tx_datagrams += count;
+        if (tt_send_batch(node, batch, count) < 0) {
             return false;
         }
-        offset += length;
     }
     return true;
 }

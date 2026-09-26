@@ -171,6 +171,15 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
     return send_all(node, hdr, hdr_len, body, body_len);
 }
 
+int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        if (send_all(node, datagrams[i].head, datagrams[i].head_len, datagrams[i].body, datagrams[i].body_len) < 0) {
+            return -1;
+        }
+    }
+    return (int32_t)count;
+}
+
 // Called with q->lock held and a datagram waiting.
 static int32_t pop_locked(struct queue* q, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct datagram* d = &q->slots[q->head];

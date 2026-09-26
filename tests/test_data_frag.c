@@ -449,6 +449,78 @@ static void test_zero_copy_publish_fragments_too(void) {
     expect_delivered_once(2800);
 }
 
+// --- system calls: the batching that makes a fragmented sample cost one send again -------------------
+
+static void set_peers(uint8_t n) {
+    for (uint8_t i = 0; i < n; i++) {
+        pub.peers[i] = (struct tt_Peer) {.ip = RECEIVER_IP + i, .port = PORT, .node_id = (uint8_t)(RECEIVER_ID + i)};
+    }
+}
+
+static void test_a_fragmented_sample_is_one_batch_per_destination(void) {
+    // Broadcast: both fragments in one tt_send_batch() - one sendmmsg() on Linux, where each fragment used
+    // to be its own sendmsg().
+    init_pair(2800);
+    publish_captured();
+    EXPECT_EQ_INT(2, datagram_count);
+    EXPECT_EQ_INT(1, test_mock_send_batch_call_count);
+    EXPECT_EQ_U64(2, sender.tx_datagrams);
+
+    // Two unicast peers: one batch each, carrying the whole sample, so each receiver gets its fragments
+    // back to back.
+    init_pair(2800);
+    set_peers(2);
+    publish_captured();
+    EXPECT_EQ_INT(4, datagram_count);
+    EXPECT_EQ_INT(2, test_mock_send_batch_call_count);
+    EXPECT_EQ_INT(4, test_mock_send_to_call_count);
+    EXPECT_EQ_U32(RECEIVER_IP, test_mock_send_to_ips[0]);
+    EXPECT_EQ_U32(RECEIVER_IP, test_mock_send_to_ips[1]);
+    EXPECT_EQ_U32(RECEIVER_IP + 1, test_mock_send_to_ips[2]);
+    EXPECT_EQ_U32(RECEIVER_IP + 1, test_mock_send_to_ips[3]);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_FRAG_FIRST, submessage_of(2)->type);
+    EXPECT_EQ_U64(4, sender.tx_datagrams);
+}
+
+static void test_one_datagram_to_one_destination_is_not_batched(void) {
+    // Control, and the p1-p3 promise: a sample that fits one datagram, sent to one destination, takes the
+    // path it always took - no batch - whether broadcast or unicast.
+    init_pair(1000);
+    publish_captured();
+    EXPECT_EQ_INT(1, datagram_count);
+    EXPECT_EQ_INT(0, test_mock_send_batch_call_count);
+
+    init_pair(1000);
+    set_peers(1);
+    publish_captured();
+    EXPECT_EQ_INT(1, datagram_count);
+    EXPECT_EQ_INT(0, test_mock_send_batch_call_count);
+    EXPECT_EQ_INT(1, test_mock_send_to_call_count);
+}
+
+static void test_one_datagram_to_several_peers_is_one_batch(void) {
+    // The flush path's own case for sendmmsg: the same bytes to each unicast peer.
+    init_pair(1000);
+    set_peers(2);
+    publish_captured();
+    EXPECT_EQ_INT(2, datagram_count);
+    EXPECT_EQ_INT(1, test_mock_send_batch_call_count);
+    EXPECT_EQ_INT(2, test_mock_send_to_call_count);
+    EXPECT_EQ_U64(2, sender.tx_datagrams);
+    deliver(0);
+    expect_delivered_once(1000);
+}
+
+static void test_a_failed_batch_fails_the_publish(void) {
+    init_pair(2800);
+    test_mock_send_return_override = true;
+    test_mock_send_return = -1;
+    start_capture();
+    EXPECT_EQ_INT(tt_RET_IO_ERROR, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_EQ_U32(0, pub.seq_no);
+    EXPECT_EQ_U32(sizeof(struct tt_Header), sender.tx_tail); // nothing left behind in tx_buffer
+}
+
 // Rewrites captured datagram d as a node of the opposite byte order would have sent it: every framing
 // field swapped and the header stamped REVERSE. The payload is the codec's business and is left alone.
 static void make_reverse_endian(int d) {
@@ -786,6 +858,10 @@ int main(void) {
     test_original_and_retransmission_agree_on_fragment_count();
     test_durability_backlog_sends_fragmented_samples();
     test_reverse_endian_fragments_reassemble();
+    test_a_fragmented_sample_is_one_batch_per_destination();
+    test_one_datagram_to_one_destination_is_not_batched();
+    test_one_datagram_to_several_peers_is_one_batch();
+    test_a_failed_batch_fails_the_publish();
     test_lossless_link_sends_two_datagrams_a_sample();
     test_lossy_link_recovers_every_sample();
 

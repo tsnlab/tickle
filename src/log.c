@@ -8,6 +8,11 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
+// localtime_r() is POSIX, not ISO C: declared under a strict -std=c11 only when asked for. Before any
+// include, as feature-test macros must be.
+// NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
+#define _POSIX_C_SOURCE 200112L
+
 #include "log.h"
 
 #include <stdarg.h>
@@ -54,13 +59,16 @@ void tt_log_internal(tt_LogLevel level, const char* level_str, const char* forma
     FILE* output = tt_log_output ? tt_log_output : stderr;
 
     // Get current time
+    // localtime_r(), not localtime(): localtime() returns one static struct tm shared by every thread, so
+    // two nodes logging at once on two threads could each format the other's time - a real race, found by
+    // test_thread_safety under TSan (2026-09-26).
     time_t now;
-    struct tm* timeinfo;
+    struct tm timeinfo;
     char time_str[log_time_string_length];
 
     time(&now);
-    timeinfo = localtime(&now);
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", timeinfo);
+    localtime_r(&now, &timeinfo);
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &timeinfo);
 
     // Print timestamp and log level
     fprintf(output, "[%s] [%s] ", time_str, level_str);

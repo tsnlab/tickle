@@ -429,6 +429,48 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
     return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
 }
 
+// Datagrams per sendmmsg() call. A sample's fragments (at most tt_FRAG_MAX_COUNT) always fit one call; a
+// longer batch takes several, in order.
+#define TT_SEND_BATCH_CHUNK 64
+
+int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+    uint32_t sent = 0;
+    while (sent < count) {
+        uint32_t chunk = count - sent < TT_SEND_BATCH_CHUNK ? count - sent : TT_SEND_BATCH_CHUNK;
+        struct mmsghdr msgs[TT_SEND_BATCH_CHUNK];
+        // NOLINTNEXTLINE(misc-include-cleaner) - see <sys/uio.h>'s own include comment
+        struct iovec iov[TT_SEND_BATCH_CHUNK][2];
+        struct sockaddr_in addrs[TT_SEND_BATCH_CHUNK];
+        memset(msgs, 0, sizeof(msgs[0]) * chunk);
+        for (uint32_t i = 0; i < chunk; i++) {
+            const struct tt_OutDatagram* datagram = &datagrams[sent + i];
+            iov[i][0].iov_base = (void*)datagram->head;
+            iov[i][0].iov_len = datagram->head_len;
+            iov[i][1].iov_base = (void*)datagram->body;
+            iov[i][1].iov_len = datagram->body_len;
+            msgs[i].msg_hdr.msg_iov = iov[i];
+            msgs[i].msg_hdr.msg_iovlen = datagram->body_len != 0 ? 2 : 1;
+            if (datagram->ip != 0) {
+                memset(&addrs[i], 0, sizeof(addrs[i]));
+                addrs[i].sin_family = AF_INET;
+                addrs[i].sin_addr.s_addr = htonl(datagram->ip);
+                addrs[i].sin_port = htons(datagram->port);
+                msgs[i].msg_hdr.msg_name = &addrs[i];
+                msgs[i].msg_hdr.msg_namelen = sizeof(addrs[i]);
+            } else {
+                msgs[i].msg_hdr.msg_name = &node->hal.broadcast_addr;
+                msgs[i].msg_hdr.msg_namelen = sizeof(node->hal.broadcast_addr);
+            }
+        }
+        int result = sendmmsg(node->hal.data_sock, msgs, chunk, 0);
+        if (result <= 0) {
+            return -1; // errno says why; a 0 would otherwise loop forever
+        }
+        sent += (uint32_t)result;
+    }
+    return (int32_t)count;
+}
+
 // Bits of struct tt_hal.rx_idle - see tt_try_receive().
 #define TT_RX_IDLE_WELL_KNOWN 1U
 #define TT_RX_IDLE_DATA 2U

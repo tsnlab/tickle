@@ -131,6 +131,24 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
 // data_encode_inplace.
 int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port);
+
+// One datagram for tt_send_batch(): `head`, followed by `body` unless body_len is 0, to ip/port - or, with ip
+// 0, to the node's usual broadcast address, the convention tt_send_iov() uses.
+struct tt_OutDatagram {
+    const void* head;
+    size_t head_len;
+    const void* body;
+    size_t body_len;
+    uint32_t ip;
+    uint16_t port;
+};
+
+// Sends `count` datagrams in order, in as few system calls as the platform allows: sendmmsg() on Linux, one
+// send each where there is no such call. Returns count, or a negative value if any failed, in which case
+// that datagram and every one after it may be unsent. Used where core has several datagrams ready at once
+// - a sample's fragments, or one datagram to several peers - so that the number of system calls stops
+// following the number of datagrams.
+int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count);
 /**
  * @timeout I/O timeout in nanoseconds, -1 for use default timeout value, 0 for no timeout
  * @return received bytes, -1 for timeout, -3 if woken by tt_wake_signal() rather than data,

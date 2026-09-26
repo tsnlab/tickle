@@ -273,6 +273,26 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
     return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
 }
 
+// lwIP has no sendmmsg(), so a batch is one send each - the same number of calls core made before batching.
+int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+    for (uint32_t i = 0; i < count; i++) {
+        const struct tt_OutDatagram* datagram = &datagrams[i];
+        int32_t result;
+        if (datagram->body_len != 0) {
+            result = tt_send_iov(node, datagram->head, datagram->head_len, datagram->body, datagram->body_len,
+                                 datagram->ip, datagram->port);
+        } else if (datagram->ip == 0) {
+            result = tt_send(node, datagram->head, datagram->head_len);
+        } else {
+            result = tt_send_to(node, datagram->head, datagram->head_len, datagram->ip, datagram->port);
+        }
+        if (result < 0) {
+            return result;
+        }
+    }
+    return (int32_t)count;
+}
+
 // tt_receive()'s wait: select() on both sockets and the wake socket for up to `timeout` (0 = no
 // timeout), and pick which socket the read that follows should use. Returns 0 when a datagram is ready
 // (with *read_fd set), otherwise the value tt_receive() returns: -1 timeout, -2 I/O error, -3 woken by

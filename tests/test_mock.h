@@ -53,6 +53,9 @@ int test_mock_send_call_count = 0;
 // shouldn't need to care which of the two actually carried it) - these track the unicast call
 // specifically, for a test that cares whether the destination was right.
 int test_mock_send_to_call_count = 0;
+// tt_send_batch() calls - the system calls a batch costs on Linux - where test_mock_send_call_count still counts
+// each datagram in it, through the per-datagram functions a batch is dispatched to.
+int test_mock_send_batch_call_count = 0;
 uint32_t test_mock_send_to_last_ip = 0;
 // Every destination this run sent to, in order. The last_ip/last_port pair answers "where did that
 // one go"; a per-link test needs "where did all of them go", because the whole point is that one
@@ -89,6 +92,7 @@ extern bool test_mock_send_return_override;
 extern int32_t test_mock_send_return;
 extern int test_mock_send_call_count;
 extern int test_mock_send_to_call_count;
+extern int test_mock_send_batch_call_count;
 extern uint32_t test_mock_send_to_last_ip;
 #define TEST_MOCK_MAX_SENDS 16
 extern uint32_t test_mock_send_to_ips[TEST_MOCK_MAX_SENDS];
@@ -114,6 +118,7 @@ static inline void test_mock_reset(void) {
     test_mock_send_return = 0;
     test_mock_send_call_count = 0;
     test_mock_send_to_call_count = 0;
+    test_mock_send_batch_call_count = 0;
     test_mock_send_to_last_ip = 0;
     test_mock_send_to_ip_count = 0;
     for (int i = 0; i < TEST_MOCK_MAX_SENDS; i++) {
@@ -263,6 +268,28 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
         return test_mock_send_return;
     }
     return (int32_t)(hdr_len + body_len);
+}
+
+// One call, dispatched to the per-datagram mocks above so that every counter and capture sees each datagram
+// exactly as it would have seen it sent alone - a test that counts tt_send() against tt_send_to() still can.
+int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagrams, uint32_t count) {
+    test_mock_send_batch_call_count++;
+    for (uint32_t i = 0; i < count; i++) {
+        const struct tt_OutDatagram* datagram = &datagrams[i];
+        int32_t result;
+        if (datagram->body_len != 0) {
+            result = tt_send_iov(node, datagram->head, datagram->head_len, datagram->body, datagram->body_len,
+                                 datagram->ip, datagram->port);
+        } else if (datagram->ip == 0) {
+            result = tt_send(node, datagram->head, datagram->head_len);
+        } else {
+            result = tt_send_to(node, datagram->head, datagram->head_len, datagram->ip, datagram->port);
+        }
+        if (result < 0) {
+            return result;
+        }
+    }
+    return (int32_t)count;
 }
 
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
