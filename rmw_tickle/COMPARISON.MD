@@ -1392,6 +1392,11 @@ RTPS the way CycloneDDS and TickLE do:
   reliable_throughput RESULT line says `transport_profile=`.
 - The change matters only where a sample exceeds one datagram, which is p3 and p4. At p1 and p2 the
   two profiles send identical datagrams.
+- **At p3 the three frameworks now send different packet counts, and that is expected** (Dev's
+  arithmetic). Tuned FastDDS's p3 message is about 1,484 B: RTPS 20 + INFO_TS 12 + DATA ~24 +
+  encapsulation 4 + 1,424. That exceeds 1,472, so FastDDS splits p3 in two in RTPS. CycloneDDS
+  already splits p3 at its 1,344 B FragmentSize, and TickLE sends p3 whole, since its limit is
+  1,444 B. A shift in FastDDS's p3 row between the two profiles is this, not noise.
 
 Pre-registered before the tuned runs:
 - **Mechanism, p4 without loss:** the server's kernel reassembly requests per sample fall from 2.98 to
