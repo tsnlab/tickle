@@ -1,0 +1,12 @@
+=== discovery join, 2026-09-26T21:42:06+09:00, core 41fa005f, N=8 E=4 count=10 ===
+join 1 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=1.6 dips=0 last_change_ms=1.6 complete_at_exit=1
+join 2 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=2.0 dips=0 last_change_ms=2.0 complete_at_exit=1
+join 3 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=1.6 dips=0 last_change_ms=1.6 complete_at_exit=1
+join 4 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=1.8 dips=0 last_change_ms=1.8 complete_at_exit=1
+join 5 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=1.8 dips=0 last_change_ms=1.8 complete_at_exit=1
+join 6 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=2.0 dips=0 last_change_ms=2.0 complete_at_exit=1
+join 7 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=1.6 dips=0 last_change_ms=1.6 complete_at_exit=1
+join 8 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=1.6 dips=0 last_change_ms=1.6 complete_at_exit=1
+join 9 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=2.0 dips=0 last_change_ms=2.0 complete_at_exit=1
+join 10 | ok | node=8 endpoints=4 seconds=8 expected=28 reached_ms=1.8 dips=0 last_change_ms=1.8 complete_at_exit=1
+=== done ===

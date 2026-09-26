@@ -129,3 +129,47 @@ over 30 s after a 5 s warm-up; 2 repetitions, 18 rows, 0 void. The repetitions a
   against 35,213 measured.
 - **The premise holds**, so the change proceeds. M2's pass criteria are unchanged: at E = 32 and N ≥ 8,
   at most 1/3 of these; at N = 2 and E = 4, within +10% of 385 B/s received.
+
+## 7. M2, M3 and M5 results (2026-09-26, `d732139b` against `41fa005f`)
+
+Raw rows: `results/discovery_scaling_M2_*`, `results/discovery_M3_*`, `results/discovery_M5_*`.
+
+**M2 passes.** Same grid and tool as M1, 18 rows, 0 void. Per node, received bytes/s:
+
+| | before (M1) | after | ratio |
+|---|---:|---:|---:|
+| N = 16, E = 32 | 35,213 | 1,085-1,105 | 3.1% |
+| N = 8, E = 32 | 16,455 | 538-546 | 3.3% |
+| N = 2, E = 4 | 385-399 | 119-121 | 30% |
+
+Traffic no longer depends on E: ~75 B per summary, headers included.
+
+**M3 passes.** N = 8, 10 joins, core and tool at `-Dtt_MAX_DISCOVERED_ENTITIES=512`. Median time from a
+joining node's start to holding every peer's endpoints:
+- E = 4: 1.8 ms before, 1.8 ms after;
+- E = 32: 1.2 ms before, 1.9 ms after.
+Both are within +5 ms. With no loss, the change-push and first-contact reply make a join one exchange.
+
+**M5 fails, marginally, and has one unexplained anomaly.** N = 8, E = 32, 5% netem loss on every
+interface, 3 repetitions (24 nodes each):
+- **Convergence bound missed by 0.8 ms.** Before the change, the slowest node converged at 999.2 ms.
+  After it, one node took **2,000.8 ms** (the next slowest 1,000.4), against a pre-registered 2 s. This
+  is the design's own cost:
+  - v7 carried the full list in every periodic packet, so any one received announce was enough;
+  - v8 needs summary → request → list, and a lost packet in that exchange waits for the next summary,
+    +1 s.
+  It is recorded as a fail, not rounded to a pass.
+- **Two dips during the run after the change, none before.** Rep 3, nodes 1 and 3, both recovered at
+  the same instant (33,006 ms). The loss is netem on each sender's egress, so a lost summary is lost for
+  every receiver alike. A dip seen by 2 of 7 observers is therefore not a sender's summary loss. The
+  cause is not known.
+- **Tool flaw, corrected in the reading:** before the change, 3 nodes read "incomplete at exit" with
+  their last change at ~40,004 ms, which is the shutdown itself: peers' goodbyes arrive while each node
+  exits. That is the tool measuring shutdown, so it is not held against either version. The tool will
+  judge completeness before the exits begin.
+
+**Follow-up (Dev):**
+- a request that went unanswered is retried after a short delay (a few `tt_NODE_TX_INTERVAL`), not at
+  the next summary, which restores a one-interval bound under loss;
+- find the cause of the two-observer dip.
+M5 is re-run after both.

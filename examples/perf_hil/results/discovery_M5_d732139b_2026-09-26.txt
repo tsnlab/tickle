@@ -1,0 +1,26 @@
+=== discovery loss, 2026-09-26T21:51:00+09:00, core d732139b, N=8 E=32 count=3 loss=5% ===
+rep1 node1 | ok | node=1 endpoints=32 seconds=40 expected=224 reached_ms=4.3 dips=0 last_change_ms=4.3 complete_at_exit=1
+rep1 node2 | ok | node=2 endpoints=32 seconds=40 expected=224 reached_ms=3.9 dips=0 last_change_ms=3.9 complete_at_exit=1
+rep1 node3 | ok | node=3 endpoints=32 seconds=40 expected=224 reached_ms=3.3 dips=0 last_change_ms=3.3 complete_at_exit=1
+rep1 node4 | ok | node=4 endpoints=32 seconds=40 expected=224 reached_ms=3.2 dips=0 last_change_ms=3.2 complete_at_exit=1
+rep1 node5 | ok | node=5 endpoints=32 seconds=40 expected=224 reached_ms=3.2 dips=0 last_change_ms=3.2 complete_at_exit=1
+rep1 node6 | ok | node=6 endpoints=32 seconds=40 expected=224 reached_ms=3.1 dips=0 last_change_ms=3.1 complete_at_exit=1
+rep1 node7 | ok | node=7 endpoints=32 seconds=40 expected=224 reached_ms=1000.4 dips=0 last_change_ms=1000.4 complete_at_exit=1
+rep1 node8 | ok | node=8 endpoints=32 seconds=40 expected=224 reached_ms=2000.8 dips=0 last_change_ms=2000.8 complete_at_exit=1
+rep2 node1 | ok | node=1 endpoints=32 seconds=40 expected=224 reached_ms=1.2 dips=0 last_change_ms=1.2 complete_at_exit=1
+rep2 node2 | ok | node=2 endpoints=32 seconds=40 expected=224 reached_ms=1.2 dips=0 last_change_ms=1.2 complete_at_exit=1
+rep2 node3 | ok | node=3 endpoints=32 seconds=40 expected=224 reached_ms=1.9 dips=0 last_change_ms=1.9 complete_at_exit=1
+rep2 node4 | ok | node=4 endpoints=32 seconds=40 expected=224 reached_ms=1.4 dips=0 last_change_ms=1.4 complete_at_exit=1
+rep2 node5 | ok | node=5 endpoints=32 seconds=40 expected=224 reached_ms=1.3 dips=0 last_change_ms=1.3 complete_at_exit=1
+rep2 node6 | ok | node=6 endpoints=32 seconds=40 expected=224 reached_ms=1.7 dips=0 last_change_ms=1.7 complete_at_exit=1
+rep2 node7 | ok | node=7 endpoints=32 seconds=40 expected=224 reached_ms=1.5 dips=0 last_change_ms=1.5 complete_at_exit=1
+rep2 node8 | ok | node=8 endpoints=32 seconds=40 expected=224 reached_ms=1.2 dips=0 last_change_ms=1.2 complete_at_exit=1
+rep3 node1 | ok | node=1 endpoints=32 seconds=40 expected=224 reached_ms=1.8 dips=1 last_change_ms=33006.2 complete_at_exit=1
+rep3 node2 | ok | node=2 endpoints=32 seconds=40 expected=224 reached_ms=1.9 dips=0 last_change_ms=1.9 complete_at_exit=1
+rep3 node3 | ok | node=3 endpoints=32 seconds=40 expected=224 reached_ms=1.9 dips=1 last_change_ms=33006.2 complete_at_exit=1
+rep3 node4 | ok | node=4 endpoints=32 seconds=40 expected=224 reached_ms=1.7 dips=0 last_change_ms=1.7 complete_at_exit=1
+rep3 node5 | ok | node=5 endpoints=32 seconds=40 expected=224 reached_ms=1.6 dips=0 last_change_ms=1.6 complete_at_exit=1
+rep3 node6 | ok | node=6 endpoints=32 seconds=40 expected=224 reached_ms=1.7 dips=0 last_change_ms=1.7 complete_at_exit=1
+rep3 node7 | ok | node=7 endpoints=32 seconds=40 expected=224 reached_ms=1.6 dips=0 last_change_ms=1.6 complete_at_exit=1
+rep3 node8 | ok | node=8 endpoints=32 seconds=40 expected=224 reached_ms=1.7 dips=0 last_change_ms=1.7 complete_at_exit=1
+=== done ===
