@@ -319,3 +319,24 @@ The control is the lease/3 core (`af87e150`), which section 8 showed can fail th
   idle. That is as expected: the 1 s summary still goes as its own datagram, now just ahead of the next send, so only
   its timing changes, not the count. Raw rows are `results/liveliness_l3t_2026-09-27.txt`. Its L2 on the rig (the
   no-mode criterion of section 11) follows the rig queue.
+
+## 13. L2 on the ride-ahead change: every rep within 0.2 ms of the lease, at every lease (2026-09-27, `0f220ba0` against `ccbacb36`)
+
+`liveliness_l2.sh`, 20 repetitions, the four arms interleaved in every rep, 240 ok rows, no foreign node. Raw rows are
+`results/liveliness_l2e_2026-09-27.txt`. Residual = detect - lease, in ms: median, max |rep - median| (range):
+
+| arm | lease 1 s | 2 s | 4 s |
+|---|---|---|---|
+| TickLE after | **+0.1, 0.1** (+0.1..+0.2) | **+0.1, 0.1** (+0.0..+0.2) | **+0.1, 0.1** (+0.1..+0.2) |
+| TickLE before (control) | +286.8, 68.2 | +289.5, 471.0 | -708.2, 412.4 |
+| CycloneDDS | +0.1, 94.1 (one rep +94) | +0.1, 93.6 (one rep +94) | +0.1, 92.7 (one rep +93) |
+| FastDDS | -0.9, 78.4 (one rep +78) | -0.9, 0.0 | -0.9, 0.0 |
+
+- **The control reproduces**, so the after arm is read.
+- **PASS on section 4's criteria and on section 11's added no-mode criterion** (every rep within 5 ms of the median):
+  all 60 TickLE reps lie within 0.2 ms of their lease.
+- **The two modes of section 11 are gone at 2 s.** With the 1 s summary sent just ahead of the next data datagram,
+  the last datagram before a kill is always data.
+- **In this session TickLE is the tightest of the three:** CycloneDDS has one rep ~+94 ms late at every lease, and
+  FastDDS one +78 ms at 1 s.
+- **Next:** COMPARISON.md row 46 is re-scored from these figures.
