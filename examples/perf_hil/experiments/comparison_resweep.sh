@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-measure COMPARISON.MD's native (no rmw) sections at the current main, all three frameworks
+# Re-measure COMPARISON.md's native (no rmw) sections at the current main, all three frameworks
 # in ONE session, so every column is comparable to the others.
 #
 # Why (2026-09-24): since §3/§3a were last measured, TickLE's core has changed underneath them -
@@ -62,7 +62,7 @@ trap 'sl 0' EXIT
 say() { echo "$*" | tee -a "$OUT"; }
 
 SHA="$(git -C "$REPO" rev-parse origin/main)"
-say "=== COMPARISON.MD native re-sweep, $(date -Is), ${REPS} reps, main $SHA ==="
+say "=== COMPARISON.md native re-sweep, $(date -Is), ${REPS} reps, main $SHA ==="
 
 say "--- deploying $SHA and building every scenario for all three frameworks on both rpis ---"
 SCENS="best_effort_latency reliable_latency best_effort_throughput reliable_throughput durability_late_join history_depth_burst_loss deadline_miss_detection liveliness_loss_detection lifespan_expiry"

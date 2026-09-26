@@ -3,7 +3,7 @@
 2026-09-26. The user's instruction: implement DATA_FRAG in TickLE core so that TickLE beats both
 FastDDS and CycloneDDS at **all four payload shapes p1, p2, p3 and p4**, then look for further
 optimisation, and only then move to `rmw_tickle`. This supersedes the 2026-09-25 decision to leave
-OS-level IP fragmentation alone (COMPARISON.MD to-do 15).
+OS-level IP fragmentation alone (COMPARISON.md to-do 15).
 
 Core is Dev's. This is the design, the measurement bar and the two numeric constraints Plan found
 before any code exists, because both of them would be expensive to discover afterwards.
@@ -31,7 +31,7 @@ the middleware layer, which is what DATA_FRAG is.
 
 ## 2. Constraint A: the per-fragment header must be <= 4 bytes
 
-This is arithmetic on the measured framing model (COMPARISON.MD 2.5: base 70.6 B per datagram
+This is arithmetic on the measured framing model (COMPARISON.md 2.5: base 70.6 B per datagram
 including the 42 B of Ethernet+IP+UDP, plus ~42 B per extra IP fragment; the model predicted all
 twelve observed packet counts with no mismatches).
 
@@ -72,7 +72,7 @@ binds only at p4, and only against CycloneDDS, and it binds hard.
 
 The only metric TickLE loses at p4 unshaped is **peak RSS: 7,384 KB against CycloneDDS's 5,608**.
 DATA_FRAG does not improve that and its reassembly buffers make it slightly worse. So "win p4"
-requires a second, independent change, and it is already diagnosed (COMPARISON.MD 2.4):
+requires a second, independent change, and it is already diagnosed (COMPARISON.md 2.4):
 
 TickLE's RSS is `C + reliable_depth * record_bytes` with C measured at 1,720-1,733 KB across all
 four shapes - a 13 KB spread against a 5,464 KB range, so the retention window is the entire story.
@@ -474,7 +474,7 @@ The three non-wins:
   more digits in all three harnesses' RESULT lines. Until then this row's verdict carries no
   information at p4.
 
-Next: the p4 build that goes into COMPARISON.MD is `sendmmsg` (`c3d7a955`) or later. It is expected to
+Next: the p4 build that goes into COMPARISON.md is `sendmmsg` (`c3d7a955`) or later. It is expected to
 lower c4 client CPU toward the ipfrag build's 11.5 and leave bytes and packets unchanged.
 
 ## 12. FastDDS at c6: half the hypothesis confirmed, half not (2026-09-26)
@@ -663,7 +663,7 @@ counter of 13.2 fixes it, so that counter is required regardless of this change.
 The rig runs queue in order behind the 12-cell campaign: FastDDS's delayed counter read, the
 4-fragment "before" arm (pinned to `3f564c7b`, whose core is identical to `8c4dad8f`'s), the "after"
 arm on `bceddf2a`, then cells 1-6 on `bceddf2a`, pinned. Those last are the p1-p4 figures the
-COMPARISON.MD table takes.
+COMPARISON.md table takes.
 
 ### 13.7 The rmw side, as built (2026-09-26)
 
@@ -679,7 +679,7 @@ nodes before and after do not interoperate, and a plain core node on an rmw_tick
 DATA goes whole only up to `tt_CONTROL_MAX_LENGTH`, so rmw_tickle (`tt_MAX_BUFFER_LENGTH` 65507)
 fragments its samples at the control datagram while services keep large datagrams. The benchmark's ipfrag
 arm builds with `-Dtt_FRAG_ENABLED=0`. **This replaces OS IP fragmentation for rmw topics**, which the
-user kept on 2026-09-25 (COMPARISON.MD to-do 15); Plan relayed "go ahead with the rmw_tickle FRAG move".
+user kept on 2026-09-25 (COMPARISON.md to-do 15); Plan relayed "go ahead with the rmw_tickle FRAG move".
 
 **Depth in messages (13.4 item 1, revisiting 13.6's first point).** Core gained
 `tt_ReliableCache.sample_depth` and `retained_samples`: KEEP_LAST evicts whole samples before holding
@@ -826,7 +826,7 @@ bandwidth, not latency, is the binding constraint, such as 10BASE-T1S at 10 Mbit
 this should be revisited**, with both of Dev's saved patches (`~/tickle-dev-suppression-tick-
 deferral*.patch`) as the starting point.
 
-**A latent sensitivity found on the way, recorded as COMPARISON.MD to-do 19:** the dynamic interval
+**A latent sensitivity found on the way, recorded as COMPARISON.md to-do 19:** the dynamic interval
 estimator times a recovery from the *first* request, with no Karn's rule. A recovery whose repair was
 lost therefore includes the wait for the re-request. In Dev's 10-fragment unit simulation, lengthening
 that wait was enough to make the estimator's loop diverge: delivery fell to 170/200, the interval grew

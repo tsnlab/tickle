@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "deadline_miss_detection" (rmw_tickle/COMPARISON.md) -
  * CycloneDDS native (no rmw) subscriber role. Mirrors client.c's own DEADLINE QoS exactly (RxO
  * requires the reader's own requested deadline be >= the writer's offered one; matching them
  * exactly is simplest and this exercise's own established convention) and independently monitors

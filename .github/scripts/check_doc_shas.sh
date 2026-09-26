@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Every commit sha cited in the documentation must exist and be reachable from HEAD.
 #
-# Why (2026-09-24): six shas across PLAN.md and COMPARISON.MD named commits that are not in the
+# Why (2026-09-24): six shas across PLAN.md and COMPARISON.md named commits that are not in the
 # repository at all. None of it was careless - each was recorded at the moment the work was done,
 # from the sha in front of whoever did it, and a rebase before the push changed it. No step in
 # anyone's workflow compared the local sha to the published one.
@@ -10,7 +10,7 @@
 # the sha recorded is the pre-rebase one, and the person recording it cannot tell the difference at
 # the time. Only something that looks afterwards can.
 #
-# What it cost: one of the six was under COMPARISON.MD section 3b's TRANSIENT_LOCAL result, so a
+# What it cost: one of the six was under COMPARISON.md section 3b's TRANSIENT_LOCAL result, so a
 # load-bearing claim cited a commit nobody could check out; another sent an investigation looking
 # for a measurement at a commit that does not exist.
 #
@@ -21,7 +21,7 @@ set -uo pipefail
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
-DOCS=(rmw_tickle/PLAN.md rmw_tickle/COMPARISON.MD README.md)
+DOCS=(rmw_tickle/PLAN.md rmw_tickle/COMPARISON.md README.md)
 
 fail=0
 checked=0

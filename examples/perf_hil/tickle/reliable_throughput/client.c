@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
+// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.md) -
 // TickLE core native client/sender role (no rmw). Same one-way max-rate stream as
 // best_effort_throughput's own client.c, plus RELIABLE + a caller-configurable HISTORY depth
 // (rmw_tickle/PLAN.md's own "DDS semantic-parity backlog" row 2 - struct tt_ReliableCache's
@@ -127,7 +127,7 @@ static bool keep_all = false;
 // configuration where a Subscriber that started tracking late is still *owed* the samples it
 // missed, since deliver_durability_backlog() replays the retained range on match. The prediction
 // under test: raw loss (counted from seq 1) converges with post-match loss, i.e. the pre-match
-// window COMPARISON.MD §3b documents closes here.
+// window COMPARISON.md §3b documents closes here.
 static bool durable = false;
 
 // -B <ms>: how long to keep retrying a refused write before counting it as failed, emulating DDS's
@@ -179,7 +179,7 @@ static const uint32_t keep_all_default_depth = 2048;
 static const uint32_t keep_all_default_bytes = 512U * 1024U;
 static uint32_t keep_all_bytes = 0;
 // -N <samples> (with -Q): KEEP_ALL's history bound in samples, the same letter and meaning as the DDS
-// harnesses' max_samples (2026-09-26, the fairness audit, COMPARISON.MD 4.4). Core's cache counts
+// harnesses' max_samples (2026-09-26, the fairness audit, COMPARISON.md 4.4). Core's cache counts
 // datagrams, so the depth is N x the datagrams one sample takes and the arena holds N + 1 samples of this
 // shape, unbudgeted: the count, not -M, is the bound. The Subscriber's window has to cover as much, or it
 // binds first - the server takes the same -N and widens its window to match. The RESULT line reports

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# COMPARISON.MD §3b's TickLE throughput cells carry a provisional mark (◊) because five consecutive
+# COMPARISON.md §3b's TickLE throughput cells carry a provisional mark (◊) because five consecutive
 # reps at tc 0% came back 94.4 / 111.0 / 112.7 / 94.9 / 111.5 Mbps - two clean clusters with nothing
 # between them, and each published cell was a median of 3, so it reported whichever cluster that
 # cell happened to sample. The measured cause is sender-vs-NIC-IRQ core placement (commit 75b65bef),

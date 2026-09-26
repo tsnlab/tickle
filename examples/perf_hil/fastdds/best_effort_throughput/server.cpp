@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/COMPARISON.md) -
  * FastDDS native (no rmw) server/receiver role. The authoritative side for loss/throughput - only
  * it can see what actually arrived (see client.cpp's own doc comment).
  *

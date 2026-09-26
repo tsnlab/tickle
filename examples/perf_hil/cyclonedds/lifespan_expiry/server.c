@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "lifespan_expiry" (rmw_tickle/COMPARISON.md) -
  * CycloneDDS native (no rmw) subscriber role. Mirrors client.c's own LIFESPAN + generous
  * `HISTORY KEEP_ALL` exactly, then deliberately stalls its own consumption for `-p` seconds right
  * after matching, before ever taking a single sample - the real thing under test: whether samples

@@ -1,10 +1,10 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.md) -
  * FastDDS native (no rmw) subscriber role. See the CycloneDDS twin's own doc comment for the full
  * mechanism and, crucially, why both timestamps compared here (last received sample, loss
  * detected) are taken on this same host's own clock - never against the writer's own kill time on
  * a different host, the exact cross-host clock-sync pitfall this exercise's own earlier work
- * ("Item 5" in COMPARISON.MD) got burned by once already.
+ * ("Item 5" in COMPARISON.md) got burned by once already.
  *
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the listener,
  * the detection wait, the QoS and the RESULT line are unchanged.

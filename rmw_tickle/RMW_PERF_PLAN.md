@@ -1,6 +1,6 @@
 # rmw_tickle performance: where the ~0.08 ms deficit to CycloneDDS lives
 
-2026-09-26. The user's instruction: make TickLE core win p1-p4 with DATA_FRAG (done, COMPARISON.MD
+2026-09-26. The user's instruction: make TickLE core win p1-p4 with DATA_FRAG (done, COMPARISON.md
 section 1), look for further core optimisation, then optimise `rmw_tickle`. This file is the `rmw_tickle`
 step. It is Plan's, as research and measurement; the code it points at is Dev's.
 
@@ -17,7 +17,7 @@ eth0 link only, identity-checked per row (`experiments/rmw_crosshost_rtt.sh`, `r
 | Array1k, best_effort | 0.515 | 0.511 | **0.448** |
 | Array1k, reliable | 0.506 | 0.523 | **0.443** |
 
-TickLE's *core* wins the same round trip natively: 0.207 ms against CycloneDDS's 0.259 (COMPARISON.MD row 1).
+TickLE's *core* wins the same round trip natively: 0.207 ms against CycloneDDS's 0.259 (COMPARISON.md row 1).
 So `rmw_tickle`'s layer adds **~0.30 ms** where CycloneDDS's adds **~0.17**. The deficit is ~0.08 ms per round
 trip, ~40 us per direction, and it sits inside `rmw_tickle`, not in the protocol.
 

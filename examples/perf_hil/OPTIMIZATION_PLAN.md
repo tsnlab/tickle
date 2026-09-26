@@ -9,7 +9,7 @@ across QoS and `tc`-shaped network conditions, then optimise until TickLE wins e
 
 ## 1. What already exists, and what does not
 
-On the rig today (`COMPARISON.MD` §3, §3a, §3b): latency, throughput, and the nine QoS scenarios.
+On the rig today (`COMPARISON.md` §3, §3a, §3b): latency, throughput, and the nine QoS scenarios.
 **Not measured anywhere: memory, CPU utilisation, network bytes.** `CpuPlace.h` is shared by all
 three harnesses and reports `cpu_main` / `cpu_main_share` / `cpu_migrations` - *where* a process ran,
 not how much CPU it used. No harness reads `VmHWM`, `getrusage()` or a packet count.
@@ -98,7 +98,7 @@ arithmetic in §3, and worth its own look - it is most of why FastDDS loses the 
 **Consequences, both deferred to the next session rather than patched mid-campaign:**
 
 - A fair P2 needs `sample <= 1304`, so `uint8[N]` with **N <= 1292** instead of 1376. N = 1280
-  (sample 1292 B) leaves 12 B of margin. P2's cells are not to be carried into `COMPARISON.MD` from
+  (sample 1292 B) leaves 12 B of margin. P2's cells are not to be carried into `COMPARISON.md` from
   the session that used 1376.
 - **P3 is correct but has 3.4 B of headroom.** At 1440 B TickLE's frame is 1510.6 against 1514. It
   works, and for exactly the intended reason - 1440 sits between CycloneDDS's 1409.9 and TickLE's
@@ -138,7 +138,7 @@ metric the small size exists to measure, and it would be charged to framing.
 **Fix: put `send_ns` first.** `unsigned long long send_ns; unsigned long seq; octet payload[N]` is
 8 + 4 + N with no padding under either rule, so all three agree exactly at every size.
 
-This does not invalidate any published figure. `COMPARISON.MD` §3's Mbps is computed as
+This does not invalidate any published figure. `COMPARISON.md` §3's Mbps is computed as
 `recv_count x 76 x 8 / elapsed` for all three alike, so it is application-payload throughput and is
 unaffected. It is the *new* wire-bytes metric that the padding would have distorted.
 
@@ -232,7 +232,7 @@ hence the 1 ms.
 build phases in 77 minutes, i.e. ~19 s a cell. At 25 s that is **45 minutes**, plus ~8 minutes of
 builds including the second TickLE build for P4: **~53 minutes**, inside the hour with margin.
 
-Three repetitions, not two: every published figure uses three, and `COMPARISON.MD` reports the
+Three repetitions, not two: every published figure uses three, and `COMPARISON.md` reports the
 spread rather than a mean alone. Frameworks are interleaved within each repetition so a drift lands
 on all three.
 
@@ -277,7 +277,7 @@ ACKNACK against discovery), which step 6 will want - not something to run 108 ti
 - **A cell is void** if its leftover guard fired, if it produced no `RESULT:` line, or if a framework
   did not end `drained=acked` where expected. Void is reported as void, never as zero.
 - **Comparisons are within this session only.** The rig carries day-to-day offsets of ~13 us on
-  latency across all implementations at once (`COMPARISON.MD` §5). Published figures are compared
+  latency across all implementations at once (`COMPARISON.md` §5). Published figures are compared
   only as "moved / did not move".
 - **TickLE wins a cell** when it beats *both* vendors on that metric, outside the spread of the three
   repetitions. Inside the spread is a draw, not a win.
@@ -306,7 +306,7 @@ sample, 97.4% of the receiving kernel's reassembly attempts fail; the 681,461 da
 reassembled are 46.8 per delivered sample against 47.3 transmissions per sample from the interface
 counters - the same number, so the wire amplification *is* the reassembly failure. Both controls
 clean: no fragmentation at 76 bytes, and flawless fragmentation with nothing lost. A1, A2 and A3
-were all ruled out inside core first, each with a control. Full record in `COMPARISON.MD` item 15;
+were all ruled out inside core first, each with a control. Full record in `COMPARISON.md` item 15;
 harness `experiments/a4_reassembly_check.sh`, raw output
 `results/a4_reassembly_2026-09-25.txt`.
 
@@ -484,7 +484,7 @@ in which the preferred story happened to work.
 **The largest effect here is not the change.** Holding the clock at 2,400 MHz makes both builds
 19-21 us faster, ~10% of the round trip. On a DVFS host the governor's treatment of an idle core
 costs several times more than the difference between these two versions of the poll, which is why
-`COMPARISON.MD` section 3c now carries that caveat on every absolute latency figure.
+`COMPARISON.md` section 3c now carries that caveat on every absolute latency figure.
 
 **What must not be traded away.** TickLE has the lowest RTT of the three (0.204 ms against 0.358 and
 0.282) and the poll cadence is the plausible reason; CycloneDDS blocks and pays thread handoff
@@ -562,7 +562,7 @@ ones. **Disproof:** if c4's memory advantage at depth 1024 comes with any increa
 3. **TickLE Plan**: the sweep script extending `comparison_resweep.sh` - the 12 combinations, the
    four `tc` conditions, the two TickLE builds, the leftover guard, timestamped output.
 4. **Baseline pass on the rig**, holding the hil lock, ~53 minutes.
-5. **`COMPARISON.MD` gains a section per metric**, raw output committed under
+5. **`COMPARISON.md` gains a section per metric**, raw output committed under
    `examples/perf_hil/results/`.
 6. **Optimisation targets** from §9, each with a hypothesis and a pre-registered reading.
 7. **Optimise, then re-run the affected cells and the unaffected ones as the control**, because a

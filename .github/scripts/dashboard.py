@@ -130,7 +130,7 @@ def _row(entry):
     fr = bt_rows.get("freertos") or {}
     has_bt = bool(bt)
 
-    # rmw_tickle/COMPARISON.MD's own §2-3 TickLE-core HIL methodology (run_perf.sh, rewritten
+    # rmw_tickle/COMPARISON.md's own §2-3 TickLE-core HIL methodology (run_perf.sh, rewritten
     # 2026-09-22) - one column per scenario/condition write_dashboard_fragment() reports, not the
     # old run_perf.sh's examples/linux/perf tool's own field set.
     pf = entry.get("perf") or {}

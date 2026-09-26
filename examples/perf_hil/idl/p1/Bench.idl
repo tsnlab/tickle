@@ -8,7 +8,7 @@
 // same code at the four sizes - which is what this comparison rests on.
 //
 // Both fastddsgen and CycloneDDS's own idlc compile this exact file - "identical data" is a
-// byte-identical source guarantee, not a hand-matched one (COMPARISON.MD's own design note). The
+// byte-identical source guarantee, not a hand-matched one (COMPARISON.md's own design note). The
 // TickLE side is generated too, since 2026-09-25, from the matching
 // tickle/common/p1/Bench.msg; tools/scripts/check_bench_shapes.sh checks the two against each
 // other so this file and that one cannot drift apart unnoticed.
@@ -19,7 +19,7 @@
 // have landed inside the wire-bytes-per-sample metric and been charged to framing. `send_ns`
 // first is 8 + 4 + N under both rules, with no padding under either.
 //
-// 8 + 4 + 64 = 76 bytes: the small size, and the one every figure published in COMPARISON.MD so
+// 8 + 4 + 64 = 76 bytes: the small size, and the one every figure published in COMPARISON.md so
 // far was measured at. One datagram for all three.
 //
 // @extensibility(FINAL) pinned explicitly, not left to whatever each tool's own current default

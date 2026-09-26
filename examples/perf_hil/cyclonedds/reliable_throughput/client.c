@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.md) -
  * CycloneDDS native (no rmw) client/sender role. Unlike the two latency scenarios, this is a
  * one-way stream (no pong) - mirrors TickLE's own examples/linux/perf/perf_client.c: the sender
  * just blasts samples, the *receiver* (server.c) is the authoritative side for loss/throughput,
@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     // 53% loss, so a shallow depth would re-measure that finding rather than the default.
     int keep_last_depth = 0; // 0 = KEEP_ALL, unchanged default
     // -N <samples>: KEEP_ALL's history bound, RESOURCE_LIMITS max_samples and max_samples_per_instance,
-    // 4000 by default (2026-09-26, the fairness audit, COMPARISON.MD 4.4). The bound differed between
+    // 4000 by default (2026-09-26, the fairness audit, COMPARISON.md 4.4). The bound differed between
     // the three frameworks by default; the campaign now passes all three the same number of samples,
     // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
     int keepall_samples = 4000;
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     dds_entity_t topic = dds_create_topic(participant, &Bench_desc, "stream", NULL, NULL);
 
     // scenario "reliable_throughput" - RELIABLE, matched exactly across frameworks
-    // (COMPARISON.MD's design principle 3). KEEP_ALL + generous resource_limits (2026-09-20,
+    // (COMPARISON.md's design principle 3). KEEP_ALL + generous resource_limits (2026-09-20,
     // matching the real upstream eclipse-cyclonedds/cyclonedds examples/throughput/publisher.c's
     // own prepare_dds()): KEEP_LAST(8) was real, bisected root cause of a genuine 53% loss under
     // RELIABLE at full send rate on the rig (a shallow writer history queue backpressures/drops
@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     uint64_t sent = 0;
     // Which core this thread ran on, sampled the same way and at the same 100ms cadence as the
     // TickLE harness. The rig's eth0 IRQ is pinned to CPU0, and a sender sharing that core measured
-    // ~15% slower (COMPARISON.MD §6 item 14) - so "this is a rig property, not a TickLE one" needs
+    // ~15% slower (COMPARISON.md §6 item 14) - so "this is a rig property, not a TickLE one" needs
     // measuring on the DDS columns too, not asserting.
     struct BenchCpuPlace cpu_place;
     BenchCpuPlace_init(&cpu_place);

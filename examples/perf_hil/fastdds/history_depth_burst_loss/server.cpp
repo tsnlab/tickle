@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "history_depth_burst_loss" (rmw_tickle/COMPARISON.md) -
  * FastDDS native (no rmw) subscriber role. See the CycloneDDS twin's own doc comment for the full
  * mechanism - this mirrors it exactly: deliberately stalls its own consumption for `-p` seconds
  * right after matching, before ever creating the receive loop, while the writer (client.cpp) keeps

@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "durability_late_join" (rmw_tickle/COMPARISON.md) -
  * CycloneDDS native (no rmw) publisher role.
  *
  * Publishes N samples on "ping" *before* any subscriber exists (the whole point of this
@@ -10,7 +10,7 @@
  * found while building the best_effort_throughput/reliable_throughput scenarios (a write-only
  * participant's own dds_get_publication_matched_status() never went non-zero against a pure
  * read-only peer, even though the peer's own matched status did) - not solved yet, tracked
- * separately in COMPARISON.MD; giving every participant in every later scenario both a writer and
+ * separately in COMPARISON.md; giving every participant in every later scenario both a writer and
  * a reader sidesteps it without waiting on the real fix.
  *
  * -D: durable (TRANSIENT_LOCAL) instead of the default volatile - the actual variable under test.

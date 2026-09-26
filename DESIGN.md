@@ -471,7 +471,7 @@ A sample that no single `DATA` can carry is sent as fragments, each in a datagra
 back together by the receiver: DATA_FRAG, added 2026-09-26 (`rmw_tickle/DATAFRAG_PLAN.md`). Before
 it such a sample was refused, unless `tt_MAX_BUFFER_LENGTH` was raised, in which case it went out as
 one oversized datagram that the OS split into IP fragments. At 5% loss the kernel failed to
-reassemble 97.4% of those (COMPARISON.MD to-do 15), so reliable recovery was retransmitting whole
+reassemble 97.4% of those (COMPARISON.md to-do 15), so reliable recovery was retransmitting whole
 samples into a path that destroyed them again.
 
 **Configuration.** `tt_MAX_BUFFER_LENGTH` keeps meaning the largest datagram. `tt_MAX_SAMPLE_LENGTH`

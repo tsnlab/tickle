@@ -503,7 +503,7 @@ The hardware-in-the-loop latency and throughput test runs on two real Raspberry 
 connected by an Ethernet link (`rpi#1` as client/sender, `rpi#2` as server/receiver), via a
 self-hosted GitHub Actions runner. **It runs on manual dispatch only.** Until 2026-09-24 it ran on
 every push to `main`, but in practice most runs were cancelled by the next push while holding the
-rig, and the published performance figures (`rmw_tickle/COMPARISON.MD`) are taken by hand anyway.
+rig, and the published performance figures (`rmw_tickle/COMPARISON.md`) are taken by hand anyway.
 A push now runs only the hosted `Check all` and `Test all` workflows.
 
 - [`.github/workflows/performance.yml`](.github/workflows/performance.yml) - `workflow_dispatch`

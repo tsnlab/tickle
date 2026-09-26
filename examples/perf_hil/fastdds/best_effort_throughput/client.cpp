@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "best_effort_throughput" (rmw_tickle/COMPARISON.md) -
  * FastDDS native (no rmw) client/sender role. Mirrors the CycloneDDS scenario pair exactly - a
  * one-way stream (no pong), the receiver (server.cpp) is the authoritative side for loss/
  * throughput since only it can see what actually arrived.
@@ -55,7 +55,7 @@ namespace {
     }
 
     // Actively waits for a real match instead of a blind sleep - a real, confirmed CycloneDDS
-    // discovery bug (COMPARISON.MD's own "Blocked" section) made this necessary there; adding it here
+    // discovery bug (COMPARISON.md's own "Blocked" section) made this necessary there; adding it here
     // too on the first real failure of this exact scenario on FastDDS - a blind sleep alone isn't
     // reliable for a write-only participant on a topic other than the two latency scenarios' own
     // "ping"/"pong", confirmed the hard way (0 received, 100% loss, reproduced twice).
@@ -107,7 +107,7 @@ auto main(int argc, char** argv) -> int {
     Topic* const topic = participant->create_topic("stream", "Bench", TOPIC_QOS_DEFAULT);
 
     // scenario "best_effort_throughput" - BEST_EFFORT, matched exactly across frameworks
-    // (COMPARISON.MD's design principle 3).
+    // (COMPARISON.md's design principle 3).
     DataWriterQos wqos = DATAWRITER_QOS_DEFAULT;
     wqos.reliability().kind = BEST_EFFORT_RELIABILITY_QOS;
 

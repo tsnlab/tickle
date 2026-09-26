@@ -2,7 +2,7 @@
 # Builds one TickLE-native HIL scenario's client+server (examples/perf_hil/tickle/<scenario>/).
 # Uses `make install` to a scratch prefix + pkg-config rather than TickLE's own top-level
 # Makefile/examples build - deliberately: this whole examples/perf_hil/ tree is "TickLE Plan"'s
-# own observation/comparison work (rmw_tickle/COMPARISON.MD), kept independent of whatever
+# own observation/comparison work (rmw_tickle/COMPARISON.md), kept independent of whatever
 # TickLE Dev's own queue is doing to platform/linux/Makefile or the example set it manages.
 set -euo pipefail
 
@@ -136,7 +136,7 @@ esac
 # TICKLE_CORE_BUILD: how libtickle.a itself is optimised - release (-O2, the default since 2026-09-26)
 # or debug (-O0 -g). Until then this script built the core through `make install` with the platform
 # Makefile's own default, BUILD_TYPE=debug, so every TickLE figure measured on the rig - the campaign,
-# the single-packet sweep, every COMPARISON.MD cell - was an unoptimised core against CycloneDDS and
+# the single-packet sweep, every COMPARISON.md cell - was an unoptimised core against CycloneDDS and
 # FastDDS release packages. Only this directory's client.c/server.c were -O2. Found by disassembling two
 # rig builds: not a single static helper was inlined. `debug` reproduces those builds exactly, for a
 # like-for-like comparison with anything measured before; the RESULT line says which one ran

@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.MD) -
+// HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.md) -
 // TickLE core native client/ping role (no rmw). Mirrors examples/perf_hil/{cyclonedds,fastdds}/
 // reliable_latency/client.c's own logic exactly - single-clock RTT (this side's own
 // tt_get_ns(), both send and receipt), same RESULT line shape, for direct comparison.
@@ -148,7 +148,7 @@ int main(int argc, char** argv) {
         return ret;
     }
     // scenario "reliable_latency" - RELIABLE + HISTORY depth=8, matched exactly across every
-    // framework (COMPARISON.MD's own design principle 3 / QoS value matrix).
+    // framework (COMPARISON.md's own design principle 3 / QoS value matrix).
     // entries[]/capacity are this file's own backing array now, not an embedded
     // tt_MAX_RELIABLE_HISTORY-sized one (struct tt_ReliableCache's own doc comment, tickle.h).
     // B1 (rmw_tickle/PLAN.md) - index slots plus a byte arena sized for this scenario's own

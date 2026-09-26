@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.md) -
  * FastDDS native (no rmw) publisher role. See the CycloneDDS twin's own doc comment for the full
  * mechanism this mirrors exactly - publishes at a steady cadence with LIVELINESS AUTOMATIC and a
  * matched lease duration until it either runs out its own generous safety cap or gets killed

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Is today's TickLE faster or slower than the TickLE whose numbers are published in COMPARISON.MD?
+# Is today's TickLE faster or slower than the TickLE whose numbers are published in COMPARISON.md?
 # The user asked directly, and the comparison mixes two things that have to be separated:
 #   (1) the build fix (-O0 -> -O2), which is not a change to TickLE at all, only to how we compiled it
 #   (2) the night's changes (scheduler-driven poll, thread safety, dynamic retry, KEEP_ALL byte budget)
 #
-# A  b9fad3c1 at -O0   the campaign build, exactly as COMPARISON.MD's published figures were measured
+# A  b9fad3c1 at -O0   the campaign build, exactly as COMPARISON.md's published figures were measured
 # B  b9fad3c1 at -O2   the same TickLE, compiled properly - isolates (1)
 # C  current  at -O2    today's TickLE as a user would get it, defaults and all - A->C is the net answer
 #

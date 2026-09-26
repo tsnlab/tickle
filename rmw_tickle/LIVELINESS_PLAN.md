@@ -7,7 +7,7 @@ liveness on announce *or* data (an announce being a kind of data anyway) solve t
 
 ## 1. The problem, as it stands
 
-`COMPARISON.MD` row 46 (LIVELINESS detection) is marked not comparable. §3 items 10 and 14 have the
+`COMPARISON.md` row 46 (LIVELINESS detection) is marked not comparable. §3 items 10 and 14 have the
 detail, and `PLAN.md` holds the 3 s cap as a conformance gap. Three separate defects stack:
 
 1. **The lease is anchored on the announce, not on the last sign of life.** Today an entity is declared

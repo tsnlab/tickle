@@ -717,7 +717,7 @@ struct tt_Data {
 // (~1.2M msg/s), the original 64-bit width passed in roughly 53 microseconds - almost certainly
 // shorter than one real ACKNACK round trip on any real network - so this Subscriber-side ceiling,
 // not the Publisher-side cache depth fixed here, was very likely the actual bottleneck behind
-// TickLE's own comparatively poor tc-loss recovery at high throughput (rmw_tickle/COMPARISON.MD).
+// TickLE's own comparatively poor tc-loss recovery at high throughput (rmw_tickle/COMPARISON.md).
 // **Update, rmw_tickle/PLAN.md's "TickLE-native performance" plan**: tt_RELIABLE_BITMAP_BITS was
 // since widened 64 -> 256 (a real wire-protocol change, tt_VERSION bumped) once this same
 // diagnosis pointed at it directly - raises the tolerable gap ~4x, likely closing most or all of
@@ -1302,7 +1302,7 @@ struct tt_WriterProxy {
     // WORDS-word array (config.h), word 0 holding bits 0-63, word 1 bits 64-127, and so on - widened
     // from a single bare uint64_t (rmw_tickle/PLAN.md's "TickLE-native performance" plan) since the
     // old 64-bit width was the real bottleneck behind RELIABLE's own measured tc-loss recovery gap
-    // vs. FastDDS/CycloneDDS (COMPARISON.MD §3/§6 item 7), not the Publisher's own retained-cache
+    // vs. FastDDS/CycloneDDS (COMPARISON.md §3/§6 item 7), not the Publisher's own retained-cache
     // depth (Milestone 61 already ruled that out on real HIL). tickle.c's own small, fixed set of
     // bitmap_*() helpers (next to highest_received_bit()) are the only code that manipulates this
     // array directly - every call site here goes through one of them, not raw per-word arithmetic,
@@ -1588,7 +1588,7 @@ struct tt_Subscriber { // extends endpoint
     // BEST_EFFORT ordering: samples dropped because they were no newer than the last delivered
     // from the same writer. Counted rather than silent, because this drop is a deliberate policy
     // and an application seeing a gap deserves to be able to tell a discarded reorder from a
-    // sample that never arrived - which is the same reason COMPARISON.MD reports raw and
+    // sample that never arrived - which is the same reason COMPARISON.md reports raw and
     // post-match loss as separate columns rather than one number nobody can take apart.
     uint32_t out_of_order_discarded;
 
@@ -1600,7 +1600,7 @@ struct tt_Subscriber { // extends endpoint
     // received, so the ordinary ACKNACK exchange fetches it again once the gap has filled.
     // Ordering is correct either way - what the buffer buys is not having to re-request
     // everything that arrived after a single lost sample, which is the common case under loss
-    // and the one COMPARISON.MD section 3b measures.
+    // and the one COMPARISON.md section 3b measures.
     //
     // There is deliberately no builtin default, unlike tracking_bitmaps' own builtin_tracking[].
     // A useful builtin would have to hold whole payloads - 8 slots at tt_MAX_BUFFER_LENGTH is

@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.md) -
  * CycloneDDS native (no rmw) server/receiver role. The authoritative side for loss/throughput -
  * only it can see what actually arrived (see client.c's own doc comment). Runs until SIGINT
  * (sent by the orchestrating run_scenario.sh once the client's own -d duration elapses) or its
@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     // 53% loss, so a shallow depth would re-measure that finding rather than the default.
     int keep_last_depth = 0; // 0 = KEEP_ALL, unchanged default
     // -N <samples>: KEEP_ALL's history bound, RESOURCE_LIMITS max_samples and max_samples_per_instance,
-    // 4000 by default (2026-09-26, the fairness audit, COMPARISON.MD 4.4). The bound differed between
+    // 4000 by default (2026-09-26, the fairness audit, COMPARISON.md 4.4). The bound differed between
     // the three frameworks by default; the campaign now passes all three the same number of samples,
     // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
     int keepall_samples = 4000;

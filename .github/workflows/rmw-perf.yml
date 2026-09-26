@@ -12,15 +12,15 @@ name: rmw_tickle performance
 # this rig only has one of everything (one build/install tree under ~/rmw_perf_ws, one runner),
 # so two overlapping runs would corrupt each other's in-progress rebuild.
 # Manual only (workflow_dispatch), by the user's decision of 2026-09-24 (translated): "Pulling
-# performance figures with the HIL rig is something we do anyway when producing comparison.md, so
+# performance figures with the HIL rig is something we do anyway when producing COMPARISON.md, so
 # let's leave it out of CI."
 #
 # Why it came off every push, measured rather than felt: in the ~6.5 hours after the self-hosted
 # runners were restarted that day, CI held the rig for 155 minutes across 34 jobs and the dev box
 # for 70 minutes across 36 - and 17 of the 34 rig jobs were cancelled by a newer push before they
 # finished, so half the rig time produced nothing at all while manual measurements queued behind
-# it. Performance figures are taken by hand on the rig for rmw_tickle/COMPARISON.MD anyway, and
-# the dev box is not used for performance at all (COMPARISON.MD section 5).
+# it. Performance figures are taken by hand on the rig for rmw_tickle/COMPARISON.md anyway, and
+# the dev box is not used for performance at all (COMPARISON.md section 5).
 #
 # What per-push CI no longer does, recorded so nobody discovers it the hard way:
 #   - the only LIVE two-process rmw_tickle exchange through rclcpp. Hosted check-all keeps the
@@ -342,7 +342,7 @@ jobs:
           # That is not hypothetical for this job. `-R two_process_rmw_` matches names
           # buildfarm_perf_tests registers from PERF_TEST_RMW_IMPLEMENTATIONS and PERF_TEST_TOPICS
           # at configure time, so a provisioning change, an upstream rename, or the test-
-          # registration flakiness COMPARISON.MD section 5 already records would all produce a
+          # registration flakiness COMPARISON.md section 5 already records would all produce a
           # green run that tested nothing - and it would look like success for as long as nobody
           # looked.
           #
@@ -375,7 +375,7 @@ jobs:
           # and get real gh-pages dev/bench history/graphing, the same way performance.yml's own
           # TickLE-core numbers already have (rmw_tickle/PLAN.md's benchmark plan's original
           # raw-artifacts/no-dashboard starting point, one step further).
-          # The caveat goes in the step, not only in COMPARISON.MD, because whoever reads this
+          # The caveat goes in the step, not only in COMPARISON.md, because whoever reads this
           # table is reading a CI log and will not have the document open.
           {
             echo "### rmw_tickle same-host diagnostics"
@@ -390,7 +390,7 @@ jobs:
 
       # The two github-action-benchmark steps that used to run here (rmw_tickle latency/throughput
       # dashboard graphs) were removed 2026-09-22, at the user's own request, alongside the
-      # dashboard's broader switch to comparison.md's own TickLE-core HIL methodology - this
+      # dashboard's broader switch to COMPARISON.md's own TickLE-core HIL methodology - this
       # same-host rig's numbers stay out of the automated dashboard for now (would need real ROS 2
       # provisioning on the tickle-hil Pis, not done - see run_perf.sh's own top comment). The
       # step-summary table above and the raw-results artifact below are untouched; only the

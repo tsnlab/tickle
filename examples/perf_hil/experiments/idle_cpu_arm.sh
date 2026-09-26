@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# What does an IDLE node cost? Every CPU figure in COMPARISON.MD is per-sample under load, and the
+# What does an IDLE node cost? Every CPU figure in COMPARISON.md is per-sample under load, and the
 # user's instruction, translated: "use as little CPU time as possible". For a 10Base-T1S device
 # that is mostly waiting, the idle cost is the one that matters, and nothing has measured it.
 #

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Cross-host rmw-layer round trip: rmw_tickle against rmw_fastrtps_cpp and rmw_cyclonedds_cpp, each
 # reached the way a ROS 2 application reaches it (rclcpp, RMW_IMPLEMENTATION), ping on rpi#1 and pong
-# on rpi#2 (rmw_tickle/rmw_perf_pingpong). Re-measures COMPARISON.MD's rmw rows, the only rows where
+# on rpi#2 (rmw_tickle/rmw_perf_pingpong). Re-measures COMPARISON.md's rmw rows, the only rows where
 # TickLE is not first, on the current core. The previous figures (0.524/0.523 ms against FastDDS
 # 0.516/0.523 and CycloneDDS 0.440/0.449, 2026-09-21) predate the release build of both core and
 # rmw_tickle, the scheduler-driven poll, sendmmsg and DATA_FRAG.
 #
-# Fairness, enforced rather than assumed (COMPARISON.MD 4.4):
+# Fairness, enforced rather than assumed (COMPARISON.md 4.4):
 #   - all three on the eth0 test link only: TICKLE_BROADCAST_ADDR for rmw_tickle, the eth0-only XML
 #     profile for FastDDS (without it FastDDS also sends on wlan0 - the 2026-09-22 E2 finding),
 #     CYCLONEDDS_URI for CycloneDDS, the same strings the native harnesses use;

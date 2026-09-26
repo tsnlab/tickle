@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Where did RELIABLE+KEEP_ALL throughput under heavy loss go? COMPARISON.MD §3b publishes 89.3 Mbps
+# Where did RELIABLE+KEEP_ALL throughput under heavy loss go? COMPARISON.md §3b publishes 89.3 Mbps
 # at tc 20%; HEAD measures ~55. Already excluded, each by measurement rather than by argument:
 #   - the same-host socket work (82a6a02d/2d72282c): ABBA A/B, 4 blocks, arms agree at 55.0
 #   - 835e8b44's logging: "Publisher peer registered" fires exactly ONCE in a 20%-loss run

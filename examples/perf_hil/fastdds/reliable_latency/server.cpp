@@ -1,8 +1,8 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_latency" (rmw_tickle/COMPARISON.md) -
  * FastDDS native (no rmw) server/pong role. Subscribes on "ping", republishes the exact same
  * sample (same seq/send_ns) on "pong" immediately - mirrors the CycloneDDS scenario pair exactly
- * (COMPARISON.MD's design principle 1: identical data/behavior, only the framework differs).
+ * (COMPARISON.md's design principle 1: identical data/behavior, only the framework differs).
  *
  * Brought up to the repository's C++ clang-tidy checks on 2026-09-25 (see harness_common.hpp); the
  * echo loop, its QoS and its timing are unchanged.
@@ -71,7 +71,7 @@ auto main() -> int {
     Topic* const pong_topic = participant->create_topic("pong", "Bench", TOPIC_QOS_DEFAULT);
 
     // scenario "reliable_latency" - RELIABLE on both sides, matching CycloneDDS's own QoS exactly
-    // (COMPARISON.MD's design principle 3). This comment said BEST_EFFORT until 2026-09-25, above code
+    // (COMPARISON.md's design principle 3). This comment said BEST_EFFORT until 2026-09-25, above code
     // that has always set RELIABLE; the code was right.
     DataReaderQos rqos = DATAREADER_QOS_DEFAULT;
     rqos.history().kind = KEEP_LAST_HISTORY_QOS;

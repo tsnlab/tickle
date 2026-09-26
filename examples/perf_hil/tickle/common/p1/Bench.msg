@@ -12,7 +12,7 @@
 # bytes of padding that TickLE does not, so the same source produced 76 bytes here and 80 on the
 # wire there. `send_ns` first is 8 + 4 + N under both rules, with no padding under either.
 #
-# 8 + 4 + 64 = 76 bytes, which is what every figure published in COMPARISON.MD so far was measured
+# 8 + 4 + 64 = 76 bytes, which is what every figure published in COMPARISON.md so far was measured
 # at, and what the generated `_Static_assert` pins.
 #
 # Replaces a hand-written codec (deleted 2026-09-25, the user's decision): the benchmark was

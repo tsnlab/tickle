@@ -5,7 +5,7 @@
 # Why this regime and not the latency benchmark: at 20-50% tc loss the RELIABLE path is doing
 # continuous ACKNACK/retransmit work, so drain_rx() - and therefore tt_try_receive(), which now
 # makes up to two recvfrom() calls where it used to make one - runs hot. A same-host latency
-# benchmark barely exercises it, which is why it showed nothing. Prompted by COMPARISON.MD §3b's
+# benchmark barely exercises it, which is why it showed nothing. Prompted by COMPARISON.md §3b's
 # own re-measurement coming back at 55 Mbps at 20% and 22 at 50% against published 89.3 and 56.5.
 #
 # ABBA over the two arms so a drift in the rig across the run cannot be read as an arm difference.

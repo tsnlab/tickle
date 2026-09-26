@@ -103,7 +103,7 @@ fi
 # Q0 = RELIABLE + KEEP_ALL: -Q for TickLE, the DDS harnesses' own default.
 # Q1 = BEST_EFFORT, which is a different scenario binary rather than a flag.
 # Q2 = RELIABLE + KEEP_LAST 64.
-# Since 2026-09-26 (COMPARISON.MD 4.4, the user's instruction to re-measure with identical QoS), every
+# Since 2026-09-26 (COMPARISON.md 4.4, the user's instruction to re-measure with identical QoS), every
 # QoS value that differed between the frameworks is passed explicitly and identically to all three by
 # common_args() below, and asserted per row: the KEEP_ALL bound in samples (-N), max_blocking_time
 # (-B 100), and KEEP_LAST 64 at Q2 (-K 64). Before that, Q2 gave the DDS harnesses nothing and they ran
@@ -229,7 +229,7 @@ wait_rig_quiet() {
     echo "$left"
 }
 
-# --- identical QoS for all three (COMPARISON.MD 4.4) --------------------------------------------
+# --- identical QoS for all three (COMPARISON.md 4.4) --------------------------------------------
 # KEEP_ALL's bound in samples per payload shape: min(2048, floor(512 KiB / sample bytes)), which is
 # what TickLE's shipped 512 KiB budget allows, so TickLE barely moves and the vendors are brought to
 # the same count. Every framework's RESULT line reports it as keepall_samples=.

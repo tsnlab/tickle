@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Hardware-in-the-loop performance test, run from the self-hosted runner (tickle-hil).
 #
-# Rebuilt 2026-09-22 (the user's own explicit request) around rmw_tickle/COMPARISON.MD's own §2-3
+# Rebuilt 2026-09-22 (the user's own explicit request) around rmw_tickle/COMPARISON.md's own §2-3
 # TickLE-core HIL methodology (examples/perf_hil/tickle/*, run via run_scenario.sh, TickLE's real
 # max send rate) instead of this script's own former tool (examples/linux/perf/{perf_client,
 # perf_server}, examples/linux/ping_pong/{ping,pong} - a different, lower-pacing tool). Motivation:
 # a real, concrete confusion this mismatch caused, not just a cosmetic inconsistency - Milestone 65's
 # own dashboard-sourced "loss_pct -> 0.0%" claim for the ACKNACK bitmap widening was measured under
-# the *old* tool and did not hold up when re-measured with COMPARISON.MD's own real max-rate
+# the *old* tool and did not hold up when re-measured with COMPARISON.md's own real max-rate
 # scenario 4 (1.9-8.1% loss). This script (and the dashboard it feeds) now measures the same thing
-# COMPARISON.MD documents, so the two can never silently diverge like that again.
+# COMPARISON.md documents, so the two can never silently diverge like that again.
 #
 # Roles (fixed, per the two dedicated test Pis - unchanged from before this rewrite):
 #   rpi#1 - client role
@@ -59,8 +59,8 @@ LOG_DIR="$(mktemp -d)"
 
 # QoS roadmap #5 (RELIABILITY/RELIABLE) loss-injection (scenario 4 only, now) - same tc/netem
 # machinery as before this rewrite, just no longer feeding a whole separate matrix of loss${pct}_*
-# scenarios (COMPARISON.MD §3 only measures reliable_throughput at 0/1/5% tc loss, not 10% - that
-# was this script's own prior convention, not COMPARISON.MD's).
+# scenarios (COMPARISON.md §3 only measures reliable_throughput at 0/1/5% tc loss, not 10% - that
+# was this script's own prior convention, not COMPARISON.md's).
 CLIENT_IFACE=""          # resolved below; set_loss() below is always a safe no-op while empty
 LOSS_TESTING_AVAILABLE=0 # 1 once both the interface and passwordless sudo tc are confirmed
 
@@ -231,7 +231,7 @@ run_liveliness_scenario() {
     } > "$LOG_DIR/${label}.log" 2>&1 || true
 }
 
-# --- Scenario definitions, matching rmw_tickle/COMPARISON.MD §2-3 exactly ---
+# --- Scenario definitions, matching rmw_tickle/COMPARISON.md §2-3 exactly ---
 #
 # best_effort_latency/reliable_latency/best_effort_throughput/deadline_miss_detection: no args,
 # fixed default run - client.c/server.c take none (confirmed: no argv parsing in either).
@@ -252,15 +252,15 @@ run_liveliness_scenario() {
 # simplest, most defensible choice (the Subscriber joins essentially immediately, deep inside the
 # window), used here rather than an arbitrary intermediate guess.
 #
-# reliable_throughput: 0/1/5% tc loss (COMPARISON.MD's own three rows - not 10%, this script's own
-# former convention, not COMPARISON.MD's own).
+# reliable_throughput: 0/1/5% tc loss (COMPARISON.md's own three rows - not 10%, this script's own
+# former convention, not COMPARISON.md's own).
 #
-# liveliness_loss_detection: lease=1.0/2.0/4.0s, matching COMPARISON.MD's own already-published
+# liveliness_loss_detection: lease=1.0/2.0/4.0s, matching COMPARISON.md's own already-published
 # values (and Milestone 65's own follow-up interest in the ~3s node-level sweep ceiling).
 #
 # lifespan_expiry: pause_s=1.0/1.5/2.0s with interval=0.02s/lifespan=0.1s/count=250 - the exact
 # slope-test methodology rmw_tickle/PLAN.md's own DDS semantic-parity backlog row 5 and
-# COMPARISON.MD §6 item 8 already verified against the expected formula on real HIL.
+# COMPARISON.md §6 item 8 already verified against the expected formula on real HIL.
 
 SCENARIOS=(best_effort_latency reliable_latency best_effort_throughput reliable_throughput
     durability_late_join history_depth_burst_loss deadline_miss_detection liveliness_loss_detection
@@ -308,11 +308,11 @@ run_all_scenarios() {
     done
 }
 
-# --- Job-summary rendering (mirrors COMPARISON.MD's own §3 table shape directly) ---
+# --- Job-summary rendering (mirrors COMPARISON.md's own §3 table shape directly) ---
 
 summarize() {
     {
-        echo "## TickLE HIL scenario results (rmw_tickle/COMPARISON.MD §2-3 methodology)"
+        echo "## TickLE HIL scenario results (rmw_tickle/COMPARISON.md §2-3 methodology)"
         echo
         echo "| Scenario | Condition | Result |"
         echo "|---|---|---|"

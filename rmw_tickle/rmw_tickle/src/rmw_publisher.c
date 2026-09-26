@@ -138,7 +138,7 @@ static void check_publisher_qos_incompatible(struct tt_Node* node, uint64_t time
 //   literally "how much history a late joiner gets" and KEEP_ALL's "retain everything" cashes out
 //   as a real, observable difference for every extra slot. This keeps the original 8192 - the same
 //   order of magnitude as MAX_RELIABLE_DEPTH in examples/perf_hil/tickle/reliable_throughput/
-//   client.c, at COMPARISON.MD §6 item 9/10's own already-measured ~12.2MB.
+//   client.c, at COMPARISON.md §6 item 9/10's own already-measured ~12.2MB.
 //
 //   VOLATILE: depth past the ack window is memory that can never change behavior. KEEP_ALL's
 //   back-pressure blocks at keep_all_bound() = min(cache depth, smallest announced tracking

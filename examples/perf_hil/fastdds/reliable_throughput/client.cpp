@@ -1,5 +1,5 @@
 /*
- * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
+ * HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.md) -
  * FastDDS native (no rmw) client/sender role. Mirrors the CycloneDDS scenario pair exactly - a
  * one-way stream (no pong), the receiver (server.cpp) is the authoritative side for loss/
  * throughput since only it can see what actually arrived.
@@ -60,7 +60,7 @@ namespace {
         // the common 3 s, and every RESULT line prints drain_cap_s= so the two cannot be mixed up.
         double drain_s = default_drain_s;
         // -N <samples>: KEEP_ALL's history bound, RESOURCE_LIMITS max_samples and max_samples_per_instance,
-        // 4000 by default (2026-09-26, the fairness audit, COMPARISON.MD 4.4). The bound differed between
+        // 4000 by default (2026-09-26, the fairness audit, COMPARISON.md 4.4). The bound differed between
         // the three frameworks by default; the campaign now passes all three the same number of samples,
         // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
         int32_t keepall_samples = default_keepall_samples;
@@ -87,11 +87,11 @@ namespace {
     }
 
     // scenario "reliable_throughput" - RELIABLE, matched exactly across frameworks
-    // (COMPARISON.MD's design principle 3). KEEP_ALL + generous resource_limits (2026-09-21, real
+    // (COMPARISON.md's design principle 3). KEEP_ALL + generous resource_limits (2026-09-21, real
     // bug found the hard way - see the CycloneDDS twin's own identical fix, which this file never
     // got the matching update for): the shallow KEEP_LAST(8) this file used before real-CI-caught
     // reliable_throughput's own RELIABLE never recovering any real tc/netem-injected loss at all
-    // (COMPARISON.MD §3/§6 - CycloneDDS's own KEEP_ALL+resource_limits(4000) fully recovers 1%/5%
+    // (COMPARISON.md §3/§6 - CycloneDDS's own KEEP_ALL+resource_limits(4000) fully recovers 1%/5%
     // injected loss every time, this file's own shallow depth=8 recovered none of it) - a shallow
     // writer history queue evicts a lost sample long before a NACK-driven retry can land, the exact
     // same root cause CycloneDDS's own client.c doc comment already names.

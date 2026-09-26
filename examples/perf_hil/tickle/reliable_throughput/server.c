@@ -8,7 +8,7 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.MD) -
+// HIL 3-way QoS-matrix comparison, scenario "reliable_throughput" (rmw_tickle/COMPARISON.md) -
 // TickLE core native server/receiver role (no rmw). Same one-way stream shape as
 // best_effort_throughput/server.c (this side is the authoritative one for loss/throughput),
 // `sub.reliable = true` to match the client's own RELIABLE Publisher - no cache is needed on the
@@ -193,7 +193,7 @@ static const double default_safety_cap_s = 40.0;
 // Phase 2 - -w <samples>: the RELIABLE tracking window this Subscriber asks for; 0 = core default.
 static uint32_t window_samples = 0;
 // -N <samples>: KEEP_ALL's history bound, the same flag as the client's and the DDS harnesses'
-// (2026-09-26, COMPARISON.MD 4.4). A Publisher can hold no more unacknowledged than this Subscriber's
+// (2026-09-26, COMPARISON.md 4.4). A Publisher can hold no more unacknowledged than this Subscriber's
 // window, which counts datagrams, so without -w the window is widened to N x the datagrams one sample
 // takes, rounded up to whole bitmap words - otherwise the reader's default window, not N, would bound the
 // run. The DDS readers take N as their own max_samples; this side has no history of its own to bound.
@@ -296,7 +296,7 @@ int main(int argc, char** argv) {
     // -D: request TRANSIENT_LOCAL, matching the client's own -D. The RxO fix (PLAN.md Milestone 60)
     // keys the first-contact baseline on sub->durable: a durable Subscriber syncs to the
     // Publisher's first_available_seq_no rather than to "whatever arrives next", which is exactly
-    // the pre-match window COMPARISON.MD §3b documents for the volatile case.
+    // the pre-match window COMPARISON.md §3b documents for the volatile case.
     sub.durable = durable;
     // Phase 2 - a wider caller-owned tracking window, one per simultaneously tracked Publisher.
     // Sized for the widest this build allows; only the requested prefix is actually used.
@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
     // is resident: c6's server read 13,061 KB against c4's 1,731, the difference being the ~11.4 MB
     // ring, while CycloneDDS read 5,841. Slots beyond the window can never be legitimately needed:
     // the Subscriber cannot hold a sample further than one window ahead of its oldest gap.
-    // Fewer slots than the window is what storms (COMPARISON.MD to-do 17); exactly the window is
+    // Fewer slots than the window is what storms (COMPARISON.md to-do 17); exactly the window is
     // the floor that does not. The width below is core's own rule, subscriber_tracking_words().
     sub.reorder_slots = reorder_slots_for_window(&sub);
 

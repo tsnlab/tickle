@@ -367,7 +367,7 @@ static void test_entity_alive_traffic_vetoes_stale_announces(void) {
 
 // And the veto must not delay a real expiry. With both clocks stopping together - which is what a
 // killed process does - detection lands exactly on the announce boundary, unchanged from before
-// the traffic clock existed. This is the property that keeps COMPARISON.MD's scenario 8 figures
+// the traffic clock existed. This is the property that keeps COMPARISON.md's scenario 8 figures
 // valid; using traffic as the single clock moved them about +290ms on real hardware.
 static void test_entity_alive_traffic_does_not_delay_expiry(void) {
     struct tt_Node node;

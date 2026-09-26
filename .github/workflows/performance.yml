@@ -1,20 +1,20 @@
 name: Performance Test
 
 # Manual only (workflow_dispatch), by the user's decision of 2026-09-24 (translated): "Pulling
-# performance figures with the HIL rig is something we do anyway when producing comparison.md, so
+# performance figures with the HIL rig is something we do anyway when producing COMPARISON.md, so
 # let's leave it out of CI."
 #
 # Why it came off every push, measured rather than felt: in the ~6.5 hours after the self-hosted
 # runners were restarted that day, CI held the rig for 155 minutes across 34 jobs and the dev box
 # for 70 minutes across 36 - and 17 of the 34 rig jobs were cancelled by a newer push before they
 # finished, so half the rig time produced nothing at all while manual measurements queued behind
-# it. Performance figures are taken by hand on the rig for rmw_tickle/COMPARISON.MD anyway, and
-# the dev box is not used for performance at all (COMPARISON.MD section 5).
+# it. Performance figures are taken by hand on the rig for rmw_tickle/COMPARISON.md anyway, and
+# the dev box is not used for performance at all (COMPARISON.md section 5).
 #
 # What per-push CI no longer does, recorded so nobody discovers it the hard way:
 #   - HIL throughput/latency/QoS scenarios on the two rpis. These caught a 12x RELIABLE throughput
 #     regression within minutes on 2026-09-24; the equivalent evidence now comes from a manual
-#     rig sweep (examples/perf_hil/) before a result is written into COMPARISON.MD.
+#     rig sweep (examples/perf_hil/) before a result is written into COMPARISON.md.
 #   - the gh-pages "TickLE HIL - ..." dashboard series, which now update only when this is run.
 # Hosted check-all/test-all still run on every push and cover correctness over real sockets
 # (netns two-node integration, same-host two-node, unit, sanitizers, header/lint/doc gates).
@@ -42,7 +42,7 @@ jobs:
       - name: Run hardware-in-the-loop performance tests
         run: .github/scripts/run_perf.sh
 
-      # All 11 groups below are sourced from examples/perf_hil/tickle/* (comparison.md's own §2-3
+      # All 11 groups below are sourced from examples/perf_hil/tickle/* (COMPARISON.md's own §2-3
       # HIL methodology), not run_perf.sh's former examples/linux/perf tool - see run_perf.sh's own
       # top comment for why this switch happened. fail-on-alert: true only for the two throughput
       # groups (the only ones a 200%-regression alert can distinguish from expected run-to-run
