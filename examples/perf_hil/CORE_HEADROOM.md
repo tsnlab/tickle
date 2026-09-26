@@ -114,3 +114,31 @@ sample counts between arms (81,848 and 135,084), because strace perturbs through
 1.066 receives per sample is close to the floor Dev names for this change - n+1 per drain cannot
 go below one per sample - so reaching CycloneDDS's 0.74 needs `recvmmsg`, which is the next step
 rather than a shortfall in this one.
+
+## Result of item 3 (`recvmmsg`, Dev's `ef0c7ea0`), against the pre-registration (2026-09-26)
+
+Campaign cells 1, 4, 10 and 11, all three frameworks, 3 repetitions, before (`559b91f6`, the parent) and
+after (`ef0c7ea0`) in one session: `results/campaign_rxb_{before,after}_2026-09-26.txt`. Both score
+**WIN 28, DRAW/TIE 4, LOSE 0**. TickLE, before against after, medians with the three repetitions' range:
+
+| TickLE | before | after | pre-registered |
+|---|---:|---:|---|
+| c1 server receive calls per sample | (1.066 earlier) | **0.137** | <= 0.8, **met** |
+| c1 server `stime_s` | 1.992 | **1.847 (-7.3%, no overlap)** | falls, **met** |
+| c1 server `cpu_s_per_Msample` | 2.987 | **2.529 (-15.3%, no overlap)** | - |
+| c1 server `utime_s` | 0.846 | 0.550 (-35.0%) | - |
+| c4 server `cpu_s_per_Msample` | 8.849 | 8.011 (-9.5%, no overlap) | - |
+| c1 / c4 throughput, wire bytes | 115.7 / 939.5 Mbps | 116.0 / 939.6 Mbps, identical bytes | unchanged, **met** |
+| c1 server peak RSS | 1,780 KB | 1,836 KB (+56) | about +48 KB (32 x 1.5 KB), **met** |
+| **c10 / c11 RTT mean (kill criterion)** | 0.207 / 0.233 ms | 0.213 / 0.236 ms | no regression: **not settled** |
+
+The receive calls per sample come from the server's own `rx_batch_calls / recv`: 130-132 thousand
+calls for about 950 thousand datagrams, an average of 7.3 datagrams per call. **Only 10-23 calls in
+130 thousand filled all 32 slots**, so N=32 never binds on the rig. A smaller N would hold the same
+result for less memory. That is a sizing choice, recorded, and not a defect.
+
+**The latency criterion is not settled by this run, and it is not waved through.** c10's mean moved
++6 us (ranges [0.207..0.209] and [0.208..0.214]), which overlap at n=3 but only just. As for this
+morning's poll change, the settling run is 10 repetitions per arm. **Pre-registered: the drift is real
+if |mean_after - mean_before| exceeds twice the combined standard error, and not resolved otherwise.**
+A real regression fires the kill criterion, whatever the CPU saving.
