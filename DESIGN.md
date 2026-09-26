@@ -382,8 +382,8 @@ spans datagrams without holding a reassembly buffer the size of the largest poss
 while the wire is one mechanism. A continuation is recognised as discovery by its `entity_id`.
 
 **Sender.**
-- An announce that fits one datagram is one `DATA`, broadcast periodically, or unicast when
-  replying to first contact.
+- An announce that fits one datagram is one `DATA`: broadcast when the endpoint list changes, and
+  unicast when replying to first contact or to a request (see "The periodic summary" below).
 - Otherwise the list is split greedily in endpoint order, each fragment its own datagram to the same
   destination. Fragments are planned with `FRAG_FIRST`'s larger header, so the plan holds wherever a
   fragment lands.
@@ -394,14 +394,12 @@ while the wire is one mechanism. A continuation is recognised as discovery by it
 
 **Receiver.**
 - **Liveliness is refreshed first**, on every announce and every fragment, before anything can
-  return. A node whose list never changes resends the same generation every interval, so every
-  announce after its first is a duplicate by `seq_no`, and those duplicates are what keep it alive.
-  `test_update_parts.c` pins this with a control: it checks after every interval, because a node
-  wrongly declared dead is re-learned from its very next announce and the end state alone would
-  look healthy.
+  return, as it is on every summary. `test_update_parts.c` pins this with a control: it checks after
+  every interval, because a node wrongly declared dead is re-learned from its very next summary and
+  the end state alone would look healthy.
 - The discovery endpoint has no Subscriber, no reliable tracking and no deduplication in front of
-  it. The handler compares the generation itself: the one it last acted on is a periodic resend and
-  is ignored.
+  it. The handler compares the generation itself: the one it last acted on is a resend and is
+  ignored.
 - A new generation replaces the source's old list as soon as its first datagram arrives, whole or
   any fragment: everything the source announced before is forgotten, then this is applied. Each
   fragment's entities are applied as they arrive, and a repeated fragment applies the same entities
@@ -411,15 +409,50 @@ while the wire is one mechanism. A continuation is recognised as discovery by it
   own announce back.
 
 **Lost fragment.** The announce stays incomplete, and the source is known by the fragments that did
-arrive. The next periodic announce (`tt_NODE_UPDATE_INTERVAL`) resends every fragment under the same
-generation, and that fills the gap without starting over. A source heard only through an announce
-that never completed still expires by the ordinary liveliness rule, since its entities are recorded
-all the same.
+arrive. Its generation is not applied, so the source's next summary draws a request, and the reply
+resends every fragment under the same generation, which fills the gap without starting over. A
+source heard only through an announce that never completed still expires by the ordinary liveliness
+rule, since its entities are recorded all the same.
 
 **Interop.** A version bump, not new types. The announce itself changed shape, so a node of
 `tt_VERSION` 6 and one of 7 cannot understand each other's discovery. `validate_packet_header()`
 rejects the other version outright, and logs that once per source, rather than letting either side
 misread the other.
+
+### The periodic summary, and the list pulled on demand (`tt_VERSION` 8)
+
+Until `tt_VERSION` 8 the whole announce was broadcast every `tt_NODE_UPDATE_INTERVAL` (1 s), changed
+or not: about 100-130 bytes per ROS endpoint, so a node's steady-state discovery traffic grew with
+every endpoint on the network. Since 8 (2026-09-26, `rmw_tickle/DISCOVERY_PLAN.md`, the user's
+decision) the list travels only when someone needs it, over the reliable protocol's own submessages
+on the discovery endpoint:
+
+| role | submessage | addressed | contents |
+|---|---|---|---|
+| summary, every interval | `HEARTBEAT` | broadcast | `first_available_seq_no = last_seq_no` = generation |
+| request for the list | `ACKNACK` | unicast to the summary's sender | `seq_no` = the generation seen |
+| the list | the announce above | unicast to the requester | the full endpoint list |
+| a change | the announce above | broadcast, at once | the new generation |
+
+- **A summary is ~28 bytes whatever the endpoint count.** It refreshes the sender's liveliness exactly
+  as an announce does, so leases and `tt_NODE_UPDATE_INTERVAL` are unchanged.
+- **A generation already applied** makes a summary liveliness only; nothing is sent back.
+- **Any other generation** - a change whose broadcast was lost, a node that joined later, one that
+  restarted, an announce left incomplete - draws one request. The request is re-sent only on a later
+  summary that still shows an unapplied generation, so the request rate is the summary rate: a lost
+  request or reply costs one interval, and nothing can storm. No per-peer "request outstanding" state
+  is kept; the summary cadence is the bound.
+- **A request is answered unicast**, up to `tt_UNICAST_PEER_THRESHOLD` in one `tt_NODE_TX_INTERVAL`
+  tick. One more is answered by a single broadcast of the list, and the rest of that tick's requests
+  by nothing further - so a burst of new nodes costs one broadcast, not one unicast each.
+- **A change is still pushed** by broadcast the moment an endpoint is created or destroyed, and a
+  node hearing a changed broadcast list, or an unknown node's, still answers with its own, as before.
+  The pull only covers what the push missed.
+- A request or answer goes out from an empty transmit buffer: anything batched there is flushed as
+  the broadcast it was going to be.
+
+`tests/test_peer_discovery.c` checks each rule on two simulated nodes, with the loss that exercises
+it, and each check was run against a code change that breaks its rule.
 
 ## Samples larger than a datagram (`FRAG_FIRST`/`FRAG_CONT`, types 8 and 9)
 

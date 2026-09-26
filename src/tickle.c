@@ -1268,7 +1268,8 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
 // struct tt_Node.announce_soon_scheduled: the announce a new endpoint is owed, sent once the burst it came
 // in has gone quiet for tt_NODE_TX_INTERVAL. Rescheduling itself rather than unscheduling on every creation
 // keeps creation to a clock read and a store. The periodic node_update() is untouched - this is one extra
-// announce per burst of changes, not a faster cadence.
+// announce per burst of changes, not a faster cadence. Since tt_VERSION 8 this broadcast is how a change
+// is pushed; a peer that misses it pulls the list when the next summary shows the new generation.
 static void announce_soon(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
     uint64_t quiet_at = node->endpoints_changed_ns + tt_NODE_TX_INTERVAL;
@@ -1276,7 +1277,7 @@ static void announce_soon(struct tt_Node* node, uint64_t time, void* param) {
         if (tt_Node_schedule(node, quiet_at, announce_soon, NULL)) {
             return;
         }
-        TT_LOG_ERROR("Cannot reschedule announce_soon"); // the periodic announce still covers it
+        TT_LOG_ERROR("Cannot reschedule announce_soon"); // peers still pull it on the next summary
     }
     node->announce_soon_scheduled = false;
     build_and_send_update(node, NULL, 0);
@@ -1927,6 +1928,8 @@ static void reset_node_state(struct tt_Node* node) {
     node->flush_scheduled = false;
     node->announce_soon_scheduled = false;
     node->endpoints_changed_ns = 0;
+    node->discovery_reply_tick = 0;
+    node->discovery_reply_count = 0;
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
@@ -5280,11 +5283,11 @@ static bool send_update_parts(struct tt_Node* node, struct tt_Endpoint* const* e
 }
 
 // Builds this node's current announce (its own endpoint list, a DATA of the built-in discovery endpoint)
-// and sends it either way node_update()/process_announce() need it sent: peer_count == 0 broadcasts it,
-// batched (is_flush=false - the periodic case, no synchronous waiter, node_flush()'s own tick is fine);
-// peer_count >= 1 unicasts it to that one peer, flushed immediately (the reactive first-contact reply
-// case in process_announce() - the whole point is the other side learning us as fast as possible, not
-// waiting for the next tick or our own next periodic broadcast).
+// and sends it either way it is needed: peer_count == 0 broadcasts it, batched (is_flush=false - a change
+// pushed by announce_soon(), or a request answered in bulk, no synchronous waiter, node_flush()'s own tick
+// is fine); peer_count >= 1 unicasts it to that one peer, flushed immediately (a first-contact reply from
+// process_announce(), or a request answered by answer_discovery_request() - the whole point is the other
+// side learning us as fast as possible).
 static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
     uint32_t old_tx_tail = node->tx_tail;
 
@@ -5355,10 +5358,40 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
     return true;
 }
 
+// The periodic discovery summary (tt_VERSION 8, rmw_tickle/DISCOVERY_PLAN.md): a HEARTBEAT of the built-in
+// discovery endpoint whose first and last seq_no are this node's announce generation - ~28 bytes whatever the
+// endpoint count, where the periodic announce it replaces carried the whole endpoint list every interval. A
+// receiver that has applied this generation takes it as liveliness only; one that has not asks for the list
+// (process_discovery_summary()). The full list is still broadcast at once on every change (announce_soon(),
+// broadcast_goodbye()). Batched, as the announce was: it is broadcast-only content.
+static void send_discovery_summary(struct tt_Node* node) {
+    uint32_t old_tx_tail = node->tx_tail;
+    struct tt_SubmessageHeader* submessage_header =
+        start_encode(node, tt_SUBMESSAGE_TYPE_HEARTBEAT, tt_SUBMESSAGE_ID_ALL);
+    struct tt_HeartbeatHeader* summary =
+        submessage_header != NULL ? encode(node, sizeof(struct tt_HeartbeatHeader)) : NULL;
+    if (summary == NULL) {
+        rollback(node, old_tx_tail);
+        return; // start_encode()/encode() logged why; the next interval tries again
+    }
+    uint32_t generation = (uint32_t)node->last_modified;
+    summary->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
+    summary->first_available_seq_no = generation;
+    summary->last_seq_no = generation;
+    summary->entity_id = tt_DISCOVERY_ENTITY_ID;
+    summary->flags = tt_HEARTBEAT_FLAG_FINAL;
+    memset(summary->reserved, 0, sizeof(summary->reserved));
+    if (!end_encode(node, submessage_header, false, NULL, 0)) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+    node->tx_has_pending_update = true; // broadcast-only, like the announce it replaces
+}
+
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
-    build_and_send_update(node, NULL, 0);
+    send_discovery_summary(node);
 
     if (!tt_Node_schedule(node, time + tt_NODE_UPDATE_INTERVAL, node_update, NULL)) {
         TT_LOG_ERROR("Cannot schedule node_update");
@@ -5878,7 +5911,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
 // whatever announce got us onto its radar in the first place, or, in the simultaneous-startup
 // case, from this very reply - so replying to a reply never meets this same trigger condition
 // again on either side. Skipped (not a correctness issue, just a missed optimization
-// this one time - the periodic broadcast still reaches them eventually) whenever tx_buffer
+// this one time - the peer pulls our list when our next summary reaches it) whenever tx_buffer
 // already has something else pending: redirecting that to a single peer here could be wrong for
 // whatever else it's for (same shared-tx_buffer reasoning as process_callrequest()'s own unicast).
 static void reply_with_own_announce(struct tt_Node* node, uint8_t sender_node_id, uint32_t sender_ip,
@@ -5903,17 +5936,17 @@ _Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Node.update_part_received is a 32-
 // and frag_count are 0 and 1 for an announce in one datagram.
 //
 // Liveliness is refreshed first, before anything can return: every announce and every fragment is proof
-// the sender is alive, and a periodic resend of an unchanged list - an already-seen generation - is
-// exactly what keeps a quiet node from being presumed dead. Only then is the generation compared.
+// the sender is alive, as every discovery summary is (process_discovery_summary()). Only then is the
+// generation compared: a resend of an already-seen generation changes nothing.
 //
 // A new generation replaces what the source announced before (forget, then apply), as soon as its first
 // datagram - whole or any fragment - arrives. Each fragment's entities are applied as it arrives, and a
 // repeated fragment re-applies the same entities, which upsert makes harmless. Once every fragment has
 // arrived the announce is complete: it becomes the source's acted-on announce (update_generation /
 // update_seen), unmatched ack state is dropped, and a first contact is answered with our own announce.
-// A lost fragment leaves the announce incomplete until the next periodic announce resends every fragment
-// under the same generation, which fills the gap without starting over; until then the source is known
-// by the fragments that did arrive.
+// A lost fragment leaves the announce incomplete - its generation not applied - so the source's next
+// summary draws a request, and the reply resends every fragment under the same generation, which fills the
+// gap without starting over; until then the source is known by the fragments that did arrive.
 static bool process_announce(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                              uint32_t tail, uint32_t sender_ip, uint16_t sender_port, uint32_t generation,
                              uint8_t frag_index, uint8_t frag_count) {
@@ -7384,6 +7417,75 @@ static void retransmit_reliable_samples(struct tt_Node* node, struct tt_Publishe
 // under one wire id corrupts a remote reliable Subscriber's own seq_no tracking regardless of
 // which one answers a given ACKNACK, so picking a specific one here doesn't make that any better
 // or worse. Not attempted to be made "correct" beyond find_endpoint()'s own deterministic pick.
+// A send addressed to one peer goes from an empty tx_buffer: anything batched there, broadcast-only, leaves
+// first as the broadcast it was going to be (flush_pending_before_unicast()'s reasoning).
+static void flush_pending_broadcast(struct tt_Node* node) {
+    if (node->tx_tail != sizeof(struct tt_Header)) {
+        (void)flush_tx(node, node->tx_tail, NULL, 0);
+    }
+}
+
+// Asks `source` for its endpoint list (rmw_tickle/DISCOVERY_PLAN.md rule 3): an ACKNACK of the built-in
+// discovery endpoint naming the generation its summary showed, unicast. Sent once per summary that shows a
+// generation not yet applied, so the request rate is the summary rate, and a lost request or reply costs one
+// interval, as a lost announce did.
+static void send_discovery_request(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
+                                   uint16_t sender_port) {
+    flush_pending_broadcast(node);
+    uint32_t old_tx_tail = node->tx_tail;
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_ACKNACK, source);
+    struct tt_AckNackHeader* request = submessage_header != NULL ? encode(node, sizeof(struct tt_AckNackHeader)) : NULL;
+    if (request == NULL) {
+        rollback(node, old_tx_tail);
+        return;
+    }
+    request->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
+    request->entity_id = tt_DISCOVERY_ENTITY_ID;
+    request->sender_entity_id = tt_DISCOVERY_ENTITY_ID;
+    request->seq_no = generation;
+    request->bitmap_words = 0;
+    request->reserved = 0;
+    struct tt_Peer target = {source, sender_ip, sender_port};
+    if (!end_encode(node, submessage_header, true, &target, 1)) {
+        rollback(node, old_tx_tail);
+    }
+}
+
+// A discovery summary from `source` (send_discovery_summary()). Liveliness first, whatever else it says -
+// exactly what an announce refreshes (rule 1). A generation already applied needs nothing more (rule 2); any
+// other - a change missed, a node never heard in full - is asked for (rule 3).
+static bool process_discovery_summary(struct tt_Node* node, uint8_t source, uint32_t generation, uint32_t sender_ip,
+                                      uint16_t sender_port) {
+    node->update_last_seen[source] = tt_get_ns();
+    if (node->update_seen[source] && node->update_generation[source] == generation) {
+        return true;
+    }
+    send_discovery_request(node, source, generation, sender_ip, sender_port);
+    return true;
+}
+
+// A peer asked for this node's endpoint list (rule 4): the whole announce, unicast to it. When more than
+// tt_UNICAST_PEER_THRESHOLD ask within one tt_NODE_TX_INTERVAL tick - a burst of new nodes, say - the next
+// becomes one broadcast instead, and later requests in that tick are covered by it.
+static void answer_discovery_request(struct tt_Node* node, uint8_t source, uint32_t sender_ip, uint16_t sender_port) {
+    uint64_t tick = tt_get_ns() / tt_NODE_TX_INTERVAL;
+    if (tick != node->discovery_reply_tick) {
+        node->discovery_reply_tick = tick;
+        node->discovery_reply_count = 0;
+    }
+    if (node->discovery_reply_count > tt_UNICAST_PEER_THRESHOLD) {
+        return; // a broadcast of the list is already on its way this tick
+    }
+    node->discovery_reply_count++;
+    if (node->discovery_reply_count > tt_UNICAST_PEER_THRESHOLD) {
+        build_and_send_update(node, NULL, 0); // batched broadcast, out on the next flush tick
+        return;
+    }
+    flush_pending_broadcast(node);
+    struct tt_Peer requester = {source, sender_ip, sender_port};
+    build_and_send_update(node, &requester, 1);
+}
+
 static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
     struct tt_AckNackHeader* acknack_header = decode(node, buffer, &head, tail, sizeof(struct tt_AckNackHeader));
@@ -7396,6 +7498,10 @@ static bool process_acknack(struct tt_Node* node, struct tt_Header* header, uint
     uint32_t seq_no = rd32(header, acknack_header->seq_no);
     uint32_t entity_id = rd32(header, acknack_header->entity_id);
     uint32_t sender_entity_id = rd32(header, acknack_header->sender_entity_id);
+    if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
+        answer_discovery_request(node, header->source, sender_ip, sender_port);
+        return true;
+    }
 
     // Phase 2 - the bitmap is variable length now, so its own claimed word count is untrusted
     // input: it must fit both this datagram's own remaining bytes and this receiver's own local
@@ -7675,6 +7781,9 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
     TT_LOG_DEBUG("  first_available_seq_no: %u", first_available_seq_no);
     TT_LOG_DEBUG("  last_seq_no: %u", last_seq_no);
 
+    if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
+        return process_discovery_summary(node, header->source, last_seq_no, sender_ip, sender_port);
+    }
     struct heartbeat_ctx ctx = {header, sender_ip, sender_port, entity_id, first_available_seq_no, last_seq_no, flags};
     for_each_endpoint(node, tt_KIND_TOPIC_SUBSCRIBER, endpoint_id, inform_subscriber_of_heartbeat, &ctx);
     return true;

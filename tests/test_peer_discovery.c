@@ -511,12 +511,43 @@ struct duo_datagram {
     bool unicast;
     uint32_t len;
     uint8_t bytes[tt_MAX_BUFFER_LENGTH];
+    // Its discovery submessages, by what they are (duo_classify()).
+    int summaries; // HEARTBEAT of the discovery endpoint
+    int requests;  // ACKNACK of the discovery endpoint
+    int lists;     // DATA of the discovery endpoint: the full announce
 };
 static struct duo_datagram duo_queue[DUO_QUEUE];
 static int duo_count;
 static uint8_t duo_acting;
 static int duo_seen_send_to;
 static int duo_sent[3];
+// What each node sent, by kind; lists split by how they were addressed.
+static int duo_summaries[3];
+static int duo_requests[3];
+static int duo_lists_broadcast[3];
+static int duo_lists_unicast[3];
+// Loses a datagram it returns true for, on the way to the other node. NULL loses nothing.
+static bool (*duo_drop)(const struct duo_datagram* datagram);
+
+// Walks a datagram's submessages and counts the discovery ones: every body starts with the endpoint_id.
+static void duo_classify(struct duo_datagram* datagram) {
+    uint32_t head = sizeof(struct tt_Header);
+    while (head + sizeof(struct tt_SubmessageHeader) + sizeof(uint32_t) <= datagram->len) {
+        struct tt_SubmessageHeader sub;
+        uint32_t endpoint_id = 0;
+        memcpy(&sub, &datagram->bytes[head], sizeof(sub));
+        memcpy(&endpoint_id, &datagram->bytes[head + sizeof(sub)], sizeof(endpoint_id));
+        if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
+            datagram->summaries += sub.type == tt_SUBMESSAGE_TYPE_HEARTBEAT;
+            datagram->requests += sub.type == tt_SUBMESSAGE_TYPE_ACKNACK;
+            datagram->lists += sub.type == tt_SUBMESSAGE_TYPE_DATA;
+        }
+        if (sub.length < sizeof(sub)) {
+            return;
+        }
+        head += sub.length;
+    }
+}
 
 static void duo_capture(const void* buf, size_t len) {
     EXPECT_TRUE(duo_count < DUO_QUEUE && len <= tt_MAX_BUFFER_LENGTH);
@@ -526,7 +557,18 @@ static void duo_capture(const void* buf, size_t len) {
     duo_seen_send_to = test_mock_send_to_call_count;
     datagram->len = (uint32_t)len;
     memcpy(datagram->bytes, buf, len);
+    datagram->summaries = 0;
+    datagram->requests = 0;
+    datagram->lists = 0;
+    duo_classify(datagram);
     duo_sent[duo_acting]++;
+    duo_summaries[duo_acting] += datagram->summaries;
+    duo_requests[duo_acting] += datagram->requests;
+    if (datagram->unicast) {
+        duo_lists_unicast[duo_acting] += datagram->lists;
+    } else {
+        duo_lists_broadcast[duo_acting] += datagram->lists;
+    }
 }
 
 static void duo_run_due(struct tt_Node* node) {
@@ -540,6 +582,9 @@ static void duo_run_due(struct tt_Node* node) {
 static void duo_deliver(struct tt_Node* one, struct tt_Node* two) {
     for (int i = 0; i < duo_count; i++) { // grows while delivering: a reply is delivered in the same pass
         struct duo_datagram* datagram = &duo_queue[i];
+        if (duo_drop != NULL && duo_drop(datagram)) {
+            continue;
+        }
         struct tt_Node* to = datagram->from == one->id ? two : one;
         duo_acting = to->id;
         memcpy(to->rx_buffer, datagram->bytes, datagram->len);
@@ -640,6 +685,238 @@ static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_en
     test_mock_send_hook = NULL;
 }
 
+// --- The discovery summary (tt_VERSION 8, rmw_tickle/DISCOVERY_PLAN.md) --------------------------------
+
+static void duo_reset_counts(void) {
+    memset(duo_summaries, 0, sizeof(duo_summaries));
+    memset(duo_requests, 0, sizeof(duo_requests));
+    memset(duo_lists_broadcast, 0, sizeof(duo_lists_broadcast));
+    memset(duo_lists_unicast, 0, sizeof(duo_lists_unicast));
+}
+
+// Two nodes, 1 and 2, on the mock clock at 1 s, their periodic tasks scheduled and nothing lost.
+static void duo_start(struct tt_Node* one, struct tt_Node* two) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    test_mock_send_hook = duo_capture;
+    duo_count = 0;
+    duo_seen_send_to = 0;
+    duo_drop = NULL;
+    memset(duo_sent, 0, sizeof(duo_sent));
+    duo_reset_counts();
+    init_node(one);
+    init_node(two);
+    one->id = 1;
+    two->id = 2;
+    EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(one));
+    EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(two));
+}
+
+static void duo_stop(void) {
+    duo_drop = NULL;
+    test_mock_send_hook = NULL;
+}
+
+static struct tt_Topic duo_sub_topic = {.name = "duo",
+                                        .data_size = 4,
+                                        .data_decode = duo_decode,
+                                        .data_free = duo_free};
+static struct tt_Topic duo_pub_topic = {.name = "duo",
+                                        .data_size = 4,
+                                        .data_encode_size = fake_encode_size,
+                                        .data_encode = fake_encode};
+
+static bool drop_summaries(const struct duo_datagram* datagram) {
+    return datagram->summaries > 0;
+}
+
+static bool drop_node_one_lists(const struct duo_datagram* datagram) {
+    return datagram->from == 1 && datagram->lists > 0;
+}
+
+static bool drop_node_one_broadcast_lists(const struct duo_datagram* datagram) {
+    return datagram->from == 1 && datagram->lists > 0 && !datagram->unicast;
+}
+
+// Rules 1 and 2: once two nodes know each other, each sends one summary a second and nothing else - no
+// request, no list - and the summaries alone keep the other alive. The liveliness half is checked with an
+// entity lease of 1.5 s, sampled every 50 ms over 3 s: shorter than the 3 s since the last full list, so only
+// the summaries can keep it; and at the node level any traffic vetoes a death (check_liveliness()), so the
+// lease is where a summary that did not refresh liveliness shows. Control: with the summaries lost the same
+// entity expires, so the check can fail.
+static void test_steady_state_is_summaries_that_keep_the_peer_alive(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Subscriber sub;
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&two, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &duo_pub_topic, "duo_ep"));
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+
+    duo_reset_counts();
+    struct tt_DiscoveredEntity entity;
+    memset(&entity, 0, sizeof(entity));
+    entity.node_id = 2;
+    entity.alive = true;
+    entity.liveliness_lease_duration_ns = tt_SECOND + (tt_SECOND / 2);
+    int dead_samples = 0;
+    uint64_t end = test_mock_now + (3 * tt_SECOND);
+    while (test_mock_now < end) {
+        duo_run_until(&one, &two, test_mock_now + (50 * tt_MILLISECOND));
+        dead_samples += !tt_Node_entity_alive(&one, &entity, test_mock_now);
+    }
+    EXPECT_EQ_INT(0, dead_samples);
+    EXPECT_TRUE(duo_summaries[1] >= 2 && duo_summaries[1] <= 4);
+    EXPECT_TRUE(duo_summaries[2] >= 2 && duo_summaries[2] <= 4);
+    EXPECT_EQ_INT(0, duo_requests[1] + duo_requests[2]);
+    EXPECT_EQ_INT(0, duo_lists_broadcast[1] + duo_lists_broadcast[2] + duo_lists_unicast[1] + duo_lists_unicast[2]);
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+
+    duo_drop = drop_summaries; // control
+    end = test_mock_now + (3 * tt_SECOND);
+    dead_samples = 0;
+    while (test_mock_now < end) {
+        duo_run_until(&one, &two, test_mock_now + (50 * tt_MILLISECOND));
+        dead_samples += !tt_Node_entity_alive(&one, &entity, test_mock_now);
+    }
+    EXPECT_TRUE(dead_samples > 0);
+    duo_stop();
+}
+
+// Rules 3 and 5: a change is pushed by broadcast; a node that missed that broadcast asks when the next
+// summary shows it a generation it has not applied, and gets the list unicast - within one interval and a
+// round trip. Control: 5 ms after the change, with its broadcast lost, the peer is not yet known.
+static void test_a_missed_change_is_pulled_on_the_next_summary(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+
+    duo_reset_counts();
+    duo_drop = drop_node_one_broadcast_lists;
+    struct tt_Subscriber sub;
+    uint64_t created = test_mock_now;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    duo_run_until(&one, &two, created + (5 * tt_MILLISECOND));
+    EXPECT_EQ_INT(1, duo_lists_broadcast[1]); // the push happened, and was lost
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+
+    duo_run_until(&one, &two, created + tt_NODE_UPDATE_INTERVAL + (5 * tt_MILLISECOND));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    EXPECT_EQ_INT(1, duo_requests[2]);
+    EXPECT_EQ_INT(1, duo_lists_unicast[1]);
+    EXPECT_EQ_INT(0, duo_requests[1]); // node 1 knew node 2's generation throughout
+
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND)); // and it ends there
+    EXPECT_EQ_INT(1, duo_requests[2]);
+    EXPECT_EQ_INT(1, duo_lists_unicast[1]);
+    duo_stop();
+}
+
+// Rule 3's bound (DISCOVERY_PLAN.md section 4, first risk): a node whose lists never arrive is asked once
+// per summary - never more - and the asking stops as soon as a list gets through.
+static void test_requests_come_one_per_summary_until_a_list_arrives(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&two, &pub, &duo_pub_topic, "duo_ep"));
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND) + (tt_SECOND / 2));
+
+    duo_reset_counts();
+    duo_drop = drop_node_one_lists;
+    struct tt_Subscriber sub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&one, &sub, &duo_sub_topic, "duo_ep", duo_on_data));
+    duo_run_until(&one, &two, test_mock_now + (5 * tt_SECOND));
+    EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
+    EXPECT_TRUE(duo_summaries[1] >= 4);
+    EXPECT_EQ_INT(duo_summaries[1], duo_requests[2]);     // one request per summary
+    EXPECT_EQ_INT(duo_requests[2], duo_lists_unicast[1]); // each answered, and each answer lost
+
+    duo_drop = NULL;
+    duo_run_until(&one, &two, test_mock_now + tt_NODE_UPDATE_INTERVAL + (5 * tt_MILLISECOND));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
+    int requests = duo_requests[2];
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND));
+    EXPECT_EQ_INT(requests, duo_requests[2]);
+    duo_stop();
+}
+
+static int answers_unicast;
+static int answers_broadcast;
+
+static void count_answers(const void* buf, size_t len) {
+    struct duo_datagram datagram;
+    memset(&datagram, 0, sizeof(datagram));
+    datagram.len = (uint32_t)len;
+    memcpy(datagram.bytes, buf, len);
+    duo_classify(&datagram);
+    bool unicast = test_mock_send_to_call_count != duo_seen_send_to;
+    duo_seen_send_to = test_mock_send_to_call_count;
+    if (unicast) {
+        answers_unicast += datagram.lists;
+    } else {
+        answers_broadcast += datagram.lists;
+    }
+}
+
+// One peer's request for this node's list, as send_discovery_request() writes it.
+static uint32_t write_request(uint8_t* buf, uint8_t source, uint32_t generation) {
+    struct tt_Header header;
+    init_header(&header, source);
+    memcpy(buf, &header, sizeof(header));
+    struct tt_SubmessageHeader sub = {tt_SUBMESSAGE_TYPE_ACKNACK, LOCAL_NODE_ID,
+                                      (uint16_t)(sizeof(sub) + sizeof(struct tt_AckNackHeader))};
+    memcpy(buf + sizeof(header), &sub, sizeof(sub));
+    struct tt_AckNackHeader request;
+    memset(&request, 0, sizeof(request));
+    request.endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
+    request.entity_id = tt_DISCOVERY_ENTITY_ID;
+    request.sender_entity_id = tt_DISCOVERY_ENTITY_ID;
+    request.seq_no = generation;
+    memcpy(buf + sizeof(header) + sizeof(sub), &request, sizeof(request));
+    return (uint32_t)(sizeof(header) + sizeof(sub) + sizeof(request));
+}
+
+// Rule 4: requests are answered unicast, up to tt_UNICAST_PEER_THRESHOLD in one tt_NODE_TX_INTERVAL tick;
+// the next is answered by one broadcast, and later ones in the tick by nothing more. A new tick starts over.
+static void test_requests_beyond_the_threshold_are_answered_by_one_broadcast(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    test_mock_send_hook = count_answers;
+    duo_seen_send_to = 0;
+    answers_unicast = 0;
+    answers_broadcast = 0;
+    static struct tt_Node node;
+    init_node(&node);
+    struct tt_Publisher pub;
+    init_publisher(&pub, &node);
+
+    const int requesters = tt_UNICAST_PEER_THRESHOLD + 3;
+    for (int i = 0; i < requesters; i++) {
+        uint32_t len = write_request(node.rx_buffer, (uint8_t)(REMOTE_NODE_ID + i), (uint32_t)node.last_modified);
+        node.rx_via_data_port = true;
+        EXPECT_TRUE(process_packet(&node, node.rx_buffer, 0, len, 0xc0a80a02U + (uint32_t)i, 8282));
+    }
+    if (node.tx_tail != sizeof(struct tt_Header)) {
+        (void)flush_tx(&node, node.tx_tail, NULL, 0); // what the flush tick does with the batched broadcast
+    }
+    EXPECT_EQ_INT(tt_UNICAST_PEER_THRESHOLD, answers_unicast);
+    EXPECT_EQ_INT(1, answers_broadcast);
+
+    test_mock_now += tt_NODE_TX_INTERVAL;
+    uint32_t len = write_request(node.rx_buffer, REMOTE_NODE_ID, (uint32_t)node.last_modified);
+    EXPECT_TRUE(process_packet(&node, node.rx_buffer, 0, len, 0xc0a80a02U, 8282));
+    EXPECT_EQ_INT(tt_UNICAST_PEER_THRESHOLD + 1, answers_unicast);
+    EXPECT_EQ_INT(1, answers_broadcast);
+    test_mock_send_hook = NULL;
+}
+
 int main(void) {
     test_publisher_learns_subscriber_peer_from_update();
     test_client_learns_server_peer_from_update();
@@ -655,6 +932,10 @@ int main(void) {
     test_publisher_created_after_the_announce_learns_the_peer_from_its_resend();
     test_client_created_after_the_announce_learns_the_peer_from_its_resend();
     test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_ends();
+    test_steady_state_is_summaries_that_keep_the_peer_alive();
+    test_a_missed_change_is_pulled_on_the_next_summary();
+    test_requests_come_one_per_summary_until_a_list_arrives();
+    test_requests_beyond_the_threshold_are_answered_by_one_broadcast();
 
     if (test_result() != 0) {
         return 1;

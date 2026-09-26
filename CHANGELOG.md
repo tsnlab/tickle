@@ -284,6 +284,14 @@ number, `tt_VERSION`, which moves independently.
   record is `tt_sample_cache_bytes()` of its CDR plus the psn, and the first arena slice holds at least
   one of the largest. KEEP_ALL's depth (2048 / 8192) now counts datagrams, as the reader's tracking window
   it is paired with does. Reorder slots hold the psn too.
+- **Wire protocol `tt_VERSION` 7 -> 8: discovery sends a small periodic summary and pulls the list on
+  demand.** The whole endpoint list is no longer broadcast every `tt_NODE_UPDATE_INTERVAL`. A node
+  broadcasts a ~28-byte summary instead - a `HEARTBEAT` of the discovery endpoint whose seq_no is its
+  announce generation - which refreshes liveliness as the announce did. A receiver that has not applied
+  that generation asks with an `ACKNACK` of the discovery endpoint, unicast, and the list comes back
+  unicast (more than `tt_UNICAST_PEER_THRESHOLD` requests in one tick: one broadcast). Changes are still
+  broadcast at once. New `tt_Node.discovery_reply_tick`/`discovery_reply_count`. Nodes of version 7 and 8
+  do not interoperate. See DESIGN.md's "The periodic summary".
 - **Wire protocol `tt_VERSION` 6 -> 7.** The discovery announce is now a `DATA` sample of a built-in
   endpoint (`tt_DISCOVERY_ENDPOINT_ID`, `tt_DISCOVERY_ENTITY_ID`) whose `seq_no` is the announce
   generation (the low 32 bits of `last_modified`), with a `tt_AnnounceHeader` + entities payload. A

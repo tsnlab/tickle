@@ -225,6 +225,11 @@ struct tt_Node {
     // periodic tick, up to tt_NODE_UPDATE_INTERVAL, before any remote node heard of it.
     bool announce_soon_scheduled;
     uint64_t endpoints_changed_ns;
+    // Requests for this node's endpoint list answered in the current tt_NODE_TX_INTERVAL tick (rmw_tickle/
+    // DISCOVERY_PLAN.md rule 4): up to tt_UNICAST_PEER_THRESHOLD are answered unicast, one more turns them
+    // into a single broadcast, and the rest wait for it.
+    uint64_t discovery_reply_tick;
+    uint8_t discovery_reply_count;
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
@@ -1886,7 +1891,7 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // Bumped 6 -> 7 for DATA_FRAG step 2 (rmw_tickle/DATAFRAG_PLAN.md section 6): the discovery announce
 // became a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID), and UPDATE/UPDATE_PART were
 // retired.
-#define tt_VERSION 7
+#define tt_VERSION 8
 
 struct tt_Header {
     union {
@@ -1943,8 +1948,16 @@ struct tt_SubmessageHeader {
 // continuation is recognised as discovery by its entity_id, which no user entity is ever given.
 //
 // The receiver refreshes the sender's liveliness on every announce and every fragment before anything
-// else, and re-applies the entity list only when the generation changes: periodic resends of an
-// unchanged list carry an already-seen seq_no by design.
+// else, and re-applies the entity list only when the generation changes: a resend of an unchanged list
+// carries an already-seen seq_no by design.
+//
+// Since tt_VERSION 8 the list is not resent periodically (rmw_tickle/DISCOVERY_PLAN.md). Every
+// tt_NODE_UPDATE_INTERVAL a node broadcasts a summary instead: a HEARTBEAT of this endpoint whose
+// first_available_seq_no and last_seq_no are its current generation, ~28 bytes whatever its endpoint count.
+// It refreshes liveliness as an announce does. A receiver that has not applied that generation - it missed
+// the change's broadcast, joined later, or never heard the node in full - asks for the list with an ACKNACK
+// of this endpoint (seq_no = the generation), unicast, and gets the announce back unicast. A change is
+// still pushed at once by broadcast.
 #define tt_DISCOVERY_ENDPOINT_ID 0
 #define tt_DISCOVERY_ENTITY_ID UINT32_MAX
 
