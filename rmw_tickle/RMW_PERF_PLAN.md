@@ -334,3 +334,42 @@ Read against the pre-registration:
    200 us. That makes the result about the rmw rather than about one grid.
 3. The NIC's interrupt coalescing (`macb` rx-usecs/tx-usecs 49) is a candidate for much of the 168 us
    wire. It affects all three alike and is a rig setting, so it is the user's call and is not changed here.
+
+### 8.2 After the broadcast fix, with application stamps (`9d89f78f`, 2026-09-26)
+
+The same session shape as 8.1, with `--stamps` on every row: 48 rows, 0 void. The rows and split are in
+`results/rmw_sysstamp_fix_2026-09-26/`.
+
+**CONTROL 1 fails for CycloneDDS in this session.** Block-mode RTT on - off is +7.6 us for rmw_tickle,
++10.2 for FastDDS and **+29.8 for CycloneDDS**. CycloneDDS's pong_turn went from 58.9 to 87.5 us with
+the layer on. So, per the pre-registration, this session's sysstamp-on segments are not read for
+CycloneDDS; FastDDS is at the threshold. The cause is not known. In 8.1, without `--stamps`, the same
+check was +5.5.
+
+**The rows without the layer are valid for all three**, and they are framework-neutral: pcap taps plus
+each process's own stamps. Block mode, mean of 4 rows, us:
+
+| segment | rmw_tickle | CycloneDDS | FastDDS |
+|---|---:|---:|---:|
+| ping: app → tap (send) | **12.1** | 21.8 | 31.5 |
+| pong: tap → callback (kernel rx, rmw rx, executor) | **36.5** | 40.1 | 53.7 |
+| pong: callback → tap (app, rmw tx, kernel tx) | **10.8** | 18.8 | 27.1 |
+| ping: tap → reply callback (kernel rx, rmw rx) | **33.9** | 43.6 | 51.4 |
+| RTT | **260.2** | 282.2 | 333.8 |
+
+**With the broadcast race fixed, rmw_tickle is fastest on every segment of the round trip.** The slower
+kernel wake that 8.1 found is still there (tap → recv return 18.9 us, sysstamp on, against CycloneDDS's
+12.6 in 8.1). It is more than paid back in user space, so the pong's whole receive side is still the
+shortest.
+
+rmw_tickle's own user-space pieces (sysstamp on, which passes control 1 for rmw_tickle):
+- pong recv return → callback: 21.1 us. This is the poll thread's delivery, the handoff to the
+  executor and the take: the largest remaining piece.
+- callback → send entry: 1.9 us.
+- send return → publish return: 2.7 us.
+
+**What is left to gain**, in order of size:
+1. The poll thread → executor handoff: ~21 us, inside recv → callback.
+2. The ppoll wake: ~6 us against a blocking recvmsg. bpftrace is now installed on both Pis, and its
+   split (IRQ → NAPI → UDP enqueue → socket wake → sched_waking → switch-in → syscall return) is the
+   next measurement.

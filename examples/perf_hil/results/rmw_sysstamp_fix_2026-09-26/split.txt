@@ -1,0 +1,984 @@
+== rmw_tickle_bench_best_effort_rep1_poll  (row ok, app rtt_avg 0.511 ms, offset drift client 148 ns server 38 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    11.1  p50    10.6  p90    13.0 us
+   pong_turn  mean    45.4  p50    42.4  p90    49.5 us
+   wire       mean   168.1  p50   167.8  p90   170.0 us
+   ping_recv  mean   286.3 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   129.2  p50   129.4  p90   134.7 us  (n=100)
+   pong tap->callback         mean    34.6  p50    31.9  p90    36.7 us  (n=100)
+   pong callback->tap         mean    10.9  p50    10.5  p90    13.0 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_best_effort_rep1_poll  (row ok, app rtt_avg 0.487 ms, offset drift client 74 ns server 110 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    29.2  p50    28.5  p90    32.5 us
+   pong_turn  mean    76.7  p50    73.6  p90    86.2 us
+   wire       mean   171.8  p50   171.1  p90   173.3 us
+   ping_recv  mean   209.3 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    47.6  p50    44.5  p90    52.2 us  (n=100)
+   pong tap->callback         mean    53.6  p50    51.0  p90    61.8 us  (n=100)
+   pong callback->tap         mean    23.1  p50    21.9  p90    26.3 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_best_effort_rep1_poll  (row ok, app rtt_avg 0.438 ms, offset drift client 222 ns server 167 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    19.1  p50    18.6  p90    21.1 us
+   pong_turn  mean    56.5  p50    54.1  p90    64.7 us
+   wire       mean   168.8  p50   168.5  p90   169.9 us
+   ping_recv  mean   193.7 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    35.3  p50    33.1  p90    46.0 us  (n=100)
+   pong tap->callback         mean    40.5  p50    38.3  p90    48.3 us  (n=100)
+   pong callback->tap         mean    16.0  p50    15.5  p90    18.3 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_best_effort_rep1_poll_sst  (row ok, app rtt_avg 0.515 ms, offset drift client 240 ns server 278 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    13.8  p50    13.8  p90    15.1 us
+   pong_turn  mean    50.8  p50    47.2  p90    55.6 us
+   wire       mean   168.1  p50   167.9  p90   169.8 us
+   ping_recv  mean   282.2 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     3.4  p50     3.3  p90     3.6 us  (n=100)
+   ping send->tap             mean    10.5  p50    10.6  p90    11.6 us  (n=100)
+   pong tap->wake             mean    13.5  p50    13.2  p90    14.7 us  (n=100)
+   pong tap->recv             mean    17.9  p50    17.3  p90    21.0 us  (n=100)
+   pong recv->send (user)     mean    23.2  p50    19.9  p90    27.5 us  (n=100)
+   pong send->tap             mean     9.7  p50     9.5  p90    11.2 us  (n=100)
+   ping tap->wake             mean    13.1  p50    12.6  p90    15.0 us  (n=100)
+   ping tap->recv             mean    18.7  p50    18.1  p90    21.0 us  (n=100)
+   ping recv->app (mean)        263.6 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   125.4  p50   127.9  p90   136.9 us  (n=100)
+   pong tap->callback         mean    39.3  p50    36.0  p90    43.9 us  (n=100)
+   pong callback->tap         mean    11.5  p50    11.1  p90    12.9 us  (n=100)
+   pong recv->callback        mean    21.4  p50    18.3  p90    25.2 us  (n=100)
+   pong callback->send        mean     1.8  p50     1.5  p90     2.3 us  (n=100)
+   pong send->publish ret     mean     2.6  p50     1.8  p90     2.6 us  (n=100)
+   ping recv->app (reply)     mean   106.7  p50   108.9  p90   119.1 us  (n=100)
+== rmw_fastrtps_cpp_bench_best_effort_rep1_poll_sst  (row ok, app rtt_avg 0.497 ms, offset drift client 19 ns server 167 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    29.4  p50    28.7  p90    31.6 us
+   pong_turn  mean    80.7  p50    78.0  p90    89.5 us
+   wire       mean   171.3  p50   171.3  p90   172.9 us
+   ping_recv  mean   215.6 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    20.0  p50    19.2  p90    21.6 us  (n=100)
+   ping send->tap             mean     9.5  p50     9.4  p90    10.4 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.9  p50    14.2  p90    18.1 us  (n=100)
+   pong recv->send (user)     mean    56.5  p50    53.7  p90    63.7 us  (n=100)
+   pong send->tap             mean     9.3  p50     8.9  p90    10.9 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    13.8  p50    12.8  p90    19.3 us  (n=100)
+   ping recv->app (mean)        201.8 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    54.7  p50    52.1  p90    66.7 us  (n=100)
+   pong tap->callback         mean    57.3  p50    55.0  p90    64.7 us  (n=100)
+   pong callback->tap         mean    23.4  p50    22.0  p90    27.0 us  (n=100)
+   pong recv->callback        mean    42.4  p50    40.4  p90    49.3 us  (n=100)
+   pong callback->send        mean    14.1  p50    12.8  p90    16.3 us  (n=100)
+   pong send->publish ret     mean     3.2  p50     2.9  p90     3.6 us  (n=100)
+   ping recv->app (reply)     mean    40.9  p50    39.3  p90    47.1 us  (n=100)
+== rmw_cyclonedds_cpp_bench_best_effort_rep1_poll_sst  (row ok, app rtt_avg 0.443 ms, offset drift client 19 ns server 185 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    20.5  p50    19.6  p90    26.0 us
+   pong_turn  mean    58.6  p50    55.7  p90    69.5 us
+   wire       mean   168.6  p50   168.6  p90   169.9 us
+   ping_recv  mean   195.4 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    10.0  p50     9.0  p90    13.1 us  (n=100)
+   ping send->tap             mean    10.5  p50    10.2  p90    12.9 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    13.5  p50    12.8  p90    17.6 us  (n=100)
+   pong recv->send (user)     mean    34.3  p50    31.9  p90    41.4 us  (n=100)
+   pong send->tap             mean    10.8  p50    10.5  p90    12.3 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    11.5  p50    11.1  p90    13.9 us  (n=100)
+   ping recv->app (mean)        183.8 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    36.9  p50    35.1  p90    45.3 us  (n=100)
+   pong tap->callback         mean    42.0  p50    39.0  p90    51.2 us  (n=100)
+   pong callback->tap         mean    16.5  p50    16.0  p90    19.4 us  (n=100)
+   pong recv->callback        mean    28.5  p50    26.2  p90    36.5 us  (n=100)
+   pong callback->send        mean     5.8  p50     5.2  p90     7.1 us  (n=100)
+   pong send->publish ret     mean     3.3  p50     2.9  p90     3.6 us  (n=100)
+   ping recv->app (reply)     mean    25.3  p50    24.1  p90    32.3 us  (n=100)
+== rmw_tickle_bench_best_effort_rep1_block  (row ok, app rtt_avg 0.260 ms, offset drift client 111 ns server 371 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    11.9  p50    11.4  p90    14.6 us
+   pong_turn  mean    47.9  p50    44.5  p90    52.7 us
+   wire       mean   168.2  p50   168.1  p90   170.0 us
+   ping_recv  mean    32.0 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    33.0  p50    30.5  p90    37.8 us  (n=100)
+   pong tap->callback         mean    36.4  p50    33.0  p90    40.7 us  (n=100)
+   pong callback->tap         mean    11.6  p50    11.0  p90    12.9 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_best_effort_rep1_block  (row ok, app rtt_avg 0.327 ms, offset drift client 185 ns server 19 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    28.4  p50    27.3  p90    31.6 us
+   pong_turn  mean    76.6  p50    72.6  p90    84.7 us
+   wire       mean   171.1  p50   170.7  p90   173.1 us
+   ping_recv  mean    50.9 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    52.3  p50    49.0  p90    59.1 us  (n=100)
+   pong tap->callback         mean    53.0  p50    49.7  p90    59.3 us  (n=100)
+   pong callback->tap         mean    23.6  p50    22.5  p90    28.5 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_best_effort_rep1_block  (row ok, app rtt_avg 0.286 ms, offset drift client 111 ns server 75 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    19.6  p50    18.6  p90    22.8 us
+   pong_turn  mean    57.9  p50    54.5  p90    66.7 us
+   wire       mean   169.0  p50   168.7  p90   171.2 us
+   ping_recv  mean    39.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    40.4  p50    36.8  p90    48.6 us  (n=100)
+   pong tap->callback         mean    40.8  p50    38.1  p90    46.2 us  (n=100)
+   pong callback->tap         mean    17.1  p50    16.2  p90    21.4 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_best_effort_rep1_block_sst  (row ok, app rtt_avg 0.266 ms, offset drift client 112 ns server 18 ns)
+   ping packets {'broadcast': 8, 'unicast': 92}, echo packets {'broadcast': 10, 'unicast': 90} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.1  p50    10.9  p90    16.0 us
+   pong_turn  mean    50.2  p50    46.4  p90    59.3 us
+   wire       mean   168.2  p50   168.0  p90   169.9 us
+   ping_recv  mean    35.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     2.8  p50     2.7  p90     3.6 us  (n=100)
+   ping send->tap             mean     9.3  p50     8.2  p90    11.7 us  (n=100)
+   pong tap->wake             mean    13.9  p50    13.6  p90    17.5 us  (n=100)
+   pong tap->recv             mean    18.3  p50    17.4  p90    23.1 us  (n=100)
+   pong recv->send (user)     mean    21.9  p50    18.8  p90    23.4 us  (n=100)
+   pong send->tap             mean    10.0  p50     8.7  p90    19.2 us  (n=100)
+   ping tap->wake             mean    13.0  p50    12.3  p90    16.0 us  (n=100)
+   ping tap->recv             mean    17.3  p50    16.4  p90    21.0 us  (n=100)
+   ping recv->app (mean)         18.1 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    36.4  p50    33.9  p90    41.2 us  (n=100)
+   pong tap->callback         mean    38.6  p50    34.8  p90    42.9 us  (n=100)
+   pong callback->tap         mean    11.6  p50    10.0  p90    21.1 us  (n=100)
+   pong recv->callback        mean    20.3  p50    17.3  p90    22.0 us  (n=100)
+   pong callback->send        mean     1.6  p50     1.4  p90     2.1 us  (n=100)
+   pong send->publish ret     mean     2.9  p50     1.8  p90     8.2 us  (n=100)
+   ping recv->app (reply)     mean    19.0  p50    17.1  p90    22.1 us  (n=100)
+== rmw_fastrtps_cpp_bench_best_effort_rep1_block_sst  (row ok, app rtt_avg 0.339 ms, offset drift client 112 ns server 19 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    29.3  p50    28.8  p90    31.4 us
+   pong_turn  mean    86.5  p50    82.4  p90    97.6 us
+   wire       mean   171.7  p50   171.3  p90   173.9 us
+   ping_recv  mean    51.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    19.1  p50    18.6  p90    20.5 us  (n=100)
+   ping send->tap             mean    10.2  p50    10.2  p90    11.5 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.5  p50    13.9  p90    18.4 us  (n=100)
+   pong recv->send (user)     mean    61.8  p50    57.6  p90    69.5 us  (n=100)
+   pong send->tap             mean    10.1  p50     9.9  p90    11.4 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    13.0  p50    12.2  p90    17.0 us  (n=100)
+   ping recv->app (mean)         38.4 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    52.8  p50    48.6  p90    62.9 us  (n=100)
+   pong tap->callback         mean    58.7  p50    54.6  p90    66.3 us  (n=100)
+   pong callback->tap         mean    27.7  p50    27.0  p90    30.2 us  (n=100)
+   pong recv->callback        mean    44.2  p50    40.2  p90    50.8 us  (n=100)
+   pong callback->send        mean    17.6  p50    16.9  p90    19.1 us  (n=100)
+   pong send->publish ret     mean     3.8  p50     3.6  p90     4.0 us  (n=100)
+   ping recv->app (reply)     mean    39.7  p50    36.2  p90    46.1 us  (n=100)
+== rmw_cyclonedds_cpp_bench_best_effort_rep1_block_sst  (row ok, app rtt_avg 0.289 ms, offset drift client 204 ns server 205 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    19.3  p50    18.9  p90    22.2 us
+   pong_turn  mean    61.9  p50    58.3  p90    74.8 us
+   wire       mean   168.6  p50   168.4  p90   170.3 us
+   ping_recv  mean    39.2 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     9.4  p50     9.3  p90    10.8 us  (n=100)
+   ping send->tap             mean     9.9  p50     9.4  p90    12.1 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.3  p50    13.4  p90    17.9 us  (n=100)
+   pong recv->send (user)     mean    36.8  p50    34.2  p90    44.2 us  (n=100)
+   pong send->tap             mean    10.8  p50    10.7  p90    12.1 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    11.8  p50    11.6  p90    13.5 us  (n=100)
+   ping recv->app (mean)         27.4 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    40.5  p50    38.7  p90    47.5 us  (n=100)
+   pong tap->callback         mean    44.0  p50    41.0  p90    54.1 us  (n=100)
+   pong callback->tap         mean    17.9  p50    17.3  p90    19.8 us  (n=100)
+   pong recv->callback        mean    29.7  p50    27.1  p90    36.3 us  (n=100)
+   pong callback->send        mean     7.1  p50     6.5  p90     7.9 us  (n=100)
+   pong send->publish ret     mean     4.4  p50     3.8  p90     4.2 us  (n=100)
+   ping recv->app (reply)     mean    28.7  p50    27.4  p90    34.9 us  (n=100)
+== rmw_tickle_bench_reliable_rep1_poll  (row ok, app rtt_avg 0.513 ms, offset drift client 260 ns server 0 ns)
+   ping packets {'broadcast': 7, 'unicast': 93}, echo packets {'broadcast': 10, 'unicast': 90} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    13.3  p50    12.1  p90    16.8 us
+   pong_turn  mean    49.0  p50    43.8  p90    54.3 us
+   wire       mean   168.3  p50   168.1  p90   170.5 us
+   ping_recv  mean   282.4 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   125.8  p50   126.7  p90   131.3 us  (n=100)
+   pong tap->callback         mean    36.4  p50    32.6  p90    39.5 us  (n=100)
+   pong callback->tap         mean    12.6  p50    11.3  p90    20.2 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_reliable_rep1_poll  (row ok, app rtt_avg 0.501 ms, offset drift client 55 ns server 0 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    36.7  p50    35.3  p90    40.5 us
+   pong_turn  mean    82.3  p50    78.6  p90    89.9 us
+   wire       mean   171.3  p50   171.1  p90   172.8 us
+   ping_recv  mean   210.6 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    50.3  p50    47.7  p90    57.9 us  (n=100)
+   pong tap->callback         mean    52.8  p50    49.5  p90    59.3 us  (n=100)
+   pong callback->tap         mean    29.5  p50    28.7  p90    33.8 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_reliable_rep1_poll  (row ok, app rtt_avg 0.439 ms, offset drift client 112 ns server 37 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 101} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    24.7  p50    24.0  p90    28.2 us
+   pong_turn  mean    57.3  p50    51.5  p90    66.6 us
+   wire       mean   152.5  p50   153.5  p90   157.8 us
+   ping_recv  mean   204.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    46.3  p50    43.3  p90    53.7 us  (n=100)
+   pong tap->callback         mean    38.4  p50    34.3  p90    42.4 us  (n=100)
+   pong callback->tap         mean    18.9  p50    17.9  p90    24.7 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_reliable_rep1_poll_sst  (row ok, app rtt_avg 0.515 ms, offset drift client 240 ns server 111 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.2  p50    11.7  p90    14.5 us
+   pong_turn  mean    49.6  p50    45.1  p90    55.2 us
+   wire       mean   168.1  p50   167.5  p90   170.6 us
+   ping_recv  mean   285.1 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     3.8  p50     3.5  p90     4.0 us  (n=100)
+   ping send->tap             mean     8.5  p50     8.1  p90    10.2 us  (n=100)
+   pong tap->wake             mean    13.7  p50    13.3  p90    16.1 us  (n=100)
+   pong tap->recv             mean    18.2  p50    17.4  p90    21.5 us  (n=100)
+   pong recv->send (user)     mean    23.0  p50    18.9  p90    26.5 us  (n=100)
+   pong send->tap             mean     8.5  p50     7.5  p90    11.1 us  (n=100)
+   ping tap->wake             mean    13.2  p50    12.5  p90    16.3 us  (n=100)
+   ping tap->recv             mean    17.8  p50    16.8  p90    21.5 us  (n=100)
+   ping recv->app (mean)        267.3 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   127.9  p50   129.1  p90   134.6 us  (n=100)
+   pong tap->callback         mean    39.2  p50    35.0  p90    42.6 us  (n=100)
+   pong callback->tap         mean    10.4  p50     9.2  p90    13.1 us  (n=100)
+   pong recv->callback        mean    21.0  p50    17.4  p90    24.4 us  (n=100)
+   pong callback->send        mean     1.9  p50     1.5  p90     2.1 us  (n=100)
+   pong send->publish ret     mean     2.4  p50     1.7  p90     2.6 us  (n=100)
+   ping recv->app (reply)     mean   110.1  p50   111.1  p90   116.7 us  (n=100)
+== rmw_fastrtps_cpp_bench_reliable_rep1_poll_sst  (row ok, app rtt_avg 0.525 ms, offset drift client 111 ns server 370 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    36.0  p50    34.6  p90    39.8 us
+   pong_turn  mean    92.0  p50    88.5  p90   102.3 us
+   wire       mean   171.8  p50   171.2  p90   173.4 us
+   ping_recv  mean   225.1 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    26.0  p50    25.0  p90    27.9 us  (n=100)
+   ping send->tap             mean     9.9  p50     9.6  p90    11.0 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.7  p50    14.1  p90    17.8 us  (n=100)
+   pong recv->send (user)     mean    67.5  p50    64.1  p90    75.6 us  (n=100)
+   pong send->tap             mean     9.8  p50     9.8  p90    11.0 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    13.3  p50    12.3  p90    17.7 us  (n=100)
+   ping recv->app (mean)        211.8 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    62.9  p50    50.5  p90    69.5 us  (n=100)
+   pong tap->callback         mean    58.8  p50    55.1  p90    66.8 us  (n=100)
+   pong callback->tap         mean    33.3  p50    33.0  p90    36.6 us  (n=100)
+   pong recv->callback        mean    44.0  p50    41.0  p90    50.6 us  (n=100)
+   pong callback->send        mean    23.4  p50    22.9  p90    25.8 us  (n=100)
+   pong send->publish ret     mean     7.1  p50     6.2  p90     7.5 us  (n=100)
+   ping recv->app (reply)     mean    49.7  p50    37.3  p90    52.6 us  (n=100)
+== rmw_cyclonedds_cpp_bench_reliable_rep1_poll_sst  (row ok, app rtt_avg 0.448 ms, offset drift client 19 ns server 222 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 101} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    24.9  p50    24.8  p90    27.9 us
+   pong_turn  mean    63.8  p50    58.6  p90    71.4 us
+   wire       mean   151.7  p50   152.3  p90   157.1 us
+   ping_recv  mean   207.7 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    15.0  p50    14.9  p90    16.7 us  (n=100)
+   ping send->tap             mean     9.9  p50     9.7  p90    11.2 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    12.5  p50    11.5  p90    15.5 us  (n=100)
+   pong recv->send (user)     mean    41.0  p50    35.6  p90    45.2 us  (n=100)
+   pong send->tap             mean    10.3  p50    10.1  p90    12.8 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    21.7  p50    20.5  p90    28.9 us  (n=100)
+   ping recv->app (mean)        186.0 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    49.2  p50    43.6  p90    54.2 us  (n=100)
+   pong tap->callback         mean    42.8  p50    37.7  p90    47.0 us  (n=100)
+   pong callback->tap         mean    21.0  p50    19.5  p90    25.9 us  (n=100)
+   pong recv->callback        mean    30.3  p50    25.6  p90    32.8 us  (n=100)
+   pong callback->send        mean    10.7  p50     9.3  p90    16.6 us  (n=100)
+   pong send->publish ret     mean     4.9  p50     4.2  p90     5.3 us  (n=100)
+   ping recv->app (reply)     mean    27.6  p50    23.1  p90    28.6 us  (n=100)
+== rmw_tickle_bench_reliable_rep1_block  (row ok, app rtt_avg 0.261 ms, offset drift client 0 ns server 574 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.3  p50    11.8  p90    15.1 us
+   pong_turn  mean    46.5  p50    42.9  p90    52.0 us
+   wire       mean   168.1  p50   167.8  p90   170.0 us
+   ping_recv  mean    34.1 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    35.4  p50    31.3  p90    36.5 us  (n=100)
+   pong tap->callback         mean    35.8  p50    32.2  p90    39.8 us  (n=100)
+   pong callback->tap         mean    10.6  p50     9.6  p90    13.9 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_reliable_rep1_block  (row ok, app rtt_avg 0.341 ms, offset drift client 93 ns server 55 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    33.4  p50    33.1  p90    36.4 us
+   pong_turn  mean    85.4  p50    80.1  p90    95.4 us
+   wire       mean   171.1  p50   171.0  p90   172.9 us
+   ping_recv  mean    51.0 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    51.8  p50    49.1  p90    55.8 us  (n=100)
+   pong tap->callback         mean    55.3  p50    50.8  p90    64.2 us  (n=100)
+   pong callback->tap         mean    30.1  p50    29.0  p90    34.9 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_reliable_rep1_block  (row ok, app rtt_avg 0.281 ms, offset drift client 111 ns server 93 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 101} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    24.8  p50    24.4  p90    28.5 us
+   pong_turn  mean    61.9  p50    56.0  p90    71.5 us
+   wire       mean   148.7  p50   149.3  p90   159.1 us
+   ping_recv  mean    45.6 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    47.1  p50    42.1  p90    60.5 us  (n=100)
+   pong tap->callback         mean    40.6  p50    35.8  p90    44.8 us  (n=100)
+   pong callback->tap         mean    21.3  p50    19.9  p90    27.4 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_reliable_rep1_block_sst  (row ok, app rtt_avg 0.266 ms, offset drift client 167 ns server 278 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    11.5  p50    10.9  p90    13.3 us
+   pong_turn  mean    50.7  p50    46.6  p90    56.3 us
+   wire       mean   167.9  p50   167.7  p90   169.5 us
+   ping_recv  mean    35.9 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     3.3  p50     2.9  p90     3.9 us  (n=100)
+   ping send->tap             mean     8.1  p50     7.6  p90     9.8 us  (n=100)
+   pong tap->wake             mean    13.8  p50    13.7  p90    15.1 us  (n=100)
+   pong tap->recv             mean    18.2  p50    17.6  p90    20.8 us  (n=100)
+   pong recv->send (user)     mean    23.5  p50    19.7  p90    27.3 us  (n=100)
+   pong send->tap             mean     9.0  p50     8.8  p90    10.9 us  (n=100)
+   ping tap->wake             mean    13.1  p50    12.4  p90    15.7 us  (n=100)
+   ping tap->recv             mean    17.8  p50    16.5  p90    22.1 us  (n=100)
+   ping recv->app (mean)         18.2 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    36.8  p50    33.9  p90    42.9 us  (n=100)
+   pong tap->callback         mean    39.3  p50    35.5  p90    43.5 us  (n=100)
+   pong callback->tap         mean    11.4  p50    10.7  p90    13.5 us  (n=100)
+   pong recv->callback        mean    21.2  p50    17.9  p90    24.3 us  (n=100)
+   pong callback->send        mean     2.3  p50     1.7  p90     2.7 us  (n=100)
+   pong send->publish ret     mean     2.7  p50     1.8  p90     2.5 us  (n=100)
+   ping recv->app (reply)     mean    19.0  p50    17.0  p90    22.2 us  (n=100)
+== rmw_fastrtps_cpp_bench_reliable_rep1_block_sst  (row ok, app rtt_avg 0.348 ms, offset drift client 370 ns server 148 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    34.3  p50    33.7  p90    38.2 us
+   pong_turn  mean    91.0  p50    85.6  p90   102.2 us
+   wire       mean   171.4  p50   171.0  p90   173.0 us
+   ping_recv  mean    51.3 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    23.9  p50    23.0  p90    27.6 us  (n=100)
+   ping send->tap             mean    10.4  p50    10.3  p90    12.2 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.5  p50    13.7  p90    18.1 us  (n=100)
+   pong recv->send (user)     mean    66.2  p50    61.8  p90    76.3 us  (n=100)
+   pong send->tap             mean    10.3  p50    10.0  p90    11.6 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    11.9  p50    11.4  p90    14.2 us  (n=100)
+   ping recv->app (mean)         39.4 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    52.3  p50    48.6  p90    61.9 us  (n=100)
+   pong tap->callback         mean    57.8  p50    52.9  p90    67.6 us  (n=100)
+   pong callback->tap         mean    33.2  p50    32.1  p90    37.6 us  (n=100)
+   pong recv->callback        mean    43.3  p50    39.2  p90    49.6 us  (n=100)
+   pong callback->send        mean    22.9  p50    22.2  p90    24.7 us  (n=100)
+   pong send->publish ret     mean     7.8  p50     7.2  p90     8.0 us  (n=100)
+   ping recv->app (reply)     mean    40.4  p50    37.2  p90    47.9 us  (n=100)
+== rmw_cyclonedds_cpp_bench_reliable_rep1_block_sst  (row ok, app rtt_avg 0.386 ms, offset drift client 222 ns server 93 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    23.1  p50    22.1  p90    28.5 us
+   pong_turn  mean   164.4  p50    54.3  p90    64.5 us
+   wire       mean   152.0  p50   152.4  p90   159.3 us
+   ping_recv  mean    46.4 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    13.7  p50    13.0  p90    18.1 us  (n=100)
+   ping send->tap             mean     9.4  p50     9.0  p90    11.3 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    11.8  p50    11.2  p90    14.0 us  (n=100)
+   pong recv->send (user)     mean   142.5  p50    32.0  p90    40.5 us  (n=100)
+   pong send->tap             mean    10.2  p50    10.1  p90    11.6 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    21.8  p50    20.4  p90    28.5 us  (n=100)
+   ping recv->app (mean)         24.6 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    47.9  p50    45.0  p90    58.7 us  (n=100)
+   pong tap->callback         mean   145.7  p50    35.9  p90    44.8 us  (n=100)
+   pong callback->tap         mean    18.7  p50    17.8  p90    23.2 us  (n=100)
+   pong recv->callback        mean   134.0  p50    24.3  p90    31.2 us  (n=100)
+   pong callback->send        mean     8.5  p50     7.4  p90    11.1 us  (n=100)
+   pong send->publish ret     mean     3.8  p50     3.2  p90     3.9 us  (n=100)
+   ping recv->app (reply)     mean    26.1  p50    24.6  p90    31.1 us  (n=100)
+== rmw_tickle_bench_best_effort_rep2_poll  (row ok, app rtt_avg 0.512 ms, offset drift client 445 ns server 56 ns)
+   ping packets {'broadcast': 7, 'unicast': 93}, echo packets {'broadcast': 10, 'unicast': 90} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.6  p50    10.9  p90    16.4 us
+   pong_turn  mean    48.9  p50    44.0  p90    56.8 us
+   wire       mean   168.0  p50   168.0  p90   169.5 us
+   ping_recv  mean   282.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   125.5  p50   128.4  p90   134.7 us  (n=100)
+   pong tap->callback         mean    36.4  p50    32.5  p90    39.9 us  (n=100)
+   pong callback->tap         mean    12.5  p50    11.3  p90    20.4 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_best_effort_rep2_poll  (row ok, app rtt_avg 0.485 ms, offset drift client 38 ns server 74 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    28.8  p50    28.4  p90    31.2 us
+   pong_turn  mean    77.6  p50    74.0  p90    91.2 us
+   wire       mean   170.9  p50   170.8  p90   172.6 us
+   ping_recv  mean   207.6 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    49.1  p50    45.0  p90    56.3 us  (n=100)
+   pong tap->callback         mean    53.3  p50    49.6  p90    63.9 us  (n=100)
+   pong callback->tap         mean    24.3  p50    23.5  p90    28.6 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_best_effort_rep2_poll  (row ok, app rtt_avg 0.437 ms, offset drift client 148 ns server 111 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    18.9  p50    18.5  p90    21.2 us
+   pong_turn  mean    56.3  p50    53.0  p90    63.7 us
+   wire       mean   168.5  p50   168.4  p90   170.0 us
+   ping_recv  mean   193.3 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    35.7  p50    33.5  p90    39.9 us  (n=100)
+   pong tap->callback         mean    39.9  p50    36.9  p90    48.2 us  (n=100)
+   pong callback->tap         mean    16.4  p50    15.6  p90    18.8 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_best_effort_rep2_poll_sst  (row ok, app rtt_avg 0.513 ms, offset drift client 222 ns server 110 ns)
+   ping packets {'broadcast': 6, 'unicast': 94}, echo packets {'broadcast': 10, 'unicast': 90} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.2  p50    11.4  p90    14.1 us
+   pong_turn  mean    51.4  p50    46.7  p90    59.9 us
+   wire       mean   168.0  p50   167.7  p90   170.3 us
+   ping_recv  mean   281.4 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     3.1  p50     3.0  p90     3.7 us  (n=100)
+   ping send->tap             mean     9.1  p50     8.4  p90    10.7 us  (n=100)
+   pong tap->wake             mean    14.1  p50    13.9  p90    15.4 us  (n=100)
+   pong tap->recv             mean    18.8  p50    17.9  p90    23.5 us  (n=100)
+   pong recv->send (user)     mean    23.2  p50    19.7  p90    26.4 us  (n=100)
+   pong send->tap             mean     9.5  p50     7.8  p90    16.0 us  (n=100)
+   ping tap->wake             mean    12.5  p50    12.1  p90    14.1 us  (n=100)
+   ping tap->recv             mean    16.7  p50    16.2  p90    20.6 us  (n=100)
+   ping recv->app (mean)        264.7 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   124.1  p50   125.5  p90   133.6 us  (n=100)
+   pong tap->callback         mean    40.0  p50    36.4  p90    45.2 us  (n=100)
+   pong callback->tap         mean    11.4  p50     9.6  p90    18.0 us  (n=100)
+   pong recv->callback        mean    21.3  p50    17.8  p90    24.7 us  (n=100)
+   pong callback->send        mean     2.0  p50     1.8  p90     2.3 us  (n=100)
+   pong send->publish ret     mean     3.2  p50     2.1  p90     5.7 us  (n=100)
+   ping recv->app (reply)     mean   107.3  p50   109.9  p90   116.9 us  (n=100)
+== rmw_fastrtps_cpp_bench_best_effort_rep2_poll_sst  (row ok, app rtt_avg 0.502 ms, offset drift client 111 ns server 92 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    28.6  p50    27.9  p90    31.1 us
+   pong_turn  mean    83.8  p50    79.1  p90    95.8 us
+   wire       mean   171.5  p50   170.9  p90   174.0 us
+   ping_recv  mean   218.1 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    19.2  p50    18.5  p90    20.6 us  (n=100)
+   ping send->tap             mean     9.4  p50     9.1  p90    10.6 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.5  p50    13.8  p90    18.2 us  (n=100)
+   pong recv->send (user)     mean    59.6  p50    55.2  p90    66.9 us  (n=100)
+   pong send->tap             mean     9.7  p50     9.5  p90    11.0 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    12.9  p50    12.3  p90    15.6 us  (n=100)
+   ping recv->app (mean)        205.2 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    58.1  p50    48.1  p90    60.4 us  (n=100)
+   pong tap->callback         mean    56.2  p50    52.0  p90    65.0 us  (n=100)
+   pong callback->tap         mean    27.6  p50    26.4  p90    32.4 us  (n=100)
+   pong recv->callback        mean    41.7  p50    38.2  p90    48.0 us  (n=100)
+   pong callback->send        mean    17.9  p50    16.6  p90    20.5 us  (n=100)
+   pong send->publish ret     mean     3.8  p50     3.6  p90     4.0 us  (n=100)
+   ping recv->app (reply)     mean    45.2  p50    35.9  p90    44.1 us  (n=100)
+== rmw_cyclonedds_cpp_bench_best_effort_rep2_poll_sst  (row ok, app rtt_avg 0.442 ms, offset drift client 222 ns server 500 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    19.9  p50    19.2  p90    22.7 us
+   pong_turn  mean    59.4  p50    56.8  p90    68.1 us
+   wire       mean   168.2  p50   168.2  p90   170.0 us
+   ping_recv  mean   194.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     9.5  p50     9.4  p90    10.9 us  (n=100)
+   ping send->tap             mean    10.4  p50    10.2  p90    12.5 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    13.2  p50    12.6  p90    17.8 us  (n=100)
+   pong recv->send (user)     mean    35.6  p50    32.4  p90    41.8 us  (n=100)
+   pong send->tap             mean    10.7  p50    10.3  p90    12.2 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    11.7  p50    11.4  p90    13.0 us  (n=100)
+   ping recv->app (mean)        182.8 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    36.3  p50    35.9  p90    42.1 us  (n=100)
+   pong tap->callback         mean    42.0  p50    38.9  p90    49.4 us  (n=100)
+   pong callback->tap         mean    17.5  p50    16.8  p90    19.7 us  (n=100)
+   pong recv->callback        mean    28.7  p50    25.9  p90    34.6 us  (n=100)
+   pong callback->send        mean     6.8  p50     6.2  p90     7.6 us  (n=100)
+   pong send->publish ret     mean     4.2  p50     3.6  p90     4.2 us  (n=100)
+   ping recv->app (reply)     mean    24.6  p50    24.2  p90    28.4 us  (n=100)
+== rmw_tickle_bench_best_effort_rep2_block  (row ok, app rtt_avg 0.260 ms, offset drift client 37 ns server 74 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    11.8  p50    11.3  p90    14.9 us
+   pong_turn  mean    46.9  p50    43.4  p90    53.8 us
+   wire       mean   168.1  p50   168.0  p90   170.1 us
+   ping_recv  mean    33.2 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    34.4  p50    32.2  p90    40.9 us  (n=100)
+   pong tap->callback         mean    36.5  p50    33.0  p90    42.0 us  (n=100)
+   pong callback->tap         mean    10.5  p50    10.3  p90    12.8 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_best_effort_rep2_block  (row ok, app rtt_avg 0.329 ms, offset drift client 18 ns server 537 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    30.1  p50    29.3  p90    33.8 us
+   pong_turn  mean    77.3  p50    74.4  p90    85.0 us
+   wire       mean   171.4  p50   171.2  p90   172.9 us
+   ping_recv  mean    50.2 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    51.3  p50    49.0  p90    55.7 us  (n=100)
+   pong tap->callback         mean    53.2  p50    50.0  p90    59.0 us  (n=100)
+   pong callback->tap         mean    24.1  p50    22.9  p90    29.1 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_best_effort_rep2_block  (row ok, app rtt_avg 0.281 ms, offset drift client 111 ns server 148 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    19.3  p50    19.0  p90    21.9 us
+   pong_turn  mean    55.3  p50    52.9  p90    63.9 us
+   wire       mean   168.7  p50   168.5  p90   170.5 us
+   ping_recv  mean    37.8 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    38.8  p50    36.9  p90    46.7 us  (n=100)
+   pong tap->callback         mean    39.1  p50    36.9  p90    45.1 us  (n=100)
+   pong callback->tap         mean    16.2  p50    15.5  p90    19.4 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_best_effort_rep2_block_sst  (row ok, app rtt_avg 0.268 ms, offset drift client 111 ns server 129 ns)
+   ping packets {'broadcast': 7, 'unicast': 93}, echo packets {'broadcast': 10, 'unicast': 90} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.8  p50    11.6  p90    16.8 us
+   pong_turn  mean    51.9  p50    47.1  p90    60.1 us
+   wire       mean   168.1  p50   167.7  p90   170.1 us
+   ping_recv  mean    35.3 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     3.0  p50     2.9  p90     3.2 us  (n=100)
+   ping send->tap             mean     9.8  p50     8.7  p90    13.8 us  (n=100)
+   pong tap->wake             mean    13.9  p50    13.6  p90    15.7 us  (n=100)
+   pong tap->recv             mean    19.0  p50    17.9  p90    24.5 us  (n=100)
+   pong recv->send (user)     mean    22.5  p50    19.2  p90    24.6 us  (n=100)
+   pong send->tap             mean    10.4  p50     9.5  p90    17.2 us  (n=100)
+   ping tap->wake             mean    12.8  p50    12.4  p90    15.8 us  (n=100)
+   ping tap->recv             mean    17.1  p50    16.4  p90    20.4 us  (n=100)
+   ping recv->app (mean)         18.2 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    36.0  p50    33.8  p90    40.5 us  (n=100)
+   pong tap->callback         mean    39.9  p50    35.9  p90    44.4 us  (n=100)
+   pong callback->tap         mean    11.9  p50    10.8  p90    18.9 us  (n=100)
+   pong recv->callback        mean    21.0  p50    17.8  p90    23.0 us  (n=100)
+   pong callback->send        mean     1.6  p50     1.3  p90     1.7 us  (n=100)
+   pong send->publish ret     mean     2.5  p50     1.7  p90     4.7 us  (n=100)
+   ping recv->app (reply)     mean    19.0  p50    17.1  p90    22.2 us  (n=100)
+== rmw_fastrtps_cpp_bench_best_effort_rep2_block_sst  (row ok, app rtt_avg 0.336 ms, offset drift client 36 ns server 0 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    30.4  p50    29.8  p90    32.4 us
+   pong_turn  mean    80.8  p50    75.7  p90    97.1 us
+   wire       mean   171.5  p50   171.1  p90   173.2 us
+   ping_recv  mean    53.3 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    20.1  p50    19.9  p90    21.0 us  (n=100)
+   ping send->tap             mean    10.3  p50     9.9  p90    11.3 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.1  p50    13.4  p90    18.5 us  (n=100)
+   pong recv->send (user)     mean    57.0  p50    52.6  p90    69.3 us  (n=100)
+   pong send->tap             mean     9.7  p50     9.4  p90    11.5 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    13.0  p50    12.4  p90    16.0 us  (n=100)
+   ping recv->app (mean)         40.3 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    54.7  p50    51.1  p90    62.5 us  (n=100)
+   pong tap->callback         mean    55.3  p50    50.9  p90    67.5 us  (n=100)
+   pong callback->tap         mean    25.4  p50    24.1  p90    31.5 us  (n=100)
+   pong recv->callback        mean    41.3  p50    37.4  p90    50.6 us  (n=100)
+   pong callback->send        mean    15.7  p50    14.2  p90    20.1 us  (n=100)
+   pong send->publish ret     mean     3.3  p50     3.0  p90     3.9 us  (n=100)
+   ping recv->app (reply)     mean    41.6  p50    38.6  p90    47.2 us  (n=100)
+== rmw_cyclonedds_cpp_bench_best_effort_rep2_block_sst  (row ok, app rtt_avg 0.285 ms, offset drift client 333 ns server 297 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    16.8  p50    16.6  p90    20.1 us
+   pong_turn  mean    60.3  p50    56.8  p90    71.5 us
+   wire       mean   168.7  p50   168.5  p90   170.2 us
+   ping_recv  mean    39.2 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     7.7  p50     7.1  p90    10.1 us  (n=100)
+   ping send->tap             mean     9.1  p50     8.8  p90    10.9 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    13.6  p50    12.9  p90    18.0 us  (n=100)
+   pong recv->send (user)     mean    35.5  p50    32.7  p90    42.9 us  (n=100)
+   pong send->tap             mean    11.2  p50    11.0  p90    13.0 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    12.8  p50    12.1  p90    16.3 us  (n=100)
+   ping recv->app (mean)         26.4 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    40.7  p50    38.4  p90    48.1 us  (n=100)
+   pong tap->callback         mean    43.0  p50    40.2  p90    51.6 us  (n=100)
+   pong callback->tap         mean    17.3  p50    16.7  p90    20.0 us  (n=100)
+   pong recv->callback        mean    29.3  p50    26.9  p90    34.8 us  (n=100)
+   pong callback->send        mean     6.1  p50     5.5  p90     7.1 us  (n=100)
+   pong send->publish ret     mean     3.6  p50     3.0  p90     4.4 us  (n=100)
+   ping recv->app (reply)     mean    27.8  p50    26.4  p90    32.9 us  (n=100)
+== rmw_tickle_bench_reliable_rep2_poll  (row ok, app rtt_avg 0.508 ms, offset drift client 148 ns server 19 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    11.6  p50    11.0  p90    13.9 us
+   pong_turn  mean    46.9  p50    43.6  p90    52.6 us
+   wire       mean   167.8  p50   167.7  p90   169.7 us
+   ping_recv  mean   281.7 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   124.4  p50   126.3  p90   132.3 us  (n=100)
+   pong tap->callback         mean    35.9  p50    32.9  p90    40.0 us  (n=100)
+   pong callback->tap         mean    11.1  p50    10.8  p90    13.4 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_reliable_rep2_poll  (row ok, app rtt_avg 0.513 ms, offset drift client 426 ns server 18 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    36.3  p50    34.2  p90    41.3 us
+   pong_turn  mean    86.2  p50    80.9  p90    96.1 us
+   wire       mean   171.9  p50   171.5  p90   173.5 us
+   ping_recv  mean   218.7 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    56.7  p50    48.2  p90    63.9 us  (n=100)
+   pong tap->callback         mean    55.5  p50    51.1  p90    63.1 us  (n=100)
+   pong callback->tap         mean    30.7  p50    28.9  p90    36.2 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_reliable_rep2_poll  (row ok, app rtt_avg 0.443 ms, offset drift client 19 ns server 371 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 101} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    26.4  p50    25.0  p90    32.3 us
+   pong_turn  mean    58.6  p50    52.7  p90    66.4 us
+   wire       mean   152.2  p50   153.1  p90   157.2 us
+   ping_recv  mean   205.8 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    48.0  p50    42.9  p90    52.0 us  (n=100)
+   pong tap->callback         mean    39.2  p50    34.1  p90    44.4 us  (n=100)
+   pong callback->tap         mean    19.4  p50    18.2  p90    24.9 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_reliable_rep2_poll_sst  (row ok, app rtt_avg 0.514 ms, offset drift client 240 ns server 0 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.3  p50    11.8  p90    14.2 us
+   pong_turn  mean    51.1  p50    47.0  p90    59.4 us
+   wire       mean   168.0  p50   167.6  p90   170.1 us
+   ping_recv  mean   282.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     3.9  p50     3.6  p90     4.1 us  (n=100)
+   ping send->tap             mean     8.5  p50     8.3  p90    10.1 us  (n=100)
+   pong tap->wake             mean    14.3  p50    13.9  p90    16.9 us  (n=100)
+   pong tap->recv             mean    18.9  p50    17.9  p90    23.4 us  (n=100)
+   pong recv->send (user)     mean    22.7  p50    19.4  p90    26.6 us  (n=100)
+   pong send->tap             mean     9.5  p50     9.1  p90    11.6 us  (n=100)
+   ping tap->wake             mean    12.7  p50    12.4  p90    14.0 us  (n=100)
+   ping tap->recv             mean    17.0  p50    16.4  p90    19.0 us  (n=100)
+   ping recv->app (mean)        265.5 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean   126.2  p50   127.3  p90   136.8 us  (n=100)
+   pong tap->callback         mean    39.6  p50    35.4  p90    45.2 us  (n=100)
+   pong callback->tap         mean    11.6  p50    11.0  p90    14.2 us  (n=100)
+   pong recv->callback        mean    20.7  p50    17.6  p90    24.8 us  (n=100)
+   pong callback->send        mean     2.0  p50     1.6  p90     2.4 us  (n=100)
+   pong send->publish ret     mean     2.7  p50     1.8  p90     3.6 us  (n=100)
+   ping recv->app (reply)     mean   109.2  p50   110.8  p90   117.1 us  (n=100)
+== rmw_fastrtps_cpp_bench_reliable_rep2_poll_sst  (row ok, app rtt_avg 0.512 ms, offset drift client 111 ns server 55 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    36.2  p50    35.6  p90    40.2 us
+   pong_turn  mean    87.6  p50    84.1  p90   100.9 us
+   wire       mean   171.6  p50   171.1  p90   173.1 us
+   ping_recv  mean   216.6 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    26.2  p50    25.4  p90    29.6 us  (n=100)
+   ping send->tap             mean    10.0  p50     9.7  p90    11.6 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.2  p50    13.7  p90    17.9 us  (n=100)
+   pong recv->send (user)     mean    63.0  p50    59.5  p90    73.8 us  (n=100)
+   pong send->tap             mean    10.4  p50    10.0  p90    11.9 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    12.0  p50    11.4  p90    14.7 us  (n=100)
+   ping recv->app (mean)        204.7 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    54.7  p50    47.9  p90    63.2 us  (n=100)
+   pong tap->callback         mean    56.5  p50    52.1  p90    65.8 us  (n=100)
+   pong callback->tap         mean    31.1  p50    30.6  p90    36.4 us  (n=100)
+   pong recv->callback        mean    42.4  p50    38.4  p90    50.5 us  (n=100)
+   pong callback->send        mean    20.7  p50    20.4  p90    24.5 us  (n=100)
+   pong send->publish ret     mean     7.0  p50     6.7  p90     7.4 us  (n=100)
+   ping recv->app (reply)     mean    42.7  p50    36.2  p90    51.1 us  (n=100)
+== rmw_cyclonedds_cpp_bench_reliable_rep2_poll_sst  (row ok, app rtt_avg 0.444 ms, offset drift client 130 ns server 93 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 101} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    24.0  p50    23.7  p90    26.9 us
+   pong_turn  mean    59.8  p50    55.0  p90    68.5 us
+   wire       mean   151.4  p50   152.5  p90   155.7 us
+   ping_recv  mean   208.7 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    14.3  p50    14.3  p90    16.4 us  (n=100)
+   ping send->tap             mean     9.7  p50     9.4  p90    10.9 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    12.1  p50    11.4  p90    14.9 us  (n=100)
+   pong recv->send (user)     mean    37.8  p50    32.5  p90    45.0 us  (n=100)
+   pong send->tap             mean     9.9  p50     9.8  p90    11.2 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    22.4  p50    21.1  p90    26.7 us  (n=100)
+   ping recv->app (mean)        186.3 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    50.7  p50    45.4  p90    55.9 us  (n=100)
+   pong tap->callback         mean    40.4  p50    35.9  p90    47.1 us  (n=100)
+   pong callback->tap         mean    19.5  p50    17.9  p90    24.5 us  (n=100)
+   pong recv->callback        mean    28.3  p50    24.3  p90    30.9 us  (n=100)
+   pong callback->send        mean     9.5  p50     7.6  p90    15.1 us  (n=100)
+   pong send->publish ret     mean     4.0  p50     3.2  p90     4.7 us  (n=100)
+   ping recv->app (reply)     mean    28.3  p50    23.7  p90    33.1 us  (n=100)
+== rmw_tickle_bench_reliable_rep2_block  (row ok, app rtt_avg 0.260 ms, offset drift client 185 ns server 38 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.4  p50    12.2  p90    15.3 us
+   pong_turn  mean    47.8  p50    43.1  p90    52.5 us
+   wire       mean   167.6  p50   167.7  p90   169.5 us
+   ping_recv  mean    32.2 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    32.9  p50    31.2  p90    36.1 us  (n=100)
+   pong tap->callback         mean    37.4  p50    33.1  p90    40.6 us  (n=100)
+   pong callback->tap         mean    10.3  p50     9.5  p90    12.8 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_fastrtps_cpp_bench_reliable_rep2_block  (row ok, app rtt_avg 0.338 ms, offset drift client 130 ns server 167 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    34.1  p50    33.2  p90    37.7 us
+   pong_turn  mean    84.0  p50    81.6  p90    92.5 us
+   wire       mean   171.1  p50   170.9  p90   172.7 us
+   ping_recv  mean    48.8 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    50.1  p50    46.8  p90    56.8 us  (n=100)
+   pong tap->callback         mean    53.3  p50    50.6  p90    59.4 us  (n=100)
+   pong callback->tap         mean    30.7  p50    30.4  p90    34.2 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_cyclonedds_cpp_bench_reliable_rep2_block  (row ok, app rtt_avg 0.281 ms, offset drift client 0 ns server 334 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 101} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    23.5  p50    22.7  p90    27.6 us
+   pong_turn  mean    60.6  p50    54.4  p90    70.9 us
+   wire       mean   150.2  p50   151.6  p90   159.9 us
+   ping_recv  mean    46.7 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: none for this row
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    48.0  p50    44.5  p90    55.2 us  (n=100)
+   pong tap->callback         mean    40.1  p50    34.6  p90    43.6 us  (n=100)
+   pong callback->tap         mean    20.5  p50    19.3  p90    26.9 us  (n=100)
+   pong recv->callback        n/a
+   pong callback->send        n/a
+   pong send->publish ret     n/a
+   ping recv->app (reply)     n/a
+== rmw_tickle_bench_reliable_rep2_block_sst  (row ok, app rtt_avg 0.271 ms, offset drift client 167 ns server 203 ns)
+   ping packets {'broadcast': 7, 'unicast': 93}, echo packets {'broadcast': 10, 'unicast': 90} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    12.7  p50    11.7  p90    15.0 us
+   pong_turn  mean    54.8  p50    51.5  p90    63.4 us
+   wire       mean   168.3  p50   168.0  p90   170.4 us
+   ping_recv  mean    35.2 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean     3.7  p50     3.4  p90     3.9 us  (n=100)
+   ping send->tap             mean     9.0  p50     8.2  p90    11.2 us  (n=100)
+   pong tap->wake             mean    15.3  p50    14.6  p90    18.1 us  (n=100)
+   pong tap->recv             mean    20.2  p50    18.8  p90    24.1 us  (n=100)
+   pong recv->send (user)     mean    23.9  p50    20.8  p90    27.0 us  (n=100)
+   pong send->tap             mean    10.7  p50     9.9  p90    18.7 us  (n=100)
+   ping tap->wake             mean    13.0  p50    12.6  p90    15.3 us  (n=100)
+   ping tap->recv             mean    17.2  p50    16.8  p90    20.2 us  (n=100)
+   ping recv->app (mean)         18.0 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    36.3  p50    34.7  p90    41.4 us  (n=100)
+   pong tap->callback         mean    41.9  p50    38.8  p90    46.6 us  (n=100)
+   pong callback->tap         mean    12.9  p50    11.8  p90    21.3 us  (n=100)
+   pong recv->callback        mean    21.7  p50    19.0  p90    24.8 us  (n=100)
+   pong callback->send        mean     2.2  p50     1.8  p90     2.5 us  (n=100)
+   pong send->publish ret     mean     2.7  p50     1.8  p90     4.3 us  (n=100)
+   ping recv->app (reply)     mean    19.1  p50    17.6  p90    22.5 us  (n=100)
+== rmw_fastrtps_cpp_bench_reliable_rep2_block_sst  (row ok, app rtt_avg 0.353 ms, offset drift client 75 ns server 112 ns)
+   ping packets {'broadcast': 0, 'unicast': 100}, echo packets {'broadcast': 0, 'unicast': 100} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    33.8  p50    33.4  p90    37.5 us
+   pong_turn  mean    94.9  p50    89.3  p90   104.1 us
+   wire       mean   171.4  p50   171.3  p90   172.8 us
+   ping_recv  mean    52.9 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    23.8  p50    23.1  p90    27.3 us  (n=100)
+   ping send->tap             mean    10.0  p50     9.8  p90    11.7 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    14.6  p50    14.0  p90    16.3 us  (n=100)
+   pong recv->send (user)     mean    69.7  p50    64.9  p90    78.1 us  (n=100)
+   pong send->tap             mean    10.6  p50    10.4  p90    12.0 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    13.1  p50    12.5  p90    16.4 us  (n=100)
+   ping recv->app (mean)         39.7 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    54.5  p50    50.7  p90    64.4 us  (n=100)
+   pong tap->callback         mean    59.6  p50    55.2  p90    66.1 us  (n=100)
+   pong callback->tap         mean    35.3  p50    34.0  p90    38.7 us  (n=100)
+   pong recv->callback        mean    45.0  p50    41.4  p90    52.1 us  (n=100)
+   pong callback->send        mean    24.7  p50    23.6  p90    28.1 us  (n=100)
+   pong send->publish ret     mean     6.9  p50     6.1  p90     7.6 us  (n=100)
+   ping recv->app (reply)     mean    41.3  p50    38.0  p90    50.1 us  (n=100)
+== rmw_cyclonedds_cpp_bench_reliable_rep2_block_sst  (row ok, app rtt_avg 0.288 ms, offset drift client 19 ns server 55 ns)
+   ping packets {'broadcast': 0, 'unicast': 101}, echo packets {'broadcast': 0, 'unicast': 101} (every copy, retransmissions included)
+   matched 100 of 100 pings (echo seen 100, pong host in 100 out 100)
+   ping_send  mean    24.7  p50    24.1  p90    27.8 us
+   pong_turn  mean    63.5  p50    58.5  p90    73.1 us
+   wire       mean   150.2  p50   151.1  p90   157.4 us
+   ping_recv  mean    49.5 us   (app rtt_avg minus send_ns-to-echo-at-tap)
+   sysstamp: 100 of 100 samples found in both hosts' records (pong receive and reply on different threads in 100)
+   ping app->send             mean    14.9  p50    14.6  p90    17.4 us  (n=100)
+   ping send->tap             mean     9.8  p50     9.6  p90    11.2 us  (n=100)
+   pong tap->wake             n/a
+   pong tap->recv             mean    11.9  p50    11.2  p90    14.3 us  (n=100)
+   pong recv->send (user)     mean    41.8  p50    36.8  p90    46.6 us  (n=100)
+   pong send->tap             mean     9.9  p50     9.7  p90    11.3 us  (n=100)
+   ping tap->wake             n/a
+   ping tap->recv             mean    21.5  p50    20.2  p90    28.1 us  (n=100)
+   ping recv->app (mean)         28.0 us   (app rtt_avg minus send_ns-to-receive-return)
+   stamps: 100 of 100 samples joined
+   ping tap->app (reply)      mean    50.3  p50    45.4  p90    57.7 us  (n=100)
+   pong tap->callback         mean    42.7  p50    37.7  p90    49.3 us  (n=100)
+   pong callback->tap         mean    20.9  p50    19.8  p90    25.7 us  (n=100)
+   pong recv->callback        mean    30.8  p50    26.4  p90    35.0 us  (n=100)
+   pong callback->send        mean    11.0  p50     9.4  p90    14.8 us  (n=100)
+   pong send->publish ret     mean     5.0  p50     4.1  p90     5.1 us  (n=100)
+   ping recv->app (reply)     mean    28.8  p50    24.9  p90    31.6 us  (n=100)

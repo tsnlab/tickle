@@ -1,0 +1,199 @@
+=== rmw cross-host RTT, 2026-09-26T20:25:47+09:00, SHA 9d89f78fa51dc357106c88e0fdcbc8aaea67e634, 2 reps, msgs: bench, spin arms: off, trace: 0, waits: poll block, poll sleeps: default, sysstamp arms: off on ===
+--- building rmw_tickle + rmw_perf_pingpong (Release) at 9d89f78fa51dc357106c88e0fdcbc8aaea67e634 on both rpis ---
+built on tickle-testbed-rpi-0 at 9d89f78f
+built on tickle-testbed-rpi-1 at 9d89f78f
+--- sysstamp built on both rpis from source md5 8c887c173ae7 ---
+  capture stem=rmw_tickle_bench_best_effort_rep1_poll role=ping t0_ns=1790421994221526619
+  capture stem=rmw_tickle_bench_best_effort_rep1_poll role=pong t0_ns=1790421994967182729
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep1_poll before: client=1789081489073642352 server=1789081891569960425 after: client=1789081489073642204 server=1789081891569960387 
+rmw_tickle bench best_effort rep1 wait=poll | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.475 rtt_avg_ms=0.511 rtt_max_ms=0.896 LOOP: iterations_per_rtt=3.02 spin_some_us=6.3 sleep_us=156.9 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=11264  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=35089187 pong_maxrss_kb=11712
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_poll role=ping t0_ns=1790422056496428561
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_poll role=pong t0_ns=1790422057320592130
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep1_poll before: client=1789081489073642167 server=1789081891569960350 after: client=1789081489073642093 server=1789081891569960240 
+rmw_fastrtps_cpp bench best_effort rep1 wait=poll | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.430 rtt_avg_ms=0.487 rtt_max_ms=0.825 LOOP: iterations_per_rtt=2.02 spin_some_us=63.4 sleep_us=158.4 ping_utime_s=0.04 ping_stime_s=0.02 ping_maxrss_kb=23948  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=57385729 pong_maxrss_kb=23620
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_poll role=ping t0_ns=1790422117608344257
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_poll role=pong t0_ns=1790422118395827316
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_poll before: client=1789081489073642389 server=1789081891569960388 after: client=1789081489073642167 server=1789081891569960221 
+rmw_cyclonedds_cpp bench best_effort rep1 wait=poll | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.377 rtt_avg_ms=0.438 rtt_max_ms=0.726 LOOP: iterations_per_rtt=2.01 spin_some_us=47.2 sleep_us=156.6 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=14848  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=43876922 pong_maxrss_kb=14540
+  capture stem=rmw_tickle_bench_best_effort_rep1_poll_sst role=ping t0_ns=1790422178770825118
+  capture stem=rmw_tickle_bench_best_effort_rep1_poll_sst role=pong t0_ns=1790422179521326738
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep1_poll_sst before: client=1789081489073642111 server=1789081891569960406 after: client=1789081489073641871 server=1789081891569960128 
+rmw_tickle bench best_effort rep1 wait=poll sst=on | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.469 rtt_avg_ms=0.515 rtt_max_ms=0.736 LOOP: iterations_per_rtt=3.01 spin_some_us=6.8 sleep_us=156.5 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=11520  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=38414748 pong_maxrss_kb=11852
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_poll_sst role=ping t0_ns=1790422242003675244
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_poll_sst role=pong t0_ns=1790422242756739743
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep1_poll_sst before: client=1789081489073642111 server=1789081891569960072 after: client=1789081489073642130 server=1789081891569960239 
+rmw_fastrtps_cpp bench best_effort rep1 wait=poll sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.444 rtt_avg_ms=0.497 rtt_max_ms=0.827 LOOP: iterations_per_rtt=2.01 spin_some_us=67.0 sleep_us=159.2 ping_utime_s=0.04 ping_stime_s=0.03 ping_maxrss_kb=24064  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=60249856 pong_maxrss_kb=23712
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_poll_sst role=ping t0_ns=1790422303905296131
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_poll_sst role=pong t0_ns=1790422304686355742
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_poll_sst before: client=1789081489073642222 server=1789081891569960406 after: client=1789081489073642241 server=1789081891569960221 
+rmw_cyclonedds_cpp bench best_effort rep1 wait=poll sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.417 rtt_avg_ms=0.443 rtt_max_ms=0.667 LOOP: iterations_per_rtt=2.01 spin_some_us=47.7 sleep_us=156.7 ping_utime_s=0.03 ping_stime_s=0.02 ping_maxrss_kb=14848  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=46253413 pong_maxrss_kb=14644
+  capture stem=rmw_tickle_bench_best_effort_rep1_block role=ping t0_ns=1790422365969487603
+  capture stem=rmw_tickle_bench_best_effort_rep1_block role=pong t0_ns=1790422366790778691
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep1_block before: client=1789081489073642037 server=1789081891569960146 after: client=1789081489073642148 server=1789081891569960517 
+rmw_tickle bench best_effort rep1 wait=block | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.245 rtt_avg_ms=0.260 rtt_max_ms=0.582 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.01 ping_maxrss_kb=11264  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=36036197 pong_maxrss_kb=11712
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_block role=ping t0_ns=1790422428229657916
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_block role=pong t0_ns=1790422428973362481
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep1_block before: client=1789081489073642167 server=1789081891569960332 after: client=1789081489073642352 server=1789081891569960351 
+rmw_fastrtps_cpp bench best_effort rep1 wait=block | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.308 rtt_avg_ms=0.327 rtt_max_ms=0.676 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=24044  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=57412863 pong_maxrss_kb=23620
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_block role=ping t0_ns=1790422489283480139
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_block role=pong t0_ns=1790422490066021839
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_block before: client=1789081489073642167 server=1789081891569960240 after: client=1789081489073642278 server=1789081891569960165 
+rmw_cyclonedds_cpp bench best_effort rep1 wait=block | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.265 rtt_avg_ms=0.286 rtt_max_ms=0.418 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=14720  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=44415517 pong_maxrss_kb=14540
+  capture stem=rmw_tickle_bench_best_effort_rep1_block_sst role=ping t0_ns=1790422550400520554
+  capture stem=rmw_tickle_bench_best_effort_rep1_block_sst role=pong t0_ns=1790422551133292567
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep1_block_sst before: client=1789081489073642315 server=1789081891569960388 after: client=1789081489073642203 server=1789081891569960406 
+rmw_tickle bench best_effort rep1 wait=block sst=on | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.241 rtt_avg_ms=0.266 rtt_max_ms=0.621 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=11520  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.02 pong_cpu_ns=37335826 pong_maxrss_kb=11876
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_block_sst role=ping t0_ns=1790422613484463848
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep1_block_sst role=pong t0_ns=1790422614274105001
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep1_block_sst before: client=1789081489073642074 server=1789081891569960277 after: client=1789081489073642186 server=1789081891569960258 
+rmw_fastrtps_cpp bench best_effort rep1 wait=block sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.294 rtt_avg_ms=0.339 rtt_max_ms=0.700 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.04 ping_stime_s=0.03 ping_maxrss_kb=24072  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=60429621 pong_maxrss_kb=23720
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_block_sst role=ping t0_ns=1790422675450697051
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_block_sst role=pong t0_ns=1790422676235316166
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep1_block_sst before: client=1789081489073642056 server=1789081891569960202 after: client=1789081489073641852 server=1789081891569960407 
+rmw_cyclonedds_cpp bench best_effort rep1 wait=block sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.273 rtt_avg_ms=0.289 rtt_max_ms=0.427 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.03 ping_stime_s=0.02 ping_maxrss_kb=15104  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=45475947 pong_maxrss_kb=14640
+  capture stem=rmw_tickle_bench_reliable_rep1_poll role=ping t0_ns=1790422737519416982
+  capture stem=rmw_tickle_bench_reliable_rep1_poll role=pong t0_ns=1790422738290365282
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep1_poll before: client=1789081489073641907 server=1789081891569960239 after: client=1789081489073642167 server=1789081891569960239 
+rmw_tickle bench reliable rep1 wait=poll | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.462 rtt_avg_ms=0.513 rtt_max_ms=0.912 LOOP: iterations_per_rtt=3.02 spin_some_us=6.2 sleep_us=156.8 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=11392  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=36563301 pong_maxrss_kb=11752
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_poll role=ping t0_ns=1790422799890353535
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_poll role=pong t0_ns=1790422800677554596
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep1_poll before: client=1789081489073642278 server=1789081891569960443 after: client=1789081489073642333 server=1789081891569960443 
+rmw_fastrtps_cpp bench reliable rep1 wait=poll | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.445 rtt_avg_ms=0.501 rtt_max_ms=0.843 LOOP: iterations_per_rtt=2.01 spin_some_us=66.4 sleep_us=157.8 ping_utime_s=0.03 ping_stime_s=0.04 ping_maxrss_kb=24008  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=62012237 pong_maxrss_kb=23636
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_poll role=ping t0_ns=1790422861087327931
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_poll role=pong t0_ns=1790422861824666581
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep1_poll before: client=1789081489073642297 server=1789081891569960313 after: client=1789081489073642185 server=1789081891569960276 
+rmw_cyclonedds_cpp bench reliable rep1 wait=poll | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.402 rtt_avg_ms=0.439 rtt_max_ms=0.990 LOOP: iterations_per_rtt=2.02 spin_some_us=43.7 sleep_us=156.6 ping_utime_s=0.01 ping_stime_s=0.03 ping_maxrss_kb=14976  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=49065612 pong_maxrss_kb=14536
+  capture stem=rmw_tickle_bench_reliable_rep1_poll_sst role=ping t0_ns=1790422922120770026
+  capture stem=rmw_tickle_bench_reliable_rep1_poll_sst role=pong t0_ns=1790422922855738560
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep1_poll_sst before: client=1789081489073642038 server=1789081891569960313 after: client=1789081489073642278 server=1789081891569960424 
+rmw_tickle bench reliable rep1 wait=poll sst=on | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.468 rtt_avg_ms=0.515 rtt_max_ms=0.894 LOOP: iterations_per_rtt=3.02 spin_some_us=6.4 sleep_us=156.9 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=11520  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.02 pong_cpu_ns=37717757 pong_maxrss_kb=11892
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_poll_sst role=ping t0_ns=1790422985240967356
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_poll_sst role=pong t0_ns=1790422986030587731
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep1_poll_sst before: client=1789081489073642148 server=1789081891569960332 after: client=1789081489073642259 server=1789081891569959962 
+rmw_fastrtps_cpp bench reliable rep1 wait=poll sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.469 rtt_avg_ms=0.525 rtt_max_ms=0.824 LOOP: iterations_per_rtt=2.07 spin_some_us=70.4 sleep_us=158.6 ping_utime_s=0.04 ping_stime_s=0.03 ping_maxrss_kb=24052  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.06 pong_cpu_ns=64446469 pong_maxrss_kb=23736
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_poll_sst role=ping t0_ns=1790423047393100351
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_poll_sst role=pong t0_ns=1790423048148765121
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep1_poll_sst before: client=1789081489073642315 server=1789081891569960387 after: client=1789081489073642296 server=1789081891569960165 
+rmw_cyclonedds_cpp bench reliable rep1 wait=poll sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.426 rtt_avg_ms=0.448 rtt_max_ms=1.144 LOOP: iterations_per_rtt=2.04 spin_some_us=47.4 sleep_us=154.2 ping_utime_s=0.04 ping_stime_s=0.02 ping_maxrss_kb=14848  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=51690619 pong_maxrss_kb=14704
+  capture stem=rmw_tickle_bench_reliable_rep1_block role=ping t0_ns=1790423109375934883
+  capture stem=rmw_tickle_bench_reliable_rep1_block role=pong t0_ns=1790423110146733820
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep1_block before: client=1789081489073642130 server=1789081891569959906 after: client=1789081489073642130 server=1789081891569960480 
+rmw_tickle bench reliable rep1 wait=block | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.244 rtt_avg_ms=0.261 rtt_max_ms=0.567 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.00 ping_stime_s=0.02 ping_maxrss_kb=11392  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=35304074 pong_maxrss_kb=11752
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_block role=ping t0_ns=1790423171619103316
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_block role=pong t0_ns=1790423172361844379
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep1_block before: client=1789081489073642241 server=1789081891569960240 after: client=1789081489073642148 server=1789081891569960295 
+rmw_fastrtps_cpp bench reliable rep1 wait=block | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.300 rtt_avg_ms=0.341 rtt_max_ms=0.675 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=23924  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=61714489 pong_maxrss_kb=23640
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_block role=ping t0_ns=1790423232769792489
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_block role=pong t0_ns=1790423233558424103
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep1_block before: client=1789081489073642074 server=1789081891569960554 after: client=1789081489073642185 server=1789081891569960461 
+rmw_cyclonedds_cpp bench reliable rep1 wait=block | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.244 rtt_avg_ms=0.281 rtt_max_ms=0.831 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=14720  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=50644375 pong_maxrss_kb=14548
+  capture stem=rmw_tickle_bench_reliable_rep1_block_sst role=ping t0_ns=1790423293921846885
+  capture stem=rmw_tickle_bench_reliable_rep1_block_sst role=pong t0_ns=1790423294703490718
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep1_block_sst before: client=1789081489073642056 server=1789081891569960147 after: client=1789081489073641889 server=1789081891569959869 
+rmw_tickle bench reliable rep1 wait=block sst=on | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.243 rtt_avg_ms=0.266 rtt_max_ms=0.629 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=11648  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=37818531 pong_maxrss_kb=11888
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_block_sst role=ping t0_ns=1790423357000570242
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep1_block_sst role=pong t0_ns=1790423357787032586
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep1_block_sst before: client=1789081489073641908 server=1789081891569960073 after: client=1789081489073642278 server=1789081891569960221 
+rmw_fastrtps_cpp bench reliable rep1 wait=block sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.306 rtt_avg_ms=0.348 rtt_max_ms=0.664 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.04 ping_stime_s=0.03 ping_maxrss_kb=24020  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.06 pong_cpu_ns=62993306 pong_maxrss_kb=23724
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_block_sst role=ping t0_ns=1790423419056577640
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep1_block_sst role=pong t0_ns=1790423419831979752
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep1_block_sst before: client=1789081489073642019 server=1789081891569960462 after: client=1789081489073642241 server=1789081891569960369 
+rmw_cyclonedds_cpp bench reliable rep1 wait=block sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.261 rtt_avg_ms=0.386 rtt_max_ms=11.124 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=14976  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=50725126 pong_maxrss_kb=14696
+  capture stem=rmw_tickle_bench_best_effort_rep2_poll role=ping t0_ns=1790423482163568746
+  capture stem=rmw_tickle_bench_best_effort_rep2_poll role=pong t0_ns=1790423482992005119
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep2_poll before: client=1789081489073642371 server=1789081891569960258 after: client=1789081489073641926 server=1789081891569960314 
+rmw_tickle bench best_effort rep2 wait=poll | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.462 rtt_avg_ms=0.512 rtt_max_ms=0.908 LOOP: iterations_per_rtt=3.02 spin_some_us=6.4 sleep_us=156.2 ping_utime_s=0.00 ping_stime_s=0.02 ping_maxrss_kb=11264  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=35610426 pong_maxrss_kb=11700
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_poll role=ping t0_ns=1790423544505872962
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_poll role=pong t0_ns=1790423545333138188
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep2_poll before: client=1789081489073642185 server=1789081891569960165 after: client=1789081489073642223 server=1789081891569960239 
+rmw_fastrtps_cpp bench best_effort rep2 wait=poll | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.430 rtt_avg_ms=0.485 rtt_max_ms=0.765 LOOP: iterations_per_rtt=2.02 spin_some_us=64.8 sleep_us=156.2 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=23876  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=57724495 pong_maxrss_kb=23628
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_poll role=ping t0_ns=1790423605749342657
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_poll role=pong t0_ns=1790423606502081779
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_poll before: client=1789081489073642167 server=1789081891569960202 after: client=1789081489073642019 server=1789081891569960313 
+rmw_cyclonedds_cpp bench best_effort rep2 wait=poll | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.391 rtt_avg_ms=0.437 rtt_max_ms=0.607 LOOP: iterations_per_rtt=2.01 spin_some_us=47.5 sleep_us=156.2 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=14848  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=43983000 pong_maxrss_kb=14532
+  capture stem=rmw_tickle_bench_best_effort_rep2_poll_sst role=ping t0_ns=1790423666700088505
+  capture stem=rmw_tickle_bench_best_effort_rep2_poll_sst role=pong t0_ns=1790423667529604291
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep2_poll_sst before: client=1789081489073642315 server=1789081891569960277 after: client=1789081489073642093 server=1789081891569960387 
+rmw_tickle bench best_effort rep2 wait=poll sst=on | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.483 rtt_avg_ms=0.513 rtt_max_ms=0.771 LOOP: iterations_per_rtt=3.01 spin_some_us=6.2 sleep_us=157.0 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=11520  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=37455380 pong_maxrss_kb=11872
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_poll_sst role=ping t0_ns=1790423730116174476
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_poll_sst role=pong t0_ns=1790423730897308819
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep2_poll_sst before: client=1789081489073642019 server=1789081891569960258 after: client=1789081489073642130 server=1789081891569960350 
+rmw_fastrtps_cpp bench best_effort rep2 wait=poll sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.438 rtt_avg_ms=0.502 rtt_max_ms=0.810 LOOP: iterations_per_rtt=2.06 spin_some_us=66.2 sleep_us=157.7 ping_utime_s=0.05 ping_stime_s=0.02 ping_maxrss_kb=24024  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=58966842 pong_maxrss_kb=23716
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_poll_sst role=ping t0_ns=1790423792182261792
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_poll_sst role=pong t0_ns=1790423792968241768
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_poll_sst before: client=1789081489073642260 server=1789081891569960369 after: client=1789081489073642038 server=1789081891569959869 
+rmw_cyclonedds_cpp bench best_effort rep2 wait=poll sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.384 rtt_avg_ms=0.442 rtt_max_ms=0.667 LOOP: iterations_per_rtt=2.01 spin_some_us=47.3 sleep_us=156.7 ping_utime_s=0.03 ping_stime_s=0.02 ping_maxrss_kb=15104  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=45816597 pong_maxrss_kb=14644
+  capture stem=rmw_tickle_bench_best_effort_rep2_block role=ping t0_ns=1790423854040307989
+  capture stem=rmw_tickle_bench_best_effort_rep2_block role=pong t0_ns=1790423854807052238
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep2_block before: client=1789081489073642204 server=1789081891569960332 after: client=1789081489073642167 server=1789081891569960258 
+rmw_tickle bench best_effort rep2 wait=block | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.246 rtt_avg_ms=0.260 rtt_max_ms=0.550 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.01 ping_maxrss_kb=11264  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=35346612 pong_maxrss_kb=11720
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_block role=ping t0_ns=1790423916332946497
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_block role=pong t0_ns=1790423917119480392
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep2_block before: client=1789081489073642148 server=1789081891569960461 after: client=1789081489073642130 server=1789081891569959924 
+rmw_fastrtps_cpp bench best_effort rep2 wait=block | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.287 rtt_avg_ms=0.329 rtt_max_ms=0.668 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.04 ping_stime_s=0.02 ping_maxrss_kb=24012  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=57241714 pong_maxrss_kb=23632
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_block role=ping t0_ns=1790423977408696339
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_block role=pong t0_ns=1790423978204718292
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_block before: client=1789081489073642204 server=1789081891569960184 after: client=1789081489073642093 server=1789081891569960332 
+rmw_cyclonedds_cpp bench best_effort rep2 wait=block | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.265 rtt_avg_ms=0.281 rtt_max_ms=0.405 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=14840  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=42993836 pong_maxrss_kb=14540
+  capture stem=rmw_tickle_bench_best_effort_rep2_block_sst role=ping t0_ns=1790424038511972262
+  capture stem=rmw_tickle_bench_best_effort_rep2_block_sst role=pong t0_ns=1790424039270917907
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep2_block_sst before: client=1789081489073642185 server=1789081891569960166 after: client=1789081489073642296 server=1789081891569960295 
+rmw_tickle bench best_effort rep2 wait=block sst=on | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.241 rtt_avg_ms=0.268 rtt_max_ms=0.635 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=11392  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=37069664 pong_maxrss_kb=11860
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_block_sst role=ping t0_ns=1790424101616861978
+  capture stem=rmw_fastrtps_cpp_bench_best_effort_rep2_block_sst role=pong t0_ns=1790424102367084892
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_best_effort_rep2_block_sst before: client=1789081489073642093 server=1789081891569960276 after: client=1789081489073642129 server=1789081891569960276 
+rmw_fastrtps_cpp bench best_effort rep2 wait=block sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.290 rtt_avg_ms=0.336 rtt_max_ms=0.641 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.04 ping_stime_s=0.03 ping_maxrss_kb=23996  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=59552919 pong_maxrss_kb=23716
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_block_sst role=ping t0_ns=1790424163425726467
+  capture stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_block_sst role=pong t0_ns=1790424164219361985
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_best_effort_rep2_block_sst before: client=1789081489073641945 server=1789081891569960295 after: client=1789081489073642278 server=1789081891569959998 
+rmw_cyclonedds_cpp bench best_effort rep2 wait=block sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.258 rtt_avg_ms=0.285 rtt_max_ms=0.423 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.03 ping_stime_s=0.02 ping_maxrss_kb=14976  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=45950288 pong_maxrss_kb=14636
+  capture stem=rmw_tickle_bench_reliable_rep2_poll role=ping t0_ns=1790424225550689185
+  capture stem=rmw_tickle_bench_reliable_rep2_poll role=pong t0_ns=1790424226345733505
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep2_poll before: client=1789081489073642241 server=1789081891569960147 after: client=1789081489073642093 server=1789081891569960128 
+rmw_tickle bench reliable rep2 wait=poll | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.465 rtt_avg_ms=0.508 rtt_max_ms=0.716 LOOP: iterations_per_rtt=3.01 spin_some_us=5.9 sleep_us=156.7 ping_utime_s=0.00 ping_stime_s=0.02 ping_maxrss_kb=11392  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=37025362 pong_maxrss_kb=11740
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_poll role=ping t0_ns=1790424287805701034
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_poll role=pong t0_ns=1790424288632722140
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep2_poll before: client=1789081489073642222 server=1789081891569960258 after: client=1789081489073641796 server=1789081891569960276 
+rmw_fastrtps_cpp bench reliable rep2 wait=poll | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.454 rtt_avg_ms=0.513 rtt_max_ms=0.815 LOOP: iterations_per_rtt=2.04 spin_some_us=68.5 sleep_us=158.8 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=23876  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=61374883 pong_maxrss_kb=23640
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_poll role=ping t0_ns=1790424348916789206
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_poll role=pong t0_ns=1790424349696977515
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep2_poll before: client=1789081489073642111 server=1789081891569960017 after: client=1789081489073642130 server=1789081891569960388 
+rmw_cyclonedds_cpp bench reliable rep2 wait=poll | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.395 rtt_avg_ms=0.443 rtt_max_ms=1.140 LOOP: iterations_per_rtt=2.03 spin_some_us=43.9 sleep_us=156.7 ping_utime_s=0.01 ping_stime_s=0.03 ping_maxrss_kb=15104  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=50888761 pong_maxrss_kb=14560
+  capture stem=rmw_tickle_bench_reliable_rep2_poll_sst role=ping t0_ns=1790424410173571857
+  capture stem=rmw_tickle_bench_reliable_rep2_poll_sst role=pong t0_ns=1790424410997100934
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep2_poll_sst before: client=1789081489073642148 server=1789081891569960221 after: client=1789081489073641908 server=1789081891569960221 
+rmw_tickle bench reliable rep2 wait=poll sst=on | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.474 rtt_avg_ms=0.514 rtt_max_ms=0.887 LOOP: iterations_per_rtt=3.02 spin_some_us=6.4 sleep_us=156.5 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=11648  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=37195759 pong_maxrss_kb=11892
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_poll_sst role=ping t0_ns=1790424473491594931
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_poll_sst role=pong t0_ns=1790424474274481318
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep2_poll_sst before: client=1789081489073642000 server=1789081891569960276 after: client=1789081489073642111 server=1789081891569960221 
+rmw_fastrtps_cpp bench reliable rep2 wait=poll sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.446 rtt_avg_ms=0.512 rtt_max_ms=0.792 LOOP: iterations_per_rtt=2.03 spin_some_us=68.4 sleep_us=158.6 ping_utime_s=0.05 ping_stime_s=0.03 ping_maxrss_kb=24032  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=63776026 pong_maxrss_kb=23736
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_poll_sst role=ping t0_ns=1790424535602499487
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_poll_sst role=pong t0_ns=1790424536425402428
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep2_poll_sst before: client=1789081489073642074 server=1789081891569960314 after: client=1789081489073642204 server=1789081891569960221 
+rmw_cyclonedds_cpp bench reliable rep2 wait=poll sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=poll sent=100 recv=100 loss_pct=0 rtt_min_ms=0.397 rtt_avg_ms=0.444 rtt_max_ms=0.993 LOOP: iterations_per_rtt=2.03 spin_some_us=44.8 sleep_us=156.5 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=15104  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=49775616 pong_maxrss_kb=14700
+  capture stem=rmw_tickle_bench_reliable_rep2_block role=ping t0_ns=1790424597681350410
+  capture stem=rmw_tickle_bench_reliable_rep2_block role=pong t0_ns=1790424598463489834
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep2_block before: client=1789081489073642186 server=1789081891569960277 after: client=1789081489073642371 server=1789081891569960239 
+rmw_tickle bench reliable rep2 wait=block | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.243 rtt_avg_ms=0.260 rtt_max_ms=0.636 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=11392  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.02 pong_cpu_ns=34737544 pong_maxrss_kb=11744
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_block role=ping t0_ns=1790424659961533348
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_block role=pong t0_ns=1790424660718723321
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep2_block before: client=1789081489073642241 server=1789081891569960369 after: client=1789081489073642111 server=1789081891569960202 
+rmw_fastrtps_cpp bench reliable rep2 wait=block | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.310 rtt_avg_ms=0.338 rtt_max_ms=0.674 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=24020  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.05 pong_cpu_ns=61469918 pong_maxrss_kb=23636
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_block role=ping t0_ns=1790424721126465079
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_block role=pong t0_ns=1790424721892679010
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep2_block before: client=1789081489073642241 server=1789081891569960054 after: client=1789081489073642241 server=1789081891569960388 
+rmw_cyclonedds_cpp bench reliable rep2 wait=block | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.253 rtt_avg_ms=0.281 rtt_max_ms=0.895 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.03 ping_maxrss_kb=14976  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=49856242 pong_maxrss_kb=14552
+  capture stem=rmw_tickle_bench_reliable_rep2_block_sst role=ping t0_ns=1790424782279568055
+  capture stem=rmw_tickle_bench_reliable_rep2_block_sst role=pong t0_ns=1790424783038664516
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep2_block_sst before: client=1789081489073642204 server=1789081891569960406 after: client=1789081489073642037 server=1789081891569960203 
+rmw_tickle bench reliable rep2 wait=block sst=on | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.253 rtt_avg_ms=0.271 rtt_max_ms=0.608 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.02 ping_stime_s=0.02 ping_maxrss_kb=11520  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=38647411 pong_maxrss_kb=11900
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_block_sst role=ping t0_ns=1790424845485525931
+  capture stem=rmw_fastrtps_cpp_bench_reliable_rep2_block_sst role=pong t0_ns=1790424846278985707
+  clock_offset_ns stem=rmw_fastrtps_cpp_bench_reliable_rep2_block_sst before: client=1789081489073642186 server=1789081891569960388 after: client=1789081489073642111 server=1789081891569960276 
+rmw_fastrtps_cpp bench reliable rep2 wait=block sst=on | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.310 rtt_avg_ms=0.353 rtt_max_ms=0.646 LOOP: iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.05 ping_stime_s=0.03 ping_maxrss_kb=23984  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.06 pong_cpu_ns=64373101 pong_maxrss_kb=23740
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_block_sst role=ping t0_ns=1790424907319278038
+  capture stem=rmw_cyclonedds_cpp_bench_reliable_rep2_block_sst role=pong t0_ns=1790424908055543205
+  clock_offset_ns stem=rmw_cyclonedds_cpp_bench_reliable_rep2_block_sst before: client=1789081489073642297 server=1789081891569960184 after: client=1789081489073642278 server=1789081891569960239 
+rmw_cyclonedds_cpp bench reliable rep2 wait=block sst=on | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.249 rtt_avg_ms=0.288 rtt_max_ms=0.881 LOOP: iterations_per_rtt=1.01 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.03 ping_stime_s=0.03 ping_maxrss_kb=14976  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.04 pong_cpu_ns=51956697 pong_maxrss_kb=14704
+
+=== done ===
