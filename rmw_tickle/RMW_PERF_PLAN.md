@@ -516,6 +516,24 @@ callback, so it gains in full.
   MultiThreadedExecutor is never held up by another thread's lease.
 - Diagnostic: the shutdown line adds `delivered_by_executor=` and `delivered_by_poll_thread=`, which tests the
   hypothesis above directly on the rig, in both arms.
+  `park_wakes=` counts the parked thread's returns from `ppoll()`, for the idle-CPU criterion below.
+
+**Found while implementing (2026-09-27, before any rig run).** The timer-latency test caught two defects in
+the design above, each confirmed by a mutant:
+- An entry scheduled from another thread while the executor is away was not seen until the lease ended: core
+  wakes only a thread waiting inside `tt_Node_poll()`, and the parked thread waits outside it. Fix:
+  `tt_Node_next_due()` also sets `tt_Node.idle_waiter`, and until the next `tt_Node_poll()` starts every
+  `tt_Node_schedule()` signals the node's wake descriptor, which the parked thread now waits on too. The
+  release arms the park timer for the earlier of the lease's end and core's next due entry, so the parked
+  thread does not sleep through an entry the executor's own poll left behind.
+- A non-blocking `tt_Node_poll(0)` does not read that wake descriptor, so after the first such signal the
+  parked thread returned from `ppoll()` at once, over and over, until the lease ended - a spin, which the
+  first mutant run hid by firing every timer on time. Fix: it drains the descriptor itself before its poll,
+  and if the executor has taken the role meanwhile (`tt_RET_BUSY`) it signals again, since the drained wake may
+  have been the executor's. New shutdown counter `park_wakes=`; the test bounds it at 10 per 100 ms absence.
+- The test allows 1 ms of lateness as pre-registered; 20/20 runs on the PC passed. It schedules its second
+  entry 10 ms after the release, because core's own entries due just after a release woke the parked thread
+  and hid the first defect.
 
 **How to read it** (rig, `rmw_crosshost_rtt.sh`, 100 ms gap, block and poll, Bench and Array1k, BE and REL,
 3 repetitions, this commit against its parent, both with executor-driven receive on):

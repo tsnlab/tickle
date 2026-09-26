@@ -113,6 +113,40 @@ static void test_node_interrupt_rejects_null(void) {
     EXPECT_EQ_INT(tt_RET_INVALID_ARGUMENT, tt_Node_interrupt(NULL));
 }
 
+static void noop_entry(struct tt_Node* node, uint64_t time, void* param) {
+    (void)node;
+    (void)time;
+    (void)param;
+}
+
+// tt_Node_next_due(): a caller waiting outside tt_Node_poll() for the next due entry (rmw_tickle's parked
+// poll thread) must hear of an entry scheduled after it looked, whatever that entry's time - with nothing
+// waiting in tt_Node_poll(), wait_until says no poll is waiting and nothing else would signal.
+static void test_next_due_makes_every_schedule_signal(void) {
+    struct tt_Node node;
+    memset(&node, 0, sizeof(node));
+    node_init_locks(&node);
+    test_mock_reset();
+    const uint64_t far = tt_get_ns() + (60ULL * tt_SECOND);
+
+    // Control: nobody waiting, so a far entry signals nothing.
+    EXPECT_TRUE(tt_Node_schedule(&node, far, noop_entry, NULL));
+    EXPECT_EQ_INT(0, test_mock_wake_signal_call_count);
+
+    uint64_t due = 0;
+    EXPECT_TRUE(tt_Node_next_due(&node, &due));
+    EXPECT_TRUE(due == far);
+    EXPECT_TRUE(tt_Node_schedule(&node, far + 1, noop_entry, NULL));
+    EXPECT_EQ_INT(1, test_mock_wake_signal_call_count);
+
+    // A poll that starts sees every insert itself: the signalling ends with it.
+    test_mock_receive_return = -1;
+    (void)tt_Node_poll(&node, 0);
+    int before = test_mock_wake_signal_call_count;
+    EXPECT_TRUE(tt_Node_schedule(&node, far + 2, noop_entry, NULL));
+    EXPECT_EQ_INT(before, test_mock_wake_signal_call_count);
+}
+
 int main(void) {
     test_interrupt_ends_poll_even_with_scheduler_wakeup_pending();
     test_interrupt_ends_poll_with_no_scheduler_wakeup_pending();
@@ -122,6 +156,7 @@ int main(void) {
     test_node_poll_returns_interrupted();
     test_node_interrupt_calls_hal_wake_signal();
     test_node_interrupt_rejects_null();
+    test_next_due_makes_every_schedule_signal();
 
     if (test_result() != 0) {
         return 1;

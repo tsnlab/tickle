@@ -16,7 +16,11 @@
 // however many rmw_create_node() calls share that context - see that struct's own doc comment for
 // why a logical "node" never needed its own transport identity in the first place.
 
-#include <poll.h> // poll() - executor-driven receive's park
+// ppoll() - the parked poll thread's wait for core's next due entry (RMW_PERF_PLAN.md 8.6) - is a GNU
+// extension; glibc declares it only with this, as for hal_linux.c.
+// NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
+#define _GNU_SOURCE
+#include <poll.h> // ppoll() - executor-driven receive's park
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -31,7 +35,7 @@
 #include <sys/timerfd.h>
 #include <tickle/config.h>    // tt_RECEIVE_TIMEOUT, tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL
 #include <tickle/hal.h>       // tt_ret_t/tt_RET_OK, tt_get_ns()
-#include <tickle/hal_linux.h> // tt_thread_self()
+#include <tickle/hal_linux.h> // tt_thread_self(), the node's wake_fd
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h" // rcutils_allocator_t
@@ -284,7 +288,7 @@ static bool executor_holds_poll(rmw_tickle_context_impl_t* context_impl) {
         return true;
     }
     uint64_t left = atomic_load(&context_impl->executor_left_ns);
-    return 0 != left && tt_get_ns() - left < RMW_TICKLE_EXECUTOR_POLL_LEASE_NS;
+    return 0 != left && tt_get_ns() - left < rmw_tickle_executor_lease_ns(context_impl);
 }
 
 static void drain_fd(int descriptor) {
@@ -308,11 +312,39 @@ static bool park_for_polling_executor(rmw_tickle_context_impl_t* context_impl) {
     pthread_mutex_unlock(&context_impl->wait_mutex);
     while (context_impl->poll_thread_running && executor_holds_poll(context_impl)) {
         // NOLINTNEXTLINE(misc-include-cleaner) - struct pollfd/POLLIN: <poll.h> above, via a glibc-private header
-        struct pollfd fds[2] = {{.fd = context_impl->park_timer_fd, .events = POLLIN, .revents = 0},
-                                {.fd = context_impl->park_wake_fd, .events = POLLIN, .revents = 0}};
-        (void)poll(fds, 2, -1); // NOLINT(misc-include-cleaner) - <poll.h> above
+        struct pollfd fds[3] = {{.fd = context_impl->park_timer_fd, .events = POLLIN, .revents = 0},
+                                {.fd = context_impl->park_wake_fd, .events = POLLIN, .revents = 0},
+                                {.fd = context_impl->tickle_node.hal.wake_fd, .events = POLLIN, .revents = 0}};
+        // While the executor is away within its lease nobody polls the node, so its timers are served from
+        // here: wake when the next one falls due - or when another thread schedules one, which core signals
+        // on its wake descriptor after tt_Node_next_due() - and run one non-blocking poll: due entries, and
+        // whatever arrived meanwhile. Never a blocking one, so the executor's return finds the role free
+        // (8.6).
+        struct timespec until_due;
+        struct timespec* timeout = NULL;
+        uint64_t due = 0;
+        if (!atomic_load(&context_impl->executor_polling) && tt_Node_next_due(&context_impl->tickle_node, &due)) {
+            uint64_t now = tt_get_ns();
+            uint64_t wait_ns = due > now ? due - now : 0;
+            until_due.tv_sec = (time_t)(wait_ns / tt_SECOND);
+            until_due.tv_nsec = (long)(wait_ns % tt_SECOND);
+            timeout = &until_due;
+        }
+        (void)ppoll(fds, 3, timeout, NULL); // NOLINT(misc-include-cleaner) - <poll.h> above
+        atomic_fetch_add(&context_impl->park_wakes, 1);
         drain_fd(context_impl->park_timer_fd);
         drain_fd(context_impl->park_wake_fd);
+        if (context_impl->poll_thread_running && !atomic_load(&context_impl->executor_polling) &&
+            executor_holds_poll(context_impl)) {
+            // Core's signal was for this thread, and a non-blocking poll does not read it: left there, every
+            // ppoll() above would return at once until the lease ended. If the executor came back meanwhile
+            // (tt_RET_BUSY) the signal may have been its own, so it is given back.
+            drain_fd(context_impl->tickle_node.hal.wake_fd);
+            if (tt_RET_BUSY == tt_Node_poll(&context_impl->tickle_node, 0)) {
+                (void)tt_Node_interrupt(&context_impl->tickle_node);
+            }
+            atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
+        }
     }
     atomic_store(&context_impl->poll_thread_parked, false);
     atomic_store(&context_impl->poll_thread_last_return_ns, tt_get_ns());
@@ -426,10 +458,17 @@ static void stop_shared_tickle_node(rmw_tickle_context_impl_t* context_impl) {
         close(context_impl->park_wake_fd);
         context_impl->park_wake_fd = -1;
     }
-    // One line, so a measurement can confirm which library ran and whether the path was taken.
-    (void)fprintf(stderr, "rmw_tickle: executor_poll=%d executor_poll_waits=%llu\n",
+    // One line, so a measurement can confirm which library ran, whether the path was taken, how often the
+    // role was taken back from the poll thread, and which thread delivered the samples (RMW_PERF_PLAN.md 8.6).
+    (void)fprintf(stderr,
+                  "rmw_tickle: executor_poll=%d executor_poll_waits=%llu executor_handovers=%llu "
+                  "delivered_by_executor=%llu delivered_by_poll_thread=%llu park_wakes=%llu\n",
                   context_impl->executor_poll_enabled ? 1 : 0,
-                  (unsigned long long)atomic_load(&context_impl->executor_poll_waits));
+                  (unsigned long long)atomic_load(&context_impl->executor_poll_waits),
+                  (unsigned long long)atomic_load(&context_impl->executor_handovers),
+                  (unsigned long long)atomic_load(&context_impl->delivered_by_executor),
+                  (unsigned long long)atomic_load(&context_impl->delivered_by_poll_thread),
+                  (unsigned long long)atomic_load(&context_impl->park_wakes));
 
     // watchdog_thread_running is only ever true here if start_shared_tickle_node() actually
     // managed to start it (see its own doc comment there) - nothing to join otherwise. No tt_Node_

@@ -14,7 +14,10 @@
 //   1. core's timers run while an executor holds the poll role - on the executor's thread, on time;
 //   2. once the executor has been away longer than the lease (a long callback), the poll thread serves them;
 //   3. a guard condition triggered from another thread wakes an rmw_wait() that is polling;
-//   4. two rmw_wait() calls at once - one polls, the other waits on the condition variable - both return.
+//   4. two rmw_wait() calls at once - one polls, the other waits on the condition variable - both return;
+//   5. a caller that sleeps outside rmw_wait() on a regular cadence keeps the role across its sleep - no
+//      handover per wait - while core's timers still fire on time from the parked poll thread, and another
+//      thread's rmw_wait() takes the role from it at once (RMW_PERF_PLAN.md 8.6).
 
 #include <assert.h>
 #include <pthread.h>
@@ -48,6 +51,12 @@
 #define TRIGGER_AFTER_MS 20U  // parts 3 and 4: when the other thread triggers
 #define WOKEN_WITHIN_MS 5U    // part 3: how soon after that the wait must end
 #define BOTH_WITHIN_MS 10U    // part 4: how soon both waits must end
+#define CADENCE_MS 100U       // part 5: the caller's sleep outside rmw_wait(), the ping's
+#define CADENCE_ROUNDS 5
+#define SHORT_WAIT_NS MS       // part 5: each wait, 1 ms, times out
+#define AWAY_FIRE_WITHIN_MS 1U // part 5: how late such a timer may fire (RMW_PERF_PLAN.md 8.6)
+#define AWAY_WAKES_MAX 10U     // part 5: the parked poll thread's wakes in one such absence
+#define SCHEDULE_AFTER_MS 10U  // part 5: when this thread schedules, after its wait
 
 static _Atomic uint64_t fired_at_ns;
 static _Atomic uintptr_t fired_on_thread;
@@ -159,6 +168,54 @@ int main(void) {
     assert(0 == pthread_join(second_thread, NULL));
     assert(RMW_RET_OK == first.result && RMW_RET_OK == second.result);
     assert(tt_get_ns() - start <= BOTH_WITHIN_MS * MS);
+
+    // 5. A regular cadence: wait 1 ms, sleep 100 ms, again. After the first two rounds the lease covers the
+    //    sleep, so the later rounds find the role still theirs - no handover.
+    rmw_time_t short_wait = {0, SHORT_WAIT_NS};
+    uint64_t handovers_before = 0;
+    for (int round = 0; round < CADENCE_ROUNDS; round++) {
+        if (2 == round) {
+            handovers_before = atomic_load(&impl->executor_handovers);
+        }
+        storage[0] = guard;
+        assert(RMW_RET_TIMEOUT == rmw_wait(NULL, &guards, NULL, NULL, NULL, wait_set, &short_wait));
+        sleep_ms(CADENCE_MS);
+    }
+    assert(atomic_load(&impl->executor_handovers) == handovers_before);
+    //    Away again within that lease, a timer due 20 ms in fires on time, from the poll thread - one
+    //    scheduled before the wait, and one scheduled from this thread after it.
+    for (int after_wait = 0; after_wait <= 1; after_wait++) {
+        atomic_store(&fired_at_ns, 0);
+        due = tt_get_ns() + (AWAY_TIMER_DUE_MS * MS);
+        if (!after_wait) {
+            assert(tt_Node_schedule(tickle_node, due, record_firing, NULL));
+        }
+        storage[0] = guard;
+        assert(RMW_RET_TIMEOUT == rmw_wait(NULL, &guards, NULL, NULL, NULL, wait_set, &short_wait));
+        if (after_wait) {
+            // Late enough that core's own entries due just after the release have run and the poll thread
+            // is parked until the next one, a second off: only core's signal can tell it of this entry.
+            sleep_ms(SCHEDULE_AFTER_MS);
+            due = tt_get_ns() + (AWAY_TIMER_DUE_MS * MS);
+            assert(tt_Node_schedule(tickle_node, due, record_firing, NULL));
+        }
+        uint64_t wakes_before = atomic_load(&impl->park_wakes);
+        sleep_ms(CADENCE_MS);
+        // A handful of wakes - this entry, core's own, the lease's end - not a spin.
+        assert(atomic_load(&impl->park_wakes) - wakes_before <= AWAY_WAKES_MAX);
+        assert(atomic_load(&fired_at_ns) >= due && atomic_load(&fired_at_ns) <= due + (AWAY_FIRE_WITHIN_MS * MS));
+        assert(atomic_load(&fired_on_thread) != main_thread);
+    }
+    //    And another thread's wait takes the role from the away executor at once.
+    struct waiter third = {other_wait_set, other_guard, RMW_RET_ERROR};
+    pthread_t third_thread; // NOLINT(misc-include-cleaner) - as above
+    assert(0 == pthread_create(&third_thread, NULL, wait_on_guard, &third));
+    sleep_ms(TRIGGER_AFTER_MS);
+    start = tt_get_ns();
+    assert(RMW_RET_OK == rmw_trigger_guard_condition(other_guard));
+    assert(0 == pthread_join(third_thread, NULL));
+    assert(RMW_RET_OK == third.result);
+    assert(tt_get_ns() - start <= WOKEN_WITHIN_MS * MS);
 
     assert(RMW_RET_OK == rmw_destroy_wait_set(other_wait_set));
     assert(RMW_RET_OK == rmw_destroy_guard_condition(other_guard));
