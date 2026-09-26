@@ -39,6 +39,7 @@
 #include <time.h>
 
 #include <tickle/config.h> // tt_SECOND
+#include <tickle/trace.h>  // TT_TRACE
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
@@ -273,6 +274,7 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
         if (ready_subs || ready_gcs || ready_svcs || ready_clients || ready_events) {
             finalize_all(subscriptions, guard_conditions, services, clients, events);
             pthread_mutex_unlock(&context_impl->wait_mutex);
+            TT_TRACE(tt_TRACE_EXEC_WAKE);
             return RMW_RET_OK;
         }
 

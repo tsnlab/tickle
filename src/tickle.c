@@ -57,6 +57,34 @@ _Static_assert(tt_RELIABLE_RECORD_BYTES(0) ==
                    ROUNDUP(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
                "tt_RELIABLE_RECORD_BYTES must match the real DATA submessage framing size");
 
+// Latency trace stamps - see include/tickle/trace.h. Compiled out unless built with -Dtt_TRACE.
+#ifdef tt_TRACE
+#include <tickle/trace.h>
+
+// tt_trace_stamp()'s ring (trace.h). Process-global and written by any thread: the slot is claimed with an
+// atomic add, and a reader copies after the writers it cares about have stopped.
+static struct tt_TraceStamp g_trace[tt_TRACE_CAPACITY];
+static uint32_t g_trace_next;
+
+void tt_trace_stamp(enum tt_TracePoint point) {
+    uint32_t slot = __atomic_fetch_add(&g_trace_next, 1U, __ATOMIC_RELAXED) & (tt_TRACE_CAPACITY - 1U);
+    g_trace[slot] = (struct tt_TraceStamp) {.ns = tt_get_ns(),
+                                            .thread = (uint64_t)tt_thread_self(),
+                                            .point = (uint32_t)point}; // NOLINT(misc-include-cleaner)
+}
+
+uint32_t tt_trace_read(struct tt_TraceStamp* out, uint32_t max) {
+    uint32_t written = __atomic_load_n(&g_trace_next, __ATOMIC_ACQUIRE);
+    uint32_t held = written < tt_TRACE_CAPACITY ? written : tt_TRACE_CAPACITY;
+    uint32_t count = held < max ? held : max;
+    uint32_t first = written - count;
+    for (uint32_t i = 0; i < count; i++) {
+        out[i] = g_trace[(first + i) & (tt_TRACE_CAPACITY - 1U)];
+    }
+    return count;
+}
+#endif
+
 // RELIABLE recovery instrumentation - see include/tickle/reliable_stats.h. Everything below is
 // compiled out (RSTAT_* expand to nothing) unless built with -Dtt_RELIABLE_STATS.
 #ifdef tt_RELIABLE_STATS
@@ -1402,6 +1430,17 @@ static void state_lock_taken(struct tt_Node* node) {
     node->state_lock_stats.acquisitions++;
 }
 
+// Counts a wait for the state lock that began at start and has just ended with the lock held.
+static void state_lock_waited(struct tt_Node* node, uint64_t start) {
+    uint64_t waited = tt_get_ns() - start;
+    node->state_lock_stats.contended++;
+    node->state_lock_stats.wait_ns += waited;
+    if (__atomic_load_n(&node->poller_thread, __ATOMIC_RELAXED) == tt_thread_self()) { // NOLINT(misc-include-cleaner)
+        node->state_lock_stats.poller_contended++;
+        node->state_lock_stats.poller_wait_ns += waited;
+    }
+}
+
 static void state_lock(struct tt_Node* node) {
     if (state_lock_owned(node)) {
         node->state_depth++; // re-entry from a callback, or a public call made inside another
@@ -1410,8 +1449,7 @@ static void state_lock(struct tt_Node* node) {
     if (!tt_lock_try(&node->state_lock)) { // NOLINT(misc-include-cleaner)
         uint64_t start = tt_get_ns();
         tt_lock_acquire(&node->state_lock); // NOLINT(misc-include-cleaner)
-        node->state_lock_stats.contended++;
-        node->state_lock_stats.wait_ns += tt_get_ns() - start;
+        state_lock_waited(node, start);
     }
     state_lock_taken(node);
 }
@@ -1455,8 +1493,7 @@ bool tt_Node_lock_timed(struct tt_Node* node, uint64_t timeout_ns) {
         if (!tt_lock_acquire_timed(&node->state_lock, timeout_ns)) { // NOLINT(misc-include-cleaner)
             return false;
         }
-        node->state_lock_stats.contended++;
-        node->state_lock_stats.wait_ns += tt_get_ns() - start;
+        state_lock_waited(node, start);
     }
     state_lock_taken(node);
     return true;
@@ -1795,6 +1832,7 @@ static void node_init_locks(struct tt_Node* node) {
     __atomic_store_n(&node->state_owner, 0, __ATOMIC_RELAXED);
     node->state_depth = 0;
     node->state_lock_stats = (struct tt_LockStats) {0};
+    __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);
     for (int i = 0; i < tt_SCHED_INBOX_LENGTH; i++) {
         __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELAXED);
     }
@@ -8402,7 +8440,9 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     if (!__atomic_compare_exchange_n(&node->poller_active, &idle, 1, false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
         return tt_RET_BUSY;
     }
+    __atomic_store_n(&node->poller_thread, tt_thread_self(), __ATOMIC_RELAXED); // NOLINT(misc-include-cleaner)
     tt_ret_t result = node_poll(node, timeout);
+    __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELEASE);
     return result;
 }

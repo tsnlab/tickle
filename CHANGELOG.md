@@ -32,6 +32,14 @@ number, `tt_VERSION`, which moves independently.
   (`retained_samples` counts them). 0 leaves `depth` as the only bound, as before.
   `tt_sample_datagrams()` and `tt_sample_cache_bytes()` (tickle.h) size a cache in samples: the seq_no
   and the arena bytes one sample of a given CDR length takes.
+- **Latency trace stamps** (`include/tickle/trace.h`, `-Dtt_TRACE`; `rmw_tickle`: `-DRMW_TICKLE_TRACE=ON`):
+  CLOCK_MONOTONIC stamps along a responder's receive-to-reply path - ppoll return, datagram to core, rmw
+  delivery, signal, executor wake, take, publish, send return - into one process-global ring any thread
+  may write. Measurement only; off, every stamp compiles to nothing. `rmw_tickle` writes them, with the
+  node's lock counters, to `RMW_TICKLE_TRACE_FILE` at shutdown; `experiments/rmw_trace_segments.py` turns
+  a dump into per-segment latencies. `tt_LockStats` gains `poller_contended`/`poller_wait_ns`, the waits
+  the polling thread did, so a contended lock says who waited for whom. `rmw_tickle` also takes
+  `-DRMW_TICKLE_RX_BATCH=N` for `tt_RX_BATCH`.
 - **HAL: `tt_send_batch()`**, several datagrams in one call - `sendmmsg()` on Linux, one send each on
   FreeRTOS. **A HAL port must now provide it.** Core uses it for a sample's fragments and for one
   datagram to several destinations; a single datagram to a single destination still uses

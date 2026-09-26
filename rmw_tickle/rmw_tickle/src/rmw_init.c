@@ -10,10 +10,15 @@
 
 #include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include <tickle/config.h>
+#include <tickle/tickle.h> // struct tt_LockStats
+#ifdef tt_TRACE
+#include <tickle/trace.h> // tt_trace_read(), with -DRMW_TICKLE_TRACE=ON
+#endif
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
@@ -253,6 +258,42 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     return RMW_RET_OK;
 }
 
+// RMW_TICKLE_TRACE_FILE=<path> (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md H1/H2): at the first shutdown,
+// write this context's node state-lock counters to <path> - who waited for the lock, and how long - and,
+// in a build with -DRMW_TICKLE_TRACE=ON, every latency stamp still in core's ring (tickle/trace.h).
+// Measurement only: unset, it does nothing, and a file that cannot be opened is skipped silently.
+//
+// Format, one record a line:
+//   lock acquisitions=A contended=C wait_ns=W poller_contended=PC poller_wait_ns=PW
+//   points 1=rx_wake 2=rx_datagram 3=deliver 4=signaled 5=exec_wake 6=taken 7=publish 8=tx_done
+//   stamp <ns> <thread> <point>      (oldest first; ns is CLOCK_MONOTONIC)
+// The counters are read while the poll thread may still run, so they can be one update stale.
+static void dump_measurements(rmw_tickle_context_impl_t* impl) {
+    const char* path = getenv("RMW_TICKLE_TRACE_FILE");
+    if (NULL == path || '\0' == path[0]) {
+        return;
+    }
+    FILE* out = fopen(path, "w");
+    if (NULL == out) {
+        return;
+    }
+    const struct tt_LockStats* lock = &impl->tickle_node.state_lock_stats;
+    fprintf(out, "lock acquisitions=%llu contended=%llu wait_ns=%llu poller_contended=%llu poller_wait_ns=%llu\n",
+            (unsigned long long)lock->acquisitions, (unsigned long long)lock->contended,
+            (unsigned long long)lock->wait_ns, (unsigned long long)lock->poller_contended,
+            (unsigned long long)lock->poller_wait_ns);
+    fprintf(out, "points 1=rx_wake 2=rx_datagram 3=deliver 4=signaled 5=exec_wake 6=taken 7=publish 8=tx_done\n");
+#ifdef tt_TRACE
+    static struct tt_TraceStamp stamps[tt_TRACE_CAPACITY];
+    uint32_t count = tt_trace_read(stamps, tt_TRACE_CAPACITY);
+    for (uint32_t i = 0; i < count; i++) {
+        fprintf(out, "stamp %llu %llu %u\n", (unsigned long long)stamps[i].ns, (unsigned long long)stamps[i].thread,
+                stamps[i].point);
+    }
+#endif
+    fclose(out);
+}
+
 rmw_ret_t rmw_shutdown(rmw_context_t* context) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(context, RMW_RET_INVALID_ARGUMENT);
 
@@ -276,7 +317,11 @@ rmw_ret_t rmw_shutdown(rmw_context_t* context) {
 
     // Idempotent by rmw's own contract (test_init_shutdown.cpp's "Shutdown twice should succeed")
     // - just (re-)mark it, no different work needed the second time.
-    ((rmw_tickle_context_impl_t*)context->impl)->shutdown = true;
+    rmw_tickle_context_impl_t* impl = (rmw_tickle_context_impl_t*)context->impl;
+    if (!impl->shutdown) {
+        dump_measurements(impl);
+    }
+    impl->shutdown = true;
 
     return RMW_RET_OK;
 }

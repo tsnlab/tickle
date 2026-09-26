@@ -82,6 +82,11 @@ struct tt_LockStats {
     uint64_t acquisitions;
     uint64_t contended;
     uint64_t wait_ns;
+    // The part of contended/wait_ns the polling thread did - the one running tt_Node_poll() - so a wait
+    // can be told apart by who waited: the poll thread for an application thread, or the other way round
+    // (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md H1). The rest was other threads.
+    uint64_t poller_contended;
+    uint64_t poller_wait_ns;
 };
 
 // struct tt_Node.sched_inbox_state[] values.
@@ -229,9 +234,10 @@ struct tt_Node {
     // node, its entities and the scheduler heap. User callbacks run with it held and may call back into
     // core, so it is re-entrant - not through a recursive mutex but by recording its owner: re-entry by the
     // owning thread is then a compare, not an atomic, which matters on the per-sample publish path.
-    tt_lock_t state_lock;  // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
-    uintptr_t state_owner; // tt_thread_self() of the holder, 0 when free; accessed through __atomic builtins
-    uint32_t state_depth;  // how many times the owner has taken it; only the owner reads or writes it
+    tt_lock_t state_lock;    // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
+    uintptr_t state_owner;   // tt_thread_self() of the holder, 0 when free; accessed through __atomic builtins
+    uintptr_t poller_thread; // tt_thread_self() of the thread inside tt_Node_poll(), 0 when none; __atomic
+    uint32_t state_depth;    // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Node_schedule() from a thread that does not hold the state lock puts its entry
     // here, without a lock, and the next look at the heap moves it in - see sched_inbox_push() (tickle.c).

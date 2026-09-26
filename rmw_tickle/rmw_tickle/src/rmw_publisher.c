@@ -24,6 +24,7 @@
 #include <tickle/config.h> // tt_MAX_RELIABLE_HISTORY, tt_MAX_PEER_COUNT, tt_CALL_RETRY_INTERVAL, tt_SECOND
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK, tt_get_ns()
 #include <tickle/tickle.h>
+#include <tickle/trace.h>
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
@@ -1228,6 +1229,7 @@ static rmw_ret_t publish_blocking(rmw_tickle_publisher_t* pub_impl, void* tickle
 
 rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
                       rmw_publisher_allocation_t* allocation) {
+    TT_TRACE(tt_TRACE_PUBLISH);
     (void)allocation; // pre-allocated-message optimization, not implemented
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);

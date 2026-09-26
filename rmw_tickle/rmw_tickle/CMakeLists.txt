@@ -80,6 +80,19 @@ target_compile_definitions(rmw_tickle PUBLIC tt_SERVER_CACHE_ENTRY_LENGTH=8 tt_S
 # fewer than 16 of this build's datagrams.
 target_compile_definitions(rmw_tickle PUBLIC tt_SOCKET_BUFFER_SIZE=4194304)
 
+# RMW_TICKLE_TRACE (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md H2): latency stamps along the receive-to-reply
+# path, core's and this package's, dumped by RMW_TICKLE_TRACE_FILE at shutdown (rmw_init.c). Measurement
+# only; off, every stamp compiles to nothing. RMW_TICKLE_RX_BATCH passes tt_RX_BATCH through for the
+# recvmmsg arm (hal_linux.h; rmw's default is 1 - see there for why).
+option(RMW_TICKLE_TRACE "Build with core and rmw latency trace stamps" OFF)
+if(RMW_TICKLE_TRACE)
+  target_compile_definitions(rmw_tickle PRIVATE tt_TRACE)
+endif()
+set(RMW_TICKLE_RX_BATCH "" CACHE STRING "tt_RX_BATCH for this build; empty keeps hal_linux.h's default")
+if(NOT RMW_TICKLE_RX_BATCH STREQUAL "")
+  target_compile_definitions(rmw_tickle PUBLIC "tt_RX_BATCH=${RMW_TICKLE_RX_BATCH}")
+endif()
+
 target_include_directories(rmw_tickle PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${TICKLE_INCLUDE_DIR}>

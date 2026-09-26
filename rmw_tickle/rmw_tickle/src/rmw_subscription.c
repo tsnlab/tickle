@@ -24,6 +24,7 @@
 #include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK/tt_get_ns
 #include <tickle/tickle.h>
+#include <tickle/trace.h>
 
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
@@ -138,6 +139,7 @@ static bool decode_with_psn(rmw_tickle_subscriber_t* sub_impl, const struct payl
 
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
     (void)seq_no; // core's: counts datagrams once messages fragment - the psn comes from rmw_tickle's own header
+    TT_TRACE(tt_TRACE_DELIVER);
     rmw_tickle_subscriber_t* sub_impl =
         (rmw_tickle_subscriber_t*)((char*)tt_sub - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
@@ -200,6 +202,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     // doc comment explains why the broadcast must happen under wait_mutex even though queue_count
     // itself is guarded by the separate queue_mutex above.
     wake_wait_cond(sub_impl->node->context_impl);
+    TT_TRACE(tt_TRACE_SIGNALED);
 }
 
 // QoS roadmap #2 (DEADLINE) - see rmw_publisher.c's own check_publisher_deadline() doc comment,
@@ -759,6 +762,7 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     shell_pool_push(sub_impl, entry.ros_message);
     pthread_mutex_unlock(&sub_impl->queue_mutex);
     *taken = true;
+    TT_TRACE(tt_TRACE_TAKEN);
 
     if (NULL != message_info) {
         message_info->source_timestamp = (rmw_time_point_value_t)entry.source_timestamp;

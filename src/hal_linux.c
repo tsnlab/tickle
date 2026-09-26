@@ -44,6 +44,7 @@
 #include <tickle/hal.h>
 #include <tickle/hal_linux.h> // tt_RX_BATCH, struct tt_mmsghdr
 #include <tickle/tickle.h>
+#include <tickle/trace.h>
 
 #include "consts.h"
 #include "log.h"
@@ -400,8 +401,10 @@ void tt_close(struct tt_Node* node) {
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
-    return (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
-                           sizeof(struct sockaddr_in));
+    int32_t sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
+                                   sizeof(struct sockaddr_in));
+    TT_TRACE(tt_TRACE_TX_DONE);
+    return sent;
 }
 
 int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t ip, uint16_t port) {
@@ -410,7 +413,10 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     addr.sin_addr.s_addr = htonl(ip);
     addr.sin_port = htons(port);
 
-    return (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+    int32_t sent =
+        (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
+    TT_TRACE(tt_TRACE_TX_DONE);
+    return sent;
 }
 
 int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
@@ -473,6 +479,7 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
             }
         }
         int result = sendmmsg(node->hal.data_sock, msgs, chunk, 0);
+        TT_TRACE(tt_TRACE_TX_DONE);
         if (result <= 0) {
             return -1; // errno says why; a 0 would otherwise loop forever
         }
@@ -497,6 +504,7 @@ static int32_t rx_take_pending(struct tt_Node* node, void* buf, size_t len, uint
     *ip = hal->rx_ip[slot];
     *port = hal->rx_port[slot];
     node->rx_via_data_port = hal->rx_from_data;
+    TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return (int32_t)copy;
 }
 
@@ -629,6 +637,9 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         // millisecond-rounded) timeout resolution is what's wanted here.
         // NOLINTNEXTLINE(misc-include-cleaner)
         int poll_ret = ppoll(pfd, 3, timeout_ts_ptr, NULL);
+        if (poll_ret > 0 && ((pfd[0].revents | pfd[2].revents) & POLLIN) != 0) { // NOLINT(misc-include-cleaner)
+            TT_TRACE(tt_TRACE_RX_WAKE);
+        }
         if (poll_ret == 0) {
             return -1; // Timeout
         }
@@ -690,6 +701,7 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     }
 #endif
 
+    TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return ret;
 }
 
@@ -739,6 +751,7 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
         node->hal.rx_idle = 0; // drained: the next drain session asks every socket again
         return -1;             // Nothing waiting
     }
+    TT_TRACE(tt_TRACE_RX_DATAGRAM);
     return ret;
 }
 
