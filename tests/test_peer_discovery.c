@@ -19,7 +19,7 @@
 #define TEST_MOCK_DEFINE_STORAGE
 #include "test_mock.h"
 
-// Whitebox: process_update()/decode_update_entities()/upsert_peer()/count_peers() are static.
+// Whitebox: process_data()/decode_update_entities()/upsert_peer()/count_peers() are static.
 // This exercises the discovery-side half of the unicast/broadcast feature - learning a peer's
 // address from its periodic UPDATE announce and storing it on the matching local
 // Publisher/Client - which nothing else in this test suite covers.
@@ -42,7 +42,7 @@ static void init_node(struct tt_Node* node) {
     node->id = LOCAL_NODE_ID;
     // Real baseline every other caller of encode()/start_encode() assumes (see tt_Node_create()'s
     // own reset_node_state()) - needed now that reply_with_own_announce()'s tests below exercise
-    // that encode path, not just process_update()'s incoming-side decode path the earlier tests
+    // that encode path, not just process_data()'s incoming-side decode path the earlier tests
     // in this file only needed.
     node->tx_tail = sizeof(struct tt_Header);
     node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
@@ -75,13 +75,13 @@ static void init_client(struct tt_Client* client, struct tt_Node* node) {
 }
 
 // Builds an UpdateHeader with a single following UpdateEntity in buf, returning the tail offset
-// (matching what process_packet() would have handed process_update()).
+// (matching what process_packet() would have handed process_data()).
 static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, uint32_t endpoint_id, uint8_t kind,
                                         const char* type, const char* name) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)buf;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(buf);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + tail);
     entity->endpoint_id = endpoint_id;
@@ -104,10 +104,10 @@ static void init_header(struct tt_Header* header, uint8_t source) {
 // An UpdateHeader that announces no endpoints at all - what tt_Node_destroy() broadcasts on the
 // way out.
 static uint32_t write_update_no_entities(uint8_t* buf, uint64_t last_modified) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)buf;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 0;
-    return sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(buf);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 0;
+    return sizeof(struct test_announce);
 }
 
 // A remote TOPIC_SUBSCRIBER announcing the same endpoint_id as our local Publisher must be
@@ -126,7 +126,7 @@ static void test_publisher_learns_subscriber_peer_from_update(void) {
 
     uint32_t sender_ip = 0xc0a80a02; // 192.168.10.2
     uint16_t sender_port = 8282;
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);
@@ -150,7 +150,7 @@ static void test_client_learns_server_peer_from_update(void) {
 
     uint32_t sender_ip = 0xc0a80a03; // 192.168.10.3
     uint16_t sender_port = 9191;
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(client.peers));
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)client.peers[0].node_id);
@@ -173,7 +173,7 @@ static void test_unrelated_entity_kind_is_not_tracked_as_peer(void) {
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_PUBLISHER, "topic", "pub2");
 
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a04, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a04, 8282));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
 
@@ -191,19 +191,19 @@ static void test_repeated_announce_from_same_node_refreshes_peer_not_duplicates(
 
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     tail = write_update_one_entity(node.rx_buffer, 200, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
     uint32_t new_ip = 0xc0a80a09;
     uint16_t new_port = 7777;
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, new_ip, new_port));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, new_ip, new_port));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers)); // refreshed, not duplicated
     EXPECT_EQ_U32(new_ip, pub.peers[0].ip);
     EXPECT_EQ_U32((uint32_t)new_port, (uint32_t)pub.peers[0].port);
 }
 
-// A repeated announce with the SAME last_modified hits process_update()'s existing dedup
+// A repeated announce with the SAME last_modified hits process_data()'s existing dedup
 // early-return, which skips decode_update_entities() (and thus peer matching) entirely - a
 // changed sender address on that duplicate must NOT overwrite the peer already learned.
 static void test_update_skipped_when_last_modified_unchanged_does_not_rerun_matching(void) {
@@ -218,11 +218,11 @@ static void test_update_skipped_when_last_modified_unchanged_does_not_rerun_matc
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
     uint32_t first_ip = 0xc0a80a02;
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, first_ip, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, first_ip, 8282));
 
     // Same last_modified (100) as before - dedup path, decode_update_entities() must not run.
     tail = write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80aff, 9999));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80aff, 9999));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     EXPECT_EQ_U32(first_ip, pub.peers[0].ip); // unchanged - the second call's address was ignored
@@ -243,7 +243,7 @@ static void test_peer_table_full_drops_new_peer_silently(void) {
         init_header(&header, source);
         uint32_t tail =
             write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-        EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a00 + source, 8282));
+        EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a00 + source, 8282));
     }
     EXPECT_EQ_U32(tt_MAX_PEER_COUNT, (uint32_t)count_peers(pub.peers));
 
@@ -252,7 +252,7 @@ static void test_peer_table_full_drops_new_peer_silently(void) {
     init_header(&header, overflow_source);
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80aff, 9999)); // still returns true
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80aff, 9999)); // still returns true
 
     EXPECT_EQ_U32(tt_MAX_PEER_COUNT, (uint32_t)count_peers(pub.peers)); // unchanged, not grown
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub.peers[0].node_id);      // first entry untouched
@@ -277,7 +277,7 @@ static void test_first_contact_triggers_unicast_reply_with_own_announce(void) {
 
     uint32_t sender_ip = 0xc0a80a02; // 192.168.10.2
     uint16_t sender_port = 8282;
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, sender_ip, sender_port));
 
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // replied once, unicast
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);    // and only that - no broadcast too
@@ -301,11 +301,11 @@ static void test_repeat_contact_does_not_trigger_reply(void) {
 
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
 
     tail = write_update_one_entity(node.rx_buffer, 200, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // still just the one reply
 }
@@ -326,7 +326,7 @@ static void test_reply_skipped_when_tx_buffer_has_pending_content(void) {
 
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
@@ -348,12 +348,12 @@ static void test_source_dropping_endpoint_forgets_its_peer(void) {
 
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
 
     // Farewell: same source, newer last_modified, no entities.
     tail = write_update_no_entities(node.rx_buffer, 200);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
 
@@ -373,13 +373,13 @@ static void test_farewell_from_one_source_leaves_other_peers_intact(void) {
 
     uint32_t tail =
         write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     tail = write_update_one_entity(node.rx_buffer, 100, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
-    EXPECT_TRUE(process_update(&node, &from3, node.rx_buffer, 0, tail, 0xc0a80a03, 8282));
+    EXPECT_TRUE(process_data(&node, &from3, node.rx_buffer, 0, tail, 0xc0a80a03, 8282));
     EXPECT_EQ_U32(2, (uint32_t)count_peers(pub.peers));
 
     tail = write_update_no_entities(node.rx_buffer, 200);
-    EXPECT_TRUE(process_update(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &from2, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
     bool found_node3 = false;

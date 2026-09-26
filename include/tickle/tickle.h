@@ -54,7 +54,6 @@ const char* tt_version(void);
 #define tt_KIND_SERVICE_SERVER (tt_KIND_SENDER | tt_KIND_SERVICE)
 
 struct tt_Endpoint;
-struct tt_UpdateHeader;
 struct tt_Node;
 struct tt_Discovery;
 
@@ -146,17 +145,17 @@ struct tt_Node {
     uint32_t entity_id_base;
     uint32_t next_entity_id;
 
-    // Per remote node (indexed by its node id), the last UPDATE announce we've acted on: its
-    // last_modified, and whether we've seen it at all. Only these two facts are ever read back
-    // (dedup + first-contact detection - see process_update()), so there's no need to keep a
-    // malloc'd copy of the whole variable-length announce the way earlier versions did.
-    uint64_t update_last_modified[tt_MAX_ENDPOINT_COUNT];
+    // Per remote node (indexed by its node id), the last discovery announce we've acted on: its
+    // generation (tt_DataHeader.seq_no of the announce, see tt_DISCOVERY_ENDPOINT_ID), and whether we've
+    // seen it at all. Only these two facts are ever read back (dedup + first-contact detection - see
+    // process_announce()), so there's no need to keep a copy of the whole variable-length announce.
+    uint32_t update_generation[tt_MAX_ENDPOINT_COUNT];
     bool update_seen[tt_MAX_ENDPOINT_COUNT];
-    // Per remote node, an announce arriving in parts (tt_SUBMESSAGE_TYPE_UPDATE_PART) that is not
-    // complete yet: its last_modified, how many parts it has, and which have arrived (bit i = part
-    // i; 0 = none in progress). Once every bit is set the announce is complete and moves into
-    // update_last_modified[]/update_seen[] above, exactly as a single UPDATE would.
-    uint64_t update_part_last_modified[tt_MAX_ENDPOINT_COUNT];
+    // Per remote node, an announce arriving in fragments that is not complete yet: its generation, how
+    // many fragments it has, and which have arrived (bit i = fragment i; 0 = none in progress). Once
+    // every bit is set the announce is complete and moves into update_generation[]/update_seen[] above,
+    // exactly as an announce in one datagram would.
+    uint32_t update_part_generation[tt_MAX_ENDPOINT_COUNT];
     uint32_t update_part_received[tt_MAX_ENDPOINT_COUNT];
     uint8_t update_part_count[tt_MAX_ENDPOINT_COUNT];
     // Phase 2 (rmw_tickle/PLAN.md) - the tt_VERSION last logged as mismatched for each remote node
@@ -715,8 +714,9 @@ struct tt_ReliableCacheIndex {
 };
 
 // Milestone 58 (rmw_tickle/PLAN.md) - remembers which remote node_ids have already received this
-// Publisher's own DURABLE backlog, keyed by node_id *and* the announcing node's own last_modified
-// value as of that delivery - not just by tt_Publisher.peers[]'s own array position, which check_
+// Publisher's own DURABLE backlog, keyed by node_id *and* the generation of the announcing node's
+// endpoint list as of that delivery (tt_VERSION 7: the low 32 bits of its last_modified, see
+// tt_DISCOVERY_ENDPOINT_ID) - not just by tt_Publisher.peers[]'s own array position, which check_
 // liveliness()'s own presumed-dead cleanup (a load-induced false positive, not necessarily a real
 // departure) wipes and lets a later upsert_peer() call reuse for an unrelated node_id. Without
 // this, the exact same still-alive peer's very next (entirely unchanged) announce looks like a
@@ -732,8 +732,8 @@ struct tt_ReliableCacheIndex {
 // genuine process restart reliably lands on a different value than whatever this table last saw,
 // while an unchanged, still-running instance keeps announcing the exact same one.
 struct tt_DurableDeliveryRecord {
-    uint8_t node_id;        // tt_NODE_ID_INVALID (0, matching zero-init) = empty slot
-    uint64_t last_modified; // the announcing node's own last_modified as of the delivery below
+    uint8_t node_id;     // tt_NODE_ID_INVALID (0, matching zero-init) = empty slot
+    uint32_t generation; // the announcing node's announce generation as of the delivery below
 };
 struct tt_ReliableCache {
     // The actual size of the caller-provided index[] array below, in element count - the real
@@ -849,7 +849,7 @@ struct tt_Publisher { // extends endpoint
     // QoS roadmap #5 (RELIABILITY) follow-up, tt_Publisher_wait_for_all_acked() - what each
     // matched remote node has acknowledged, keyed by node_id rather than index-aligned with
     // peers[] above (Phase 3 prerequisite (c), rmw_tickle/PLAN.md). Index alignment used to mean
-    // process_update()'s own forget-then-re-add cycle (a remote node changing *any* endpoint
+    // process_announce()'s own forget-then-re-add cycle (a remote node changing *any* endpoint
     // re-announces, and forget_peers_from_source() cleared the slot) threw away ack state for
     // Subscribers that never went anywhere - harmless while nothing depended on it, but Phase 3's
     // KEEP_ALL blocking does: a writer that has to wait for acks must not have them silently reset
@@ -1830,7 +1830,10 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // plan) - struct tt_AckNackHeader.bitmap grew from a single uint64_t to a tt_RELIABLE_BITMAP_WORDS-
 // word array (256 bits total, config.h), a real on-the-wire layout change; the identical "no
 // partial-compatibility case to handle" reasoning applies.
-#define tt_VERSION 6
+// Bumped 6 -> 7 for DATA_FRAG step 2 (rmw_tickle/DATAFRAG_PLAN.md section 6): the discovery announce
+// became a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID), and UPDATE/UPDATE_PART were
+// retired.
+#define tt_VERSION 7
 
 struct tt_Header {
     union {
@@ -1843,19 +1846,19 @@ struct tt_Header {
 
 #define tt_SUBMESSAGE_ID_ALL 0xff
 
-#define tt_SUBMESSAGE_TYPE_UPDATE 1
+// Type 1 was UPDATE and type 7 UPDATE_PART, the discovery announce, until tt_VERSION 7 made the
+// announce a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID below). Retired, not free:
+// never give either number a new meaning.
 #define tt_SUBMESSAGE_TYPE_DATA 2
 #define tt_SUBMESSAGE_TYPE_ACKNACK 3
 #define tt_SUBMESSAGE_TYPE_CALLREQUEST 4
 #define tt_SUBMESSAGE_TYPE_CALLRESPONSE 5
 #define tt_SUBMESSAGE_TYPE_HEARTBEAT 6
-// A discovery announce too large for one datagram, sent as numbered parts - struct
-// tt_UpdatePartHeader below. Only ever sent when the single UPDATE would not fit.
-#define tt_SUBMESSAGE_TYPE_UPDATE_PART 7
 // A sample too large for one datagram, sent as fragments (DATA_FRAG, rmw_tickle/DATAFRAG_PLAN.md
 // section 6). The first carries the sample's whole DataHeader (struct tt_FragFirstHeader); the rest
 // carry only what identifies the sample (struct tt_FragContHeader), since entity_id is unique within a
-// node and the node is tt_Header.source. Only ever sent when a DATA would not fit.
+// node and the node is tt_Header.source. Only ever sent when a DATA would not fit. A discovery announce
+// uses the same two types, split differently - see tt_DISCOVERY_ENDPOINT_ID.
 #define tt_SUBMESSAGE_TYPE_FRAG_FIRST 8
 #define tt_SUBMESSAGE_TYPE_FRAG_CONT 9
 
@@ -1869,39 +1872,37 @@ struct tt_SubmessageHeader {
     uint16_t length;
 } __attribute__((packed));
 
-struct tt_UpdateHeader {
-    uint64_t last_modified;
+// Discovery (tt_VERSION 7, rmw_tickle/DATAFRAG_PLAN.md section 6): a node's endpoint list travels as a
+// DATA sample of a built-in endpoint - the RTPS arrangement - rather than as a submessage type of its
+// own. Its tt_DataHeader carries
+//   endpoint_id = tt_DISCOVERY_ENDPOINT_ID, entity_id = tt_DISCOVERY_ENTITY_ID,
+//   timestamp   = the node's last_modified,
+//   seq_no      = the announce's generation: the low 32 bits of last_modified. It changes exactly when
+//                 the endpoint list does, and differs across a restart, which is all the receiver asks
+//                 of it; it is what identifies the announce because a FRAG_CONT carries seq_no and
+//                 not timestamp.
+// and its payload is a struct tt_AnnounceHeader followed by that many struct tt_UpdateEntity records.
+//
+// An announce too large for one datagram is split into FRAG_FIRST/FRAG_CONT fragments, but at entity
+// boundaries: every fragment carries its own tt_AnnounceHeader and whole entities, and is processed as
+// it arrives, with no reassembly memory. That keeps what UPDATE_PART gave a node on core defaults - it
+// can discover a node whose announce spans datagrams - while user data shares the wire format. A
+// continuation is recognised as discovery by its entity_id, which no user entity is ever given.
+//
+// The receiver refreshes the sender's liveliness on every announce and every fragment before anything
+// else, and re-applies the entity list only when the generation changes: periodic resends of an
+// unchanged list carry an already-seen seq_no by design.
+#define tt_DISCOVERY_ENDPOINT_ID 0
+#define tt_DISCOVERY_ENTITY_ID UINT32_MAX
+
+struct tt_AnnounceHeader {
     uint8_t entity_count;
     /* Dynamically allocated
     struct tt_UpdateEntity entities[];
     */
 } __attribute__((packed));
 
-// One part of a discovery announce too large for a single datagram (tt_SUBMESSAGE_TYPE_UPDATE_PART,
-// 2026-09-24 - DESIGN.md's "Discovery announce in parts" has the full rule). A node sends the
-// ordinary single UPDATE whenever it fits one datagram, and parts only when it does not: a node
-// whose endpoint list outgrew the datagram could otherwise not be discovered at all.
-//
-// All parts of one announce carry the same last_modified and part_count; each carries its own
-// slice of the entity list, encoded exactly as in an UPDATE. The receiver treats the announce as
-// complete - and so as this node's whole endpoint list, replacing what it announced before - only
-// once every part_index below part_count has arrived. A lost part is recovered by the next
-// periodic announce, which resends every part under the same last_modified.
-//
-// A new submessage type rather than part fields inside UPDATE, so that a node built before it
-// skips it as unknown instead of reading the first part as a complete list. Chosen by the user
-// on 2026-09-24 over a protocol version bump.
-struct tt_UpdatePartHeader {
-    uint64_t last_modified;
-    uint8_t part_index;   // 0 .. part_count - 1
-    uint8_t part_count;   // 2 .. tt_UPDATE_MAX_PARTS
-    uint8_t entity_count; // entities in this part
-    /* Dynamically allocated
-    struct tt_UpdateEntity entities[];
-    */
-} __attribute__((packed));
-
-// Parts one announce may be split into - the width of tt_Node.update_part_received. At the default
+// Fragments one announce may be split into - the width of tt_Node.update_part_received. At the default
 // tt_MAX_BUFFER_LENGTH that is ~480 ROS-sized endpoints, beyond tt_MAX_ENDPOINT_COUNT.
 #define tt_UPDATE_MAX_PARTS 32
 

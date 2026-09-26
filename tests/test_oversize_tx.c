@@ -10,7 +10,7 @@
 
 // A submessage no datagram can carry must be refused and counted - never left in tx_buffer.
 //
-// Found 2026-09-24: a node whose discovery UPDATE outgrew one datagram (16 endpoints with ROS-sized
+// Found 2026-09-24: a node whose discovery announce outgrew one datagram (16 endpoints with ROS-sized
 // names, at the default tt_MAX_BUFFER_LENGTH of 1472) logged "Flush length 1476 exceeds" and kept
 // the bytes. Every later send appends behind them and flushes them first, so from then on every
 // publish failed too: the node went silent for good. rmw_tickle runs one tt_Node per process, so
@@ -57,7 +57,7 @@ static char names[MAX_ENDPOINTS][48];
 static uint8_t sample[8];
 
 // A node with `count` publishers named the way rmw_tickle names them - a ROS topic path of ~36
-// characters and a ~22-character endpoint name - which puts each UPDATE entity near 91 bytes.
+// characters and a ~22-character endpoint name - which puts each announce entity near 91 bytes.
 static void init_node_with_endpoints(int count) {
     memset(&node, 0, sizeof(node));
     node_init_locks(&node);
@@ -100,7 +100,7 @@ static void test_small_update_is_sent_and_counts_nothing(void) {
 
 static void test_large_announce_leaves_node_usable(void) {
     // 20 and 40 endpoints: past one datagram, and at 40 past tx_buffer itself. Both used to leave
-    // the node unable to send; both now announce in parts (test_update_parts.c covers the parts
+    // the node unable to send; both now announce in fragments (test_update_parts.c covers the fragments
     // themselves), and nothing is dropped.
     for (int count = 20; count <= 40; count += 20) {
         test_mock_reset();
@@ -116,8 +116,8 @@ static void test_large_announce_leaves_node_usable(void) {
 
 static void test_endpoint_too_large_to_announce_is_dropped_alone(void) {
     // An endpoint whose name alone outgrows a datagram cannot be announced even as a part of its
-    // own. It is left out and counted; the rest of the announce still goes, as the single UPDATE
-    // it fits - never as a one-part announce, which no receiver accepts.
+    // own. It is left out and counted; the rest of the announce still goes, as the single announce
+    // DATA it fits - never as a one-fragment announce, which no receiver accepts.
     static char huge_name[tt_CONTROL_MAX_LENGTH + 64];
     test_mock_reset();
     init_node_with_endpoints(4);
@@ -135,7 +135,7 @@ static void test_endpoint_too_large_to_announce_is_dropped_alone(void) {
     EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
     node_flush(&node, 0, NULL);
     EXPECT_EQ_INT(1, test_mock_send_call_count);
-    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_UPDATE,
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA,
                   ((const struct tt_SubmessageHeader*)(test_mock_send_last_buf + sizeof(struct tt_Header)))->type);
     EXPECT_EQ_U32(1, (uint32_t)node.tx_dropped_oversize);
     expect_node_still_publishes();

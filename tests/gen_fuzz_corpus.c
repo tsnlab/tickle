@@ -12,8 +12,8 @@
 //
 // Why seeds at all: `make fuzz` used to start from nothing, and in CI's 45 seconds libFuzzer
 // rarely builds a packet with a valid header, a known submessage type and self-consistent fields -
-// so a parser that needs all three (UPDATE_PART, 2026-09-24) was barely reached. Mutating from
-// valid packets reaches it immediately.
+// so a parser that needs all three (announce fragments - UPDATE_PART before tt_VERSION 7) was barely
+// reached. Mutating from valid packets reaches it immediately.
 //
 // Why generated rather than hand-written bytes: the seeds must match the current wire format and
 // tt_VERSION exactly, or validate_packet_header() rejects them before any parser runs and they are
@@ -145,27 +145,29 @@ int main(int argc, char** argv) {
     tt_current_log_level = TT_LOG_NONE;
     int fail = 0;
 
-    // A whole announce in one UPDATE, and the same cut off mid-entity.
+    // A whole announce in one DATA, and the same cut off mid-entity.
     if (announce(3) != 1) {
         fprintf(stderr, "gen_fuzz_corpus: a 3-endpoint announce should be one datagram\n");
         return 1;
     }
-    fail |= write_seed(dir, "update_single.bin", datagrams[0], datagram_len[0]);
-    fail |= write_seed(dir, "update_single_truncated.bin", datagrams[0],
+    fail |= write_seed(dir, "announce_single.bin", datagrams[0], datagram_len[0]);
+    fail |= write_seed(dir, "announce_single_truncated.bin", datagrams[0],
                        truncate_consistently(datagrams[0], datagram_len[0], 8));
 
-    // An announce too large for one datagram: every part, and the first cut off mid-entity.
+    // An announce too large for one datagram: every fragment (FRAG_FIRST, then FRAG_CONT), and the first
+    // cut off mid-entity.
     int parts = announce(MAX_ENDPOINTS);
     if (parts < 2) {
-        fprintf(stderr, "gen_fuzz_corpus: a %d-endpoint announce should need parts, got %d\n", MAX_ENDPOINTS, parts);
+        fprintf(stderr, "gen_fuzz_corpus: a %d-endpoint announce should need fragments, got %d\n", MAX_ENDPOINTS,
+                parts);
         return 1;
     }
     for (int i = 0; i < parts; i++) {
         char name[64];
-        (void)snprintf(name, sizeof(name), "update_part_%d_of_%d.bin", i, parts);
+        (void)snprintf(name, sizeof(name), "announce_frag_%d_of_%d.bin", i, parts);
         fail |= write_seed(dir, name, datagrams[i], datagram_len[i]);
     }
-    fail |= write_seed(dir, "update_part_truncated.bin", datagrams[0],
+    fail |= write_seed(dir, "announce_frag_truncated.bin", datagrams[0],
                        truncate_consistently(datagrams[0], datagram_len[0], 8));
 
     return fail;

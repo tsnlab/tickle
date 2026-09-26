@@ -2238,7 +2238,7 @@ static void test_forget_publisher_peer_resets_ack_seq_no(void) {
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
     EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
 
-    // preserve_ack = true keeps it: process_update()'s own forget-then-re-add must not throw away
+    // preserve_ack = true keeps it: process_data()'s own forget-then-re-add must not throw away
     // ack state for a Subscriber that never went anywhere (Phase 3 prerequisite (c)).
     pub.peers[0].node_id = REMOTE_NODE_ID;
     claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);

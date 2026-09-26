@@ -243,7 +243,7 @@ $(OBJ)/fuzz:
 	mkdir -p $@
 
 # Re-run the unit tests under AddressSanitizer + UndefinedBehaviorSanitizer. Catches
-# use-after-free / out-of-bounds / UB the plain run misses (e.g. process_update()'s malloc path).
+# use-after-free / out-of-bounds / UB the plain run misses (e.g. a decoder reading past its datagram).
 sanitize:
 	$(MAKE) clean
 	$(MAKE) test CFLAGS='-O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer'

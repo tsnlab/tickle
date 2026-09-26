@@ -208,14 +208,14 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
 }
 
 // Builds an UpdateHeader with a single following TOPIC_SUBSCRIBER UpdateEntity in node->rx_buffer,
-// returning the tail offset (matching what process_packet() would have handed process_update()) -
+// returning the tail offset (matching what process_packet() would have handed process_data()) -
 // same helper as tests/test_durability_pubsub.c's own identically-named one, needed here too for
 // this file's own discovery-triggered-Heartbeat tests below.
 static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)node->rx_buffer;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(node->rx_buffer);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
     memset(entity, 0, sizeof(*entity)); // explicit: rx_buffer is reused across writes in these tests
@@ -1047,7 +1047,7 @@ static void test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer(void)
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
     EXPECT_EQ_U32(TEST_SENDER_IP, test_mock_send_to_last_ip);
@@ -1077,12 +1077,12 @@ static void test_heartbeat_discovery_skipped_for_besteffort_publisher(void) {
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
-// A already-known peer's periodic UPDATE refresh (same last_modified, deduped by process_update()
+// A already-known peer's periodic UPDATE refresh (same last_modified, deduped by process_data()
 // before decode_update_entities()/upsert_peer() ever run again) must not re-trigger a second
 // initial Heartbeat - mirrors test_durability_pubsub.c's own test_durability_no_redelivery_on_
 // unchanged_update().
@@ -1107,13 +1107,13 @@ static void test_heartbeat_discovery_no_redelivery_on_unchanged_update(void) {
     init_header(&header);
 
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // the initial Heartbeat, first time
 
     test_mock_send_to_call_count = 0; // only count the second (unchanged) UPDATE's own effect below
 
     tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID); // same last_modified -> deduped
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
@@ -1146,14 +1146,14 @@ static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     // 3 durability backlog samples + 1 initial Heartbeat.
     EXPECT_EQ_U32(4, (uint32_t)test_mock_send_to_call_count);
 }
 
 // Phase 3 prerequisite (c), rmw_tickle/PLAN.md - a remote node re-announcing (it changed *some*
-// endpoint, which re-sends its whole entity list) makes process_update() forget and re-add its peer
+// endpoint, which re-sends its whole entity list) makes process_data() forget and re-add its peer
 // slots. That must not throw away ack state for a Subscriber that never went anywhere: Phase 3's
 // KEEP_ALL blocking waits on exactly that state, and an unrelated announce would silently reset it.
 static void test_publisher_peer_ack_survives_announce_refresh(void) {
@@ -1170,14 +1170,14 @@ static void test_publisher_peer_ack_survives_announce_refresh(void) {
 
     // The remote Subscriber announces, becomes a peer, and acks up to 7.
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id);
     claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 7);
 
     // It re-announces (a newer last_modified) while still listing the same Subscriber.
     tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id); // re-added
     const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
@@ -1201,14 +1201,14 @@ static void test_publisher_peer_ack_dropped_when_announce_drops_match(void) {
     init_header(&header);
 
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     claim_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
     record_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID, 7);
     EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
 
     // A Subscriber for a different topic only: this Publisher is no longer matched.
     tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID + 1);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
     EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);

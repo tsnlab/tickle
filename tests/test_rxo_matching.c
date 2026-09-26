@@ -148,10 +148,10 @@ static uint32_t write_data(struct tt_Node* node, uint32_t seq_no, uint64_t times
 static uint32_t write_update_one_subscriber_full(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id,
                                                  uint8_t qos, uint64_t deadline_duration_ns,
                                                  uint64_t liveliness_lease_duration_ns) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)node->rx_buffer;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(node->rx_buffer);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
     memset(entity, 0, sizeof(*entity)); // explicit: rx_buffer is reused across writes in these tests
@@ -330,7 +330,7 @@ static void test_publisher_side_gate_skips_incompatible_subscriber(void) {
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber_with_qos(&node, 100, ENDPOINT_ID, tt_UPDATE_QOS_RELIABLE);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
@@ -349,7 +349,7 @@ static void test_publisher_side_gate_accepts_compatible_subscriber(void) {
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber_with_qos(&node, 100, ENDPOINT_ID, 0); // requests nothing extra
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
 }
@@ -515,7 +515,7 @@ static void test_publisher_side_gate_skips_subscriber_requesting_tighter_deadlin
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber_full(&node, 100, ENDPOINT_ID, 0, 100000000, 0); // requests 100ms
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
@@ -535,7 +535,7 @@ static void test_publisher_side_gate_skips_subscriber_requesting_manual_liveline
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber_full(&node, 100, ENDPOINT_ID, tt_UPDATE_QOS_LIVELINESS_MANUAL, 0, 0);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }

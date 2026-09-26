@@ -68,7 +68,7 @@ int main(void) {
             EXPECT_TRUE(false);
         }
         const struct tt_SubmessageHeader* sub = (const struct tt_SubmessageHeader*)(buf + sizeof(struct tt_Header));
-        if (sub->type == tt_SUBMESSAGE_TYPE_UPDATE_PART) {
+        if (sub->type == tt_SUBMESSAGE_TYPE_FRAG_FIRST || sub->type == tt_SUBMESSAGE_TYPE_FRAG_CONT) {
             parts++;
         }
         seeds++;

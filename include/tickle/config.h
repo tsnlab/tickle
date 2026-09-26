@@ -327,7 +327,7 @@
 #endif
 
 // The largest datagram a node builds out of more than one submessage, and the size a discovery
-// announce is split to (DESIGN.md's "Discovery announce in parts") - kept at a standard Ethernet
+// announce is split to (DESIGN.md's "Discovery announce") - kept at a standard Ethernet
 // datagram even when tt_MAX_BUFFER_LENGTH is raised, as rmw_tickle does (up to 65507, left to the
 // OS to fragment - the user's decision, 2026-09-24).
 //

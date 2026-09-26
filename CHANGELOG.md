@@ -10,6 +10,20 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **DATA_FRAG: samples larger than one datagram.** A new `tt_MAX_SAMPLE_LENGTH` bounds a sample's
+  encoded size while `tt_MAX_BUFFER_LENGTH` keeps meaning one datagram. When it is larger,
+  fragmentation is compiled in: a sample no `DATA` can carry is sent as `FRAG_FIRST` (type 8, the
+  whole `tt_DataHeader` + `frag_count`) and `FRAG_CONT` (type 9, `entity_id`, `seq_no`,
+  `frag_index`, `frag_count`), each alone in a datagram of at most `tt_CONTROL_MAX_LENGTH`. The
+  receiver reassembles it in `tt_FRAG_REASSEMBLY_SLOTS` (8) node-level slots. At the default the
+  two limits are equal and nothing changes: no reassembly memory, and an oversized sample is
+  refused as before. New counters: `tt_Node.frag_reassembled`, `frag_abandoned`, `frag_dropped`.
+  See DESIGN.md's "Samples larger than a datagram".
+- **HAL: `tt_send_batch()`**, several datagrams in one call - `sendmmsg()` on Linux, one send each on
+  FreeRTOS. **A HAL port must now provide it.** Core uses it for a sample's fragments and for one
+  datagram to several destinations; a single datagram to a single destination still uses
+  `tt_send()`/`tt_send_to()`.
+
 - `rosidl_typesupport_tickle_c_message_callbacks_t` gains `tickle_max_encoded_size`: an upper bound
   on the type's encoded payload, generated per type, or
   `ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED` (0) when the type has none. **Adding a field
@@ -210,6 +224,16 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **Wire protocol `tt_VERSION` 6 -> 7.** The discovery announce is now a `DATA` sample of a built-in
+  endpoint (`tt_DISCOVERY_ENDPOINT_ID`, `tt_DISCOVERY_ENTITY_ID`) whose `seq_no` is the announce
+  generation (the low 32 bits of `last_modified`), with a `tt_AnnounceHeader` + entities payload. A
+  large announce is split into `FRAG_FIRST`/`FRAG_CONT` at entity boundaries, each fragment
+  processed on arrival. `UPDATE` (type 1) and `UPDATE_PART` (type 7), `tt_UpdateHeader` and
+  `tt_UpdatePartHeader` are retired. Nodes of version 6 and 7 do not interoperate.
+  `tt_Node.update_last_modified[]` became `update_generation[]` (u32), and
+  `tt_DurableDeliveryRecord.last_modified` became `generation`.
+- A user entity is never given `tt_DISCOVERY_ENTITY_ID`; entity-id assignment skips it.
+
 - **Breaking wire change, `tt_VERSION` 5 -> 6** (`rmw_tickle/PLAN.md`'s Phase 2 + prerequisite (b),
   one bump covering both). `tt_AckNackHeader` now carries `sender_entity_id`, the *sending*
   Subscriber's own entity id - it previously identified only the target Publisher, and every
@@ -293,6 +317,9 @@ number, `tt_VERSION`, which moves independently.
 
 ### Fixed
 
+- The logger formatted its timestamp with `localtime()`, whose one static `struct tm` is shared by
+  every thread, so two nodes logging at once on two threads could print each other's time. Now
+  `localtime_r()`. Found by `test_thread_safety` under ThreadSanitizer.
 - `tt_Publisher_unacked_bound()` no longer clamps a matched subscriber's announced RELIABLE
   tracking window to `tt_RELIABLE_BITMAP_BITS` (256). It is documented as the narrowest window
   across matched subscribers, but was implemented as "start at the protocol default and let peers

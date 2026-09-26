@@ -146,13 +146,13 @@ static void test_large_sample_is_not_joined_by_batched_ones(void) {
 }
 
 static void test_announce_splits_at_the_control_limit(void) {
-    // 30 endpoints (~2.7 KB) would fit one 8192-byte UPDATE; the announce is split for 1472 anyway.
+    // 30 endpoints (~2.7 KB) would fit one 8192-byte announce; it is split for 1472 anyway.
     init(ENDPOINTS);
     EXPECT_TRUE(build_and_send_update(&node, NULL, 0));
     node_flush(&node, 0, NULL);
     EXPECT_TRUE(datagram_count >= 2);
     for (int d = 0; d < datagram_count; d++) {
-        EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_UPDATE_PART, datagram_type[d]);
+        EXPECT_EQ_INT(d == 0 ? tt_SUBMESSAGE_TYPE_FRAG_FIRST : tt_SUBMESSAGE_TYPE_FRAG_CONT, datagram_type[d]);
         EXPECT_TRUE(datagram_len[d] <= tt_CONTROL_MAX_LENGTH);
     }
 }

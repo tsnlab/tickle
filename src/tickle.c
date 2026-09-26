@@ -474,8 +474,9 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
             if (submsg->length == 0) {
                 break;
             }
-            if (submsg->type == tt_SUBMESSAGE_TYPE_DATA) {
-                data_count++;
+            if (submsg->type == tt_SUBMESSAGE_TYPE_DATA &&
+                ((const struct tt_DataHeader*)(submsg + 1))->endpoint_id != tt_DISCOVERY_ENDPOINT_ID) {
+                data_count++; // a sample - an announce is a DATA too since tt_VERSION 7
             }
             pos += submsg->length;
         }
@@ -490,10 +491,10 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
     }
 #endif
 
-    // Whatever was pending (including any batched UPDATE - see node_update()/node_flush()) just
+    // Whatever was pending (including any batched announce - see node_update()/node_flush()) just
     // went out in `len` bytes above, unconditionally: a deferred-flush's `base` always covers
     // everything appended before the submessage that triggered it, which includes an earlier
-    // UPDATE if one was still batched.
+    // announce if one was still batched.
     node->tx_has_pending_update = false;
 
     _tt_memmove(node->tx_buffer + sizeof(struct tt_Header), node->tx_buffer + len, node->tx_tail - len);
@@ -881,7 +882,7 @@ static void for_each_endpoint(struct tt_Node* node, uint8_t kind, uint32_t endpo
 // Returns whether this call claimed a previously-empty slot (a genuinely new-to-this-table
 // node_id), as opposed to refreshing one already there - QoS roadmap #4 (DURABILITY) needs this
 // from decode_update_entities()'s own call site, to trigger a one-time retained-sample backlog
-// delivery instead of on every periodic UPDATE refresh. Most callers (the Client/Server peer
+// delivery instead of on every periodic announce refresh. Most callers (the Client/Server peer
 // direction) still just ignore the return value, which is fine in C.
 static bool upsert_peer(struct tt_Peer* peers, uint8_t node_id, uint32_t ip, uint16_t port) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
@@ -956,8 +957,8 @@ static struct tt_PeerAck* claim_peer_ack(struct tt_Publisher* pub, uint8_t node_
     return NULL;
 }
 
-// Drops ack state outright - a real departure (farewell UPDATE, liveliness timeout, or an announce
-// that no longer lists a matching Subscriber), not process_update()'s own transient
+// Drops ack state outright - a real departure (farewell announce, liveliness timeout, or an announce
+// that no longer lists a matching Subscriber), not process_announce()'s own transient
 // forget-then-re-add (Phase 3 prerequisite (c): that one must preserve it). entity_id 0 with
 // match_any_entity drops every entity that node hosts (a whole node departing); otherwise just the
 // one named entity (a single Subscriber's own lease expiring while its node stays up).
@@ -1028,7 +1029,7 @@ static void forget_publisher_peers_for_endpoint(struct tt_Node* node, uint32_t e
 }
 
 // Clears the ack state of every local Publisher that `node_id` is no longer a matched peer of -
-// process_update()'s own companion to forget_peers_from_source(..., preserve_ack=true), run once
+// process_announce()'s own companion to forget_peers_from_source(..., preserve_ack=true), run once
 // decode_update_entities() has re-added whatever the fresh announce still lists (Phase 3
 // prerequisite (c), rmw_tickle/PLAN.md). A Publisher this node is still matched to keeps its ack
 // watermark untouched across the announce.
@@ -1053,10 +1054,10 @@ static void drop_ack_state_for_unmatched_source(struct tt_Node* node, uint8_t no
 }
 
 // Drops every peer-table entry pointing at `node_id`, across every Publisher and Client on this
-// node. Called when a fresh UPDATE from that source arrives (process_update): its new announce is
+// node. Called when a fresh announce from that source arrives (process_announce): its new announce is
 // authoritative for what it still hosts, and decode_update_entities() re-adds whatever's still
 // listed. Also does the right thing for a node that has left - tt_Node_destroy() broadcasts a
-// final entity-less UPDATE, so this forgets it and nothing gets re-added.
+// final entity-less announce, so this forgets it and nothing gets re-added.
 static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id, bool preserve_ack) {
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         struct tt_Endpoint* endpoint = node->endpoints[i];
@@ -1136,7 +1137,7 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
 }
 
 // The discovery-cache counterpart to forget_peers_from_source() - same "authoritative announce
-// supersedes old state" reasoning (a fresh UPDATE means decode_update_entities() is about to
+// supersedes old state" reasoning (a fresh announce means decode_update_entities() is about to
 // re-add whatever `node_id` still actually hosts, so anything not re-added here first must have
 // been dropped). A real removal (the slot is freed, not tombstoned) - this is a normal,
 // intentional departure (an explicit farewell, or the node simply not listing this entity
@@ -1220,6 +1221,11 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
     // Endpoint.entity_id's own doc comment (tickle.h) for what this is and struct tt_Node.
     // entity_id_base/next_entity_id's own doc comment for the generation scheme.
     endpoint->entity_id = node->entity_id_base + node->next_entity_id++;
+    if (endpoint->entity_id == tt_DISCOVERY_ENTITY_ID) {
+        // Reserved for the node's own discovery announce, which a fragment names by entity_id alone
+        // (tt_DISCOVERY_ENDPOINT_ID, tickle.h). Reached only when the launch-drawn base lands next to it.
+        endpoint->entity_id = node->entity_id_base + node->next_entity_id++;
+    }
 
     node->endpoints[node->endpoint_count++] = endpoint;
     node->endpoint_index_valid = false;
@@ -1780,10 +1786,10 @@ static void reset_node_state(struct tt_Node* node) {
     node->next_entity_id = 0;
 
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        node->update_last_modified[i] = 0;
+        node->update_generation[i] = 0;
         node->update_seen[i] = false;
         node->update_last_seen[i] = 0;
-        node->update_part_last_modified[i] = 0;
+        node->update_part_generation[i] = 0;
         node->update_part_received[i] = 0;
         node->update_part_count[i] = 0;
         node->traffic_last_seen[i] = 0;
@@ -2105,7 +2111,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Pub
     pub->ack_solicit_period_ns = 0;     // no periodic ACK solicitation by default - see its own doc comment
     pub->ack_solicit_watermark_pct = 0; // no watermark-triggered solicitation either (Phase 3 (d))
     pub->last_ack_solicit_ns = 0;
-    // Every field an UPDATE announce or the reliability path reads, not only the ones above: these
+    // Every field an announce or the reliability path reads, not only the ones above: these
     // used to be left as found, and a caller whose struct was not already zero (a stack or reused
     // allocation) announced whatever QoS bits the garbage made, and could start with ack slots that
     // looked occupied. Found 2026-09-24 by UBSan ("load of value 69 ... for type '_Bool'").
@@ -2962,34 +2968,34 @@ static bool reliable_cache_entry_expired(const struct tt_ReliableCacheIndex* ent
 }
 
 // Milestone 58 (rmw_tickle/PLAN.md) - true if durable_delivered[] already records this exact
-// (node_id, last_modified) pair, i.e. this announce is a re-announce from a peer that already has
+// (node_id, announce generation) pair, i.e. this announce is a re-announce from a peer that already has
 // this Publisher's current backlog, not a genuinely new match. See struct tt_DurableDeliveryRecord's
-// own doc comment (tickle.h) for why last_modified, not node_id alone, is the right key.
-static bool durable_delivered_get(const struct tt_ReliableCache* cache, uint8_t node_id, uint64_t last_modified) {
+// own doc comment (tickle.h) for why the generation, not node_id alone, is the right key.
+static bool durable_delivered_get(const struct tt_ReliableCache* cache, uint8_t node_id, uint32_t generation) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (cache->durable_delivered[i].node_id == node_id) {
-            return cache->durable_delivered[i].last_modified == last_modified;
+            return cache->durable_delivered[i].generation == generation;
         }
     }
     return false;
 }
 
-// Records that node_id has now received the backlog as of last_modified - refreshes an existing
+// Records that node_id has now received the backlog as of its announce generation - refreshes an existing
 // slot for that node_id, or claims the first empty one, mirroring upsert_peer()'s own style. A full
 // table (durable_delivered_upsert() finding neither) is a safe no-op: the worst case is one
 // redundant re-delivery next time, never a correctness problem (struct tt_DurableDeliveryRecord's
 // own doc comment).
-static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t node_id, uint64_t last_modified) {
+static void durable_delivered_upsert(struct tt_ReliableCache* cache, uint8_t node_id, uint32_t generation) {
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (cache->durable_delivered[i].node_id == node_id) {
-            cache->durable_delivered[i].last_modified = last_modified;
+            cache->durable_delivered[i].generation = generation;
             return;
         }
     }
     for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
         if (cache->durable_delivered[i].node_id == tt_NODE_ID_INVALID) {
             cache->durable_delivered[i].node_id = node_id;
-            cache->durable_delivered[i].last_modified = last_modified;
+            cache->durable_delivered[i].generation = generation;
             return;
         }
     }
@@ -3215,7 +3221,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // pub->batch (default false, tt_Node_create_publisher() - see tickle.h's own doc comment on
     // it for why immediate is the default now): mirrors tt_Client_call()'s own peer decision and
     // shared-tx_buffer guard exactly - unicast to pub->peers when there's a small enough known
-    // count (tt_UNICAST_PEER_THRESHOLD) *and* nothing else (e.g. a still-batched UPDATE announce
+    // count (tt_UNICAST_PEER_THRESHOLD) *and* nothing else (e.g. a still-batched announce
     // from node_update()) was already sitting unflushed ahead of this DATA submessage, since
     // unicasting would only reach these peers, not whatever else needs the whole segment.
     // pub->batch == true keeps today's behavior unconditionally: never flush here, let
@@ -3367,7 +3373,7 @@ static void send_ack_solicit(struct tt_Node* node, uint64_t time, void* param) {
 
 // QoS roadmap #5 (RELIABILITY) follow-up - fires once, the instant decode_update_entities()'s own
 // upsert_peer() claims a previously-empty slot for this exact Publisher (a genuinely new - or
-// forgotten-then-rejoined - peer, not every periodic UPDATE refresh), mirroring deliver_
+// forgotten-then-rejoined - peer, not every periodic announce refresh), mirroring deliver_
 // durability_backlog()'s own identical trigger exactly. Closes the race a purely periodic
 // Heartbeat can't: a newly-matched Subscriber's very first few samples are also the ones a slow
 // periodic period is most likely to arrive too late to save (by the time it fires, reliable_
@@ -4807,10 +4813,11 @@ static bool submessage_bytes_fit_datagram(uint32_t bytes) {
     return sizeof(struct tt_Header) + ROUNDUP(bytes) <= tt_CONTROL_MAX_LENGTH;
 }
 
-// Whether this node's whole announce fits one UPDATE: within one datagram, and within the 255
-// entities UpdateHeader.entity_count can say.
+// Whether this node's whole announce fits one DATA: within one datagram, and within the 255 entities
+// tt_AnnounceHeader.entity_count can say.
 static bool update_fits_single(struct tt_Endpoint* const* endpoints, uint32_t endpoint_count) {
-    uint32_t bytes = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_UpdateHeader);
+    uint32_t bytes =
+        sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + sizeof(struct tt_AnnounceHeader);
     uint32_t entities = 0;
     for (uint32_t i = 0; i < endpoint_count; i++) {
         uint32_t size = update_entity_wire_size(endpoints[i]);
@@ -4822,14 +4829,16 @@ static bool update_fits_single(struct tt_Endpoint* const* endpoints, uint32_t en
     return entities < UINT8_MAX && submessage_bytes_fit_datagram(bytes);
 }
 
-// Splits endpoints[] into announce parts that each fit one datagram, in order: part p covers
+// Splits endpoints[] into announce fragments that each fit one datagram, in order: fragment p covers
 // endpoints[part_start[p]] up to endpoints[part_start[p + 1]]. An endpoint whose entity could not
-// fit even a part of its own is dropped from the announce (NULLed in endpoints[], counted and
-// logged) rather than holding everything else back. Returns the part count, or 0 when more than
-// tt_UPDATE_MAX_PARTS would be needed.
+// fit even a fragment of its own is dropped from the announce (NULLed in endpoints[], counted and
+// logged) rather than holding everything else back. Returns the fragment count, or 0 when more than
+// tt_UPDATE_MAX_PARTS would be needed. Every fragment is planned with FRAG_FIRST's larger header, so
+// the plan holds wherever a fragment lands.
 static uint8_t plan_update_parts(struct tt_Node* node, struct tt_Endpoint** endpoints, uint32_t endpoint_count,
                                  uint32_t part_start[tt_UPDATE_MAX_PARTS + 1]) {
-    const uint32_t part_overhead = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_UpdatePartHeader);
+    const uint32_t part_overhead =
+        sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragFirstHeader) + sizeof(struct tt_AnnounceHeader);
     uint32_t parts = 0;
     uint32_t bytes = part_overhead;
     uint32_t entities = 0;
@@ -4861,40 +4870,66 @@ static uint8_t plan_update_parts(struct tt_Node* node, struct tt_Endpoint** endp
     return (uint8_t)parts;
 }
 
-// Sends this node's announce as the part_count (>= 2) tt_SUBMESSAGE_TYPE_UPDATE_PART parts
-// plan_update_parts() laid out (tt_UpdatePartHeader, tickle.h), each flushed as its own datagram to
-// the same destination the single UPDATE would have gone to.
+// This node's announce DataHeader (tt_DISCOVERY_ENDPOINT_ID, tickle.h): the built-in endpoint, and the
+// generation that names this version of the endpoint list.
+static void fill_announce_header(const struct tt_Node* node, struct tt_DataHeader* data_header) {
+    data_header->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
+    data_header->seq_no = (uint32_t)node->last_modified;
+    data_header->timestamp = node->last_modified;
+    data_header->entity_id = tt_DISCOVERY_ENTITY_ID;
+}
+
+// Sends this node's announce as the part_count (>= 2) fragments plan_update_parts() laid out, each
+// flushed as its own datagram to the same destination the single announce would have gone to. Split at
+// entity boundaries rather than by bytes: every fragment is FRAG_FIRST/FRAG_CONT framing, its own
+// tt_AnnounceHeader and whole entities, so a receiver processes each one on arrival with no reassembly
+// memory (tt_DISCOVERY_ENDPOINT_ID, tickle.h).
 static bool send_update_parts(struct tt_Node* node, struct tt_Endpoint* const* endpoints,
                               const uint32_t part_start[tt_UPDATE_MAX_PARTS + 1], uint8_t part_count,
                               const struct tt_Peer* peers, uint8_t peer_count) {
     for (uint8_t part_no = 0; part_no < part_count; part_no++) {
         uint32_t old_tx_tail = node->tx_tail;
-        struct tt_SubmessageHeader* submessage_header =
-            start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE_PART, tt_SUBMESSAGE_ID_ALL);
+        uint8_t type = part_no == 0 ? tt_SUBMESSAGE_TYPE_FRAG_FIRST : tt_SUBMESSAGE_TYPE_FRAG_CONT;
+        struct tt_SubmessageHeader* submessage_header = start_encode(node, type, tt_SUBMESSAGE_ID_ALL);
         if (submessage_header == NULL) {
             return false;
         }
-        struct tt_UpdatePartHeader* part = encode(node, sizeof(struct tt_UpdatePartHeader));
-        if (part == NULL) {
+        bool header_ok;
+        if (part_no == 0) {
+            struct tt_FragFirstHeader* first = encode(node, sizeof(struct tt_FragFirstHeader));
+            header_ok = first != NULL;
+            if (header_ok) {
+                fill_announce_header(node, &first->data);
+                first->frag_count = part_count;
+            }
+        } else {
+            struct tt_FragContHeader* cont = encode(node, sizeof(struct tt_FragContHeader));
+            header_ok = cont != NULL;
+            if (header_ok) {
+                cont->entity_id = tt_DISCOVERY_ENTITY_ID;
+                cont->seq_no = (uint32_t)node->last_modified;
+                cont->frag_index = part_no;
+                cont->frag_count = part_count;
+            }
+        }
+        struct tt_AnnounceHeader* announce = header_ok ? encode(node, sizeof(struct tt_AnnounceHeader)) : NULL;
+        if (announce == NULL) {
             rollback(node, old_tx_tail);
             return false;
         }
-        part->last_modified = node->last_modified;
-        part->part_index = part_no;
-        part->part_count = part_count;
         int entity_count = encode_update_entities(node, endpoints + part_start[part_no],
                                                   part_start[part_no + 1] - part_start[part_no]);
         if (entity_count < 0) {
             rollback(node, old_tx_tail);
             return false;
         }
-        part->entity_count = (uint8_t)entity_count;
+        announce->entity_count = (uint8_t)entity_count;
         if (!end_encode(node, submessage_header, true, peers, peer_count)) {
             rollback(node, old_tx_tail);
             return false;
         }
-        // end_encode() flushes what was pending ahead of a part that would not fit behind it and
-        // keeps the part for the next flush. Each part is meant to go now, as its own datagram.
+        // end_encode() flushes what was pending ahead of a fragment that would not fit behind it and
+        // keeps the fragment for the next flush. Each fragment is meant to go now, as its own datagram.
         if (node->tx_tail != sizeof(struct tt_Header) && !flush_tx(node, node->tx_tail, peers, peer_count)) {
             return false;
         }
@@ -4902,12 +4937,12 @@ static bool send_update_parts(struct tt_Node* node, struct tt_Endpoint* const* e
     return true;
 }
 
-// Builds this node's current UPDATE announce (its own endpoint list) and sends it either way
-// node_update()/process_update() need it sent: peer_count == 0 broadcasts it, batched
-// (is_flush=false - the periodic case, no synchronous waiter, node_flush()'s own tick is fine);
-// peer_count >= 1 unicasts it to that one peer, flushed immediately (the reactive first-contact
-// reply case in process_update() - the whole point is the other side learning us as fast as
-// possible, not waiting for the next tick or our own next periodic broadcast).
+// Builds this node's current announce (its own endpoint list, a DATA of the built-in discovery endpoint)
+// and sends it either way node_update()/process_announce() need it sent: peer_count == 0 broadcasts it,
+// batched (is_flush=false - the periodic case, no synchronous waiter, node_flush()'s own tick is fine);
+// peer_count >= 1 unicasts it to that one peer, flushed immediately (the reactive first-contact reply
+// case in process_announce() - the whole point is the other side learning us as fast as possible, not
+// waiting for the next tick or our own next periodic broadcast).
 static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
     uint32_t old_tx_tail = node->tx_tail;
 
@@ -4915,19 +4950,19 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
     // tx buffer"), so none of these failure branches log again on top of that.
 
     // Header and SubmessageHeader
-    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_UPDATE, tt_SUBMESSAGE_ID_ALL);
+    struct tt_SubmessageHeader* submessage_header = start_encode(node, tt_SUBMESSAGE_TYPE_DATA, tt_SUBMESSAGE_ID_ALL);
     if (submessage_header == NULL) {
         return false;
     }
 
-    struct tt_UpdateHeader* update_header = encode(node, sizeof(struct tt_UpdateHeader));
-    if (update_header == NULL) {
+    struct tt_DataHeader* data_header = encode(node, sizeof(struct tt_DataHeader));
+    struct tt_AnnounceHeader* announce = data_header != NULL ? encode(node, sizeof(struct tt_AnnounceHeader)) : NULL;
+    if (announce == NULL) {
         rollback(node, old_tx_tail);
         return false;
     }
-
-    update_header->last_modified = node->last_modified;
-    update_header->entity_count = 0;
+    fill_announce_header(node, data_header);
+    announce->entity_count = 0;
 
     struct tt_Endpoint* endpoints[tt_MAX_ENDPOINT_COUNT];
     uint32_t endpoint_count = node->endpoint_count;
@@ -4935,13 +4970,12 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
         endpoints[i] = node->endpoints[i];
     }
 
-    // An announce too large for one datagram goes in parts; anything that fits stays the single
-    // UPDATE every node has always understood (the user's choice, 2026-09-24).
+    // An announce too large for one datagram goes in fragments; anything that fits is one DATA.
     if (!update_fits_single(endpoints, endpoint_count)) {
         uint32_t part_start[tt_UPDATE_MAX_PARTS + 1];
         uint8_t part_count = plan_update_parts(node, endpoints, endpoint_count, part_start);
         if (part_count == 0) {
-            TT_LOG_ERROR("Announce of %u endpoints needs more than %d parts - not announced", endpoint_count,
+            TT_LOG_ERROR("Announce of %u endpoints needs more than %d fragments - not announced", endpoint_count,
                          tt_UPDATE_MAX_PARTS);
             node->tx_dropped_oversize++;
             rollback(node, old_tx_tail);
@@ -4951,9 +4985,8 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
             rollback(node, old_tx_tail);
             return send_update_parts(node, endpoints, part_start, part_count, peers, peer_count);
         }
-        // One part: what is left once plan_update_parts() dropped endpoints no datagram could
-        // carry fits a single UPDATE (its header is smaller than a part's), which every receiver
-        // understands - and a one-part announce is not a valid part at all.
+        // One fragment: what is left once plan_update_parts() dropped endpoints no datagram could
+        // carry fits a single DATA, and a one-fragment sample is not a valid fragment at all.
     }
 
     int entity_count = encode_update_entities(node, endpoints, endpoint_count);
@@ -4961,7 +4994,7 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
         rollback(node, old_tx_tail);
         return false;
     }
-    update_header->entity_count = (uint8_t)entity_count;
+    announce->entity_count = (uint8_t)entity_count;
 
     bool is_flush = peer_count > 0;
     if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
@@ -4970,7 +5003,7 @@ static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* pe
     }
 
     if (!is_flush) {
-        // This UPDATE is now sitting batched in tx_buffer (or, rarely, was already flushed on
+        // This announce is now sitting batched in tx_buffer (or, rarely, was already flushed on
         // its own by end_encode()'s own overflow handling above) - either way it's
         // broadcast-only content that must not get swept into a unicast flush; node_flush()
         // clears this once it's actually sent, see flush_tx().
@@ -5111,11 +5144,11 @@ static void tombstone_entities_past_own_lease(struct tt_Node* node, uint64_t tim
 }
 
 // Runs once per tt_NODE_UPDATE_INTERVAL (schedule_periodic_tasks()'s own first-run comment
-// applies here too) - the timeout-based counterpart to process_update()'s content-change
+// applies here too) - the timeout-based counterpart to process_announce()'s content-change
 // dedup: a remote node whose announce hasn't been *heard at all* (not just unchanged) for
 // tt_LIVELINESS_MISS_THRESHOLD consecutive intervals is presumed gone - same forget_peers_from_
-// source() peer-table cleanup a farewell UPDATE would also do, and the same update_seen[]/
-// update_last_modified[] reset so a later announce from the same node id is treated as first
+// source() peer-table cleanup a farewell announce would also do, and the same update_seen[]/
+// update_generation[] reset so a later announce from the same node id is treated as first
 // contact again (reply_with_own_announce() fires, matching a genuinely new node). Its own
 // discovery-cache cleanup (tombstone_discovered_entities_from_source(), unlike forget_discovered_
 // entities_from_source() a farewell/dropped-from-announce uses) deliberately differs from a real
@@ -5144,12 +5177,12 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
         // traffic stops at the same moment its announces do.
         if (time - node->update_last_seen[i] > (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL &&
             time - node->traffic_last_seen[i] > (uint64_t)tt_NODE_UPDATE_INTERVAL) {
-            TT_LOG_WARNING("Node %d presumed dead (no UPDATE for %d consecutive intervals)", i,
+            TT_LOG_WARNING("Node %d presumed dead (no announce for %d consecutive intervals)", i,
                            tt_LIVELINESS_MISS_THRESHOLD);
             forget_peers_from_source(node, (uint8_t)i, /*preserve_ack=*/false);
             tombstone_discovered_entities_from_source(node, (uint8_t)i);
             node->update_seen[i] = false;
-            node->update_last_modified[i] = 0;
+            node->update_generation[i] = 0;
             node->update_last_seen[i] = 0;
             node->traffic_last_seen[i] = 0;
             node->update_part_received[i] = 0;
@@ -5164,15 +5197,15 @@ static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
 }
 
 // This periodic tick only ever flushes batched pub/sub content - a DATA submessage from
-// tt_Publisher_publish() and/or an UPDATE from node_update() - never a CallResponse (that always
+// tt_Publisher_publish() and/or an announce from node_update() - never a CallResponse (that always
 // flushes immediately from process_callrequest() itself instead). Broadcast is always correct
 // for that content; unicasting it to a short list of known peers is only correct when (a) no
-// UPDATE is currently batched in there (it must reach the whole segment, not just a couple of
+// announce is currently batched in there (it must reach the whole segment, not just a couple of
 // peers - see tx_has_pending_update) and (b) there's exactly one Publisher on this node to
 // attribute the batched DATA to (tx_buffer is shared across every endpoint on a node - mixing
 // two Publishers' data in one unicast flush could send one's data to the other's peers). Both
 // conditions hold for every one of this codebase's own examples (one Publisher per node); a node
-// with 0 or 2+ Publishers, or one with an UPDATE still pending, simply keeps broadcasting exactly
+// with 0 or 2+ Publishers, or one with an announce still pending, simply keeps broadcasting exactly
 // as before this feature existed.
 static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
@@ -5213,7 +5246,7 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
 // topic just discovered - QoS roadmap #4 (DURABILITY/TRANSIENT_LOCAL, rmw_tickle/PLAN.md). Called
 // only from decode_update_entities() below when upsert_peer() just claimed a previously-empty
 // peer slot for this exact Publisher - a genuinely new (or forgotten-then-rejoined) peer, not
-// every periodic UPDATE refresh. No-op unless pub->durable is set (VOLATILE, today's default) and
+// every periodic announce refresh. No-op unless pub->durable is set (VOLATILE, today's default) and
 // pub->reliable_cache is non-NULL (nothing to deliver from otherwise) - matches process_acknack()'s
 // own retransmit loop exactly, just unicasting to a fixed target instead of reacting to a NACK
 // bitmap, and reading from the same shared cache (struct tt_ReliableCache's own doc comment).
@@ -5289,7 +5322,7 @@ static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher
 // if a type/name string fails to decode.
 
 // Milestone 35 - for_each_endpoint()'s own visitor context for registering one remote peer
-// (learned from an UPDATE announce) against every local Publisher sharing the announced topic
+// (learned from an announce) against every local Publisher sharing the announced topic
 // name - not just the first, now that more than one may exist (add_endpoint_to_node()'s own doc
 // comment). qos is update_entity->qos verbatim (already native-endian - a single byte-ish
 // bitfield, no rd*() needed, matching the original inline code this was lifted from).
@@ -5303,8 +5336,8 @@ struct update_peer_ctx {
     // way qos above is already native-endian by the time it lands here.
     uint64_t deadline_duration_ns;
     uint64_t liveliness_lease_duration_ns;
-    // Milestone 58 - the announcing node's own tt_Node.last_modified as of this UPDATE (process_
-    // update()'s own already-decoded last_modified, threaded down through decode_update_entities()).
+    // Milestone 58 - the generation of the announce this entity came in (tt_DISCOVERY_ENDPOINT_ID,
+    // tickle.h), threaded down through decode_update_entities().
     // Phase 2 - the announcing entity's own entity_id and, for a Subscriber, the RELIABLE tracking
     // window it announced (tt_UpdateEntity.tracking_words). Both unused by
     // register_server_peer_on_client().
@@ -5312,7 +5345,7 @@ struct update_peer_ctx {
     uint16_t tracking_words;
     // Unused by register_server_peer_on_client() (Clients/Servers have no durability concept), only
     // meaningful to register_subscriber_peer_on_publisher()'s own durable_delivered[] check below.
-    uint64_t announce_last_modified;
+    uint32_t announce_generation;
 };
 
 static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct tt_Endpoint* endpoint, void* ctx_ptr) {
@@ -5384,16 +5417,16 @@ static void register_subscriber_peer_on_publisher(struct tt_Node* node, struct t
         // Milestone 58 - skip a redundant backlog re-delivery when this "genuinely new" peer slot
         // (check_liveliness()'s own presumed-dead cleanup, not necessarily a real departure - see
         // struct tt_DurableDeliveryRecord's own doc comment, tickle.h) already received this exact
-        // announce's backlog. A real process restart lands on a different announce_last_modified
+        // announce's backlog. A real process restart lands on a different announce_generation
         // (durable_delivered_get() returns false), so it still gets delivered as usual.
         bool tracks_durable_delivery = pub->durable && pub->reliable_cache != NULL;
         bool already_delivered =
             tracks_durable_delivery &&
-            durable_delivered_get(pub->reliable_cache, ctx->header->source, ctx->announce_last_modified);
+            durable_delivered_get(pub->reliable_cache, ctx->header->source, ctx->announce_generation);
         if (!already_delivered) {
             deliver_durability_backlog(node, pub, &target);
             if (tracks_durable_delivery) {
-                durable_delivered_upsert(pub->reliable_cache, ctx->header->source, ctx->announce_last_modified);
+                durable_delivered_upsert(pub->reliable_cache, ctx->header->source, ctx->announce_generation);
             }
         }
         send_initial_heartbeat(node, pub, &target);
@@ -5413,7 +5446,7 @@ static void register_server_peer_on_client(struct tt_Node* node, struct tt_Endpo
 
 static bool decode_update_entities(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t* head,
                                    uint32_t tail, int entity_count, uint32_t sender_ip, uint16_t sender_port,
-                                   uint64_t last_modified) {
+                                   uint32_t generation) {
     bool reverse = tt_is_reverse_endian(header);
     for (int i = 0; i < entity_count && *head + sizeof(struct tt_UpdateEntity) + (2 * sizeof(uint16_t)) < tail; i++) {
         struct tt_UpdateEntity* update_entity = decode(node, buffer, head, tail, sizeof(struct tt_UpdateEntity));
@@ -5441,7 +5474,7 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
                                           .liveliness_lease_duration_ns = liveliness_lease_duration_ns,
                                           .entity_id = remote_entity_id,
                                           .tracking_words = remote_tracking_words,
-                                          .announce_last_modified = last_modified};
+                                          .announce_generation = generation};
             for_each_endpoint(node, tt_KIND_TOPIC_PUBLISHER, endpoint_id, register_subscriber_peer_on_publisher, &ctx);
         } else if (update_entity->kind == tt_KIND_TOPIC_PUBLISHER) {
             // Phase 3 - remember whether this writer promises KEEP_ALL, so acknack_retry() knows
@@ -5481,8 +5514,8 @@ static bool decode_update_entities(struct tt_Node* node, struct tt_Header* heade
     return true;
 }
 
-// Unicasts our own current UPDATE announce straight back to a peer we've just heard from for the
-// first time - see process_update()'s own comment on why. Terminates rather than looping forever
+// Unicasts our own current announce straight back to a peer we've just heard from for the
+// first time - see process_announce()'s own comment on why. Terminates rather than looping forever
 // because it only ever fires on that first contact: by the time this reply reaches the peer and
 // it processes it, node->update_seen[our own source] on ITS side is already true - either from
 // whatever announce got us onto its radar in the first place, or, in the simultaneous-startup
@@ -5501,129 +5534,89 @@ static void reply_with_own_announce(struct tt_Node* node, uint8_t sender_node_id
     build_and_send_update(node, &reply_to, 1);
 }
 
-static bool process_update(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                           uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
-    struct tt_UpdateHeader* update_header = decode(node, buffer, &head, tail, sizeof(struct tt_UpdateHeader));
-    if (update_header == NULL) {
-        TT_LOG_ERROR("Illegal UpdateHeader");
-        return false;
-    }
-
-    uint8_t source = header->source;
-    uint64_t last_modified = rd64(header, update_header->last_modified);
-
-    TT_LOG_DEBUG("Update");
-    TT_LOG_DEBUG("  last_modified: %lu", last_modified);
-    TT_LOG_DEBUG("  entity_count: %u", update_header->entity_count);
-
-    // Liveliness (check_liveliness(), below) cares that *an* announce arrived, not whether its
-    // content changed - update this on every valid announce, including the "nothing changed"
-    // dedup case just below, unlike update_last_modified[] which only moves on real change.
-    node->update_last_seen[source] = tt_get_ns();
-
-    if (node->update_seen[source] && node->update_last_modified[source] == last_modified) {
-        return true; // nothing changed since the announce we last acted on
-    }
-
-    // First time we've ever heard from this node, as opposed to it changing its endpoints since -
-    // captured before update_seen[] is set below, because that's the state
-    // reply_with_own_announce() needs to not reply forever (see its own comment).
-    bool is_first_contact_from_sender = !node->update_seen[source];
-
-    // This announce supersedes anything we knew about what this source hosts (it may have dropped
-    // an endpoint, or left entirely - see tt_Node_destroy()'s farewell UPDATE). Forget its old
-    // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
-    forget_peers_from_source(node, source, /*preserve_ack=*/true);
-    forget_discovered_entities_from_source(node, source);
-    // A whole announce in one datagram supersedes one this source was sending in parts - it has
-    // shrunk back under the datagram, or this is its farewell.
-    node->update_part_received[source] = 0;
-
-    if (!decode_update_entities(node, header, buffer, &head, tail, update_header->entity_count, sender_ip, sender_port,
-                                last_modified)) {
-        return false;
-    }
-
-    // Phase 3 prerequisite (c) - the forget above preserved this source's ack state so a re-added
-    // Subscriber keeps it; now drop it wherever this announce genuinely dropped the match (an
-    // endpoint it no longer lists, or a farewell UPDATE listing nothing at all), so a departed
-    // Subscriber can't hold a KEEP_ALL writer's ack set forever.
-    drop_ack_state_for_unmatched_source(node, source);
-
-    node->update_last_modified[source] = last_modified;
-    node->update_seen[source] = true;
-
-    if (is_first_contact_from_sender) {
-        reply_with_own_announce(node, source, sender_ip, sender_port);
-    }
-
-    return true;
-}
-
-// Bit mask with one bit per part of an announce split into part_count parts.
+// Bit mask with one bit per fragment of an announce split into part_count fragments.
 static uint32_t update_all_parts_mask(uint8_t part_count) {
     return part_count >= 32 ? UINT32_MAX : ((uint32_t)1 << part_count) - 1;
 }
 
-_Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Node.update_part_received is a 32-bit mask, one bit per part");
+_Static_assert(tt_UPDATE_MAX_PARTS <= 32, "tt_Node.update_part_received is a 32-bit mask, one bit per fragment");
 
-// One part of a discovery announce that did not fit a datagram (struct tt_UpdatePartHeader,
-// tickle.h; DESIGN.md's "Discovery announce in parts"). The same effect as process_update() once
-// every part has arrived, reached incrementally:
-//   - the first part of a last_modified this source has not completed replaces what it announced
-//     before, the way a whole UPDATE does (forget, then apply);
-//   - every part's entities are applied as it arrives - a repeated part re-applies the same
-//     entities, which upsert makes harmless;
-//   - when the last missing part arrives the announce is complete: it becomes this source's
-//     acted-on announce (update_last_modified/update_seen) and the post-announce cleanup and
-//     first-contact reply happen, both exactly as process_update() does them.
-// A lost part leaves the announce incomplete until the next periodic announce resends every part
-// under the same last_modified, which fills the gap without starting over. Until then the source
-// is known by the parts that did arrive.
-static bool process_update_part(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
-                                uint32_t tail, uint32_t sender_ip, uint16_t sender_port) {
-    struct tt_UpdatePartHeader* part = decode(node, buffer, &head, tail, sizeof(struct tt_UpdatePartHeader));
-    if (part == NULL) {
-        TT_LOG_ERROR("Illegal UpdatePartHeader");
-        return false;
-    }
-    if (part->part_count < 2 || part->part_count > tt_UPDATE_MAX_PARTS || part->part_index >= part->part_count) {
-        TT_LOG_ERROR("Illegal UpdatePartHeader: part %u of %u", part->part_index, part->part_count);
-        return false;
-    }
-
+// A discovery announce (tt_DISCOVERY_ENDPOINT_ID, tickle.h), whole or one fragment of it: buffer[head..tail)
+// is its tt_AnnounceHeader and entities. generation is its DataHeader/FragContHeader seq_no; frag_index
+// and frag_count are 0 and 1 for an announce in one datagram.
+//
+// Liveliness is refreshed first, before anything can return: every announce and every fragment is proof
+// the sender is alive, and a periodic resend of an unchanged list - an already-seen generation - is
+// exactly what keeps a quiet node from being presumed dead. Only then is the generation compared.
+//
+// A new generation replaces what the source announced before (forget, then apply), as soon as its first
+// datagram - whole or any fragment - arrives. Each fragment's entities are applied as it arrives, and a
+// repeated fragment re-applies the same entities, which upsert makes harmless. Once every fragment has
+// arrived the announce is complete: it becomes the source's acted-on announce (update_generation /
+// update_seen), unmatched ack state is dropped, and a first contact is answered with our own announce.
+// A lost fragment leaves the announce incomplete until the next periodic announce resends every fragment
+// under the same generation, which fills the gap without starting over; until then the source is known
+// by the fragments that did arrive.
+static bool process_announce(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                             uint32_t tail, uint32_t sender_ip, uint16_t sender_port, uint32_t generation,
+                             uint8_t frag_index, uint8_t frag_count) {
     uint8_t source = header->source;
-    uint64_t last_modified = rd64(header, part->last_modified);
-    node->update_last_seen[source] = tt_get_ns(); // any announce, complete or not - see process_update()
+    node->update_last_seen[source] = tt_get_ns();
 
-    if (node->update_seen[source] && node->update_last_modified[source] == last_modified) {
-        return true; // the periodic resend of an announce already complete here
+    struct tt_AnnounceHeader* announce = decode(node, buffer, &head, tail, sizeof(struct tt_AnnounceHeader));
+    if (announce == NULL) {
+        TT_LOG_ERROR("Illegal AnnounceHeader");
+        return false;
+    }
+    if (frag_count < 1 || frag_count > tt_UPDATE_MAX_PARTS || frag_index >= frag_count) {
+        TT_LOG_ERROR("Illegal announce fragment %u of %u", frag_index, frag_count);
+        return false;
     }
 
-    if (node->update_part_received[source] == 0 || node->update_part_last_modified[source] != last_modified ||
-        node->update_part_count[source] != part->part_count) {
-        // A new announce from this source: like a whole UPDATE, it replaces what came before.
+    TT_LOG_DEBUG("Announce");
+    TT_LOG_DEBUG("  generation: %u", generation);
+    TT_LOG_DEBUG("  fragment: %u of %u", frag_index, frag_count);
+    TT_LOG_DEBUG("  entity_count: %u", announce->entity_count);
+
+    if (node->update_seen[source] && node->update_generation[source] == generation) {
+        return true; // the periodic resend of the announce we last acted on
+    }
+
+    bool whole = frag_count == 1;
+    if (whole || node->update_part_received[source] == 0 || node->update_part_generation[source] != generation ||
+        node->update_part_count[source] != frag_count) {
+        // A new announce from this source: it supersedes what it announced before (it may have dropped
+        // an endpoint, or left entirely - see tt_Node_destroy()'s farewell announce). Forget its old
+        // peer-table entries; decode_update_entities() below re-adds whatever it still lists.
         forget_peers_from_source(node, source, /*preserve_ack=*/true);
         forget_discovered_entities_from_source(node, source);
-        node->update_part_last_modified[source] = last_modified;
-        node->update_part_count[source] = part->part_count;
+        node->update_part_generation[source] = generation;
+        node->update_part_count[source] = frag_count;
         node->update_part_received[source] = 0;
     }
 
-    if (!decode_update_entities(node, header, buffer, &head, tail, part->entity_count, sender_ip, sender_port,
-                                last_modified)) {
+    if (!decode_update_entities(node, header, buffer, &head, tail, announce->entity_count, sender_ip, sender_port,
+                                generation)) {
         return false;
     }
 
-    node->update_part_received[source] |= (uint32_t)1 << part->part_index;
-    if (node->update_part_received[source] != update_all_parts_mask(part->part_count)) {
-        return true; // more parts to come
+    node->update_part_received[source] |= (uint32_t)1 << frag_index;
+    if (node->update_part_received[source] != update_all_parts_mask(frag_count)) {
+        return true; // more fragments to come
     }
-
     node->update_part_received[source] = 0;
-    drop_ack_state_for_unmatched_source(node, source); // see process_update()
+
+    // Phase 3 prerequisite (c) - the forget above preserved this source's ack state so a re-added
+    // Subscriber keeps it; now drop it wherever this announce genuinely dropped the match (an
+    // endpoint it no longer lists, or a farewell listing nothing at all), so a departed Subscriber
+    // can't hold a KEEP_ALL writer's ack set forever.
+    drop_ack_state_for_unmatched_source(node, source);
+
+    // First time we've ever heard from this node, as opposed to it changing its endpoints since -
+    // captured before update_seen[] is set, because that's the state reply_with_own_announce() needs
+    // to not reply forever (see its own comment).
     bool is_first_contact_from_sender = !node->update_seen[source];
-    node->update_last_modified[source] = last_modified;
+    node->update_generation[source] = generation;
     node->update_seen[source] = true;
     if (is_first_contact_from_sender) {
         reply_with_own_announce(node, source, sender_ip, sender_port);
@@ -5662,7 +5655,7 @@ static bool is_power_of_ten(uint32_t count) {
 // Fails OPEN (returns false, "compatible enough to deliver") whenever there's nothing to check
 // against yet: no discovery cache attached at all (a raw TickLE-core caller that never called
 // tt_Node_set_discovery() sees no behavior change from this milestone), or this Publisher hasn't
-// been discovered yet (DATA arriving before its own first UPDATE announce - a narrow startup
+// been discovered yet (DATA arriving before its own first announce - a narrow startup
 // race, not a genuine incompatibility; giving the benefit of the doubt here is strictly better
 // than dropping a legitimately compatible pair's very first samples).
 static bool subscriber_incompatible_with_publisher(struct tt_Node* node, struct tt_Subscriber* sub,
@@ -6167,6 +6160,12 @@ static bool process_data(struct tt_Node* node, struct tt_Header* header, uint8_t
     uint32_t seq_no = rd32(header, data_header->seq_no);
     uint64_t timestamp = rd64(header, data_header->timestamp);
     uint32_t entity_id = rd32(header, data_header->entity_id);
+
+    // The built-in discovery endpoint (tt_DISCOVERY_ENDPOINT_ID, tickle.h): no Subscriber, no reliable
+    // tracking and no deduplication in front of it - process_announce() refreshes liveliness first.
+    if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID && entity_id == tt_DISCOVERY_ENTITY_ID) {
+        return process_announce(node, header, buffer, head, tail, sender_ip, sender_port, seq_no, 0, 1);
+    }
 
     TT_LOG_DEBUG("Data");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
@@ -7201,6 +7200,11 @@ static uint32_t frag_offset(uint32_t index, uint32_t cont_length) {
     return index == 0 ? 0 : (cont_length - (uint32_t)tt_FRAG_FIRST_SHORTFALL) + ((index - 1) * cont_length);
 }
 
+// Whether the count-th occurrence of a fragment event is logged: the 1st, 10th, 100th ... (is_power_of_ten()).
+static bool frag_log_due(uint64_t count) {
+    return count <= UINT32_MAX && is_power_of_ten((uint32_t)count);
+}
+
 static uint64_t frag_all_received(uint32_t count) {
     return count >= tt_FRAG_MAX_COUNT ? UINT64_MAX : (1ULL << count) - 1; // tt_FRAG_MAX_COUNT is the bitmap width
 }
@@ -7229,8 +7233,14 @@ static struct tt_FragSlot* frag_slot_for(struct tt_Node* node, uint8_t source, u
     if (slot == NULL) {
         slot = oldest;
         node->frag_abandoned++;
-        TT_LOG_WARNING("Abandoning reassembly of seq_no %u from node %u for a newer sample", slot->seq_no,
-                       slot->source);
+        // Throttled like the RxO drop: under loss this is routine - a sample that lost a fragment holds its
+        // slot until its retransmission, which carries every fragment again and so needs nothing the slot
+        // held - and one line per event was 28,542 lines in a 5 s p4 run at 5% loss, each a write() of
+        // its own on the receive path being measured. The counter keeps the exact figure.
+        if (frag_log_due(node->frag_abandoned)) {
+            TT_LOG_WARNING("Abandoning reassembly of seq_no %u from node %u for a newer sample (abandoned #%lu)",
+                           slot->seq_no, slot->source, (unsigned long)node->frag_abandoned);
+        }
     }
     slot->received = 0;
     slot->source = source;
@@ -7296,49 +7306,28 @@ static bool frag_place(struct tt_FragSlot* slot, uint32_t index, const uint8_t* 
     return true;
 }
 
-// One fragment, FRAG_FIRST or FRAG_CONT, of a sample from header->source. Once every fragment has
-// arrived, the sample is handed to process_data() exactly as a DATA carrying it would have been.
-static bool process_frag(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
-                         uint8_t type, uint32_t sender_ip, uint16_t sender_port) {
-    const struct tt_DataHeader* data_header = NULL;
-    uint32_t entity_id;
-    uint32_t seq_no;
-    uint32_t index;
-    uint32_t count;
-    if (type == tt_SUBMESSAGE_TYPE_FRAG_FIRST) {
-        struct tt_FragFirstHeader* first = decode(node, buffer, &head, tail, sizeof(struct tt_FragFirstHeader));
-        if (first == NULL) {
-            node->frag_dropped++;
-            return false;
-        }
-        data_header = &first->data;
-        entity_id = rd32(header, first->data.entity_id);
-        seq_no = rd32(header, first->data.seq_no);
-        index = 0;
-        count = first->frag_count;
-    } else {
-        struct tt_FragContHeader* cont = decode(node, buffer, &head, tail, sizeof(struct tt_FragContHeader));
-        if (cont == NULL) {
-            node->frag_dropped++;
-            return false;
-        }
-        entity_id = rd32(header, cont->entity_id);
-        seq_no = rd32(header, cont->seq_no);
-        index = cont->frag_index;
-        count = cont->frag_count;
-    }
-    uint32_t length = tail - head;
+// One user-data fragment, placed in the reassembly pool. Once every fragment has arrived, the sample is
+// handed to process_data() exactly as a DATA carrying it would have been. data_header is the FRAG_FIRST's
+// DataHeader, NULL for a continuation.
+static bool reassemble_fragment(struct tt_Node* node, struct tt_Header* header, const uint8_t* payload, uint32_t length,
+                                const struct tt_DataHeader* data_header, uint32_t entity_id, uint32_t seq_no,
+                                uint32_t index, uint32_t count, uint32_t sender_ip, uint16_t sender_port) {
     if (count < 2 || count > tt_FRAG_MAX_COUNT || index >= count || length == 0) {
-        TT_LOG_ERROR("Illegal fragment %u of %u (%u bytes)", index, count, length);
         node->frag_dropped++;
+        if (frag_log_due(node->frag_dropped)) {
+            TT_LOG_ERROR("Illegal fragment %u of %u (%u bytes, dropped #%lu)", index, count, length,
+                         (unsigned long)node->frag_dropped);
+        }
         return false;
     }
 
     struct tt_FragSlot* slot = frag_slot_for(node, header->source, entity_id, seq_no, (uint8_t)count);
-    if (slot->frag_count != count || !frag_place(slot, index, buffer + head, length)) {
-        TT_LOG_WARNING("Fragment %u of seq_no %u from node %u is inconsistent with its sample - dropped", index, seq_no,
-                       header->source);
+    if (slot->frag_count != count || !frag_place(slot, index, payload, length)) {
         node->frag_dropped++;
+        if (frag_log_due(node->frag_dropped)) {
+            TT_LOG_WARNING("Fragment %u of seq_no %u from node %u is inconsistent with its sample - dropped (#%lu)",
+                           index, seq_no, header->source, (unsigned long)node->frag_dropped);
+        }
         return false;
     }
     if (data_header != NULL) {
@@ -7357,6 +7346,61 @@ static bool process_frag(struct tt_Node* node, struct tt_Header* header, uint8_t
 }
 #endif
 
+// One fragment, FRAG_FIRST or FRAG_CONT, from header->source. A discovery announce's fragment (its
+// entity_id is tt_DISCOVERY_ENTITY_ID) is whole entities and goes straight to process_announce(), in
+// every build; anything else is user data for the reassembly pool, which exists only when fragmentation
+// is compiled in - without it, a sample over this node's limit could not be delivered anyway, and its
+// fragments are passed over.
+static bool process_frag(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
+                         uint8_t type, uint32_t sender_ip, uint16_t sender_port) {
+    const struct tt_DataHeader* data_header = NULL;
+    uint32_t entity_id;
+    uint32_t seq_no;
+    uint32_t index;
+    uint32_t count;
+    if (type == tt_SUBMESSAGE_TYPE_FRAG_FIRST) {
+        struct tt_FragFirstHeader* first = decode(node, buffer, &head, tail, sizeof(struct tt_FragFirstHeader));
+        if (first == NULL) {
+            TT_LOG_ERROR("Illegal FragFirstHeader");
+            return false;
+        }
+        data_header = &first->data;
+        entity_id = rd32(header, first->data.entity_id);
+        seq_no = rd32(header, first->data.seq_no);
+        index = 0;
+        count = first->frag_count;
+    } else {
+        struct tt_FragContHeader* cont = decode(node, buffer, &head, tail, sizeof(struct tt_FragContHeader));
+        if (cont == NULL) {
+            TT_LOG_ERROR("Illegal FragContHeader");
+            return false;
+        }
+        entity_id = rd32(header, cont->entity_id);
+        seq_no = rd32(header, cont->seq_no);
+        index = cont->frag_index;
+        count = cont->frag_count;
+    }
+
+    if (entity_id == tt_DISCOVERY_ENTITY_ID) {
+        if (count < 2) {
+            TT_LOG_ERROR("Illegal announce fragment %u of %u", index, count);
+            return false;
+        }
+        return process_announce(node, header, buffer, head, tail, sender_ip, sender_port, seq_no, (uint8_t)index,
+                                (uint8_t)count);
+    }
+#if tt_FRAG_ENABLED
+    return reassemble_fragment(node, header, buffer + head, tail - head, data_header, entity_id, seq_no, index, count,
+                               sender_ip, sender_port);
+#else
+    UNUSED(data_header);
+    UNUSED(sender_ip);
+    UNUSED(sender_port);
+    TT_LOG_DEBUG("Fragment skipped: built without fragmentation");
+    return true;
+#endif
+}
+
 static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
                                uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
@@ -7364,7 +7408,7 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     // doesn't log again on top of that - only the type dispatch itself gets a message here.
     // sender_ip/sender_port (this packet's own source, from tt_receive() - see
     // handle_receive_result()) reach process_callrequest() (to unicast the CallResponse straight
-    // back), process_update() (to learn/refresh a peer table entry - see decode_update_
+    // back), process_announce() (to learn/refresh a peer table entry - see decode_update_
     // entities()'s own comment), process_data() (to remember where a reliable Subscriber's own
     // ACKNACK should go, QoS roadmap #5), and process_acknack() (to unicast a retransmit straight
     // back the same way CallResponse does); process_callresponse() doesn't need them.
@@ -7377,16 +7421,6 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
     // for pub/sub - the request/response datagrams *are* the only path, so suppressing them here
     // made a co-located client structurally unable to ever reach its own service.
     switch (submessage_header->type) {
-    case tt_SUBMESSAGE_TYPE_UPDATE:
-        if (!self_sent) {
-            process_update(node, header, buffer, head, body_tail, sender_ip, sender_port);
-        }
-        return true;
-    case tt_SUBMESSAGE_TYPE_UPDATE_PART:
-        if (!self_sent) {
-            process_update_part(node, header, buffer, head, body_tail, sender_ip, sender_port);
-        }
-        return true;
     case tt_SUBMESSAGE_TYPE_DATA:
         if (!self_sent) {
             process_data(node, header, buffer, head, body_tail, sender_ip, sender_port);
@@ -7394,7 +7428,7 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         return true;
     case tt_SUBMESSAGE_TYPE_ACKNACK:
         // QoS roadmap #5 (RELIABILITY/RELIABLE) - self_sent-guarded for the same reason as DATA/
-        // UPDATE above: a reliable Subscriber never sees its own co-located Publisher's DATA in
+        // DATA above: a reliable Subscriber never sees its own co-located Publisher's DATA in
         // the first place (self_sent-suppressed), so it never has anything to ack locally either.
         if (!self_sent) {
             process_acknack(node, header, buffer, head, body_tail, sender_ip, sender_port);
@@ -7415,15 +7449,9 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         return true;
     case tt_SUBMESSAGE_TYPE_FRAG_FIRST:
     case tt_SUBMESSAGE_TYPE_FRAG_CONT:
-#if tt_FRAG_ENABLED
         if (!self_sent) {
             process_frag(node, header, buffer, head, body_tail, submessage_header->type, sender_ip, sender_port);
         }
-#else
-        // A sample larger than this build accepts (tt_MAX_SAMPLE_LENGTH): it could not be delivered
-        // whole anyway, so its fragments are passed over without the unknown-type warning below.
-        TT_LOG_DEBUG("Fragment skipped: built without fragmentation");
-#endif
         return true;
     default:
         // An unknown type is most likely a submessage from a newer protocol revision (see
@@ -7467,6 +7495,17 @@ static bool validate_packet_header(struct tt_Node* node, struct tt_Header* heade
 
 enum submessage_walk_result { SUBMSG_ERROR, SUBMSG_DONE, SUBMSG_CONTINUE };
 
+// Whether the DATA submessage whose body is buffer[head..body_tail) is a discovery announce
+// (tt_DISCOVERY_ENDPOINT_ID, tickle.h) rather than a sample.
+static bool data_is_announce(struct tt_Header* header, const uint8_t* buffer, uint32_t head, uint32_t body_tail) {
+    if (body_tail < head || body_tail - head < sizeof(struct tt_DataHeader)) {
+        return false;
+    }
+    const struct tt_DataHeader* data_header = (const struct tt_DataHeader*)(buffer + head);
+    return rd32(header, data_header->endpoint_id) == tt_DISCOVERY_ENDPOINT_ID &&
+           rd32(header, data_header->entity_id) == tt_DISCOVERY_ENTITY_ID;
+}
+
 // Decodes and dispatches one submessage starting at *head, advancing *head past it.
 static enum submessage_walk_result process_one_submessage(struct tt_Node* node, struct tt_Header* header,
                                                           uint8_t* buffer, uint32_t* head, uint32_t tail,
@@ -7491,17 +7530,19 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
         return SUBMSG_ERROR;
     }
 
+    const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
+
     // Counted before the receiver filter below, deliberately: a node's own DATA is addressed to
     // whoever it was published to, not to itself, so filtering first would hide exactly the case
-    // this counter exists to detect.
-    if (self_sent && submessage_header->type == tt_SUBMESSAGE_TYPE_DATA) {
+    // this counter exists to detect. A sample only: since tt_VERSION 7 an announce is a DATA too.
+    if (self_sent && submessage_header->type == tt_SUBMESSAGE_TYPE_DATA &&
+        !data_is_announce(header, buffer, *head, body_tail)) {
         node->rx_self_sent_data++;
         if (node->rx_via_data_port) {
             node->rx_self_sent_data_unicast++;
         }
     }
 
-    const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
     node->rx_targeted = submessage_header->receiver == node->id;
     if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
         !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port,
@@ -7526,9 +7567,9 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     }
 
     // Self sent message - no longer short-circuited here: see process_submessage()'s own comment
-    // on why this now only suppresses the topic-shaped types (UPDATE/DATA), not CALLREQUEST/
-    // CALLRESPONSE, and so has to be threaded down per-submessage rather than dropping the whole
-    // packet up front.
+    // on why this now only suppresses the topic-shaped types (DATA and its fragments, which carry announces too), not
+    // CALLREQUEST/ CALLRESPONSE, and so has to be threaded down per-submessage rather than dropping the whole packet up
+    // front.
     bool self_sent = header->source == node->id;
     if (self_sent) {
         node->rx_self_sent++;
@@ -7536,7 +7577,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     TT_LOG_DEBUG("source: %d%s", header->source, self_sent ? " (self)" : "");
 
     // Liveliness evidence (2026-09-23, at the user's own direction): ANY validated packet from a
-    // node proves that node is alive, not only its periodic UPDATE announce. A peer that is
+    // node proves that node is alive, not only its periodic announce. A peer that is
     // sending DATA at full rate, or ACKNACKing every gap, is self-evidently running - declaring it
     // dead because its announces happened to be the packets that got dropped is a false positive
     // by construction, and injected loss attacks exactly the channel the old evidence relied on.
@@ -8066,7 +8107,7 @@ static tt_ret_t node_destroy_locked(struct tt_Node* node) {
     }
     node->endpoint_count = 0;
 
-    // Broadcast a final, entity-less UPDATE so peers can drop this node right away
+    // Broadcast a final, entity-less announce so peers can drop this node right away
     // (forget_peers_from_source() on their side) instead of carrying it until - nothing, there's
     // no other expiry. node_update() only batches it into tx_buffer; flush it out here, before
     // the socket closes below, since node_flush()'s tick is about to be cancelled too.

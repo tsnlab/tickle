@@ -186,7 +186,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
     EXPECT_EQ_U32(0xCAFEF00D, sub_value);
 }
 
-// --- UPDATE announce from a reverse-endian peer: discovery still matches --
+// --- Announce from a reverse-endian peer: discovery still matches -----------
 
 static void test_reverse_endian_update_matches_and_learns_peer(void) {
     test_mock_reset();
@@ -220,15 +220,18 @@ static void test_reverse_endian_update_matches_and_learns_peer(void) {
     uint32_t off = sizeof(struct tt_Header);
 
     struct tt_SubmessageHeader* submsg = (struct tt_SubmessageHeader*)(buf + off);
-    submsg->type = tt_SUBMESSAGE_TYPE_UPDATE;
+    submsg->type = tt_SUBMESSAGE_TYPE_DATA; // an announce is a DATA of the built-in endpoint
     submsg->receiver = tt_SUBMESSAGE_ID_ALL;
     uint32_t sub_start = off;
     off += sizeof(struct tt_SubmessageHeader);
 
-    struct tt_UpdateHeader* update_hdr = (struct tt_UpdateHeader*)(buf + off);
-    update_hdr->last_modified = swap64(1000);
-    update_hdr->entity_count = 1;
-    off += sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_hdr = test_announce_at((buf + off));
+    // Swapped field by field: the generation is the low 32 bits of last_modified, swapped as a 32-bit
+    // value in its own right. The built-in endpoint's ids (0 and all-ones) read the same either way.
+    update_hdr->data.timestamp = swap64(1000);
+    update_hdr->data.seq_no = swap32(1000);
+    update_hdr->announce.entity_count = 1;
+    off += sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + off);
     entity->endpoint_id = swap32(0x01020304); // same id our Publisher has

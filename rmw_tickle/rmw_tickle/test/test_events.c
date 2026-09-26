@@ -259,7 +259,7 @@ int main(void) {
     // watchdog.c already reaches into directly for an equivalent reason (proving something no
     // black-box rmw API call alone can induce). Injecting one synthetic discovered entity per
     // event, straight into context_impl->discovery.entities[] under the node lock (the exact same
-    // table process_update()/decode_update_entities() would populate from a real remote UPDATE,
+    // table process_announce()/decode_update_entities() would populate from a real remote announce,
     // tickle.c), is that same technique applied here: check_publisher_qos_incompatible()/check_
     // subscription_qos_incompatible() (rmw_publisher.c/rmw_subscription.c) can't tell the
     // difference between this and a genuine remote announce - both just read this same table.

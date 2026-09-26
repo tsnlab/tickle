@@ -268,10 +268,10 @@ static void test_destroying_one_duplicate_leaves_its_sibling_registered(void) {
 // subscriber(), needed here too (each tests/test_*.c is its own standalone binary, no helpers
 // shared across files).
 static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)node->rx_buffer;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(node->rx_buffer);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
     memset(entity, 0, sizeof(*entity)); // explicit: rx_buffer is reused across writes in these tests
@@ -290,7 +290,7 @@ static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_
 // first: otherwise a second local Publisher (now legal to create at all, per the tests above)
 // would exist locally but never actually learn any remote peers of its own, making it silently
 // unable to unicast/durability-backlog/heartbeat to anyone despite being a perfectly valid
-// Publisher. Exercises the real decode_update_entities() path (via process_update()), not a direct
+// Publisher. Exercises the real decode_update_entities() path (via process_data()), not a direct
 // unit call, since the fan-out itself lives inside that function's own for_each_endpoint() use.
 static void test_update_registers_peer_on_every_matching_publisher(void) {
     test_mock_reset();
@@ -313,7 +313,7 @@ static void test_update_registers_peer_on_every_matching_publisher(void) {
     header.source = REMOTE_NODE_ID;
 
     uint32_t tail = write_update_one_subscriber(&node, 100, pub_a.endpoint.id);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub_a.peers[0].node_id);
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)pub_b.peers[0].node_id);

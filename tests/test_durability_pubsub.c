@@ -110,14 +110,14 @@ static void init_header(struct tt_Header* header) {
 }
 
 // Builds an UpdateHeader with a single following TOPIC_SUBSCRIBER UpdateEntity in node->rx_buffer,
-// returning the tail offset (matching what process_packet() would have handed process_update()) -
+// returning the tail offset (matching what process_packet() would have handed process_data()) -
 // same shape as tests/test_peer_discovery.c's own write_update_one_entity(), narrowed to the one
 // entity kind these tests need.
 static uint32_t write_update_one_subscriber(struct tt_Node* node, uint64_t last_modified, uint32_t endpoint_id) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)node->rx_buffer;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(node->rx_buffer);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(node->rx_buffer + tail);
     memset(entity, 0, sizeof(*entity)); // explicit: rx_buffer is reused across writes in these tests
@@ -239,7 +239,7 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
         EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1..3
     }
 
-    // Marks REMOTE_NODE_ID as already-known to process_update()'s own discovery bookkeeping, so
+    // Marks REMOTE_NODE_ID as already-known to process_data()'s own discovery bookkeeping, so
     // its first-contact reply_with_own_announce() (a real, unrelated send_to of its own) doesn't
     // confound this test's own send_to count - this test cares about durability's own delivery
     // count specifically, not discovery's own reply mechanics.
@@ -249,7 +249,7 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     // 3 retained samples, all unicast to the new subscriber's own address.
     EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
@@ -292,7 +292,7 @@ static void test_durability_skips_expired_backlog_entries(void) {
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count); // every retained sample already expired
 }
@@ -300,7 +300,7 @@ static void test_durability_skips_expired_backlog_entries(void) {
 // upsert_peer() itself must return true only the first time a given node_id claims a slot, not on
 // a later refresh of that same node_id's address - the exact distinction decode_update_entities()
 // relies on to fire deliver_durability_backlog() only for a genuinely new peer. Tested directly,
-// not through the full process_update() pipeline: process_update()'s own forget_peers_from_source()
+// not through the full process_data() pipeline: process_data()'s own forget_peers_from_source()
 // wipes and re-adds every peer from a source on *any* changed announce (see this file's own
 // upsert_peer() doc comment), so a same-node_id "refresh" at that level always looks like a fresh
 // slot claim too - a real, already-documented trade-off, not something this unit-level test needs
@@ -318,7 +318,7 @@ static void test_upsert_peer_true_only_for_new_slot(void) {
 
 // A newly-discovered Subscriber for a DURABLE Publisher's topic, seen via an UPDATE whose
 // last_modified exactly matches the last one already processed from that same source, must not
-// re-trigger a fresh backlog delivery - process_update()'s own "nothing changed" dedup short-
+// re-trigger a fresh backlog delivery - process_data()'s own "nothing changed" dedup short-
 // circuits before decode_update_entities() (and so upsert_peer()) ever runs again.
 static void test_durability_no_redelivery_on_unchanged_update(void) {
     test_mock_reset();
@@ -341,13 +341,13 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     init_header(&header);
 
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // the one retained sample, first time
 
     test_mock_send_to_call_count = 0; // only count the second (unchanged) UPDATE's own effect below
 
     tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID); // same last_modified -> deduped, unprocessed
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
@@ -356,7 +356,7 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
 // gap in a still-alive peer's periodic UPDATE announces, not a real departure - check_liveliness()'s
 // own doc comment) must not cause DURABLE backlog re-delivery once that peer's very next (otherwise
 // unchanged) announce arrives. check_liveliness() wipes peers[]/update_seen[]/update_last_modified[]
-// for the presumed-dead source, which defeats process_update()'s own "nothing changed" dedup (it
+// for the presumed-dead source, which defeats process_data()'s own "nothing changed" dedup (it
 // only short-circuits when update_seen[source] is still true) and makes upsert_peer() see the
 // recovering peer as a genuinely new slot claim again - but its own last_modified is unchanged
 // (nothing about its Publisher/Subscriber set actually changed), so durable_delivered[] (tickle.h)
@@ -383,7 +383,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count); // first contact, backlog delivered once
 
     // Simulate check_liveliness()'s own presumed-dead cleanup directly - this test cares about its
@@ -395,7 +395,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
 
     // Same as above - re-set so the recovering peer's own reply_with_own_announce() (a real, but
     // unrelated to durability, "first contact" reply - update_last_modified[] is still 0 from
-    // check_liveliness()'s own reset, so process_update()'s "nothing changed" dedup still doesn't
+    // check_liveliness()'s own reset, so process_data()'s "nothing changed" dedup still doesn't
     // short-circuit and decode_update_entities() still runs) doesn't confound this test's own
     // send_to count, same reasoning as this file's other tests.
     node.update_seen[REMOTE_NODE_ID] = true;
@@ -406,7 +406,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     // was just wiped), but durable_delivered[] must still remember it, so no redundant backlog
     // re-delivery happens.
     tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
@@ -437,7 +437,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
 
     node.update_last_seen[REMOTE_NODE_ID] = 0;
@@ -450,7 +450,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     // A different last_modified - a genuine restart, its own subscription state was wiped too, it
     // needs the backlog again.
     tail = write_update_one_subscriber(&node, 200, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(3, (uint32_t)test_mock_send_to_call_count);
 }
@@ -475,7 +475,7 @@ static void test_durability_ignored_for_volatile_publisher(void) {
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
 
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }

@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <tickle/tickle.h>
+
 // Defined in exactly one place per test binary; the test .c file does that before including
 // this header (see the DEFINE_STORAGE convention below).
 #ifdef TEST_COMMON_DEFINE_STORAGE
@@ -105,4 +107,28 @@ static inline int test_result(void) {
     }
 
     return 0;
+}
+
+// The head of a discovery announce as the receiver's process_data() takes it (tt_VERSION 7,
+// tt_DISCOVERY_ENDPOINT_ID in tickle.h): the built-in endpoint's DataHeader, then the entity count,
+// then the entities. It stands where tt_VERSION 6's tt_UpdateHeader stood and carries the same two
+// facts, so a test that built an UPDATE builds this instead: test_announce_at() writes the built-in
+// endpoint's ids, test_announce_set_last_modified() the announce's version.
+struct test_announce {
+    struct tt_DataHeader data;
+    struct tt_AnnounceHeader announce;
+} __attribute__((packed));
+
+static inline struct test_announce* test_announce_at(void* buf) {
+    struct test_announce* announce = (struct test_announce*)buf;
+    memset(announce, 0, sizeof(*announce));
+    announce->data.endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
+    announce->data.entity_id = tt_DISCOVERY_ENTITY_ID;
+    return announce;
+}
+
+// As a node does: its last_modified is the timestamp, and its low 32 bits the generation (seq_no).
+static inline void test_announce_set_last_modified(struct test_announce* announce, uint64_t last_modified) {
+    announce->data.timestamp = last_modified;
+    announce->data.seq_no = (uint32_t)last_modified;
 }

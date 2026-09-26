@@ -19,7 +19,7 @@
 #define TEST_MOCK_DEFINE_STORAGE
 #include "test_mock.h"
 
-// Whitebox: process_update()/check_liveliness() are static.
+// Whitebox: process_data()/check_liveliness() are static.
 // rmw_tickle/PLAN.md's Milestone 0(c) - opt-in graph introspection built on top of the same
 // UPDATE processing test_peer_discovery.c/test_liveliness.c already exercise for peers/
 // liveliness, now also recording into an attached struct tt_Discovery.
@@ -47,10 +47,10 @@ static void init_header(struct tt_Header* header, uint8_t source) {
 // Same shape as test_peer_discovery.c's/test_liveliness.c's own helper.
 static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, uint32_t endpoint_id, uint8_t kind,
                                         const char* type, const char* name) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)buf;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(buf);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + tail);
     entity->endpoint_id = endpoint_id;
@@ -69,10 +69,10 @@ static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, ui
 static uint32_t write_update_one_entity_with_lease(uint8_t* buf, uint64_t last_modified, uint32_t endpoint_id,
                                                    uint8_t kind, const char* type, const char* name,
                                                    uint64_t liveliness_lease_duration_ns) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)buf;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(buf);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + tail);
     entity->endpoint_id = endpoint_id;
@@ -126,7 +126,7 @@ static void test_no_discovery_attached_is_a_no_op(void) {
                                             "std_msgs/msg/"
                                             "String",
                                             "topic");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_INT(0, callback_calls);
 }
@@ -145,7 +145,7 @@ static void test_attached_discovery_records_entity_and_fires_callback(void) {
     init_header(&header, REMOTE_NODE_ID);
     uint32_t tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
                                             "std_msgs/msg/String", "my_topic");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_INT(1, callback_calls);
     EXPECT_EQ_U32(REMOTE_NODE_ID, (uint32_t)last_node_id);
@@ -175,17 +175,17 @@ static void test_entity_dropped_from_new_announce_fires_departed(void) {
     init_header(&header, REMOTE_NODE_ID);
     uint32_t tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
                                             "std_msgs/msg/String", "my_topic");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
 
     reset_callback_observations();
 
     // A farewell UPDATE: same source, different (higher) last_modified, zero entities.
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)node.rx_buffer;
-    update_header->last_modified = 200;
-    update_header->entity_count = 0;
-    uint32_t farewell_tail = sizeof(struct tt_UpdateHeader);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, farewell_tail, 0xc0a80a02, 8282));
+    struct test_announce* update_header = test_announce_at(node.rx_buffer);
+    test_announce_set_last_modified(update_header, 200);
+    update_header->announce.entity_count = 0;
+    uint32_t farewell_tail = sizeof(struct test_announce);
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, farewell_tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_INT(1, callback_calls);
     EXPECT_TRUE(last_departed);
@@ -214,7 +214,7 @@ static void test_liveliness_timeout_tombstones_not_frees(void) {
     init_header(&header, REMOTE_NODE_ID);
     uint32_t tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
                                             "std_msgs/msg/String", "my_topic");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
 
     reset_callback_observations();
@@ -231,14 +231,14 @@ static void test_liveliness_timeout_tombstones_not_frees(void) {
     EXPECT_TRUE(strcmp(tombstoned->name, "my_topic") == 0);
 
     // A later re-announce from the same node/entity (liveliness reasserted) must flip it back to
-    // alive - process_update()'s own existing forget_discovered_entities_from_source()-then-
+    // alive - process_data()'s own existing forget_discovered_entities_from_source()-then-
     // decode_update_entities() cycle (unaffected by this milestone) already does this: the
     // tombstone gets wiped for real and a fresh upsert_discovered_entity() call sets alive = true
     // again, indistinguishable here from a first-ever announce.
     reset_callback_observations();
     uint32_t reassert_tail = write_update_one_entity(node.rx_buffer, 300, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
                                                      "std_msgs/msg/String", "my_topic");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, reassert_tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, reassert_tail, 0xc0a80a02, 8282));
 
     EXPECT_TRUE(!last_departed);
     EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
@@ -261,7 +261,7 @@ static void test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full(void) 
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, &discovery, observe_discovery, NULL));
 
     // Fill the whole table with one entity each from tt_MAX_DISCOVERED_ENTITIES distinct *source
-    // nodes* (not one source announcing many entities - process_update()'s own forget-then-readd
+    // nodes* (not one source announcing many entities - process_data()'s own forget-then-readd
     // cycle wipes everything else from the same source on every new announce, so a single source
     // can only ever contribute one live entity per node_id here), then tombstone all of them via a
     // liveliness timeout - table is now full, but entirely of tombstones, not truly-empty slots.
@@ -270,7 +270,7 @@ static void test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full(void) 
         init_header(&source_header, (uint8_t)(REMOTE_NODE_ID + i));
         uint32_t tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID + i, tt_KIND_TOPIC_PUBLISHER,
                                                 "std_msgs/msg/String", "my_topic");
-        EXPECT_TRUE(process_update(&node, &source_header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+        EXPECT_TRUE(process_data(&node, &source_header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     }
     EXPECT_EQ_U32(tt_MAX_DISCOVERED_ENTITIES, tt_Discovery_count(&discovery));
 
@@ -284,7 +284,7 @@ static void test_new_entity_reclaims_a_tombstoned_slot_when_table_is_full(void) 
     init_header(&other_header, (uint8_t)(REMOTE_NODE_ID + tt_MAX_DISCOVERED_ENTITIES));
     uint32_t new_tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID + 999, tt_KIND_TOPIC_SUBSCRIBER,
                                                 "std_msgs/msg/String", "brand_new_topic");
-    EXPECT_TRUE(process_update(&node, &other_header, node.rx_buffer, 0, new_tail, 0xc0a80a03, 8283));
+    EXPECT_TRUE(process_data(&node, &other_header, node.rx_buffer, 0, new_tail, 0xc0a80a03, 8283));
 
     EXPECT_EQ_U32(1, tt_Discovery_count(&discovery)); // the new one reclaimed a tombstoned slot
     const struct tt_DiscoveredEntity* found =
@@ -307,14 +307,14 @@ static void test_detaching_stops_recording(void) {
     init_header(&header, REMOTE_NODE_ID);
     uint32_t tail = write_update_one_entity(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
                                             "std_msgs/msg/String", "my_topic");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(&node, NULL, NULL, NULL));
     reset_callback_observations();
 
     uint32_t second_tail = write_update_one_entity(node.rx_buffer, 999, ENTITY_ID + 1, tt_KIND_TOPIC_SUBSCRIBER,
                                                    "std_msgs/msg/String", "another_topic");
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, second_tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, second_tail, 0xc0a80a02, 8282));
 
     EXPECT_EQ_INT(0, callback_calls);
     // The first entity, recorded before detaching, is untouched - detaching isn't the same as
@@ -327,7 +327,7 @@ static void test_detaching_stops_recording(void) {
 // examples/perf_hil/tickle/liveliness_loss_detection/server.c) must see departed=true at an
 // entity's own short lease boundary, not only ever at check_liveliness()'s fixed ~3s node-wide
 // sweep. The remote node itself keeps announcing on schedule here (update_seen[]/update_last_
-// seen[] are set by process_update() and never reset) - only this one entity's own shorter lease
+// seen[] are set by process_data() and never reset) - only this one entity's own shorter lease
 // is what's being tested.
 static void test_short_lease_entity_tombstoned_before_node_level_sweep(void) {
     struct tt_Node node;
@@ -341,7 +341,7 @@ static void test_short_lease_entity_tombstoned_before_node_level_sweep(void) {
     init_header(&header, REMOTE_NODE_ID);
     uint32_t tail = write_update_one_entity_with_lease(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
                                                        "std_msgs/msg/String", "my_topic", 500);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
     EXPECT_EQ_U32(1, tt_Discovery_count(&discovery));
 
     reset_callback_observations();
@@ -374,7 +374,7 @@ static void test_short_lease_entity_not_tombstoned_before_its_own_lease(void) {
     init_header(&header, REMOTE_NODE_ID);
     uint32_t tail = write_update_one_entity_with_lease(node.rx_buffer, 100, ENTITY_ID, tt_KIND_TOPIC_PUBLISHER,
                                                        "std_msgs/msg/String", "my_topic", 500);
-    EXPECT_TRUE(process_update(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
 
     reset_callback_observations();
     check_liveliness(&node, 500, NULL); // exactly at the lease boundary - still alive

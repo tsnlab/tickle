@@ -7,7 +7,7 @@ classDiagram
         +uint32_t endpoint_count
         +tt_Endpoint* endpoints[256]
         +uint64_t last_modified
-        +tt_UpdateHeader* updates[256]
+        +uint32_t update_generation[256]
         +uint8_t tx_buffer[2944]
         +uint32_t tx_tail
         +uint32_t tx_size
@@ -145,18 +145,23 @@ classDiagram
         +uint16_t length
     }
 
-    class tt_UpdateHeader {
-        <<type=UPDATE>>
-        +uint64_t last_modified
+    class tt_AnnounceHeader {
+        <<discovery payload, after the built-in endpoint's DataHeader>>
         +uint8_t entity_count
     }
 
-    class tt_UpdatePartHeader {
-        <<type=UPDATE_PART>>
-        +uint64_t last_modified
-        +uint8_t part_index
-        +uint8_t part_count
-        +uint8_t entity_count
+    class tt_FragFirstHeader {
+        <<type=FRAG_FIRST>>
+        +tt_DataHeader data
+        +uint8_t frag_count
+    }
+
+    class tt_FragContHeader {
+        <<type=FRAG_CONT>>
+        +uint32_t entity_id
+        +uint32_t seq_no
+        +uint8_t frag_index
+        +uint8_t frag_count
     }
 
     class tt_UpdateEntity {
@@ -172,6 +177,7 @@ classDiagram
         +uint32_t endpoint_id
         +uint32_t seq_no
         +uint64_t timestamp
+        +uint32_t entity_id
     }
 
     class tt_CallRequestHeader {
@@ -190,13 +196,13 @@ classDiagram
     }
 
     tt_Header "1" *-- "1..*" tt_SubmessageHeader : submessages (TLV)
-    tt_SubmessageHeader <|.. tt_UpdateHeader : body when type=1
     tt_SubmessageHeader <|.. tt_DataHeader : body when type=2
     tt_SubmessageHeader <|.. tt_CallRequestHeader : body when type=4
     tt_SubmessageHeader <|.. tt_CallResponseHeader : body when type=5
-    tt_SubmessageHeader <|.. tt_UpdatePartHeader : body when type=7
-    tt_UpdateHeader "1" *-- "0..*" tt_UpdateEntity : entities[]
-    tt_UpdatePartHeader "1" *-- "0..*" tt_UpdateEntity : entities[] (this part's slice)
+    tt_SubmessageHeader <|.. tt_FragFirstHeader : body when type=8
+    tt_SubmessageHeader <|.. tt_FragContHeader : body when type=9
+    tt_DataHeader "1" *-- "0..1" tt_AnnounceHeader : payload when endpoint_id is the discovery endpoint
+    tt_AnnounceHeader "1" *-- "0..*" tt_UpdateEntity : entities[]
 ```
 
 # Sequence Diagrams
@@ -348,58 +354,72 @@ messages actually arriving), the "Discovery-learned peers" section below's own `
 caveat in concrete numbers; `-B` restored both throughput (~4x higher sent rate) and reliability
 (0.7% loss) by coalescing that same flood into far fewer, larger packets.
 
-## Discovery announce in parts (`UPDATE_PART`, type 7)
+## Discovery announce: a DATA of a built-in endpoint
 
-A node announces its endpoints in one `UPDATE` submessage. When that list outgrows one datagram
-(`tt_MAX_BUFFER_LENGTH` - about 15 endpoints with ROS-sized names at the default 1472), it is sent
-as `UPDATE_PART` submessages instead, each in a datagram of its own. The single `UPDATE` stays the
-format whenever it fits: nothing changes for a node that was already discoverable. Added
-2026-09-24; before it, such a node could not be discovered at all, and until the fix just before
-it, it could not send anything either.
+A node announces its endpoints as a `DATA` sample of a built-in discovery endpoint, which is the
+RTPS arrangement. Since `tt_VERSION` 7 (DATA_FRAG step 2, 2026-09-26) it is no longer a submessage
+type of its own. `UPDATE` (type 1) and `UPDATE_PART` (type 7) are retired, and neither number is to
+be reused.
 
-**Wire.** `tt_UpdatePartHeader` = `last_modified` (u64), `part_index` (u8, from 0), `part_count` (u8,
-2 to `tt_UPDATE_MAX_PARTS` = 32), `entity_count` (u8, this part's), followed by that many
-`tt_UpdateEntity` records encoded exactly as in `UPDATE`. Byte order follows the packet header, as
-for every submessage.
+**Wire.** The `tt_DataHeader` carries `endpoint_id = tt_DISCOVERY_ENDPOINT_ID` (0),
+`entity_id = tt_DISCOVERY_ENTITY_ID` (all ones), `timestamp` = the node's `last_modified`, and
+`seq_no` = the announce's **generation**, the low 32 bits of `last_modified`. The payload is
+`tt_AnnounceHeader` (`entity_count`, u8) followed by that many `tt_UpdateEntity` records. Byte
+order follows the packet header, as for every submessage. No user entity is ever given the
+discovery `entity_id`; creation skips it.
+
+The generation changes exactly when the endpoint list does, and differs across a restart. Those
+are the only two things the receiver asks of it. It is carried because a `FRAG_CONT` carries
+`seq_no` and not `timestamp`, and every fragment of an announce has to say which announce it
+belongs to.
+
+**Too large for one datagram.** When the list outgrows a datagram (about 15 endpoints with
+ROS-sized names at 1472), it goes as `FRAG_FIRST`/`FRAG_CONT`, the same types user data uses. It is
+split **at entity boundaries** rather than by bytes: every fragment carries its own
+`tt_AnnounceHeader` and whole entities, and is processed as it arrives, with no reassembly memory.
+That keeps what `UPDATE_PART` gave a node on core defaults (it can discover a node whose announce
+spans datagrams without holding a reassembly buffer the size of the largest possible announce),
+while the wire is one mechanism. A continuation is recognised as discovery by its `entity_id`.
 
 **Sender.**
-- Every part of one announce carries the same `last_modified` and `part_count`, and each is flushed
-  as its own datagram to the same destination the `UPDATE` would have gone to: broadcast
-  periodically, unicast when replying to first contact.
-- Parts are filled greedily in endpoint order, up to the datagram and up to 255 entities per part.
+- An announce that fits one datagram is one `DATA`, broadcast periodically, or unicast when
+  replying to first contact.
+- Otherwise the list is split greedily in endpoint order, each fragment its own datagram to the same
+  destination. Fragments are planned with `FRAG_FIRST`'s larger header, so the plan holds wherever a
+  fragment lands.
 - An endpoint whose record alone could not fit a datagram is left out, logged and counted in
-  `tt_Node.tx_dropped_oversize`. If what remains fits one datagram, it goes as a single `UPDATE`:
-  a one-part announce is never sent.
-- An announce needing more than 32 parts is not sent at all, and is logged and counted.
+  `tt_Node.tx_dropped_oversize`. If what remains fits one datagram, it goes as a single `DATA`: a
+  one-fragment announce is never sent.
+- An announce needing more than 32 fragments is not sent at all, and is logged and counted.
 
-**Receiver - reassembly.**
-- A part whose `last_modified` matches the source's last completed announce is a periodic resend,
-  and is ignored.
-- Otherwise the first part of a `last_modified` (or `part_count`) not yet being assembled starts a
-  new announce. Exactly like a single `UPDATE`, it first forgets everything that source announced
-  before.
-- Each part's entities are applied as they arrive. A repeated part applies the same entities
+**Receiver.**
+- **Liveliness is refreshed first**, on every announce and every fragment, before anything can
+  return. A node whose list never changes resends the same generation every interval, so every
+  announce after its first is a duplicate by `seq_no`, and those duplicates are what keep it alive.
+  `test_update_parts.c` pins this with a control: it checks after every interval, because a node
+  wrongly declared dead is re-learned from its very next announce and the end state alone would
+  look healthy.
+- The discovery endpoint has no Subscriber, no reliable tracking and no deduplication in front of
+  it. The handler compares the generation itself: the one it last acted on is a periodic resend and
+  is ignored.
+- A new generation replaces the source's old list as soon as its first datagram arrives, whole or
+  any fragment: everything the source announced before is forgotten, then this is applied. Each
+  fragment's entities are applied as they arrive, and a repeated fragment applies the same entities
   again, which is harmless because discovery upserts.
-- Once every `part_index` below `part_count` has arrived, the announce is complete. It becomes the
-  source's acted-on announce (`update_last_modified`/`update_seen`), unmatched ack state is
-  dropped, and a first-contact reply goes out: all as for `UPDATE`.
+- Once every fragment has arrived, the announce becomes the source's acted-on one
+  (`update_generation`/`update_seen`), unmatched ack state is dropped, and a first contact gets our
+  own announce back.
 
-**Lost part.** The announce stays incomplete, and the source is known by the parts that did arrive.
-The next periodic announce (`tt_NODE_UPDATE_INTERVAL`) resends every part under the same
-`last_modified`, and that fills the gap without starting over. A source heard only through an
-announce that never completed still expires by the ordinary liveliness rule, since its entities
-are recorded all the same.
+**Lost fragment.** The announce stays incomplete, and the source is known by the fragments that did
+arrive. The next periodic announce (`tt_NODE_UPDATE_INTERVAL`) resends every fragment under the same
+generation, and that fills the gap without starting over. A source heard only through an announce
+that never completed still expires by the ordinary liveliness rule, since its entities are recorded
+all the same.
 
-**Replacement.** A newer `last_modified` replaces the old list the moment its first part arrives.
-A single `UPDATE` from the same source supersedes any assembly in progress (the node has shrunk
-back under a datagram, or it is saying farewell).
-
-**Interop with nodes built before it.** A new submessage type, not part fields inside `UPDATE`, is
-the user's choice of 2026-09-24. An older node skips type 7 as unknown (logging a warning per part),
-so it sees a large node exactly as before, which is not at all, and never as a partial list.
-Reusing `UPDATE` would have been worse: every part shares one `last_modified`, so an older node
-would take the first part as the complete list and deduplicate the rest away, leaving a stable,
-silently partial view. No `tt_VERSION` bump was needed, and small nodes are unaffected.
+**Interop.** A version bump, not new types. The announce itself changed shape, so a node of
+`tt_VERSION` 6 and one of 7 cannot understand each other's discovery. `validate_packet_header()`
+rejects the other version outright, and logs that once per source, rather than letting either side
+misread the other.
 
 ## Samples larger than a datagram (`FRAG_FIRST`/`FRAG_CONT`, types 8 and 9)
 
@@ -561,9 +581,9 @@ Storage comes from one of two places, and both are the caller's:
   allocates it however it likes, and **the caller frees it.** Core only ever holds the pointer.
 
 Discovery state per remote node stays in two plain arrays on `tt_Node`,
-`update_last_modified[tt_MAX_ENDPOINT_COUNT]` and `update_seen[...]`. `process_update()` used to
-`malloc()` a copy of each incoming announce, but only its `last_modified` and seen/not-seen were
-ever read back, so a `uint64_t` plus a `bool` per source is all it keeps.
+`update_generation[tt_MAX_ENDPOINT_COUNT]` and `update_seen[...]`. The announce handler once
+`malloc()`ed a copy of each incoming announce, but only its version and seen/not-seen were ever
+read back, so a `uint32_t` generation plus a `bool` per source is all it keeps.
 
 **The sizes are the caller's decision too**, not just the memory. A Publisher's `capacity`
 (samples) and `arena_size` (bytes) are DDS's `RESOURCE_LIMITS` for that Publisher, per instance:

@@ -19,7 +19,7 @@
 #define TEST_MOCK_DEFINE_STORAGE
 #include "test_mock.h"
 
-// Whitebox: process_update()/check_liveliness()/count_peers()/peek_scheduler() are static.
+// Whitebox: process_data()/check_liveliness()/count_peers()/peek_scheduler() are static.
 // rmw_tickle/PLAN.md's Milestone 0(b) - the timeout-based counterpart to test_peer_discovery.c's
 // content-change dedup tests: a node that stays silent (not just unchanged) has to be noticed.
 #include "../src/tickle.c" // NOLINT(bugprone-suspicious-include) -- whitebox: reaches tickle.c's static functions
@@ -63,10 +63,10 @@ static void init_header(struct tt_Header* header, uint8_t source) {
 // shared so this file doesn't take on a cross-file dependency for one small helper.
 static uint32_t write_update_one_entity(uint8_t* buf, uint64_t last_modified, uint32_t endpoint_id, uint8_t kind,
                                         const char* type, const char* name) {
-    struct tt_UpdateHeader* update_header = (struct tt_UpdateHeader*)buf;
-    update_header->last_modified = last_modified;
-    update_header->entity_count = 1;
-    uint32_t tail = sizeof(struct tt_UpdateHeader);
+    struct test_announce* update_header = test_announce_at(buf);
+    test_announce_set_last_modified(update_header, last_modified);
+    update_header->announce.entity_count = 1;
+    uint32_t tail = sizeof(struct test_announce);
 
     struct tt_UpdateEntity* entity = (struct tt_UpdateEntity*)(buf + tail);
     entity->endpoint_id = endpoint_id;
@@ -84,7 +84,7 @@ static void receive_update(struct tt_Node* node, uint64_t at_time, uint64_t last
     init_header(&header, REMOTE_NODE_ID);
     uint32_t tail = write_update_one_entity(node->rx_buffer, last_modified, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER,
                                             "topic", "sub");
-    EXPECT_TRUE(process_update(node, &header, node->rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_TRUE(process_data(node, &header, node->rx_buffer, 0, tail, 0xc0a80a02, 8282));
 }
 
 // Phase 3 follow-up (2026-09-23) - evidence of life is ANY validated packet from a node, not only
@@ -229,7 +229,7 @@ static void test_expires_peer_after_missed_intervals(void) {
     check_liveliness(&node, past_threshold, NULL);
 
     EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
-    EXPECT_EQ_U32(0, (uint32_t)node.update_last_modified[REMOTE_NODE_ID]);
+    EXPECT_EQ_U32(0, node.update_generation[REMOTE_NODE_ID]);
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
 
@@ -249,7 +249,7 @@ static void test_does_not_expire_before_threshold(void) {
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
 }
 
-// The critical regression case: a *repeated, content-unchanged* announce (process_update()'s own
+// The critical regression case: a *repeated, content-unchanged* announce (process_data()'s own
 // dedup path - see its early return) must still push update_last_seen[] forward, exactly like a
 // changed one would. Without that, a perfectly healthy node whose endpoints never change would
 // get falsely expired the first time check_liveliness() ran after tt_LIVELINESS_MISS_THRESHOLD

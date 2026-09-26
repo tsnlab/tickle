@@ -22,7 +22,7 @@
 # socket to whichever such socket bound last, not by any real address distinction, so that setup
 # silently could not validate any of the unicast paths (a server's CallResponse, a Publisher/
 # Client that has discovered a peer - see tt_UNICAST_PEER_THRESHOLD, the reactive discovery reply
-# in process_update()). Two genuinely distinct addresses have no such ambiguity, and node IDs come
+# in process_announce()). Two genuinely distinct addresses have no such ambiguity, and node IDs come
 # from tt_get_node_id()'s normal auto-detection (last octet of the address on the broadcast
 # subnet) rather than an override, so that path gets exercised for real too.
 #

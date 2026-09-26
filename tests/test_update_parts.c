@@ -8,9 +8,10 @@
  * Software Foundation. A proprietary license is also available on request - see README.md.
  */
 
-// A discovery announce too large for one datagram goes out in parts (tt_SUBMESSAGE_TYPE_UPDATE_PART,
-// DESIGN.md's "Discovery announce in parts"); one that fits stays the single UPDATE every node has
-// always understood. The user's choice, 2026-09-24.
+// A discovery announce too large for one datagram goes out in fragments; one that fits is a single DATA
+// of the built-in discovery endpoint (tt_DISCOVERY_ENDPOINT_ID, tickle.h - tt_VERSION 7). Announce
+// fragments are FRAG_FIRST/FRAG_CONT split at entity boundaries, each processed as it arrives: the
+// semantics UPDATE_PART had from 2026-09-24 (the user's choice then), on the wire user data shares.
 //
 // Before this, a node whose endpoint list outgrew the datagram could not be discovered at all -
 // and, until the fix just before it, went silent altogether. rmw_tickle runs one tt_Node per
@@ -186,11 +187,18 @@ static int announce(void) {
 // --- tests -------------------------------------------------------------------------------------
 
 static void test_announce_that_fits_stays_a_single_update(void) {
-    // Control, and the compatibility promise: nothing changes for a node that fits.
+    // Control: an announce that fits is one DATA of the built-in endpoint, carrying the generation.
     test_mock_reset();
     init_sender(8, 100);
     EXPECT_EQ_INT(1, announce());
-    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_UPDATE, first_submessage(0)->type);
+    const struct tt_SubmessageHeader* sub = first_submessage(0);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA, sub->type);
+    const struct tt_DataHeader* data_header = (const struct tt_DataHeader*)(sub + 1);
+    EXPECT_EQ_U32(tt_DISCOVERY_ENDPOINT_ID, data_header->endpoint_id);
+    EXPECT_EQ_U32(tt_DISCOVERY_ENTITY_ID, data_header->entity_id);
+    EXPECT_EQ_U32(100, data_header->seq_no);
+    EXPECT_EQ_U64(100, data_header->timestamp);
+    EXPECT_EQ_INT(8, ((const struct tt_AnnounceHeader*)(data_header + 1))->entity_count);
 }
 
 static void test_large_announce_goes_in_datagram_sized_parts(void) {
@@ -204,13 +212,26 @@ static void test_large_announce_goes_in_datagram_sized_parts(void) {
     for (int d = 0; d < n; d++) {
         EXPECT_TRUE(datagram_len[d] <= tt_CONTROL_MAX_LENGTH); // whatever tt_MAX_BUFFER_LENGTH is
         const struct tt_SubmessageHeader* sub = first_submessage(d);
-        EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_UPDATE_PART, sub->type);
-        const struct tt_UpdatePartHeader* part = (const struct tt_UpdatePartHeader*)(sub + 1);
-        EXPECT_EQ_INT(d, part->part_index);
-        EXPECT_EQ_INT(n, part->part_count);
-        EXPECT_EQ_U32(100, (uint32_t)part->last_modified);
+        const struct tt_AnnounceHeader* part;
+        if (d == 0) {
+            EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_FRAG_FIRST, sub->type);
+            const struct tt_FragFirstHeader* first = (const struct tt_FragFirstHeader*)(sub + 1);
+            EXPECT_EQ_U32(tt_DISCOVERY_ENDPOINT_ID, first->data.endpoint_id);
+            EXPECT_EQ_U32(tt_DISCOVERY_ENTITY_ID, first->data.entity_id);
+            EXPECT_EQ_U32(100, first->data.seq_no);
+            EXPECT_EQ_INT(n, first->frag_count);
+            part = (const struct tt_AnnounceHeader*)(first + 1);
+        } else {
+            EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_FRAG_CONT, sub->type);
+            const struct tt_FragContHeader* cont = (const struct tt_FragContHeader*)(sub + 1);
+            EXPECT_EQ_U32(tt_DISCOVERY_ENTITY_ID, cont->entity_id); // how a continuation says "discovery"
+            EXPECT_EQ_U32(100, cont->seq_no);
+            EXPECT_EQ_INT(d, cont->frag_index);
+            EXPECT_EQ_INT(n, cont->frag_count);
+            part = (const struct tt_AnnounceHeader*)(cont + 1);
+        }
         EXPECT_EQ_U32(sizeof(struct tt_Header) + sub->length, datagram_len[d]); // one submessage per datagram
-        entities += part->entity_count;
+        entities += part->entity_count;                                         // whole entities in every fragment
     }
     EXPECT_EQ_U32(MAX_ENDPOINTS, entities);
     EXPECT_EQ_U32(0, (uint32_t)sender.tx_dropped_oversize);
@@ -236,7 +257,7 @@ static void test_receiver_matches_endpoints_from_every_part(void) {
     EXPECT_TRUE(matched(1));
     EXPECT_TRUE(matched(2));
     EXPECT_TRUE(receiver.update_seen[SENDER_ID]);
-    EXPECT_EQ_U32(100, (uint32_t)receiver.update_last_modified[SENDER_ID]);
+    EXPECT_EQ_U32(100, receiver.update_generation[SENDER_ID]);
     EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
 }
 
@@ -277,7 +298,7 @@ static void test_completed_announce_replaces_the_previous_one(void) {
     announce();
     deliver_all();
     EXPECT_TRUE(receiver.update_seen[SENDER_ID]);
-    EXPECT_EQ_U32(101, (uint32_t)receiver.update_last_modified[SENDER_ID]);
+    EXPECT_EQ_U32(101, receiver.update_generation[SENDER_ID]);
     EXPECT_TRUE(!matched(0));
 }
 
@@ -311,7 +332,7 @@ static void test_single_update_supersedes_parts_in_progress(void) {
     deliver(0);
     EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
     EXPECT_TRUE(receiver.update_seen[SENDER_ID]);
-    EXPECT_EQ_U32(200, (uint32_t)receiver.update_last_modified[SENDER_ID]);
+    EXPECT_EQ_U32(200, receiver.update_generation[SENDER_ID]);
     EXPECT_TRUE(matched(0));
 }
 
@@ -335,20 +356,122 @@ static void test_node_heard_only_through_parts_still_expires(void) {
 static void test_malformed_part_headers_are_rejected(void) {
     test_mock_reset();
     init_sender(MAX_ENDPOINTS, 100);
-    announce();
+    int n = announce();
+    EXPECT_TRUE(n >= 2);
     const int topics[] = {0};
     init_receiver(topics, 1);
-    struct tt_UpdatePartHeader* part =
-        (struct tt_UpdatePartHeader*)((struct tt_SubmessageHeader*)(datagrams[0] + sizeof(struct tt_Header)) + 1);
-    part->part_count = 1; // a single part is a single UPDATE, never a part
+    struct tt_FragFirstHeader* first =
+        (struct tt_FragFirstHeader*)((struct tt_SubmessageHeader*)(datagrams[0] + sizeof(struct tt_Header)) + 1);
+    first->frag_count = 1; // one fragment is a whole announce, never a fragment
     deliver(0);
-    part->part_count = tt_UPDATE_MAX_PARTS + 1;
+    first->frag_count = tt_UPDATE_MAX_PARTS + 1;
     deliver(0);
-    part->part_count = 2;
-    part->part_index = 2; // index past the count
-    deliver(0);
+    struct tt_FragContHeader* cont =
+        (struct tt_FragContHeader*)((struct tt_SubmessageHeader*)(datagrams[1] + sizeof(struct tt_Header)) + 1);
+    cont->frag_index = cont->frag_count; // index past the count
+    deliver(1);
     EXPECT_EQ_U32(0, receiver.update_part_received[SENDER_ID]);
     EXPECT_TRUE(!matched(0));
+    // Control: the same fragment with a sane header is taken, so the refusals above were the headers'.
+    cont->frag_index = 1;
+    deliver(1);
+    EXPECT_TRUE(receiver.update_part_received[SENDER_ID] != 0);
+}
+
+// --- liveliness versus deduplication (DATAFRAG_PLAN.md 6.4) --------------------------------------
+//
+// A node whose endpoint list never changes resends the same generation every tt_NODE_UPDATE_INTERVAL,
+// so every announce after the first is a duplicate by seq_no. Those duplicates are what keep it alive:
+// liveliness has to be refreshed before the generation is compared, or a quiet node is declared dead
+// while announcing on schedule.
+//
+// The announces go to process_data() directly rather than through process_packet(), on purpose:
+// process_packet() also refreshes the traffic clock, and check_liveliness() declares a node dead only
+// when both clocks are quiet - so through process_packet() a refresh in the wrong order would be masked
+// by the traffic clock, and this test could not fail.
+
+static void deliver_announce_only(int d) {
+    struct tt_Header* header = (struct tt_Header*)datagrams[d];
+    uint32_t head = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader);
+    EXPECT_TRUE(process_data(&receiver, header, datagrams[d], head, datagram_len[d], SENDER_IP, SENDER_PORT));
+}
+
+// Runs the receiver's liveliness check once per announce interval for longer than the miss threshold,
+// the sender resending its unchanged announce before each check when `resend` is set. Returns how many
+// of those checks found the sender dead. Checked after every interval rather than once at the end: a
+// node wrongly declared dead is re-learned from its very next announce - which, once update_seen is
+// cleared, is no longer a duplicate - so the end state alone would look healthy. That is exactly how the
+// first version of this test passed with the refresh moved after deduplication.
+static int run_intervals(bool resend) {
+    int dead = 0;
+    for (int k = 1; k <= tt_LIVELINESS_MISS_THRESHOLD + 2; k++) {
+        test_mock_now = (uint64_t)k * tt_NODE_UPDATE_INTERVAL;
+        if (resend) {
+            EXPECT_EQ_INT(1, announce());
+            deliver_announce_only(0);
+        }
+        check_liveliness(&receiver, test_mock_now, NULL);
+        if (!receiver.update_seen[SENDER_ID]) {
+            dead++;
+        }
+    }
+    return dead;
+}
+
+static void test_unchanged_resends_keep_a_quiet_node_alive(void) {
+    test_mock_reset();
+    init_sender(4, 100);
+    const int topics[] = {0};
+    init_receiver(topics, 1);
+    EXPECT_EQ_INT(1, announce());
+    deliver_announce_only(0);
+    EXPECT_TRUE(receiver.update_seen[SENDER_ID]);
+    EXPECT_TRUE(matched(0));
+
+    EXPECT_EQ_INT(0, run_intervals(true)); // never declared dead: every resend refreshed it
+    EXPECT_TRUE(matched(0));
+}
+
+static void test_a_silent_node_is_still_declared_dead(void) {
+    // Control for the test above: the same timeline with no resends does expire the node, so "still
+    // alive" above was the resends' doing and not a liveliness check that never fires.
+    test_mock_reset();
+    init_sender(4, 100);
+    const int topics[] = {0};
+    init_receiver(topics, 1);
+    EXPECT_EQ_INT(1, announce());
+    deliver_announce_only(0);
+    EXPECT_TRUE(matched(0));
+
+    EXPECT_TRUE(run_intervals(false) > 0);
+    EXPECT_TRUE(!receiver.update_seen[SENDER_ID]);
+    EXPECT_TRUE(!matched(0));
+}
+
+static void test_same_generation_does_not_reapply_but_a_new_one_does(void) {
+    // Deduplication's own half: a resend of the generation already acted on changes nothing, which is
+    // made visible here by withdrawing the match by hand - an unchanged resend must not restore it. A
+    // new generation must (control).
+    test_mock_reset();
+    init_sender(4, 100);
+    const int topics[] = {0};
+    init_receiver(topics, 1);
+    EXPECT_EQ_INT(1, announce());
+    deliver_announce_only(0);
+    EXPECT_TRUE(matched(0));
+
+    for (int i = 0; i < tt_MAX_PEER_COUNT; i++) {
+        receiver_pubs[0].peers[i].node_id = tt_NODE_ID_INVALID;
+    }
+    EXPECT_EQ_INT(1, announce());
+    deliver_announce_only(0);
+    EXPECT_TRUE(!matched(0)); // not re-applied
+
+    sender.last_modified = 101;
+    EXPECT_EQ_INT(1, announce());
+    deliver_announce_only(0);
+    EXPECT_TRUE(matched(0)); // a new generation is
+    EXPECT_EQ_U32(101, receiver.update_generation[SENDER_ID]);
 }
 
 int main(void) {
@@ -361,6 +484,9 @@ int main(void) {
     test_single_update_supersedes_parts_in_progress();
     test_node_heard_only_through_parts_still_expires();
     test_malformed_part_headers_are_rejected();
+    test_unchanged_resends_keep_a_quiet_node_alive();
+    test_a_silent_node_is_still_declared_dead();
+    test_same_generation_does_not_reapply_but_a_new_one_does();
 
     if (test_result() != 0) {
         return 1;
