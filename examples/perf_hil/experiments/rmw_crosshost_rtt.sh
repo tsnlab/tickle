@@ -197,11 +197,13 @@ cap_start() { # $1 file stem. Each run writes its own file, owned by ci (-Z ci),
     # after the first then copied the same stale file. The start time on each host goes into $OUT so that
     # rmw_pcap_split.py can refuse a capture that began before its own run.
     local h role
+    # -U writes each packet as it comes: without it the first copy of a capture was a 40,960-byte prefix of the
+    # file tcpdump went on to finish, because the copy is taken while tcpdump still holds a buffer.
     CAP_FILE=/tmp/rmwx_cap_$1_$(date +%s).pcap
     for h in "$CLIENT" "$SERVER"; do
         role=ping; [ "$h" = "$SERVER" ] && role=pong
         say "  capture stem=$1 role=$role t0_ns=$(sh_ "$h" "date +%s%N")"
-        sh_ "$h" "sudo -n tcpdump -Z ci -i eth0 -n -s 256 --time-stamp-precision=nano -G $CAP_S -W 1 -w $CAP_FILE udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
+        sh_ "$h" "sudo -n tcpdump -U -Z ci -i eth0 -n -s 256 --time-stamp-precision=nano -G $CAP_S -W 1 -w $CAP_FILE udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
     done
     sleep 1
 }
@@ -230,8 +232,8 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     env=$(env_for "$rmw")
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0=""
-    if [ "$CAPTURE" = 1 ]; then cap_start "${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}"; off0=$(clock_offset); fi
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}"
+    if [ "$CAPTURE" = 1 ]; then cap_start "$stem"; off0=$(clock_offset); fi
     local dumpenv=""
     case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
     pongpid=$(sh_ "$SERVER" "$env; $dumpenv nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
@@ -247,7 +249,15 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # per-process totals, not per-message costs, and compare only between rmw implementations run alike.
     local waitflag=""
     [ "$WAITS" != poll ] && waitflag="--wait $WAIT"
-    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/dev/null; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^ping_utime_s' | tr '\n' ' ' || true)
+    # How many ping/pong processes are alive on both Pis as the ping starts (2026-09-26), found by /proc/PID/exe,
+    # never by name. More than one of either means a leftover from an earlier row is answering or announcing
+    # too: every rmw would see extra peers, and rmw_tickle would broadcast above tt_UNICAST_PEER_THRESHOLD.
+    local procs
+    procs="pong_procs=$(sh_ "$SERVER" "n=0; for q in /proc/[0-9]*; do [ \"\$(readlink \$q/exe 2>/dev/null)\" = $BIN/pong_node ] && n=\$((n+1)); done; echo \$n") ping_procs_before=$(sh_ "$CLIENT" "n=0; for q in /proc/[0-9]*; do [ \"\$(readlink \$q/exe 2>/dev/null)\" = $BIN/ping_node ] && n=\$((n+1)); done; echo \$n")"
+    # The ping's own log (stderr) is kept per row with the pong's in $OUT.logs, for questions such as which peers
+    # rmw_tickle's publisher registered.
+    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^ping_utime_s' | tr '\n' ' ' || true)
+    res="$res $procs"
     local pongcpu
     # pong_cpu_ns: summed run time of every pong thread from /proc/PID/task/*/schedstat (ns), because the
     # tick-based utime+stime (pong_cpu_s, 10 ms granularity) cannot separate rmw_tickle from CycloneDDS.
@@ -255,10 +265,13 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
+    mkdir -p "$OUT.logs"
+    scp -q -i "$K" -o BatchMode=yes "ci@$CLIENT:/tmp/rmwx_ping.log" "$OUT.logs/${stem}_ping.log" 2>/dev/null || say "  (no ping log)"
+    scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_pong.log" "$OUT.logs/${stem}_pong.log" 2>/dev/null || say "  (no pong log)"
     if [ "$CAPTURE" = 1 ]; then
         local off1; off1=$(clock_offset)
-        say "  clock_offset_ns stem=${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM} before: ${off0}after: ${off1}"
-        cap_collect "${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}"
+        say "  clock_offset_ns stem=$stem before: ${off0}after: ${off1}"
+        cap_collect "$stem"
     fi
     case "$rmw" in rmw_tickle*)
         sleep 1; mkdir -p "$OUT.dumps"
