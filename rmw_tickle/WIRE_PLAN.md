@@ -422,6 +422,31 @@ different `tt_Node` layout around `node->hal`.
 - **Control:** `8f3811f4` against itself as a second arm pinned the same way. Its difference must be within 2 x SE,
   or the run is void.
 
+### 8.9 The pre-v10 parent against `main`, A B B A: no CPU, rate, byte or latency row WORSE (2026-09-27)
+
+`campaign_ab_chain.sh`, `8f3811f4` / `173268a6` / `173268a6` / `8f3811f4`. `main` at `173268a6` carries v10 with its
+receive fix, the summary skip, D1, D3, D4, D5 and the ride-ahead. 3 repetitions per block, 72 + 72 ok rows, 0 VOID.
+Raw rows are `results/wire_final_abba_{A_8f3811f4,B_173268a6}_2026-09-27.txt`. Read by 8.3: 38 better, 66 held,
+4 WORSE.
+
+- **CPU per sample: WORSE nowhere.**
+  - The server is better at c5, c6, c7, c8 and c9 (-1.4 to -2.4%, t -4 to -24).
+  - The client is better at c2 (-0.9%) and held everywhere else. That includes the reliable p1 cells c1 (-0.1%) and
+    c9 (-0.1%), where 8.4 found v10 alone +0.7-0.8%. On `main`, the D-series more than covers it.
+- **Send rate:** better at c2, c3, c4, c6 and c7 (+0.4 to +3.6%), held elsewhere.
+- **Wire bytes:** better in every cell.
+- **Latency:** every latency cell held (p1 0.209 -> 0.208 ms).
+- **The 4 WORSE rows are all peak RSS, +6 to +12 KB (+0.3-0.5%):** the client at c4 and c9, the server at c5 and c8.
+  - That is 4 of 21 peak-RSS rows, so they are chance candidates under 8.3, not confirmed.
+  - The client's peak RSS leans upward in 11 of 12 cells (+0.0 to +0.5%), however, so a small real rise is
+    plausible. It is checked statically (binary size, `sizeof(struct tt_Node)`) and by a targeted re-run before it
+    is called either way.
+- **Standing against section 1:**
+  - On the user's literal reading ("every test better than before the wire change"), `main` meets it on CPU, rate,
+    bytes and latency. The one open item is the peak-RSS lean.
+  - On Plan's reading, which the user chose at 08:00 ("결정 1은 너의 추천을 따를게"), the wire change is judged
+    alone. There v10's reliable client cost on the Pi (8.4) stays open until 8.8's real-socket run explains it.
+
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
 **What it can save.**
