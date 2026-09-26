@@ -287,6 +287,134 @@ sequenceDiagram
     end
 ```
 
+# Wire Protocol
+
+This chapter is the specification of what TickLE puts on the wire, as of `tt_VERSION` 8. The decision
+sections further down explain *why* each part looks as it does; this chapter says *what* it is, in one
+place. The structs named here are in `include/tickle/tickle.h`, and they are the authority if this text
+and the code ever disagree.
+
+## Transport and addressing
+
+- **UDP over IPv4.** Every node has two sockets:
+  - the **well-known socket**, bound to the wildcard address on the well-known port (`_tt_NODE_PORT`,
+    8282 by default), which receives broadcasts;
+  - the **data socket**, bound to the node's address on its own port, which sends everything and receives
+    unicast. A peer's unicast address is learned from the source address of its datagrams.
+- **Broadcast**, to the configured link broadcast address (`_tt_CONFIG.broadcast`, the limited broadcast
+  `255.255.255.255` by default). It carries discovery, and data for a publisher that has no peers or
+  more than `tt_UNICAST_PEER_THRESHOLD` (2) of them. Otherwise a publisher's data is unicast to each
+  learned subscriber ("Discovery-learned peers" below).
+- **Datagram size:** at most `tt_MAX_BUFFER_LENGTH` bytes of UDP payload, 1472 by default (a standard
+  Ethernet MTU with no IP fragmentation). A sample larger than that is split by TickLE itself
+  (`FRAG_FIRST`/`FRAG_CONT`), never by the IP layer.
+
+## Datagram layout
+
+A datagram is one `tt_Header` followed by one or more submessages, each a type-length-value record:
+
+```
++--------------------------------------------------------------+
+| tt_Header (4 B): magic[2] "KT" (LE) / "TK" (BE) | version | source |
++--------------------------------------------------------------+
+| tt_SubmessageHeader (4 B): type | receiver | length (bytes)   |
+| body: a type-specific header, then the payload (CDR-4)      |
+| ... padded so the next submessage starts 4-byte aligned      |
++--------------------------------------------------------------+
+| next submessage ...                                          |
++--------------------------------------------------------------+
+```
+
+- `magic` gives the sender's byte order. Senders write native order; receivers swap ("Byte order" below).
+- `version` is `tt_VERSION`. A datagram of another version is dropped, and the mismatch is logged once
+  per remote node.
+- `source` is the sending node's ID (1-254; 0 is `tt_NODE_ID_INVALID`).
+- `receiver` is the destination node ID, or `tt_SUBMESSAGE_ID_ALL` (0xff) for every node.
+- `length` is the whole submessage in **bytes**, header included, normally padded to a multiple of 4. It
+  is the offset to the next submessage. It is not a count of 4-byte words.
+
+## Submessages
+
+| type | name | body header | size | purpose |
+|---:|---|---|---:|---|
+| 1 | *(retired: UPDATE)* | - | - | never reused |
+| 2 | `DATA` | `tt_DataHeader`: endpoint_id, seq_no, timestamp, entity_id | 20 B | one sample in one datagram |
+| 3 | `ACKNACK` | `tt_AckNackHeader`: endpoint_id, entity_id, sender_entity_id, seq_no, bitmap_words, bitmap[] | 20 + 8 × words B | a reader's cumulative ack plus a bitmap of what it is missing |
+| 4 | `CALLREQUEST` | `tt_CallRequestHeader`: endpoint_id, seq_no (16-bit), retry, reserved | 8 B | a service request |
+| 5 | `CALLRESPONSE` | `tt_CallResponseHeader`: endpoint_id, seq_no, retry, return_code | 8 B | its response |
+| 6 | `HEARTBEAT` | `tt_HeartbeatHeader`: endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags, pad | 20 B | a writer's range, soliciting ACKNACKs |
+| 7 | *(retired: UPDATE_PART)* | - | - | never reused |
+| 8 | `FRAG_FIRST` | `tt_FragFirstHeader`: a whole `tt_DataHeader` + frag_count | 21 B | first datagram of a fragmented sample |
+| 9 | `FRAG_CONT` | `tt_FragContHeader`: entity_id, seq_no, frag_index, frag_count | 10 B | every later datagram of it |
+
+`FRAG_FIRST` and `FRAG_CONT` are not padded, so a fragment's payload starts right after its header.
+
+**Identifiers.**
+- `endpoint_id` is a 32-bit hash of the topic or service name and the endpoint name. Every instance of an
+  endpoint on a node shares it.
+- `entity_id` identifies one instance within its node; the pair (source node, entity_id) identifies a
+  writer network-wide.
+- `seq_no` is per writer and **per datagram**: a sample of k fragments uses k consecutive numbers
+  (`DATAFRAG_PLAN.md` §13). Loss recovery works per datagram, through ACKNACK's bitmap of
+  `tt_RELIABLE_BITMAP_WORDS` 64-bit words.
+
+## Built-in discovery endpoint (`tt_DISCOVERY_ENDPOINT_ID` 0)
+
+Discovery is ordinary traffic on a built-in endpoint (endpoint_id 0, entity_id `tt_DISCOVERY_ENTITY_ID`),
+in the RTPS arrangement, rather than message types of its own:
+
+| role | submessage | addressed | contents |
+|---|---|---|---|
+| summary, every interval (1 s) | HEARTBEAT | broadcast | `first_available_seq_no = last_seq_no` = the node's generation (low 32 bits of `last_modified`) |
+| request for the list | ACKNACK | unicast to the summary's sender | `seq_no` = the generation wanted |
+| the list | DATA / FRAG_FIRST+FRAG_CONT | unicast to the requester | `tt_AnnounceHeader` + `tt_UpdateEntity` records |
+| a change (endpoint created or destroyed) | the list | broadcast, at once | the new generation |
+
+- A changed list heard by broadcast is answered once with the receiver's own list, unicast.
+- An unanswered request is re-sent every `tt_DISCOVERY_REQUEST_RETRY` (10 ms), up to
+  `tt_DISCOVERY_REQUEST_ATTEMPTS` times.
+- A large list is fragmented **at entity boundaries**. Every fragment carries its own `tt_AnnounceHeader`
+  and whole entities, so it is applied as it arrives, with no reassembly memory.
+- Every summary and list refreshes the sender's liveliness. A node is presumed gone after
+  `tt_LIVELINESS_SILENCE_NS` (3.5 intervals) of silence, or on its goodbye (its list broadcast at
+  destroy).
+- The detail and the reasons are in "Discovery announce: a DATA of a built-in endpoint" below and in
+  `rmw_tickle/DISCOVERY_PLAN.md`.
+
+## Payload
+
+- Sample payloads are TickLE CDR-4 ("Interface serialization" below), which caps alignment at 4.
+- `rmw_tickle` prefixes each sample with its own 8-byte publication sequence number: the ROS sample
+  number, distinct from the core's per-datagram `seq_no`.
+
+## Versioning rule
+
+`tt_VERSION` changes whenever a byte on the wire changes meaning, including a new use of an existing
+submessage or flag. There is no partial compatibility: two versions do not talk, and the mismatch is
+logged. Numbers of retired types are never reused. History:
+- 5: ACKNACK bitmap widened.
+- 6: a per-subscriber ack identity (ACKNACK `sender_entity_id`) and a wider window.
+- 7: discovery became a DATA of a built-in endpoint; UPDATE/UPDATE_PART retired.
+- 8: periodic summary and pulled list.
+- 9 is planned, for `tt_HEARTBEAT_FLAG_LIVELINESS` (`rmw_tickle/LIVELINESS_PLAN.md`).
+
+## Per-datagram overhead, the baseline for wire optimisation
+
+Framing bytes on the wire besides the payload, for one sample in one datagram:
+
+| layer | bytes |
+|---|---:|
+| Ethernet + IPv4 + UDP (outside TickLE's control) | 14 + 20 + 8 = 42 |
+| `tt_Header` | 4 |
+| `tt_SubmessageHeader` | 4 |
+| `tt_DataHeader` | 20 |
+| rmw_tickle's publication sequence number (rmw only) | 8 |
+| **TickLE framing, core / rmw** | **28 / 36** |
+
+`COMPARISON.md` row 41 measures the whole on-wire cost per sample against FastDDS and CycloneDDS. Any
+change to this chapter's formats follows `rmw_tickle/WIRE_PLAN.md`: a wire change must leave every test
+better than before (the user's rule of 2026-09-26).
+
 # Performance & Reliability Decisions
 
 A few internal choices exist specifically to keep tail latency and syscall/CPU overhead down.
