@@ -664,3 +664,29 @@ whole run's schedstat (4 s idle + 5 s traffic):
 **Worth knowing for a next variant.** The RTT gain is real and large, -4.6 us of ~45, beyond run-to-run noise. A
 version that keeps it must stop the spurious wakes without a syscall per claim - for example, a claim that disarms
 only when the armed deadline falls within the expected hold. That is not designed here.
+
+### 9.3 R1d - a claim disarms only a timer due inside its expected hold (pre-registered 2026-09-27, before code; branch only)
+
+**Why.** R1 moved RTT by -4.6 us, and the stamps put the gain outside the release (9.2), plausibly in the claim-time
+disarm. R1 lost on CPU because a timer left armed fires during long holds.
+
+**The change.**
+- A claim disarms the park timer only if it is armed to fire before now + 1.5 x the last hold (claim -> release, kept
+  in the context; the same 1.5 x rule 8.6 applies to the away time).
+- A release re-arms it as today, which pushes the deadline on.
+- So:
+  - a short hold, the pong at a 5 ms gap and the ping at any gap, makes no claim syscall and never sees the timer
+    fire;
+  - a long hold, the pong at the 100 ms gap, disarms as today.
+
+**Why this and not a lazy disarm.** Leaving the timer armed and letting it fire once per hold would cost the pong one
+parked-thread wake per message at 100 ms, which Plan's wake bar forbids. The predictor exists already.
+
+**Also measured.** The claim-time `timerfd_settime()` itself, stamped before and after, in main. If it is only a few
+hundred ns, the RTT gain is an indirect kernel cost, and this says so.
+
+**PASS, all of:**
+- veth RTT median better beyond 2 x SE at gap 5 ms or at gap 100 ms, over 5 interleaved reps;
+- pong whole-run CPU not WORSE beyond 2 x SE, at both gaps;
+- pong `park_wakes` per run no more than +10% over main, at both gaps;
+- 8.6's timer-latency tests green.
