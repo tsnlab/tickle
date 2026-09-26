@@ -102,3 +102,53 @@ How each reading will be taken:
   CycloneDDS's path (section 3) is the candidate.
 - **H3 (the extra receive per drain):** trace_rxb8 against trace RTT. A drop of more than 10 us means it
   matters. Within 10 us means it does not.
+
+## 6. The H1-H3 session: all three refuted, and the time is somewhere else (2026-09-26)
+
+`results/rmw_h123_2026-09-26/` (rows plus the rep-2 dumps; the full set was 18 dumps), build `9e989307`,
+30 rows and 0 void. Each variant's pong mapped its own library.
+
+| Bench, median of 3 | RTT best_effort | RTT reliable | pong CPU (ns-summed, whole run) | pong peak RSS |
+|---|---:|---:|---:|---:|
+| rmw_tickle default | 0.504 ms | 0.506 ms | **34.4 ms** | **11,760 KB** |
+| rmw_tickle trace | 0.510 | 0.514 | 34.4 | 11,788 |
+| rmw_tickle trace + RX_BATCH 8 | 0.504 | 0.508 | 34.7 | 12,172 |
+| rmw_fastrtps_cpp | 0.476 | 0.486 | 56.0 | 23,620 |
+| rmw_cyclonedds_cpp | **0.426** | **0.429** | 42.8 | 14,536 |
+
+Read against section 5's pre-registration:
+- **The stamps' own cost is +6 / +8 us**, under the 10 us threshold, so the segments can be read as they
+  are.
+- **H1 is refuted.** The pong's node lock was contended 0-4 times in ~950 acquisitions per run, which is
+  0.01-0.04 per round trip against a threshold of about 1. The executor does not wait on the poll thread.
+- **H3 is refuted.** RX_BATCH 8 against trace is -6 us, within the 10 us threshold.
+- **H2, the pong's own path from poll wake to reply sent, is a median 32 us:**
+  - publish → tx_done 12.3 us
+  - signaled → exec_wake 7.8 us
+  - exec_wake → taken 3.1 us
+  - deliver → signaled 3.1 us
+  - rx_wake → rx_datagram 2.7 us
+  - rx_datagram → deliver 0.7 us
+  - taken → publish 0.8 us
+
+  No single segment is large.
+- **New and unambiguous: CPU.** With the pong's thread run times summed from `schedstat` in
+  nanoseconds, rmw_tickle uses the least CPU of the three: 34.4 ms against CycloneDDS's 42.8-47.4 and
+  FastDDS's 56.0-59.5. The 10 ms tick could not show this.
+
+**The accounting does not close, and that is the finding.**
+- rmw_tickle adds about 300 us to TickLE's native round trip (0.207 → 0.505 ms). CycloneDDS's `rmw` adds
+  about 167 us to its own (0.259 → 0.426).
+- The pong's whole stamped path is 32 us. The ping's equivalent halves, publish and receive-to-take, are
+  of the same order, so everything stamped comes to roughly 60 us per round trip.
+- **About 240 us per round trip lies outside every stamped segment.** The only unstamped stretches are
+  before `rx_wake` (packet arrival to the poll thread returning from `ppoll`), after `tx_done` (to the
+  wire), and the network itself.
+
+**Next (Plan, no code change needed): packet timestamps on both hosts.** `sudo tcpdump` is available on
+the rig. On the pong host, the time from the ping's arrival to the reply's departure is the pong's
+whole turnaround, kernel wake included, on one clock. It is framework-neutral, so the same number exists
+for CycloneDDS and FastDDS, and for the native TickLE harness. On the ping host, application RTT
+minus on-wire RTT is the ping side's overhead. Together they split the round trip into ping side, wire
+and pong side for all three `rmw` implementations and the native harness. Aligning the pong's pcap
+times with its `rx_wake` stamps then measures arrival → poll wake directly.

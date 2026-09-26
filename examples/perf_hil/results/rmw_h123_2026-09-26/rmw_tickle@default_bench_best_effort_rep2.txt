@@ -1,0 +1,2 @@
+lock acquisitions=956 contended=0 wait_ns=0 poller_contended=0 poller_wait_ns=0
+points 1=rx_wake 2=rx_datagram 3=deliver 4=signaled 5=exec_wake 6=taken 7=publish 8=tx_done
