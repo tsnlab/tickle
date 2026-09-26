@@ -210,12 +210,13 @@ auto main(int argc, char** argv) -> int {
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d transport_profile=%s %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d "
+           "transport_profile=%s %s\n",
            static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.write_fail), elapsed_s, mbps,
            opts.max_blocking_ms, drained, opts.drain_s, BenchCpuPlace_main_cpu(&cpu_place),
            BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations, opts.keep_last_depth > 0 ? 0 : 1,
-           opts.keep_last_depth, static_cast<int>(opts.keepall_samples),
-           harness::transport_profile(), harness::bench_fields(BENCH_ROLE_SENDER, result.sent));
+           opts.keep_last_depth, static_cast<int>(opts.keepall_samples), harness::transport_profile(),
+           harness::bench_fields(BENCH_ROLE_SENDER, result.sent));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

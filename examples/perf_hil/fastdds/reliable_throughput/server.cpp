@@ -157,7 +157,8 @@ auto main(int argc, char** argv) -> int {
     bench_stats_end(&harness::g_bench_stats);
 
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d keepall_samples=%d transport_profile=%s %s\n",
+           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d keepall_samples=%d "
+           "transport_profile=%s %s\n",
            static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
            mbps, opts.keep_last_depth > 0 ? 0 : 1, opts.keep_last_depth, static_cast<int>(opts.keepall_samples),
            harness::transport_profile(), harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received));
