@@ -1216,6 +1216,16 @@ number that looked fine and meant nothing.
   of 14,002. `loss_pct` measures gaps between the sequence numbers that *arrived*; samples that
   never arrived leave no gap to count, so it reads a clean zero across a 67%-vs-1.4% difference and
   would have been scored a three-way TIE.
+  **Changed 2026-09-26 by the user's decision** (translated: "compare the complete vendors with each
+  other"), recorded before the first run it applies to was read. An incomplete *vendor* no longer
+  voids the cell: it is excluded from that cell's verdicts, because its per-sample figures come from a
+  truncated run, and is reported on its own DELIVERY FAILED line. TickLE is then scored against the
+  vendors that delivered everything. An incomplete *TickLE* makes every metric of the cell a LOSE.
+  The rule is deliberately asymmetric, in the direction that costs TickLE, since applying the vendor
+  rule to TickLE would let its own delivery failure pass unscored. It was triggered by c6 (p4 under
+  5% loss), where FastDDS delivered 28-29% in two separate runs while TickLE and CycloneDDS delivered
+  100%. `campaign_summary.py`'s `delivery_verdict()` carries the rule, and both branches were checked
+  against real result files before use.
 - **History-policy mismatch.** It fired on **c9**: TickLE ran KEEP_LAST 64 while both DDS harnesses
   were hard-coded KEEP_ALL, with nothing in the output saying so.
 - **Absolute CPU seconds are not a verdict metric at all.** Every throughput cell runs for a fixed

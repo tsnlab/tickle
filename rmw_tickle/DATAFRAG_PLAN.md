@@ -433,3 +433,13 @@ at 2.28-2.31.** If packets per sample rises, the slots are binding and the chang
 
 **c6 still cannot be scored under the current rule while FastDDS is incomplete.** Whether it ever
 can is the user's decision (section 8), and it has been put to them.
+
+### 10.1 The c6 scoring rule, decided (2026-09-26)
+
+The user chose **"compare the complete vendors with each other"** (translated). It was committed to
+`campaign_summary.py` before the reorder-slot re-run's results were read. An incomplete vendor is
+excluded from that cell's verdicts and shown on a DELIVERY FAILED line; an incomplete TickLE loses
+every metric of the cell. Re-scored under it, step 1's c6 is TickLE against CycloneDDS: every metric
+WIN or TIE except **server memory (LOSE)** and server wire bytes (DRAW, overlapping ranges). The
+baseline's c6, where TickLE delivered 98.8%, becomes all LOSE, which is the control showing that the
+rule bites TickLE too.

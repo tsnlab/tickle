@@ -167,15 +167,26 @@ def delivery_verdict(qos, per_fw):
     rather than a fault - the first version of this check voided c8 for delivering exactly what
     BEST_EFFORT promises. Same over-reach as the policy rule's first version, caught the same way,
     by running it over cells whose answers were already known.
+
+    SCORING RULE CHANGED 2026-09-26 by the user's decision, made before the first run it applies to
+    was read ("완전한 벤더끼리 비교"): an incomplete framework no longer voids the whole cell.
+    - An incomplete VENDOR is excluded from every per-sample verdict in that cell - its figures are
+      over a truncated run and cannot be trusted in either direction - and is reported on its own
+      DELIVERY FAILED line. TickLE is scored against the vendors that delivered everything.
+    - An incomplete TickLE makes every metric of the cell a LOSE. Applying the vendor rule to
+      TickLE would let TickLE's own delivery failure pass unscored, so the rule is deliberately
+      asymmetric, in the direction that costs TickLE.
+    Before this, c6 was VOID in the campaign, the baseline and FRAG step 1 alike, the last two
+    because FastDDS alone delivered 28-29% while TickLE and CycloneDDS delivered 100%.
     """
     if qos == BEST_EFFORT_QOS:
         return None                       # samples are meant to be droppable here
-    short = []
+    short = []   # (framework, description)
     for fw, d in per_fw.items():
         sent, recv = d["delivery"].get("sent"), d["delivery"].get("recv")
         if sent is None or recv is None or sent == recv:
             continue
-        short.append(f"{fw} delivered {recv:.0f} of {sent:.0f} ({(sent - recv) / sent * 100:.1f}% missing)")
+        short.append((fw, f"{fw} delivered {recv:.0f} of {sent:.0f} ({(sent - recv) / sent * 100:.1f}% missing)"))
     return short or None
 
 
@@ -280,24 +291,32 @@ def main(path):
     if not cells:
         sys.exit(f"{path}: no campaign result lines matched - wrong file, or the sweep printed nothing")
     wins = draws = losses = voids = 0
+    vendor_delivery_failures = 0
     for key, per_fw in cells.items():
         num, shape, payload, qos, net = key
         print(f"\n== c{num} {shape} {payload} {qos} [{net}]")
         gate = boundary_verdict(shape, payload, net, per_fw)
         pol = policy_verdict(per_fw)
         deliv = delivery_verdict(qos, per_fw)
-        if deliv:
-            print(f"   INCOMPLETE DELIVERY: {'; '.join(deliv)}")
-            print("   -> cross-vendor comparison is VOID: loss_pct reads 0 for a server that stopped")
-            print("      early, so every per-sample figure here is over a truncated run.")
+        tickle_failed = any(fw == "tickle" for fw, _ in (deliv or []))
+        failed_vendors = {fw for fw, _ in (deliv or []) if fw != "tickle"}
+        for fw, why in (deliv or []):
+            print(f"   DELIVERY FAILED: {why}")
+        if tickle_failed:
+            print("   -> TickLE did not deliver everything its client sent: every metric in this cell")
+            print("      is a LOSE (the 2026-09-26 rule is asymmetric against TickLE on purpose).")
+        elif failed_vendors:
+            print(f"   -> {', '.join(sorted(failed_vendors))} excluded from this cell's verdicts: its per-sample")
+            print("      figures are over a truncated run. TickLE is scored against the vendors that")
+            print("      delivered everything (user decision 2026-09-26).")
+            vendor_delivery_failures += len(failed_vendors)
         if pol:
             print(f"   POLICY MISMATCH: {'; '.join(pol)}")
             print("   -> cross-vendor comparison is VOID: the cell's premise is that all three made")
             print("      the same promise, and the output does not show that they did.")
         void_reason = ("boundary gate" if gate else
-                       "incomplete delivery" if deliv else
                        "policy mismatch" if pol else None)
-        gate = gate or deliv or pol
+        gate = gate or pol
         if gate and void_reason == "boundary gate":
             print(f"   BOUNDARY GATE FAILED: {'; '.join(gate)}")
             print("   -> this payload's cross-vendor comparison is VOID (section 9). Numbers below are")
@@ -316,18 +335,25 @@ def main(path):
         for m in metrics:
             t = per_fw["tickle"]["vals"][m]
             vend = {v: per_fw[v]["vals"][m] for v in VENDORS
-                    if v in per_fw and m in per_fw[v]["vals"]}
-            if len(vend) < 2:
+                    if v in per_fw and m in per_fw[v]["vals"] and v not in failed_vendors}
+            need = 2 - len(failed_vendors)
+            if len(vend) < max(need, 1):
                 print(f"   {m:<24} tickle {fmt(t):<22} (no cross-vendor comparison: "
-                      f"{2 - len(vend)} vendor(s) missing)")
+                      f"{max(need, 1) - len(vend)} vendor(s) missing)")
                 continue
             v, why = verdict(m.split(".", 1)[1], t, vend)
+            if failed_vendors and v in ("WIN", "DRAW", "TIE", "LOSE"):
+                why = (why + "; " if why else "") + "vs complete vendors only"
+            if tickle_failed:
+                v, why = "LOSE", "TickLE delivery failed"
             if void_reason:
                 v, why = "VOID", void_reason
             cols = "  ".join(f"{name[:6]} {fmt(vals)}" for name, vals in vend.items())
             print(f"   {m:<24} tickle {fmt(t):<22} {cols:<44} {v}{'  (' + why + ')' if why else ''}")
             wins += v == "WIN"; draws += v in ("DRAW", "TIE"); losses += v == "LOSE"; voids += v == "VOID"
     print(f"\n== totals over comparable metric-cells: WIN {wins}  DRAW/TIE {draws}  LOSE {losses}  VOID {voids}")
+    if vendor_delivery_failures:
+        print(f"   plus {vendor_delivery_failures} vendor delivery failure(s), each excluded from its cell's verdicts")
     print("Every LOSE and every DRAW is an optimisation target and needs a named hypothesis before")
     print("any code change (OPTIMIZATION_PLAN.md section 9).")
 
