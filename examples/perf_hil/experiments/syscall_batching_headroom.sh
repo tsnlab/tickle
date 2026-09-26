@@ -30,7 +30,7 @@ sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
 say "=== syscall batching headroom, $(date -Is) ==="
 say "head=$(git -C "$REPO" rev-parse --short origin/main)"
 
-# Build both first: `git clean -fdqx` from earlier experiments leaves only sources behind, and the
+# Build both first: `git clean -fdqx -e install -e build -e log` from earlier experiments leaves only sources behind, and the
 # first version of this script straced a framework whose binaries did not exist. strace then left
 # the PREVIOUS framework's counts in /tmp/sc_cli.txt and the script printed them again under the new
 # name - two byte-identical blocks that would read as "the two frameworks behave the same". The

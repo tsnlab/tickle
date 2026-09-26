@@ -31,7 +31,7 @@ ssh_h() { local h=$1; shift; ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeou
 deploy() { # $1 sha
     local h
     for h in "${HOSTS[@]}"; do
-        ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $1 && git clean -fdqx
+        ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $1 && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle && ./build.sh best_effort_latency >/tmp/bisect_build.log 2>&1 || { echo BUILD FAILED; tail -5 /tmp/bisect_build.log; exit 1; }" &
     done
     wait

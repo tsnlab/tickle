@@ -59,7 +59,7 @@ build() {
     say ""; say "--- building $which ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx && $recipe
+cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && $recipe
 cd examples/perf_hil/tickle && ./build.sh reliable_latency p1 > /tmp/spin_build.log 2>&1 \
   || { echo FAIL; tail -8 /tmp/spin_build.log; exit 1; }" &
         pids+=($!)

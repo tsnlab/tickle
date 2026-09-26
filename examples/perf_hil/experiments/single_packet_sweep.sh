@@ -48,7 +48,7 @@ pids=(); bad=0
 say ""; say "--- building $VARIANTS x 3 frameworks on both rpis ---"
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
+cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil
 for v in $VARIANTS; do
   scen=\${v%_p[0-9]}; size=\${v##*_}

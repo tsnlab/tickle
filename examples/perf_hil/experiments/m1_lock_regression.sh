@@ -43,7 +43,7 @@ build() {
     say ""; say "--- building $sha ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx
+cd ~/tickle && git fetch -q origin && git reset -q --hard $sha && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil/tickle
 for v in 'reliable_throughput p1' 'reliable_throughput p2' 'reliable_latency p1'; do
   # shellcheck disable=SC2086

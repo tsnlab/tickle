@@ -29,7 +29,7 @@ for h in "$C" "$S"; do
 cd ~/tickle && git fetch -q origin
 for spec in 'A $OLD debug' 'B $OLD release' 'C $NEW release'; do
   set -- \$spec; arm=\$1; sha=\$2; opt=\$3
-  git reset -q --hard \$sha && git clean -fdqx && rm -rf \$HOME/tickle_local_install*
+  git reset -q --hard \$sha && git clean -fdqx -e install -e build -e log && rm -rf \$HOME/tickle_local_install*
   cd examples/perf_hil/tickle
   if [ \$opt = release ]; then BUILD_TYPE=release ./build.sh reliable_throughput p1 > /tmp/ba_\$arm.log 2>&1; else BUILD_TYPE=debug ./build.sh reliable_throughput p1 > /tmp/ba_\$arm.log 2>&1; fi
   [ -x reliable_throughput_p1/client ] || { echo \"BUILD FAILED \$arm\"; tail -5 /tmp/ba_\$arm.log; exit 1; }

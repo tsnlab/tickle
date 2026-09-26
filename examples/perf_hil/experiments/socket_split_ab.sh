@@ -56,7 +56,7 @@ deploy() {
 cd ~/tickle
 git fetch --quiet origin
 git reset --hard --quiet $sha
-git clean -fdqx
+git clean -fdqx -e install -e build -e log
 rm -rf ~/tickle_local_install
 cd ~/tickle/examples/perf_hil/tickle && ./build.sh reliable_throughput >/tmp/ab_build.log 2>&1 || { tail -20 /tmp/ab_build.log; exit 1; }" &
     done

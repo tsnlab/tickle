@@ -27,7 +27,7 @@ git -C "$REPO" fetch -q origin
 SHA="$(git -C "$REPO" rev-parse origin/main)"
 say "=== latency recheck, $(date -Is), main $SHA, ${REPS} reps ==="
 for h in "${HOSTS[@]}"; do
-    ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
+    ssh_h "$h" "set -e; cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil && for fw in tickle cyclonedds fastdds; do for s in best_effort_latency reliable_latency; do (cd \$fw && ./build.sh \$s >/tmp/recheck_build.log 2>&1) || { echo BUILD FAILED \$fw \$s; exit 1; }; done; done" &
 done
 wait

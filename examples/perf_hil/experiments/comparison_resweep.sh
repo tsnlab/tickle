@@ -72,7 +72,7 @@ SCENS="best_effort_latency reliable_latency best_effort_throughput reliable_thro
 build_pids=()
 for host in "$RPI_CLIENT" "$RPI_SERVER"; do
     ssh_h "$host" "set -e
-cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx
+cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
 cd examples/perf_hil
 for fw in tickle cyclonedds fastdds; do for s in $SCENS; do
   (cd \$fw && ./build.sh \$s >/tmp/resweep_build_\${fw}_\$s.log 2>&1) || { echo \"BUILD FAILED: \$fw \$s\"; tail -5 /tmp/resweep_build_\${fw}_\$s.log; exit 1; }

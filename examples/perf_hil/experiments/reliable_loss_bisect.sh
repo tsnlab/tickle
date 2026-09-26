@@ -45,7 +45,7 @@ for sha in $SHAS; do
 cd ~/tickle
 git fetch --quiet origin
 git reset --hard --quiet $HEADSHA
-git clean -fdqx
+git clean -fdqx -e install -e build -e log
 git checkout --quiet $sha -- src include
 rm -rf ~/tickle_local_install
 cd ~/tickle/examples/perf_hil/tickle && ./build.sh reliable_throughput >/tmp/bisect_build.log 2>&1 || { echo BUILD_FAILED; tail -5 /tmp/bisect_build.log; exit 1; }" || ok=0
@@ -63,7 +63,7 @@ cd ~/tickle/examples/perf_hil/tickle && ./build.sh reliable_throughput >/tmp/bis
 done
 
 for host in "$CLIENT" "$SERVER"; do
-    ssh -i "$K" -o BatchMode=yes "ci@$host" "cd ~/tickle && git reset --hard --quiet $HEADSHA && git clean -fdqx" || true
+    ssh -i "$K" -o BatchMode=yes "ci@$host" "cd ~/tickle && git reset --hard --quiet $HEADSHA && git clean -fdqx -e install -e build -e log" || true
 done
 say ""
 say "=== done $(date -Is); tc restored, rig left at HEAD ==="

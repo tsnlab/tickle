@@ -7,7 +7,7 @@
 # between the two hosts' 50 ms match polls. That is a small enough drift to be produced by the
 # session rather than by the code. Alternating removes it: a drift now lands on both arms equally.
 #
-# Both binaries have to outlive the checkouts, because `git clean -fdqx` wipes untracked files in the
+# Both binaries have to outlive the checkouts, because `git clean -fdqx -e install -e build -e log` wipes untracked files in the
 # tree. So each arm is built once and its client/server copied to /tmp/lifespan_{pre,post} on both
 # rpis, and every run executes from there.
 #
@@ -40,7 +40,7 @@ stage() {   # $1 sha  $2 dest
     say "--- staging $sha -> $dest ---"
     for h in "$CLIENT" "$SERVER"; do
         sh_ "$h" "set -u
-cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx && git checkout -q $sha
+cd ~/tickle && git fetch -q origin && git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && git checkout -q $sha
 cd examples/perf_hil/fastdds && rm -f $SCEN/client $SCEN/server
 ./build.sh $SCEN > /tmp/ls_build.log 2>&1
 { [ -x $SCEN/client ] && [ -x $SCEN/server ]; } || { echo MISSING; tail -5 /tmp/ls_build.log; exit 1; }

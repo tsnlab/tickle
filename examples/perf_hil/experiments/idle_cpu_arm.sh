@@ -34,8 +34,8 @@ trap kill_all EXIT
 say "=== idle CPU, $(date -Is), window ${WINDOW}s ==="
 build() {
     local sha="$1" recipe
-    [ "$sha" = "$OLD" ] && recipe="git reset -q --hard origin/main && git clean -fdqx && git checkout -q $NEW && git checkout -q $OLD -- src/tickle.c src/hal_linux.c include/tickle/config.h include/tickle/tickle.h" \
-                        || recipe="git reset -q --hard $sha && git clean -fdqx"
+    [ "$sha" = "$OLD" ] && recipe="git reset -q --hard origin/main && git clean -fdqx -e install -e build -e log && git checkout -q $NEW && git checkout -q $OLD -- src/tickle.c src/hal_linux.c include/tickle/config.h include/tickle/tickle.h" \
+                        || recipe="git reset -q --hard $sha && git clean -fdqx -e install -e build -e log"
     say ""; say "--- building for arm $sha ---"
     sh_ "set -e
 cd ~/tickle && git fetch -q origin && $recipe
