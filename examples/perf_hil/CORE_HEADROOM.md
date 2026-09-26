@@ -148,3 +148,41 @@ Strace cross-check (`results/rx_batch_verify_2026-09-26.txt`, same build pair): 
 campaign. The straced figure is lower than the counter's 0.137 because strace slows the receiver and
 fuller batches result - both are far inside the <= 0.8 pre-registration. The latency item stays open until
 the 10-repetition pair reports.
+
+### The 10-repetition latency settlement (2026-09-26)
+
+Cell 10 (P1, RELIABLE latency), all three frameworks, 10 repetitions per arm, three builds:
+`559b91f6` (before), `ef0c7ea0` (recvmmsg as first landed) and `5f70c3cc`, Dev's fix. In the fix, the read
+that ends a wait is `recvfrom` again, and only the drain after it batches. Raw rows are in
+`results/lat10_recvmmsg_2026-09-26/`. There are 0 void rows, and every TickLE row reports
+`core_build=release`. The arms ran one after another in the order before, fix, ef0c7ea0, 17:21-17:53.
+They were not interleaved, so the vendors, whose code is the same in every arm, serve as the drift control.
+
+TickLE `rtt_avg`, mean ± standard error over 10:
+
+| arm | TickLE | FastDDS (control) | CycloneDDS (control) |
+|---|---:|---:|---:|
+| `559b91f6` before | 209.3 ± 0.6 us | 290.5 ± 0.8 | 290.6 ± 15.4 |
+| `ef0c7ea0` recvmmsg | 211.1 ± 0.5 | 289.5 ± 1.0 | 281.5 ± 13.3 |
+| `5f70c3cc` fix | 210.1 ± 0.6 | 291.1 ± 0.8 | 310.3 ± 16.8 |
+
+Read against the pre-registration (real if the difference exceeds twice the combined standard error):
+- **`ef0c7ea0` − before = +1.8 us, against 2×SE = 1.6 us: real by the rule, and only just.** It is also
+  far smaller than the +6 us the 3-repetition run suggested. With 18 such comparisons in this reading,
+  one crossing by 0.2 us is weak evidence on its own. Dev's pre-registration for the fix is what makes it
+  worth reading anyway.
+- **`5f70c3cc` − before = +0.8 us, within 2×SE (1.7 us): no regression.**
+- Dev pre-registered that if `ef0c7ea0` regressed and `5f70c3cc` did not, the extra probe before
+  processing explains the regression. **That is what the rows show**, at the weak margin stated above.
+- **The controls did not move.** FastDDS is within 2×SE in all three pairs. CycloneDDS's mean is noisy (its
+  tail) and within 2×SE throughout, and its `rtt_min` is within 2×SE throughout. So the TickLE differences
+  are not a drift of the rig across the 30 minutes.
+- `rtt_min` agrees: `5f70c3cc` is 2.8 us below `ef0c7ea0` (2×SE 2.4), and neither differs from before.
+
+**Verdict: the kill criterion does not fire for the code as it stands (`5f70c3cc`).** `ef0c7ea0`'s small
+regression is gone in `5f70c3cc`. Cell 11 was not re-run at n=10. Its 3-repetition move (+3 us) was
+inside its own ranges.
+
+The fix changed the receive path, so the CPU saving has to be shown to survive it. c1 on `5f70c3cc`
+(receive calls per sample and `stime_s`) is queued. This item closes when that row matches the
+`ef0c7ea0` figures above.
