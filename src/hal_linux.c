@@ -533,11 +533,9 @@ static void rx_headers_setup(struct tt_hal* hal) {
 }
 #endif
 
-static int32_t rx_fill(struct tt_Node* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
-    struct tt_hal* hal = &node->hal;
-    node->rx_via_data_port = (socket_fd == hal->data_sock);
-#if tt_RX_BATCH == 1
-    // No batching: recvfrom(), which the control arm measured slightly cheaper than a one-slot recvmmsg().
+// One datagram with recvfrom(), without waiting: its length, -1 when nothing is waiting, -2 on an I/O error.
+static int32_t rx_read_one(struct tt_Node* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    node->rx_via_data_port = (socket_fd == node->hal.data_sock);
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
     int32_t ret = (int32_t)recvfrom(socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
@@ -548,7 +546,15 @@ static int32_t rx_fill(struct tt_Node* node, int socket_fd, void* buf, size_t le
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
     return ret;
+}
+
+static int32_t rx_fill(struct tt_Node* node, int socket_fd, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
+    struct tt_hal* hal = &node->hal;
+#if tt_RX_BATCH == 1
+    // No batching: recvfrom(), which the control arm measured slightly cheaper than a one-slot recvmmsg().
+    return rx_read_one(node, socket_fd, buf, len, ip, port);
 #else
+    node->rx_via_data_port = (socket_fd == hal->data_sock);
     if (hal->rx_headers_for != hal) {
         rx_headers_setup(hal);
     }
@@ -685,9 +691,13 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 #endif
     }
 
-    // ppoll() said read_fd is readable, so this reads at least one datagram without waiting - and every
-    // other one already queued on that socket, up to tt_RX_BATCH, in the same syscall.
-    int32_t ret = rx_fill(node, read_fd, buf, len, ip, port);
+    // ppoll() said read_fd is readable: one datagram with recvfrom(), not a batch. This read is on the
+    // latency path - the datagram that woke the node is processed, and often answered, before anything
+    // else - and a recvmmsg() does not return after its first datagram: it tries the next slot and only
+    // then sees EAGAIN, a probe that recv_single_cost.c measured at ~0.3 us on x86 (0.99 against 0.69)
+    // and that recvfrom() leaves until after processing, in the drain. Whatever else is queued, the drain
+    // (tt_try_receive()) takes in batches.
+    int32_t ret = rx_read_one(node, read_fd, buf, len, ip, port);
     if (ret < 0) {
         return ret; // -1 nothing after all (Timeout), -2 I/O error
     }

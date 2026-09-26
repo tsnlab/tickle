@@ -245,9 +245,12 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
-- **Linux HAL reads with `recvmmsg()`** (`tt_RX_BATCH`, hal_linux.h): one call takes up to 32 datagrams
-  already queued, the first straight into the caller's buffer and the rest held in the node until
-  `tt_try_receive()` asks - always before the next wait, so batching never holds a datagram back. A batch
+- **Linux HAL reads with `recvmmsg()`** (`tt_RX_BATCH`, hal_linux.h): the drain after a wake-up takes up to
+  32 queued datagrams a call, the first straight into the caller's buffer and the rest held in the node
+  until `tt_try_receive()` asks - always before the next wait, so batching never holds a datagram back.
+  The read that ends a wait stays a single `recvfrom()`: it is on the latency path, and a `recvmmsg()`
+  probes for a second datagram before returning the first (+0.3 us on x86,
+  `experiments/recv_single_cost.c`). A batch
   that comes back short marks its socket drained, sparing the drain loop the EAGAIN read that used to end
   it. On a backlogged receiver (veth, `experiments/veth_rx_batch.sh`) receive syscalls fell from 1.08 to
   0.06 a sample; on one that keeps up, batches run short and CPU per sample is unchanged within noise, as

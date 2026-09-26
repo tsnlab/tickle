@@ -226,10 +226,7 @@ static void test_drain_after_a_wait_reads_only_ready_sockets(void) {
 
     EXPECT_EQ_INT(1, tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)SHORT_WAIT_NS)); // reads 'a'
     EXPECT_EQ_INT('a', buf[0]);
-    // ppoll saw nothing on the well-known socket. With batching, the recvmmsg() that read 'a' took 'b' as
-    // well and came back short, so the data socket is known drained too.
-    EXPECT_EQ_INT(tt_RX_BATCH > 1 ? (TT_RX_IDLE_WELL_KNOWN | TT_RX_IDLE_DATA) : TT_RX_IDLE_WELL_KNOWN,
-                  node.hal.rx_idle);
+    EXPECT_EQ_INT(TT_RX_IDLE_WELL_KNOWN, node.hal.rx_idle); // ppoll saw nothing on the well-known socket
 
     EXPECT_EQ_INT(1, (int)send(pair_wk[1], "w", 1, 0));
     uint8_t tag = 0;
@@ -248,9 +245,10 @@ static uint64_t elapsed_ns_since(const struct timespec* start) {
     return ((uint64_t)(now.tv_sec - start->tv_sec) * 1000000000ULL) + (uint64_t)now.tv_nsec - (uint64_t)start->tv_nsec;
 }
 
-// Everything already queued on a socket comes in with one recvmmsg(): the first datagram returned, the
-// rest held and handed out by tt_try_receive() without another syscall.
-static void test_one_call_reads_every_queued_datagram(void) {
+// The read after a wait takes one datagram with recvfrom() - it is on the latency path, and a recvmmsg()
+// would probe for a second before returning the first (hal_linux.c, tt_receive()). Everything else
+// queued comes in with the drain's first recvmmsg(), held and handed out without another syscall.
+static void test_the_drain_reads_every_queued_datagram_in_one_call(void) {
     open_pair_node();
     static const uint8_t tags[] = {'a', 'b', 'c', 'd', 'e'};
     for (int i = 0; i < 5; i++) {
@@ -261,14 +259,14 @@ static void test_one_call_reads_every_queued_datagram(void) {
     uint16_t port = 0;
     EXPECT_EQ_INT(1, tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)SHORT_WAIT_NS));
     EXPECT_EQ_INT('a', buf[0]);
-    EXPECT_EQ_U64(1, node.hal.rx_batch_calls);
-    EXPECT_EQ_U64(5, node.hal.rx_batch_datagrams);
+    EXPECT_EQ_U64(0, node.hal.rx_batch_calls); // the wake-up read was not a batch
     uint8_t tag = 0;
     for (int i = 1; i < 5; i++) {
         EXPECT_EQ_INT(1, try_one(&tag));
         EXPECT_EQ_INT(tags[i], tag);
     }
-    EXPECT_EQ_U64(1, node.hal.rx_batch_calls); // all four came from the batch
+    EXPECT_EQ_U64(1, node.hal.rx_batch_calls); // b..e in one call
+    EXPECT_EQ_U64(4, node.hal.rx_batch_datagrams);
     EXPECT_EQ_INT(-1, try_one(&tag));
     close_pair_node();
 }
@@ -277,17 +275,22 @@ static void test_one_call_reads_every_queued_datagram(void) {
 // from adding latency. The socket is empty, so a tt_receive() that waited first would sit out its timeout.
 static void test_a_held_datagram_is_returned_before_any_wait(void) {
     open_pair_node();
-    EXPECT_EQ_INT(1, (int)send(pair_data[1], "a", 1, 0));
-    EXPECT_EQ_INT(1, (int)send(pair_data[1], "b", 1, 0));
+    static const uint8_t tags[] = {'a', 'b', 'c'};
+    for (int i = 0; i < 3; i++) {
+        EXPECT_EQ_INT(1, (int)send(pair_data[1], &tags[i], 1, 0));
+    }
     uint8_t buf[16] = {0};
     uint32_t ip = 0;
     uint16_t port = 0;
     EXPECT_EQ_INT(1, tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)SHORT_WAIT_NS));
     EXPECT_EQ_INT('a', buf[0]);
+    uint8_t tag = 0;
+    EXPECT_EQ_INT(1, try_one(&tag)); // the batch: 'b' returned, 'c' held
+    EXPECT_EQ_INT('b', tag);
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     EXPECT_EQ_INT(1, tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)tt_SECOND));
-    EXPECT_EQ_INT('b', buf[0]);
+    EXPECT_EQ_INT('c', buf[0]);
     EXPECT_TRUE(elapsed_ns_since(&start) < 50ULL * 1000000ULL);
     close_pair_node();
 }
@@ -296,7 +299,7 @@ static void test_a_held_datagram_is_returned_before_any_wait(void) {
 // drain reads on, and the datagram past the batch is not stranded until the next wait.
 static void test_a_full_batch_does_not_mark_the_socket_drained(void) {
     open_pair_node();
-    for (int i = 0; i <= tt_RX_BATCH; i++) {
+    for (int i = 0; i <= tt_RX_BATCH + 1; i++) { // one for the wake-up read, a full batch, one past it
         uint8_t tag = (uint8_t)i;
         EXPECT_EQ_INT(1, (int)send(pair_data[1], &tag, 1, 0));
     }
@@ -304,10 +307,13 @@ static void test_a_full_batch_does_not_mark_the_socket_drained(void) {
     uint32_t ip = 0;
     uint16_t port = 0;
     EXPECT_EQ_INT(1, tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)SHORT_WAIT_NS));
+    EXPECT_EQ_INT(0, buf[0]);
+    uint8_t tag = 0;
+    EXPECT_EQ_INT(1, try_one(&tag)); // a full batch
+    EXPECT_EQ_INT(1, tag);
     EXPECT_EQ_U64(1, node.hal.rx_batch_full);
     EXPECT_EQ_INT(0, node.hal.rx_idle & TT_RX_IDLE_DATA);
-    uint8_t tag = 0;
-    for (int i = 1; i <= tt_RX_BATCH; i++) {
+    for (int i = 2; i <= tt_RX_BATCH + 1; i++) {
         EXPECT_EQ_INT(1, try_one(&tag));
         EXPECT_EQ_INT(i, tag);
     }
@@ -318,7 +324,7 @@ static void test_a_full_batch_does_not_mark_the_socket_drained(void) {
 
 int main(void) {
 #if tt_RX_BATCH > 1
-    test_one_call_reads_every_queued_datagram();
+    test_the_drain_reads_every_queued_datagram_in_one_call();
     test_a_held_datagram_is_returned_before_any_wait();
     test_a_full_batch_does_not_mark_the_socket_drained();
 #endif
