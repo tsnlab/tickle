@@ -552,6 +552,33 @@ the design above, each confirmed by a mutant:
   RELIABLE cells carry the ACK traffic that would show it; they are in the pass criterion.
 - Any criterion failing: the change is not merged and these numbers are recorded here.
 
+**Result on the rig (Plan, 2026-09-27): FAIL, reverted.** `rmw_lease86_rig_chain.sh`, `3e00eb97` / `22a8f2cb` /
+`22a8f2cb` / `3e00eb97`, 3 repetitions per block, IDLE_S=10, 48 + 48 ok rows and 0 VOID. Raw rows are
+`results/rmw86_{A_3e00eb97,B_22a8f2cb}_2026-09-27.txt`. Read by WIRE_PLAN 8.3: 0 better, 54 held, 2 WORSE.
+
+- **The mechanism works as designed.** The 8.6 ping reports `delivered_by_executor=100 delivered_by_poll_thread=0
+  executor_handovers=2 park_wakes=50-51` per 10 s block-mode run. The parent has no such counters, so the "confirmed
+  whatever the RTT does" clause cannot be read from the parent's side.
+- **The RTT does not move** in any block cell, so the pass criterion fails. rtt_avg in ms, parent -> 8.6:
+
+  | cell | parent | 8.6 | t |
+  |---|---:|---:|---:|
+  | bench BEST_EFFORT | 0.2440 | 0.2415 | -1.6 |
+  | bench RELIABLE | 0.2415 | 0.2420 | +0.4 |
+  | array1k BEST_EFFORT | 0.2640 | 0.2633 | -0.7 |
+  | array1k RELIABLE | 0.2643 | 0.2640 | -0.4 |
+
+  On the Pi, the poll thread's handover to the executor costs nothing that a 100 ms-gap ping-pong can see. On PC
+  veth the same change gained several us.
+- **Everything else holds:**
+  - idle CPU, `pong_idle_cpu_ns` ~2.0 ms over 9.4 s, in all 8 cells;
+  - pong whole-run CPU in 7 of 8 cells;
+  - the poll control in 3 of 4 cells.
+- **Chance candidates under WIRE_PLAN 8.3,** one cell each: array1k BEST_EFFORT poll pong CPU +1.8% (t 2.6), and bench
+  RELIABLE poll RTT +0.4% (t 2.5).
+- **As pre-registered, the change is not kept.** Dev reverts its behaviour on `main`. R1 and R1d (sections 9.2-9.3)
+  were built on its park timer and stop with it.
+
 ## 9. Where an rmw round trip goes, above and below core (2026-09-27, veth, PC; numbers only)
 
 **Setup.** One ping-pong, BEST_EFFORT bench, `--wait block`, 5 ms gap, ~975 round trips. It runs on a veth pair

@@ -72,7 +72,9 @@ done
 echo "core_cost_pi $(date -Is) pi=$PI rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} refs=$*" >>"$OUT"
 for round in $(seq "$ROUNDS"); do
     while read -r ref sha; do
-        line="$("${SSH[@]}" "taskset -c $CPU $REMOTE/bench_$sha $SAMPLES ${BENCH_ARGS:-} 2>/dev/null" |
+        # </dev/null: ssh would otherwise read the rest of the refs file this loop is reading, and every round
+        # would run the first ref only (2026-09-27, the first Pi run; PI=local cannot show it, bash -c reads nothing).
+        line="$("${SSH[@]}" "taskset -c $CPU $REMOTE/bench_$sha $SAMPLES ${BENCH_ARGS:-} 2>/dev/null" </dev/null |
             grep -E '^(RESULT|PUBLISH):' | tr '\n' ' ' || true)"
         [ -n "$line" ] || line="RESULT: failed"
         echo "ref=$ref round=$round $line" >>"$OUT"
