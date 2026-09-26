@@ -700,3 +700,31 @@ Client datagrams per delivered sample (`wire_role_packets_per_sample`):
   is open and has gone to Dev.
 - The FastDDS delayed counter read (section 12's follow-up) is in
   `results/fastdds_c6_delayed_2026-09-26.txt` and is read separately.
+
+## 15. FastDDS at c6: the delayed counter read settles section 12
+
+`results/fastdds_c6_delayed_2026-09-26.txt`, the same three arms re-run with `DELAYED_READ_S=40`,
+with both outcomes pre-registered in the script header before the run.
+
+| arm | ReasmFails right after | ReasmFails at +40 s |
+|---|---:|---:|
+| A control, p1 + 5% | 0 | 22 (background, 487 requests from other traffic) |
+| B, p4, no loss | 0 | 0 |
+| C, p4 + 5% loss | 0 | **427** (all of them `ReasmTimeout`) |
+
+The pre-registered reading holds: **ReasmFails well above the control's 22 means FastDDS's IP
+fragments were lost, and the IP-fragmentation mechanism stands.** The kernel counted those losses
+only when `ipfrag_time` expired, after the immediate snapshot. That was section 12's post-hoc
+suspicion, and this pre-registered follow-up confirms it rather than having it assumed.
+
+It also shows why so little is delivered. In C, 3,966 datagrams were reassembled but only 871 of
+4,346 samples were delivered. A RELIABLE KEEP_ALL reader hands samples over in order, so each lost
+datagram holds back everything received after it until FastDDS recovers the gap, and FastDDS's
+recovery is paced by its heartbeat. The client's 3 s drain ran out with most samples still held.
+Both mechanisms are FastDDS defaults that the harness leaves alone. **FastDDS's c6 shortfall is
+FastDDS as shipped, not the harness.** The DELIVERY FAILED line of section 10.1 therefore stands
+as a statement about FastDDS.
+
+Whether to add a second, tuned FastDDS arm (for example `maxMessageSize` around 1,472 B, so it
+fragments in RTPS the way CycloneDDS does) is a question about tuning a vendor beyond its QoS, and
+has gone to the user.
