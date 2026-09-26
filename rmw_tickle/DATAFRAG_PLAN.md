@@ -762,3 +762,40 @@ as a statement about FastDDS.
 Whether to add a second, tuned FastDDS arm (for example `maxMessageSize` around 1,472 B, so it
 fragments in RTPS the way CycloneDDS does) is a question about tuning a vendor beyond its QoS, and
 has gone to the user.
+
+## 16. Duplicate datagrams: mechanism confirmed, fix next (2026-09-26)
+
+Dev's `veth_frag_duplicate.sh` (`04568f48`, pre-registered) settles what section 14's failed
+prediction left open. **Every duplicate is a second writer resend.** Extra client resends equal
+duplicates plus lost repairs (16.7k against 14.4k + ~2.2k; 6.84k against 5.30k + ~1.53k). The cause is
+the per-writer-proxy `acknack_retry` timer. It re-names a missing seq whose first repair is still in
+flight, and the writer answers again. That is real wire waste.
+
+This was confirmed by intervention. With a fixed 1 ms retry interval, below the round trip, about every
+other loss became a duplicate: 0.51-0.52 per lost datagram at 250 us one-way delay, against a
+pre-registered 0.3-0.7. At zero delay it was 0.01.
+
+Two things did not hold:
+- Dev's quantitative model, `srtt / (srtt + 4*rttvar)`, predicted 0.34 and 0.58 for the dynamic arm,
+  and it measured 0.22 twice.
+- The rig's 2-fragment against 4-fragment asymmetry does not reproduce on veth (0.22 against 0.21 per
+  loss). The raw-line re-run of the 4-fragment arm, queued after the aligned campaign, is what can
+  address it.
+
+The rig's own figure, 5.7% of samples at 0.1 losses per sample, is about 0.57 duplicates per loss.
+That is the fixed-interval regime, not veth's dynamic 0.22, and it is itself unexplained.
+
+**Fix (Dev, next):** a per-seq request time on the reader. A timer ACKNACK names a missing seq only if
+its last request is older than the current retry interval. New gaps are still NACKed at once. The
+give-up and retry-count semantics count timer ticks today and must keep their meaning.
+
+**Pre-registered, rig, before and after the fix, same cells, same session:**
+- **c6 (p4 + 5% loss): `frag_duplicate` falls from 10.5-11.0k per run to under 1k.** Client wire
+  bytes per sample fall by about 2-3% (roughly one extra datagram in every 17 samples removed).
+  Throughput and `drained=acked` are unchanged or better.
+- **c5 (p1 + 5% loss): the same direction.** Duplicates of whole DATA come from the same timer, so the
+  fix is not FRAG-specific.
+- **c1 and c4 (no loss): no change**, because nothing is missing there, so nothing is re-requested.
+- **If duplicates fall but first-recovery time rises** (server `recovery_srtt_ns` up, or throughput
+  under loss down), the suppression is holding back legitimate re-requests, and the interval test is
+  wrong rather than the idea.
