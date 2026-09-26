@@ -169,3 +169,21 @@ keeps it 30 s.
 / 5). Five consecutive losses are then needed: 0.05⁵ ≈ 3 × 10⁻⁷ per summary, ~2 × 10⁻⁴ per 120 s run. A summary
 is ~28 B, so at a 1 s lease that is 5 per second, ~150 B/s. L3 is re-run on the fix with more repetitions
 of the idle case (10 × 120 s), and must show 0.
+
+## 9. L3 passes on the lease/6 cadence (2026-09-27, `39570d7a` against `af87e150`)
+
+Dev set the divisor to 6, not 5, and the arithmetic was his. With n summaries lost in a row, the peer hears
+nothing for (n + 1)/k of the lease, so k - 1 losses already sit on the boundary and k = 6 is what "five losses
+in a row" needs. It is `tt_LIVELINESS_LEASE_DIVISOR` in `config.h`. It also covers `tt_Publisher_assert_liveliness()`'s rate
+limit and rmw's lease floor (6 ms).
+
+Idle case re-run: 1 s lease, no data, 5% loss both ways, 10 × 120 s. `results/liveliness_l3r_2026-09-26.txt`.
+
+| core | false deaths |
+|---|---:|
+| `af87e150` (summaries at lease/3), the control | 6 of 10, each at 1,000.0-1,000.1 ms of silence |
+| `39570d7a` (summaries at lease/6) | **0 of 10** |
+
+**L3 passes** (the data case passed in section 8, and the change does not touch it). L2 on the rig is still to
+run. Its first two attempts were void because of harness faults, not the core; see `RMW_PERF_PLAN.md` and
+the `liveliness_l2.sh` history.
