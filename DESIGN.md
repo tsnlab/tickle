@@ -365,7 +365,7 @@ in the RTPS arrangement, rather than message types of its own:
 
 | role | submessage | addressed | contents |
 |---|---|---|---|
-| summary, every interval (1 s, or a third of the node's shortest own lease if sooner) | HEARTBEAT | broadcast | `first_available_seq_no = last_seq_no` = the node's generation (low 32 bits of `last_modified`) |
+| summary, every interval (1 s, or a sixth of the node's shortest own lease if sooner) | HEARTBEAT | broadcast | `first_available_seq_no = last_seq_no` = the node's generation (low 32 bits of `last_modified`) |
 | request for the list | ACKNACK | unicast to the summary's sender | `seq_no` = the generation wanted |
 | the list | DATA / FRAG_FIRST+FRAG_CONT | unicast to the requester | `tt_AnnounceHeader` + `tt_UpdateEntity` records |
 | a change (endpoint created or destroyed) | the list | broadcast, at once | the new generation |
@@ -617,7 +617,7 @@ runs from the entity's last sign of life, and the verdict is taken when it runs 
   in full - up to `tt_NODE_MAX_LEASE_NS` (10 s, CycloneDDS's participant lease), as a DDS participant
   lease bounds its writers'. Then its peers are forgotten and its entities tombstoned; it is re-learned from its next summary.
 - **An idle node's summary is its only sign of life**, so it goes out every `tt_NODE_UPDATE_INTERVAL` or
-  every third of the shortest lease its own endpoints announce, whichever is sooner (at least one
+  every sixth of the shortest lease its own endpoints announce, whichever is sooner (at least one
   `tt_NODE_TX_INTERVAL`).
 
 Before this the lease ran from the last announce and traffic only held off the verdict for half a lease,

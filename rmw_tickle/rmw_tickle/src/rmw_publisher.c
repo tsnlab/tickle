@@ -1426,7 +1426,7 @@ rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
         atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
         // ...and to the remote side too: a HEARTBEAT with the liveliness flag, which is what keeps this
         // Publisher alive at the Subscriptions that watch it (LIVELINESS_PLAN.md amendment 4). The core
-        // sends nothing within a third of the lease of the last publish or assertion.
+        // sends nothing within a tt_LIVELINESS_LEASE_DIVISOR-th of the lease of the last publish or assertion.
         (void)tt_Publisher_assert_liveliness(&pub_impl->tickle_publisher);
     }
     return RMW_RET_OK;

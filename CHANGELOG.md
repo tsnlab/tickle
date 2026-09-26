@@ -300,10 +300,10 @@ number, `tt_VERSION`, which moves independently.
   `tt_Publisher_assert_liveliness()`). The verdict is taken by one timer at the earliest expiry
   (`check_liveliness()` no longer sweeps once a second), a lapsed entity revives on its next sign of life,
   a node is kept alive at least as long as the longest lease it announced, and a node's summary goes out
-  at a third of its shortest lease when that is under a second. New `tt_DiscoveredEntity.last_asserted_ns`,
+  at a sixth of its shortest lease (`tt_LIVELINESS_LEASE_DIVISOR`) when that is under a second. New `tt_DiscoveredEntity.last_asserted_ns`,
   `tt_Publisher.liveliness_asserted_ns`, `tt_Node.liveliness_check_*`, `liveliness_flags[]`,
   `next_summary_ns`. `rmw_tickle`: RMW_EVENT_LIVELINESS_CHANGED is updated from the core's discovery
-  callback instead of a timer of its own; the 3 s lease floor is now 3 ms; AUTOMATIC Publishers announce
+  callback instead of a timer of its own; the 3 s lease floor is now 6 ms; AUTOMATIC Publishers announce
   their lease too; INFINITE goes on the wire as no lease; `rmw_publisher_assert_liveliness()` reaches the wire.
 - **A node is presumed dead after `tt_LIVELINESS_SILENCE_NS`** (new, config.h): 3.5 update intervals of
   silence instead of 3, so two lost summaries in a row can no longer declare a live node dead when the

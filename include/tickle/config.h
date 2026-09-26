@@ -466,6 +466,18 @@
 // dead; too high a value delays noticing a real departure (a crash, a pulled cable - anything
 // that skips tt_Node_destroy()'s own farewell UPDATE). 3 matches the conventional heartbeat-miss
 // default other discovery protocols use for the same reason.
+// How many summaries a node sends per lifetime of the shortest liveliness lease its own endpoints announce,
+// when that makes them more frequent than tt_NODE_UPDATE_INTERVAL (LIVELINESS_PLAN.md amendment 1) - an
+// idle node's summary is its only sign of life. With n summaries lost in a row the peer hears nothing for
+// (n + 1) / tt_LIVELINESS_LEASE_DIVISOR of a lease, so at six, four losses leave a sixth of the lease to
+// spare and the fifth lands exactly on it - where two nodes' drifting schedulers decide it by a coin toss,
+// the boundary tt_LIVELINESS_SILENCE_NS moved off. At 5% loss that is ~1e-4 false lapses per 120 s; five
+// would put the coin toss at four losses (~2e-3), and three failed L3 once in three 120 s runs.
+// tt_Publisher_assert_liveliness() allows an assertion this often too.
+#ifndef tt_LIVELINESS_LEASE_DIVISOR
+#define tt_LIVELINESS_LEASE_DIVISOR 6
+#endif
+
 // The longest a silent node is kept alive for the sake of a long liveliness lease one of its entities
 // announced (LIVELINESS_PLAN.md rule 3). DDS bounds a writer's lease by its participant's the same way:
 // CycloneDDS's participant lease is 10 s, Fast DDS's 20 s. Below tt_LIVELINESS_SILENCE_NS it has no effect.

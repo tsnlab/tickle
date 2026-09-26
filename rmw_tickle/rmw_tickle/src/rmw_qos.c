@@ -113,7 +113,7 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
     }
     // A custom lease_duration is accepted down to three tt_NODE_TX_INTERVALs. The core honours any lease
     // above that (LIVELINESS_PLAN.md, 2026-09-26): it runs from the last sign of life, is checked by a
-    // timer at the expiry, and a node sends its summary at a third of its shortest lease, which cannot
+    // timer at the expiry, and a node sends its summary tt_LIVELINESS_LEASE_DIVISOR times a lease, which cannot
     // go below one tx tick. The floor used to be tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL
     // (3 s), when the core checked once a second and cut every lease at its node-level limit. Rejected
     // below the floor rather than silently rounded up - same "reject, don't silently downgrade"
@@ -126,9 +126,10 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                         (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT) &&
         !rmw_time_equal(qos_profile->liveliness_lease_duration, (rmw_time_t)RMW_DURATION_INFINITE) &&
         rmw_time_total_nsec(qos_profile->liveliness_lease_duration) <
-            (rmw_duration_t)(3 * (uint64_t)tt_NODE_TX_INTERVAL)) {
+            (rmw_duration_t)(tt_LIVELINESS_LEASE_DIVISOR * (uint64_t)tt_NODE_TX_INTERVAL)) {
         RMW_SET_ERROR_MSG("rmw_tickle's own liveliness_lease_duration floor is "
-                          "3 * tt_NODE_TX_INTERVAL (a node's summary goes out at a third of its "
+                          "tt_LIVELINESS_LEASE_DIVISOR * tt_NODE_TX_INTERVAL (a node's summary goes out "
+                          "tt_LIVELINESS_LEASE_DIVISOR times its "
                           "shortest lease) - see rmw_tickle/LIVELINESS_PLAN.md");
         return RMW_RET_UNSUPPORTED;
     }

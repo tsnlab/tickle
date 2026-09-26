@@ -3657,7 +3657,8 @@ tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub) {
     state_lock(node);
     uint64_t now = tt_get_ns();
     uint64_t lease = pub->liveliness_lease_duration_ns;
-    if (lease != 0 && (pub->liveliness_asserted_ns == 0 || now - pub->liveliness_asserted_ns >= lease / 3)) {
+    if (lease != 0 && (pub->liveliness_asserted_ns == 0 ||
+                       now - pub->liveliness_asserted_ns >= lease / tt_LIVELINESS_LEASE_DIVISOR)) {
         encode_and_send_heartbeat(node, pub, 0, NULL, 0, tt_HEARTBEAT_FLAG_FINAL | tt_HEARTBEAT_FLAG_LIVELINESS);
         pub->liveliness_asserted_ns = now;
     }
@@ -5435,15 +5436,16 @@ static void send_discovery_summary(struct tt_Node* node) {
     node->tx_has_pending_update = true; // broadcast-only, like the announce it replaces
 }
 
-// How often this node's summary goes out: every tt_NODE_UPDATE_INTERVAL, or a third of the shortest lease any
+// How often this node's summary goes out: every tt_NODE_UPDATE_INTERVAL, or a tt_LIVELINESS_LEASE_DIVISOR-th of
+// the shortest lease any
 // of its own endpoints announces if that is sooner (LIVELINESS_PLAN.md amendment 1) - an idle node's summary
 // is its only sign of life, so it must outpace the leases peers hold it to. At least tt_NODE_TX_INTERVAL.
 static uint64_t summary_interval(const struct tt_Node* node) {
     uint64_t interval = tt_NODE_UPDATE_INTERVAL;
     for (uint32_t i = 0; i < node->endpoint_count; i++) {
         uint64_t lease = endpoint_liveliness_lease_duration_ns(node->endpoints[i]);
-        if (lease != 0 && lease / 3 < interval) {
-            interval = lease / 3;
+        if (lease != 0 && lease / tt_LIVELINESS_LEASE_DIVISOR < interval) {
+            interval = lease / tt_LIVELINESS_LEASE_DIVISOR;
         }
     }
     return interval < tt_NODE_TX_INTERVAL ? tt_NODE_TX_INTERVAL : interval;

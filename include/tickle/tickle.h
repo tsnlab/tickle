@@ -254,7 +254,8 @@ struct tt_Node {
     // MANUAL_BY_TOPIC Publisher whose DATA asserts it, or an entity lapsed on its lease that traffic revives.
     // Zero for every node with neither, so their traffic costs nothing extra.
     uint8_t liveliness_flags[tt_MAX_ENDPOINT_COUNT];
-    // When node_update() next sends the summary; the interval shrinks to a third of the shortest lease any
+    // When node_update() next sends the summary; the interval shrinks to a tt_LIVELINESS_LEASE_DIVISOR-th of the
+    // shortest lease any
     // of this node's own endpoints announce (summary_interval()).
     uint64_t next_summary_ns;
 
@@ -1138,7 +1139,7 @@ struct tt_Publisher { // extends endpoint
     bool liveliness_manual;
     // When this Publisher last asserted its liveliness on the wire - a publish, or tt_Publisher_assert_
     // liveliness() sending a HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS. That function sends nothing more
-    // within a third of the lease of this. 0: never.
+    // within a tt_LIVELINESS_LEASE_DIVISOR-th of the lease of this. 0: never.
     uint64_t liveliness_asserted_ns;
 };
 
@@ -1201,7 +1202,8 @@ tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
 
 // Asserts a MANUAL_BY_TOPIC Publisher's liveliness without publishing (rmw_tickle/LIVELINESS_PLAN.md): a
 // HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS, broadcast, which every receiver takes as this writer's sign of
-// life. A publish asserts it too, so nothing is sent within a third of liveliness_lease_duration_ns of the
+// life. A publish asserts it too, so nothing is sent within liveliness_lease_duration_ns /
+// tt_LIVELINESS_LEASE_DIVISOR of the
 // last publish or assertion; nothing either for a Publisher with no lease. tt_RET_INVALID_ARGUMENT for a
 // NULL or unregistered Publisher.
 tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub);

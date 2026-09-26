@@ -1159,7 +1159,7 @@ static void test_an_automatic_lease_runs_from_the_data_and_lapses_on_time(void) 
 
 // Rule 1 (MANUAL_BY_TOPIC): a manual Publisher is kept alive only by its own DATA or assertion - not by
 // another Publisher's data from the same node. It lapses one lease after it was announced, while the other
-// streams; tt_Publisher_assert_liveliness() revives it at once, and a second call within a third of the
+// streams; tt_Publisher_assert_liveliness() revives it at once, and a second call within a sixth of the
 // lease sends nothing.
 static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
     static struct tt_Node one;
@@ -1183,7 +1183,7 @@ static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
     int sent_before = duo_sent[1];
     duo_acting = 1;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_assert_liveliness(&manual));
-    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_assert_liveliness(&manual)); // within lease/3: nothing more
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_assert_liveliness(&manual)); // within lease/6: nothing more
     duo_deliver(&one, &two);
     EXPECT_EQ_INT(sent_before + 1, duo_sent[1]);
     EXPECT_EQ_INT(2, watched_arrivals[0]); // revived
@@ -1212,6 +1212,37 @@ static void test_a_lease_longer_than_the_node_limit_is_not_cut_short(void) {
     duo_stop();
 }
 
+// tt_LIVELINESS_LEASE_DIVISOR: four summaries lost in a row never lapse an idle node's 1 s lease, however the two
+// nodes' schedulers drift - (4 + 1) / 6 of the lease passes before the next one. 20 trials starting the
+// loss at different points of the drift. Control: seven lost always lapse it. With a divisor of five the
+// fourth loss lands on the lease itself and the drift decides.
+static int lease_lapse_trials(int lost, uint64_t late_one, uint64_t late_two) {
+    int lapses = 0;
+    for (int trial = 0; trial < 20; trial++) {
+        static struct tt_Node one;
+        static struct tt_Node two;
+        duo_start(&one, &two);
+        duo_late[1] = late_one;
+        duo_late[2] = late_two;
+        struct tt_Publisher pub;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+        pub.liveliness_lease_duration_ns = tt_SECOND;
+        liveliness_duo_start(&one, &two, &pub, NULL);
+        duo_run_until(&one, &two, test_mock_now + tt_SECOND + ((uint64_t)trial * tt_SECOND / 20));
+        datagrams_to_drop = lost;
+        duo_drop = drop_node_one_summaries_counted;
+        duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND));
+        lapses += watched_departures[0] > 0;
+        duo_stop();
+    }
+    return lapses;
+}
+
+static void test_four_lost_summaries_never_lapse_an_idle_lease(void) {
+    EXPECT_EQ_INT(0, lease_lapse_trials(4, 100 * tt_MICROSECOND, 170 * tt_MICROSECOND));
+    EXPECT_EQ_INT(20, lease_lapse_trials(7, 0, 0)); // control
+}
+
 // Rule 3's cap: a silent node is kept alive for its entities' leases, but no longer than tt_NODE_MAX_LEASE_NS,
 // as a DDS participant lease bounds its writers'. A 30 s lease on a node that goes silent: the node, and
 // the entity with it, is gone one cap after its last datagram.
@@ -1234,7 +1265,7 @@ static void test_a_node_is_not_kept_alive_past_the_lease_cap(void) {
     duo_stop();
 }
 
-// LIVELINESS_PLAN.md amendment 1: an idle node's summary is its only sign of life, so it goes out at a third
+// LIVELINESS_PLAN.md amendment 1: an idle node's summary is its only sign of life, so it goes out at a sixth
 // of the shortest lease its endpoints announce. A 1 s lease on an idle node, one summary lost now and then,
 // schedulers running late as real ones do: no false lapse in 20 s. With the summary at a fixed second the
 // lease would lapse on the first late one.
@@ -1255,7 +1286,7 @@ static void test_an_idle_short_lease_is_kept_by_faster_summaries(void) {
         duo_run_until(&one, &two, test_mock_now + tt_SECOND);
     }
     EXPECT_EQ_INT(0, watched_departures[0]);
-    EXPECT_TRUE(duo_summaries[1] >= 50); // ~3 a second
+    EXPECT_TRUE(duo_summaries[1] >= 100); // ~6 a second
     duo_stop();
 }
 
@@ -1286,6 +1317,7 @@ int main(void) {
     test_a_lease_longer_than_the_node_limit_is_not_cut_short();
     test_an_idle_short_lease_is_kept_by_faster_summaries();
     test_a_node_is_not_kept_alive_past_the_lease_cap();
+    test_four_lost_summaries_never_lapse_an_idle_lease();
 
     if (test_result() != 0) {
         return 1;

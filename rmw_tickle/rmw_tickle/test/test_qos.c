@@ -72,8 +72,8 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     // QoS roadmap #3 (LIVELINESS) - done, every kind this rmw_qos_policy_liveliness_t still
-    // defines. A custom liveliness_lease_duration is accepted down to 3 * tt_NODE_TX_INTERVAL (a
-    // node's summary goes out at a third of its shortest lease, LIVELINESS_PLAN.md) - 1 ms is below
+    // defines. A custom liveliness_lease_duration is accepted down to tt_LIVELINESS_LEASE_DIVISOR *
+    // tt_NODE_TX_INTERVAL (a node's summary goes out that many times a lease, LIVELINESS_PLAN.md) - 1 ms is below
     // that floor and stays rejected; 1 second, rejected until the 3 s floor went on 2026-09-26, is
     // accepted, for every entity kind (validation only - the actual RMW_EVENT_LIVELINESS_CHANGED
     // monitoring this backs is Publisher/Subscription-only, rmw_subscription.c).

@@ -192,8 +192,15 @@ test: $(TEST_BINS)
 	    ./$$bin || exit 1; \
 	done
 
+# $@.d: the headers the test's own translation unit uses (it #includes tickle.c), so changing one -
+# config.h's constants, a struct in tickle.h - rebuilds it. Written by a -MM pass of its own: -MMD on the
+# compile below would record only the last of its three sources. Without this a header-only change left
+# every unit test binary as it was, and a mutant made in config.h "passed" against it (2026-09-26).
 $(OBJ)/tests/%: $(TEST_DIR)/%.c $(SRC)/tickle.c $(SRC)/encoding.c $(SRC)/log.c | $(OBJ)/tests
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MM -MP -MT $@ -MF $@.d $<
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ $< $(SRC)/encoding.c $(SRC)/log.c -lm
+
+-include $(TEST_BINS:=.d)
 
 # The one unit test that links tickle.c as its own translation unit instead of #including it: it drives
 # core through the public API from several threads at once and brings its own thread-safe HAL (see the

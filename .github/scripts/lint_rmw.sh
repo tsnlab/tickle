@@ -58,8 +58,10 @@ checked=0
 # Tests too, not only src/ (2026-09-25): cpp-linter checks every file a push CHANGED, tests
 # included, so a gate that skipped them reported clean for files CI was about to fail on - which is
 # exactly how this script's own existence came about, one directory further in. Four findings in
-# test_storage_budget.c turned Check all red this way.
-for f in rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c; do
+# test_storage_budget.c turned Check all red this way. And headers (2026-09-26): cpp-linter lints a
+# changed header on its own, and an include-cleaner finding in rmw_tickle.h turned af87e150 red while
+# this gate - linting only .c files, where the header's own includes are never judged - said clean.
+for f in rmw_tickle/rmw_tickle/src/*.c rmw_tickle/rmw_tickle/test/*.c rmw_tickle/rmw_tickle/include/rmw_tickle_c/*.h; do
     checked=$((checked + 1))
     out=$("$TIDY" -p build/rmw_tickle "$f" 2>&1 | grep -E "$(basename "$f"):[0-9]+:[0-9]+: (warning|error)")
     if [ -n "$out" ]; then

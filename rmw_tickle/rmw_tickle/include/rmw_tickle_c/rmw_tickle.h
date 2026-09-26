@@ -25,6 +25,7 @@
 #include "rcutils/allocator.h"
 #include "rmw/qos_policy_kind.h" // rmw_qos_policy_kind_t - rmw_tickle_qos_incompatible_status_t.last_policy_kind
 #include "rmw/ret_types.h"       // rmw_ret_t
+#include "rmw/time.h"            // rmw_time_t - rmw_tickle_wire_lease_ns()
 #include "rmw/types.h"           // rmw_node_t, rmw_publisher_t, rmw_subscription_t, rmw_client_t,
                                  // rmw_service_t, rmw_guard_condition_t, rmw_wait_set_t, rmw_qos_profile_t
 #include "rosidl_runtime_c/message_type_support_struct.h"
