@@ -38,6 +38,7 @@ INSTALL_PREFIX="$HOME/tickle_local_install"
 # a peak RSS in the megabytes but the reason the P4 memory figure is not strictly comparable to P1-P3's.
 CORE_DEFINE=""
 SAMPLE_PATH=datagram
+DATAGRAM_BYTES=1472 # what tt_MAX_BUFFER_LENGTH resolves to; the fit check below proves it per build
 if [ "$SHAPE" = "p4" ]; then
     case "${TICKLE_P4_PATH:-frag}" in
     frag)
@@ -51,11 +52,22 @@ if [ "$SHAPE" = "p4" ]; then
             CORE_DEFINE="$CORE_DEFINE -Dtt_FRAG_REASSEMBLY_SLOTS=$TICKLE_FRAG_SLOTS"
             INSTALL_PREFIX="${INSTALL_PREFIX}_slots${TICKLE_FRAG_SLOTS}"
         fi
+        # TICKLE_DATAGRAM_BYTES=N (2026-09-26): a smaller datagram, so the same 2800 B sample travels as
+        # more fragments - 800 gives exactly 4 (771 B in FRAG_FIRST, 782 B in each FRAG_CONT). A
+        # TickLE-only diagnostic for how recovery cost scales with fragment count, used to measure the
+        # per-datagram seq_no change (rmw_tickle/DATAFRAG_PLAN.md section 13.3) without adding a fifth
+        # payload shape to every framework. Its own prefix; RESULT lines say datagram_bytes=.
+        if [ -n "${TICKLE_DATAGRAM_BYTES:-}" ]; then
+            CORE_DEFINE="$CORE_DEFINE -Dtt_MAX_BUFFER_LENGTH=$TICKLE_DATAGRAM_BYTES"
+            INSTALL_PREFIX="${INSTALL_PREFIX}_dgram${TICKLE_DATAGRAM_BYTES}"
+            DATAGRAM_BYTES="$TICKLE_DATAGRAM_BYTES"
+        fi
         ;;
     ipfrag)
         CORE_DEFINE="-Dtt_MAX_BUFFER_LENGTH=4096"
         INSTALL_PREFIX="$HOME/tickle_local_install_buf4096"
         SAMPLE_PATH=ipfrag
+        DATAGRAM_BYTES=4096
         ;;
     *)
         echo "TICKLE_P4_PATH must be frag (the default, DATA_FRAG) or ipfrag (one datagram, split by the OS)" >&2
@@ -194,7 +206,7 @@ TICKLE_LIBS="$(PKG_CONFIG_PATH="$PKG_CONFIG_PATH" pkg-config --libs tickle)"
 # The payload shape comes first on the include path, and the four shapes all declare the same
 # `struct BenchData` / `BenchTopic`, so every scenario's own client.c and server.c compiles
 # unchanged at each size - the size is chosen here and nowhere else.
-CFLAGS="-O2 -DBENCH_CORE_BUILD=$CORE_BUILD_TYPE -DBENCH_SAMPLE_PATH=$SAMPLE_PATH $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
+CFLAGS="-O2 -DBENCH_CORE_BUILD=$CORE_BUILD_TYPE -DBENCH_SAMPLE_PATH=$SAMPLE_PATH -DBENCH_DATAGRAM_BYTES=$DATAGRAM_BYTES $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
 
 # Compile-time proof that this shape can be sent by the build *this* libtickle.a was compiled as, and
 # by the path sample_path= will claim. The generator emits BenchData_FITS_ONE_DATAGRAM as
@@ -209,7 +221,7 @@ else
     FIT_CHECK='_Static_assert(BenchData_FITS_ONE_DATAGRAM, "payload shape does not fit this build tt_MAX_BUFFER_LENGTH");'
 fi
 # shellcheck disable=SC2086
-printf '#include "Bench.h"\n%s\n_Static_assert(BENCH_SAMPLE_BYTES == sizeof(struct BenchData), "BENCH_SAMPLE_BYTES disagrees with the generated struct");\n' "$FIT_CHECK" |
+printf '#include "Bench.h"\n%s\n_Static_assert(BENCH_SAMPLE_BYTES == sizeof(struct BenchData), "BENCH_SAMPLE_BYTES disagrees with the generated struct");\n_Static_assert(BENCH_DATAGRAM_BYTES == tt_MAX_BUFFER_LENGTH, "datagram_bytes= would misreport this build");\n' "$FIT_CHECK" |
     $CC $CFLAGS -fsyntax-only -x c - || {
     echo "Payload shape $SHAPE cannot be sent as sample_path=$SAMPLE_PATH by $INSTALL_PREFIX" >&2
     exit 1

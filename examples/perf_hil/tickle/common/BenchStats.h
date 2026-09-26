@@ -180,7 +180,15 @@ static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
 #define BENCH_STRINGIFY_(x) #x
 #define BENCH_STRINGIFY(x) BENCH_STRINGIFY_(x)
 #define BENCH_CORE_BUILD_FIELD " core_build="
-#define BENCH_CORE_BUILD_VALUE BENCH_STRINGIFY(BENCH_CORE_BUILD) " sample_path=" BENCH_STRINGIFY(BENCH_SAMPLE_PATH)
+// datagram_bytes= is tt_MAX_BUFFER_LENGTH as this build compiled it (build.sh's fit check fails the
+// build if the two disagree), so a row from the TICKLE_DATAGRAM_BYTES diagnostic cannot pass for p4.
+#ifndef BENCH_DATAGRAM_BYTES
+#error \
+    "build.sh defines BENCH_DATAGRAM_BYTES alongside BENCH_CORE_BUILD; a TickLE harness built without it would print no datagram_bytes="
+#endif
+#define BENCH_CORE_BUILD_VALUE        \
+    BENCH_STRINGIFY(BENCH_CORE_BUILD) \
+    " sample_path=" BENCH_STRINGIFY(BENCH_SAMPLE_PATH) " datagram_bytes=" BENCH_STRINGIFY(BENCH_DATAGRAM_BYTES)
 #else
 #define BENCH_CORE_BUILD_FIELD ""
 #define BENCH_CORE_BUILD_VALUE ""
@@ -229,7 +237,7 @@ static inline const char* bench_stats_fields(struct BenchStats* stats, int role,
     }
 
     snprintf(buf, buf_len,
-             "sample_bytes=%" PRIu64 " utime_s=%.3f stime_s=%.3f cpu_s_per_Msample=%.3f cpu_s_per_MB=%.3f "
+             "sample_bytes=%" PRIu64 " utime_s=%.3f stime_s=%.3f cpu_s_per_Msample=%.3f cpu_s_per_MB=%.6f "
              "peak_rss_kb=%" PRIu64 " wire_rx_bytes=%" PRIu64 " wire_rx_packets=%" PRIu64 " wire_tx_bytes=%" PRIu64
              " wire_tx_packets=%" PRIu64 " wire_bytes_total=%" PRIu64 " wire_packets_total=%" PRIu64
              " wire_bytes_per_sample=%.1f wire_packets_per_sample=%.3f wire_role_packets_per_sample=%.3f "
