@@ -147,3 +147,25 @@ where `tt_NODE_MAX_LEASE_NS` is a `config.h` default of 10 s (CycloneDDS's parti
 rmw maps `RMW_DURATION_INFINITE` to no lease (Dev, in implementation), so ROS users are unaffected. **L1
 gains a test:** entity lease 30 s, node silent → gone at 10 s plus a tick. The mutant without the cap
 keeps it 30 s.
+
+## 8. L3 result: fails once in the idle case (2026-09-26, `af87e150` against `ccbacb36`)
+
+`liveliness_l3.sh`, veth on the PC, 5% loss both ways, 3 × 120 s per case per core. Raw rows:
+`results/liveliness_l3_2026-09-26.txt`.
+
+| case | before (`ccbacb36`) | after (`af87e150`) |
+|---|---|---|
+| data: 2 s lease, 10 Hz | 3/3 held | 3/3 held |
+| idle: 1 s lease, no data | **3/3 false deaths** (last announce ~1,999 ms old) | 2/3 held, **1 false death** (silence 1,000.0 ms) |
+
+- The control works: today's core flaps on a 1 s lease with only summaries, as amendment 1 predicted.
+- **The change fails L3's pre-registered 0.** Summaries go out at lease/3, so three consecutive lost summaries
+  exceed the lease. That is 0.05³ = 1.25 × 10⁻⁴ per summary; over ~360 summaries in 120 s it is ~4.5% per run.
+  One false death in three runs is consistent with that.
+- The verdict landed at exactly 1,000.0 ms of silence, so rule 2's timer is doing its job. The shortfall is
+  the summary cadence, not the detection.
+
+**Fix (Plan's decision):** a node's summary interval becomes min(`tt_NODE_UPDATE_INTERVAL`, shortest own lease
+/ 5). Five consecutive losses are then needed: 0.05⁵ ≈ 3 × 10⁻⁷ per summary, ~2 × 10⁻⁴ per 120 s run. A summary
+is ~28 B, so at a 1 s lease that is 5 per second, ~150 B/s. L3 is re-run on the fix with more repetitions
+of the idle case (10 × 120 s), and must show 0.
