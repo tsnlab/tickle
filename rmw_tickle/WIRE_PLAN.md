@@ -447,6 +447,26 @@ Raw rows are `results/wire_final_abba_{A_8f3811f4,B_173268a6}_2026-09-27.txt`. R
   - On Plan's reading, which the user chose at 08:00 ("결정 1은 너의 추천을 따를게"), the wire change is judged
     alone. There v10's reliable client cost on the Pi (8.4) stays open until 8.8's real-socket run explains it.
 
+**8.9 follow-up: the peak-RSS lean, a layout test (pre-registered 2026-09-27, before the run).**
+- **Static facts (Dev, x86 release, build.sh's flags):**
+  - `tickle.c` text grew 66,627 -> 70,267 B (+3.6 KB).
+  - `sizeof(struct tt_Node)` grew 73,712 -> 73,792 B (+80 B), from ten new fields in the middle of the struct.
+  - No new data anywhere. The client's static bss fell by 32.8 KB (the smaller reliable record).
+  - The campaign's client and server keep their node as a 73 KB stack local, so the +80 B moves every later field:
+    `rx_buffer`, `hal` and the counters.
+- **Arm B, branch `layout-new-fields-at-end` (`48329585`):** `173268a6` with those ten fields moved to the end of
+  `tt_Node`. Every earlier field is back at its `8f3811f4` offset (`rx_buffer` 17568, `hal` 23600,
+  `tx_datagrams` 73640). Behaviour is unchanged; unit tests are green. Arm A is `173268a6` as it is.
+- **The run:** campaign cells c1 and c9, TickLE only, 6 reps per arm, A B B A.
+- **Reading:**
+  - **B's client peak RSS below A's beyond 2 x SE, by ~4 KB or more:** the lean is the node's field layout (a hot
+    structure crossing into another page). The fix is to place the new fields where they cost no page, and the
+    placement is re-measured.
+  - **No difference:** the lean is the +3.6 KB of code, or something outside the node. It stays open and is not
+    worth more rig time at +0.3-0.5%.
+  - **Guard:** CPU and rate rows must not differ between A and B beyond 2 x SE, since the arms differ only in layout.
+    A CPU difference is recorded, not explained away.
+
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
 **What it can save.**
