@@ -20,6 +20,12 @@
 // Seen on x86 (2026-09-26, rx CPU 2, tx CPU 4, loopback, medians of 20000): recvfrom 11.02-11.04 us, recvmsg
 // 11.24, ppoll3 11.83-11.86 - ppoll3 +0.8 us (+7%), the control pair agreeing within 0.2.
 //
+// epoll3 (added 2026-09-26): the same three descriptors registered once in an epoll set, epoll_wait() then
+// recvfrom() - whether keeping the registration across waits, instead of ppoll()'s per-call setup, recovers
+// the wait's cost. Seen on x86 (same CPUs, 20000 each, twice interleaved): recvfrom 11.04 / 11.14 us,
+// ppoll3 11.92 / 12.06, epoll3 11.80 / 12.03 - no gain over ppoll3 here; the Pi, where ppoll3 cost +2.8 us,
+// decides.
+//
 // Build: cc -O2 -pthread -o /tmp/recv_wake_cost recv_wake_cost.c   Run: /tmp/recv_wake_cost [rx_cpu tx_cpu]
 // NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 #define _GNU_SOURCE
@@ -34,6 +40,7 @@
 #include <unistd.h>
 
 #include <netinet/in.h>
+#include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 
@@ -51,12 +58,13 @@
 #define DEFAULT_TX_CPU 4
 #define DATAGRAM_BYTES 76
 
-enum wait_style { WAIT_PPOLL3, WAIT_RECVFROM, WAIT_RECVMSG };
+enum wait_style { WAIT_PPOLL3, WAIT_RECVFROM, WAIT_RECVMSG, WAIT_EPOLL3 };
 
 struct shared {
     int socket_fd;
     int other_fd; // a second, idle socket, as the well-known socket is to the data socket
     int event_fd; // an idle eventfd, as the wake fd is
+    int epoll_fd; // the three above registered once (epoll3)
     enum wait_style style;
     int cpu;
     uint64_t samples[ROUNDS];
@@ -92,6 +100,13 @@ static ssize_t receive_one(const struct shared* ctx, uint8_t* buf, size_t len) {
                                 {.fd = ctx->event_fd, .events = POLLIN, .revents = 0},
                                 {.fd = ctx->socket_fd, .events = POLLIN, .revents = 0}};
         if (ppoll(fds, 3, NULL, NULL) <= 0) { // NOLINT(misc-include-cleaner) - <poll.h>
+            return -1;
+        }
+        return recvfrom(ctx->socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&from, &from_len);
+    }
+    if (ctx->style == WAIT_EPOLL3) {
+        struct epoll_event ready;
+        if (epoll_wait(ctx->epoll_fd, &ready, 1, -1) <= 0) {
             return -1;
         }
         return recvfrom(ctx->socket_fd, buf, len, MSG_DONTWAIT, (struct sockaddr*)&from, &from_len);
@@ -134,6 +149,12 @@ static void run(enum wait_style style, const char* name, int rx_cpu, int tx_cpu)
     ctx.event_fd = eventfd(0, EFD_NONBLOCK);
     ctx.style = style;
     ctx.cpu = rx_cpu;
+    ctx.epoll_fd = epoll_create1(0);
+    const int watched[3] = {ctx.other_fd, ctx.event_fd, ctx.socket_fd};
+    for (int i = 0; i < 3; i++) {
+        struct epoll_event interest = {.events = EPOLLIN, .data = {.fd = watched[i]}};
+        epoll_ctl(ctx.epoll_fd, EPOLL_CTL_ADD, watched[i], &interest);
+    }
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -169,6 +190,7 @@ static void run(enum wait_style style, const char* name, int rx_cpu, int tx_cpu)
     close(ctx.socket_fd);
     close(ctx.other_fd);
     close(ctx.event_fd);
+    close(ctx.epoll_fd);
     close(sender);
 }
 
@@ -177,8 +199,10 @@ int main(int argc, char** argv) {
     int tx_cpu = argc > 2 ? atoi(argv[2]) : DEFAULT_TX_CPU;
     run(WAIT_RECVFROM, "recvfrom", rx_cpu, tx_cpu);
     run(WAIT_PPOLL3, "ppoll3", rx_cpu, tx_cpu);
+    run(WAIT_EPOLL3, "epoll3", rx_cpu, tx_cpu);
     run(WAIT_RECVMSG, "recvmsg", rx_cpu, tx_cpu);
-    run(WAIT_PPOLL3, "ppoll3", rx_cpu, tx_cpu); // twice, interleaved: drift control
+    run(WAIT_EPOLL3, "epoll3", rx_cpu, tx_cpu);
+    run(WAIT_PPOLL3, "ppoll3", rx_cpu, tx_cpu); // twice each, interleaved: drift control
     run(WAIT_RECVFROM, "recvfrom", rx_cpu, tx_cpu);
     return 0;
 }
