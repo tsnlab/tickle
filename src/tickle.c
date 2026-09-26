@@ -57,9 +57,10 @@ _Static_assert(tt_RELIABLE_RECORD_BYTES(0) ==
                    ROUNDUP(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
                "tt_RELIABLE_RECORD_BYTES must match the real DATA submessage framing size");
 
-// Latency trace stamps - see include/tickle/trace.h. Compiled out unless built with -Dtt_TRACE.
-#ifdef tt_TRACE
+// Latency trace stamps - see include/tickle/trace.h. Compiled out unless built with -Dtt_TRACE: without it
+// TT_TRACE() is a no-op, which is why the header is included either way.
 #include <tickle/trace.h>
+#ifdef tt_TRACE
 
 // tt_trace_stamp()'s ring (trace.h). Process-global and written by any thread: the slot is claimed with an
 // atomic add, and a reader copies after the writers it cares about have stopped.
@@ -3387,6 +3388,7 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
     }
     const uint8_t* body = NULL;
     int32_t body_len = pub->topic->data_encode_inplace(data, &body);
+    TT_TRACE(tt_TRACE_ENCODED);
     uint32_t standalone_len = sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) +
                               sizeof(struct tt_DataHeader) + (body_len >= 0 ? (uint32_t)body_len : 0);
     bool fills_packet =
@@ -3674,6 +3676,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     }
 
     int32_t encoded_len = pub->topic->data_encode(data, cdr, cdr_len);
+    TT_TRACE(tt_TRACE_ENCODED);
     if (encoded_len < 0) {
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;

@@ -1277,6 +1277,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         return RMW_RET_ERROR;
     }
 
+    TT_TRACE(tt_TRACE_SERIALIZED);
     rmw_ret_t ret = publish_blocking(pub_impl, &outgoing);
     if (RMW_RET_OK == ret) {
         pub_impl->next_publication_sequence_number++;

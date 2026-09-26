@@ -17,7 +17,7 @@
 // executor thread never share a slot. When the ring wraps the oldest stamps are overwritten.
 //
 // The points are the receive-to-reply path of a ping-pong responder, in the order one message crosses
-// them. Core stamps the HAL's; rmw_tickle stamps its own.
+// them. Core stamps the HAL's; rmw_tickle stamps its own. experiments/rmw_trace_split.py reads them all.
 
 #include <stdint.h>
 
@@ -34,6 +34,15 @@ enum tt_TracePoint {
     tt_TRACE_TAKEN,       // rmw_tickle: rmw_take() returning a message
     tt_TRACE_PUBLISH,     // rmw_tickle: rmw_publish() entered
     tt_TRACE_TX_DONE,     // a send syscall returned (hal_linux.c)
+    // 2026-09-27, RMW_PERF_PLAN.md 9: the same path split finer, above and below core.
+    tt_TRACE_SERIALIZED, // rmw_tickle: rmw_publish() after to_tickle()
+    tt_TRACE_ENCODED,    // core: a DATA's topic encode returned (tickle.c)
+    tt_TRACE_TX_START,   // a send syscall about to be made (hal_linux.c)
+    tt_TRACE_DECODED,    // rmw_tickle: subscriber_callback() after the CDR decode
+    tt_TRACE_CONVERTED,  // rmw_tickle: subscriber_callback() after from_tickle()
+    tt_TRACE_RELEASE,    // rmw_tickle: an executor about to release the poll role (rmw_wait_set.c)
+    tt_TRACE_TIMER_SET,  // rmw_tickle: ... the parked poll thread's timer set
+    tt_TRACE_TAKE_ENTER, // rmw_tickle: rmw_take_with_info() entered
 };
 
 #ifdef tt_TRACE

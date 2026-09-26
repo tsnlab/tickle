@@ -401,6 +401,7 @@ void tt_close(struct tt_Node* node) {
 }
 
 int32_t tt_send(struct tt_Node* node, const void* buf, size_t len) {
+    TT_TRACE(tt_TRACE_TX_START);
     int32_t sent = (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&node->hal.broadcast_addr,
                                    sizeof(struct sockaddr_in));
     TT_TRACE(tt_TRACE_TX_DONE);
@@ -413,6 +414,7 @@ int32_t tt_send_to(struct tt_Node* node, const void* buf, size_t len, uint32_t i
     addr.sin_addr.s_addr = htonl(ip);
     addr.sin_port = htons(port);
 
+    TT_TRACE(tt_TRACE_TX_START);
     int32_t sent =
         (int32_t)sendto(node->hal.data_sock, buf, len, 0, (struct sockaddr*)&addr, sizeof(struct sockaddr_in));
     TT_TRACE(tt_TRACE_TX_DONE);
@@ -442,6 +444,7 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
         msg.msg_namelen = sizeof(node->hal.broadcast_addr);
     }
 
+    TT_TRACE(tt_TRACE_TX_START);
     return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
 }
 
@@ -478,6 +481,7 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
                 msgs[i].msg_hdr.msg_namelen = sizeof(node->hal.broadcast_addr);
             }
         }
+        TT_TRACE(tt_TRACE_TX_START);
         int result = sendmmsg(node->hal.data_sock, msgs, chunk, 0);
         TT_TRACE(tt_TRACE_TX_DONE);
         if (result <= 0) {

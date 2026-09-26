@@ -145,6 +145,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     if (!decode_with_psn(sub_impl, (const struct payload_view*)data, &publication_sequence_number)) {
         return; // not an rmw_tickle message, or its CDR does not decode: nothing to hand up
     }
+    TT_TRACE(tt_TRACE_DECODED);
     rmw_tickle_context_impl_t* delivering_context = sub_impl->node->context_impl;
     atomic_fetch_add(pthread_equal(pthread_self(), delivering_context->poll_thread)
                          ? // NOLINT(misc-include-cleaner)
@@ -168,6 +169,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
         }
     }
     bool converted = callbacks->from_tickle(tickle, ros_message);
+    TT_TRACE(tt_TRACE_CONVERTED);
     callbacks->tickle_free(tickle);
     if (!converted) {
         pthread_mutex_lock(&sub_impl->queue_mutex);
@@ -703,6 +705,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
 
 rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_message, bool* taken,
                              rmw_message_info_t* message_info, rmw_subscription_allocation_t* allocation) {
+    TT_TRACE(tt_TRACE_TAKE_ENTER);
     (void)allocation; // pre-allocated-message optimization, not implemented
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(ros_message, RMW_RET_INVALID_ARGUMENT);

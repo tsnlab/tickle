@@ -336,6 +336,7 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
     }
     // Released: the lease starts now. Nobody is woken; the parked poll thread's timer is set for the end of
     // the lease, and taking the role again disarms it (rmw_node.c's park_for_polling_executor()).
+    TT_TRACE(tt_TRACE_RELEASE);
     uint64_t left = tt_get_ns();
     atomic_store(&context_impl->executor_left_ns, left);
     atomic_store(&context_impl->executor_polling, false);
@@ -346,6 +347,7 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
         park_in = due > left ? due - left : 1; // 0 would disarm
     }
     set_park_timer(context_impl, park_in);
+    TT_TRACE(tt_TRACE_TIMER_SET);
     if (RMW_RET_OK == *result) {
         TT_TRACE(tt_TRACE_EXEC_WAKE);
     }

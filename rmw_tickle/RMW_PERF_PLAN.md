@@ -551,3 +551,63 @@ the design above, each confirmed by a mutant:
   due waits until the executor returns, the next core entry (<= 1 s), or the lease's end (<= 250 ms). The
   RELIABLE cells carry the ACK traffic that would show it; they are in the pass criterion.
 - Any criterion failing: the change is not merged and these numbers are recorded here.
+
+## 9. Where an rmw round trip goes, above and below core (2026-09-27, veth, PC; numbers only)
+
+**Setup.** One ping-pong, BEST_EFFORT bench, `--wait block`, 5 ms gap, ~975 round trips. It runs on a veth pair
+between two private netns, with executor-driven receive on (the default), and both processes dump their latency
+stamps.
+- Tooling: `experiments/rmw_trace_split.sh` and `rmw_trace_split.py`.
+- Eight stamps are new in `tickle/trace.h`. They are compiled out unless `-DRMW_TICKLE_TRACE=ON`, and the dumps are
+  the proof that the traced build was the one loaded.
+- The table is the responder (pong) of the first run. RTT median was 62.8 us; a second run gave 58.6 us and the same
+  shape, a few tenths higher throughout.
+
+| segment | median us | p90 | whose |
+|---|---:|---:|---|
+| ppoll returns -> datagram read | 1.18 | 3.09 | kernel: recvmsg |
+| -> rmw's callback | 0.54 | 1.69 | core: packet, lookup |
+| -> CDR decoded | 0.10 | 0.36 | typesupport |
+| -> ROS message filled (`from_tickle`) | 0.38 | 1.30 | rmw: shell pool, convert |
+| -> queued, waiter signalled | 0.19 | 0.68 | rmw |
+| -> poll role about to be released | 0.66 | 1.97 | core poll return, drain, rmw's wait-set check |
+| -> park timer set | 0.65 | 1.77 | rmw: `tt_Node_next_due()` + `timerfd_settime()` (8.6) |
+| -> `rmw_wait()` returns | 0.04 | 0.06 | rmw |
+| -> `rmw_take()` entered | 1.44 | 5.39 | **rclcpp executor** |
+| -> `rmw_take()` returns | 0.13 | 0.27 | rmw |
+| -> `rmw_publish()` entered | 0.92 | 3.17 | **rclcpp**: callback dispatch, user code, publish |
+| -> `to_tickle()` done | 0.36 | 0.51 | rmw: mutex, convert |
+| -> CDR encoded | 0.23 | 0.61 | core + typesupport |
+| -> send syscall made | 0.18 | 0.51 | core: framing, route |
+| -> send syscall returned | 8.59 | 13.35 | kernel: sendmsg, **on veth including the peer's receive path** |
+| whole responder | 16.97 | 32.85 | |
+
+**Reading.**
+- **The responder's own user-space work is ~6 us of its 17.**
+  - rmw's part: ~2.4 us.
+  - core's part: ~0.95 us.
+  - typesupport: ~0.3 us.
+  - rclcpp: ~2.5 us, the largest of these.
+- **The syscalls are the rest.** The send is 8.6 us here because a veth send runs the peer's receive softirq on the
+  sender's CPU; on the rig's NICs it is a different number.
+- **Of the ~60 us RTT, ~17 is each process's responder-like path. The rest is two thread wakeups and the kernel's
+  network path, which no stamp sees.**
+- **The largest rmw-owned piece is the poll role's return and release**, 1.3 us together. It includes one
+  `timerfd_settime()` per release, plus the one per claim that is not on this path.
+
+**Candidates, pre-registered as proposals only (no code; each needs its own A/B, and the rig's block RTT is the
+judge):**
+- **R1 - release without a timer syscall on the executor's path.**
+  - Leave the park timer armed at claim (no disarm), and at release re-arm only when no earlier deadline is armed.
+    The parked thread re-arms itself if it wakes early inside a lease.
+  - Predicted: -0.4 to -0.6 us per wait on the executor, and one fewer syscall per claim.
+  - Risk: extra parked-thread wakes (8.6's `park_wakes=` counts them).
+  - PASS: veth RTT median better beyond 2 x SE, pong CPU not WORSE, `park_wakes` per second not WORSE by more
+    than 10%.
+- **R2 - the drain's read that finds nothing.** After a wakeup with one datagram, core's drain calls
+  `tt_try_receive()`, which makes up to two `recvmmsg()` calls that return EAGAIN (two sockets).
+  - First measure how many per wakeup.
+  - If at least one, skip the drain when the wakeup's own read returned short of a batch: the socket was empty an
+    instant before, and a later arrival is seen by the next poll.
+  - Predicted: -0.3 to -0.6 us per wakeup.
+- **Not rmw's to change:** rclcpp's executor, ~2.4 us (p90 5-8 us). It is the same for every rmw.
