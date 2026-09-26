@@ -329,6 +329,10 @@ struct tt_Node {
     uint64_t frag_reassembled;
     uint64_t frag_abandoned;
     uint64_t frag_dropped;
+    // Where a RELIABLE Subscriber's sample is put together from the fragments held in its reorder buffer,
+    // at the moment the last one is in order - filled and delivered in one step, so one per node serves
+    // every Subscriber. 8-aligned, with the payload placed at +4, as rx_buffer places a DATA's CDR.
+    tt_ALIGNAS(8) uint8_t frag_scratch[tt_MAX_SAMPLE_LENGTH + 8];
     // Fragments of a sample already reassembled (struct tt_FragSlot.done) - the rest of a retransmission
     // that another fragment already completed. Not a loss; counted so it is not mistaken for one.
     uint64_t frag_duplicate;
@@ -752,6 +756,10 @@ struct tt_ReliableCache {
     // clamping call site treats it exactly like "no cache" (see cache_reliable_sample()/deliver_
     // durability_backlog()/process_acknack()'s own shared clamp expression).
     uint16_t capacity;
+    // Counted in seq_no, which is in DATAGRAMS once samples fragment: a fragmented sample is retained one
+    // record per datagram, so a depth of N keeps N / k samples of k fragments (DATAFRAG_PLAN.md section
+    // 13). KEEP_LAST evicts whole samples, never a sample's first datagram without the rest; size depth as
+    // samples x fragments per sample to keep that many samples.
     uint16_t depth; // in-use ring size, 1..capacity - see this struct's own doc comment for why
                     // this stays a separate field from capacity rather than always equaling it.
                     // Fixed once the first sample has been cached: slot (seq_no - 1) % depth is
@@ -933,6 +941,9 @@ struct tt_Publisher { // extends endpoint
     // about the sample the caller will actually retry rather than about the count alone. Cleared by
     // the next publish that is admitted.
     uint32_t blocked_record_bytes;
+    // The same for the count bound: how many datagrams - each its own seq_no - a sample refused for its
+    // fragment count needed (DATAFRAG_PLAN.md section 13), 0 when none was. Cleared with the above.
+    uint16_t blocked_datagrams;
     bool writable_pending;
 
     // NULL (tt_Node_create_publisher()'s own default): no retained-sample storage at all - both
@@ -1353,6 +1364,10 @@ struct tt_WriterProxy {
     struct tt_Subscriber* sub;
 };
 
+// seq_no is the sample's sequence number from its writer: increasing, but not contiguous. Every datagram a
+// writer sends takes its own seq_no (DATAFRAG_PLAN.md section 13), so a sample that went as k fragments is
+// named by its first datagram's and the next sample's is k higher. Contiguous only while nothing fragments.
+// It says which sample this is, not how many were missed.
 typedef void (*tt_SUBSCRIBER_CALLBACK)(struct tt_Subscriber* subscriber, uint64_t time, uint16_t seq_no,
                                        struct tt_Data* data);
 
@@ -1379,6 +1394,10 @@ struct tt_ReorderSlot {
     // the retry timer releases it - and attributing it to that trigger's socket made
     // via_socket_flips count the trigger, not the stream.
     bool via_data_port;
+    // A fragment's place in its sample (DATAFRAG_PLAN.md section 13): frag_count is 0 for a whole
+    // sample, else how many datagrams its sample has, and frag_index which one this is.
+    uint8_t frag_index;
+    uint8_t frag_count;
 };
 
 // Bytes one reorder slot needs for a payload of `payload_bytes`, rounded UP to a multiple of 8.
@@ -1554,6 +1573,12 @@ struct tt_Subscriber { // extends endpoint
     // Set all three together before the first sample arrives. reorder_slot_bytes is the stride
     // and must be at least tt_REORDER_SLOT_SIZE(largest payload this topic can carry); a payload
     // too big for the stride is treated exactly like a full buffer.
+    //
+    // Not optional for a RELIABLE Subscriber of a topic whose samples fragment (DATAFRAG_PLAN.md
+    // section 13): each fragment is held in a slot, one datagram per slot, until its whole sample is in
+    // order, and is acknowledged only once it is held. Without room it is left unacknowledged and asked
+    // for again, never lost - but with no buffer at all that is every time. A slot needs a fragment's
+    // payload, at most tt_CONTROL_MAX_LENGTH, and the buffer at least one window of datagrams.
     // uint64_t*, not uint8_t*, and for the same reason tracking_bitmaps is: a slot header starts
     // with a uint64_t timestamp, so the storage has to be 8-byte aligned. A uint8_t array gives no
     // such guarantee - it would be undefined behaviour everywhere and an alignment fault on the
@@ -2013,7 +2038,7 @@ struct tt_FragFirstHeader {
 // Fragments 1 .. frag_count - 1.
 struct tt_FragContHeader {
     uint32_t entity_id; // tt_DataHeader.entity_id of the sample
-    uint32_t seq_no;    // tt_DataHeader.seq_no of the sample
+    uint32_t seq_no;    // this datagram's own; the sample's is seq_no - frag_index (DATAFRAG_PLAN.md 13)
     uint8_t frag_index; // 1 .. frag_count - 1
     uint8_t frag_count; // the same in every fragment of a sample
 } __attribute__((packed));

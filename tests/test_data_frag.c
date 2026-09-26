@@ -16,7 +16,8 @@
 // refuses what one datagram cannot carry. Each test drives a real sender and a real receiver: what the
 // sender's HAL was handed is fed, datagram by datagram, into the receiver's process_packet().
 
-#define tt_MAX_SAMPLE_LENGTH 4096
+// Room for 11 fragments: the loss sweep below runs samples of 1, 2, 4 and 10.
+#define tt_MAX_SAMPLE_LENGTH 16000
 
 #include <stdint.h>
 #include <stdio.h>
@@ -400,8 +401,7 @@ static void test_inconsistent_fragments_are_dropped_and_counted(void) {
     init_pair(2800);
     publish_captured();
     deliver(0);
-    set_cont_field(1, offsetof(struct tt_FragContHeader, frag_count), 3);
-    set_cont_field(1, offsetof(struct tt_FragContHeader, frag_index), 2);
+    set_cont_field(1, offsetof(struct tt_FragContHeader, frag_count), 3); // same sample, other count
     deliver(1);
     EXPECT_EQ_INT(0, delivered_count);
     EXPECT_EQ_U64(1, receiver.frag_dropped);
@@ -438,7 +438,7 @@ static void test_sample_above_the_limit_is_refused(void) {
     // Control: the limit itself is accepted.
     sample_len = tt_MAX_SAMPLE_LENGTH;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
-    EXPECT_EQ_INT(3, datagram_count);
+    EXPECT_EQ_INT((int)frag_count_for(tt_MAX_SAMPLE_LENGTH), datagram_count);
     for (int d = 0; d < datagram_count; d++) {
         deliver(d);
     }
@@ -612,24 +612,51 @@ static void make_reliable(void) {
 
 static const struct tt_Peer receiver_peer = {.ip = RECEIVER_IP, .port = PORT, .node_id = RECEIVER_ID};
 
-static void test_retransmission_is_fragmented_and_addressed(void) {
+static void test_every_datagram_takes_its_own_seq_no(void) {
+    // DATAFRAG_PLAN.md section 13: DATA, FRAG_FIRST and each FRAG_CONT consume consecutive seq_no, and a
+    // sample is named by its first datagram's.
+    init_pair(4000);
+    publish_captured();
+    EXPECT_EQ_INT(3, datagram_count);
+    const struct tt_FragFirstHeader* first = (const struct tt_FragFirstHeader*)(submessage_of(0) + 1);
+    EXPECT_EQ_U32(1, first->data.seq_no);
+    for (int d = 1; d < 3; d++) {
+        const struct tt_FragContHeader* cont = (const struct tt_FragContHeader*)(submessage_of(d) + 1);
+        EXPECT_EQ_U32((uint32_t)d + 1, cont->seq_no);
+        EXPECT_EQ_INT(d, cont->frag_index);
+    }
+    EXPECT_EQ_U32(3, pub.seq_no);
+    sample_len = 100; // control: a whole DATA takes exactly one
+    publish_captured();
+    EXPECT_EQ_U32(4, ((const struct tt_DataHeader*)(submessage_of(0) + 1))->seq_no);
+    EXPECT_EQ_U32(4, pub.seq_no);
+}
+
+static void test_retransmission_resends_only_the_lost_datagram(void) {
     init_pair(2800);
     make_reliable();
     publish_captured();
     EXPECT_EQ_INT(2, datagram_count);
-    deliver(0); // the original's last fragment is lost
+    uint32_t original_len = datagram_len[1];
+    deliver(0); // the original's continuation, seq_no 2, is lost
 
     start_capture();
     struct tt_ReliableCache* cache = pub.reliable_cache;
-    EXPECT_TRUE(!retransmit_one_sample(&sender, &pub, cache, reliable_cache_depth(cache), 1, &receiver_peer));
-    EXPECT_EQ_INT(2, datagram_count);
-    EXPECT_EQ_INT(2, test_mock_send_to_call_count); // unicast, to the node that asked
-    for (int d = 0; d < 2; d++) {
-        EXPECT_EQ_INT(RECEIVER_ID, submessage_of(d)->receiver); // Karn: addressed, so it reads as a recovery
-    }
-    // The retransmitted last fragment completes the slot the original's first fragment started.
-    deliver(1);
+    EXPECT_TRUE(!retransmit_one_sample(&sender, &pub, cache, reliable_cache_depth(cache), 2, &receiver_peer));
+    EXPECT_EQ_INT(1, datagram_count);               // that datagram, not the whole sample
+    EXPECT_EQ_INT(1, test_mock_send_to_call_count); // unicast, to the node that asked
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_FRAG_CONT, submessage_of(0)->type);
+    EXPECT_EQ_INT(RECEIVER_ID, submessage_of(0)->receiver); // Karn: addressed, so it reads as a recovery
+    EXPECT_EQ_U32(2, ((const struct tt_FragContHeader*)(submessage_of(0) + 1))->seq_no);
+    EXPECT_EQ_U32(original_len, datagram_len[0]); // unpadded, byte for byte what was lost
+    deliver(0);
     expect_delivered_once(2800);
+
+    // And the first fragment on its own, when that is what is asked for.
+    start_capture();
+    EXPECT_TRUE(!retransmit_one_sample(&sender, &pub, cache, reliable_cache_depth(cache), 1, &receiver_peer));
+    EXPECT_EQ_INT(1, datagram_count);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_FRAG_FIRST, submessage_of(0)->type);
 }
 
 static void test_original_and_retransmission_agree_on_fragment_count(void) {
@@ -640,21 +667,22 @@ static void test_original_and_retransmission_agree_on_fragment_count(void) {
     init_pair(1443 + 1454);
     make_reliable();
     publish_captured();
-    int original = datagram_count;
+    EXPECT_EQ_INT(3, datagram_count);
     const struct tt_FragFirstHeader* first =
         (const struct tt_FragFirstHeader*)(datagrams[0] + sizeof(struct tt_Header) +
                                            sizeof(struct tt_SubmessageHeader));
     uint8_t original_count = first->frag_count;
     deliver(0);
+    deliver(2); // the middle one, seq_no 2, is lost
 
     start_capture();
     struct tt_ReliableCache* cache = pub.reliable_cache;
-    EXPECT_TRUE(!retransmit_one_sample(&sender, &pub, cache, reliable_cache_depth(cache), 1, &receiver_peer));
-    EXPECT_EQ_INT(original, datagram_count);
-    EXPECT_EQ_INT(original_count, first->frag_count); // datagrams[0] now holds the retransmission
-    for (int d = 1; d < datagram_count; d++) {
-        deliver(d);
-    }
+    EXPECT_TRUE(!retransmit_one_sample(&sender, &pub, cache, reliable_cache_depth(cache), 2, &receiver_peer));
+    EXPECT_EQ_INT(1, datagram_count);
+    const struct tt_FragContHeader* cont = (const struct tt_FragContHeader*)(submessage_of(0) + 1);
+    EXPECT_EQ_INT(original_count, cont->frag_count);
+    EXPECT_EQ_INT(1, cont->frag_index);
+    deliver(0);
     EXPECT_EQ_INT(1, delivered_count);
     EXPECT_EQ_U64(0, receiver.frag_dropped);
 }
@@ -765,7 +793,9 @@ static void sim_on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no,
     (void)s;
     (void)time;
     (void)data;
-    sim_in_order = sim_in_order && seq_no == (uint16_t)(sim_last_seq + 1);
+    // Monotonic, not contiguous: a sample is named by its first datagram's seq_no, and a fragmented one
+    // takes one per datagram (DATAFRAG_PLAN.md section 13).
+    sim_in_order = sim_in_order && (delivered_count == 0 || seq_no > (uint16_t)sim_last_seq);
     sim_last_seq = seq_no;
     delivered_count++;
 }
@@ -778,15 +808,32 @@ static void sim_on_data(struct tt_Subscriber* s, uint64_t time, uint16_t seq_no,
 #define SIM_REORDER_SLOTS tt_RELIABLE_BITMAP_BITS
 #define SIM_REORDER_SLOT_BYTES (sizeof(struct tt_ReorderSlot) + 2816)
 static uint64_t sim_reorder[SIM_REORDER_SLOTS * SIM_REORDER_SLOT_BYTES / sizeof(uint64_t)];
-static struct tt_ReliableCacheIndex sim_cache_index[256];
-static uint8_t sim_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(256, tt_RELIABLE_RECORD_BYTES(2800))];
+// Records are one datagram each (DATAFRAG_PLAN.md section 13), so the cache is sized in datagrams.
+#define SIM_CACHE_DEPTH 2048
+static struct tt_ReliableCacheIndex sim_cache_index[SIM_CACHE_DEPTH];
+static uint8_t sim_cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(SIM_CACHE_DEPTH, tt_RELIABLE_RECORD_BYTES(1472))];
 static struct tt_ReliableCache sim_cache;
 
-// Publishes SIM_SAMPLES p4-sized samples through a link losing loss_per_mille of every datagram in both
-// directions, then lets the protocol run until the Subscriber has them all or `budget` has passed.
+// Runs whatever is due on both nodes, one step of simulated time on.
+static bool sim_step(void) {
+    uint64_t next = sim_next_due();
+    if (next == UINT64_MAX) {
+        return false;
+    }
+    if (next > test_mock_now) {
+        test_mock_now = next;
+    }
+    sim_run_due(&sender);
+    sim_run_due(&receiver);
+    return true;
+}
+
+// Publishes SIM_SAMPLES samples of `size` bytes through a link losing loss_per_mille of every datagram in
+// both directions, then lets the protocol run until the Subscriber has them all or `budget` has passed.
+// KEEP_ALL, as c6 is: a publish that would outrun the acknowledgements waits, as a real writer blocks.
 // Returns the simulated time recovery took, after the last publish.
-static uint64_t sim_run(uint32_t loss_per_mille, uint64_t budget) {
-    init_pair(2800);
+static uint64_t sim_run(uint32_t size, uint32_t loss_per_mille, uint64_t budget) {
+    init_pair(size);
     sim_head = sim_tail = 0;
     sim_loss_per_mille = loss_per_mille;
     sim_rng = 1;
@@ -798,8 +845,8 @@ static uint64_t sim_run(uint32_t loss_per_mille, uint64_t budget) {
     memset(sim_cache_index, 0, sizeof(sim_cache_index));
     memset(&sim_cache, 0, sizeof(sim_cache));
     sim_cache.index = sim_cache_index;
-    sim_cache.capacity = 256;
-    sim_cache.depth = 256;
+    sim_cache.capacity = SIM_CACHE_DEPTH;
+    sim_cache.depth = SIM_CACHE_DEPTH;
     sim_cache.arena = sim_cache_arena;
     sim_cache.arena_size = (uint32_t)sizeof(sim_cache_arena);
     pub.reliable_cache = &sim_cache;
@@ -820,21 +867,25 @@ static uint64_t sim_run(uint32_t loss_per_mille, uint64_t budget) {
         sim_run_due(&sender);
         sim_run_due(&receiver);
         sim_acting = SENDER_ID;
-        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+        tt_ret_t result = tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len);
+        uint64_t blocked_since = test_mock_now;
+        while (result == tt_RET_WOULD_BLOCK && test_mock_now - blocked_since < budget) {
+            sim_drain();
+            if (!sim_step()) {
+                break;
+            }
+            sim_acting = SENDER_ID;
+            result = tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len);
+        }
+        EXPECT_EQ_INT(tt_RET_OK, result);
         sim_drain();
         test_mock_now += SIM_PUBLISH_SPACING;
     }
     uint64_t published = test_mock_now;
     while (delivered_count < SIM_SAMPLES && test_mock_now - published < budget) {
-        uint64_t next = sim_next_due();
-        if (next == UINT64_MAX) {
+        if (!sim_step()) {
             break; // nothing left to happen: a stall, which the assertions below report
         }
-        if (next > test_mock_now) {
-            test_mock_now = next;
-        }
-        sim_run_due(&sender);
-        sim_run_due(&receiver);
     }
     test_mock_send_hook = NULL;
     return test_mock_now - published;
@@ -842,7 +893,7 @@ static uint64_t sim_run(uint32_t loss_per_mille, uint64_t budget) {
 
 static void test_lossless_link_sends_two_datagrams_a_sample(void) {
     // Control for the lossy run below: the same simulation with nothing dropped.
-    sim_run(0, tt_SECOND);
+    sim_run(2800, 0, tt_SECOND);
     EXPECT_EQ_INT(SIM_SAMPLES, delivered_count);
     EXPECT_TRUE(sim_in_order);
     EXPECT_EQ_U64(SIM_SAMPLES, receiver.frag_reassembled);
@@ -855,7 +906,7 @@ static void test_lossy_link_recovers_every_sample(void) {
     // inside the harness's 3 s drain window; and the sender must not have needed more than a small
     // multiple of the lossless two datagrams a sample to get there (DATAFRAG_PLAN.md section 8 puts the
     // target at 2.2-2.5 on the wire; heartbeats and retransmissions are both counted here).
-    uint64_t took = sim_run(50, 3 * tt_SECOND);
+    uint64_t took = sim_run(2800, 50, 3 * tt_SECOND);
     EXPECT_EQ_INT(SIM_SAMPLES, delivered_count);
     EXPECT_TRUE(sim_in_order);
     EXPECT_TRUE(took < 500 * tt_MILLISECOND);
@@ -869,6 +920,204 @@ static void test_lossy_link_recovers_every_sample(void) {
            delivered_count, SIM_SAMPLES, (double)took / 1e6, per_sample, (unsigned long)sim_dropped[SENDER_ID],
            (unsigned long)sim_sent[SENDER_ID], (double)sim_sent[RECEIVER_ID] / SIM_SAMPLES,
            (unsigned long)receiver.frag_abandoned);
+}
+
+static void test_loss_costs_the_lost_datagram_not_the_sample(void) {
+    // DATAFRAG_PLAN.md 13.3, pre-registered: at 5% loss a datagram needs 1 / 0.95 sends on average, so a
+    // k-fragment sample costs k / 0.95 datagrams when only the lost one is resent, against k / 0.95^k when
+    // the whole sample is. At 1 fragment the two coincide (control); the gap is what this design buys, and
+    // it grows with k: 4.21 against 4.91 at 4, 10.5 against 16.7 at 10. Loss here is 5% both ways, so an
+    // ACKNACK can be lost too, and heartbeats count: within 10% of the per-datagram figure is the bar.
+    static const uint32_t fragments[] = {1, 2, 4, 10};
+    for (size_t f = 0; f < sizeof(fragments) / sizeof(fragments[0]); f++) {
+        uint32_t k = fragments[f];
+        uint32_t size = k == 1 ? 1000 : 1443 + ((k - 1) * 1454) - 100; // k fragments, the last one short
+        sim_run(size, 50, 5 * tt_SECOND);
+        double per_sample = (double)sim_sent[SENDER_ID] / SIM_SAMPLES;
+        double per_datagram_model = (double)k / 0.95;
+        double whole_sample_model = (double)k;
+        for (uint32_t i = 0; i < k; i++) {
+            whole_sample_model /= 0.95;
+        }
+        EXPECT_EQ_INT(SIM_SAMPLES, delivered_count);
+        EXPECT_TRUE(sim_in_order);
+        EXPECT_TRUE(per_sample < per_datagram_model * 1.10);
+        if (k >= 4) {
+            EXPECT_TRUE(per_sample < whole_sample_model); // measurably below what whole-sample resend costs
+        }
+        printf("test_data_frag: %u fragment(s) at 5%% loss - %.2f datagrams a sample (per-datagram model %.2f, "
+               "whole-sample model %.2f), %d/%d delivered\n",
+               k, per_sample, per_datagram_model, whole_sample_model, delivered_count, SIM_SAMPLES);
+    }
+}
+
+// --- RELIABLE receiver: every datagram its own seq_no (DATAFRAG_PLAN.md section 13) ---------------
+
+#define TEST_REORDER_SLOTS 64
+#define TEST_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(1472)
+static uint64_t test_reorder[TEST_REORDER_SLOTS * TEST_REORDER_SLOT_BYTES / sizeof(uint64_t)];
+
+static void make_receiver_reliable(bool with_buffer) {
+    sub.reliable = true;
+    memset(test_reorder, 0, sizeof(test_reorder));
+    sub.reorder_storage = with_buffer ? test_reorder : NULL;
+    sub.reorder_slots = with_buffer ? TEST_REORDER_SLOTS : 0;
+    sub.reorder_slot_bytes = with_buffer ? TEST_REORDER_SLOT_BYTES : 0;
+}
+
+static struct tt_WriterProxy* sender_proxy(void) {
+    return find_writer_proxy(&sub, SENDER_ID, pub.endpoint.entity_id);
+}
+
+static void test_reliable_fragments_reassemble_in_every_order(void) {
+    // A continuation reaches a RELIABLE Subscriber only once it tracks the writer, which takes a first
+    // datagram or a DATA - so one that overtakes its writer's very first datagram is not taken, stays
+    // unacknowledged, and is what the ACKNACK asks for. Modelled here by resending exactly the datagrams
+    // still unacknowledged, as the writer would.
+    static const int orders[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+    for (int o = 0; o < 6; o++) {
+        init_pair(4000);
+        make_receiver_reliable(true);
+        publish_captured();
+        for (int k = 0; k < 3; k++) {
+            deliver(orders[o][k]);
+        }
+        int resent = 0;
+        for (int d = 0; d < 3; d++) {
+            struct tt_WriterProxy* proxy = sender_proxy();
+            uint32_t seq_no = (uint32_t)d + 1;
+            if (seq_no >= proxy->ack_seq_no && !bitmap_test_bit(proxy->received_bitmap, seq_no - proxy->ack_seq_no)) {
+                deliver(d);
+                resent++;
+            }
+        }
+        int ahead_of_first = 0; // continuations delivered before the first fragment
+        while (orders[o][ahead_of_first] != 0) {
+            ahead_of_first++;
+        }
+        EXPECT_EQ_INT(ahead_of_first, resent); // exactly the continuations that overtook it, nothing else
+        expect_delivered_once(4000);
+        EXPECT_EQ_U32(4, sender_proxy()->ack_seq_no); // all three datagrams acknowledged
+        EXPECT_EQ_U32(0, sub.reorder_held);           // and nothing left behind
+    }
+}
+
+static void test_reliable_missing_fragment_is_tracked_as_its_own_gap(void) {
+    init_pair(4000);
+    make_receiver_reliable(true);
+    publish_captured();
+    deliver(0);
+    deliver(2);
+    EXPECT_EQ_INT(0, delivered_count);
+    struct tt_WriterProxy* proxy = sender_proxy();
+    EXPECT_EQ_U32(2, proxy->ack_seq_no);                      // stuck at the lost datagram, seq_no 2
+    EXPECT_TRUE(bitmap_test_bit(proxy->received_bitmap, 1));  // seq_no 3 held ahead of it
+    EXPECT_TRUE(!bitmap_test_bit(proxy->received_bitmap, 0)); // seq_no 2 is what an ACKNACK names
+    deliver(1);
+    expect_delivered_once(4000);
+}
+
+static void test_reliable_sample_given_up_on_is_never_delivered_torn(void) {
+    // Its first datagram arrives, the rest never do, and the writer declares them gone (an eviction
+    // Heartbeat). The held first datagram must be dropped - delivering part of a sample would hand the
+    // application garbage - and the next sample must still arrive intact.
+    init_pair(4000);
+    make_receiver_reliable(true);
+    publish_captured(); // seq_no 1..3
+    deliver(0);
+    struct tt_WriterProxy* proxy = sender_proxy();
+    advance_past_unavailable(proxy, 4);
+    drain_reorder(&receiver, &sub, proxy);
+    EXPECT_EQ_INT(0, delivered_count);
+    EXPECT_EQ_U32(0, sub.reorder_held);
+    EXPECT_TRUE(sub.reorder_abandoned >= 1);
+    publish_captured(); // seq_no 4..6 - control: the stream carries on
+    for (int d = 0; d < 3; d++) {
+        deliver(d);
+    }
+    expect_delivered_once(4000);
+}
+
+static void test_reliable_fragment_without_room_is_left_unrecorded(void) {
+    // No reorder buffer: a fragment cannot be held until its sample is whole, so it must not be
+    // acknowledged either - an acknowledged fragment is never sent again.
+    init_pair(2800);
+    make_receiver_reliable(false);
+    publish_captured();
+    deliver(0);
+    struct tt_WriterProxy* proxy = sender_proxy();
+    EXPECT_TRUE(proxy == NULL || proxy->ack_seq_no <= 1);
+    EXPECT_TRUE(sub.reorder_overflow >= 1);
+    EXPECT_EQ_INT(0, delivered_count);
+    // Control: the same datagrams with a buffer are recorded and delivered.
+    init_pair(2800);
+    make_receiver_reliable(true);
+    publish_captured();
+    deliver(0);
+    deliver(1);
+    expect_delivered_once(2800);
+}
+
+static void test_reliable_two_writers_interleaved(void) {
+    // Two writers of one topic count from 1 alike, and a fragment is held even in order - the per-writer
+    // slot offset is what keeps their datagrams from colliding.
+    init_pair(2800);
+    make_receiver_reliable(true);
+    static struct tt_Node second;
+    static struct tt_Publisher second_pub;
+    init_bare_node(&second, 3);
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&second, &second_pub, &sender_topic, ENDPOINT_NAME));
+    publish_captured();
+    uint8_t first_writer[2][tt_MAX_BUFFER_LENGTH];
+    uint32_t first_len[2];
+    for (int d = 0; d < 2; d++) {
+        memcpy(first_writer[d], datagrams[d], datagram_len[d]);
+        first_len[d] = datagram_len[d];
+    }
+    start_capture();
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&second_pub, (struct tt_Data*)&sample_len));
+    EXPECT_TRUE(process_packet(&receiver, first_writer[0], 0, first_len[0], SENDER_IP, PORT));
+    EXPECT_TRUE(process_packet(&receiver, datagrams[0], 0, datagram_len[0], SENDER_IP + 2, PORT));
+    EXPECT_TRUE(process_packet(&receiver, first_writer[1], 0, first_len[1], SENDER_IP, PORT));
+    EXPECT_TRUE(process_packet(&receiver, datagrams[1], 0, datagram_len[1], SENDER_IP + 2, PORT));
+    EXPECT_EQ_INT(2, delivered_count);
+    EXPECT_EQ_U32(0, sub.reorder_overflow);
+}
+
+static void test_keep_last_evicts_whole_samples(void) {
+    // Depth counts seq_no - datagrams - and eviction takes a whole sample, never leaving a continuation
+    // without its first datagram at the old end of the cache.
+    init_pair(4000); // 3 datagrams a sample
+    make_reliable();
+    frag_cache.depth = 5;
+    publish_captured(); // seq_no 1..3
+    publish_captured(); // seq_no 4..6: needs 4..6 in a 5-deep ring, so sample 1 goes - all of it
+    EXPECT_EQ_U32(4, frag_cache.oldest_seq_no);
+    EXPECT_TRUE(reliable_cache_slot_live(&frag_cache, 5, 4));
+    EXPECT_TRUE(reliable_cache_slot_live(&frag_cache, 5, 6));
+    EXPECT_TRUE(!reliable_cache_slot_live(&frag_cache, 5, 3)); // not a stranded continuation
+}
+
+static void test_keep_all_counts_every_datagram(void) {
+    // KEEP_ALL refuses a sample whose datagrams would take the unacknowledged run past its bound, and
+    // says why, so tt_Publisher_writable() answers about the sample the caller will retry.
+    init_pair(4000); // 3 datagrams a sample
+    make_reliable();
+    frag_cache.depth = 4;
+    pub.keep_all = true;
+    pub.peer_acks[0].node_id = RECEIVER_ID;
+    pub.peer_acks[0].ack_seq_no = 1; // nothing acknowledged yet
+    publish_captured();              // 3 unacknowledged: fits 4
+    EXPECT_EQ_U32(3, pub.seq_no);
+    start_capture();
+    EXPECT_EQ_INT(tt_RET_WOULD_BLOCK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_EQ_INT(0, datagram_count);
+    EXPECT_EQ_U32(3, pub.seq_no);
+    EXPECT_TRUE(!tt_Publisher_writable(&pub));
+    pub.peer_acks[0].ack_seq_no = 4; // all three acknowledged
+    EXPECT_TRUE(tt_Publisher_writable(&pub));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&sample_len));
+    EXPECT_EQ_U32(6, pub.seq_no);
 }
 
 int main(void) {
@@ -886,7 +1135,15 @@ int main(void) {
     test_sample_above_the_limit_is_refused();
     test_batch_ahead_of_a_fragmented_sample_goes_first();
     test_zero_copy_publish_fragments_too();
-    test_retransmission_is_fragmented_and_addressed();
+    test_every_datagram_takes_its_own_seq_no();
+    test_reliable_fragments_reassemble_in_every_order();
+    test_reliable_missing_fragment_is_tracked_as_its_own_gap();
+    test_reliable_sample_given_up_on_is_never_delivered_torn();
+    test_reliable_fragment_without_room_is_left_unrecorded();
+    test_reliable_two_writers_interleaved();
+    test_keep_last_evicts_whole_samples();
+    test_keep_all_counts_every_datagram();
+    test_retransmission_resends_only_the_lost_datagram();
     test_original_and_retransmission_agree_on_fragment_count();
     test_durability_backlog_sends_fragmented_samples();
     test_reverse_endian_fragments_reassemble();
@@ -896,6 +1153,7 @@ int main(void) {
     test_a_failed_batch_fails_the_publish();
     test_lossless_link_sends_two_datagrams_a_sample();
     test_lossy_link_recovers_every_sample();
+    test_loss_costs_the_lost_datagram_not_the_sample();
 
     if (test_result() != 0) {
         return 1;

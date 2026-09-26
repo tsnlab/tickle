@@ -441,53 +441,73 @@ fragment itself; `tt_SubmessageHeader.length` is exact.
 - `FRAG_FIRST` carries the sample's whole `tt_DataHeader` (20 B), then `frag_count` (u8), then the
   first CDR bytes.
 - `FRAG_CONT` carries `entity_id` (u32), `seq_no` (u32), `frag_index` (u8) and `frag_count` (u8),
-  10 B, then its CDR bytes. `entity_id` is unique within a node and the node is `tt_Header.source`,
-  so `(source, entity_id, seq_no)` names the sample and only the first fragment needs `endpoint_id`
-  and `timestamp`.
+  10 B, then its CDR bytes. Its `seq_no` is its own datagram's; its sample's is `seq_no - frag_index`.
+  `entity_id` is unique within a node and the node is `tt_Header.source`, so only the first fragment
+  needs `endpoint_id` and `timestamp`.
 
 This is the whole of the p4 bandwidth argument: a 2800 B sample is 2847 B of UDP payload in two
 datagrams, 2931 B on the wire against CycloneDDS's 2950. A full `tt_DataHeader` in every fragment
 would have left 6 B of margin, inside the noise.
+
+**Every datagram takes its own seq_no** (the user's decision of 2026-09-26, DATAFRAG_PLAN.md
+section 13). DATA, `FRAG_FIRST` and each `FRAG_CONT` consume consecutive seq_no from their writer, and a
+sample is named by its first datagram's. Reliability therefore works per datagram with the ACKNACK bitmap
+it always had: a lost fragment is asked for, and resent, on its own. Resending a whole sample for one lost
+piece cost k / 0.95^k datagrams a k-fragment sample at 5% loss; per datagram it costs k / 0.95. The
+lossy-link simulation in `test_data_frag.c` measures 1.06, 2.12, 4.25 and 10.57 for 1, 2, 4 and 10
+fragments, against 1.05, 2.11, 4.21 and 10.53. Whole-sample resend would be 16.7 at 10 fragments.
+
+What follows from it:
+- The subscriber callback's `seq_no` is monotonic, not contiguous: the next sample after a
+  k-fragment one is k higher. It says which sample this is, not how many were missed. `rmw_tickle`
+  carries its own contiguous counter for ROS's `publication_sequence_number` (13.2).
+- The reliable cache retains one record per datagram, so `tt_ReliableCache.depth` counts datagrams.
+  KEEP_LAST evicts whole samples, never a sample's first datagram without the rest. KEEP_ALL counts
+  every datagram of a sample against its bound before admitting it.
+- A tracking window of 256 bits covers 256 datagrams: 128 samples at p4.
 
 **Sender.**
 - Every fragment but the last is full, and fragment 0 carries exactly 11 B less CDR than a
   continuation (`tt_FRAG_FIRST_SHORTFALL`, the difference between the two headers). A fragment's
   position therefore follows from its index and the continuation size, and no offset field is
   needed.
-- A sample is encoded, cached and retained as one ordinary `DATA` record. It is split only as it is
-  sent, by one routine used by publish, retransmission and durability backlog alike, and each
-  fragment's CDR is sent straight from where the record lies through the HAL's scatter-gather send.
-  Nothing is copied to be split.
-- All of a sample's fragments to one destination go in one `tt_send_batch()`, which is one
+- A sample is encoded once in `tx_buffer`. Its fragments are sent straight from there through the HAL's
+  scatter-gather send, all of them to one destination in one `tt_send_batch()`, which is one
   `sendmmsg()` on Linux. A fragmented sample therefore costs the single send system call it cost
-  whole: strace on veth counted 60,199 `sendmmsg` calls for 60,199 p4 samples. The same call
-  carries one datagram to several unicast peers. One datagram to one destination is not batched
-  and keeps the path it always had, which is what p1 to p3 use.
-- The original is padded to 4 as the cached record is, so an original and its retransmission always
-  agree on the fragment count. Otherwise a retransmission could never complete a slot the original
-  had started.
+  whole: strace on veth counted 60,199 `sendmmsg` calls for 60,199 p4 samples. The same call carries
+  one datagram to several unicast peers. One datagram to one destination is not batched and keeps the
+  path it always had, which is what p1 to p3 use.
+- A reliable or durable writer caches each fragment as its own record, exactly as sent. A
+  retransmission or a durability backlog sends a record as its own datagram, **unpadded**, since a
+  fragment's length is what places it. A sample with more fragments than the cache has slots, or more
+  bytes than its arena, is sent and not retained.
 - Anything batched ahead of a fragmented sample is flushed first, so it is not overtaken.
 
 **Receiver.**
-- A node holds `tt_FRAG_REASSEMBLY_SLOTS` (8) slots shared by every sender. Each holds one whole
-  sample laid out as a `DATA` body would be, and a completed sample goes to the ordinary
-  `process_data()`: reliability, ordering and delivery see no difference.
-- The continuation size is learned from the first non-last fragment to arrive. A last fragment
-  arriving before that is parked at the end of the slot and moved into place once it is known.
-- A slot that completes its sample keeps naming it (`tt_FragSlot.done`), so a fragment arriving
-  for a sample already whole is counted as a duplicate (`frag_duplicate`) and dropped. A
-  retransmission resends every fragment, and the one that completes the sample is not always the
-  last to arrive. Before this, the rest opened a reassembly that could never complete, one for every
-  sample whose first fragment was lost. That was 26,711 in a 5 s veth run at 5% loss, at 8, 32 and
-  128 slots alike, which is how it was told apart from pool pressure.
-- When every slot is busy, a done slot is reused first, then the incomplete reassembly claimed
-  longest ago is abandoned (`frag_abandoned`). Fragments that contradict their sample are refused
-  (`frag_dropped`). Both are counted, because a silent drop here looks exactly like network loss.
-
-**Loss.** A lost fragment loses its sample, which the ordinary sample-granular ACKNACK recovers by
-resending every fragment of it. Simulated at c6's condition, 5% loss both ways with KEEP_ALL, that
-costs 2.23 datagrams a sample (`test_data_frag.c` asserts under 3). Fragment-granular
-retransmission is the optimisation to measure next, not a precondition.
+- **RELIABLE:** a fragment is stored in the subscriber's reorder buffer, one datagram per slot, and
+  only then recorded as received. Once a seq_no is acknowledged the writer never sends it again, so an
+  acknowledged fragment must already be kept somewhere. One that cannot be stored stays unrecorded
+  and is asked for again. When a sample's datagrams are all in order, it is put together in the
+  node's `frag_scratch` and delivered through the ordinary in-order path.
+  - A sample that can never be whole is dropped, counted in `reorder_abandoned`: one of its
+    datagrams lies below the watermark without having arrived (a gap given up on), or a continuation
+    is in order without its first datagram. A torn sample is never delivered.
+  - A continuation carries no endpoint id, so it goes only to subscribers already tracking its
+    writer. One that overtakes its writer's very first datagram is left unrecorded and re-requested.
+  - Reorder slots are offset per writer, because every writer counts from 1 and in-order fragments
+    are held too. Without the offset, two writers at similar seq_no would contend for the same slots.
+- **Best effort:** the node's reassembly pool of `tt_FRAG_REASSEMBLY_SLOTS` (8) slots, keyed by
+  source, `entity_id` and the sample's seq_no (a continuation's seq_no minus its index). A completed
+  sample goes to `process_data_for()` for best-effort subscribers only.
+  - The continuation size is learned from the first non-last fragment to arrive. A last fragment
+    arriving before that is parked at the end of the slot and moved into place once it is known.
+  - A slot that completes its sample keeps naming it (`tt_FragSlot.done`), so a fragment arriving
+    for a sample already whole is counted as a duplicate (`frag_duplicate`) and dropped.
+  - When every slot is busy, a done slot is reused first, then the reassembly claimed longest ago is
+    abandoned (`frag_abandoned`). A partial sample is not dropped merely because a newer one started,
+    since a gap from reordering is not a loss. Fragments that contradict their sample are refused
+    (`frag_dropped`). Every one of these is counted, because a silent drop here looks exactly like
+    network loss.
 
 **Interop.** New types rather than a version bump. A node built without fragmentation skips types 8
 and 9 quietly: it could not deliver a sample over its own limit anyway.

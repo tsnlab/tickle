@@ -19,6 +19,13 @@ number, `tt_VERSION`, which moves independently.
   two limits are equal and nothing changes: no reassembly memory, and an oversized sample is
   refused as before. New counters: `tt_Node.frag_reassembled`, `frag_abandoned`, `frag_dropped`,
   `frag_duplicate`.
+  **Every datagram takes its own seq_no** - DATA, `FRAG_FIRST` and each `FRAG_CONT` - so a lost
+  fragment is asked for and resent on its own through the existing ACKNACK bitmap. Consequences for
+  callers: the subscriber callback's `seq_no` is monotonic, not contiguous, once samples fragment;
+  `tt_ReliableCache.depth` counts datagrams (KEEP_LAST evicts whole samples); and a RELIABLE subscriber
+  of a fragmented topic needs a reorder buffer, since fragments are held there until their sample is
+  whole and acknowledged only once held. `tt_ReorderSlot` gained `frag_index`/`frag_count`, and reorder
+  slots are now offset per writer.
   See DESIGN.md's "Samples larger than a datagram".
 - **HAL: `tt_send_batch()`**, several datagrams in one call - `sendmmsg()` on Linux, one send each on
   FreeRTOS. **A HAL port must now provide it.** Core uses it for a sample's fragments and for one
