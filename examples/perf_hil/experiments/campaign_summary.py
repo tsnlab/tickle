@@ -84,6 +84,7 @@ INFORMATIONAL = ("utime_s", "stime_s")
 # rather than by any measurement.
 POLICY = ("keep_all", "keep_last_depth")
 BEST_EFFORT_QOS = "Q1"
+KEEP_LAST_QOS = "Q2"   # RELIABLE + KEEP_LAST 64 (campaign_sweep.sh matrix)
 
 GATE_METRIC = "wire_role_packets_per_sample"
 GATE_ROLE = "client"
@@ -181,6 +182,14 @@ def delivery_verdict(qos, per_fw):
     """
     if qos == BEST_EFFORT_QOS:
         return None                       # samples are meant to be droppable here
+    if qos == KEEP_LAST_QOS:
+        # KEEP_LAST lets a writer replace unacknowledged samples once its history is full, so
+        # sent != recv is what the QoS promises, not a fault - the same reasoning as BEST_EFFORT.
+        # Added 2026-09-26 AFTER seeing data, and said so: the aligned campaign excluded CycloneDDS
+        # from c9 for 216 of 715,733 samples (0.03%) that KEEP_LAST 64 was allowed to drop. Including
+        # it changed no verdict there (TickLE led every metric either way), and the change includes a
+        # vendor rather than excluding one, so it cannot have been chosen to favour TickLE.
+        return None
     short = []   # (framework, description)
     for fw, d in per_fw.items():
         sent, recv = d["delivery"].get("sent"), d["delivery"].get("recv")
