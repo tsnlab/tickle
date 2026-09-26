@@ -187,3 +187,38 @@ Idle case re-run: 1 s lease, no data, 5% loss both ways, 10 × 120 s. `results/l
 **L3 passes** (the data case passed in section 8, and the change does not touch it). L2 on the rig is still to
 run. Its first two attempts were void because of harness faults, not the core; see `RMW_PERF_PLAN.md` and
 the `liveliness_l2.sh` history.
+
+## 10. L2 on the rig: 4 s passes, 1 s and 2 s miss the 20 ms bar (2026-09-27)
+
+`liveliness_l2.sh`, before `ccbacb36`, after `48a87342`, CycloneDDS and FastDDS, lease 1/2/4 s, 20 repetitions, the four
+arms interleaved. 240 rows, 0 void; the TickLE server watched only the client's node (`-N 3`), and no PC node took part
+(`results/liveliness_l2_2026-09-27.txt`). Two earlier attempts were void, from a harness PID bug and then PC test nodes
+reaching the Pis over the management LAN.
+
+Median of (detect - lease), measured from the last data sample received, as all three harnesses measure:
+
+| arm | 1 s | 2 s | 4 s | reps > 50 ms from the median |
+|---|---:|---:|---:|---|
+| CycloneDDS | +0.1 ms | +0.1 | +0.1 | 0 |
+| FastDDS | -0.9 ms | -0.9 | -0.9 | 0 |
+| TickLE before (control) | +215 | +284 | **-763** (cut to ~3.2 s) | 11 / 9 / 15 of 20 |
+| **TickLE after** | **+33.6** | **+31.4** | **+0.2** | 0 / 0 / 0 |
+
+- **The control reproduces today's figures:** a wide spread, and 4 s cut short.
+- **After the change:**
+  - 4 s is no longer cut, and no repetition strays.
+  - **1 s and 2 s miss the pre-registered "within 20 ms".**
+
+**Why:** TickLE is exact against its own anchor. At 1 s and 2 s, the time from the last announce to the verdict minus the
+lease is 0.1 ms in the median: the verdict lands exactly one lease after the last sign of life. But under rule 1 any
+datagram is a sign of life. A short lease makes the node send summaries often (every 167 ms at 1 s), so the last datagram
+before the kill is often a summary ~30 ms after the last data sample, and the harness measures from the data. At 4 s the
+summaries are 667 ms apart and the last datagram is almost always data, hence +0.2.
+
+**Remedy (Plan's decision; the criterion is unchanged):**
+- The extra summaries that exist only for a short lease (the lease/6 cadence below `tt_NODE_UPDATE_INTERVAL`) are skipped
+  while the node has sent any datagram within that cadence. That datagram already asserted liveliness.
+- The 1 s summary that discovery needs is always sent.
+- Under traffic, the last sign of life is then the data, as in DDS, and fewer packets go out.
+- L2 is re-run with the same criteria. L3's idle case is unaffected (no data means every summary goes), and its data
+  case is re-run too.
