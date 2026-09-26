@@ -294,6 +294,9 @@ number, `tt_VERSION`, which moves independently.
   do not interoperate. See DESIGN.md's "The periodic summary".
   An unanswered request is re-sent every `tt_DISCOVERY_REQUEST_RETRY` (10 ms), `tt_DISCOVERY_REQUEST_ATTEMPTS`
   (4) times in all, from a fixed `tt_Node.discovery_requests[tt_DISCOVERY_PENDING_REQUESTS]` table.
+- **`rmw_tickle` honours `ROS_DOMAIN_ID`**: the well-known port is `_tt_NODE_PORT` + the domain id (0-232),
+  so domains on one network no longer discover each other. Domain 0 keeps port 8282. Found when a PC's
+  unit tests (domain 0) were heard by the rig's nodes (domain 73) over a shared management LAN.
 - **Wire protocol `tt_VERSION` 8 -> 9: liveliness runs from the last sign of life** (LIVELINESS_PLAN.md).
   An AUTOMATIC lease is refreshed by any datagram from the entity's node, a MANUAL_BY_TOPIC one only by
   that Publisher's DATA or its new liveliness HEARTBEAT (`tt_HEARTBEAT_FLAG_LIVELINESS`, sent by the new

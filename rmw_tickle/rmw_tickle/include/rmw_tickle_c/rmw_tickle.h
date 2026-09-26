@@ -803,6 +803,9 @@ typedef struct rmw_tickle_subscriber_t {
     uint64_t lifespan_ns;
 } rmw_tickle_subscriber_t;
 
+// The largest ROS_DOMAIN_ID rmw_tickle accepts: the DDS limit, which also keeps _tt_NODE_PORT + id in range.
+#define RMW_TICKLE_MAX_DOMAIN_ID 232U
+
 // Executor-driven receive: after any change another thread makes that could make a wait set ready (a
 // guard condition, an event, a queue fed outside the poll), wakes an rmw_wait() that is polling the node
 // itself. A no-op unless one is, and on the thread that is doing the polling (rmw_node.c).

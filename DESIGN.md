@@ -298,7 +298,9 @@ and the code ever disagree.
 
 - **UDP over IPv4.** Every node has two sockets:
   - the **well-known socket**, bound to the wildcard address on the well-known port (`_tt_NODE_PORT`,
-    8282 by default), which receives broadcasts;
+    8282 by default), which receives broadcasts. `rmw_tickle` adds the ROS domain id to it, so each
+    domain is its own port and two domains on one network never discover each other, as DDS keeps them
+    apart (2026-09-27);
   - the **data socket**, bound to the node's address on its own port, which sends everything and receives
     unicast. A peer's unicast address is learned from the source address of its datagrams.
 - **Broadcast**, to the configured link broadcast address (`_tt_CONFIG.broadcast`, the limited broadcast

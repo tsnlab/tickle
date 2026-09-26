@@ -23,7 +23,9 @@
 #include "rcutils/allocator.h"
 #include "rcutils/error_handling.h"
 #include "rcutils/logging_macros.h"
+#include "rcutils/macros.h" // RCUTILS_STRINGIFY
 #include "rcutils/strdup.h"
+#include "rmw/domain_id.h" // RMW_DEFAULT_DOMAIN_ID
 #include "rmw/error_handling.h"
 #include "rmw/init.h"             // rmw_context_t, rmw_context_impl_t
 #include "rmw/init_options.h"     // rmw_init_options_t
@@ -177,6 +179,20 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         RMW_SET_ERROR_MSG("context has already been initialized");
         return RMW_RET_INVALID_ARGUMENT;
     }
+    // ROS_DOMAIN_ID (2026-09-27, DDS parity): each domain listens on its own well-known port, _tt_NODE_PORT +
+    // the domain id, so two domains on one network never discover each other - as DDS keeps domains apart
+    // by port. Until then every rmw_tickle on a network was in one domain, and a PC's unit tests (domain 0)
+    // were heard by the rig's nodes (domain 73) over a shared management LAN. rcl passes the domain it
+    // resolved from ROS_DOMAIN_ID; RMW_DEFAULT_DOMAIN_ID (a direct rmw caller) reads the variable itself.
+    size_t domain_id = options->domain_id;
+    if (RMW_DEFAULT_DOMAIN_ID == domain_id) {
+        const char* from_env = getenv("ROS_DOMAIN_ID");
+        domain_id = NULL != from_env && '\0' != from_env[0] ? strtoul(from_env, NULL, 10) : 0;
+    }
+    if (domain_id > RMW_TICKLE_MAX_DOMAIN_ID) {
+        RMW_SET_ERROR_MSG("domain id above " RCUTILS_STRINGIFY(RMW_TICKLE_MAX_DOMAIN_ID) " (the DDS limit)");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
 
     context->instance_id = 0;
     context->implementation_identifier = RMW_TICKLE_IDENTIFIER;
@@ -245,6 +261,8 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
     // HAL's own compiled-in default (see src/hal_linux.c / src/hal_freertos.c) the same way
     // examples/linux's drivers let `-b` do it for a CLI-driven process; unset, this leaves that
     // default untouched instead of guessing.
+    _tt_CONFIG.port = _tt_NODE_PORT + (int)domain_id; // see the domain check at the top
+
     char* broadcast_addr = getenv("TICKLE_BROADCAST_ADDR");
     if (broadcast_addr != NULL) {
         _tt_CONFIG.broadcast = broadcast_addr;
