@@ -10,6 +10,9 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **A received sample reads no clock** (WIRE_PLAN.md 8.1a): the tt_VERSION 10 timestamp is rebuilt against the
+  time the running `tt_Node_poll()` already read (`tt_Node.rx_clock_ns`), not a clock read per sample - which
+  had cost v10's receivers 19-70 ns of user time per sample on the Pi.
 - **Short-lease summaries give way to traffic** (LIVELINESS_PLAN.md 10). A summary at the lease/6 cadence
   is skipped when every known peer has had a datagram from the node since the last tick; the
   `tt_NODE_UPDATE_INTERVAL` summary always goes. Under traffic a lease then runs from the data, as with DDS.

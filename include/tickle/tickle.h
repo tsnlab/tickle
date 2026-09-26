@@ -263,9 +263,12 @@ struct tt_Node {
     // more than tt_NODE_UPDATE_INTERVAL apart.
     uint64_t summary_sent_ns;
     // Who has had a datagram from this node since the last summary tick: a broadcast reaches everyone, an
-    // addressed send its peers (a bit per node id). Set from any sending thread and read and cleared by
-    // node_update(), so accessed only through __atomic builtins.
+    // addressed send its peers (a bit per node id). Every send and node_update() run under the state lock, so
+    // plain accesses: an atomic read-modify-write here cost ~8 ns a send on the PC (core_cost_bench.c).
     uint8_t reached_everyone;
+    // Whether the summaries run at the short-lease cadence, the only case with anything to skip: while false,
+    // sends record nothing (note_reached()), so a node without short leases pays one branch a send.
+    uint8_t summary_skip_armed;
     // tx_tail when tx_buffer holds a summary and nothing else, 0 otherwise: a flush of exactly that is not
     // traffic for the skip, or each summary would cancel the next and an idle node's cadence would halve.
     uint32_t tx_summary_alone_len;
@@ -288,7 +291,13 @@ struct tt_Node {
     tt_lock_t state_lock;    // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
     uintptr_t state_owner;   // tt_thread_self() of the holder, 0 when free; accessed through __atomic builtins
     uintptr_t poller_thread; // tt_thread_self() of the thread inside tt_Node_poll(), 0 when none; __atomic
-    uint32_t state_depth;    // how many times the owner has taken it; only the owner reads or writes it
+    // The time the running tt_Node_poll() last read (tt_get_ns()), 0 outside one: what a received DATA's 32-bit
+    // timestamp is rebuilt against (timestamp_from_wire()), so receiving a sample reads no clock of its own.
+    // Any time within minutes of now will do - the rebuild's window is +-35.8 min - and it is refreshed after
+    // every wait. Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a division per
+    // poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
+    uint64_t rx_clock_ns;
+    uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Node_schedule() from a thread that does not hold the state lock puts its entry
     // here, without a lock, and the next look at the heap moves it in - see sched_inbox_push() (tickle.c).

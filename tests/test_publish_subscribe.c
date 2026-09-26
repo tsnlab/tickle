@@ -836,6 +836,8 @@ static void test_best_effort_discards_out_of_order(void) {
 // receiver rebuilds the rest from its own clock - exactly, as long as the two clocks are within half the
 // 32-bit range (+-35.8 min) of each other, across the 32-bit wrap in either direction.
 static void test_wire_timestamp_rebuilds_across_skew_and_wrap(void) {
+    static struct tt_Node clock_node; // rx_clock_ns 0: outside a poll, the receiver reads its own clock
+    memset(&clock_node, 0, sizeof(clock_node));
     const uint64_t thirty_minutes = 30ULL * 60ULL * tt_SECOND;
     // An arbitrary clock far from any wrap, and one 5 us before the 32-bit microsecond wrap.
     const uint64_t far_from_wrap = 1790000000ULL * tt_SECOND;
@@ -843,22 +845,29 @@ static void test_wire_timestamp_rebuilds_across_skew_and_wrap(void) {
     const uint64_t just_before_wrap = (wrap_us - 5ULL) * tt_MICROSECOND;
 
     test_mock_now = far_from_wrap;
-    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(far_from_wrap + thirty_minutes)) ==
+    EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(far_from_wrap + thirty_minutes)) ==
                 far_from_wrap + thirty_minutes);
-    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(far_from_wrap - thirty_minutes)) ==
+    EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(far_from_wrap - thirty_minutes)) ==
                 far_from_wrap - thirty_minutes);
-    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(far_from_wrap + 1234)) == far_from_wrap + 1000); // to us
+    EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(far_from_wrap + 1234)) ==
+                far_from_wrap + 1000); // to us
 
     // The receiver just before the wrap, the sender 10 us later - past it, its low bits small.
     test_mock_now = just_before_wrap;
     uint64_t sent = just_before_wrap + (10 * tt_MICROSECOND);
     EXPECT_TRUE(timestamp_to_wire(sent) < 16U); // the sender's low bits did wrap
-    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(sent)) == sent);
+    EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(sent)) == sent);
     // ... and the other way: the receiver past the wrap, the sender just before it.
     test_mock_now = sent;
-    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(just_before_wrap)) == just_before_wrap);
+    EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(just_before_wrap)) == just_before_wrap);
     // Thirty minutes of skew across the wrap still rebuilds.
-    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(sent + thirty_minutes)) == sent + thirty_minutes);
+    EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(sent + thirty_minutes)) == sent + thirty_minutes);
+    // Inside a poll the rebuild takes the poll's own reading (tt_Node.rx_clock_ns) and reads no clock: the
+    // same answer with the clock itself hours off.
+    clock_node.rx_clock_ns = far_from_wrap;
+    test_mock_now = far_from_wrap + (5ULL * 3600ULL * tt_SECOND);
+    EXPECT_TRUE(timestamp_from_wire(&clock_node, timestamp_to_wire(far_from_wrap + thirty_minutes)) ==
+                far_from_wrap + thirty_minutes);
 }
 
 // --- The single-submessage form (tt_VERSION 10, WIRE_PLAN.md W4) ---------------------------------------

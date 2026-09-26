@@ -386,13 +386,16 @@ struct tx_datagram {
 // broadcast (no peers), otherwise the peers it is addressed to. A link's broadcast of an addressed datagram
 // also reaches that link's other peers; they are not counted, which only means a summary goes out anyway.
 static void note_reached(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
+    if (!node->summary_skip_armed) {
+        return;
+    }
     if (peers == NULL || peer_count == 0) {
-        __atomic_store_n(&node->reached_everyone, 1, __ATOMIC_RELAXED);
+        node->reached_everyone = 1;
         return;
     }
     for (uint8_t i = 0; i < peer_count; i++) {
         uint8_t id = peers[i].node_id;
-        __atomic_fetch_or(&node->reached_nodes[id / 32U], 1U << (id % 32U), __ATOMIC_RELAXED);
+        node->reached_nodes[id / 32U] |= 1U << (id % 32U);
     }
 }
 
@@ -1943,6 +1946,7 @@ static void node_init_locks(struct tt_Node* node) {
     __atomic_store_n(&node->idle_waiter, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_seq, 0, __ATOMIC_RELAXED);
+    node->rx_clock_ns = 0;
     __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
 }
@@ -2013,9 +2017,10 @@ static void reset_node_state(struct tt_Node* node) {
     node->next_summary_ns = 0;
     node->summary_sent_ns = 0;
     node->tx_summary_alone_len = 0;
-    __atomic_store_n(&node->reached_everyone, 0, __ATOMIC_RELAXED);
+    node->reached_everyone = 0;
+    node->summary_skip_armed = 0;
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT / 32; i++) {
-        __atomic_store_n(&node->reached_nodes[i], 0, __ATOMIC_RELAXED);
+        node->reached_nodes[i] = 0;
     }
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
@@ -2742,8 +2747,10 @@ static uint32_t timestamp_to_wire(uint64_t time_ns) {
 
 // ... and back, in nanoseconds: the sender's microseconds taken as the ones nearest the receiver's clock,
 // within half the 32-bit range (+-35.8 min) of it either way. 0 if that would fall before the clock's epoch.
-static uint64_t timestamp_from_wire(uint32_t sent_us) {
-    int64_t now_us = (int64_t)(tt_get_ns() / tt_MICROSECOND);
+// The receiver's clock is the one the running poll already read (tt_Node.rx_clock_ns): a clock read per
+// received sample cost the v10 campaign 19-70 ns of user time per sample on the Pi (WIRE_PLAN.md 8).
+static uint64_t timestamp_from_wire(const struct tt_Node* node, uint32_t sent_us) {
+    int64_t now_us = (int64_t)((node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns()) / tt_MICROSECOND);
     int64_t rebuilt_us = now_us + (int32_t)(sent_us - (uint32_t)now_us);
     return rebuilt_us < 0 ? 0 : (uint64_t)rebuilt_us * tt_MICROSECOND;
 }
@@ -5545,10 +5552,12 @@ static uint64_t summary_interval(const struct tt_Node* node) {
 // (source_last_heard()), as the summary would have; MANUAL writers assert with their own DATA and HEARTBEAT.
 // False with no peer known, so a node alone keeps announcing itself.
 static bool every_peer_reached(struct tt_Node* node) {
-    bool everyone = __atomic_exchange_n(&node->reached_everyone, 0, __ATOMIC_RELAXED) != 0;
+    bool everyone = node->reached_everyone != 0;
+    node->reached_everyone = 0;
     uint32_t reached[tt_MAX_ENDPOINT_COUNT / 32];
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT / 32; i++) {
-        reached[i] = __atomic_exchange_n(&node->reached_nodes[i], 0, __ATOMIC_RELAXED);
+        reached[i] = node->reached_nodes[i];
+        node->reached_nodes[i] = 0;
     }
     bool any_peer = false;
     for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
@@ -5571,7 +5580,8 @@ static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     // data, as with DDS, rather than a summary tens of ms after it. The tt_NODE_UPDATE_INTERVAL summary, which
     // also carries the discovery generation, always goes.
     uint64_t interval = summary_interval(node);
-    bool reached = every_peer_reached(node);
+    bool reached = every_peer_reached(node) && node->summary_skip_armed; // always cleared; unarmed, it recorded nothing
+    node->summary_skip_armed = interval < tt_NODE_UPDATE_INTERVAL;
     bool keeps_the_second = interval >= tt_NODE_UPDATE_INTERVAL || node->summary_sent_ns == 0 ||
                             time - node->summary_sent_ns + interval > tt_NODE_UPDATE_INTERVAL;
     if (keeps_the_second || !reached) {
@@ -7027,7 +7037,7 @@ static bool process_data_for(struct tt_Node* node, struct tt_Header* header, uin
 
     uint32_t endpoint_id = rd32(header, data_header->endpoint_id);
     uint32_t seq_no = rd32(header, data_header->seq_no);
-    uint64_t timestamp = timestamp_from_wire(rd32(header, data_header->timestamp));
+    uint64_t timestamp = timestamp_from_wire(node, rd32(header, data_header->timestamp));
     uint32_t entity_id = rd32(header, data_header->entity_id);
 
     // The built-in discovery endpoint (tt_DISCOVERY_ENDPOINT_ID, tickle.h): no Subscriber, no reliable
@@ -8531,7 +8541,7 @@ static bool deliver_user_fragment(struct tt_Node* node, struct tt_Header* header
         .endpoint_id = data_header != NULL ? rd32(header, data_header->endpoint_id) : 0,
         .entity_id = entity_id,
         .seq_no = seq_no,
-        .timestamp = data_header != NULL ? timestamp_from_wire(rd32(header, data_header->timestamp)) : 0,
+        .timestamp = data_header != NULL ? timestamp_from_wire(node, rd32(header, data_header->timestamp)) : 0,
         .buffer = buffer,
         .head = head,
         .tail = tail,
@@ -9115,6 +9125,7 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
     __atomic_store_n(&node->poller_thread, tt_thread_self(), __ATOMIC_RELAXED); // NOLINT(misc-include-cleaner)
     __atomic_store_n(&node->idle_waiter, 0, __ATOMIC_RELAXED);                  // this poll sees every insert itself
     tt_ret_t result = node_poll(node, timeout);
+    node->rx_clock_ns = 0; // outside a poll a receive reads the clock itself
     __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELEASE);
     return result;
@@ -9138,6 +9149,7 @@ static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout) {
 
     uint64_t time = tt_get_ns();
     const uint64_t poll_start = time;
+    node->rx_clock_ns = time;
 
     // timeout == 0: one non-blocking pass - run everything due now, drain whatever RX is already
     // waiting, return. No poll()/select() wait at all. For a caller that just wants to make
@@ -9196,6 +9208,7 @@ static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout) {
             timeout -= (int64_t)(new_time - time);
         }
         time = new_time;
+        node->rx_clock_ns = time;
         if (until_next_event && did_work && time - poll_start >= (uint64_t)tt_RECEIVE_TIMEOUT) {
             return tt_RET_TIMEOUT; // the busy-node slice
         }

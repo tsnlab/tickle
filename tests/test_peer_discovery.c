@@ -1327,6 +1327,7 @@ static void test_a_summary_is_skipped_only_when_every_peer_was_reached(void) {
     static struct tt_Node node;
     memset(&node, 0, sizeof(node));
     node.id = 1;
+    node.summary_skip_armed = 1;             // a short-lease cadence: sends are recorded
     EXPECT_TRUE(!every_peer_reached(&node)); // no peer known
     node.update_seen[2] = true;
     node.update_seen[3] = true;

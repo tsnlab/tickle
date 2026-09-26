@@ -217,4 +217,44 @@ and on figures inflated in either direction. It gives 34 better, 52 held and **2
   cost without giving up the bytes. The fix is judged by the same campaign, re-run as interleaved A B B A blocks against
   `8f3811f4`.
 
+### 8.1a Dev: the cause measured on the PC, and the fix (2026-09-27)
+
+`perf` is not available to the sessions on the PC (`perf_event_paranoid` 4, no sudo for it), so the cost was measured
+with a benchmark of TickLE core alone: `experiments/core_cost_bench.c`, driven by `experiments/core_cost_ab.sh`.
+- **The benchmark.** Two nodes run in one process, with a HAL of their own: sends are captured into memory, and receives
+  hand the captured datagrams back through `tt_Node_poll()`. `tt_get_ns()` is the real clock, and its calls are counted.
+  It measures p1 Bench samples BEST_EFFORT. The send phase publishes N samples, polling once after each; the receive
+  phase hands them all to the subscriber's node. There is no kernel and no network, so this is user time only.
+- **The runs.** Each build ran pinned to one CPU, in rounds alternating between builds. Differences are paired by
+  round (mean +- SE).
+
+**Result, 300,000 samples x 40 rounds, against the parent `8f3811f4`:**
+
+| build | send ns/sample | recv ns/sample | clock reads per sample (send / recv) |
+|---|---:|---:|---|
+| parent `8f3811f4` | 189.6 | 83.8 | 2 / 1 |
+| v10 (at `22a8f2cb`) | -2.4 +- 0.7 | **+26.4 +- 0.5** | 2 / **2** |
+| this fix | +0.1 +- 0.9 | -1.4 +- 0.7 | 2 / 1 |
+
+- **The receive regression is the clock read**, as suspected. `timestamp_from_wire()` read the clock once per
+  received sample, which the parent did not; on the PC that is +26 ns per sample. On the Pi, the server's utime rose
+  19-70 ns.
+- **The fix rebuilds the timestamp against the time the running poll already read** (`tt_Node.rx_clock_ns`). Any time
+  within minutes will do, because the window is +-35.8 min. The poll refreshes it after every wait and clears it on
+  return, and a receive outside a poll reads the clock itself.
+- **Storing it cost the sender ~3 ns, and the storage was changed to remove that.** The sender polls once per sample, so
+  the first version (a microsecond value, divided on every poll) cost it about 3 ns. It is now stored as raw
+  nanoseconds, beside `poller_thread`, which the poll writes anyway.
+- **The send path shows no v10 regression on the PC**: -2.4 +- 0.7 ns. The 64-bit division is by a constant (a
+  multiply), and `to_single_form()` rewrites four bytes. The +15-40 ns seen at the Pi's clients is not reproduced by
+  the core alone. The interleaved campaign will say whether it was the sequential arms or something the Pi does
+  differently.
+- **Found on the way.** LIVELINESS_PLAN 10's summary skip (`397d927c`) recorded every send with an atomic
+  read-modify-write, which cost ~8 ns per send.
+  - It is now plain, since every send runs under the state lock.
+  - It records nothing unless the node's summaries run at the short-lease cadence, which is the only case with
+    anything to skip. A node without short leases, like every campaign cell, pays one branch.
+
+For the ABBA campaign against `8f3811f4`: the build to use is this commit.
+
 The rmw half (block and the poll sweep, the rmw capture) follows in 8.2.
