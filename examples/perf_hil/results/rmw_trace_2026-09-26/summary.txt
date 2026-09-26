@@ -1,0 +1,7 @@
+=== rmw cross-host RTT, 2026-09-26T16:10:43+09:00, SHA 4342a5d05cf1a85d1f01d4ae308cb8c4dd94c4b8, 3 reps, msgs: bench array1k ===
+--- SKIP_BUILD: both rpis already at 4342a5d05cf1a85d1f01d4ae308cb8c4dd94c4b8 with binaries ---
+rmw_tickle bench best_effort rep1 | ok | framework=rmw_tickle scenario=pingpong qos=best_effort sent=99 recv=99 loss_pct=0 rtt_min_ms=0.787 rtt_avg_ms=1.070 rtt_max_ms=23.734
+rmw_fastrtps_cpp bench best_effort rep1 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort sent=99 recv=99 loss_pct=0 rtt_min_ms=0.738 rtt_avg_ms=1.263 rtt_max_ms=39.115
+rmw_cyclonedds_cpp bench best_effort rep1 | VOID(loss) | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort sent=95 recv=94 loss_pct=1 rtt_min_ms=0.610 rtt_avg_ms=0.746 rtt_max_ms=0.898
+
+=== done ===

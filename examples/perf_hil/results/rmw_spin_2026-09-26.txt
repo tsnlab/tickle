@@ -1,0 +1,40 @@
+=== rmw cross-host RTT, 2026-09-26T16:15:14+09:00, SHA 4342a5d05cf1a85d1f01d4ae308cb8c4dd94c4b8, 3 reps, msgs: bench, spin arms: off on, trace: 0 ===
+--- SKIP_BUILD: both rpis already at 4342a5d05cf1a85d1f01d4ae308cb8c4dd94c4b8 with binaries ---
+rmw_tickle bench best_effort rep1 spin=off freq_khz=1500000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.469 rtt_avg_ms=0.515 rtt_max_ms=0.766
+rmw_fastrtps_cpp bench best_effort rep1 spin=off freq_khz=1500000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.416 rtt_avg_ms=0.474 rtt_max_ms=0.755
+rmw_cyclonedds_cpp bench best_effort rep1 spin=off freq_khz=1500000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.395 rtt_avg_ms=0.428 rtt_max_ms=0.533
+rmw_tickle bench reliable rep1 spin=off freq_khz=1500000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.456 rtt_avg_ms=0.501 rtt_max_ms=0.703
+rmw_fastrtps_cpp bench reliable rep1 spin=off freq_khz=1500000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.424 rtt_avg_ms=0.485 rtt_max_ms=0.782
+rmw_cyclonedds_cpp bench reliable rep1 spin=off freq_khz=1500000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.379 rtt_avg_ms=0.436 rtt_max_ms=0.959
+rmw_tickle bench best_effort rep1 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.453 rtt_avg_ms=0.487 rtt_max_ms=0.710
+rmw_fastrtps_cpp bench best_effort rep1 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.363 rtt_avg_ms=0.414 rtt_max_ms=0.697
+rmw_cyclonedds_cpp bench best_effort rep1 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.364 rtt_avg_ms=0.394 rtt_max_ms=0.496
+rmw_tickle bench reliable rep1 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.464 rtt_avg_ms=0.487 rtt_max_ms=0.744
+rmw_fastrtps_cpp bench reliable rep1 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.392 rtt_avg_ms=0.427 rtt_max_ms=0.704
+rmw_cyclonedds_cpp bench reliable rep1 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.358 rtt_avg_ms=0.403 rtt_max_ms=0.889
+rmw_tickle bench best_effort rep2 spin=off freq_khz=1500000,1500000 | ok | framework=rmw_tickle scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.463 rtt_avg_ms=0.508 rtt_max_ms=0.719
+rmw_fastrtps_cpp bench best_effort rep2 spin=off freq_khz=1500000,1500000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.417 rtt_avg_ms=0.477 rtt_max_ms=0.793
+rmw_cyclonedds_cpp bench best_effort rep2 spin=off freq_khz=1500000,1500000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.383 rtt_avg_ms=0.429 rtt_max_ms=0.692
+rmw_tickle bench reliable rep2 spin=off freq_khz=1500000,1500000 | ok | framework=rmw_tickle scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.463 rtt_avg_ms=0.502 rtt_max_ms=0.734
+rmw_fastrtps_cpp bench reliable rep2 spin=off freq_khz=1500000,1500000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.435 rtt_avg_ms=0.498 rtt_max_ms=0.791
+rmw_cyclonedds_cpp bench reliable rep2 spin=off freq_khz=1500000,1500000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.382 rtt_avg_ms=0.434 rtt_max_ms=0.934
+rmw_tickle bench best_effort rep2 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.438 rtt_avg_ms=0.485 rtt_max_ms=0.710
+rmw_fastrtps_cpp bench best_effort rep2 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.369 rtt_avg_ms=0.417 rtt_max_ms=0.700
+rmw_cyclonedds_cpp bench best_effort rep2 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.355 rtt_avg_ms=0.395 rtt_max_ms=0.605
+rmw_tickle bench reliable rep2 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.446 rtt_avg_ms=0.488 rtt_max_ms=0.751
+rmw_fastrtps_cpp bench reliable rep2 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.398 rtt_avg_ms=0.429 rtt_max_ms=0.674
+rmw_cyclonedds_cpp bench reliable rep2 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.378 rtt_avg_ms=0.404 rtt_max_ms=0.916
+rmw_tickle bench best_effort rep3 spin=off freq_khz=2400000,1500000 | ok | framework=rmw_tickle scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.460 rtt_avg_ms=0.504 rtt_max_ms=0.755
+rmw_fastrtps_cpp bench best_effort rep3 spin=off freq_khz=2400000,1500000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.412 rtt_avg_ms=0.473 rtt_max_ms=0.791
+rmw_cyclonedds_cpp bench best_effort rep3 spin=off freq_khz=2400000,1500000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.385 rtt_avg_ms=0.433 rtt_max_ms=0.669
+rmw_tickle bench reliable rep3 spin=off freq_khz=2400000,1500000 | ok | framework=rmw_tickle scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.458 rtt_avg_ms=0.507 rtt_max_ms=0.826
+rmw_fastrtps_cpp bench reliable rep3 spin=off freq_khz=2400000,1500000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.436 rtt_avg_ms=0.489 rtt_max_ms=0.785
+rmw_cyclonedds_cpp bench reliable rep3 spin=off freq_khz=2400000,1500000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.382 rtt_avg_ms=0.432 rtt_max_ms=1.077
+rmw_tickle bench best_effort rep3 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.450 rtt_avg_ms=0.485 rtt_max_ms=0.711
+rmw_fastrtps_cpp bench best_effort rep3 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.367 rtt_avg_ms=0.415 rtt_max_ms=0.691
+rmw_cyclonedds_cpp bench best_effort rep3 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=best_effort sent=100 recv=100 loss_pct=0 rtt_min_ms=0.354 rtt_avg_ms=0.394 rtt_max_ms=0.502
+rmw_tickle bench reliable rep3 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_tickle scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.449 rtt_avg_ms=0.487 rtt_max_ms=0.707
+rmw_fastrtps_cpp bench reliable rep3 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_fastrtps_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.385 rtt_avg_ms=0.428 rtt_max_ms=0.659
+rmw_cyclonedds_cpp bench reliable rep3 spin=on freq_khz=2400000,2400000 | ok | framework=rmw_cyclonedds_cpp scenario=pingpong qos=reliable sent=100 recv=100 loss_pct=0 rtt_min_ms=0.350 rtt_avg_ms=0.407 rtt_max_ms=0.903
+
+=== done ===

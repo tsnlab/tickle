@@ -1,0 +1,14 @@
+== rmw_cyclonedds_cpp: 80 pings in the window, 8 threads making syscalls
+   per ping: receive 1.2  send 1.1  wait 0.4  futex 4.9  other 0.0
+   top syscalls per ping: futex 4.9, recvmsg 1.2, sendmsg 1.1, pselect6 0.4, clock_nanosleep 0.0
+   syscalls per ping by thread: 2357004 2.6, 2357015 2.0, 2357012 1.1, 2357013 1.1, 2357010 0.6, 2357016 0.1
+== rmw_fastrtps_cpp: 80 pings in the window, 9 threads making syscalls
+   per ping: receive 1.3  send 1.1  wait 0.0  futex 4.3  other 1.3
+   top syscalls per ping: futex 4.3, recvfrom 1.3, setsockopt 1.1, sendto 1.1, mmap 0.1, mprotect 0.1, munmap 0.0
+   syscalls per ping by thread: 2356697 3.5, 2356706 2.0, 2356702 1.3, 2356703 0.4, 2356705 0.3, 2356707 0.2
+== rmw_tickle: 80 pings in the window, 4 threads making syscalls
+   per ping: receive 2.4  send 1.1  wait 3.4  futex 3.8  other 0.0
+   top syscalls per ping: futex 3.8, recvfrom 2.4, clock_nanosleep 2.0, ppoll 1.4, sendto 1.0, write 0.1, mmap 0.0, munmap 0.0
+   syscalls per ping by thread: 2356404 5.5, 2356398 3.1, 2356405 2.0, 2356401 0.1
+
+== total syscalls per ping: rmw_cyclonedds_cpp 7.6, rmw_fastrtps_cpp 8.0, rmw_tickle 10.7
