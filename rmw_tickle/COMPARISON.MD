@@ -35,21 +35,22 @@ same session, so a row is always comparable. Across rows of different letters it
   transport `maxMessageSize` set to 1472**, the user's decision for a fair evaluation. This makes
   FastDDS fragment in RTPS instead of handing the kernel oversized datagrams. **Totals: WIN 27,
   DRAW/TIE 3, LOSE 0, and every framework delivered everything**, including at P4 under 5% loss.
-- **`M` rows** are the cross-host `rmw` measurement of 2026-09-26 (`rmw_crosshost_rtt.sh`, `4342a5d0`,
-  `results/rmw_cpu_mem_2026-09-26.txt`).
-  Each of `rmw_tickle`, `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp` is driven through `rclcpp` by the
-  same ping/pong nodes, on the eth0 link only, 3 repetitions interleaved, 100 round trips each. Every
-  row's pong process was checked to have mapped the expected `librmw_*.so`. 36 rows, 0 void. Memory is
-  measured from outside every process alike: the ping through `/usr/bin/time`, the pong through
-  `/proc/PID/status` VmHWM. Most of the ~11 MB is the `rclcpp`/ROS baseline all three share, so the
-  differences between implementations are a few MB. CPU is not taken from these rows: at the
-  kernel's 10 ms accounting granularity TickLE and CycloneDDS differ by one or two ticks over a run.
-- **`H` rows** are the `rmw` CPU rows, from the H1-H3 session of 2026-09-26 (`9e989307`,
-  `results/rmw_h123_2026-09-26/rows.txt`, 30 rows, 0 void), with the same setup as the `M` rows. The
-  pong's CPU is the run time of all its threads summed from `/proc/PID/task/*/schedstat` in
-  nanoseconds, over its whole life: 4 s idle and then 100 round trips. It is a per-process total, so it
-  compares implementations run alike and is not a cost per message. Median of 3. The spread within
-  each triple is 1.4 ms or less, well inside the gaps between implementations.
+- **`R` rows** are the cross-host `rmw` measurement of 2026-09-26 evening (`rmw_crosshost_rtt.sh`, build
+  `75e39a61`, `results/rmw_scored_2026-09-26.txt`, 72 rows, 0 void). It is the current core and rmw_tickle,
+  including the fix for a peer-registration race that had made rmw_tickle's ping broadcast. Each of
+  `rmw_tickle`, `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp` is driven through `rclcpp` by the same ping/pong
+  nodes, on the eth0 link only, 3 repetitions interleaved, 100 round trips each, median of 3. Every row's
+  pong was checked to have mapped the expected `librmw_*.so`.
+  - **Both ways an application can wait are test cases** (the user's decision of 2026-09-26). In *block*
+    the ping waits in `spin_once()` and the rmw wakes it when the reply arrives: the `spin()` pattern of
+    most ROS 2 applications, and the native harness's way. In *poll* it loops on `spin_some()` with a
+    100 us sleep between spins.
+  - Memory is measured from outside every process alike: the ping through `/usr/bin/time`, the pong
+    through `/proc/PID/status` VmHWM.
+  - CPU is the pong's thread run time summed from `schedstat` in nanoseconds over its whole life (4 s idle,
+    then 100 round trips): a per-process total, not a cost per message.
+  - These rows replace the earlier `M` and `H` rows, which were poll wait only, on builds before the race
+    fix.
 - **`S` rows** are the 2026-09-24/25 QoS-mechanics sweep. Neither campaign covered them.
 
 Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` and
@@ -111,14 +112,18 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 46 | LIVELINESS detection | lease 2.0 s | ⚪ not comparable | ⚪ 1999 ms | ⚪ 2000 ms | S |
 | 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | S |
 | | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | | |
-| 48 | RTT mean, BEST_EFFORT | Bench (64 B) | ❌ 0.514 | 0.476 | ✅ **0.428** | M |
-| 49 | RTT mean, RELIABLE | Bench (64 B) | ❌ 0.508 | 0.490 | ✅ **0.433** | M |
-| 50 | RTT mean, BEST_EFFORT | Array1k | ❌ 0.509 | 0.502 | ✅ **0.443** | M |
-| 51 | RTT mean, RELIABLE | Array1k | 0.508 | ❌ 0.522 | ✅ **0.442** | M |
-| 52 | peak RSS, ping process (KB) | Bench, BEST_EFFORT | ✅ **11,264** | ❌ 23,892 | 14,720 | M |
-| 53 | peak RSS, pong process (KB) | Bench, BEST_EFFORT | ✅ **11,696** | ❌ 23,624 | 14,532 | M |
-| 54 | pong CPU, whole run (ms) | Bench, BEST_EFFORT | ✅ **34.4** | ❌ 56.0 | 42.8 | H |
-| 55 | pong CPU, whole run (ms) | Bench, RELIABLE | ✅ **34.3** | ❌ 59.5 | 47.4 | H |
+| 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.252** | ❌ 0.316 | 0.270 | R |
+| 49 | RTT mean, block wait, RELIABLE | Bench (64 B) | ✅ **0.250** | ❌ 0.331 | 0.269 | R |
+| 50 | RTT mean, block wait, BEST_EFFORT | Array1k | ✅ **0.272** | ❌ 0.342 | 0.289 | R |
+| 51 | RTT mean, block wait, RELIABLE | Array1k | ✅ **0.273** | ❌ 0.349 | 0.282 | R |
+| 52 | RTT mean, poll wait (100 us sleep), BEST_EFFORT | Bench (64 B) | ❌ 0.505 | 0.469 | ✅ **0.428** | R |
+| 53 | RTT mean, poll wait (100 us sleep), RELIABLE | Bench (64 B) | ❌ 0.504 | 0.498 | ✅ **0.433** | R |
+| 54 | RTT mean, poll wait (100 us sleep), BEST_EFFORT | Array1k | ❌ 0.509 | ❌ 0.509 | ✅ **0.449** | R |
+| 55 | RTT mean, poll wait (100 us sleep), RELIABLE | Array1k | 0.510 | ❌ 0.517 | ✅ **0.437** | R |
+| 56 | peak RSS, ping process (KB) | Bench, block, BEST_EFFORT | ✅ **11,264** | ❌ 23,884 | 14,844 | R |
+| 57 | peak RSS, pong process (KB) | Bench, block, BEST_EFFORT | ✅ **11,760** | ❌ 23,624 | 14,532 | R |
+| 58 | pong CPU, whole run (ms) | Bench, block, BEST_EFFORT | ✅ **35.3** | ❌ 56.6 | 42.9 | R |
+| 59 | pong CPU, whole run (ms) | Bench, block, RELIABLE | ✅ **34.9** | ❌ 60.8 | 48.3 | R |
 
 **FastDDS as shipped (`maxMessageSize` 65,500), at the same cells, for reference.** Aligned campaign,
 same QoS:
@@ -133,12 +138,15 @@ loss. Both are shown so neither configuration's weakness is hidden.
 
 ### Where TickLE does not come first, stated up front
 
-- **Rows 48-51, the `rmw` round trip: CycloneDDS is faster through ROS 2, by about 0.08 ms per round trip**
-  (0.425-0.448 ms against TickLE's 0.504-0.515). This was re-measured on the current build, and the gap
-  barely moved from the old 0.52 ms. TickLE's *core* wins the same round trip natively (0.207 ms
-  against CycloneDDS's 0.259, row 1), so `rmw_tickle`'s own layer adds about 0.30 ms where
-  CycloneDDS's adds about 0.17. That difference is the target of the `rmw_tickle` optimisation, which
-  is the next step of the user's instruction.
+- **Rows 52-55, the `rmw` round trip with a polling wait: CycloneDDS is faster, by 0.06-0.08 ms.** TickLE is
+  fastest in the block rows (48-51), by 0.009-0.019 ms. The poll result is a grid effect, measured and not
+  argued (`RMW_PERF_PLAN.md` 8.1). `rmw_tickle`'s `spin_some()` costs 6.4 us against CycloneDDS's 46.5,
+  so its loop cycles faster, and against a 100 us sleep its reply is caught on the third iteration instead
+  of the second (3.01 against 2.03 per round trip). A single sleep value is arbitrary, so a sweep of
+  0/50/100/200 us is being measured; these rows will then show the whole sweep rather than one point of it.
+  At the kernel boundary, rmw_tickle is fastest in every user-space segment. It is behind by more than
+  5 us only in the pong's kernel receive (ppoll then recvfrom, against the vendors' blocking recvmsg),
+  which is the next thing being worked on.
 - **Row 5** is a draw by construction, not a win. A 10 ms injected delay swamps a 0.2 ms round
   trip, so that cell measures `netem`. The next row, the tail, still separates the three.
 
@@ -683,18 +691,21 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 
 ### 2.7 The rmw layer
 
-Table rows 48-55. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
+Table rows 48-59. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
 
-**Current status (2026-09-26):** these are the only rows where TickLE is not first. The re-measurement on
-the current build, what has been ruled out (CPU frequency, by a pre-registered test), what the traces
-show, and the hypotheses being tested are in [`RMW_PERF_PLAN.md`](RMW_PERF_PLAN.md). The text below is the
-history of how the `rmw` comparison was set up, and its figures predate that plan.
+**Current status (2026-09-26):**
+- With a block wait, TickLE is first on every `rmw` row: RTT, memory and CPU.
+- With a poll wait at a 100 us sleep, it is not first (rows 52-55). Why is measured: the loop's grid.
+- The earlier ~0.08 ms "deficit" was the ping's polling loop, found when the round trip was split with
+  packet captures, a syscall timestamp layer and application stamps on both hosts.
 
-**Rows 54-55, CPU:** `rmw_tickle`'s pong uses the least CPU of the three, in both reliability modes, while
-being the slowest on RTT. So the RTT gap is not explained by more computation in the pong: over the
-run it does less work than CycloneDDS's pong and still answers later. The figure is a whole-run total,
-so it cannot say where in a round trip the time goes. `RMW_PERF_PLAN.md` section 6 has the numbers,
-and the packet-capture split planned there asks the "where".
+[`RMW_PERF_PLAN.md`](RMW_PERF_PLAN.md) sections 7-8 hold the whole investigation: what was ruled out,
+the vendor source comparison, and the per-segment split. The text below is the history of how the
+`rmw` comparison was set up, and its figures predate that plan.
+
+**Rows 58-59, CPU:** `rmw_tickle`'s pong uses the least CPU of the three in both reliability modes: 35 ms
+against CycloneDDS's 43-48 and FastDDS's 57-61. That agrees with the per-segment split, where every
+user-space segment of rmw_tickle is the shortest.
 
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
 (`RMW_IMPLEMENTATION` + `rclcpp`), not either framework's own native API:
