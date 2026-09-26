@@ -60,6 +60,10 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-T") == 0 && i + 1 < argc) {
             lease_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
+            // Publish interval, 0.1 s unless given - as the DDS twins' -i. LIVELINESS_PLAN.md L3's idle case
+            // passes a very long one, so the lease is kept only by the node's own summaries.
+            interval_s = atof(argv[++i]);
         }
     }
 
