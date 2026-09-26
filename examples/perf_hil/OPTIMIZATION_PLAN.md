@@ -728,3 +728,24 @@ chunk, where today it waits at most one datagram.
 5. on the rig, the native campaign and the rmw block RTT not WORSE (WIRE_PLAN 8.3's reading).
 
 A failure on any of these, and it is recorded here and not merged.
+
+**Bench result (2026-09-27, branch `d4-state-lock-chunk` against `004f5a10`), criteria 1-4 PASS:**
+
+| criterion | result |
+|---|---|
+| 1. recv, 25 paired rounds | **-9.66 +- 0.64 ns per datagram** (61.3 -> 51.8, -16%), in the predicted range |
+| 2. send | -1.0 +- 1.6 ns, not WORSE |
+| 3. under `-p`, 20 rounds, a publisher on its own CPU | publish p50 -0.25 +- 0.31 ns, p99 -4.3 +- 3.3 ns (bound +1 us), and the drain's recv -24.5 +- 1.3 ns (134 -> 109) with less contention |
+| 4. unit, tsan | green: `test_thread_safety`'s HAL reports its queue as buffered, so the locked chunks ran under ThreadSanitizer with the publishing threads |
+
+Tests:
+- `test_poll_wait` pins that a 40-datagram drain takes fewer than 20 locks, and that no socket read is made holding
+  the lock.
+- Mutants caught:
+  - a chunk of 1;
+  - the unbuffered read made under the lock.
+
+  A third mutant, which skipped the unbuffered branch, hung instead of failing. It spins without ever asking the
+  HAL, so it is recorded as a hang, caught only by the test timeout.
+
+Criterion 5 (the rig) is still to come, in the D-series ABBA.

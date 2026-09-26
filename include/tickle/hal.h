@@ -181,6 +181,12 @@ int32_t tt_link_mtu(uint32_t addr);
 // per packet. Returns received bytes, -1 if nothing is waiting, other negatives for I/O error.
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port);
 
+// How many datagrams the HAL already holds, read from the socket and not yet handed out, that the next
+// tt_try_receive() calls return without a system call (hal_linux.c's recvmmsg() batch; 0 on a HAL with
+// none). Core keeps its state lock across such datagrams and never across a read from the socket
+// (OPTIMIZATION_PLAN.md 11.4, D4).
+uint32_t tt_rx_buffered(const struct tt_Node* node);
+
 // Wakes a concurrent tt_receive() blocked on this node (from any thread, including this one - a
 // self-signal), making it return -3 immediately instead of waiting out the rest of its timeout.
 // Safe to call whether or not a call is currently blocked; if none is, the signal is simply

@@ -270,6 +270,12 @@
 #ifndef tt_RX_CLOCK_REFRESH
 #define tt_RX_CLOCK_REFRESH 16
 #endif
+// How many datagrams the HAL already holds (tt_rx_buffered()) core processes under one taking of the state lock
+// (OPTIMIZATION_PLAN.md 11.4, D4): the lock costs ~13 ns a pair on the PC, and a thread publishing meanwhile
+// waits for at most this many datagrams' processing. 1 is the behaviour before D4.
+#ifndef tt_RX_LOCK_CHUNK
+#define tt_RX_LOCK_CHUNK 8
+#endif
 // A positive poll slice some callers pass explicitly (rmw_tickle's poll thread), and the most back-to-
 // back scheduler work a negative-timeout tt_Node_poll() runs before handing control back. It used to be
 // what a negative timeout waited, too; since 2026-09-25 that waits for the scheduler instead - see

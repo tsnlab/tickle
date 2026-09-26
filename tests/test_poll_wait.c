@@ -284,9 +284,14 @@ static void test_a_long_drain_keeps_its_stamps_fresh(void) {
     test_mock_try_receive_len = len;
     test_mock_try_receive_advance_ns = tt_MICROSECOND;
 
+    uint64_t locks_before = node.state_lock_stats.acquisitions;
     (void)tt_Node_poll(&node, -1);
 
     EXPECT_EQ_INT(0, test_mock_try_receive_remaining);
+    // D4 (OPTIMIZATION_PLAN.md 11.4): the backlog is processed tt_RX_LOCK_CHUNK datagrams to a taking of the lock,
+    // not one - and the read that finds nothing more, a socket read on a real HAL, is not made holding it.
+    EXPECT_TRUE(node.state_lock_stats.acquisitions - locks_before < 40 / 2);
+    EXPECT_EQ_INT(0, test_mock_socket_reads_under_lock);
     uint64_t last_arrived = tt_SECOND + (40 * tt_MICROSECOND);
     EXPECT_TRUE(node.traffic_last_seen[STAMP_SOURCE] <= last_arrived);
     EXPECT_TRUE(node.traffic_last_seen[STAMP_SOURCE] >= last_arrived - (tt_RX_CLOCK_REFRESH * tt_MICROSECOND));

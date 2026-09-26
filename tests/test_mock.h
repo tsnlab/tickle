@@ -91,6 +91,8 @@ uint64_t test_mock_receive_data_advance_ns = 0; // a wait that ends with a datag
 int test_mock_try_receive_remaining = 0;        // tt_try_receive() hands back this many more datagrams ...
 int32_t test_mock_try_receive_len = 0;          // ... of this length, whatever the buffer holds ...
 uint64_t test_mock_try_receive_advance_ns = 0;  // ... each this much later than the one before
+int test_mock_socket_reads_under_lock = 0;      // tt_try_receive() calls past the backlog - a read of the
+                                                // socket, on a real HAL - made holding the node's state lock
 #else
 extern uint64_t test_mock_now;
 extern int32_t test_mock_node_id;
@@ -119,6 +121,7 @@ extern uint64_t test_mock_receive_data_advance_ns;
 extern int test_mock_try_receive_remaining;
 extern int32_t test_mock_try_receive_len;
 extern uint64_t test_mock_try_receive_advance_ns;
+extern int test_mock_socket_reads_under_lock;
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -150,6 +153,7 @@ static inline void test_mock_reset(void) {
     test_mock_try_receive_remaining = 0;
     test_mock_try_receive_len = 0;
     test_mock_try_receive_advance_ns = 0;
+    test_mock_socket_reads_under_lock = 0;
 }
 
 // A datagram as sent, in the classic form a test's decoder reads: one in the single-submessage form
@@ -345,6 +349,12 @@ int32_t tt_send_batch(struct tt_Node* node, const struct tt_OutDatagram* datagra
     return (int32_t)count;
 }
 
+// The mock's backlog counts as held: tt_try_receive() hands it out with nothing to wait for.
+uint32_t tt_rx_buffered(const struct tt_Node* node) {
+    (void)node;
+    return test_mock_try_receive_remaining > 0 ? (uint32_t)test_mock_try_receive_remaining : 0U;
+}
+
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     (void)node;
     (void)buf;
@@ -360,6 +370,9 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
         test_mock_try_receive_remaining--;
         test_mock_now += test_mock_try_receive_advance_ns;
         return test_mock_try_receive_len;
+    }
+    if (__atomic_load_n(&node->state_owner, __ATOMIC_RELAXED) == tt_thread_self()) {
+        test_mock_socket_reads_under_lock++;
     }
     return -1;
 }

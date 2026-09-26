@@ -726,6 +726,10 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 // socket in the meantime is not lost or delayed past the next poll: readiness is level-triggered, so the
 // very next ppoll() reports it. When every socket is idle this answers without a syscall, and clears the
 // bits so the next drain - one not preceded by a wait, like a non-blocking poll - asks both again.
+uint32_t tt_rx_buffered(const struct tt_Node* node) {
+    return node->hal.rx_next < node->hal.rx_count ? (uint32_t)(node->hal.rx_count - node->hal.rx_next) : 0U;
+}
+
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     int32_t pending = rx_take_pending(node, buf, len, ip, port);
     if (pending >= 0) {
