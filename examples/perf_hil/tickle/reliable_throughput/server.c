@@ -191,6 +191,13 @@ static void print_missing_seqs(uint64_t lost) {
 static const double default_safety_cap_s = 40.0;
 // Phase 2 - -w <samples>: the RELIABLE tracking window this Subscriber asks for; 0 = core default.
 static uint32_t window_samples = 0;
+// -N <samples>: KEEP_ALL's history bound, the same flag as the client's and the DDS harnesses'
+// (2026-09-26, COMPARISON.MD 4.4). A Publisher can hold no more unacknowledged than this Subscriber's
+// window, which counts datagrams, so without -w the window is widened to N x the datagrams one sample
+// takes, rounded up to whole bitmap words - otherwise the reader's default window, not N, would bound the
+// run. The DDS readers take N as their own max_samples; this side has no history of its own to bound.
+// Reported as keepall_samples= and window= on the RESULT line. -w, if given, still wins.
+static uint32_t keepall_samples = 0;
 static const double safety_cap_buffer_s = 15.0;
 
 // The first writer proxy in use, for reporting its recovery estimate. This scenario has one writer;
@@ -204,17 +211,13 @@ static const struct tt_WriterProxy* first_live_writer(const struct tt_Subscriber
     return &sub->writers[0];
 }
 
-int main(int argc, char** argv) {
-    // Armed at the very top, before any middleware setup, so the counters cover discovery
-    // too - identically for all three frameworks, which is what makes them comparable.
-    bench_stats_begin(&g_bench_stats);
-    bool durable = false; // -D, see sub.durable below
-    double safety_cap_s = default_safety_cap_s;
+// Split out of main() to keep its cognitive complexity under the project's clang-tidy threshold.
+static void parse_args(int argc, char** argv, bool* durable, double* safety_cap_s) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
-            safety_cap_s = atof(argv[++i]);
+            *safety_cap_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-D") == 0) {
-            durable = true;
+            *durable = true;
         } else if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
             // Phase 2 (rmw_tickle/PLAN.md) - RELIABLE tracking window in samples, so one HIL
             // sweep can compare them. 0/absent keeps TickLE core's own embedded-first default
@@ -224,8 +227,25 @@ int main(int argc, char** argv) {
             // Publisher retains can only ever be skipped, never recovered. Measured at -K 1024:
             // -w 1024 lost nothing over 6 runs, -w 4096 lost 191-368 per run.
             window_samples = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
+            keepall_samples = (uint32_t)strtoul(argv[++i], NULL, 10);
         }
     }
+    // -N without -w: the window KEEP_ALL's N samples need (keepall_samples' own comment above).
+    if (keepall_samples > 0 && window_samples == 0) {
+        const uint32_t datagrams = keepall_samples * tt_sample_datagrams((uint32_t)sizeof(struct BenchData));
+        window_samples = ((datagrams + tt_RELIABLE_BITMAP_WORD_BITS - 1) / tt_RELIABLE_BITMAP_WORD_BITS) *
+                         tt_RELIABLE_BITMAP_WORD_BITS;
+    }
+}
+
+int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
+    bool durable = false; // -D, see sub.durable below
+    double safety_cap_s = default_safety_cap_s;
+    parse_args(argc, argv, &durable, &safety_cap_s);
     // +15s buffer - see deadline_miss_detection/server.c's own doc comment for the real bug this
     // avoids (run_scenario.sh forwards the same -d to both sides, but it means "this side's own
     // send duration" on the client vs. "don't hang forever" here - taken verbatim, this side could
@@ -363,6 +383,7 @@ int main(int argc, char** argv) {
     // from "given up on", which recv against the client's sent cannot.
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
+           "keepall_samples=%u "
            "reorder_slots=%u frag_slots=%d frag_reassembled=%lu frag_abandoned=%lu frag_dropped=%lu "
            "frag_duplicate=%lu "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
@@ -370,7 +391,7 @@ int main(int argc, char** argv) {
            "recovery_rttvar_ns=%u %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
-           (unsigned)sub.reorder_slots, BENCH_FRAG_SLOTS, BENCH_FRAG_COUNT(node, frag_reassembled),
+           keepall_samples, (unsigned)sub.reorder_slots, BENCH_FRAG_SLOTS, BENCH_FRAG_COUNT(node, frag_reassembled),
            BENCH_FRAG_COUNT(node, frag_abandoned), BENCH_FRAG_COUNT(node, frag_dropped),
            BENCH_FRAG_COUNT(node, frag_duplicate), BenchCpuFreq_mean_mhz(&g_cpu_freq),
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,

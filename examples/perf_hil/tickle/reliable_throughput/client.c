@@ -178,6 +178,14 @@ static const uint32_t keep_all_default_depth = 2048;
 // fair comparison: those pass their QoS explicitly to all three frameworks, this included.
 static const uint32_t keep_all_default_bytes = 512U * 1024U;
 static uint32_t keep_all_bytes = 0;
+// -N <samples> (with -Q): KEEP_ALL's history bound in samples, the same letter and meaning as the DDS
+// harnesses' max_samples (2026-09-26, the fairness audit, COMPARISON.MD 4.4). Core's cache counts
+// datagrams, so the depth is N x the datagrams one sample takes and the arena holds N + 1 samples of this
+// shape, unbudgeted: the count, not -M, is the bound. The Subscriber's window has to cover as much, or it
+// binds first - the server takes the same -N and widens its window to match. The RESULT line reports
+// keepall_bound_samples=, the bound in samples this run actually had, so a row whose window or arena
+// cut it short shows it. 0 = not given: the -K / -M behaviour above, unchanged.
+static uint32_t keepall_samples = 0;
 static const uint32_t default_ack_solicit_us = 200; // well under the time to send throttle_lag
                                                     // messages at max rate for every -T value
                                                     // this scenario tests (64-200)
@@ -341,6 +349,20 @@ static bool wait_for_matched_subscriber(struct tt_Node* node, struct tt_Publishe
     return true;
 }
 
+// KEEP_ALL's two sizing flags, -M <bytes> and -N <samples>: true if flag was one of them. Split out of
+// parse_args() below for the same cognitive-complexity reason that one was split out of main().
+static bool parse_keep_all_flag(const char* flag, const char* value) {
+    if (strcmp(flag, "-M") == 0) {
+        keep_all_bytes = (uint32_t)strtoul(value, NULL, 10);
+        return true;
+    }
+    if (strcmp(flag, "-N") == 0) {
+        keepall_samples = (uint32_t)strtoul(value, NULL, 10);
+        return true;
+    }
+    return false;
+}
+
 // Split out of main() to keep its own cognitive complexity under the project's clang-tidy
 // threshold - this branch chain was the tipping point once -A joined -i/-d/-K/-T.
 static void parse_args(int argc, char** argv) {
@@ -368,8 +390,8 @@ static void parse_args(int argc, char** argv) {
             keep_all = true;
         } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
             max_blocking_ms = atof(argv[++i]);
-        } else if (strcmp(argv[i], "-M") == 0 && i + 1 < argc) {
-            keep_all_bytes = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (i + 1 < argc && parse_keep_all_flag(argv[i], argv[i + 1])) {
+            i++;
         }
     }
     if (throttle_lag > 0 && ack_solicit_us == 0) {
@@ -380,6 +402,9 @@ static void parse_args(int argc, char** argv) {
 // The arena this run uses: (depth + 1) records, capped for VOLATILE KEEP_ALL at the byte budget and
 // never below one record. The same rule as rmw_tickle's resolve_keep_all_arena_bytes().
 static uint32_t keep_all_arena_bytes(void) {
+    if (keepall_samples > 0) {
+        return (keepall_samples + 1) * tt_sample_cache_bytes((uint32_t)sizeof(struct BenchData));
+    }
     const uint32_t record = tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData));
     const uint32_t full = tt_RELIABLE_CACHE_ARENA_BYTES(reliable_depth, record);
     if (!keep_all || durable) {
@@ -392,11 +417,9 @@ static uint32_t keep_all_arena_bytes(void) {
     return full < budget ? full : budget;
 }
 
-int main(int argc, char** argv) {
-    // Armed at the very top, before any middleware setup, so the counters cover discovery
-    // too - identically for all three frameworks, which is what makes them comparable.
-    bench_stats_begin(&g_bench_stats);
-    parse_args(argc, argv);
+// The cache depth this run uses, from -K, -Q and -N; false for a combination that cannot run. Split out of
+// main() to keep its cognitive complexity under the project's clang-tidy threshold.
+static bool resolve_reliable_depth(void) {
     // -Q without an explicit -K: the historical default of 64 is far below any window this scenario
     // announces (-w 1024 in the Phase 3 matrix), and KEEP_ALL blocks at min(depth, window), so
     // leaving it at 64 would measure a 64-deep cache rather than KEEP_ALL. -K still wins if given,
@@ -404,10 +427,53 @@ int main(int argc, char** argv) {
     if (keep_all && !depth_explicit) {
         reliable_depth = keep_all_default_depth;
     }
+    if (keepall_samples > 0) {
+        if (!keep_all) {
+            printf("-N is KEEP_ALL's bound and needs -Q.\n");
+            return false;
+        }
+        reliable_depth = keepall_samples * tt_sample_datagrams((uint32_t)sizeof(struct BenchData));
+    }
     if (reliable_depth == 0 || reliable_depth > MAX_RELIABLE_DEPTH) {
+        if (keepall_samples > 0) {
+            printf("-N %u needs a cache depth of %u datagrams, past this build's %u.\n", keepall_samples,
+                   reliable_depth, MAX_RELIABLE_DEPTH);
+            return false;
+        }
         printf("Requested reliable cache depth %u out of range (1..%u); clamping to %u.\n", reliable_depth,
                MAX_RELIABLE_DEPTH, (unsigned)tt_MAX_RELIABLE_HISTORY);
         reliable_depth = tt_MAX_RELIABLE_HISTORY;
+    }
+    return true;
+}
+
+// The most samples of this shape the run could hold unacknowledged: the cache's depth and the narrowest
+// window a matched Subscriber announced, both in datagrams, and the arena, which keeps one sample of wrap
+// slack. What -N promises; 0 when this is not a KEEP_ALL run. Read at the end, while still matched.
+static uint32_t keepall_bound_samples(const struct tt_Publisher* pub, const struct tt_ReliableCache* cache) {
+    if (!keep_all) {
+        return 0;
+    }
+    const uint32_t per_sample = tt_sample_datagrams((uint32_t)sizeof(struct BenchData));
+    uint32_t datagrams = cache->depth;
+    const uint32_t window = tt_Publisher_unacked_bound(pub);
+    if (window < datagrams) {
+        datagrams = window;
+    }
+    uint32_t samples = datagrams / per_sample;
+    const uint32_t footprint = tt_sample_cache_bytes((uint32_t)sizeof(struct BenchData));
+    const uint32_t in_arena = cache->arena_size / footprint;
+    const uint32_t by_bytes = in_arena > 0 ? in_arena - 1 : 0;
+    return by_bytes < samples ? by_bytes : samples;
+}
+
+int main(int argc, char** argv) {
+    // Armed at the very top, before any middleware setup, so the counters cover discovery
+    // too - identically for all three frameworks, which is what makes them comparable.
+    bench_stats_begin(&g_bench_stats);
+    parse_args(argc, argv);
+    if (!resolve_reliable_depth()) {
+        return 1;
     }
 
     // real HIL link's own broadcast address - see best_effort_latency/client.c's own doc comment
@@ -463,6 +529,11 @@ int main(int argc, char** argv) {
     // smaller retention window in bytes too, not just in slots - and, for VOLATILE KEEP_ALL, no more
     // than the byte budget (-M), exactly as rmw_tickle sizes it.
     pub_cache.arena_size = keep_all_arena_bytes();
+    if (pub_cache.arena_size > sizeof(pub_cache_arena)) {
+        printf("-N %u needs a %u-byte arena, more than this build's %zu.\n", keepall_samples, pub_cache.arena_size,
+               sizeof(pub_cache_arena));
+        return 1;
+    }
     pub.reliable_cache = &pub_cache;
     pub.reliable = true;
     // Phase 3 step 4 - KEEP_ALL's back-pressure. Blocking is bounded by min(cache depth, the
@@ -524,14 +595,15 @@ int main(int argc, char** argv) {
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "
            "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s drain_cap_s=%.1f peer_acks_end=%u "
            "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u keepall_samples=%u "
+           "keepall_bound_samples=%u %s\n",
            (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
            durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
            g_drain_fully_acked ? "acked" : "timeout", drain_s, count_peer_acks(&pub),
            g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min, BenchCpuFreq_mean_mhz(&g_cpu_freq),
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
-           pub.retransmitted, pub_cache.arena_size,
+           pub.retransmitted, pub_cache.arena_size, keepall_samples, keepall_bound_samples(&pub, &pub_cache),
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("client");

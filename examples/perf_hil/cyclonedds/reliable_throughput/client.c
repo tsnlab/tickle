@@ -50,6 +50,11 @@ int main(int argc, char** argv) {
     // Depth 64, not 8: this file's own notes record KEEP_LAST(8) as the bisected cause of a real
     // 53% loss, so a shallow depth would re-measure that finding rather than the default.
     int keep_last_depth = 0; // 0 = KEEP_ALL, unchanged default
+    // -N <samples>: KEEP_ALL's history bound, RESOURCE_LIMITS max_samples and max_samples_per_instance,
+    // 4000 by default (2026-09-26, the fairness audit, COMPARISON.MD 4.4). The bound differed between
+    // the three frameworks by default; the campaign now passes all three the same number of samples,
+    // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
+    int keepall_samples = 4000;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-K") == 0 && i + 1 < argc) {
             keep_last_depth = atoi(argv[++i]);
@@ -61,6 +66,8 @@ int main(int argc, char** argv) {
             max_blocking_ms = atof(argv[++i]);
         } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
             drain_s = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
+            keepall_samples = atoi(argv[++i]);
         }
     }
 
@@ -85,7 +92,7 @@ int main(int argc, char** argv) {
     } else {
         dds_qset_history(qos, DDS_HISTORY_KEEP_ALL, 0);
     }
-    dds_qset_resource_limits(qos, 4000, DDS_LENGTH_UNLIMITED, DDS_LENGTH_UNLIMITED);
+    dds_qset_resource_limits(qos, keepall_samples, DDS_LENGTH_UNLIMITED, keepall_samples);
     dds_entity_t writer = dds_create_writer(participant, topic, qos, NULL);
     dds_delete_qos(qos);
     if (writer < 0) {
@@ -141,10 +148,10 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d %s\n",
            (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained, drain_s,
            BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations,
-           keep_last_depth > 0 ? 0 : 1, keep_last_depth,
+           keep_last_depth > 0 ? 0 : 1, keep_last_depth, keepall_samples,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
 

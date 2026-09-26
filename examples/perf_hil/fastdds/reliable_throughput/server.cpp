@@ -37,7 +37,7 @@ namespace {
     constexpr double default_safety_cap_s = 40.0;
     constexpr double safety_cap_buffer_s = 15.0;
     constexpr double idle_cap_s = 15.0;
-    constexpr int32_t max_samples = 4000; // resource_limits - matches client.cpp
+    constexpr int32_t default_keepall_samples = 4000; // resource_limits - matches client.cpp, and -N
 
     struct server_options {
         double safety_cap_s = default_safety_cap_s;
@@ -48,6 +48,11 @@ namespace {
         // Depth 64, not 8: this file's own notes record KEEP_LAST(8) as the bisected cause of a real
         // 53% loss, so a shallow depth would re-measure that finding rather than the default.
         int keep_last_depth = 0; // 0 = KEEP_ALL, unchanged default
+        // -N <samples>: KEEP_ALL's history bound, RESOURCE_LIMITS max_samples and max_samples_per_instance,
+        // 4000 by default (2026-09-26, the fairness audit, COMPARISON.MD 4.4). The bound differed between
+        // the three frameworks by default; the campaign now passes all three the same number of samples,
+        // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
+        int32_t keepall_samples = default_keepall_samples;
     };
 
     auto parse_options(int argc, char** argv) -> server_options {
@@ -57,6 +62,8 @@ namespace {
                 opts.keep_last_depth = atoi(argv[++i]);
             } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
                 opts.safety_cap_s = atof(argv[++i]);
+            } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
+                opts.keepall_samples = static_cast<int32_t>(atoi(argv[++i]));
             }
         }
         // +15s buffer - see best_effort_throughput/server.cpp's own doc comment (this same directory)
@@ -76,7 +83,8 @@ namespace {
         } else {
             rqos.history().kind = KEEP_ALL_HISTORY_QOS;
         }
-        rqos.resource_limits().max_samples = max_samples;
+        rqos.resource_limits().max_samples = opts.keepall_samples;
+        rqos.resource_limits().max_samples_per_instance = opts.keepall_samples;
         return rqos;
     }
 
@@ -149,9 +157,9 @@ auto main(int argc, char** argv) -> int {
     bench_stats_end(&harness::g_bench_stats);
 
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=server recv=%lu lost=%lu "
-           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d %s\n",
+           "loss_pct=%.1f elapsed_s=%.3f recv_mbps=%.3f keep_all=%d keep_last_depth=%d keepall_samples=%d %s\n",
            static_cast<unsigned long>(stats.received), static_cast<unsigned long>(stats.lost), loss_pct, elapsed_s,
-           mbps, opts.keep_last_depth > 0 ? 0 : 1, opts.keep_last_depth,
+           mbps, opts.keep_last_depth > 0 ? 0 : 1, opts.keep_last_depth, static_cast<int>(opts.keepall_samples),
            harness::bench_fields(BENCH_ROLE_RECEIVER, stats.received));
 
     participant->delete_contained_entities();

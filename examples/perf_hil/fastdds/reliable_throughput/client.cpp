@@ -39,7 +39,7 @@ namespace {
 
     constexpr double default_duration_s = 10.0;
     constexpr double default_drain_s = 3.0; // cap on the teardown wait-for-acknowledgements below
-    constexpr int32_t max_samples = 4000;   // resource_limits - see the QoS comment in main()
+    constexpr int32_t default_keepall_samples = 4000; // resource_limits - see the QoS comment in main(), and -N
     constexpr time_t discovery_wait_s = 2;  // see the latency scenarios' own identical comment
     constexpr double ms_per_s = 1000.0;
     constexpr uint64_t cpu_place_period_ns = 100ULL * 1000ULL * 1000ULL; // 100ms
@@ -59,6 +59,11 @@ namespace {
         // that drained=timeout at 3 s shows whether it was slow or would never finish. Scored runs keep
         // the common 3 s, and every RESULT line prints drain_cap_s= so the two cannot be mixed up.
         double drain_s = default_drain_s;
+        // -N <samples>: KEEP_ALL's history bound, RESOURCE_LIMITS max_samples and max_samples_per_instance,
+        // 4000 by default (2026-09-26, the fairness audit, COMPARISON.MD 4.4). The bound differed between
+        // the three frameworks by default; the campaign now passes all three the same number of samples,
+        // and every RESULT line's keepall_samples= says which it was. The same letter in all three.
+        int32_t keepall_samples = default_keepall_samples;
     };
 
     auto parse_options(int argc, char** argv) -> client_options {
@@ -74,6 +79,8 @@ namespace {
                 opts.max_blocking_ms = atof(argv[++i]);
             } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
                 opts.drain_s = atof(argv[++i]);
+            } else if (strcmp(argv[i], "-N") == 0 && i + 1 < argc) {
+                opts.keepall_samples = static_cast<int32_t>(atoi(argv[++i]));
             }
         }
         return opts;
@@ -97,7 +104,8 @@ namespace {
         } else {
             wqos.history().kind = KEEP_ALL_HISTORY_QOS;
         }
-        wqos.resource_limits().max_samples = max_samples;
+        wqos.resource_limits().max_samples = opts.keepall_samples;
+        wqos.resource_limits().max_samples_per_instance = opts.keepall_samples;
         if (opts.max_blocking_ms >= 0.0) {
             // Field-wise, not a Duration_t constructor: the type lives in eprosima::fastrtps on FastDDS
             // 2.x (the rig's jazzy) but in eprosima::fastdds on 3.x, while seconds/nanosec exist in both.
@@ -202,11 +210,12 @@ auto main(int argc, char** argv) -> int {
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
-           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d %s\n",
+           "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d keepall_samples=%d %s\n",
            static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.write_fail), elapsed_s, mbps,
            opts.max_blocking_ms, drained, opts.drain_s, BenchCpuPlace_main_cpu(&cpu_place),
            BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations, opts.keep_last_depth > 0 ? 0 : 1,
-           opts.keep_last_depth, harness::bench_fields(BENCH_ROLE_SENDER, result.sent));
+           opts.keep_last_depth, static_cast<int>(opts.keepall_samples),
+           harness::bench_fields(BENCH_ROLE_SENDER, result.sent));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);
