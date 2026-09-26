@@ -476,3 +476,49 @@ The three non-wins:
 
 Next: the p4 build that goes into COMPARISON.MD is `sendmmsg` (`c3d7a955`) or later. It is expected to
 lower c4 client CPU toward the ipfrag build's 11.5 and leave bytes and packets unchanged.
+
+## 12. FastDDS at c6: half the hypothesis confirmed, half not (2026-09-26)
+
+`results/fastdds_c6_reassembly_2026-09-26.txt`, `experiments/fastdds_c6_reassembly.sh` (Dev's design,
+pre-registration in its header). Server-side `/proc/net/snmp` deltas, FastDDS run through its own
+`run_scenario.sh`:
+
+| arm | delivered | ReasmReqds / sample | ReasmOKs | ReasmFails |
+|---|---|---:|---:|---:|
+| A control, p1 + 5% loss | 51,280 / 51,280 | 0.01 | 303 | 0 |
+| B, p4, no loss | 184,691 / 184,691 | **2.98** | **184,691** | 36 |
+| C, p4 + 5% loss | **2,895 / 5,192** | 4.32 | 4,711 | **0** |
+
+- **A** is small but not zero: about 660 reassembly requests per arm from other traffic on that host.
+  That is 0.1% of B and does not change B's or C's reading.
+- **B confirms that FastDDS uses OS IP fragmentation at p4.** About three fragments per sample, and
+  exactly one successful reassembly per sample sent. Its transport sets no `maxMessageSize` in
+  `fastdds_eth0_only.xml`, so the 65,500 B default applies, and a 2,800 B sample leaves as one
+  datagram for the kernel to split.
+- **C does not confirm the collapse.** The pre-registration said a large ReasmFails would explain the
+  shortfall. ReasmFails is **0**, so that explanation is **not confirmed**, and this is recorded
+  rather than reinterpreted.
+
+A possible instrument limitation, found **after** reading C and therefore unverified. The kernel
+counts a reassembly failure when an incomplete datagram times out (`ipfrag_time`, 30 s by default) or
+when fragment memory overflows. TickLE-ipfrag's failures were counted immediately, because at its rate
+the fragment memory overflowed. FastDDS at c6 sends about 5,000 samples in 8 s and would not overflow
+it, so its failures could fall due 30 s after the snapshot was taken. A re-read of the counters at
+least 35 s after the arm ends would settle it.
+
+What the run does establish:
+- The shortfall is **not the harness stopping the server early**. Dev showed nothing arrives.
+- FastDDS runs under the **same 3 s drain cap** as TickLE and CycloneDDS, and its client reports
+  `drained=timeout` with 45 refused writes.
+- The two suspects left are both FastDDS defaults that the harness leaves alone: IP fragmentation,
+  confirmed by B, and heartbeat-paced recovery (`heartbeatPeriod`, 3 s by default).
+
+So the DELIVERY FAILED label should read as **"did not complete within the drain cap every framework
+gets"**, not as "lost". Whether it would finish given longer is not known. Under the section 10.1 rule,
+TickLE's scoring does not depend on which mechanism it is. The tuned-FastDDS-arm question goes to the
+user only once the mechanism is actually confirmed.
+
+Follow-up, queued after the full campaign:
+1. Re-read the server's counters 35 s after arm C ends.
+2. Run arm C with a 30 s drain cap for FastDDS alone, as a diagnostic arm and not a scored one, to
+   tell "slow" apart from "lost".
