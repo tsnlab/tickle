@@ -49,6 +49,11 @@ SYSSTAMP_ARMS=${SYSSTAMP_ARMS:-off}
 # $OUT.stamps/<stem>_{ping,pong}.txt - the ping's reply_ns and the pong's callback and publish-return times, which
 # split the application ends of each path. Needs a build that has --stamps.
 STAMPS=${STAMPS:-0}
+# POLL_SLEEPS="0 50 100 200" (2026-09-26, 27f75dd2 on): the poll-mode sleep between spins, as a sweep. One value
+# is an arbitrary grid: with 100 us rmw_tickle's cheaper spin_some() makes it catch the reply a cycle later
+# (RMW_PERF_PLAN 8.1). Unset, the ping is invoked exactly as before (no --poll-sleep-us, i.e. 100). Set, each
+# poll row passes --poll-sleep-us N, is labelled poll_sleep_us=N, and asserts the LOOP line reports that N.
+POLL_SLEEPS=${POLL_SLEEPS:-}
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -79,7 +84,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, sysstamp arms: $SYSSTAMP_ARMS ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -250,7 +255,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     env=$(env_for "$rmw")
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${SSTSTEM}" sstenv="" stampflag=""
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}" sstenv="" stampflag=""
     local stamprm=""
     # removed before each start too, so an interrupted row's file can never be collected as this row's
     [ "$STAMPS" = 1 ] && stampflag="--stamps /tmp/rmwx_stamps.txt" && stamprm="rm -f /tmp/rmwx_stamps.txt;"
@@ -273,6 +278,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # per-process totals, not per-message costs, and compare only between rmw implementations run alike.
     local waitflag=""
     [ "$WAITS" != poll ] && waitflag="--wait $WAIT"
+    [ -n "$PSLEEP" ] && waitflag="$waitflag --poll-sleep-us $PSLEEP"
     # How many ping/pong processes are alive on both Pis as the ping starts (2026-09-26), found by /proc/PID/exe,
     # never by name. More than one of either means a leftover from an earlier row is answering or announcing
     # too: every rmw would see extra peers, and rmw_tickle would broadcast above tt_UNICAST_PEER_THRESHOLD.
@@ -333,8 +339,11 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     if [ "$WAITS" != poll ]; then
         case "$res" in *" wait=$WAIT "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not run wait=$WAIT)" ;; esac
     fi
+    if [ -n "$PSLEEP" ]; then
+        case "$res" in *"LOOP: poll_sleep_us=$PSLEEP "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not sleep $PSLEEP us)" ;; esac
+    fi
     case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${SSTSTEM:+ sst=on}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -361,10 +370,14 @@ for rep in $(seq 1 "$REPS"); do
             fi
             for WAIT in $WAITS; do
               WAITSTEM=""; [ "$WAITS" != poll ] && WAITSTEM="_$WAIT"
-              for SST in $SYSSTAMP_ARMS; do
-                SSTSTEM=""; [ "$SST" = on ] && SSTSTEM="_sst"
-                for rmw in $RMWS; do
-                  one "$rmw" "$msg" "$qos" "$rep"
+              psleeps="-"; [ "$WAIT" = poll ] && [ -n "$POLL_SLEEPS" ] && psleeps="$POLL_SLEEPS"
+              for PS in $psleeps; do
+                PSLEEP=""; [ "$PS" != - ] && PSLEEP="$PS"
+                for SST in $SYSSTAMP_ARMS; do
+                  SSTSTEM=""; [ "$SST" = on ] && SSTSTEM="_sst"
+                  for rmw in $RMWS; do
+                    one "$rmw" "$msg" "$qos" "$rep"
+                  done
                 done
               done
             done
