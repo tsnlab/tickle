@@ -1337,6 +1337,13 @@ principle.
      reorder slots equal to the tracking window, and the 512 KiB KEEP_ALL budget. The vendors run
      theirs.
 
+**Correction to item 1 (Dev, 2026-09-26), found in the control arm of the flag that aligns it.**
+TickLE's KEEP_ALL bound in these runs was not the 512 KiB arena. TickLE's harness reports its actual
+bound as `keepall_bound_samples=`, and it is the reader's default 256-datagram window: **256 samples
+at p1 and 128 at p4**, against the vendors' 4,000. So the asymmetry was larger than stated above, and
+it cut both ways for TickLE too. TickLE buffered much less, which lowers its memory figures, and it
+kept much less in flight, which costs its throughput under loss.
+
 **Conclusion of the audit: no setting was found that decides a verdict in TickLE's favour.** One
 difference (item 1, memory against FastDDS at p2-p4) makes a TickLE margin look larger than it is,
 and items 1-3 are departures from "identical QoS" whichever way they cut. The planned correction
@@ -1346,8 +1353,32 @@ is to pass all three frameworks the same explicit bounds, and to re-run the affe
 - `max_blocking_time` 100 ms for all three
 - KEEP_LAST 64 for all three at c9
 
-The FastDDS harness needs a flag for its sample bound for this, since it is a compile-time constant
-today. Until those runs exist, the table in section 1 comes from the settings above.
+**The user decided on 2026-09-26 (translated): "if values were set differently anywhere, set them
+to the same QoS and re-measure."** Every framework's reliable_throughput harness now takes `-N`, the
+KEEP_ALL bound in samples (Dev, `47189580`). `campaign_sweep.sh` passes all three the same explicit
+values, and voids any row whose RESULT line does not show them:
+
+| cells | all three frameworks get | asserted on every row |
+|---|---|---|
+| reliable_throughput, KEEP_ALL (c1-c7) | `-N` = p1 2,048, p2 405, p3 368, p4 187 samples, and `-B 100` | `keepall_samples=`, TickLE's `keepall_bound_samples=`, `max_blocking_ms=100.000` |
+| reliable_throughput, KEEP_LAST (c9) | `-K 64 -B 100` | `keep_last_depth=64` (TickLE: `keep_all=0 reliable_depth=64`), `max_blocking_ms=100.000` |
+| best_effort, latency | unchanged: already identical | - |
+
+The per-shape counts are what TickLE's shipped 512 KiB budget allows, `min(2048, 512 KiB / sample)`.
+CycloneDDS's write-history watermark (~500 kB) is an implementation default, not a QoS, and is left
+alone. At p4, 187 samples come to slightly more than that watermark.
+
+**Pre-registered for the aligned run, before it starts:**
+- **Unshaped throughput and bandwidth (c1-c4): within about 5% of the previous run for every
+  framework.** The bound rarely binds without loss.
+- **FastDDS's peak RSS falls at p2-p4**, toward about 17-19 MB at p4 from 28.3 MB, because its
+  history was up to about 11 MB of that. **TickLE's rises somewhat**, since its reader window
+  now grows to the bound. No memory verdict is expected to flip.
+- **Under loss (c5-c7) TickLE's throughput holds or rises and the vendors' holds or falls**,
+  because TickLE's in-flight bound grows (256 → 2,048 at p1, 128 → 187 at p4) while theirs shrinks.
+- **FastDDS still does not complete c6**: the cause is its IP fragmentation, which no QoS changes.
+- **c9 becomes a real comparison** and is expected to go to TickLE as c1 does.
+- Any LOSE that appears is a result, reported as such, and not something to tune away.
 
 ### 4.5 The one thing the campaign predicted wrong, and what it cost
 

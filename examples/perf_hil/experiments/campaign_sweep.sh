@@ -100,11 +100,15 @@ fi
 
 # --- the matrix (OPTIMIZATION_PLAN.md section 7) ------------------------------------------------
 # shape|payload|qos|network|scenario|tickle_extra_args
-# Q0 = RELIABLE + KEEP_ALL: -Q for TickLE, the DDS harnesses' own default. The only configuration
-#      in which all three promise the same thing (section 5).
+# Q0 = RELIABLE + KEEP_ALL: -Q for TickLE, the DDS harnesses' own default.
 # Q1 = BEST_EFFORT, which is a different scenario binary rather than a flag.
-# Q2 = RELIABLE + KEEP_LAST 64: TickLE's default, so no flag. Cross-vendor only once both DDS
-#      harnesses can select it; until then this cell is a TickLE datapoint, which the summary says.
+# Q2 = RELIABLE + KEEP_LAST 64.
+# Since 2026-09-26 (COMPARISON.MD 4.4, the user's instruction to re-measure with identical QoS), every
+# QoS value that differed between the frameworks is passed explicitly and identically to all three by
+# common_args() below, and asserted per row: the KEEP_ALL bound in samples (-N), max_blocking_time
+# (-B 100), and KEEP_LAST 64 at Q2 (-K 64). Before that, Q2 gave the DDS harnesses nothing and they ran
+# KEEP_ALL, so c9 was voided every time; CycloneDDS blocked for 10 s where the others blocked 100 ms;
+# and the vendors held 4,000 samples of history against TickLE's 128-256.
 MATRIX=(
     "T|p1|Q0|N0|reliable_throughput|-Q"
     "T|p2|Q0|N0|reliable_throughput|-Q"
@@ -224,6 +228,50 @@ wait_rig_quiet() {
     echo "$left"
 }
 
+# --- identical QoS for all three (COMPARISON.MD 4.4) --------------------------------------------
+# KEEP_ALL's bound in samples per payload shape: min(2048, floor(512 KiB / sample bytes)), which is
+# what TickLE's shipped 512 KiB budget allows, so TickLE barely moves and the vendors are brought to
+# the same count. Every framework's RESULT line reports it as keepall_samples=.
+keepall_samples_for() {
+    case "$1" in
+        p1) echo 2048 ;;
+        p2) echo 405 ;;
+        p3) echo 368 ;;
+        p4) echo 187 ;;
+        *) echo "" ;;
+    esac
+}
+common_args() { # $1 scenario, $2 payload, $3 qos
+    case "$1:$3" in
+        reliable_throughput:Q0) echo "-N $(keepall_samples_for "$2") -B 100" ;;
+        reliable_throughput:Q2) echo "-K 64 -B 100" ;;
+        *) echo "" ;;
+    esac
+}
+# Did this row run with the QoS common_args() asked for? Returns a VOID reason, or nothing.
+# case patterns only: a grep that matches nothing inside $(...) ends the sweep silently under
+# set -euo pipefail, which is how this script died at c8 on 2026-09-26.
+qos_identity_void() { # $1 scenario, $2 payload, $3 qos, $4 fw, $5 result line
+    [ "$1" = reliable_throughput ] || return 0
+    case "$5" in *"max_blocking_ms=100.000"*) ;; *) echo "max_blocking_ms not 100"; return 0 ;; esac
+    if [ "$3" = Q0 ]; then
+        local n
+        n=$(keepall_samples_for "$2")
+        case "$5" in *"keepall_samples=$n "*|*"keepall_samples=$n") ;; *) echo "keepall_samples not $n"; return 0 ;; esac
+        if [ "$4" = tickle ]; then
+            case "$5" in *"keepall_bound_samples=$n "*|*"keepall_bound_samples=$n") ;; *) echo "keepall_bound_samples not $n"; return 0 ;; esac
+        fi
+    elif [ "$3" = Q2 ]; then
+        if [ "$4" = tickle ]; then
+            case "$5" in *"keep_all=0"*) ;; *) echo "TickLE not KEEP_LAST"; return 0 ;; esac
+            case "$5" in *"reliable_depth=64 "*) ;; *) echo "TickLE depth not 64"; return 0 ;; esac
+        else
+            case "$5" in *"keep_last_depth=64"*) ;; *) echo "keep_last_depth not 64"; return 0 ;; esac
+        fi
+    fi
+    return 0
+}
+
 # --- one cell --------------------------------------------------------------------------------
 # $1 combination number, $2 shape, $3 payload, $4 qos, $5 network, $6 scenario, $7 extra, $8 fw, $9 rep
 cell() {
@@ -231,6 +279,10 @@ cell() {
     local left; left=$(wait_rig_quiet)
     local args="-d $DUR"
     [ "$shape" = L ] && args="-i 0.1 -d 10"
+    # The QoS all three get, identically and explicitly (see the matrix header).
+    local common
+    common=$(common_args "$scenario" "$payload" "$qos")
+    [ -n "$common" ] && args="$common $args"
     # TickLE's extra args select KEEP_ALL; the DDS harnesses have it as their default (section 5).
     [ "$fw" = tickle ] && [ -n "$extra" ] && args="$extra $args"
     local res
@@ -244,6 +296,11 @@ cell() {
     # A TickLE row that does not state core_build=release is void, not assumed.
     if [ "$fw" = tickle ] && [ -n "$res" ]; then
         case "$res" in *core_build=release*) ;; *) verdict="VOID(core_build not release)" ;; esac
+    fi
+    if [ -n "$res" ] && [ "$verdict" = ok ]; then
+        local qv
+        qv=$(qos_identity_void "$scenario" "$payload" "$qos" "$fw" "$res")
+        [ -z "$qv" ] || verdict="VOID(qos: $qv)"
     fi
     # sample_path= (e9be3434) says how TickLE carried a sample: one datagram, DATA_FRAG, or one
     # datagram split by the kernel. p1-p3 must say datagram - anything else means the fragmentation

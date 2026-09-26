@@ -60,6 +60,9 @@ arm() { # $1 label, $2 expected datagram_bytes, $3 loss on|off
     tc_set "$loss"
     for r in $(seq 1 "$REPS"); do
         res=$(cd "$REPO/examples/perf_hil/tickle" && RIG_LOCK_HELD_HIL=1 timeout 180 ./run_scenario.sh reliable_throughput_p4 -d 5 -Q 2>/dev/null | tr '\n' ' ')
+        # Every raw RESULT line is kept (2026-09-26): the first runs printed selected fields only, so a
+        # later question about recovery_srtt_ns could not be answered from them.
+        printf '%s | %s\n' "$label rep$r" "$res" >>"$OUT.raw"
         case "$res" in *"datagram_bytes=$want"*) ;; *) say "$label rep$r | IDENTITY FAIL: not datagram_bytes=$want"; continue ;; esac
         case "$res" in *core_build=release*) ;; *) say "$label rep$r | IDENTITY FAIL: not release"; continue ;; esac
         say "$label rep$r | $(grep -oE '(sent|recv|drained|send_mbps|wire_role_packets_per_sample|frag_duplicate|frag_abandoned)=[^ ]+' <<<"$res" | tr '\n' ' ')"
