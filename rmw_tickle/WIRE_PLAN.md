@@ -389,6 +389,39 @@ VOID. Raw rows are `results/wire_v10fix_rmw_{A_8f3811f4,B_4dc7ad49}_2026-09-27.t
 - **Result:** the rmw half of the rule is met at `4dc7ad49`. What still fails section 1 is the native reliable
   client's CPU (8.4). Its cause lies outside the core loop (8.6).
 
+### 8.8 The real socket on the Pi: where the client's +40 ns goes (pre-registered 2026-09-27, before code)
+
+**Why.** The campaign's native RELIABLE client costs 40-50 ns more user time per sample under v10 (8.4). The client
+runs at full clock on one CPU, with an identical per-sample event mix in both arms (Dev, 8.6 addendum). The core
+alone, in every loop measured on the Pi and the PC, shows +3 to +6 ns (8.5, 8.6, OPTIMIZATION_PLAN 11.5). The one
+path the bench does not run is the real HAL: `hal_linux.c`'s sends, receives and polls on real UDP sockets. Its code
+is unchanged, but what core hands it changed with v10: a 20-byte single-form head starting at `tx_buffer + 4`, and a
+different `tt_Node` layout around `node->hal`.
+
+**The measurement.**
+- `core_cost_bench` built with `-DBENCH_REAL_HAL`: the same two nodes and the same `-c -R` loop (the clients'
+  scheduler-driven RELIABLE send), but through `hal_linux.c` on the Pi's own interface.
+- Data goes node to node over the Pi's local address; the discovery broadcast leaves on the rig link, which is idle
+  under the rig lock.
+- Each round sends 512 samples, and then the reader drains them.
+- Per phase, the thread's utime and stime (`getrusage(RUSAGE_THREAD)`) per sample, the campaign's metric, next to
+  wall time.
+- Arms: `8f3811f4`, `fd57b01d` (v10 alone) and current main, 10 rounds, paired, pinned (`core_cost_pi.sh`, which
+  takes the rig lock, hil scope).
+
+**How to read it, written before running:**
+- **send utime rises ~+40 ns at `fd57b01d`:** the cost is on the real send path. Then, and only then, a hypothesis
+  arm: the single form built so that the datagram it hands `sendmsg()` starts 8-aligned (the classic header placed
+  at `tx_buffer - 4` relative, so the single form begins at `tx_buffer + 0`), against `fd57b01d`. If that arm
+  removes the rise, alignment is the cause.
+- **send utime flat (within 2 x SE) at `fd57b01d`:** the real socket path does not carry it either. The remaining
+  difference between this loop and the campaign client is the peer: a second Pi's ACKNACK timing and the NIC. That
+  goes back to a campaign-level experiment, and the report says so.
+- **Anything else,** e.g. the rise appearing only in stime, or only at main: recorded as seen, with no mechanism
+  claimed.
+- **Control:** `8f3811f4` against itself as a second arm pinned the same way. Its difference must be within 2 x SE,
+  or the run is void.
+
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
 **What it can save.**
