@@ -60,12 +60,25 @@ lib_for() {
 say "--- building rmw_tickle + rmw_perf_pingpong (Release) at $SHA on both rpis ---"
 pids=()
 for h in "$CLIENT" "$SERVER"; do
+    # Three stages, in the order the rig's own provision_rmw_perf_ws.sh established (2026-09-26: a
+    # one-shot colcon call failed, because ~/rmw_perf_ws's builtin_interfaces/rcl_interfaces were built
+    # WITH TickLE's typesupport and so need it installed first, and colcon started rmw_perf_pingpong
+    # before the typesupport had finished). Stage 2 regenerates those two packages' TickLE bindings
+    # with the current generator rather than trusting ones generated days ago - a stale generated
+    # binding has measured the wrong thing in this repository before.
     sh_ "$h" "set -e
 cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
-set +u; source /opt/ros/jazzy/setup.bash; [ -f \$HOME/rmw_perf_ws/install/setup.bash ] && source \$HOME/rmw_perf_ws/install/setup.bash; set -u
-colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle rmw_perf_pingpong \
-  --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release > /tmp/rmwx_build.log 2>&1 \
-  || { echo \"BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build.log; exit 1; }
+set +u; source /opt/ros/jazzy/setup.bash; set -u
+colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
+  --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release > /tmp/rmwx_build1.log 2>&1 \
+  || { echo \"STAGE 1 BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build1.log; exit 1; }
+set +u; source \$HOME/tickle/install/setup.bash; set -u
+colcon build --base-paths \$HOME/rmw_perf_ws --build-base \$HOME/rmw_perf_ws/build --install-base \$HOME/rmw_perf_ws/install \
+  --packages-select builtin_interfaces rcl_interfaces --cmake-args -DCMAKE_BUILD_TYPE=Release --cmake-force-configure > /tmp/rmwx_build2.log 2>&1 \
+  || { echo \"STAGE 2 BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build2.log; exit 1; }
+set +u; source \$HOME/rmw_perf_ws/install/setup.bash; source \$HOME/tickle/install/setup.bash; set -u
+colcon build --packages-select rmw_perf_pingpong --cmake-args -DCMAKE_BUILD_TYPE=Release > /tmp/rmwx_build3.log 2>&1 \
+  || { echo \"STAGE 3 BUILD FAILED on \$(hostname)\"; tail -25 /tmp/rmwx_build3.log; exit 1; }
 test -f \$HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so
 test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/ping_node
 test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/pong_node
