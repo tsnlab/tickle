@@ -25,7 +25,7 @@ for host in 10.1.1.214 10.1.1.213; do
     echo "--- rpi $host ---" >>"$OUT"
     scp -q -i "$SSH_KEY" -o BatchMode=yes "$HERE/wake_granularity.c" "ci@$host:/tmp/wake_granularity.c"
     ssh -i "$SSH_KEY" -o BatchMode=yes "ci@$host" \
-        "gcc -O2 -Wall -Wextra -o /tmp/wake_gran /tmp/wake_granularity.c && \
+        "gcc -O2 -D_GNU_SOURCE -Wall -Wextra -o /tmp/wake_gran /tmp/wake_granularity.c && \
          echo \"  governor=\$(cat /sys/devices/system/cpu/cpu1/cpufreq/scaling_governor 2>/dev/null || echo n/a)\" && \
          taskset -c 1-3 /tmp/wake_gran $N" >>"$OUT" 2>&1
     echo >>"$OUT"

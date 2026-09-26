@@ -15,10 +15,10 @@ Every experiment in this document, all three frameworks side by side. **✅ = be
 ❌ = worst in that row.** Lower is better for latency, CPU, memory and bandwidth; higher is better
 for throughput. Each row's explanation is in section 2 below, linked from its own name.
 
-**⚪ means the row is deliberately not scored.** Six rows carry it. That is not missing data - it
-is this document's central rule, that a comparison which cannot be made fairly is worth more
-unmade than made wrongly. Section 5 gives the four conditions that void a cell and the real result
-each one caught.
+**⚪ means the row is deliberately not scored.** Four rows carry it (5, 32, 33, 34). That is not
+missing data - it is this document's central rule, that a comparison which cannot be made fairly is
+worth more unmade than made wrongly. §4.3 gives the four conditions that void a cell, and the real
+result each one caught.
 
 **Two measurement generations are mixed here and the `meas.` column says which.** `R` rows are the
 current release-optimised core (2026-09-26), the single-packet scope the user narrowed to. `C` rows
@@ -176,7 +176,7 @@ sides (`sent == recv`).
 ### 2.2a Scenario 4 in detail: RELIABLE under injected loss (re-measured 2026-09-23)
 
 Scenario 4's own single-number rows above were replaced by this section. Two reasons, both real
-bugs found on 2026-09-22/23 (see §6 items 12-13): every earlier TickLE number was measured while
+bugs found on 2026-09-22/23 (see §3 items 12-13): every earlier TickLE number was measured while
 RELIABLE's own retry path was partly inert or flooding, and **every earlier FastDDS number was
 measured over a path `tc` never touched at all** - FastDDS was sending each sample on both the
 `192.168.10.0/24` test link *and* the `10.1.1.0/24` management WiFi.
@@ -212,7 +212,7 @@ Against the previous table (2026-09-23), TickLE's column moved in the expected d
 little. depth=1024 at 1% is 0-0.00014% (was 0%), and at 5% it is 0.028-0.044% (was 0.016%). The
 20% and 50% rows are new. They show where TickLE's KEEP_LAST default stops keeping up with loss: it
 keeps its rate (88-96 Mbps) and pays in loss (2.7-24%). The DDS pair keeps 0 net loss by slowing to
-0.08-3 Mbps. §3b is the like-for-like comparison under KEEP_ALL.
+0.08-3 Mbps. §2.2b is the like-for-like comparison under KEEP_ALL.
 
 **Paced** - re-measured 2026-09-25 in one session at `9235ee21` (`paced_resweep.sh`, 3 reps per cell,
 interleaved). All three clients get `-i 0.000075`, which was meant as ~8 Mbps. The rig's timers
@@ -232,7 +232,7 @@ their default `max_blocking_time`:
 At a rate all three can sustain, TickLE and FastDDS lose nothing through 5% and keep their rate.
 CycloneDDS already slows to about 40% of its rate at 5% injected loss. At 20% only FastDDS holds
 both zero loss and its rate. TickLE keeps its rate and loses 0.14-0.17%, because it is on KEEP_LAST;
-under KEEP_ALL (§3b) it loses nothing.
+under KEEP_ALL (§2.2b) it loses nothing.
 
 **Reading**:
 
@@ -257,7 +257,7 @@ under KEEP_ALL (§3b) it loses nothing.
 
 ### 2.2b The same guarantee, compared: RELIABLE + KEEP_ALL (2026-09-23, final)
 
-§3a compared TickLE's default (KEEP_LAST-equivalent, `publish()` never blocks) against the DDS
+§2.2a compared TickLE's default (KEEP_LAST-equivalent, `publish()` never blocks) against the DDS
 pair's KEEP_ALL, which is not the same promise. TickLE now implements the DDS promise too
 (`rmw_tickle/PLAN.md` Phase 3): a KEEP_ALL Publisher refuses a write rather than evicting an
 unacknowledged sample, and `rmw_publish()` blocks up to `max_blocking_time` before returning
@@ -390,7 +390,7 @@ together before the next change to either mode.)*
 **This paragraph previously read -11% at 20% and -33% at 50%, and those figures were not merely
 stale - they were a comparison between measurement days.** The KEEP_ALL side came from the
 2026-09-24 re-measurement and the KEEP_LAST side (99.8 and 84.4) from the earlier session, in the
-one paragraph that quantifies the headline trade-off, and in a document whose §5 exists to say that
+one paragraph that quantifies the headline trade-off, and in a document whose §2.7 exists to say that
 cross-day absolutes cannot be compared. Recomputing the percentages from the new KEEP_ALL numbers
 alone would have left that intact while making it look corrected, so KEEP_LAST was re-measured
 instead. **The guarantee costs several times what this document used to claim**: two to three times
@@ -539,7 +539,7 @@ replacing this document's own earlier mix of ranges/min-max/single-value styles)
 - `avg±stdev` is computed from every individually-recorded run for that cell (sample stdev, `n-1`;
   for exactly 2 runs this reduces to `stdev = |a-b|/√2`). **`†` marks a value with no computable
   stdev** - either a single, unrepeated observation, or (scenarios 1/2/8's own DDS-vendor cells,
-  §5's own table) a run where only the tool's own already-summarized min/avg/max was recorded at
+  §2.7's own table) a run where only the tool's own already-summarized min/avg/max was recorded at
   the time, not the raw per-sample data a real stdev needs - shown as `avg` alone, not invented.
   `loss %`/`Mbps` fields are plain means (not `±stdev`) even where the underlying msgs count has
   one, matching this section's own literal template; `loss Mbps` is the derived `sent - recv`
@@ -549,7 +549,7 @@ replacing this document's own earlier mix of ranges/min-max/single-value styles)
 (`examples/perf_hil/experiments/comparison_resweep.sh` at `659013e9`, which is the head of main at the
 time; the latency rows come from `latency_recheck.sh` at `5bed1a89`, after the harness fix below). These
 cells are comparable to each other and not to the older cells in this table, because the rig carries
-day-to-day offsets (§5). Rows without ★ were re-run in the same session and gave the same result as
+day-to-day offsets (§2.7). Rows without ★ were re-run in the same session and gave the same result as
 published: durability (TickLE durable 20/20 in 3/3, volatile 0 in 3/3, and both DDS the same), deadline
 (TickLE writer_misses 3, reader_misses 29-30), and TickLE liveliness (lease 1.0/2.0/4.0 s gave 1152/2103/3270
 ms mean). Their older cells stand.
@@ -580,16 +580,16 @@ stagger was introduced.
 | 1 | `best_effort_latency` | `-i 0.1 -d 10` (100 pings) ★ | 0.20±0.00ms, 0% loss | 0.27±0.00ms, 0% loss | 0.25±0.00ms, 1.1% loss |
 | 2 | `reliable_latency` | `-i 0.1 -d 10` (100 pings) ★ | 0.20±0.00ms, 0% loss | 0.29±0.00ms, 0% loss | 0.29±0.06ms, 0% loss (one rep's max RTT 10.8ms) |
 | 3 | `best_effort_throughput` | max rate, 8s, no `tc` loss ★ | sent 1549.1K±7.9K msgs, recv 1549.1K±7.9K msgs, 0% loss, sent 117.7Mbps, recv 117.7Mbps, loss 0Mbps | sent 605.0K±10.1K msgs, recv 470.8K±80.5K msgs, 22.2% loss, sent 48.4Mbps, recv 35.8Mbps, loss 12.6Mbps | sent 895.9K±4.9K msgs, recv 894.1K±4.9K msgs, 0.2% loss, sent 71.7Mbps, recv 68.0Mbps, loss 3.7Mbps |
-| 4 | `reliable_throughput` | see §3a | **superseded - see §3a below** | **superseded (measured over a WiFi path, §6 item 12)** | **superseded - see §3a** |
-| 5 | `durability_late_join` | - | durable: recv 20.0±0/20 msgs, 0% loss; volatile: recv 0.0±0/20 msgs, 100% loss (correctly excludes backlog, matches DDS exactly - see §6) | recv 20/20 msgs, 0% loss | recv 20/20 msgs, 0% loss |
+| 4 | `reliable_throughput` | see §2.2a | **superseded - see §2.2a below** | **superseded (measured over a WiFi path, §3 item 12)** | **superseded - see §2.2a** |
+| 5 | `durability_late_join` | - | durable: recv 20.0±0/20 msgs, 0% loss; volatile: recv 0.0±0/20 msgs, 100% loss (correctly excludes backlog, matches DDS exactly - see §3) | recv 20/20 msgs, 0% loss | recv 20/20 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | beyond depth ★ | recv 147.7±0.6/160 msgs, 7.7% loss (n=3; the earlier n=3 read 150.0±5.2) | recv 109/160 msgs, 31.9% not delivered (deterministic, 3/3) | recv 109/160 msgs, 31.9% not delivered (deterministic, 3/3) |
 | 7 | `deadline_miss_detection` | - | sent 198±0 msgs, recv 198±0 msgs, 0% loss, writer_misses=3† (own math), reader_misses=30† (harmless, unexplained) | writer_misses=7†, reader_misses=19†, detect -0.90ms† | writer_misses=7†, reader_misses=14†, detect 0.05ms† |
-| 8 | `liveliness_loss_detection` | - | **provisional, and NOT comparable to the DDS columns as measured - see §6 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §6 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
+| 8 | `liveliness_loss_detection` | - | **provisional, and NOT comparable to the DDS columns as measured - see §3 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §3 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
 | 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` ★ | lost 21.3 (8-29) / 54 / 77 of 250 (n=3 each, at `6daf5b98` with `PRE_CLIENT_SLEEP=0`) - LIFESPAN enforced; see the note below for why these run ~18 below the DDS columns | lost 39/64.7/88.7 of 250 (n=3 each) | lost 45/70/95 of 250 (n=3 each, identical) |
 
-Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "sent Mbps" is each framework's own printed client-side rate. Every condition was reproduced 2/2 (scenario 6 beyond-depth: 3 runs; scenario 9 beyond-lifespan pause=1.5s: 4 runs - see §6 items 6/8) - see the Notation block above for how each cell's `avg±stdev` was computed from those runs.
+Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_count × 76 bytes × 8 / elapsed_s` (the shared `Bench` wire shape, §4.2) - only CycloneDDS/FastDDS's own `server.c`/`.cpp` print it directly; TickLE's doesn't, so it's derived the same way for all three rather than left blank for one, to keep offered-vs-actually-delivered throughput directly comparable in every cell. "sent Mbps" is each framework's own printed client-side rate. Every condition was reproduced 2/2 (scenario 6 beyond-depth: 3 runs; scenario 9 beyond-lifespan pause=1.5s: 4 runs - see §3 items 6/8) - see the Notation block above for how each cell's `avg±stdev` was computed from those runs.
 
 **Reading**:
 
@@ -610,7 +610,7 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
   harness bug instead, not a vendor difference: `examples/perf_hil/fastdds/reliable_throughput`
   had never received the same `KEEP_ALL`+`resource_limits(4000)` fix the CycloneDDS twin got early
   in this exercise, left at a shallow `depth=8` that couldn't retain a lost sample long enough for
-  its own retry to land. Fixed and re-verified 4/4 clean - see §6, item 7 for the full story.
+  its own retry to land. Fixed and re-verified 4/4 clean - see §3, item 7 for the full story.
   **TickLE's own RELIABLE, unlike either DDS vendor, still mostly doesn't recover it**, and is
   noisier about it (2.1% avg observed at 1% injected; a consistent ~5.25% avg at 5% injected) -
   plausibly explained by TickLE's own extremely high throughput at this rate: `depth=64`
@@ -624,7 +624,7 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
   is a fixed 64 bits) that a deeper Publisher-side cache alone may not fix.
 - **QoS mechanics (5-9)**: HISTORY depth, LIFESPAN expiry, and DEADLINE/LIVELINESS detection are
   all confirmed working in TickLE, each with the expected numbers where the mechanism is directly
-  comparable to DDS's own. Two real, TickLE-specific findings surfaced along the way - see §6.
+  comparable to DDS's own. Two real, TickLE-specific findings surfaced along the way - see §3.
 
 ### 2.7 The rmw layer
 
@@ -633,7 +633,7 @@ Table rows 35-36. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
 (`RMW_IMPLEMENTATION` + `rclcpp`), not either framework's own native API:
 
-- **Same-host**: `.github/scripts/compare_rmw_perf.sh` (run by hand, deliberately not CI - see §6)
+- **Same-host**: `.github/scripts/compare_rmw_perf.sh` (run by hand, deliberately not CI - see §3)
   drives `buildfarm_perf_tests`' own two-process `rmw` benchmark across all three
   `RMW_IMPLEMENTATION`s on one box. FastDDS and CycloneDDS are both forced onto real UDP/IP with
   every same-host shared-memory shortcut explicitly disabled (FastDDS's `useBuiltinTransports=
@@ -642,15 +642,15 @@ Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
   fast-path equivalent for.
 - **Cross-host**: `rmw_tickle/rmw_perf_pingpong` (a small purpose-built `rclcpp` ping/pong pair,
   message-shape-compatible with `buildfarm_perf_tests`' own `Array1k`/`Struct16`) run for real on
-  the `tickle-hil` rig's own two Pis - the same real physical link §2 uses, not same-host loopback.
+  the `tickle-hil` rig's own two Pis - the same real physical link §4.2 uses, not same-host loopback.
 
 ### Results
 
 One table, both topologies together (`Array1k`=1024-byte array, `Struct16`=16-byte struct, `Bench`
 QoS-tagged=the cross-host tool's own ping/pong shape at 50 samples/run, 3 runs/combination). Same
-notation as §3 (`avg±stdev`, `†` = no computable stdev) - every cell here is `†`: the underlying
+notation as §2.6 (`avg±stdev`, `†` = no computable stdev) - every cell here is `†`: the underlying
 tools (`buildfarm_perf_tests`, `rmw_perf_pingpong`) only ever printed their own already-averaged
-figure, not the raw per-run samples a real stdev needs, the same limitation as §3's DDS-vendor
+figure, not the raw per-run samples a real stdev needs, the same limitation as §2.6's DDS-vendor
 min/avg/max cells:
 
 | Topology | Message | Mode | TickLE (`rmw_tickle`) | FastDDS | CycloneDDS |
@@ -665,7 +665,7 @@ min/avg/max cells:
 two Claude sessions, two CI runners, a Windows VM, an Android emulator - so a latency figure taken
 on it measures that machine's mood as much as the middleware. **This document therefore publishes no
 performance number measured on the dev box.** The rig's two Raspberry Pis are dedicated hardware and
-are where every performance figure in §2, §3, §3a, §3b and the rows above comes from.
+are where every performance figure in §4.2, §2.6, §2.2a, §2.2b and the rows above comes from.
 
 **This was not an abstract concern; it had already produced a wrong result here.** The same-host
 rows were re-measured on 2026-09-24 and read 12-15us slower than the pass they replaced - which
@@ -773,20 +773,20 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
    `pthread_cond_wait`/`broadcast` primitive directly instead, via a standalone benchmark
    reproducing `rmw_tickle.h`'s exact `wait_mutex`/`wait_cond` shape. **Real result, reproduced
    4/4**: avg ≈ 9.4-9.6μs, p50 ≈ 8.6-8.7μs, p99 ≈ 13-16.5μs - closely matching the observed
-   same-host gap itself (§5's own numbers put the gap at ~9-22μs). Real, converging evidence that
+   same-host gap itself (§2.7's own numbers put the gap at ~9-22μs). Real, converging evidence that
    this mechanism's own inherent cost is the right order of magnitude to explain the whole gap -
    not proof no DDS vendor pays a comparable cost for their own equivalent hand-off (not measured
    this pass), so suggestive rather than closed. Full detail and the suggested next step (a real
    `perf sched latency` capture inside the actual two-process run, once `perf_event_paranoid` is
    lowered) in PLAN.md's own Milestone 45 addendum.
-4. **[`rmw_tickle`, re-measurement]** Done (2026-09-21, the user's own go-ahead) - §5's own numbers
+4. **[`rmw_tickle`, re-measurement]** Done (2026-09-21, the user's own go-ahead) - §2.7's own numbers
    above are this fresh baseline, run after Milestones 46-58 landed. No regression from the
    Milestone 44 baseline; the ~1.3-1.6x same-host gap and the cross-host FastDDS-parity/
    CycloneDDS-ahead pattern both persist unchanged.
-5. **[`rmw_tickle`, methodology gap - hardware-blocked]** §5's own cross-host numbers
+5. **[`rmw_tickle`, methodology gap - hardware-blocked]** §2.7's own cross-host numbers
    (`rmw_perf_pingpong` on the `tickle-hil` rig) already cover real cross-host `rmw_tickle` vs.
    FastDDS/CycloneDDS, so this item is narrower than it once read: that run is still over the rig's
-   own regular Ethernet link, not the real target network medium (10Base-T1S) §2-3's own raw-core
+   own regular Ethernet link, not the real target network medium (10Base-T1S) §4.2-3's own raw-core
    HIL comparison is *also* still measured over (a pre-existing, separately-tracked gap, not new
    here). Genuinely blocked on real 10Base-T1S hardware being available on the rig at all - not
    something reachable by re-running existing tools differently.
@@ -801,17 +801,17 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
    fully trusted as apples-to-apples against a fixed condition. Both bugs are now fixed (`+15s`
    safety-cap buffer on every affected `server.c`/`.cpp`; the server's log is now actually read
    after `pkill`, matching the TickLE-native script's own already-fixed pattern) and scenarios 3-4
-   re-measured clean, reproduced 2/2, under the redesigned methodology in §2-3 above. Scenario 9's
+   re-measured clean, reproduced 2/2, under the redesigned methodology in §4.2-3 above. Scenario 9's
    own `pause_s` value is a **known**, not-yet-resolved condition mismatch between TickLE (1.0s)
    and the DDS twins (0.3s) - TickLE's own discovery is fast enough on this rig that 0.3s doesn't
    reliably create a stale-enough gap to observe expiry (see the git history for the full
    investigation) - left as a flagged, honest inconsistency rather than silently normalized.
-7. **[Harness bug, found and fixed 2026-09-21 - closed]** §3's own original reliable-throughput-
+7. **[Harness bug, found and fixed 2026-09-21 - closed]** §2.6's own original reliable-throughput-
    under-loss result looked like a real cross-vendor difference (CycloneDDS's RELIABLE fully
    recovering 5% injected loss, FastDDS's recovering none of it) - it wasn't. Root cause, found
    independently of TickLE Dev's own concurrent HISTORY-depth work (no file overlap):
    `examples/perf_hil/fastdds/reliable_throughput/{client,server}.cpp` had never received the same
-   `KEEP_ALL`+`resource_limits(4000)` fix the CycloneDDS twin got earlier in this exercise (see §3's
+   `KEEP_ALL`+`resource_limits(4000)` fix the CycloneDDS twin got earlier in this exercise (see §2.6's
    own methodology note) - left at a shallow `KEEP_LAST(8)` (plus a stale doc comment that still
    said "BEST_EFFORT", a copy-paste leftover never updated for this scenario's own real RELIABLE
    design) that couldn't retain a lost sample long enough for a NACK-driven retry to land, the exact
@@ -823,9 +823,9 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
    semantic-parity backlog flagged one open gap for LIFESPAN, the policy already closest to real
    DDS: TickLE's own beyond-lifespan loss count had never been checked against a hand-derived
    expected-loss formula the way CycloneDDS's own exact `(pause-lifespan)/interval` match was
-   (§3, scenario 9). TickLE's own `lifespan_expiry` design can't use that same formula directly -
+   (§2.6, scenario 9). TickLE's own `lifespan_expiry` design can't use that same formula directly -
    `pause_s` is measured from the *server's own process start*, not from a completed match the way
-   the DDS twins' own design does (§6, item 6's own "not the same condition" note) - so the exact
+   the DDS twins' own design does (§3, item 6's own "not the same condition" note) - so the exact
    offset from real discovery/match completion time is an unknown constant, not a controlled zero.
    **Worked around by testing the *slope*, not the absolute count**: real HIL, three `pause_s`
    values (1.0/1.5/2.0s, same `lifespan=0.1s`/`interval=0.02s`, 250-sample runs), 2-4 reps each.
@@ -847,7 +847,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
    `received_bitmap` width) would *not* fix `reliable_throughput`'s own poor tc-loss recovery,
    since the bottleneck is Subscriber-side, not Publisher-side. Re-measured on real HIL with the
    new `-K` flag (`examples/perf_hil/tickle/reliable_throughput/client.c`, Milestone 61), same
-   `tc netem` matrix as §3/scenario 4's own original depth=64 numbers:
+   `tc netem` matrix as §2.6/scenario 4's own original depth=64 numbers:
    - `-K 512` (8x the old depth), `tc` loss=1%: sent 1,214,479/1,220,570, recv 1,183,005/1,183,049,
      **2.6%/3.1% loss** (2/2) - inside the original depth=64 range (1.1-3.1%), no improvement.
    - `-K 512`, `tc` loss=5%: sent 1,240,256/1,247,211, recv 1,177,152/1,180,082, **5.1%/5.4% loss**
@@ -897,7 +897,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
     **Confirms the fix for short leases**: at 1.0s/2.0s (both shorter than the old fixed ~3s
     window), detection now tracks the announced lease directly - a dramatic improvement from the
     old fixed ~3080-3620ms regardless of lease, and much closer to CycloneDDS/FastDDS's own
-    lease-proportional behavior (§3, scenario 8: both DDS vendors detect within ~0.07-1ms of their
+    lease-proportional behavior (§2.6, scenario 8: both DDS vendors detect within ~0.07-1ms of their
     own 2000ms lease).
 
     **One honest limit, not glossed over**: at 4.0s (a lease *longer* than the old fixed ~3s
@@ -915,7 +915,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
     for a much longer grace period - but it does mean TickLE cannot yet honor a genuinely long lease
     the way real DDS does. Not investigated further this pass (a real behavior, not a bug, and
     likely a reasonable trade-off for embedded targets that want a hard upper bound on detection
-    latency) - noted here rather than left undocumented. `COMPARISON.MD` §3, scenario 8's own TickLE
+    latency) - noted here rather than left undocumented. `COMPARISON.MD` §2.6, scenario 8's own TickLE
     column updated with these numbers.
 
 11. **[TickLE core, real HIL - a real methodology correction, and further throughput research]**
@@ -933,7 +933,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
     benchmark's own 0.0% figure might suggest at a glance. Both numbers are real and correctly
     measured for what each actually tests; the honest summary is that a 256-bit window is enough
     to fully recover loss at a modest, paced rate, but not yet enough at TickLE's own real
-    ~150-200K msg/s max throughput - `COMPARISON.MD` §3's own TickLE column updated with both the
+    ~150-200K msg/s max throughput - `COMPARISON.MD` §2.6's own TickLE column updated with both the
     new post-fix numbers and the old pre-fix ones side by side, not silently replaced.
 
     **Further hypothesis-driven research, at the user's own explicit instruction to keep
@@ -973,10 +973,10 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
     by pinning FastDDS to the test link (`examples/perf_hil/fastdds/fastdds_eth0_only.xml`, a UDPv4
     `interfaceWhiteList` + `useBuiltinTransports=false`, applied via `FASTRTPS_DEFAULT_PROFILES_FILE`
     in that framework's own `run_scenario.sh`, commit `f9cd4c0`) - verified after the fix: eth0
-    +43MB, wlan0 +12KB in the same 4s run, and throughput rose 17.0 -> 21.2 Mbps. §3a's own FastDDS
-    column is the re-measured, eth0-only result; §3's own scenario 4 FastDDS cells are superseded.
+    +43MB, wlan0 +12KB in the same 4s run, and throughput rose 17.0 -> 21.2 Mbps. §2.2a's own FastDDS
+    column is the re-measured, eth0-only result; §2.6's own scenario 4 FastDDS cells are superseded.
 
-13. **[TickLE core, three real RELIABLE bugs found and fixed 2026-09-22/23 - §3's own scenario 4
+13. **[TickLE core, three real RELIABLE bugs found and fixed 2026-09-22/23 - §2.6's own scenario 4
     TickLE cells are superseded too]** In order: (a) `struct tt_Publisher.seq_no` was `uint16_t`, so
     the wire counter wrapped every 65536 sends and `update_reliable_ack()`'s early-return path left
     retransmission effectively disabled for most of every run; (b) once that was fixed,
@@ -1005,7 +1005,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
       `detect_latency_ms` is measured from the last *data* sample, so the measurement's own
       reference point is stale by exactly that amount. The ~500ms mode separation IS that staleness.
       Consequence for this table: at n=3 there is roughly a 45% chance of catching a minority-mode
-      sample, and one moves the mean ~160ms, so §3 scenario 8's ±169/±466/±236 measure mode-mixing,
+      sample, and one moves the mean ~160ms, so §2.6 scenario 8's ±169/±466/±236 measure mode-mixing,
       not precision - the dominant mode holds to ~15ms.
 
       **And the cross-vendor comparison in scenario 8 is apples-to-oranges, which more reps cannot
@@ -1027,7 +1027,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
       phase between the 1s announce period and the 1s check tick, anywhere in 0-1000ms on another
       startup) is a trade anyone can reason about; the **3s cap** - `tt_LIVELINESS_MISS_THRESHOLD *
       tt_NODE_UPDATE_INTERVAL` firing before a longer entity lease - means a requested 4s lease is
-      silently honoured as 3s, with nothing reporting that to the caller. §6 item 10 already
+      silently honoured as 3s, with nothing reporting that to the caller. §3 item 10 already
       recorded the ceiling as a known limit; what is new is the exact rule and the silence. Raised
       as a core conformance item, see `PLAN.md`.
     - **`reliable_throughput` rate**: five consecutive reps at tc 0% gave 94.4 / 111.0 / 112.7 /
@@ -1046,7 +1046,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
       under `taskset -c 1-3` so the sender never lands on the interrupt core; the affected Mbps
       cells are re-measured under that fix before this ◊ is lifted. (Measured on TickLE only so
       far; the same instrumentation is being added to the DDS harnesses rather than asserting it
-      for them.) §3b's TickLE Mbps column is a median of 3 per cell and therefore reports whichever
+      for them.) §2.2b's TickLE Mbps column is a median of 3 per cell and therefore reports whichever
       cluster that cell sampled; those cells are marked ◊ until re-measured with enough reps to
       report both modes. Loss columns are unaffected.
     Standing consequence for methodology: 3 reps is not enough for either measurement, and any
@@ -1147,10 +1147,10 @@ This document tracks whether TickLE meets [`rmw_tickle/PLAN.md`](PLAN.md)'s own 
 `rmw` implementation, are competitive with `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp` (FastDDS/
 CycloneDDS). Two genuinely different questions, measured two different ways:
 
-- **Sections 2-3**: TickLE core itself vs. FastDDS/CycloneDDS themselves, each used directly
+- **Sections 4.1-4.2**: TickLE core itself vs. FastDDS/CycloneDDS themselves, each used directly
   through its own native API (no ROS 2, no `rmw` layer at all) - isolates TickLE's own engine from
   whatever overhead `rmw_tickle`'s own wrapper adds on top.
-- **Sections 4-5**: `rmw_tickle` vs. `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp`, all three reached the
+- **Section 2.7**: `rmw_tickle` vs. `rmw_fastrtps_cpp`/`rmw_cyclonedds_cpp`, all three reached the
   same way a real ROS 2 application would (`RMW_IMPLEMENTATION` + `rclcpp`) - the number that
   actually matters to anyone choosing an `rmw` implementation.
 
@@ -1184,8 +1184,8 @@ for byte, not just "similarly sized":
 | 9 | `lifespan_expiry` | LIFESPAN | 100ms lifespan, stall injected past that duration - confirms expired samples are not delivered |
 
 Scenarios 3-4 were redesigned and re-measured 2026-09-21 (the user's own explicit request) after
-finding real cross-framework condition mismatches in the original pass - see §6, item 6, for what
-was wrong and fixed. Every number in §3 for scenarios 3-4 is from that redesigned, reproduced (2/2)
+finding real cross-framework condition mismatches in the original pass - see §3, item 6, for what
+was wrong and fixed. Every number in §2.6 for scenarios 3-4 is from that redesigned, reproduced (2/2)
 pass; scenarios 1-2 and 5-9 keep their original (2026-09-20) results, not re-measured this pass.
 
 
@@ -1228,4 +1228,4 @@ further still.
 Had the prediction not been written down first, that cell would have been recorded as a win and the
 6.6% would have gone unremarked. It did not: the cell is now void for incomplete delivery, and
 chasing *why* TickLE spends 47 transmissions per sample there led to the kernel's IP reassembly
-collapsing rather than to anything in TickLE - item 15 in section 6, deferred by the user.
+collapsing rather than to anything in TickLE - item 15 in section 3, deferred by the user.

@@ -7,7 +7,9 @@
 //
 // What is measured: ppoll() with a computed relative timeout and no fds, which is exactly what
 // tt_Node_poll() does when it waits for the next scheduler entry. Lateness = actual elapsed -
-// requested. CLOCK_MONOTONIC throughout.
+// requested. CLOCK_MONOTONIC throughout. Built with -D_GNU_SOURCE by wake_granularity.sh (ppoll
+// needs it on glibc), and declared here too so clang-tidy sees the declaration - same
+// NOLINTNEXTLINE precedent as src/hal_linux.c:19.
 //
 // Pre-registered reading, written before the run:
 //   - G is the p99 lateness at the SHORT delay. p99 rather than max because a single outlier is
@@ -21,49 +23,65 @@
 //   - A p99 far above the 100us Dev is building with provisionally means the provisional value is
 //     too small and spurious retransmits survive the change; far below means G is nearly free and
 //     could be tightened.
+// NOLINTNEXTLINE(bugprone-reserved-identifier, readability-identifier-naming)
 #define _GNU_SOURCE
+
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
-static int cmp_ll(const void *a, const void *b) {
-    long long x = *(const long long *)a, y = *(const long long *)b;
-    return (x > y) - (x < y);
+#define NS_PER_SEC 1000000000LL
+#define SHORT_DELAY_NS 200000L
+#define CONTROL_DELAY_NS 2000000L
+#define DEFAULT_SAMPLES 20000
+#define MIN_SAMPLES 100
+#define PCT_90 90
+#define PCT_99 99
+#define PCT_DIV 100
+
+static int cmp_lateness(const void* lhs, const void* rhs) {
+    long long left = *(const long long*)lhs;
+    long long right = *(const long long*)rhs;
+    return (left > right) - (left < right);
 }
 
-static void arm(const char *label, long req_ns, int n) {
-    long long *late = malloc((size_t)n * sizeof(long long));
+static void arm(const char* label, long requested_ns, int samples) {
+    long long* late = malloc((size_t)samples * sizeof(long long));
     if (late == NULL) {
         exit(1);
     }
-    for (int i = 0; i < n; i++) {
-        struct timespec want = {.tv_sec = req_ns / 1000000000L, .tv_nsec = req_ns % 1000000000L};
-        struct timespec t0, t1;
-        clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (int idx = 0; idx < samples; idx++) {
+        struct timespec want = {.tv_sec = requested_ns / NS_PER_SEC, .tv_nsec = requested_ns % NS_PER_SEC};
+        struct timespec before;
+        struct timespec after;
+        // NOLINTNEXTLINE(misc-include-cleaner) - CLOCK_MONOTONIC/ppoll come from the includes above
+        clock_gettime(CLOCK_MONOTONIC, &before);
+        // NOLINTNEXTLINE(misc-include-cleaner)
         ppoll(NULL, 0, &want, NULL);
-        clock_gettime(CLOCK_MONOTONIC, &t1);
-        long long el = (t1.tv_sec - t0.tv_sec) * 1000000000LL + (t1.tv_nsec - t0.tv_nsec);
-        late[i] = el - req_ns;
+        // NOLINTNEXTLINE(misc-include-cleaner)
+        clock_gettime(CLOCK_MONOTONIC, &after);
+        long long elapsed = ((after.tv_sec - before.tv_sec) * NS_PER_SEC) + (after.tv_nsec - before.tv_nsec);
+        late[idx] = elapsed - requested_ns;
     }
-    qsort(late, (size_t)n, sizeof(long long), cmp_ll);
+    qsort(late, (size_t)samples, sizeof(long long), cmp_lateness);
     long long sum = 0;
-    for (int i = 0; i < n; i++) {
-        sum += late[i];
+    for (int idx = 0; idx < samples; idx++) {
+        sum += late[idx];
     }
     printf("arm=%s requested_ns=%ld n=%d late_mean_ns=%lld late_p50_ns=%lld late_p90_ns=%lld "
            "late_p99_ns=%lld late_max_ns=%lld\n",
-           label, req_ns, n, sum / n, late[n / 2], late[(n * 90) / 100], late[(n * 99) / 100], late[n - 1]);
+           label, requested_ns, samples, sum / samples, late[samples / 2], late[(samples * PCT_90) / PCT_DIV],
+           late[(samples * PCT_99) / PCT_DIV], late[samples - 1]);
     free(late);
 }
 
-int main(int argc, char **argv) {
-    int n = (argc > 1) ? atoi(argv[1]) : 20000;
-    if (n < 100) {
-        n = 100;
+int main(int argc, char** argv) {
+    int samples = (argc > 1) ? atoi(argv[1]) : DEFAULT_SAMPLES;
+    if (samples < MIN_SAMPLES) {
+        samples = MIN_SAMPLES;
     }
-    arm("short_200us", 200000L, n);
-    arm("control_2ms", 2000000L, n);
+    arm("short_200us", SHORT_DELAY_NS, samples);
+    arm("control_2ms", CONTROL_DELAY_NS, samples);
     return 0;
 }
