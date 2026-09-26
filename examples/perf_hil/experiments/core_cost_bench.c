@@ -211,6 +211,8 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
 
 #define MAX_EXTRA 14 // unrelated Publishers on writer node 1: entries in the reader's discovery table
 #define EXTRA_NAME_BYTES 8
+#define RELIABLE_DEPTH 64U // -R's KEEP_LAST cache, in samples: the Q2 cell's -K 64
+#define RELIABLE_ROUND 32U // -R: samples published before the reader takes them and its ACKNACKs come back
 #define MICRO_ITERATIONS 1000000U
 #define ARG_BASE 10
 
@@ -269,10 +271,11 @@ struct options {
     bool micro;
     bool client; // publish from a self-rescheduling entry under tt_Node_poll(-1), as the throughput clients do
     bool concurrent_publisher; // -p: another thread publishes on the reader node through the receive phase
+    bool reliable;             // -R: RELIABLE KEEP_LAST 64, as the Q2 cell (c9); send and receive alternate in rounds
 };
 
 static bool parse(int argc, char** argv, struct options* opt) {
-    *opt = (struct options) {DEFAULT_SAMPLES, 1, 0, false, false, false, false};
+    *opt = (struct options) {DEFAULT_SAMPLES, 1, 0, false, false, false, false, false};
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
             opt->samples = (uint32_t)strtoul(argv[++i], NULL, ARG_BASE);
@@ -284,6 +287,8 @@ static bool parse(int argc, char** argv, struct options* opt) {
             opt->discovery = true;
         } else if (strcmp(argv[i], "-m") == 0) {
             opt->micro = true;
+        } else if (strcmp(argv[i], "-R") == 0) {
+            opt->reliable = true;
         } else if (strcmp(argv[i], "-p") == 0) {
             opt->concurrent_publisher = true;
         } else if (strcmp(argv[i], "-c") == 0) {
@@ -411,7 +416,28 @@ static bool set_up(const struct options* opt, uint8_t reader) {
         }
     }
     acting = reader;
-    return tt_Node_create_subscriber(&nodes[reader], &sub, &BenchTopic, "bench", on_sample) == tt_RET_OK;
+    if (tt_Node_create_subscriber(&nodes[reader], &sub, &BenchTopic, "bench", on_sample) != tt_RET_OK) {
+        return false;
+    }
+    if (opt->reliable) {
+        // As reliable_throughput/client.c at Q2 (-K 64): a KEEP_LAST cache on writer 1, a RELIABLE Subscriber - set
+        // before discovery, so the announces carry them. Not KEEP_ALL: its acknowledgement requests are rate-limited
+        // in time, and a loop this fast would spend itself refused.
+        static struct tt_ReliableCacheIndex cache_index[RELIABLE_DEPTH];
+        static uint8_t cache_arena[tt_RELIABLE_CACHE_ARENA_BYTES(RELIABLE_DEPTH,
+                                                                 tt_RELIABLE_RECORD_BYTES(sizeof(struct BenchData)))];
+        static struct tt_ReliableCache cache;
+        cache.index = cache_index;
+        cache.capacity = RELIABLE_DEPTH;
+        cache.depth = RELIABLE_DEPTH;
+        cache.arena = cache_arena;
+        cache.arena_size = sizeof(cache_arena);
+        pubs[1].reliable_cache = &cache;
+        pubs[1].reliable = true;
+        pubs[1].keep_all = false;
+        sub.reliable = true;
+    }
+    return true;
 }
 
 // Every node polls and hears the others until each Publisher knows the Subscriber.
@@ -463,6 +489,41 @@ static void send_all(const struct options* opt) {
         sample.seq = (i / opt->writers) + 1;
         (void)tt_Publisher_publish(&pubs[id], (struct tt_Data*)&sample);
         (void)tt_Node_poll(&nodes[id], 0);
+    }
+}
+
+// -R: the writer publishes RELIABLE_ROUND samples (polling after each) and takes the reader's ACKNACKs - the
+// send side; then the reader takes the round - the receive side. Each side's time and clock reads are summed.
+struct phase_totals {
+    uint64_t send_ns;
+    uint64_t recv_ns;
+    uint64_t send_clock;
+    uint64_t recv_clock;
+    uint32_t publish_errors;
+};
+
+static void run_reliable(const struct options* opt, uint8_t reader, struct phase_totals* totals) {
+    struct BenchData sample;
+    memset(&sample, 0, sizeof(sample));
+    for (uint32_t done = 0; done < opt->samples;) {
+        uint32_t round = opt->samples - done < RELIABLE_ROUND ? opt->samples - done : RELIABLE_ROUND;
+        uint64_t clock_before = clock_calls;
+        uint64_t start = now_ns();
+        for (uint32_t i = 0; i < round; i++) {
+            acting = 1;
+            sample.seq = done + i + 1;
+            totals->publish_errors += tt_Publisher_publish(&pubs[1], (struct tt_Data*)&sample) != tt_RET_OK;
+            (void)tt_Node_poll(&nodes[1], 0);
+        }
+        deliver(1); // the reader's ACKNACKs
+        totals->send_ns += now_ns() - start;
+        totals->send_clock += clock_calls - clock_before;
+        clock_before = clock_calls;
+        start = now_ns();
+        deliver(reader);
+        totals->recv_ns += now_ns() - start;
+        totals->recv_clock += clock_calls - clock_before;
+        done += round;
     }
 }
 
@@ -546,9 +607,11 @@ static void print_publish_latency(void) {
 
 int main(int argc, char** argv) {
     struct options opt;
-    if (!parse(argc, argv, &opt) || (opt.client && opt.writers != 1)) {
-        fprintf(stderr, "usage: %s [-n samples] [-w writers 1-%d] [-e extra 0-%d] [-D] [-m] [-c, with -w 1] [-p]\n",
-                argv[0], MAX_WRITERS, MAX_EXTRA);
+    if (!parse(argc, argv, &opt) || ((opt.client || opt.reliable) && opt.writers != 1)) {
+        fprintf(
+            stderr,
+            "usage: %s [-n samples] [-w writers 1-%d] [-e extra 0-%d] [-D] [-m] [-c, with -w 1] [-p] [-R, with -w 1]\n",
+            argv[0], MAX_WRITERS, MAX_EXTRA);
         return 1;
     }
     wire = calloc(WIRE_MAX, sizeof(*wire));
@@ -561,6 +624,18 @@ int main(int argc, char** argv) {
     wire_count = 0;
     arena_used = 0;
     cursor[reader] = 0;
+    if (opt.reliable) {
+        struct phase_totals totals = {0};
+        received = 0;
+        run_reliable(&opt, reader, &totals);
+        printf("RESULT: samples=%u reliable=1 datagrams=%u received=%llu dropped=%u publish_errors=%u "
+               "send_ns_per_sample=%.2f recv_ns_per_sample=%.2f send_clock_per_sample=%.3f "
+               "recv_clock_per_sample=%.3f tt_version=%d\n",
+               opt.samples, wire_count, (unsigned long long)received, wire_dropped, totals.publish_errors,
+               (double)totals.send_ns / opt.samples, (double)totals.recv_ns / opt.samples,
+               (double)totals.send_clock / opt.samples, (double)totals.recv_clock / opt.samples, tt_VERSION);
+        return received == opt.samples && totals.publish_errors == 0 ? 0 : 2;
+    }
     uint64_t clock_before = clock_calls;
     uint64_t start = now_ns();
     send_all(&opt);
