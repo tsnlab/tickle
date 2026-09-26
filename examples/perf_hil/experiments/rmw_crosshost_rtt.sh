@@ -65,6 +65,11 @@ BPF_ARMS=${BPF_ARMS:-off}
 # only. RMW_LIST replaces the three rmws, e.g. RMW_LIST=rmw_tickle for an rmw_tickle-only A/B.
 EXEC_POLL_ARMS=${EXEC_POLL_ARMS:--}
 RMW_LIST=${RMW_LIST:-rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp}
+# IDLE_S=10 (2026-09-27, RMW_PERF_PLAN 8.6's idle-CPU criterion): the pong idles IDLE_S s before the ping starts
+# instead of 4, and the row gains pong_idle_cpu_ns / pong_idle_ms - the summed schedstat run time of every pong
+# thread from 1 s after launch (start-up excluded) to the ping's start, and that window's length on the Pi's clock.
+# Unset, the pong idles 4 s exactly as before and the row has no idle fields.
+IDLE_S=${IDLE_S:-}
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -95,7 +100,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, rmws: $RMW_LIST ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, idle: ${IDLE_S:-4} s, rmws: $RMW_LIST ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -288,7 +293,18 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local dumpenv=""
     case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
     pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv $stamprm nohup taskset -c 1-3 $pre $BIN/pong_node $flag $stampflag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
-    sleep 4
+    local idle=""
+    if [ -n "$IDLE_S" ] && [ "$TRACE" != 1 ]; then
+        local rd="cat /proc/$pongpid/task/*/schedstat 2>/dev/null | awk -v t=\$(date +%s%N) '{s+=\$1} END{print s+0, t}'"
+        sleep 1
+        local i0 i1
+        i0=$(sh_ "$SERVER" "$rd" || echo "0 0")
+        sleep $((IDLE_S - 1))
+        i1=$(sh_ "$SERVER" "$rd" || echo "0 0")
+        idle=$(echo "$i0 $i1" | awk '$1 > 0 && $3 > 0 {printf "pong_idle_cpu_ns=%d pong_idle_ms=%.0f", $3 - $1, ($4 - $2) / 1e6}')
+    else
+        sleep 4
+    fi
     if [ "$TRACE" = 1 ]; then
         # $! is strace; the pong is its child, found by parentage and verified by /proc/PID/exe, not by name
         pongpid=$(sh_ "$SERVER" "for c in \$(cat /proc/$pongpid/task/$pongpid/children 2>/dev/null); do [ \"\$(readlink /proc/\$c/exe)\" = $BIN/pong_node ] && echo \$c; done" | head -1)
@@ -318,7 +334,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # The ping's own log (stderr) is kept per row with the pong's in $OUT.logs, for questions such as which peers
     # rmw_tickle's publisher registered.
     res=$(sh_ "$CLIENT" "$env; $sstenv $stamprm timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag $stampflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
-    res="$res $procs"
+    res="$res $procs${idle:+ $idle}"
     if [ "$BPF" = on ]; then
         sh_ "$SERVER" "[ \"\$(readlink /proc/$bpfpid/exe)\" = /usr/bin/timeout ] && kill -TERM $bpfpid; for i in \$(seq 1 20); do [ -d /proc/$bpfpid ] || break; sleep 0.5; done" || true
         mkdir -p "$OUT.bpf"
@@ -371,6 +387,9 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     case "$maps" in *"$(lib_for "$rmw")"*) ;; *) verdict="VOID(pong loaded: ${maps:-nothing})" ;; esac
     case "$res" in *"framework=${rmw%@*} "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
+    if [ -n "$IDLE_S" ] && [ "$TRACE" != 1 ]; then
+        case "$res" in *"pong_idle_cpu_ns="*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no idle CPU reading)" ;; esac
+    fi
     if [ "$WAITS" != poll ]; then
         case "$res" in *" wait=$WAIT "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not run wait=$WAIT)" ;; esac
     fi
