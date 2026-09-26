@@ -9,12 +9,15 @@
 # whole-run CPU and every poll row do not move beyond 2 x SE; any criterion failing, the change is reverted.
 cd /home/semih/tickle || exit 1
 PARENT=${PARENT:?PARENT=<sha>}; NEW=${NEW:?NEW=<sha>}
+# TAG names the outputs, /tmp/${TAG}_b<n>_<sha8>.txt (default rmw86). The same chain serves any rmw_tickle A/B, e.g.
+# WIRE_PLAN 8.2's v10 fix against its parent.
+TAG=${TAG:-rmw86}
 export RIG_LOCK_WAIT=36000
 X=./examples/perf_hil/experiments
 n=0
 for sha in "$PARENT" "$NEW" "$NEW" "$PARENT"; do
     n=$((n + 1))
     SHA=$sha RMW_LIST=rmw_tickle WAITS='block poll' POLL_SLEEPS=100 MSGS='bench array1k' REPS=3 IDLE_S=10 \
-        OUT=/tmp/rmw86_b${n}_${sha:0:8}.txt $X/rmw_crosshost_rtt.sh > "/tmp/rmw86_b${n}_${sha:0:8}.log" 2>&1
+        OUT=/tmp/${TAG}_b${n}_${sha:0:8}.txt $X/rmw_crosshost_rtt.sh > "/tmp/${TAG}_b${n}_${sha:0:8}.log" 2>&1
 done
-echo "=== chain done $(date -Is) ===" > /tmp/rmw86_rig_chain.done
+echo "=== chain done $(date -Is) ===" > "/tmp/${TAG}_rig_chain.done"

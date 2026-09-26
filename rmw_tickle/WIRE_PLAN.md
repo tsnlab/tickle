@@ -257,7 +257,45 @@ with a benchmark of TickLE core alone: `experiments/core_cost_bench.c`, driven b
 
 For the ABBA campaign against `8f3811f4`: the build to use is this commit.
 
-The rmw half (block and the poll sweep, the rmw capture) follows in 8.2.
+
+### 8.2 rmw rows and the rmw capture (2026-09-27)
+
+`rmw_crosshost_rtt.sh`, rmw_tickle only. Block mode and the poll sweep (0/50/100/200 us), bench and array1k, both QoS,
+3 repetitions per build, the parent's session and then v10's. All 60 + 60 rows are ok. Raw rows are in
+`results/wire_v10_{rmw,cap}_{8f3811f4,fd57b01d}_2026-09-27.txt`.
+
+- **Bytes, from the capture.** The ping and pong data datagrams fall from 112 to **100 B (-12 B, the target)** in both
+  QoS, and the summaries from 28 to 24 B. All 100 replies are unicast. The only broadcasts other than summaries are
+  the three discovery datagrams each node sends at creation, so the pong-side first-reply broadcast does not show here.
+- **Timing and CPU.** `ab_compare.py rmw` finds 3 better, 106 held and 11 WORSE out of 120 comparisons. That is what
+  chance gives at n = 3: simulated for normal data, P(t > 2) is 6.0% one-sided, so about 7 WORSE and 7 better are
+  expected under no change at all.
+  - Two of the WORSE rows are the ping's tick-counted CPU (0.04 against 0.05 s, one 10 ms tick).
+  - Two are the pong's peak RSS (+4 and +13 KB).
+  - One is the pong's CPU at bench BEST_EFFORT, poll 50 us (+3.1%). The same metric is 3.1% better at bench RELIABLE,
+    poll 0 us.
+  - Six are round trips, +1-2 us (+0.2-0.8%). They lean one way: no round-trip row is better. The native path's
+    +26 ns per received sample (8.1a) cannot make 1-2 us, so a drift between the two sessions is the likelier
+    reading. The interleaved re-run below decides it.
+
+### 8.3 Reading rule for many comparisons (amendment, 2026-09-27, before the A B B A results)
+
+Sections 1 and 6 say "nothing WORSE beyond 2 x SE". Applied to about 110 comparisons per run it fails a build that
+changed nothing: at 6 repetitions per arm, P(t > 2) is 3.8% one-sided, so about 4 WORSE rows are expected by chance.
+From here on, and before any A B B A result is read:
+
+1. **Candidate.** A row WORSE at 2 x SE in the pooled A B B A run.
+2. **Confirmed**, and the build fails, if either
+   - the same metric is WORSE in at least half of the cells it appears in (8.1's utime was WORSE in every p1 cell;
+     chance cannot do that), or
+   - a targeted re-run of the candidate's cells, A B B A with 6 per arm, finds it WORSE again. Two chance WORSE in a
+     row are about 0.15% per metric, about 0.2 expected over the whole table.
+3. **Not confirmed:** the row is listed as a chance candidate with its t, and not hidden.
+4. **Not counted as timing or CPU evidence:** figures quantised coarser than the difference (tick-counted CPU,
+   `ping_cpu_s`). They stay in the table.
+
+The v10 fix (`4dc7ad49`, 8.1a) is judged this way on the native cells (`campaign_ab_chain.sh`) and on the rmw rows
+(`rmw_lease86_rig_chain.sh` with TAG=wire_v10fix_rmw), both queued on the rig.
 
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 

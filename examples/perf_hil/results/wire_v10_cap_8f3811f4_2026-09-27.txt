@@ -1,0 +1,14 @@
+=== rmw cross-host RTT, 2026-09-27T03:00:17+09:00, SHA 8f3811f4e584c45742a7d7b479ba5efc7128ad48, 1 reps, msgs: bench, spin arms: off, trace: 0, waits: block, poll sleeps: default, sysstamp arms: off, bpf arms: off, executor-poll arms: -, idle: 4 s, rmws: rmw_tickle ===
+--- building rmw_tickle + rmw_perf_pingpong (Release) at 8f3811f4e584c45742a7d7b479ba5efc7128ad48 on both rpis ---
+built on tickle-testbed-rpi-0 at 8f3811f4
+built on tickle-testbed-rpi-1 at 8f3811f4
+  capture stem=rmw_tickle_bench_best_effort_rep1_block role=ping t0_ns=1790445667420153916
+  capture stem=rmw_tickle_bench_best_effort_rep1_block role=pong t0_ns=1790445668215131680
+  clock_offset_ns stem=rmw_tickle_bench_best_effort_rep1_block before: client=1789081489073642019 server=1789081891569959869 after: client=1789081489073642259 server=1789081891569960388 
+rmw_tickle bench best_effort rep1 wait=block | ok | framework=rmw_tickle scenario=pingpong qos=best_effort wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.235 rtt_avg_ms=0.255 rtt_max_ms=0.822 LOOP: poll_sleep_us=100 iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=11136  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.02 pong_cpu_ns=36353344 pong_maxrss_kb=11776
+  capture stem=rmw_tickle_bench_reliable_rep1_block role=ping t0_ns=1790445727907658796
+  capture stem=rmw_tickle_bench_reliable_rep1_block role=pong t0_ns=1790445728702866186
+  clock_offset_ns stem=rmw_tickle_bench_reliable_rep1_block before: client=1789081489073642167 server=1789081891569960092 after: client=1789081489073642111 server=1789081891569960258 
+rmw_tickle bench reliable rep1 wait=block | ok | framework=rmw_tickle scenario=pingpong qos=reliable wait=block sent=100 recv=100 loss_pct=0 rtt_min_ms=0.223 rtt_avg_ms=0.248 rtt_max_ms=0.443 LOOP: poll_sleep_us=100 iterations_per_rtt=1.00 spin_some_us=0.0 sleep_us=0.0 ping_utime_s=0.01 ping_stime_s=0.02 ping_maxrss_kb=11264  pong_procs=1 ping_procs_before=0 pong_cpu_s=0.03 pong_cpu_ns=34892273 pong_maxrss_kb=11816
+
+=== done ===
