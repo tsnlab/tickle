@@ -33,6 +33,12 @@ K=$HOME/.ssh/tickle_ci_ed25519; CLIENT=10.1.1.214; SERVER=10.1.1.213
 SHA=${SHA:?set SHA to the commit to build and measure}
 REPS=${REPS:-3}
 MSGS=${MSGS:-"bench array1k"}
+# WAITS="poll block" (2026-09-26, 087c52d6): the ping's --wait mode, interleaved per round of rmws. poll (spin_some
+# plus a 100 us sleep, RTT read after the loop) is the ping's default and what every earlier rmw row used; block
+# waits in spin_once and reads the RTT in the callback, as the native client does. Dev measured poll - block at
+# ~230-255 us for every rmw on veth (rmw_ping_wait_mode.sh). With the default "poll" the ping is invoked exactly
+# as before, with no --wait flag; otherwise every row asserts the RESULT line's wait= matches the arm.
+WAITS=${WAITS:-poll}
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -63,7 +69,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -231,7 +237,9 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # wrapped in /usr/bin/time, the pong's /proc/PID/stat and /status are read just before it is stopped.
     # The pong's figures cover its whole life (4 s idle before the ping starts, 10 s of pings), so they are
     # per-process totals, not per-message costs, and compare only between rmw implementations run alike.
-    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag -m $msg 2>/dev/null; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^ping_utime_s' | tr '\n' ' ' || true)
+    local waitflag=""
+    [ "$WAITS" != poll ] && waitflag="--wait $WAIT"
+    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/dev/null; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^ping_utime_s' | tr '\n' ' ' || true)
     local pongcpu
     # pong_cpu_ns: summed run time of every pong thread from /proc/PID/task/*/schedstat (ns), because the
     # tick-based utime+stime (pong_cpu_s, 10 ms granularity) cannot separate rmw_tickle from CycloneDDS.
@@ -241,8 +249,8 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     sleep 1
     if [ "$CAPTURE" = 1 ]; then
         local off1; off1=$(clock_offset)
-        say "  clock_offset_ns stem=${rmw}_${msg}_${qos}_rep${rep} before: ${off0}after: ${off1}"
-        cap_collect "${rmw}_${msg}_${qos}_rep${rep}"
+        say "  clock_offset_ns stem=${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM} before: ${off0}after: ${off1}"
+        cap_collect "${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}"
     fi
     case "$rmw" in rmw_tickle*)
         sleep 1; mkdir -p "$OUT.dumps"
@@ -252,8 +260,11 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     case "$maps" in *"$(lib_for "$rmw")"*) ;; *) verdict="VOID(pong loaded: ${maps:-nothing})" ;; esac
     case "$res" in *"framework=${rmw%@*} "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
+    if [ "$WAITS" != poll ]; then
+        case "$res" in *" wait=$WAIT "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not run wait=$WAIT)" ;; esac
+    fi
     case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
-    say "$rmw $msg $qos rep$rep${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -278,8 +289,11 @@ for rep in $(seq 1 "$REPS"); do
                 RMWS=""; for v in $TICKLE_VARIANTS; do RMWS="$RMWS rmw_tickle@$v"; done
                 RMWS="$RMWS rmw_fastrtps_cpp rmw_cyclonedds_cpp"
             fi
-            for rmw in $RMWS; do
+            for WAIT in $WAITS; do
+              WAITSTEM=""; [ "$WAITS" != poll ] && WAITSTEM="_$WAIT"
+              for rmw in $RMWS; do
                 one "$rmw" "$msg" "$qos" "$rep"
+              done
             done
         done
     done

@@ -113,8 +113,12 @@ def main():
         c0, s0, c1, s1 = (int(x) for x in m.groups()[1:])
         offsets[m.group(1)] = ((c0 + c1) // 2, abs(c1 - c0), abs(s1 - s0))
     rtts = {}
-    for m in re.finditer(r"^(\S+) (\S+) (\S+) rep(\d+)\S* \| (\S+) \|.*?rtt_avg_ms=([\d.]+)", text, re.M):
-        rtts[f"{m.group(1)}_{m.group(2)}_{m.group(3)}_rep{m.group(4)}"] = (m.group(5), float(m.group(6)))
+    # A row is "<rmw> <msg> <qos> rep<N>[ wait=<mode>][ other tags] | <verdict> | ...", and its pcaps' stem
+    # is <rmw>_<msg>_<qos>_rep<N>[_<mode>] (rmw_crosshost_rtt.sh WAITS).
+    for m in re.finditer(r"^(\S+) (\S+) (\S+) rep(\d+)(?: wait=(\w+))?[^|\n]*\| (\S+) \|.*?rtt_avg_ms=([\d.]+)",
+                         text, re.M):
+        stem = f"{m.group(1)}_{m.group(2)}_{m.group(3)}_rep{m.group(4)}" + (f"_{m.group(5)}" if m.group(5) else "")
+        rtts[stem] = (m.group(6), float(m.group(7)))
     for stem, (coff, cdrift, sdrift) in offsets.items():
         ping, pong = out.with_suffix(out.suffix + ".pcaps") / f"{stem}_ping.pcap", \
             out.with_suffix(out.suffix + ".pcaps") / f"{stem}_pong.pcap"
