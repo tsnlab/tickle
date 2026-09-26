@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TUNED VARIANT: identical to fastdds_eth0_only.xml except maxMessageSize (see the transport
+  descriptor). Selected by run_scenario.sh with FASTDDS_PROFILE=fastdds_eth0_only_mms1472.xml.
+
+  Pins FastDDS to the rig's test link (eth0, 192.168.10.0/24) for every examples/perf_hil/fastdds
+  scenario, via FASTRTPS_DEFAULT_PROFILES_FILE (run_scenario.sh).
+
+  Why (found 2026-09-22, rmw_tickle/PLAN.md "E2"): with FastDDS's default transports, a writer on
+  one rpi sent every sample on BOTH eth0 and wlan0 (10.1.1.0/24, the management WiFi); tx_bytes
+  rose ~30.7MB on each in a 4s run. tc/netem loss is injected on eth0 only, so the wlan0 copy
+  always got through. FastDDS showed 0% loss even at 50% injected loss, and its throughput was
+  bounded by the WiFi path. CycloneDDS uses eth0 only.
+
+  interfaceWhiteList takes local addresses. Both rpis' test-link addresses are listed, and each
+  host simply matches its own.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>eth0_udp</transport_id>
+      <type>UDPv4</type>
+      <!-- The one change from fastdds_eth0_only.xml (the user's decision, 2026-09-26: tune FastDDS's
+           parameters for a fair evaluation). FastDDS's default of 65500 makes it send a p3/p4 sample as
+           one UDP datagram for the kernel to IP-fragment, which at 5% loss lost 427 reassemblies and
+           delivered 38% (rmw_tickle/DATAFRAG_PLAN.md sections 12 and 15). 1472 is one Ethernet
+           datagram, so FastDDS fragments in RTPS itself, as CycloneDDS and TickLE do. Nothing else,
+           such as heartbeat periods, is tuned. -->
+      <maxMessageSize>1472</maxMessageSize>
+      <interfaceWhiteList>
+        <address>192.168.10.2</address>
+        <address>192.168.10.3</address>
+      </interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="eth0_only_participant" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>eth0_udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

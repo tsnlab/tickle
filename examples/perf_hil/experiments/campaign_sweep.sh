@@ -144,6 +144,7 @@ if [ -n "${CELLS:-}" ]; then
     read -ra CELL_NUMS <<<"$CELLS"
     MATRIX=("${kept[@]}")
 fi
+say "FASTDDS_PROFILE=${FASTDDS_PROFILE:-fastdds_eth0_only.xml}"
 say "TICKLE_P4_PATH=${TICKLE_P4_PATH:-frag} (p4 TickLE rows must report sample_path=${TICKLE_P4_PATH:-frag}; p1-p3 datagram)"
 say "--- plan: ${#MATRIX[@]} combinations x 3 frameworks x ${REPS} reps = $(( ${#MATRIX[@]} * 3 * REPS )) runs ---"
 i=0
@@ -301,6 +302,12 @@ cell() {
         local qv
         qv=$(qos_identity_void "$scenario" "$payload" "$qos" "$fw" "$res")
         [ -z "$qv" ] || verdict="VOID(qos: $qv)"
+    fi
+    # FastDDS's XML profile (2026-09-26): shipped, or with maxMessageSize tuned per the user's decision.
+    # Only reliable_throughput prints transport_profile=; a row that ran the other profile is void.
+    if [ "$fw" = fastdds ] && [ "$scenario" = reliable_throughput ] && [ -n "$res" ] && [ "$verdict" = ok ]; then
+        case "$res" in *"transport_profile=${FASTDDS_PROFILE:-fastdds_eth0_only.xml}"*) ;;
+            *) verdict="VOID(transport_profile not ${FASTDDS_PROFILE:-fastdds_eth0_only.xml})" ;; esac
     fi
     # sample_path= (e9be3434) says how TickLE carried a sample: one datagram, DATA_FRAG, or one
     # datagram split by the kernel. p1-p3 must say datagram - anything else means the fragmentation

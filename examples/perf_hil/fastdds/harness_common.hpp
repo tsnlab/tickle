@@ -24,6 +24,8 @@
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <time.h> // NOLINT(modernize-deprecated-headers) - clock_gettime()/nanosleep() are POSIX, not in <ctime>
 
 #include "../tickle/common/BenchStats.h"
@@ -170,4 +172,17 @@ namespace harness {
                                   g_bench_fields.size());
     }
 
+    // Which XML profile FastDDS ran with (2026-09-26), printed as transport_profile= on the RESULT line.
+    // The user decided that FastDDS is evaluated with its UDPv4 transport's maxMessageSize tuned to the
+    // datagram (fastdds_eth0_only_mms1472.xml) as well as shipped (fastdds_eth0_only.xml). Both runs
+    // come out of the same binaries, so only the environment tells them apart, and a row has to say
+    // which it was, or a tuned figure could be read as a shipped one.
+    inline auto transport_profile() -> const char* {
+        const char* path = std::getenv("FASTRTPS_DEFAULT_PROFILES_FILE");
+        if (path == nullptr || path[0] == '\0') {
+            return "none";
+        }
+        const char* slash = std::strrchr(path, '/');
+        return slash != nullptr ? slash + 1 : path;
+    }
 } // namespace harness

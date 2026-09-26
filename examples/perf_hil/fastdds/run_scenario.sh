@@ -18,7 +18,10 @@ RPI_CLIENT="10.1.1.214"
 RPI_SERVER="10.1.1.213"
 LIB_PATH="/opt/ros/jazzy/lib"
 # Pins FastDDS to the eth0 test link, where tc applies - see fastdds_eth0_only.xml's header.
-PROFILE="/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml" # path on the rpis (user ci, as in ssh_run)
+# FASTDDS_PROFILE picks the XML profile (2026-09-26): fastdds_eth0_only.xml is FastDDS as shipped apart
+# from the interface pin; fastdds_eth0_only_mms1472.xml additionally sets maxMessageSize 1472, the
+# user's decision for a fair evaluation. The RESULT line's transport_profile= says which one ran.
+PROFILE="/home/ci/tickle/examples/perf_hil/fastdds/${FASTDDS_PROFILE:-fastdds_eth0_only.xml}" # path on the rpis
 REMOTE_DIR="tickle/examples/perf_hil/fastdds/$SCENARIO"
 
 ssh_run() {
