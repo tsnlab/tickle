@@ -386,3 +386,50 @@ Written before launch:
   against the baseline's unstable 20-90.
 - **c6 may still be VOID** if FastDDS again delivers only part of its samples. That is the open
   rule question in section 8. TickLE's criteria 1 and 2 are read from TickLE's own rows either way.
+
+## 10. Step 1 results, read against section 9
+
+`results/frag_step1_2026-09-26.txt` and `_verdicts.txt`. The sweep reported no VOID of its own:
+every TickLE row asserted `core_build=release`, and `sample_path=datagram` at p1-p3 and `frag` at
+p4. Summary: **WIN 36, DRAW/TIE 4, LOSE 0, VOID 10.** The ties are `loss_pct` reading 0 for every
+framework. All ten VOIDs are c6, and **the only incomplete framework is now FastDDS** (1,457 of
+5,168 delivered).
+
+| prediction (section 9) | result |
+|---|---|
+| c1-c3 unchanged, `sample_path=datagram` | **held.** c1 client CPU 5.28 / 115 Mbps, c3 6.62 / 938 Mbps, as at baseline |
+| c4 bandwidth about 2931 < 2950 | **held: 2933 against 2,950** |
+| c4 client CPU may lose until `sendmmsg` | **did not lose: 12.6 against CycloneDDS's 14.1.** Up from 11.5 (+9.6%), the syscall cost as foreseen, but it stays a win |
+| c6 criterion 1: `drained=acked` in all 3 reps | **held**, 100% delivered in each (104,457-139,425 samples) |
+| c6 criterion 2: 2.1-2.5 packets per sample, narrow | **held: 2.28-2.31** (baseline 20-90) |
+
+c4 is a clean sweep on this build: every client and server metric is a WIN.
+
+On TickLE's own c6 rows, which carry the label VOID only because FastDDS is incomplete, TickLE
+leads on throughput (558 Mbps against 12.8 and 14.5), client and server CPU, client memory, and
+wire bytes against CycloneDDS (3,184 against 3,227). Throughput retention under loss is now 59%
+(558 of 940), up from 6.6% in the campaign. Section 5 item 2's target was "comparable to p1's
+90.6%", so this **improved roughly ninefold and still falls short of that target**. That is stated
+as not met rather than rounded up.
+
+**One c6 row is still lost: server memory, 13,061 KB against CycloneDDS's 5,841.** It is unchanged
+from the baseline (13,020), so DATA_FRAG did not cause it. The mechanism, checked in the code:
+- The benchmark server declares `BENCH_REORDER_SLOTS = tt_RELIABLE_BITMAP_MAX_BITS` = 4,096 reorder
+  slots of about 2.8 KB at p4, which is about 11.5 MB, statically.
+- Its tracking window is 256 samples (`window_samples=256`).
+- Core chooses a slot as `seq % reorder_slots` (`src/tickle.c:5858`). Unshaped, samples arrive in
+  order and no slot is touched, which gives c4's 1,731 KB. Under loss, out-of-order samples land
+  all around the ring as seq climbs into the hundreds of thousands, until every page is resident.
+- 13,061 - 1,731 = 11,330 KB, which is the declared ring.
+
+`rmw_tickle` does not do this: it sizes reorder slots to the tracking window
+(`RMW_TICKLE_REORDER_SLOTS`, `rmw_subscription.c:276`, "defaulting to the window bound"). **The
+benchmark server holds 16 times the slots its own window can use**, and rmw's rule is the product
+behaviour. Mirroring it is the same correction as the KEEP_ALL byte budget: measure what a user of
+the product gets. Dev's reorder-storm finding sets the floor. Fewer slots than the window storms,
+while exactly the window measured 2.94 packets per sample. **Pre-registered: c6 server RSS about
+1,731 + 256 x 2.8 KB = about 2.45 MB, under CycloneDDS's 5,841, with packets per sample unchanged
+at 2.28-2.31.** If packets per sample rises, the slots are binding and the change is wrong.
+
+**c6 still cannot be scored under the current rule while FastDDS is incomplete.** Whether it ever
+can is the user's decision (section 8), and it has been put to them.

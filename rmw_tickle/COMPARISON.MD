@@ -1053,7 +1053,7 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
     Standing consequence for methodology: 3 reps is not enough for either measurement, and any
     future band quoted from them should say its n.
 
-15. **[Design decision, deferred by the user 2026-09-25 - measured, recorded, not acted on]** Large
+15. **[Design decision, deferred by the user 2026-09-25; reversed 2026-09-26 - DATA_FRAG is now being built, see rmw_tickle/DATAFRAG_PLAN.md]** Large
     messages under `rmw_tickle` are fragmented by the OS IP layer. Both DDS vendors fragment at the
     protocol level (`DATA_FRAG`) and never enter the kernel's reassembly path at all. Under packet
     loss that difference is not marginal: at a 2800-byte sample with 5% per-packet loss,
@@ -1136,6 +1136,16 @@ computed by `experiments/campaign_summary.py`, not read off by eye.
     It stays low priority because it has never been observed to fire: this scenario has produced a
     `loss_detected` reading on every run of every session, and the 2026-09-25 identity run measured it
     identical across both arms. Worth doing when something else touches that file.
+17. **[TickLE core, robustness - found, measured, not acted on (2026-09-26, Dev)]** A RELIABLE
+   Subscriber whose reorder buffer has fewer slots than its tracking window goes into a re-request
+   storm under a persistent gap. Samples that overflow the reorder buffer are "requested again",
+   and every ACKNACK re-sends them. In Dev's lossy-link simulation (a 64-slot buffer against a
+   256-bit window, 20% loss) this reached about 1,800 datagrams per sample, fragmented or not, with
+   132,536 overflows; 256 slots gave 2.94. Neither the benchmark server nor rmw_tickle is exposed,
+   since both size slots at least as wide as the window, but any integrator who sizes the buffer
+   smaller is. Candidate fixes: size-check at subscriber creation, or stop re-requesting samples
+   the buffer cannot hold.
+
 ## 4. Design philosophy and measurement rules
 
 Last, deliberately. Everything above is what was measured; this is why it was measured that way,
