@@ -114,3 +114,21 @@ are read with these amendments.
 
 **L4 added: the rmw level.** Once points 2 and 3 are in, rmw `RMW_EVENT_LIVELINESS_CHANGED` latency
 through `rclcpp` at a 1 s and a 4 s lease. Pass if it is within 20 ms of the core verdict (L2) for both.
+
+## 6. The node-level floor is 3.5 intervals of silence (2026-09-26, `b90a047d`)
+
+The M5 dip (`DISCOVERY_PLAN.md` §7) turned out to be a liveliness boundary, not discovery:
+- The node-level dead limit was exactly 3 intervals of silence. After two lost summaries, the third
+  arrives exactly 3 s after the last one heard.
+- Every node's periodic tasks run slightly late and drift at their own rate. So an observer's 1 s
+  check and the sender's third summary cross back and forth, and the verdict became a coin toss per
+  observer.
+- v7 hid it: a 32-endpoint announce was two datagrams, and both refreshed liveliness.
+
+Dev reproduced it (12 of 40 trials with 100/170 us scheduler lateness and two lost summaries, 0 of 40
+without drift). The limit is now `tt_LIVELINESS_SILENCE_NS` = 3.5 intervals, which is three missed
+summaries (0 of 20 under drift; the old-limit mutant gives 6 of 20).
+
+**Rule 6 therefore reads:** node-level death = silent for max(`tt_LIVELINESS_SILENCE_NS`, the longest
+lease among its entities), or its goodbye. Under the 1 s sweep, node-level detection moves from 3-4 s to
+3.5-4.5 s. Rule 2's timer removes that sweep artefact, making it 3.5 s after the last sign of life.
