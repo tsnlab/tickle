@@ -185,3 +185,36 @@ Raw rows are `results/wire_v10_{inv,m2}_*_2026-09-27.txt`. Bytes on the wire per
 
 The no-regression part, the rig campaign of bundle against parent (native cells, rmw block and poll sweep, and the rmw
 capture), is running and follows in section 8.
+
+## 8. v10 against its parent on the rig: the no-regression rule (2026-09-27)
+
+### 8.1 Native cells: bytes fall everywhere, CPU per sample rises everywhere, so v10 fails as it stands
+
+`campaign_sweep.sh`, TickLE only, 5 repetitions per build, the parent (`8f3811f4`) and then v10 (`fd57b01d`) in one rig
+session. All 60 + 60 rows are ok. Raw rows are `results/wire_v10_campaign_{8f3811f4,fd57b01d}_2026-09-27.txt`, and
+the reading is `experiments/ab_compare.py campaign` at 2 x SE, which was checked on a file against itself (all held)
+and on figures inflated in either direction. It gives 34 better, 52 held and **22 WORSE**.
+
+- **Better.** Wire bytes per sample fall in every cell, matching section 7: -5.5 to -6.1% at p1, -0.4 to -0.6% at
+  p2-p4. The send rate rises 0.4-0.6% at p2, p3 and p4, where the link is the limit.
+- **WORSE.** CPU per sample rises 0.4-1.2% at t 2.3-15, and the p1 send rate falls 0.6-1.1%, since p1's
+  sender is CPU-bound:
+  - p1 client at c1, c5, c8 and c9;
+  - p1 server at c5, c7, c8 and c9;
+  - p2 server at c2.
+- **It is user time, not the kernel.** Per sample, stime is flat or lower, since there are fewer bytes to copy. utime
+  rises in every cell:
+  - client: +15 to +40 ns, e.g. c1 895 -> 912 and c5 935 -> 974;
+  - server: +20 to +70 ns, e.g. c1 618 -> 672 and c5 792 -> 862.
+
+  `cpu_mhz` is the same in both arms. The arms ran one after the other, not interleaved, but a drift would not rise
+  in user time alone and in every cell.
+- **Suspected cause, not yet measured:**
+  - The receive path rebuilds the 64-bit timestamp from the u32 in `timestamp_from_wire()`, which reads the clock
+    (`tt_get_ns()`) once per received sample. The parent made no clock read there.
+  - The send path adds a 64-bit division and `to_single_form()` to every datagram.
+- **Consequence under section 1's reading:** v10 may not stand with a CPU regression, however small. Dev fixes the
+  cost without giving up the bytes. The fix is judged by the same campaign, re-run as interleaved A B B A blocks against
+  `8f3811f4`.
+
+The rmw half (block and the poll sweep, the rmw capture) follows in 8.2.
