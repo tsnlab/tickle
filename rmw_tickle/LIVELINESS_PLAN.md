@@ -74,3 +74,43 @@ lease, the DDS twins in the same session). Pass if:
 
 **Control:** L2 is also run on today's core in the same session, and must reproduce today's figures
 (bimodal spread, 4 s → ~3 s). Otherwise the harness has changed and L2 is not read.
+
+## 5. Amendments from Dev's review (2026-09-26, before implementation)
+
+Dev read the plan against the code and raised seven points. Plan accepted all of them; the rules above
+are read with these amendments.
+
+1. **An idle node's summary must outpace its shortest lease.** Since v8 an idle node's only sign of life
+   is the 1 s summary, so a 1 s AUTOMATIC lease with no data would flap. The summary interval becomes
+   min(`tt_NODE_UPDATE_INTERVAL`, shortest lease among the node's own entities / 3), as a DDS participant
+   asserts at a fraction of the lease. At default leases this changes nothing, and a summary is ~28 B.
+   **L3 gains an idle case:** 1 s lease, no data, 5% loss, 120 s, 0 departures.
+2. **rmw's lease floor goes.** `rmw_qos.c` rejects leases below `tt_LIVELINESS_MISS_THRESHOLD` ×
+   `tt_NODE_UPDATE_INTERVAL` (3 s), a floor that exists only because of defect 3. With rules 1-3 and
+   point 1 it drops to about 2 × `tt_NODE_TX_INTERVAL` or goes away, so ROS users actually get the fix.
+3. **rmw's own re-scan goes.** `check_subscription_liveliness()` re-scans every lease, which would make
+   rmw-level detection up to two leases even with an exact core verdict. rmw updates the status and
+   wakes from the core's discovery callback, in both directions.
+4. **MANUAL_BY_TOPIC is refreshed by (source node, endpoint_id)**, since `tt_DiscoveredEntity` has no
+   entity_id and DATA carries endpoint_id. That adds one `last_asserted` per discovered entity.
+   - Two writers of the same endpoint on one node share that clock. This is a known approximation,
+     stated here.
+   - The lookup on the receive path is gated on a per-source count of MANUAL entities, so
+     AUTOMATIC-only traffic pays nothing. Dev measures the gated cost on the PC ping-pong before
+     claiming it.
+   - **`assert_liveliness()` must reach the wire.** It sends a HEARTBEAT from that writer with a new
+     `tt_HEARTBEAT_FLAG_LIVELINESS` bit, as RTPS does, rate-limited to one per lease/3, for best-effort
+     writers too. **Plan's decision:** that is a new meaning for an existing submessage, so tt_VERSION
+     goes 8 → 9, by the one-version rule. v8 is hours old and deployed nowhere, so the bump costs
+     nothing.
+5. **Timer:** one scheduler entry per node at the earliest expiry. It is not re-armed on refresh, since
+   a refresh only moves an expiry later. When it fires, it tombstones what is past lease and re-arms at
+   the next expiry. It is re-armed early only for a new or newly asserted entity with an earlier
+   expiry. The receive path does no scheduler work.
+6. **Node-level death** = silent for max(`tt_LIVELINESS_MISS_THRESHOLD` × interval, the longest lease
+   among its entities), or its goodbye.
+7. **L2's control stands as written.** Under rule 1 the last data sample is the AUTOMATIC anchor, so the
+   TickLE column measures DDS's quantity.
+
+**L4 added: the rmw level.** Once points 2 and 3 are in, rmw `RMW_EVENT_LIVELINESS_CHANGED` latency
+through `rclcpp` at a 1 s and a 4 s lease. Pass if it is within 20 ms of the core verdict (L2) for both.
