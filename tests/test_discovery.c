@@ -323,7 +323,7 @@ static void test_detaching_stops_recording(void) {
 }
 
 // Milestone 62 follow-up (rmw_tickle/PLAN.md) - tombstone_entities_past_own_lease()'s own path:
-// this is the fix the "2번" (option 2) decision was about - a discovery_callback consumer (like
+// this is the fix the option-2 decision was about - a discovery_callback consumer (like
 // examples/perf_hil/tickle/liveliness_loss_detection/server.c) must see departed=true at an
 // entity's own short lease boundary, not only ever at check_liveliness()'s fixed ~3s node-wide
 // sweep. The remote node itself keeps announcing on schedule here (update_seen[]/update_last_

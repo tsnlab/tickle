@@ -15,8 +15,8 @@ provides the same (package, name) - an explicit `-I` always wins, so a caller wh
 own copy (e.g. a real ROS 2 checkout) is never overridden by this fallback.
 
 Lived in tools/typesupport until 2026-09-24, when the user decided TickLE core carries no ROS 2
-definitions ("TickLE 코어에서는 ROS의 std_msgs와 builtin_interfaces 정의를 빼자, rmw_tickle로
-옮기자").
+definitions (translated: "take ROS's std_msgs and builtin_interfaces definitions out of TickLE
+core, move them to rmw_tickle").
 
 Verbatim `.msg` text, not reparsed/rewritten from the originals, so a diff against upstream stays
 meaningful. Fetched from `ros2` GitHub repositories at the `jazzy` ref, licensed Apache License

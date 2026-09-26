@@ -9,8 +9,8 @@
 #     p2 1292 B    all three 1 packet   <- resized for exactly this by 1957a4b1, never yet measured
 # Out of scope now: p3 (1424, splits both vendors) and p4 (2800, splits all three).
 #
-# Every framework is given its QoS EXPLICITLY, per the user's binding instruction ("모든 애들이
-# 동일한 QoS를 설정한 후 테스트"): RELIABLE + KEEP_ALL on all three. TickLE takes -Q; both DDS
+# Every framework is given its QoS EXPLICITLY, per the user's binding instruction (translated:
+# "test only after setting every one of them to the same QoS"): RELIABLE + KEEP_ALL on all three. TickLE takes -Q; both DDS
 # harnesses have KEEP_ALL as their default and now also report keep_all= so the line records the
 # history it RAN rather than the one it was asked for.
 #

@@ -4,10 +4,11 @@
  *
  * THE ACTUAL ROOT CAUSE (2026-09-20, found by diffing against the real upstream
  * eclipse-cyclonedds/cyclonedds examples/throughput/publisher.c's own wait_for_reader(), at the
- * user's own explicit suggestion - "우리가 DDS 자체를 잘 못 이해하고 사용하는 것일 수도 있어. ...
- * 공식 예제들과 비교해 보았을 때 특별한 문제가 없는지 한 번 확인해보자" - and again, after a first
- * fix attempt still failed - "공식 예제를 최대한 따르는 것이 안전할 것 같아... API를 기준으로 만들기
- * 보다는 공식 예제를 조금씩 변형해 가는 식으로 작업 하면 좋을 것 같아": this earlier version polled
+ * user's own explicit suggestion, translated - "it may be that we simply do not understand DDS
+ * itself well enough. ... Let's check against the official examples and see whether anything looks
+ * wrong" - and again, after a first fix attempt still failed - "following the official examples as
+ * closely as possible seems safest... rather than building from the API, it would be better to
+ * work by making small modifications to the official examples": this earlier version polled
  * dds_get_*_matched_status() in a plain nanosleep() loop - close to, but not exactly, the real
  * upstream pattern (dds_set_status_mask() then dds_create_waitset()+dds_waitset_attach()+
  * dds_waitset_wait(), a single blocking wait rather than a sleep/poll loop). Bisected directly,

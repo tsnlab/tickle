@@ -550,7 +550,7 @@ static uint64_t resolve_heartbeat_period_ns(void) {
 // it cannot cover is a publisher that has stopped - which is why the two are separate switches,
 // so they can be compared and, if the measurement says so, combined.
 //
-// Default on is the user's decision (2026-09-24, "기본으로 켜자"), taken on Plan's measurement at
+// Default on is the user's decision (2026-09-24, translated: "turn it on by default"), taken on Plan's measurement at
 // 9afacfe1..118507ed: at max rate N=64 took window jumps from 505-767 per run to 0-1, the same as
 // a 1ms periodic Heartbeat, and it costs 0.37 B per sample (+0.035%) with no extra datagram, where
 // the periodic one nearly doubles the datagram count at 1000/s. Periodic stays opt-in.

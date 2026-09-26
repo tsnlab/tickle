@@ -28,49 +28,49 @@ conditions (loss, reorder, 2800 B payloads) the release pass does not yet. `S` r
 2026-09-24/25 nine-scenario QoS sweep. Comparing a number across generations is not valid; within a
 row it is, because all three frameworks in any one row were measured in the same session.
 
-| # | 항목 | 조건 | TickLE | FastDDS | CycloneDDS | meas. |
+| # | Metric | Condition | TickLE | FastDDS | CycloneDDS | meas. |
 |---|---|---|---|---|---|---|
-| | **[지연 Latency](#21-latency)** (ms) | | | | | |
-| 1 | RTT 평균 | P1 76 B | ✅ **0.209** | 0.287 | ❌ 0.360 | R |
-| 2 | RTT 최대 (tail) | P1 76 B | ✅ **0.324** | 0.579 | ❌ 10.79 | R |
-| 3 | RTT 평균 | P2 1292 B | ✅ **0.231** | ❌ 0.319 | 0.277 | R |
-| 4 | RTT 최대 (tail) | P2 1292 B | ✅ **0.357** | 0.607 | ❌ 0.814 | R |
-| 5 | RTT 평균 | +10 ms netem | ⚪ 10.3 | ⚪ 10.3 | ⚪ 10.4 | C |
-| 6 | RTT 최대 (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 21.1 | C |
-| | **[처리량 Throughput](#22-throughput)** (Mbps) | | | | | |
+| | **[Latency](#21-latency)** (ms) | | | | | |
+| 1 | RTT mean | P1 76 B | ✅ **0.209** | 0.287 | ❌ 0.360 | R |
+| 2 | RTT max (tail) | P1 76 B | ✅ **0.324** | 0.579 | ❌ 10.79 | R |
+| 3 | RTT mean | P2 1292 B | ✅ **0.231** | ❌ 0.319 | 0.277 | R |
+| 4 | RTT max (tail) | P2 1292 B | ✅ **0.357** | 0.607 | ❌ 0.814 | R |
+| 5 | RTT mean | +10 ms netem | ⚪ 10.3 | ⚪ 10.3 | ⚪ 10.4 | C |
+| 6 | RTT max (tail) | +10 ms netem | ✅ **12.2** | 12.3 | ❌ 21.1 | C |
+| | **[Throughput](#22-throughput)** (Mbps) | | | | | |
 | 7 | RELIABLE | P1 76 B | ✅ **115** | ❌ 36.3 | 92.3 | R |
 | 8 | RELIABLE | P2 1292 B | ✅ **932** | ❌ 563 | 833 | R |
 | 9 | BEST_EFFORT | P1, max rate | ✅ **117.7** | ❌ 48.4 | 71.7 | S |
-| 10 | RELIABLE | P1, **5% 손실** | ✅ **95.8** | 9.31 | ❌ 3.39 | C |
-| 11 | RELIABLE | P1, 5% 재정렬 | ✅ **73.9** | ❌ 31.4 | 67.9 | C |
-| 12 | 손실 하 유지율 | 5% 손실 ÷ 무손실 | ✅ **90.6%** | 26.4% | ❌ 3.5% | C |
+| 10 | RELIABLE | P1, **5% loss** | ✅ **95.8** | 9.31 | ❌ 3.39 | C |
+| 11 | RELIABLE | P1, 5% reorder | ✅ **73.9** | ❌ 31.4 | 67.9 | C |
+| 12 | retention under loss | 5% loss / unshaped | ✅ **90.6%** | 26.4% | ❌ 3.5% | C |
 | | **[CPU](#23-cpu)** (cpu_s / Msample) | | | | | |
-| 13 | 처리량, 클라이언트 | P1 76 B | ✅ **5.27** | ❌ 20.9 | 6.88 | R |
-| 14 | 처리량, 서버 | P1 76 B | ✅ **3.34** | ❌ 20.0 | 10.8 | R |
-| 15 | 처리량, 클라이언트 | P2 1292 B | ✅ **6.58** | ❌ 21.8 | 8.60 | R |
-| 16 | 처리량, 서버 | P2 1292 B | ✅ **4.82** | ❌ 20.5 | 14.3 | R |
-| 17 | 지연 | P1 76 B | ✅ **156.3** | ❌ 382.6 | 234.0 | R |
-| 18 | 지연 | P2 1292 B | ✅ **153.0** | ❌ 362.7 | 233.8 | R |
-| 19 | 처리량, 클라이언트 | P1, 5% 손실 | ✅ **6.17** | ❌ 37.3 | 12.9 | C |
-| | **[메모리 Memory](#24-memory)** (peak RSS, KB) | | | | | |
-| 20 | 처리량, 클라이언트 | P1 76 B | ✅ **1,904** | ❌ 17,760 | 5,264 | R |
-| 21 | 처리량, 클라이언트 | P2 1292 B | ✅ **2,216** | ❌ 22,408 | 6,388 | R |
-| 22 | 지연, 클라이언트 | P1 76 B | ✅ **1,644** | ❌ 14,344 | 4,836 | R |
-| 23 | 처리량, 클라이언트 | **P4 2800 B** | 7,384 | ❌ 28,412 | ✅ **5,608** | C |
-| 24 | 서버, 전 조건 범위 | P1–P4 | ✅ **1,720–2,248** | ❌ 14,340–16,428 | 4,880–7,400 | C |
-| | **[대역폭 Bandwidth](#25-bandwidth)** (wire B / sample) | | | | | |
-| 25 | 유선 바이트 | P1 76 B | ✅ **147** | ❌ 286 | 180 | R |
-| 26 | 유선 바이트 | P2 1292 B | ✅ **1,363** | ❌ 1,502 | 1,397 | R |
-| 27 | 유선 바이트 | P1, 5% 손실 | ✅ **150** | ❌ 327 | 193 | C |
-| 28 | 프레이밍 오버헤드 | 단일 datagram | ✅ **70.6** | ❌ 209.6 | 104.1 | C |
-| | **[QoS 기능](#26-qos-mechanics)** | | | | | |
-| 29 | DURABILITY 늦은 참여 | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | S |
-| 30 | HISTORY, depth 이내 | burst | 160/160 | 160/160 | 160/160 | S |
-| 31 | HISTORY, depth 초과 | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | S |
-| 32 | DEADLINE 감지 | 50 ms | ⚪ 동작 확인 | ⚪ 동작 확인 | ⚪ 동작 확인 | S |
-| 33 | LIVELINESS 감지 | lease 2.0 s | ⚪ 비교 불가 | ⚪ 1999 ms | ⚪ 2000 ms | S |
-| 34 | LIFESPAN 만료 | 100 ms | ⚪ 동작 확인 | ⚪ 동작 확인 | ⚪ 동작 확인 | S |
-| | **[rmw 계층](#27-the-rmw-layer)** (ms, cross-host) | | | | | |
+| 13 | throughput, client | P1 76 B | ✅ **5.27** | ❌ 20.9 | 6.88 | R |
+| 14 | throughput, server | P1 76 B | ✅ **3.34** | ❌ 20.0 | 10.8 | R |
+| 15 | throughput, client | P2 1292 B | ✅ **6.58** | ❌ 21.8 | 8.60 | R |
+| 16 | throughput, server | P2 1292 B | ✅ **4.82** | ❌ 20.5 | 14.3 | R |
+| 17 | latency | P1 76 B | ✅ **156.3** | ❌ 382.6 | 234.0 | R |
+| 18 | latency | P2 1292 B | ✅ **153.0** | ❌ 362.7 | 233.8 | R |
+| 19 | throughput, client | P1, 5% loss | ✅ **6.17** | ❌ 37.3 | 12.9 | C |
+| | **[Memory](#24-memory)** (peak RSS, KB) | | | | | |
+| 20 | throughput, client | P1 76 B | ✅ **1,904** | ❌ 17,760 | 5,264 | R |
+| 21 | throughput, client | P2 1292 B | ✅ **2,216** | ❌ 22,408 | 6,388 | R |
+| 22 | latency, client | P1 76 B | ✅ **1,644** | ❌ 14,344 | 4,836 | R |
+| 23 | throughput, client | **P4 2800 B** | 7,384 | ❌ 28,412 | ✅ **5,608** | C |
+| 24 | server, range over all conditions | P1–P4 | ✅ **1,720–2,248** | ❌ 14,340–16,428 | 4,880–7,400 | C |
+| | **[Bandwidth](#25-bandwidth)** (wire B / sample) | | | | | |
+| 25 | wire bytes | P1 76 B | ✅ **147** | ❌ 286 | 180 | R |
+| 26 | wire bytes | P2 1292 B | ✅ **1,363** | ❌ 1,502 | 1,397 | R |
+| 27 | wire bytes | P1, 5% loss | ✅ **150** | ❌ 327 | 193 | C |
+| 28 | framing overhead | single datagram | ✅ **70.6** | ❌ 209.6 | 104.1 | C |
+| | **[QoS mechanics](#26-qos-mechanics)** | | | | | |
+| 29 | DURABILITY late join | durable / volatile | 20/20, 0/20 | 20/20 | 20/20 | S |
+| 30 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | S |
+| 31 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | S |
+| 32 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | S |
+| 33 | LIVELINESS detection | lease 2.0 s | ⚪ not comparable | ⚪ 1999 ms | ⚪ 2000 ms | S |
+| 34 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | S |
+| | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | | |
 | 35 | RTT, BEST_EFFORT | Bench | ❌ 0.524 | 0.516 | ✅ **0.440** | S |
 | 36 | RTT, RELIABLE | Bench | ❌ 0.523 | ❌ 0.523 | ✅ **0.449** | S |
 
@@ -659,9 +659,10 @@ min/avg/max cells:
 | Cross-host | Bench, QoS=reliable | - | 0.523ms† avg RTT, 0% loss | 0.523ms† avg RTT, 0% loss | 0.449ms† avg RTT, 0% loss |
 
 **The same-host rows are gone, and this is a policy rather than a gap** (the user's decision,
-2026-09-24): *"PC는 다양한 작업이 돌아가고 있기 때문에 PC에서 성능 측정한 것은 의미가 없어. RPi의
-경우 독립된 H/W이기 때문에 거기서의 성능 측정 결과만 의미가 있어. PC는 기능 정합성을 검증하는
-용도로만 사용하고 성능 측정 용도로는 사용하지 말자."* The dev box runs whatever else it is running -
+2026-09-24, translated): *"The PC has all sorts of work running on it, so a performance measurement
+taken on the PC is meaningless. The RPi is independent hardware, so only performance results from
+there mean anything. Use the PC only to verify functional correctness, not to measure
+performance."* The dev box runs whatever else it is running -
 two Claude sessions, two CI runners, a Windows VM, an Android emulator - so a latency figure taken
 on it measures that machine's mood as much as the middleware. **This document therefore publishes no
 performance number measured on the dev box.** The rig's two Raspberry Pis are dedicated hardware and

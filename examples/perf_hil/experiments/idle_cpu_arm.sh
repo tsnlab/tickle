@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # What does an IDLE node cost? Every CPU figure in COMPARISON.MD is per-sample under load, and the
-# user's instruction is "CPU 시간을 최대한 덜 쓰도록" - spend the least CPU. For a 10Base-T1S device
+# user's instruction, translated: "use as little CPU time as possible". For a 10Base-T1S device
 # that is mostly waiting, the idle cost is the one that matters, and nothing has measured it.
 #
 # The poll change should have transformed TickLE's: 38,508 ppoll calls in a 5 s latency run became 34,

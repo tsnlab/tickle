@@ -11,8 +11,9 @@ name: rmw_tickle performance
 # concurrency below serializes runs the same way performance.yml's own perf-main group does -
 # this rig only has one of everything (one build/install tree under ~/rmw_perf_ws, one runner),
 # so two overlapping runs would corrupt each other's in-progress rebuild.
-# Manual only (workflow_dispatch), by the user's decision of 2026-09-24: "HIL을 사용해서 성능 지표를
-# 뽑는 것은 어차피 comparison.md 문서를 만들 때도 수행하니 CI에서는 생략하도록 하자."
+# Manual only (workflow_dispatch), by the user's decision of 2026-09-24 (translated): "Pulling
+# performance figures with the HIL rig is something we do anyway when producing comparison.md, so
+# let's leave it out of CI."
 #
 # Why it came off every push, measured rather than felt: in the ~6.5 hours after the self-hosted
 # runners were restarted that day, CI held the rig for 155 minutes across 34 jobs and the dev box

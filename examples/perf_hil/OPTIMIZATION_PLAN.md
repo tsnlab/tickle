@@ -144,8 +144,9 @@ unaffected. It is the *new* wire-bytes metric that the padding would have distor
 
 ## 4b. TickLE's harness codec moves to the generator
 
-The user's decision, 2026-09-25: *"DDS가 Bench.idl을 사용하듯이 TickLE 또한 Bench.msg를 사용하는 것이
-어떨까? codec 부분을 손으로 쓰는 부분이 있다면 일괄 삭제하고 xxx.msg 형태로 유지하는 것이 좋을 것 같아."*
+The user's decision, 2026-09-25 (translated): *"Just as DDS uses Bench.idl, how about TickLE using
+Bench.msg too? If there is any hand-written codec code, delete all of it and keep everything in the
+xxx.msg form."*
 Approved and in scope for step 2.
 
 `tickle/common/Bench.h` is hand-written today, and its own header comment says it "mirrors
