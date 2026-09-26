@@ -293,3 +293,26 @@ datagram before a kill is then the data in every case.
 - Mutants:
   - a rider never sent fails the summary count;
   - the ride sent at the tick fails the kill-phase test.
+
+## 12. L3 on the summary skip: no false departure (2026-09-27, `397d927c` against `af87e150`)
+
+`liveliness_l3.sh`, PC veth, 5% loss in both directions, 10 repetitions x 120 s per case. The cases:
+- data: lease 2 s, 10 Hz;
+- data1 (new): lease 1 s, 10 Hz, where the skip applies;
+- idle: lease 1 s, no data.
+
+The control is the lease/3 core (`af87e150`), which section 8 showed can fail the idle case. Each row carries
+`client_tx_pps`, the client veth's packets per second, as the arm's identity. Raw rows are
+`results/liveliness_l3s_2026-09-27.txt`.
+
+| case | after: departures, client_tx_pps | before (control): departures, client_tx_pps |
+|---|---|---|
+| data | **0/10**, 12.35 | 0/10, 12.26 |
+| data1 | **0/10**, 12.03 | 0/10, 13.87 |
+| idle | **0/10**, 6.53 | **4/10**, 3.38 (1.93 in the four runs that departed) |
+
+- **Pass:** the after core has no false departure in any case, and the control fails idle 4 times in 10, so the test can fail.
+- **The skip is visible in data1.** The after client sends 1.8 fewer packets per second: its short-lease summaries give
+  way to the data. Idle does not skip (6.5/s = the lease/6 cadence).
+- **The ride-ahead change (section 11.1, `3015e15d`)** is re-run the same way (data1 and idle) against `397d927c`,
+  started 04:10.
