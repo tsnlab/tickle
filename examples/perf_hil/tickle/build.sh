@@ -44,6 +44,13 @@ if [ "$SHAPE" = "p4" ]; then
         CORE_DEFINE="-Dtt_MAX_SAMPLE_LENGTH=4096"
         INSTALL_PREFIX="$HOME/tickle_local_install_sample4096"
         SAMPLE_PATH=frag
+        # TICKLE_FRAG_SLOTS=N: the receiver's reassembly pool (tt_FRAG_REASSEMBLY_SLOTS, default 8), for the
+        # slot-count dose arms. Its own prefix, as for every define that changes libtickle.a; the server's
+        # RESULT line reports frag_slots= so a row cannot be mistaken for another arm's.
+        if [ -n "${TICKLE_FRAG_SLOTS:-}" ]; then
+            CORE_DEFINE="$CORE_DEFINE -Dtt_FRAG_REASSEMBLY_SLOTS=$TICKLE_FRAG_SLOTS"
+            INSTALL_PREFIX="${INSTALL_PREFIX}_slots${TICKLE_FRAG_SLOTS}"
+        fi
         ;;
     ipfrag)
         CORE_DEFINE="-Dtt_MAX_BUFFER_LENGTH=4096"

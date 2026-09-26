@@ -40,7 +40,9 @@ int main(int argc, char** argv) {
     double duration_s = 10.0;
     double interval_s = 0.0;        // -i: pause between writes, 0 = as fast as possible
     double max_blocking_ms = 10000; // -B: RELIABILITY max_blocking_time, default unchanged (10s)
-    double drain_s = 3.0;           // cap on the teardown wait-for-acknowledgements below
+    // Cap on the teardown wait-for-acknowledgements below; -C overrides it for a diagnostic run only
+    // (2026-09-26 - see the FastDDS twin), and drain_cap_s= in the RESULT line says which it was.
+    double drain_s = 3.0;
     // -K <depth>: KEEP_LAST at that depth instead of the KEEP_ALL default (2026-09-25). The
     // campaign's Q0 baseline uses KEEP_ALL for all three because that is the only configuration
     // where all three make the same promise, but KEEP_LAST is what rclcpp and TickLE actually
@@ -57,6 +59,8 @@ int main(int argc, char** argv) {
             interval_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
             max_blocking_ms = atof(argv[++i]);
+        } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+            drain_s = atof(argv[++i]);
         }
     }
 
@@ -136,9 +140,9 @@ int main(int argc, char** argv) {
     double mbps = elapsed_s > 0.0 ? ((double)sent * sizeof(struct Bench) * 8.0) / 1e6 / elapsed_s : 0.0;
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=cyclonedds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s cpu_main=%d "
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d %s\n",
-           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained,
+           (unsigned long)sent, (unsigned long)write_fail, elapsed_s, mbps, max_blocking_ms, drained, drain_s,
            BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations,
            keep_last_depth > 0 ? 0 : 1, keep_last_depth,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_SENDER, sent, BENCH_SAMPLE_BYTES, g_bench_fields,

@@ -333,6 +333,14 @@ LINT_TIDY_ARGS += --extra-arg=-DBENCH_SAMPLE_BYTES=76
 # target exists to close. The tree is clean as of 2026-09-23, so anything new here is new.
 CLANG_FORMAT ?= clang-format
 CLANG_TIDY ?= clang-tidy
+# The clang major version CI runs. `make lint` refuses to report on anything else, because printing
+# which binary ran was not enough: on 2026-09-26 a bare `make lint` picked up the distro's 21, flagged
+# a line that CI's 19 does not, and the same bytes then "passed and failed" depending on who ran the
+# check - the check answering with the wrong tool, which reads exactly like a flaky gate.
+# LINT_ANY_CLANG=1 runs it anyway, for a deliberate look at what a newer clang-tidy finds; its result
+# is then not CI's (check_gates.sh passes it and marks the gate advisory).
+LINT_CLANG_MAJOR ?= 19
+LINT_ANY_CLANG ?= 0
 
 # Every public header must compile on its own, as C AND as C++. rmw_tickle's typesupport is C++ and
 # includes these, so a C-only construct here breaks it - which is not hypothetical: _Static_assert
@@ -381,7 +389,15 @@ lint:
 	     exit 1; \
 	 fi; \
 	 echo "lint: $$cf ($$($(CLANG_FORMAT) --version))"; \
-	 echo "lint: $$ct ($$($(CLANG_TIDY) --version | grep -i 'LLVM version' | tr -s ' '))"
+	 echo "lint: $$ct ($$($(CLANG_TIDY) --version | grep -i 'LLVM version' | tr -s ' '))"; \
+	 for tool in "$$cf" "$$ct"; do \
+	     major=$$("$$tool" --version | sed -n 's/.*version \([0-9][0-9]*\)\..*/\1/p' | head -1); \
+	     if [ "$$major" != "$(LINT_CLANG_MAJOR)" ] && [ "$(LINT_ANY_CLANG)" != 1 ]; then \
+	         echo "lint: $$tool is clang $$major but CI runs $(LINT_CLANG_MAJOR) - refusing, since its answer would not be CI's." >&2; \
+	         echo "lint: use CLANG_FORMAT=/CLANG_TIDY= for a $(LINT_CLANG_MAJOR) (see above), or LINT_ANY_CLANG=1 to run it anyway." >&2; \
+	         exit 1; \
+	     fi; \
+	 done
 	@set -e; \
 	 tracked=$$(git -C $(REPO_ROOT) ls-files '*.c' '*.h' | grep -Ev '$(LINT_EXCLUDE_RE)' || true); \
 	 if [ -z "$$tracked" ]; then echo "lint: no tracked sources matched - refusing to report a pass" >&2; exit 1; fi; \

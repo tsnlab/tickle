@@ -17,7 +17,8 @@ number, `tt_VERSION`, which moves independently.
   `frag_index`, `frag_count`), each alone in a datagram of at most `tt_CONTROL_MAX_LENGTH`. The
   receiver reassembles it in `tt_FRAG_REASSEMBLY_SLOTS` (8) node-level slots. At the default the
   two limits are equal and nothing changes: no reassembly memory, and an oversized sample is
-  refused as before. New counters: `tt_Node.frag_reassembled`, `frag_abandoned`, `frag_dropped`.
+  refused as before. New counters: `tt_Node.frag_reassembled`, `frag_abandoned`, `frag_dropped`,
+  `frag_duplicate`.
   See DESIGN.md's "Samples larger than a datagram".
 - **HAL: `tt_send_batch()`**, several datagrams in one call - `sendmmsg()` on Linux, one send each on
   FreeRTOS. **A HAL port must now provide it.** Core uses it for a sample's fragments and for one
@@ -233,6 +234,9 @@ number, `tt_VERSION`, which moves independently.
   `tt_Node.update_last_modified[]` became `update_generation[]` (u32), and
   `tt_DurableDeliveryRecord.last_modified` became `generation`.
 - A user entity is never given `tt_DISCOVERY_ENTITY_ID`; entity-id assignment skips it.
+- `make lint` refuses a clang-format/clang-tidy whose major version is not CI's (`LINT_CLANG_MAJOR`,
+  19) instead of reporting what the tool on `PATH` said. `LINT_ANY_CLANG=1` runs it anyway, and
+  `make check-gates` passes it when it has already marked lint advisory.
 
 - **Breaking wire change, `tt_VERSION` 5 -> 6** (`rmw_tickle/PLAN.md`'s Phase 2 + prerequisite (b),
   one bump covering both). `tt_AckNackHeader` now carries `sender_entity_id`, the *sending*

@@ -1811,11 +1811,13 @@ static void reset_node_state(struct tt_Node* node) {
 #if tt_FRAG_ENABLED
     for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
         node->frag_slots[i].received = 0;
+        node->frag_slots[i].done = false;
     }
     node->frag_clock = 0;
     node->frag_reassembled = 0;
     node->frag_abandoned = 0;
     node->frag_dropped = 0;
+    node->frag_duplicate = 0;
 #endif
 
     memset(node->tx_buffer, 0, sizeof(node->tx_buffer));
@@ -7209,27 +7211,37 @@ static uint64_t frag_all_received(uint32_t count) {
     return count >= tt_FRAG_MAX_COUNT ? UINT64_MAX : (1ULL << count) - 1; // tt_FRAG_MAX_COUNT is the bitmap width
 }
 
-// The slot already collecting this sample, or a newly claimed one - a free one if there is any, else
-// the one claimed longest ago, whose reassembly is abandoned and counted. A claimed slot stays free
-// (received == 0) until a fragment has actually been placed in it.
+static bool frag_slot_is(const struct tt_FragSlot* slot, uint8_t source, uint32_t entity_id, uint32_t seq_no) {
+    return slot->source == source && slot->entity_id == entity_id && slot->seq_no == seq_no;
+}
+
+static bool frag_claimed_before(const struct tt_FragSlot* slot, const struct tt_FragSlot* than) {
+    return than == NULL || (int32_t)(slot->claimed - than->claimed) < 0;
+}
+
+// The slot already collecting this sample - or, marked done, the one that completed it (the caller drops
+// the fragment as a duplicate) - or a newly claimed one: a slot never used, else the one whose completed
+// sample is oldest, else the incomplete reassembly claimed longest ago, which is abandoned and counted.
+// A claimed slot stays free (received == 0) until a fragment has actually been placed in it.
 static struct tt_FragSlot* frag_slot_for(struct tt_Node* node, uint8_t source, uint32_t entity_id, uint32_t seq_no,
                                          uint8_t frag_count) {
-    struct tt_FragSlot* free_slot = NULL;
+    struct tt_FragSlot* unused = NULL;
+    struct tt_FragSlot* oldest_done = NULL;
     struct tt_FragSlot* oldest = NULL;
     for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
         struct tt_FragSlot* slot = &node->frag_slots[i];
-        if (slot->received == 0) {
-            free_slot = free_slot != NULL ? free_slot : slot;
-            continue;
-        }
-        if (slot->source == source && slot->entity_id == entity_id && slot->seq_no == seq_no) {
+        if ((slot->received != 0 || slot->done) && frag_slot_is(slot, source, entity_id, seq_no)) {
             return slot;
         }
-        if (oldest == NULL || (int32_t)(slot->claimed - oldest->claimed) < 0) {
-            oldest = slot;
+        if (slot->received != 0) {
+            oldest = frag_claimed_before(slot, oldest) ? slot : oldest;
+        } else if (slot->done) {
+            oldest_done = frag_claimed_before(slot, oldest_done) ? slot : oldest_done;
+        } else if (unused == NULL) {
+            unused = slot;
         }
     }
-    struct tt_FragSlot* slot = free_slot;
+    struct tt_FragSlot* slot = unused != NULL ? unused : oldest_done;
     if (slot == NULL) {
         slot = oldest;
         node->frag_abandoned++;
@@ -7243,6 +7255,7 @@ static struct tt_FragSlot* frag_slot_for(struct tt_Node* node, uint8_t source, u
         }
     }
     slot->received = 0;
+    slot->done = false;
     slot->source = source;
     slot->entity_id = entity_id;
     slot->seq_no = seq_no;
@@ -7322,6 +7335,10 @@ static bool reassemble_fragment(struct tt_Node* node, struct tt_Header* header, 
     }
 
     struct tt_FragSlot* slot = frag_slot_for(node, header->source, entity_id, seq_no, (uint8_t)count);
+    if (slot->done) {
+        node->frag_duplicate++; // the sample is already whole and delivered
+        return true;
+    }
     if (slot->frag_count != count || !frag_place(slot, index, payload, length)) {
         node->frag_dropped++;
         if (frag_log_due(node->frag_dropped)) {
@@ -7342,6 +7359,7 @@ static bool reassemble_fragment(struct tt_Node* node, struct tt_Header* header, 
     bool processed =
         process_data(node, header, slot->bytes, 0, tt_FRAG_DATA_HEADER_LENGTH + cdr_len, sender_ip, sender_port);
     slot->received = 0;
+    slot->done = true;
     return processed;
 }
 #endif

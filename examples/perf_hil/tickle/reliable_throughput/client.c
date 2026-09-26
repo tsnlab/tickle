@@ -358,6 +358,10 @@ static void parse_args(int argc, char** argv) {
             ack_solicit_us = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "-W") == 0 && i + 1 < argc) {
             ack_watermark_pct = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+            // The teardown drain cap, for a diagnostic run only (2026-09-26 - see the FastDDS twin);
+            // the same letter in all three harnesses, and drain_cap_s= in every RESULT line.
+            drain_s = atof(argv[++i]);
         } else if (strcmp(argv[i], "-D") == 0) {
             durable = true;
         } else if (strcmp(argv[i], "-Q") == 0) {
@@ -518,12 +522,12 @@ int main(int argc, char** argv) {
     bench_stats_end(&g_bench_stats);
     printf("RESULT: framework=tickle scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
            "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f keep_all=%d durable=%d reliable_depth=%u "
-           "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s peer_acks_end=%u "
+           "throttle_lag=%u ack_solicit_us=%u ack_watermark_pct=%u drained=%s drain_cap_s=%.1f peer_acks_end=%u "
            "peer_acks_min=%u cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u retransmitted=%u arena_bytes=%u %s\n",
            (unsigned long)sent, (unsigned long)write_fail, duration_s, mbps, max_blocking_ms, keep_all ? 1 : 0,
            durable ? 1 : 0, reliable_depth, throttle_lag, ack_solicit_us, ack_watermark_pct,
-           g_drain_fully_acked ? "acked" : "timeout", count_peer_acks(&pub),
+           g_drain_fully_acked ? "acked" : "timeout", drain_s, count_peer_acks(&pub),
            g_peer_acks_min == UINT32_MAX ? 0 : g_peer_acks_min, BenchCpuFreq_mean_mhz(&g_cpu_freq),
            BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
            BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,

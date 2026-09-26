@@ -49,6 +49,9 @@ tidy_major="$(clang_major "${TIDY:-$(command -v clang-tidy || true)}")"
 lint_is_advisory=0
 if [ "$tidy_major" != "$CI_CLANG_MAJOR" ]; then
     lint_is_advisory=1
+    # `make lint` refuses a clang that is not CI's (platform/linux/Makefile, LINT_CLANG_MAJOR); here the
+    # mismatch is known and the result already marked advisory, so ask it to run anyway.
+    lint_vars+=("LINT_ANY_CLANG=1")
 fi
 
 failed=0

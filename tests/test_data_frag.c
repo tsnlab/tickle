@@ -304,11 +304,42 @@ static void test_duplicate_fragments_deliver_once(void) {
     deliver(0);
     deliver(1);
     expect_delivered_once(2800);
-    // A duplicate of a fragment arriving after its sample completed starts a new slot rather than
-    // re-delivering; it is abandoned later like any other incomplete reassembly. What matters here is
-    // that the Subscriber still saw the sample once.
+    // A duplicate of a fragment arriving after its sample completed is recognised as one (the slot is
+    // marked done) and neither re-delivers nor opens a new reassembly.
     deliver(1);
     EXPECT_EQ_INT(1, delivered_count);
+    EXPECT_EQ_U64(1, receiver.frag_duplicate);
+}
+
+static int busy_slots(void) {
+    int busy = 0;
+    for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
+        busy += receiver.frag_slots[i].received != 0 ? 1 : 0;
+    }
+    return busy;
+}
+
+static void test_late_fragment_of_a_completed_sample_opens_no_slot(void) {
+    // The shape a retransmission takes when the original lost its first fragment: the continuation is
+    // already here, the retransmitted first fragment completes the sample, and the retransmitted
+    // continuation arrives after that. It must be recognised as a duplicate, not start a reassembly that
+    // can never complete - which is what every such sample did before (tt_FragSlot.done), 26,711 times in
+    // a 5 s veth run at 5% loss.
+    init_pair(2800);
+    publish_captured();
+    deliver(1);
+    deliver(0);
+    EXPECT_EQ_INT(1, delivered_count);
+    deliver(1); // the late one
+    EXPECT_EQ_U64(1, receiver.frag_duplicate);
+    EXPECT_EQ_INT(0, busy_slots());
+    EXPECT_EQ_INT(1, delivered_count);
+
+    // Control: a fragment of the next sample does claim a slot, so "no slot" above was the duplicate's.
+    publish_captured();
+    deliver(1);
+    EXPECT_EQ_INT(1, busy_slots());
+    EXPECT_EQ_U64(1, receiver.frag_duplicate);
 }
 
 static void test_samples_interleave_across_slots(void) {
@@ -849,6 +880,7 @@ int main(void) {
     test_missing_fragment_delivers_nothing();
     test_duplicate_fragments_deliver_once();
     test_samples_interleave_across_slots();
+    test_late_fragment_of_a_completed_sample_opens_no_slot();
     test_full_pool_abandons_the_oldest_and_counts_it();
     test_inconsistent_fragments_are_dropped_and_counted();
     test_sample_above_the_limit_is_refused();

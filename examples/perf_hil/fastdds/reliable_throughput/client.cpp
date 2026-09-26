@@ -38,9 +38,9 @@ using namespace eprosima::fastdds::dds;
 namespace {
 
     constexpr double default_duration_s = 10.0;
-    constexpr int32_t drain_s = 3;         // cap on the teardown wait-for-acknowledgements below
-    constexpr int32_t max_samples = 4000;  // resource_limits - see the QoS comment in main()
-    constexpr time_t discovery_wait_s = 2; // see the latency scenarios' own identical comment
+    constexpr double default_drain_s = 3.0; // cap on the teardown wait-for-acknowledgements below
+    constexpr int32_t max_samples = 4000;   // resource_limits - see the QoS comment in main()
+    constexpr time_t discovery_wait_s = 2;  // see the latency scenarios' own identical comment
     constexpr double ms_per_s = 1000.0;
     constexpr uint64_t cpu_place_period_ns = 100ULL * 1000ULL * 1000ULL; // 100ms
 
@@ -55,6 +55,10 @@ namespace {
         // Depth 64, not 8: this file's own notes record KEEP_LAST(8) as the bisected cause of a real
         // 53% loss, so a shallow depth would re-measure that finding rather than the default.
         int keep_last_depth = 0; // 0 = KEEP_ALL, unchanged default
+        // -C <seconds>: the teardown drain cap. Diagnostic only (2026-09-26): with a longer cap, a writer
+        // that drained=timeout at 3 s shows whether it was slow or would never finish. Scored runs keep
+        // the common 3 s, and every RESULT line prints drain_cap_s= so the two cannot be mixed up.
+        double drain_s = default_drain_s;
     };
 
     auto parse_options(int argc, char** argv) -> client_options {
@@ -68,6 +72,8 @@ namespace {
                 opts.interval_s = atof(argv[++i]);
             } else if (strcmp(argv[i], "-B") == 0 && i + 1 < argc) {
                 opts.max_blocking_ms = atof(argv[++i]);
+            } else if (strcmp(argv[i], "-C") == 0 && i + 1 < argc) {
+                opts.drain_s = atof(argv[++i]);
             }
         }
         return opts;
@@ -134,8 +140,13 @@ namespace {
     // Teardown drain, matching the TickLE and CycloneDDS harnesses so all three are measured the
     // same way at the end of a run - see the CycloneDDS twin's own comment for why a tail sample
     // is otherwise invisible. wait_for_acknowledgments() is FastDDS's own equivalent.
-    auto drain(DataWriter* writer) -> const char* {
-        const eprosima::fastrtps::Duration_t drain_wait {drain_s, 0};
+    auto drain(DataWriter* writer, double drain_s) -> const char* {
+        // Field-wise, like max_blocking_time in writer_qos(): Duration_t's namespace differs between 2.x
+        // and 3.x, while seconds/nanosec exist in both.
+        eprosima::fastrtps::Duration_t drain_wait;
+        drain_wait.seconds = static_cast<int32_t>(drain_s);
+        drain_wait.nanosec =
+            static_cast<uint32_t>((drain_s - static_cast<double>(drain_wait.seconds)) * harness::ns_per_s_real);
         // == RETCODE_OK, not a bool test: on FastDDS 2.x (the rig's jazzy) this returns
         // fastrtps::types::ReturnCode_t, whose operator bool() is deleted; 3.x returns the
         // fastdds::dds enum. Comparing against the 2.x constant is what compiles where we measure.
@@ -184,18 +195,18 @@ auto main(int argc, char** argv) -> int {
     const send_result result =
         send_until(writer, start + harness::seconds_to_ns(opts.duration_s), opts.interval_s, cpu_place);
 
-    const char* const drained = drain(writer);
+    const char* const drained = drain(writer, opts.drain_s);
 
     const double elapsed_s = static_cast<double>(harness::now_ns() - start) / harness::ns_per_s_real;
     const double mbps = harness::mbps(result.sent, sizeof(Bench), elapsed_s);
     bench_stats_end(&harness::g_bench_stats);
     printf("RESULT: framework=fastdds scenario=reliable_throughput role=client sent=%lu write_fail=%lu "
-           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s cpu_main=%d "
+           "elapsed_s=%.3f send_mbps=%.3f max_blocking_ms=%.3f drained=%s drain_cap_s=%.1f cpu_main=%d "
            "cpu_main_share=%.2f cpu_migrations=%u keep_all=%d keep_last_depth=%d %s\n",
            static_cast<unsigned long>(result.sent), static_cast<unsigned long>(result.write_fail), elapsed_s, mbps,
-           opts.max_blocking_ms, drained, BenchCpuPlace_main_cpu(&cpu_place), BenchCpuPlace_main_share(&cpu_place),
-           cpu_place.migrations, opts.keep_last_depth > 0 ? 0 : 1, opts.keep_last_depth,
-           harness::bench_fields(BENCH_ROLE_SENDER, result.sent));
+           opts.max_blocking_ms, drained, opts.drain_s, BenchCpuPlace_main_cpu(&cpu_place),
+           BenchCpuPlace_main_share(&cpu_place), cpu_place.migrations, opts.keep_last_depth > 0 ? 0 : 1,
+           opts.keep_last_depth, harness::bench_fields(BENCH_ROLE_SENDER, result.sent));
 
     participant->delete_contained_entities();
     DomainParticipantFactory::get_instance()->delete_participant(participant);

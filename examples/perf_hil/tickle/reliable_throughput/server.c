@@ -26,6 +26,19 @@
 #include <tickle/tickle.h>
 
 #include "Bench.h"
+
+// DATA_FRAG's reassembly pool, reported so that c6 can be read as a number rather than inferred: how
+// many slots this build has, how many samples were put back together, how many partial reassemblies
+// were given up to make room (tt_Node.frag_abandoned), how many fragments were refused, and how many
+// arrived for a sample already whole (frag_duplicate). All zero, and
+// frag_slots=0, in a build without fragmentation - sample_path= on the same line says which it was.
+#if tt_FRAG_ENABLED
+#define BENCH_FRAG_SLOTS tt_FRAG_REASSEMBLY_SLOTS
+#define BENCH_FRAG_COUNT(node, field) ((unsigned long)(node).field)
+#else
+#define BENCH_FRAG_SLOTS 0
+#define BENCH_FRAG_COUNT(node, field) 0UL
+#endif
 #include "BenchStats.h" // shared instrumentation - see its own header
 
 static struct BenchStats g_bench_stats;
@@ -350,17 +363,20 @@ int main(int argc, char** argv) {
     // from "given up on", which recv against the client's sent cannot.
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
-           "reorder_slots=%u "
+           "reorder_slots=%u frag_slots=%d frag_reassembled=%lu frag_abandoned=%lu frag_dropped=%lu "
+           "frag_duplicate=%lu "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
            "cpu_migrations=%u gap_abandoned=%u gap_evicted=%u retry_interval_cfg_ns=%llu recovery_srtt_ns=%u "
            "recovery_rttvar_ns=%u %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
-           (unsigned)sub.reorder_slots, BenchCpuFreq_mean_mhz(&g_cpu_freq), BenchCpuFreq_min_mhz(&g_cpu_freq),
-           BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples, BenchCpuPlace_main_cpu(&g_cpu_place),
-           BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations, sub.gap_abandoned, sub.gap_evicted,
-           (unsigned long long)tt_reliable_retry_interval_configured(), first_writer->recovery_srtt_ns,
-           first_writer->recovery_rttvar_ns,
+           (unsigned)sub.reorder_slots, BENCH_FRAG_SLOTS, BENCH_FRAG_COUNT(node, frag_reassembled),
+           BENCH_FRAG_COUNT(node, frag_abandoned), BENCH_FRAG_COUNT(node, frag_dropped),
+           BENCH_FRAG_COUNT(node, frag_duplicate), BenchCpuFreq_mean_mhz(&g_cpu_freq),
+           BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples,
+           BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations,
+           sub.gap_abandoned, sub.gap_evicted, (unsigned long long)tt_reliable_retry_interval_configured(),
+           first_writer->recovery_srtt_ns, first_writer->recovery_rttvar_ns,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,
                               sizeof g_bench_fields));
     print_reliable_stats("server");

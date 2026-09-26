@@ -117,6 +117,12 @@ struct tt_FragSlot {
     uint16_t last_length; // payload bytes in the last fragment, 0 until it lands
     uint8_t source;
     uint8_t frag_count;
+    // Free, but still naming the sample it last completed: a fragment of that sample arriving afterwards is
+    // a duplicate, not the start of a new reassembly. A retransmission resends every fragment, and the one
+    // that completes the sample is not always the last to arrive - without this, the rest opened a slot
+    // that could never complete, one for every sample whose first fragment was lost (2026-09-26: 26,711
+    // in a 5 s veth run at 5% loss, the same at 8, 32 and 128 slots).
+    bool done;
     // + 4: a retransmission is cut from the cached record, which is padded to a multiple of 4
     tt_ALIGNAS(8) uint8_t bytes[tt_FRAG_DATA_HEADER_LENGTH + tt_MAX_SAMPLE_LENGTH + 4];
 };
@@ -323,6 +329,9 @@ struct tt_Node {
     uint64_t frag_reassembled;
     uint64_t frag_abandoned;
     uint64_t frag_dropped;
+    // Fragments of a sample already reassembled (struct tt_FragSlot.done) - the rest of a retransmission
+    // that another fragment already completed. Not a loss; counted so it is not mistaken for one.
+    uint64_t frag_duplicate;
 #endif
 };
 

@@ -474,9 +474,15 @@ would have left 6 B of margin, inside the noise.
   `process_data()`: reliability, ordering and delivery see no difference.
 - The continuation size is learned from the first non-last fragment to arrive. A last fragment
   arriving before that is parked at the end of the slot and moved into place once it is known.
-- When every slot is busy, the reassembly claimed longest ago is abandoned (`frag_abandoned`).
-  Fragments that contradict their sample are refused (`frag_dropped`). Both are counted, because a
-  silent drop here looks exactly like network loss.
+- A slot that completes its sample keeps naming it (`tt_FragSlot.done`), so a fragment arriving
+  for a sample already whole is counted as a duplicate (`frag_duplicate`) and dropped. A
+  retransmission resends every fragment, and the one that completes the sample is not always the
+  last to arrive. Before this, the rest opened a reassembly that could never complete, one for every
+  sample whose first fragment was lost. That was 26,711 in a 5 s veth run at 5% loss, at 8, 32 and
+  128 slots alike, which is how it was told apart from pool pressure.
+- When every slot is busy, a done slot is reused first, then the incomplete reassembly claimed
+  longest ago is abandoned (`frag_abandoned`). Fragments that contradict their sample are refused
+  (`frag_dropped`). Both are counted, because a silent drop here looks exactly like network loss.
 
 **Loss.** A lost fragment loses its sample, which the ordinary sample-granular ACKNACK recovers by
 resending every fragment of it. Simulated at c6's condition, 5% loss both ways with KEEP_ALL, that
