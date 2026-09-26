@@ -60,7 +60,10 @@ env_for() { case "$1" in
     cyclonedds) echo "export LD_LIBRARY_PATH=/opt/ros/jazzy/lib/aarch64-linux-gnu; export CYCLONEDDS_URI='$CDDS_URI';" ;;
     *) echo "" ;;
     esac; }
-lease_flag() { case "$1" in tickle_*) echo "-T $2" ;; *) echo "-L $2" ;; esac; }
+# TickLE's server watches only the client's node (-N): node IDs come from the test-link address, and the client
+# Pi is 192.168.10.3. Without it, the first departure of *any* node ends a row - and on 2026-09-27 a PC test node
+# that reached the Pis over the management LAN (node 1 at 10.1.1.204) did exactly that.
+lease_flag() { case "$1" in tickle_*) echo "-T $2 -N 3" ;; *) echo "-L $2" ;; esac; }
 
 one() { # $1 arm, $2 lease, $3 rep
     local arm=$1 lease=$2 rep=$3 d fl ev spid cpid res verdict=ok
