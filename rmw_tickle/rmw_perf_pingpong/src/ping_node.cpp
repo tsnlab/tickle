@@ -125,8 +125,30 @@ namespace {
         }
     };
 
+    // Spins until the reply has arrived or the deadline passes.
+    //
+    // poll (the default, and every row before 2026-09-26): spin_some() and a 100 us sleep, with the round
+    // trip read after the loop - so it includes the sleep that follows the spin that took the reply, and a
+    // reply is only seen at the loop's own ~150 us cadence (the sleep plus the kernel's timer slack).
+    // Measured on a veth pair, that is 230-255 us of every round trip, for all three rmw implementations
+    // alike (examples/perf_hil/experiments/rmw_ping_wait_mode.sh). block waits in spin_once() until the
+    // reply wakes the executor, as the native client waits in tt_Node_poll(); the caller then reads the
+    // round trip at the callback.
+    auto wait_for_reply(rclcpp::executors::SingleThreadedExecutor& executor, const std::atomic<bool>& got_reply,
+                        uint64_t wait_deadline, bool blocking) -> void {
+        while (rclcpp::ok() && !got_reply && now_ns() < wait_deadline) {
+            if (blocking) {
+                executor.spin_once(std::chrono::nanoseconds(wait_deadline - now_ns()));
+            } else {
+                executor.spin_some();
+                std::this_thread::sleep_for(std::chrono::microseconds(spin_poll_us));
+            }
+        }
+    }
+
     template <typename T>
-    auto run_ping(const rclcpp::Node::SharedPtr& node, double interval_s, double duration_s, bool reliable) -> int {
+    auto run_ping(const rclcpp::Node::SharedPtr& node, double interval_s, double duration_s, bool reliable,
+                  bool blocking) -> int {
         using Traits = BenchTraits<T>;
 
         rclcpp::executors::SingleThreadedExecutor executor;
@@ -143,7 +165,9 @@ namespace {
 
         std::atomic<bool> got_reply {false};
         T reply_msg;
+        uint64_t reply_ns = 0; // when the reply reached the callback - what --wait block measures to
         auto sub = node->create_subscription<T>("pong", qos, [&](const typename T::ConstSharedPtr& msg) -> void {
+            reply_ns = now_ns();
             reply_msg = *msg;
             got_reply = true;
         });
@@ -184,13 +208,11 @@ namespace {
             transmitted++;
 
             const uint64_t wait_deadline = now_ns() + (reply_wait_ms * ns_per_ms); // 500ms, matching the native client
-            while (rclcpp::ok() && !got_reply && now_ns() < wait_deadline) {
-                executor.spin_some();
-                std::this_thread::sleep_for(std::chrono::microseconds(spin_poll_us));
-            }
+            wait_for_reply(executor, got_reply, wait_deadline, blocking);
             if (got_reply && Traits::seq(reply_msg) == seq) {
+                const uint64_t end_ns = blocking ? reply_ns : now_ns();
                 const double rtt_ms =
-                    static_cast<double>(now_ns() - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms);
+                    static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms);
                 received++;
                 if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
                     rtt_min_ms = rtt_ms;
@@ -220,10 +242,11 @@ namespace {
         if (received > 0) {
             std::printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", rtt_min_ms, avg, rtt_max_ms);
         }
-        std::printf("RESULT: framework=%s scenario=pingpong qos=%s sent=%lu recv=%lu loss_pct=%.0f "
+        std::printf("RESULT: framework=%s scenario=pingpong qos=%s wait=%s sent=%lu recv=%lu loss_pct=%.0f "
                     "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
-                    rmw_impl, reliable ? "reliable" : "best_effort", static_cast<unsigned long>(transmitted),
-                    static_cast<unsigned long>(received), loss_pct, rtt_min_ms, avg, rtt_max_ms);
+                    rmw_impl, reliable ? "reliable" : "best_effort", blocking ? "block" : "poll",
+                    static_cast<unsigned long>(transmitted), static_cast<unsigned long>(received), loss_pct, rtt_min_ms,
+                    avg, rtt_max_ms);
 
         return 0;
     }
@@ -234,9 +257,12 @@ auto main(int argc, char** argv) -> int {
     double interval_s = 1.0;
     double duration_s = default_duration_s;
     bool reliable = false;
+    bool blocking = false; // --wait block|poll, see run_ping()
     const char* message = "bench";
     for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
+        if (std::strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
+            blocking = std::strcmp(argv[++i], "block") == 0;
+        } else if (std::strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
             duration_s = std::atof(argv[++i]);
@@ -259,11 +285,11 @@ auto main(int argc, char** argv) -> int {
 
         int ret;
         if (std::strcmp(message, "bench") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable);
+            ret = run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable, blocking);
         } else if (std::strcmp(message, "array1k") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable);
+            ret = run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable, blocking);
         } else if (std::strcmp(message, "struct16") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable);
+            ret = run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable, blocking);
         } else {
             std::fprintf(stderr, "unknown -m '%s' (expected bench|array1k|struct16)\n", message);
             ret = 1;
