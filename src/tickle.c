@@ -1668,13 +1668,16 @@ static void sched_heap_insert(struct tt_Node* node, uint64_t time,
 // picolibc brings no libatomic - so the value is written under a sequence counter instead. Only the poller
 // writes it. The final store of the counter is sequentially consistent, and it is that store, paired with
 // the reader's first load, that carries the ordering poll_wait_io() and wake_if_waiting_past() rely on.
+// ABLATION ONLY - NOT FOR MERGE (WIRE_PLAN.md 8, 2026-09-27): every __ATOMIC_SEQ_CST in this file made
+// __ATOMIC_RELAXED, to measure what the sequentially consistent loads and stores cost on the Pi's ARM cores.
+// The wait_until/inbox handshake relies on them; this build can miss a cross-thread wake.
 static void wait_until_store(struct tt_Node* node, uint64_t value) {
     uint32_t seq = __atomic_load_n(&node->wait_seq, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_seq, seq + 1, __ATOMIC_RELAXED); // odd: a write is in progress
     __atomic_thread_fence(__ATOMIC_RELEASE);
     __atomic_store_n(&node->wait_until_hi, (uint32_t)(value >> 32U), __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, (uint32_t)value, __ATOMIC_RELAXED);
-    __atomic_store_n(&node->wait_seq, seq + 2, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&node->wait_seq, seq + 2, __ATOMIC_RELAXED);
 }
 
 static uint64_t wait_until_load(struct tt_Node* node) {
@@ -1683,7 +1686,7 @@ static uint64_t wait_until_load(struct tt_Node* node) {
     uint32_t high = 0;
     uint32_t low = 0;
     do {
-        before = __atomic_load_n(&node->wait_seq, __ATOMIC_SEQ_CST);
+        before = __atomic_load_n(&node->wait_seq, __ATOMIC_RELAXED);
         high = __atomic_load_n(&node->wait_until_hi, __ATOMIC_RELAXED);
         low = __atomic_load_n(&node->wait_until_lo, __ATOMIC_RELAXED);
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
@@ -1697,7 +1700,7 @@ static uint64_t wait_until_load(struct tt_Node* node) {
 // read the other's variable, all sequentially consistent, so at least one of them sees the other.
 static void wake_if_waiting_past(struct tt_Node* node, uint64_t time) {
     uint64_t until = wait_until_load(node);
-    if ((until != 0 && time < until) || __atomic_load_n(&node->idle_waiter, __ATOMIC_SEQ_CST) != 0) {
+    if ((until != 0 && time < until) || __atomic_load_n(&node->idle_waiter, __ATOMIC_RELAXED) != 0) {
         tt_wake_signal(node);
     }
 }
@@ -1719,7 +1722,7 @@ static bool sched_inbox_push(struct tt_Node* node, uint64_t time,
         node->sched_inbox[i].function = function;
         node->sched_inbox[i].param = param;
         __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_READY, __ATOMIC_RELEASE);
-        __atomic_fetch_add(&node->sched_inbox_pending, 1, __ATOMIC_SEQ_CST);
+        __atomic_fetch_add(&node->sched_inbox_pending, 1, __ATOMIC_RELAXED);
         return true;
     }
     return false; // every slot busy: the caller falls back to the state lock
@@ -9082,7 +9085,7 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
     }
     wait_until_store(node, until);
     state_unlock(node);
-    if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_SEQ_CST) != 0) {
+    if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_RELAXED) != 0) {
         wait_until_store(node, 0);
         return false; // an entry arrived while this was deciding: loop, drain it, decide again
     }
@@ -9223,14 +9226,14 @@ bool tt_Node_next_due(struct tt_Node* node, uint64_t* due_ns) {
     }
     // Published before the inbox is drained, as poll_wait_io() publishes wait_until: an insert either lands
     // in the drain below or sees the flag and signals.
-    __atomic_store_n(&node->idle_waiter, 1, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&node->idle_waiter, 1, __ATOMIC_RELAXED);
     state_lock(node);
     sched_drain_inbox(node);
     bool has_next = sched_next_time(node, due_ns);
     state_unlock(node);
     // The drain's own read of the inbox is only acquire: re-read it sequentially consistent, as
     // poll_wait_io() does. An entry still arriving is due for a look now.
-    if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_SEQ_CST) != 0) {
+    if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_RELAXED) != 0) {
         *due_ns = 0;
         return true;
     }
