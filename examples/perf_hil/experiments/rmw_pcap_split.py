@@ -122,6 +122,95 @@ def first_by_key(pcap, keys, src_ip):
     return out
 
 
+WAITS = ("poll", "ppoll", "epoll_wait", "epoll_pwait", "select", "pselect")
+
+
+def sysstamp_records(directory):
+    """Every record of every process dumped into <directory> by experiments/sysstamp, as tuples
+    (tid, call, t_in, t_out, ret, head_hex), sorted by return time."""
+    recs = []
+    for path in sorted(Path(directory).glob("*")):
+        for line in path.read_text().splitlines():
+            if line.startswith("#"):
+                continue
+            f = line.split()
+            recs.append((f[0], f[1], int(f[2]), int(f[3]), int(f[4]), f[6] if len(f) > 6 else ""))
+    recs.sort(key=lambda r: r[3])
+    return recs
+
+
+def first_call(recs, key_hex, prefix, not_before):
+    """The first send* or recv* record carrying the key that returned at or after not_before (so a node's own
+    broadcast looping back to it, or a retransmission's second copy, is not mistaken for the packet at the
+    tap), or None."""
+    for r in recs:
+        if r[1].startswith(prefix) and r[4] > 0 and r[3] >= not_before and key_hex in r[5]:
+            return r
+    return None
+
+
+def wake_before(recs, recv, tap):
+    """The wait call (poll, ppoll, epoll_*, select) on the receiving thread that returned after the packet reached
+    the tap and before the receive began: the thread's wake-up. None when the thread blocks in the receive
+    call itself, as CycloneDDS's data thread does."""
+    best = None
+    for r in recs:
+        if r[0] == recv[0] and r[1] in WAITS and tap <= r[3] <= recv[2]:
+            best = r
+    return best
+
+
+def print_split(label, xs):
+    if xs:
+        print(f"   {label:26s} {stats(xs)}  (n={len(xs)})")
+    else:
+        print(f"   {label:26s} n/a")
+
+
+def kernel_split(stem, keys, sent, back, arr, dep, coff, rtt, sst_dir):
+    """RMW_PERF_PLAN.md section 8: each side of the round trip split at the kernel boundary."""
+    ping_dir, pong_dir = sst_dir / f"{stem}_ping", sst_dir / f"{stem}_pong"
+    if not ping_dir.is_dir() or not pong_dir.is_dir():
+        print("   sysstamp: none for this row")
+        return
+    ping_r, pong_r = sysstamp_records(ping_dir), sysstamp_records(pong_dir)
+    seg = {k: [] for k in ("ping app->send", "ping send->tap", "pong tap->wake", "pong tap->recv",
+                           "pong recv->send (user)", "pong send->tap", "ping tap->wake", "ping tap->recv")}
+    to_recv = []
+    handoff = 0
+    for k in keys:
+        kh = k.hex()
+        send_ns_rt = sent[k][1] + coff
+        ps = first_call(ping_r, kh, "send", send_ns_rt)
+        pr = first_call(pong_r, kh, "recv", arr[k])
+        pss = first_call(pong_r, kh, "send", pr[3]) if pr else None
+        prr = first_call(ping_r, kh, "recv", back[k])
+        if not (ps and pr and pss and prr):
+            continue
+        seg["ping app->send"].append(ps[2] - send_ns_rt)
+        seg["ping send->tap"].append(sent[k][0] - ps[2])
+        w = wake_before(pong_r, pr, arr[k])
+        if w:
+            seg["pong tap->wake"].append(w[3] - arr[k])
+        seg["pong tap->recv"].append(pr[3] - arr[k])
+        seg["pong recv->send (user)"].append(pss[2] - pr[3])
+        handoff += pss[0] != pr[0]
+        seg["pong send->tap"].append(dep[k] - pss[2])
+        w = wake_before(ping_r, prr, back[k])
+        if w:
+            seg["ping tap->wake"].append(w[3] - back[k])
+        seg["ping tap->recv"].append(prr[3] - back[k])
+        to_recv.append(prr[3] - send_ns_rt)
+    n = len(seg["ping app->send"])
+    print(f"   sysstamp: {n} of {len(keys)} samples found in both hosts' records "
+          f"(pong receive and reply on different threads in {handoff})")
+    for label, xs in seg.items():
+        print_split(label, xs)
+    if to_recv:
+        print(f"   {'ping recv->app (mean)':26s} {rtt * 1e3 - statistics.fmean(to_recv) / 1000:7.1f} us"
+              "   (app rtt_avg minus send_ns-to-receive-return)")
+
+
 def stats(xs):
     xs = sorted(xs)
     return (f"mean {statistics.fmean(xs) / 1000:7.1f}  p50 {xs[len(xs) // 2] / 1000:7.1f}  "
@@ -145,10 +234,11 @@ def main():
     rtts = {}
     # A row is "<rmw> <msg> <qos> rep<N>[ wait=<mode>][ other tags] | <verdict> | ...", and its pcaps' stem
     # is <rmw>_<msg>_<qos>_rep<N>[_<mode>] (rmw_crosshost_rtt.sh WAITS).
-    for m in re.finditer(r"^(\S+) (\S+) (\S+) rep(\d+)(?: wait=(\w+))?[^|\n]*\| (\S+) \|.*?rtt_avg_ms=([\d.]+)",
+    for m in re.finditer(r"^(\S+) (\S+) (\S+) rep(\d+)(?: wait=(\w+))?( sst=on)?[^|\n]*\| (\S+) \|.*?rtt_avg_ms=([\d.]+)",
                          text, re.M):
-        stem = f"{m.group(1)}_{m.group(2)}_{m.group(3)}_rep{m.group(4)}" + (f"_{m.group(5)}" if m.group(5) else "")
-        rtts[stem] = (m.group(6), float(m.group(7)))
+        stem = (f"{m.group(1)}_{m.group(2)}_{m.group(3)}_rep{m.group(4)}" + (f"_{m.group(5)}" if m.group(5) else "")
+                + ("_sst" if m.group(6) else ""))
+        rtts[stem] = (m.group(7), float(m.group(8)))
     for stem, (coff, cdrift, sdrift) in offsets.items():
         ping, pong = out.with_suffix(out.suffix + ".pcaps") / f"{stem}_ping.pcap", \
             out.with_suffix(out.suffix + ".pcaps") / f"{stem}_pong.pcap"
@@ -203,6 +293,7 @@ def main():
         print(f"   ping_recv  mean {recv / 1000:7.1f} us   (app rtt_avg minus send_ns-to-echo-at-tap)")
         if bad:
             print(f"   WARNING: {bad} negative segments - offsets or matching are wrong for this row")
+        kernel_split(stem, full, sent, back, arr, dep, coff, rtt, out.with_suffix(out.suffix + ".sysstamp"))
 
 
 if __name__ == "__main__":

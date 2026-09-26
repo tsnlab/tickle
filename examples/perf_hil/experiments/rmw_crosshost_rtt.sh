@@ -39,6 +39,12 @@ MSGS=${MSGS:-"bench array1k"}
 # ~230-255 us for every rmw on veth (rmw_ping_wait_mode.sh). With the default "poll" the ping is invoked exactly
 # as before, with no --wait flag; otherwise every row asserts the RESULT line's wait= matches the arm.
 WAITS=${WAITS:-poll}
+# SYSSTAMP_ARMS="off on" (2026-09-26, RMW_PERF_PLAN.md section 8, the user's request to measure the path out to the
+# kernel and in from it for every rmw): "on" runs ping and pong under experiments/sysstamp (LD_PRELOAD), which
+# records every socket and wait system call's entry and return on CLOCK_REALTIME, per process, into
+# $OUT.sysstamp/<stem>_<role>/. rmw_pcap_split.py joins those with the pcaps (use with CAPTURE=1). "off" rows
+# are the control: the layer's own cost is the on - off RTT difference, pre-registered below.
+SYSSTAMP_ARMS=${SYSSTAMP_ARMS:-off}
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -69,7 +75,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, sysstamp arms: $SYSSTAMP_ARMS ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -150,6 +156,14 @@ for h in "$CLIENT" "$SERVER"; do
 done
 [ "$bad" = 0 ] || { say "BUILD FAILED - not running"; exit 1; }
 fi
+case " $SYSSTAMP_ARMS " in *" on "*)
+    for h in "$CLIENT" "$SERVER"; do
+        scp -q -i "$K" -o BatchMode=yes "$REPO/examples/perf_hil/experiments/sysstamp/sysstamp.c" "ci@$h:/tmp/rmwx_sysstamp.c"
+        sh_ "$h" "cc -O2 -shared -fPIC -o /tmp/rmwx_libsysstamp.so /tmp/rmwx_sysstamp.c -ldl" \
+            || { say "sysstamp build FAILED on $h - not running"; exit 1; }
+    done
+    say "--- sysstamp built on both rpis from source md5 $(md5sum "$REPO/examples/perf_hil/experiments/sysstamp/sysstamp.c" | cut -c1-12) ---" ;;
+esac
 
 # SPIN_ARMS="off on" (2026-09-26): repeat every repetition with and without a nice-19 spinner on core 0 of
 # both Pis, which holds the one cpufreq policy (cores 0-3) at its maximum while cores 1-3 stay idle
@@ -232,11 +246,14 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     env=$(env_for "$rmw")
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}"
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${SSTSTEM}" sstenv=""
+    if [ "$SST" = on ]; then
+        sstenv="rm -f /tmp/rmwx_sst.*; export LD_PRELOAD=/tmp/rmwx_libsysstamp.so SYSSTAMP_FILE=/tmp/rmwx_sst;"
+    fi
     if [ "$CAPTURE" = 1 ]; then cap_start "$stem"; off0=$(clock_offset); fi
     local dumpenv=""
     case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
-    pongpid=$(sh_ "$SERVER" "$env; $dumpenv nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    pongpid=$(sh_ "$SERVER" "$env; $dumpenv $sstenv nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
     sleep 4
     if [ "$TRACE" = 1 ]; then
         # $! is strace; the pong is its child, found by parentage and verified by /proc/PID/exe, not by name
@@ -258,7 +275,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     # spin_some_us and sleep_us - kept in the row after RESULT's fields, whose order it does not change.
     # The ping's own log (stderr) is kept per row with the pong's in $OUT.logs, for questions such as which peers
     # rmw_tickle's publisher registered.
-    res=$(sh_ "$CLIENT" "$env; timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
+    res=$(sh_ "$CLIENT" "$env; $sstenv timeout 60 /usr/bin/time -f 'ping_utime_s=%U ping_stime_s=%S ping_maxrss_kb=%M' -o /tmp/rmwx_ping_time.txt taskset -c 1-3 $BIN/ping_node -i 0.1 -d 10 $flag $waitflag -m $msg 2>/tmp/rmwx_ping.log; cat /tmp/rmwx_ping_time.txt" | grep -E '^RESULT:|^LOOP:|^ping_utime_s' | tr '\n' ' ' || true)
     res="$res $procs"
     local pongcpu
     # pong_cpu_ns: summed run time of every pong thread from /proc/PID/task/*/schedstat (ns), because the
@@ -267,6 +284,17 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
+    if [ "$SST" = on ]; then
+        # the pong writes its records from a destructor as it exits, so wait for it to be gone (up to 5 s)
+        sh_ "$SERVER" "for i in 1 2 3 4 5 6 7 8 9 10; do [ -d /proc/$pongpid ] || break; sleep 0.5; done" || true
+        local h role
+        for h in "$CLIENT" "$SERVER"; do
+            role=ping; [ "$h" = "$SERVER" ] && role=pong
+            mkdir -p "$OUT.sysstamp/${stem}_${role}"
+            scp -q -i "$K" -o BatchMode=yes "ci@$h:/tmp/rmwx_sst.*" "$OUT.sysstamp/${stem}_${role}/" 2>/dev/null \
+                || say "  (no sysstamp records from $role)"
+        done
+    fi
     mkdir -p "$OUT.logs"
     scp -q -i "$K" -o BatchMode=yes "ci@$CLIENT:/tmp/rmwx_ping.log" "$OUT.logs/${stem}_ping.log" 2>/dev/null || say "  (no ping log)"
     scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_pong.log" "$OUT.logs/${stem}_pong.log" 2>/dev/null || say "  (no pong log)"
@@ -287,7 +315,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         case "$res" in *" wait=$WAIT "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not run wait=$WAIT)" ;; esac
     fi
     case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${SSTSTEM:+ sst=on}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -314,8 +342,11 @@ for rep in $(seq 1 "$REPS"); do
             fi
             for WAIT in $WAITS; do
               WAITSTEM=""; [ "$WAITS" != poll ] && WAITSTEM="_$WAIT"
-              for rmw in $RMWS; do
-                one "$rmw" "$msg" "$qos" "$rep"
+              for SST in $SYSSTAMP_ARMS; do
+                SSTSTEM=""; [ "$SST" = on ] && SSTSTEM="_sst"
+                for rmw in $RMWS; do
+                  one "$rmw" "$msg" "$qos" "$rep"
+                done
               done
             done
         done
