@@ -55,6 +55,11 @@ same session, so a row is always comparable. Across rows of different letters it
   - CPU is the pong's thread run time summed from `schedstat` in nanoseconds over its whole life (4 s idle,
     then 100 round trips): a per-process total, not a cost per message.
 - **`S` rows** are the 2026-09-24/25 QoS-mechanics sweep. Neither campaign covered them.
+- **`L` rows** are LIVELINESS_PLAN.md's L2 run on the rig (`liveliness_l2.sh`, 2026-09-27, TickLE `0f220ba0`, 20
+  reps with the three frameworks interleaved; `results/liveliness_l2e_2026-09-27.txt`, section 13 of that plan). The
+  median detection time is shown, measured from the last received sample. All three match the lease within 1 ms,
+  hence no winner. Across the 20 reps, TickLE's were all within 0.2 ms of the lease at every lease tried (1, 2 and
+  4 s). CycloneDDS had one rep about 94 ms late at each lease, and FastDDS one 78 ms late at 1 s.
 
 Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` and
 `campaign_tuned_fastdds_2026-09-26*`.
@@ -112,7 +117,7 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 43 | HISTORY, within depth | burst | 160/160 | 160/160 | 160/160 | S |
 | 44 | HISTORY, beyond depth | burst | ✅ **147.7/160** | ❌ 109/160 | ❌ 109/160 | S |
 | 45 | DEADLINE detection | 50 ms | ⚪ works | ⚪ works | ⚪ works | S |
-| 46 | LIVELINESS detection | lease 2.0 s | ⚪ not comparable | ⚪ 1999 ms | ⚪ 2000 ms | S |
+| 46 | LIVELINESS detection | lease 2.0 s | ⚪ 2000.1 ms | ⚪ 1999.1 ms | ⚪ 2000.1 ms | L |
 | 47 | LIFESPAN expiry | 100 ms | ⚪ works | ⚪ works | ⚪ works | S |
 | | **[rmw layer](#27-the-rmw-layer)** (ms, cross-host) | | | | | |
 | 48 | RTT mean, block wait, BEST_EFFORT | Bench (64 B) | ✅ **0.248** | ❌ 0.319 | 0.272 | V |
@@ -664,7 +669,7 @@ stagger was introduced.
 | 6 | `history_depth_burst_loss` | within depth | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss | recv 160/160 msgs, 0% loss |
 | 6 | `history_depth_burst_loss` | beyond depth ★ | recv 147.7±0.6/160 msgs, 7.7% loss (n=3; the earlier n=3 read 150.0±5.2) | recv 109/160 msgs, 31.9% not delivered (deterministic, 3/3) | recv 109/160 msgs, 31.9% not delivered (deterministic, 3/3) |
 | 7 | `deadline_miss_detection` | - | sent 198±0 msgs, recv 198±0 msgs, 0% loss, writer_misses=3† (own math), reader_misses=30† (harmless, unexplained) | writer_misses=7†, reader_misses=19†, detect -0.90ms† | writer_misses=7†, reader_misses=14†, detect 0.05ms† |
-| 8 | `liveliness_loss_detection` | - | **provisional, and NOT comparable to the DDS columns as measured - see §3 item 14** - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §3 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
+| 8 | `liveliness_loss_detection` | - | **Superseded 2026-09-27 by row 46 (`L`): TickLE now detects at 2000.1 ms, every rep within 0.2 ms of the lease at 1, 2 and 4 s - LIVELINESS_PLAN.md section 13. The historical figures follow.** Provisional, and not comparable to the DDS columns as measured - see §3 item 14 - lease=1.0s: 1375.7±169.1ms; lease=2.0s: 2060.9±465.7ms; lease=4.0s: 3232.0±235.7ms (real ceiling past ~3s - see §3 item 10). Those ± bands measure **mode-mixing, not precision**: at n=20 the distribution is bimodal, a dominant mode holding to ~15ms plus a minority mode ~460-500ms away | 1999.08ms† (lease=2000ms) | 2000.07ms† (lease=2000ms) |
 | 9 | `lifespan_expiry` | within lifespan | 0 lost | 0 lost | 0 lost |
 | 9 | `lifespan_expiry` | beyond lifespan, `pause=1.0/1.5/2.0s` ★ | lost 21.3 (8-29) / 54 / 77 of 250 (n=3 each, at `6daf5b98` with `PRE_CLIENT_SLEEP=0`) - LIFESPAN enforced; see the note below for why these run ~18 below the DDS columns | lost 39/64.7/88.7 of 250 (n=3 each) | lost 45/70/95 of 250 (n=3 each, identical) |
 
