@@ -94,30 +94,33 @@
 // rttvar, over request-to-recovery times. INITIAL is used until a proxy has a first sample, so
 // dynamic mode starts from exactly the fixed default and moves only on evidence.
 //
-// MIN stops a fast, low-jitter link - loopback, same host - from driving the interval toward zero
-// and turning the retry timer into the storm it exists to prevent. 250us is where the rig measured
-// 86% of healthy recoveries completing, so the timer never fires sooner than a typical healthy
-// recovery could finish. Timer resolution depends on how the caller polls. A caller passing a
-// negative timeout waits for the scheduler itself (tt_Node_poll(), tickle.h), so a retry fires at the
-// HAL's own resolution - nanoseconds on Linux. A caller polling in fixed positive slices - rmw_tickle
-// passes tt_RECEIVE_TIMEOUT, 100us - can only fire one when a slice ends, where 250us is ~2.5 slices.
+// Both bounds are relative to the link since 2026-09-26 (the user's question: can the absolute
+// constants be expressed relatively, the way RFC 6298's srtt + 4 * rttvar is?). They used to be 250us
+// and 10ms, both calibrated to the rig's ~200us recoveries - and a fixed ceiling is already wrong on
+// this project's own target link: at 10BASE-T1S speeds srtt is ~2ms, so 10ms sits at 5x srtt and
+// clamps genuine recoveries, and a ceiling below the true recovery time turns backoff into a retry
+// storm exactly when the link is worst. (examples/perf_hil/CONSTANTS_AUDIT.md has the whole sweep.)
 //
-// MAX follows a principle rather than a measured worst case: never wait longer than the Publisher
-// can still answer. A KEEP_LAST Publisher holds a sample for depth / send-rate, and at the rig's
-// fastest small-message rate (174k samples/s, depth 2048) that is ~12ms - so a retry later than that
-// asks for a sample that is provably gone, which is the same waste this feature exists to remove.
-// 10ms sits under every small-message retention the rig measured (11.8-16.9ms). Slower regimes are
-// not clamped by it in practice: where retention is long it is because the link is slow, and the
-// estimate is large for the same reason. A KEEP_ALL Publisher never evicts an unacknowledged sample,
-// so for it the bound is merely conservative.
+// The interval is srtt + max(GRANULARITY, 4 * rttvar) - RFC 6298's own form, RTO = SRTT + max(G, K *
+// RTTVAR). The G term is what the old floor was really for. On a steady link rttvar decays to zero and
+// srtt + 4 * rttvar converges on srtt itself: a retry at the MEAN recovery time, while about half of
+// all recoveries are still in flight. A floor of "1 * srtt" cannot help, because the interval is never
+// below srtt anyway. G stays absolute on purpose, and for a stated reason, as it does in the RFC: it is
+// how late this host actually runs a timer - a property of the host, not of the link. 100us is
+// provisional until the rig measures the p99 lateness of a scheduled entry; it is not a link figure.
+//
+// The ceiling is MAX_SRTT_MULTIPLE * srtt. With the interval at srtt + 4 * rttvar, it binds only when
+// rttvar reaches ~16x srtt - the pathological estimate the clamp exists for, not a healthy link. On the
+// rig it lands at ~12.8ms, next to the ~12ms a KEEP_LAST Publisher there retains a sample for, which is
+// what the old fixed 10ms was chosen against.
 #ifndef tt_RELIABLE_RETRY_INITIAL
 #define tt_RELIABLE_RETRY_INITIAL (1 * tt_MILLISECOND) // nanosecond
 #endif
-#ifndef tt_RELIABLE_RETRY_MIN
-#define tt_RELIABLE_RETRY_MIN (250 * tt_MICROSECOND) // nanosecond
+#ifndef tt_RELIABLE_RETRY_GRANULARITY
+#define tt_RELIABLE_RETRY_GRANULARITY (100 * tt_MICROSECOND) // nanosecond - the host's timer lateness
 #endif
-#ifndef tt_RELIABLE_RETRY_MAX
-#define tt_RELIABLE_RETRY_MAX (10 * tt_MILLISECOND) // nanosecond
+#ifndef tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE
+#define tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE 64 // the ceiling, in multiples of srtt
 #endif
 // Phase 3 (rmw_tickle/PLAN.md) - how often a Subscriber logs that a KEEP_ALL gap is still stuck.
 // KEEP_ALL switches off the tt_RELIABLE_RETRY give-up, so without this a genuinely unrecoverable

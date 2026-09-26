@@ -3968,8 +3968,9 @@ static uint64_t reliable_retry_configured(void) {
 
 // One proxy's interval, given the configured value. A non-zero configured value is the caller's
 // explicit choice and wins outright. 0 derives it from this proxy's own recovery estimate (see
-// tt_WriterProxy.recovery_srtt_ns): srtt + 4 * rttvar, clamped to [tt_RELIABLE_RETRY_MIN,
-// tt_RELIABLE_RETRY_MAX], or tt_RELIABLE_RETRY_INITIAL until there is a first sample.
+// tt_WriterProxy.recovery_srtt_ns): srtt + max(tt_RELIABLE_RETRY_GRANULARITY, 4 * rttvar), at most
+// tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE * srtt, or tt_RELIABLE_RETRY_INITIAL until there is a first
+// sample. See config.h for why the bounds are relative to srtt and why the one absolute term remains.
 //
 // The configured value is a parameter rather than read here so the dynamic path can be exercised
 // by tests in a build whose default is fixed - otherwise the branch this whole feature is would be
@@ -3981,14 +3982,14 @@ static uint64_t retry_interval_for(uint64_t configured, const struct tt_WriterPr
     if (proxy == NULL || proxy->recovery_srtt_ns == 0) {
         return (uint64_t)tt_RELIABLE_RETRY_INITIAL;
     }
-    uint64_t interval = (uint64_t)proxy->recovery_srtt_ns + (4ULL * proxy->recovery_rttvar_ns);
-    if (interval < (uint64_t)tt_RELIABLE_RETRY_MIN) {
-        return (uint64_t)tt_RELIABLE_RETRY_MIN;
+    uint64_t srtt = proxy->recovery_srtt_ns;
+    uint64_t spread = 4ULL * proxy->recovery_rttvar_ns;
+    if (spread < (uint64_t)tt_RELIABLE_RETRY_GRANULARITY) {
+        spread = (uint64_t)tt_RELIABLE_RETRY_GRANULARITY;
     }
-    if (interval > (uint64_t)tt_RELIABLE_RETRY_MAX) {
-        return (uint64_t)tt_RELIABLE_RETRY_MAX;
-    }
-    return interval;
+    uint64_t interval = srtt + spread;
+    uint64_t ceiling = srtt * (uint64_t)tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE;
+    return interval > ceiling ? ceiling : interval;
 }
 
 static uint64_t reliable_retry_interval(const struct tt_WriterProxy* proxy) {

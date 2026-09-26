@@ -1514,8 +1514,8 @@ static void test_retry_interval_explicit_value_wins(void) {
 }
 
 // The estimate converges on a steady recovery time, its variance term counts when recoveries jitter,
-// and both bounds hold - a fast link cannot drive the interval under the floor, a slow one cannot
-// push it past the ceiling.
+// and both bounds are relative to the link: the granularity term keeps a steady link's retry off its
+// own mean recovery time, and the ceiling scales with srtt instead of clamping a slow link.
 static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     struct tt_WriterProxy proxy;
 
@@ -1525,7 +1525,8 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     }
     EXPECT_EQ_U32(400000, proxy.recovery_srtt_ns);
     EXPECT_EQ_U32(0, proxy.recovery_rttvar_ns); // no jitter left to account for
-    EXPECT_EQ_U64(400000, retry_interval_for(0, &proxy));
+    // Not 400us: a retry at the mean recovery time would fire while half the recoveries are in flight.
+    EXPECT_EQ_U64(400000 + (uint64_t)tt_RELIABLE_RETRY_GRANULARITY, retry_interval_for(0, &proxy));
 
     memset(&proxy, 0, sizeof(proxy));
     for (int i = 0; i < 64; i++) {
@@ -1533,15 +1534,19 @@ static void test_retry_interval_estimate_converges_and_is_bounded(void) {
     }
     uint64_t jittery = retry_interval_for(0, &proxy);
     EXPECT_TRUE(jittery > 2 * (uint64_t)proxy.recovery_srtt_ns); // the variance term, not srtt alone
-    EXPECT_TRUE(jittery < (uint64_t)tt_RELIABLE_RETRY_MAX);
+    EXPECT_TRUE(jittery < (uint64_t)proxy.recovery_srtt_ns * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE);
 
+    // A slow link is no longer clamped: 100ms recoveries give 100ms + 4 * 50ms, where the old fixed
+    // 10ms ceiling would have retried ten times before a single answer could arrive.
     memset(&proxy, 0, sizeof(proxy));
-    note_recovery_sample(&proxy, 10000); // 10us: loopback-fast
-    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_MIN, retry_interval_for(0, &proxy));
+    note_recovery_sample(&proxy, 100 * tt_MILLISECOND);
+    EXPECT_EQ_U64(300 * tt_MILLISECOND, retry_interval_for(0, &proxy));
 
+    // The ceiling binds only for a pathological estimate - variance far beyond the mean.
     memset(&proxy, 0, sizeof(proxy));
-    note_recovery_sample(&proxy, 100 * tt_MILLISECOND); // far slower than anything should wait
-    EXPECT_EQ_U64((uint64_t)tt_RELIABLE_RETRY_MAX, retry_interval_for(0, &proxy));
+    proxy.recovery_srtt_ns = 100000;             // 100us
+    proxy.recovery_rttvar_ns = 10 * 1000 * 1000; // 10ms of "variance"
+    EXPECT_EQ_U64(100000ULL * tt_RELIABLE_RETRY_MAX_SRTT_MULTIPLE, retry_interval_for(0, &proxy));
 }
 
 // End to end: the recovery is timed from the FIRST ACKNACK that named the watermark, a timer retry of
