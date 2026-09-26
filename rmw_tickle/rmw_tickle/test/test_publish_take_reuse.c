@@ -209,10 +209,10 @@ int main(void) {
         // the psn a reader sees must be the publisher's, not that.
         uint8_t incoming_wire[RMW_TICKLE_PSN_BYTES + FAKE_TICKLE_TEXT_CAPACITY] = {0};
         const uint64_t psn = 70000U + (uint64_t)i;
-        memcpy(incoming_wire, &psn, sizeof(psn));
-        memcpy(incoming_wire + RMW_TICKLE_PSN_BYTES, expected, strlen(expected) + 1);
+        uint32_t header = rmw_tickle_psn_write(psn, incoming_wire); // one word below 2^31 (tt_VERSION 10)
+        memcpy(incoming_wire + header, expected, strlen(expected) + 1);
         struct tt_Data* delivered =
-            sub_impl->topic.data_decode_inplace(incoming_wire, (uint32_t)sizeof(incoming_wire), true);
+            sub_impl->topic.data_decode_inplace(incoming_wire, header + FAKE_TICKLE_TEXT_CAPACITY, true);
         assert(NULL != delivered);
         sub_impl->tickle_subscriber.callback(&sub_impl->tickle_subscriber, /*time=*/0, (uint16_t)i, delivered);
 

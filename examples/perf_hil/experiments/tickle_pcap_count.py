@@ -15,7 +15,7 @@ Per source node (tt_Header.source) it reports:
   hb_piggyback    HEARTBEAT in the same datagram as a DATA
   acknack         ACKNACK submessages
   other           any other submessage type (UPDATE discovery, RPC)
-Only datagrams that start with a TickLE magic ("KT" or "TK") count, so unrelated UDP on the same
+Only TickLE datagrams count - a magic "KT"/"TK", or since tt_VERSION 10 a single-submessage marker "k"/"t" -, so unrelated UDP on the same
 interface cannot leak in.
 """
 import struct
@@ -67,18 +67,42 @@ def udp_payload(linktype, buf):
     return ip[ihl + 8:ihl + udp_len]
 
 
+
+def classic_view(p, true_len=None):
+    """A TickLE datagram in the classic form (tt_Header + tt_SubmessageHeader), whichever it came in: since
+    tt_VERSION 10 one carrying a single submessage to every node has a 4-byte tt_SingleHeader instead - marker
+    'k'/'t' (the magic's first byte in lower case), version, source, type - and the submessage runs to the end.
+    Returns (classic bytes, byte order, version, single) or None for anything that is not TickLE."""
+    if len(p) >= 4 and p[:1] in (b"k", b"t"):
+        e = "<" if p[:1] == b"k" else ">"
+        magic = b"KT" if e == "<" else b"TK"
+        # The submessage runs to the datagram's true end, which a short snap length may have cut from p.
+        classic = magic + bytes([p[1], p[2], p[3], 0xFF]) + struct.pack(e + "H", true_len or len(p)) + p[4:]
+        return classic, e, p[1], True
+    if len(p) >= 4 and p[:2] in (b"KT", b"TK"):
+        return p, ("<" if p[:2] == b"KT" else ">"), p[2], False
+    return None
+
+
+def data_header_layout(version):
+    """(DATA header bytes, FRAG_FIRST header bytes, entity_id offset in them): the timestamp is 32-bit
+    microseconds since tt_VERSION 10, 64-bit nanoseconds before."""
+    return (16, 17, 12) if version >= 10 else (20, 21, 16)
+
 def main():
     stats = defaultdict(lambda: defaultdict(int))
     seen = defaultdict(set)
     for linktype, buf in packets(sys.argv[1]):
-        p = udp_payload(linktype, buf)
-        if not p or len(p) < 4 or p[:2] not in (b"KT", b"TK"):
+        wire = udp_payload(linktype, buf)
+        view = classic_view(wire) if wire else None
+        if view is None:
             continue
-        e = "<" if p[:2] == b"KT" else ">"
+        p, e, version, _ = view
+        data_len, _, entity_at = data_header_layout(version)
         src = p[3]
         s = stats[src]
         s["datagrams"] += 1
-        s["udp_payload_bytes"] += len(p)
+        s["udp_payload_bytes"] += len(wire)
         off, has_data, hbs = 4, False, 0
         while off + 4 <= len(p):
             typ = p[off]
@@ -89,11 +113,11 @@ def main():
                 s["malformed"] += 1
                 break
             body = p[off + 4:off + length]
-            if typ == DATA and len(body) >= 20:
+            if typ == DATA and len(body) >= data_len:
                 has_data = True
                 s["data"] += 1
                 endpoint, seq = struct.unpack(e + "II", body[:8])
-                entity = struct.unpack(e + "I", body[16:20])[0]
+                entity = struct.unpack(e + "I", body[entity_at:entity_at + 4])[0]
                 key = (endpoint, entity, seq)
                 if key in seen[src]:
                     s["data_retx"] += 1

@@ -621,18 +621,19 @@ static void arm_heartbeat_piggyback(rmw_tickle_publisher_t* pub_impl) {
 static int32_t encode_size_with_psn(struct tt_Data* data) {
     const rmw_tickle_outgoing_message_t* message = (const rmw_tickle_outgoing_message_t*)data;
     int32_t size = message->callbacks->tickle_encode_size((struct tt_Data*)message->tickle);
-    return size < 0 ? size : size + RMW_TICKLE_PSN_BYTES;
+    return size < 0 ? size : size + (int32_t)rmw_tickle_psn_bytes(message->publication_sequence_number);
 }
 
 static int32_t encode_with_psn(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
     const rmw_tickle_outgoing_message_t* message = (const rmw_tickle_outgoing_message_t*)data;
-    if (len < RMW_TICKLE_PSN_BYTES) {
+    uint32_t header = rmw_tickle_psn_bytes(message->publication_sequence_number);
+    if (len < header) {
         return -1;
     }
-    memcpy(payload, &message->publication_sequence_number, RMW_TICKLE_PSN_BYTES);
-    int32_t encoded = message->callbacks->tickle_encode((struct tt_Data*)message->tickle,
-                                                        payload + RMW_TICKLE_PSN_BYTES, len - RMW_TICKLE_PSN_BYTES);
-    return encoded < 0 ? encoded : encoded + RMW_TICKLE_PSN_BYTES;
+    (void)rmw_tickle_psn_write(message->publication_sequence_number, payload);
+    int32_t encoded =
+        message->callbacks->tickle_encode((struct tt_Data*)message->tickle, payload + header, len - header);
+    return encoded < 0 ? encoded : encoded + (int32_t)header;
 }
 
 // Core's cache counts seq_no, and every datagram of a fragmented message takes its own

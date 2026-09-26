@@ -193,8 +193,8 @@
 // bound could evict a sample before `depth` of them are retained - i.e. silently break
 // KEEP_LAST-by-count, which is what `depth` promises.
 #define tt_RELIABLE_RECORD_BYTES(payload_bytes) \
-    ((uint32_t)((((4u + 20u + (uint32_t)(payload_bytes)) + 3u) / 4u) * 4u)) // 4 = submessage header,
-                                                                            // 20 = sizeof(struct tt_DataHeader)
+    ((uint32_t)((((4u + 16u + (uint32_t)(payload_bytes)) + 3u) / 4u) * 4u)) // 4 = submessage header,
+                                                                            // 16 = sizeof(struct tt_DataHeader)
 #define tt_RELIABLE_CACHE_ARENA_BYTES(depth, max_record) (((uint32_t)(depth) + 1u) * (uint32_t)(max_record))
 // Width of tt_AckNackHeader.bitmap/tt_WriterProxy.received_bitmap, both now tt_RELIABLE_BITMAP_
 // WORDS-word uint64_t arrays (256 bits total - widened from a single, bare-uint64_t 64 bits,

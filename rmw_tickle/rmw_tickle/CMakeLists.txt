@@ -152,7 +152,7 @@ install(
 if(BUILD_TESTING)
   find_package(ament_cmake_test REQUIRED)
 
-  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks test_storage_budget test_service_roundtrip test_context_fini_leaked_node test_unsupported_entry_points test_executor_poll test_domain_id)
+  foreach(_test_name test_qos test_node_lifecycle test_guard_condition_wait test_graph test_events test_liveliness_lost_watchdog test_rmw_api_surface test_multi_node test_names_and_types test_publish_take_reuse test_history_keep_all test_keep_all_blocking test_best_available test_heartbeat_piggyback_default test_type_checks test_storage_budget test_service_roundtrip test_context_fini_leaked_node test_unsupported_entry_points test_executor_poll test_domain_id test_psn_codec)
     add_executable(${_test_name} test/${_test_name}.c)
     target_link_libraries(${_test_name} rmw_tickle Threads::Threads)
     # Every check in these tests is an assert(), so NDEBUG - which Release, now the default build type

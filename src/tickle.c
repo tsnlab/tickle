@@ -342,6 +342,39 @@ static uint8_t link_of_ip(uint32_t ip) {
 // wherever it already lies. A flush of tx_buffer is all head. A fragment is a few bytes of framing built
 // on the stack and a body read straight out of tx_buffer, the reliable cache or the caller's sample, so
 // a large sample is never copied again just to be cut up.
+_Static_assert(sizeof(struct tt_SingleHeader) == sizeof(struct tt_SubmessageHeader) &&
+                   sizeof(struct tt_SingleHeader) == sizeof(struct tt_Header),
+               "the single-submessage form must take exactly one of the classic headers' places");
+
+// The single-submessage header's first byte from this node: its magic's first byte in memory, in lower case.
+static uint8_t native_single_marker(void) {
+    uint16_t magic = NATIVE_MAGIC_VALUE;
+    uint8_t first = 0;
+    _tt_memcpy(&first, &magic, sizeof(first));
+    return (uint8_t)(first | tt_SINGLE_MARKER_FLAG);
+}
+
+// Puts a datagram about to be sent in the single-submessage form (struct tt_SingleHeader, tt_VERSION 10) when it
+// qualifies: exactly one submessage, addressed to everyone. `framing` holds the classic tt_Header and
+// tt_SubmessageHeader (framing_len bytes of it, the datagram continuing with body_len more). The submessage
+// header's four bytes are rewritten in place into the single header, and the datagram then starts
+// sizeof(struct tt_Header) bytes in - the returned offset; 0 leaves it classic. The buffer is the one about
+// to be sent, never a cached copy: whatever reads it afterwards reads it from the start again.
+static uint32_t to_single_form(uint8_t* framing, uint32_t framing_len, uint32_t body_len) {
+    if (framing_len < sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader)) {
+        return 0;
+    }
+    const struct tt_Header* header = (const struct tt_Header*)framing;
+    struct tt_SubmessageHeader* submessage = (struct tt_SubmessageHeader*)(framing + sizeof(struct tt_Header));
+    if (submessage->receiver != tt_SUBMESSAGE_ID_ALL ||
+        submessage->length != framing_len + body_len - sizeof(struct tt_Header)) {
+        return 0;
+    }
+    struct tt_SingleHeader single = {native_single_marker(), header->version, header->source, submessage->type};
+    _tt_memcpy(submessage, &single, sizeof(single));
+    return sizeof(struct tt_Header);
+}
+
 struct tx_datagram {
     const uint8_t* head;
     uint32_t head_len;
@@ -487,12 +520,7 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
     header->version = tt_VERSION;
     header->source = node->id;
 
-    struct tx_datagram dgram = {node->tx_buffer, len, NULL, 0};
-    if (!send_datagram(node, &dgram, peers, peer_count)) {
-        TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
-        return false;
-    }
-
+    // Read before the send below, which may rewrite this datagram's first submessage header in place.
 #ifdef tt_RELIABLE_STATS
     {
         uint64_t data_count = 0;
@@ -518,6 +546,13 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
         }
     }
 #endif
+
+    uint32_t skip = to_single_form(node->tx_buffer, len, 0);
+    struct tx_datagram dgram = {node->tx_buffer + skip, len - skip, NULL, 0};
+    if (!send_datagram(node, &dgram, peers, peer_count)) {
+        TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
+        return false;
+    }
 
     // Whatever was pending (including any batched announce - see node_update()/node_flush()) just
     // went out in `len` bytes above, unconditionally: a deferred-flush's `base` always covers
@@ -627,8 +662,10 @@ static bool send_fragments(struct tt_Node* node, const struct tt_DataHeader* dat
         uint32_t length = frag_payload_length(index, cdr_len);
         uint32_t header_length = frag_write_header(framing + sizeof(struct tt_Header), data_header, index, count,
                                                    length, tt_SUBMESSAGE_ID_ALL);
+        uint32_t framing_length = (uint32_t)sizeof(struct tt_Header) + header_length;
+        uint32_t skip = to_single_form(framing, framing_length, length);
         batch[index] = (struct tt_OutDatagram) {
-            framing, sizeof(struct tt_Header) + header_length, cdr + frag_payload_offset(index), length, 0, 0};
+            framing + skip, framing_length - skip, cdr + frag_payload_offset(index), length, 0, 0};
     }
 
     struct tx_destination destinations[TX_MAX_DESTINATIONS];
@@ -2670,6 +2707,20 @@ tt_ret_t tt_Server_destroy(struct tt_Server* server) {
     return result;
 }
 
+// A DATA's timestamp on the wire (tt_VERSION 10, WIRE_PLAN.md W2): the low 32 bits of the clock in
+// microseconds - see struct tt_DataHeader.timestamp.
+static uint32_t timestamp_to_wire(uint64_t time_ns) {
+    return (uint32_t)(time_ns / tt_MICROSECOND);
+}
+
+// ... and back, in nanoseconds: the sender's microseconds taken as the ones nearest the receiver's clock,
+// within half the 32-bit range (+-35.8 min) of it either way. 0 if that would fall before the clock's epoch.
+static uint64_t timestamp_from_wire(uint32_t sent_us) {
+    int64_t now_us = (int64_t)(tt_get_ns() / tt_MICROSECOND);
+    int64_t rebuilt_us = now_us + (int32_t)(sent_us - (uint32_t)now_us);
+    return rebuilt_us < 0 ? 0 : (uint64_t)rebuilt_us * tt_MICROSECOND;
+}
+
 // Zero-copy standalone-packet publish: framing (Header + SubmessageHeader + DataHeader) built in
 // a stack buffer, the CDR sent straight from the publisher's own memory via one sendmsg() - no
 // staging copy into tx_buffer. Only reachable when tx_buffer is empty (nothing to coalesce with),
@@ -2695,7 +2746,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         (struct tt_DataHeader*)(framing + sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = tt_get_ns();
+    data_header->timestamp = timestamp_to_wire(tt_get_ns());
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     uint8_t peer_count = count_peers(pub->peers);
@@ -2709,13 +2760,16 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
         return tt_RET_OK;
     }
 #endif
+    uint32_t skip = to_single_form(framing, (uint32_t)sizeof(framing), body_len);
+    const uint8_t* head = framing + skip;
+    uint32_t head_len = (uint32_t)sizeof(framing) - skip;
     if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
         for (uint8_t i = 0; i < peer_count; i++) {
-            if (tt_send_iov(node, framing, sizeof(framing), body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
+            if (tt_send_iov(node, head, head_len, body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
                 return tt_RET_IO_ERROR;
             }
         }
-    } else if (tt_send_iov(node, framing, sizeof(framing), body, body_len, 0, 0) < 0) {
+    } else if (tt_send_iov(node, head, head_len, body, body_len, 0, 0) < 0) {
         return tt_RET_IO_ERROR;
     }
 
@@ -3548,7 +3602,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     data_header->endpoint_id = endpoint->id;
     data_header->seq_no = pub->seq_no + 1;
-    data_header->timestamp = tt_get_ns();
+    data_header->timestamp = timestamp_to_wire(tt_get_ns());
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     // DataBody
@@ -5268,7 +5322,7 @@ static uint8_t plan_update_parts(struct tt_Node* node, struct tt_Endpoint** endp
 static void fill_announce_header(const struct tt_Node* node, struct tt_DataHeader* data_header) {
     data_header->endpoint_id = tt_DISCOVERY_ENDPOINT_ID;
     data_header->seq_no = (uint32_t)node->last_modified;
-    data_header->timestamp = node->last_modified;
+    data_header->timestamp = timestamp_to_wire(node->last_modified); // not read: the generation is seq_no
     data_header->entity_id = tt_DISCOVERY_ENTITY_ID;
 }
 
@@ -5874,8 +5928,9 @@ static bool send_cached_record(struct tt_Node* node, const uint8_t* record, uint
         if (addressed) {
             ((struct tt_SubmessageHeader*)(head + sizeof(struct tt_Header)))->receiver = target->node_id;
         }
-        struct tx_datagram dgram = {head, sizeof(struct tt_Header) + header_length, record + header_length,
-                                    len - header_length};
+        uint32_t framing_length = (uint32_t)sizeof(struct tt_Header) + header_length;
+        uint32_t skip = to_single_form(head, framing_length, len - header_length);
+        struct tx_datagram dgram = {head + skip, framing_length - skip, record + header_length, len - header_length};
         return send_datagram(node, &dgram, target, 1);
     }
 #endif
@@ -6366,7 +6421,9 @@ static void record_delivery_order(struct tt_Node* node, struct tt_Subscriber* su
     bool same_writer = !first && sub->last_source == source && sub->last_entity_id == entity_id;
     // seq_no counts per writer, so it means nothing across a switch of speaker.
     bool seq_back = same_writer && seq_no <= sub->last_seq_no;
-    bool time_back = !first && timestamp <= sub->last_timestamp;
+    // Strictly older: since tt_VERSION 10 timestamps have microsecond precision, and two samples in one
+    // microsecond are not out of order.
+    bool time_back = !first && timestamp < sub->last_timestamp;
 
     if (!first && !same_writer) {
         sub->writer_switches++;
@@ -6899,7 +6956,7 @@ static bool process_data_for(struct tt_Node* node, struct tt_Header* header, uin
 
     uint32_t endpoint_id = rd32(header, data_header->endpoint_id);
     uint32_t seq_no = rd32(header, data_header->seq_no);
-    uint64_t timestamp = rd64(header, data_header->timestamp);
+    uint64_t timestamp = timestamp_from_wire(rd32(header, data_header->timestamp));
     uint32_t entity_id = rd32(header, data_header->entity_id);
 
     // The built-in discovery endpoint (tt_DISCOVERY_ENDPOINT_ID, tickle.h): no Subscriber, no reliable
@@ -8403,7 +8460,7 @@ static bool deliver_user_fragment(struct tt_Node* node, struct tt_Header* header
         .endpoint_id = data_header != NULL ? rd32(header, data_header->endpoint_id) : 0,
         .entity_id = entity_id,
         .seq_no = seq_no,
-        .timestamp = data_header != NULL ? rd64(header, data_header->timestamp) : 0,
+        .timestamp = data_header != NULL ? timestamp_from_wire(rd32(header, data_header->timestamp)) : 0,
         .buffer = buffer,
         .head = head,
         .tail = tail,
@@ -8601,6 +8658,30 @@ static bool data_is_announce(struct tt_Header* header, const uint8_t* buffer, ui
            rd32(header, data_header->entity_id) == tt_DISCOVERY_ENTITY_ID;
 }
 
+// Hands one submessage, its body buffer[head..body_tail), to its handler if it is addressed to this node - from
+// the classic walk below or from a single-submessage datagram (process_packet()).
+static bool dispatch_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
+                                uint32_t body_tail, struct tt_SubmessageHeader* submessage_header, uint32_t sender_ip,
+                                uint16_t sender_port, bool self_sent) {
+    // Counted before the receiver filter below, deliberately: a node's own DATA is addressed to
+    // whoever it was published to, not to itself, so filtering first would hide exactly the case
+    // this counter exists to detect. A sample only: since tt_VERSION 7 an announce is a DATA too.
+    if (self_sent && submessage_header->type == tt_SUBMESSAGE_TYPE_DATA &&
+        !data_is_announce(header, buffer, head, body_tail)) {
+        node->rx_self_sent_data++;
+        if (node->rx_via_data_port) {
+            node->rx_self_sent_data_unicast++;
+        }
+    }
+
+    node->rx_targeted = submessage_header->receiver == node->id;
+    if (submessage_header->receiver != tt_SUBMESSAGE_ID_ALL && submessage_header->receiver != node->id) {
+        return true;
+    }
+    return process_submessage(node, header, buffer, head, body_tail, submessage_header, sender_ip, sender_port,
+                              self_sent);
+}
+
 // Decodes and dispatches one submessage starting at *head, advancing *head past it.
 static enum submessage_walk_result process_one_submessage(struct tt_Node* node, struct tt_Header* header,
                                                           uint8_t* buffer, uint32_t* head, uint32_t tail,
@@ -8626,22 +8707,8 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
     }
 
     const uint32_t body_tail = *head + sub_length - sizeof(struct tt_SubmessageHeader);
-
-    // Counted before the receiver filter below, deliberately: a node's own DATA is addressed to
-    // whoever it was published to, not to itself, so filtering first would hide exactly the case
-    // this counter exists to detect. A sample only: since tt_VERSION 7 an announce is a DATA too.
-    if (self_sent && submessage_header->type == tt_SUBMESSAGE_TYPE_DATA &&
-        !data_is_announce(header, buffer, *head, body_tail)) {
-        node->rx_self_sent_data++;
-        if (node->rx_via_data_port) {
-            node->rx_self_sent_data_unicast++;
-        }
-    }
-
-    node->rx_targeted = submessage_header->receiver == node->id;
-    if ((submessage_header->receiver == tt_SUBMESSAGE_ID_ALL || submessage_header->receiver == node->id) &&
-        !process_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port,
-                            self_sent)) {
+    if (!dispatch_submessage(node, header, buffer, *head, body_tail, submessage_header, sender_ip, sender_port,
+                             self_sent)) {
         return SUBMSG_ERROR;
     }
 
@@ -8649,9 +8716,40 @@ static enum submessage_walk_result process_one_submessage(struct tt_Node* node, 
     return SUBMSG_CONTINUE;
 }
 
+// A datagram in the single-submessage form (struct tt_SingleHeader, tt_VERSION 10): its header read into the
+// two classic ones, so the rest of the receive path is the same whichever form a datagram came in. `single`
+// sits at buffer[*head]; *head is advanced past it and the submessage is the rest of the datagram.
+static bool read_single_header(const struct tt_SingleHeader* single, uint32_t body_len, struct tt_Header* header,
+                               struct tt_SubmessageHeader* submessage) {
+    header->magic_value = single->marker == native_single_marker() ? NATIVE_MAGIC_VALUE : REVERSE_MAGIC_VALUE;
+    header->version = single->version;
+    header->source = single->source;
+    if (body_len > UINT16_MAX - sizeof(struct tt_SubmessageHeader)) {
+        return false;
+    }
+    submessage->type = single->type;
+    submessage->receiver = tt_SUBMESSAGE_ID_ALL;
+    submessage->length = 0; // not read on this path: the body runs to the end of the datagram
+    return true;
+}
+
 static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head, uint32_t tail, uint32_t sender_ip,
                            uint16_t sender_port) {
-    struct tt_Header* header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
+    struct tt_Header single_header;
+    struct tt_SubmessageHeader single_submessage;
+    bool single = false;
+    struct tt_Header* header = NULL;
+    if (tail > head && (buffer[head] == tt_SINGLE_MARKER_LE || buffer[head] == tt_SINGLE_MARKER_BE)) {
+        const struct tt_SingleHeader* single_raw = decode(node, buffer, &head, tail, sizeof(struct tt_SingleHeader));
+        if (single_raw == NULL || !read_single_header(single_raw, tail - head, &single_header, &single_submessage)) {
+            TT_LOG_ERROR("RX buffer underflow");
+            return false;
+        }
+        header = &single_header;
+        single = true;
+    } else {
+        header = decode(node, buffer, &head, tail, sizeof(struct tt_Header));
+    }
     if (header == NULL) {
         TT_LOG_ERROR("RX buffer underflow");
         return false;
@@ -8713,6 +8811,10 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
         }
     }
 
+    if (single) {
+        return dispatch_submessage(node, header, buffer, head, tail, &single_submessage, sender_ip, sender_port,
+                                   self_sent);
+    }
     while (true) {
         enum submessage_walk_result result =
             process_one_submessage(node, header, buffer, &head, tail, sender_ip, sender_port, self_sent);

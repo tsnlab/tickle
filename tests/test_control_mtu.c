@@ -42,10 +42,11 @@ static uint8_t datagram_type[MAX_DATAGRAMS];
 static int datagram_count;
 
 static void capture(const void* buf, size_t len) {
-    if (datagram_count < MAX_DATAGRAMS) {
-        datagram_len[datagram_count] = (uint32_t)len;
-        datagram_type[datagram_count] =
-            ((const struct tt_SubmessageHeader*)((const uint8_t*)buf + sizeof(struct tt_Header)))->type;
+    if (datagram_count < MAX_DATAGRAMS && len <= tt_MAX_BUFFER_LENGTH) {
+        static uint8_t classic[tt_MAX_BUFFER_LENGTH + sizeof(struct tt_Header)];
+        (void)test_classic_form(buf, len, classic);   // the type sits in the classic submessage header
+        datagram_len[datagram_count] = (uint32_t)len; // what went on the wire
+        datagram_type[datagram_count] = ((const struct tt_SubmessageHeader*)(classic + sizeof(struct tt_Header)))->type;
         datagram_count++;
     }
 }
@@ -121,7 +122,7 @@ static void test_a_large_sample_fragments_at_the_control_limit(void) {
     sample_size = 5000;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pubs[0], (struct tt_Data*)sample));
     node_flush(&node, 0, NULL);
-    EXPECT_EQ_INT(4, datagram_count); // 1443 + 1454 + 1454 + the rest
+    EXPECT_EQ_INT(4, datagram_count); // 1447 + 1454 + 1454 + the rest
     for (int d = 0; d < datagram_count; d++) {
         EXPECT_TRUE(datagram_len[d] <= tt_CONTROL_MAX_LENGTH);
         EXPECT_EQ_INT(d == 0 ? tt_SUBMESSAGE_TYPE_FRAG_FIRST : tt_SUBMESSAGE_TYPE_FRAG_CONT, datagram_type[d]);

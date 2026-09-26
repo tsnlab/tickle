@@ -47,6 +47,7 @@ int main(void) {
 
     int seeds = 0;
     int parts = 0;
+    int singles = 0; // seeds in the single-submessage form (tt_VERSION 10), read through their classic form below
     struct dirent* entry;
     while ((entry = readdir(dir)) != NULL) {
         if (strstr(entry->d_name, ".bin") == NULL) {
@@ -54,7 +55,8 @@ int main(void) {
         }
         char path[512];
         (void)snprintf(path, sizeof(path), "%s/%s", FUZZ_CORPUS_DIR, entry->d_name);
-        static uint8_t buf[tt_MAX_BUFFER_LENGTH];
+        static uint8_t buf[tt_MAX_BUFFER_LENGTH + sizeof(struct tt_Header)];
+        static uint8_t classic[tt_MAX_BUFFER_LENGTH + (2 * sizeof(struct tt_Header))];
         FILE* f = fopen(path, "rb");
         EXPECT_TRUE(f != NULL);
         if (f == NULL) {
@@ -62,12 +64,14 @@ int main(void) {
         }
         size_t len = fread(buf, 1, sizeof(buf), f);
         (void)fclose(f);
-        EXPECT_TRUE(len >= sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
-        if (!validate_packet_header(&node, (struct tt_Header*)buf)) {
+        EXPECT_TRUE(len >= sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader));
+        singles += buf[0] == tt_SINGLE_MARKER_LE || buf[0] == tt_SINGLE_MARKER_BE;
+        (void)test_classic_form(buf, len, classic);
+        if (!validate_packet_header(&node, (struct tt_Header*)classic)) {
             printf("%s: rejected by validate_packet_header() - regenerate with `make fuzz-corpus`\n", entry->d_name);
             EXPECT_TRUE(false);
         }
-        const struct tt_SubmessageHeader* sub = (const struct tt_SubmessageHeader*)(buf + sizeof(struct tt_Header));
+        const struct tt_SubmessageHeader* sub = (const struct tt_SubmessageHeader*)(classic + sizeof(struct tt_Header));
         if (sub->type == tt_SUBMESSAGE_TYPE_FRAG_FIRST || sub->type == tt_SUBMESSAGE_TYPE_FRAG_CONT) {
             parts++;
         }
@@ -76,7 +80,8 @@ int main(void) {
     (void)closedir(dir);
 
     EXPECT_TRUE(seeds >= 4);
-    EXPECT_TRUE(parts >= 2); // the parser the corpus exists for is actually seeded
+    EXPECT_TRUE(singles >= 2 && seeds - singles >= 2); // both header forms are seeded
+    EXPECT_TRUE(parts >= 2);                           // the parser the corpus exists for is actually seeded
 
     if (test_result() != 0) {
         return 1;

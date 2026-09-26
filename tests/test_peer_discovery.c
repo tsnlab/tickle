@@ -531,14 +531,17 @@ static uint64_t duo_last_delivered[3];
 // Loses a datagram it returns true for, on the way to the other node. NULL loses nothing.
 static bool (*duo_drop)(const struct duo_datagram* datagram);
 
-// Walks a datagram's submessages and counts the discovery ones: every body starts with the endpoint_id.
+// Walks a datagram's submessages and counts the discovery ones: every body starts with the endpoint_id. Reads
+// the classic form (test_classic_form()); the datagram itself is delivered as it was sent.
 static void duo_classify(struct duo_datagram* datagram) {
+    static uint8_t classic[tt_MAX_BUFFER_LENGTH + sizeof(struct tt_Header)];
+    uint32_t classic_len = (uint32_t)test_classic_form(datagram->bytes, datagram->len, classic);
     uint32_t head = sizeof(struct tt_Header);
-    while (head + sizeof(struct tt_SubmessageHeader) + sizeof(uint32_t) <= datagram->len) {
+    while (head + sizeof(struct tt_SubmessageHeader) + sizeof(uint32_t) <= classic_len) {
         struct tt_SubmessageHeader sub;
         uint32_t endpoint_id = 0;
-        memcpy(&sub, &datagram->bytes[head], sizeof(sub));
-        memcpy(&endpoint_id, &datagram->bytes[head + sizeof(sub)], sizeof(endpoint_id));
+        memcpy(&sub, &classic[head], sizeof(sub));
+        memcpy(&endpoint_id, &classic[head + sizeof(sub)], sizeof(endpoint_id));
         if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
             datagram->summaries += sub.type == tt_SUBMESSAGE_TYPE_HEARTBEAT;
             datagram->requests += sub.type == tt_SUBMESSAGE_TYPE_ACKNACK;

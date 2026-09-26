@@ -42,21 +42,25 @@
 #define TOPIC_NAME "frag_topic"
 #define ENDPOINT_NAME "frag_endpoint" // the endpoint id hashes topic and endpoint name, so both sides share it
 
-// The largest CDR a DATA can carry at the default datagram: 4 + ROUNDUP(4 + 20 + L) <= 1472.
-#define LARGEST_DATA_CDR 1444
+// The largest CDR a DATA can carry at the default datagram: 4 + ROUNDUP(4 + 16 + L) <= 1472 (the DataHeader
+// is 16 bytes since tt_VERSION 10; 1444 before).
+#define LARGEST_DATA_CDR 1448
 
 // --- capture ------------------------------------------------------------------------------------
 
 static uint8_t datagrams[MAX_DATAGRAMS][tt_MAX_BUFFER_LENGTH * 2];
 static uint32_t datagram_len[MAX_DATAGRAMS];
+// How long each really was on the wire: datagrams[] holds the classic form (test_classic_form(), test_mock.h),
+// 4 bytes longer than a datagram sent in the single-submessage form (tt_VERSION 10), which every fragment is.
+static uint32_t wire_len[MAX_DATAGRAMS];
 static int datagram_count;
 
 static void capture(const void* buf, size_t len) {
     EXPECT_TRUE(datagram_count < MAX_DATAGRAMS);
     EXPECT_TRUE(len <= tt_MAX_BUFFER_LENGTH); // every datagram, fragment or not, fits the default MTU
-    if (datagram_count < MAX_DATAGRAMS && len <= sizeof(datagrams[0])) {
-        memcpy(datagrams[datagram_count], buf, len);
-        datagram_len[datagram_count] = (uint32_t)len;
+    if (datagram_count < MAX_DATAGRAMS && len + sizeof(struct tt_Header) <= sizeof(datagrams[0])) {
+        datagram_len[datagram_count] = (uint32_t)test_classic_form(buf, len, datagrams[datagram_count]);
+        wire_len[datagram_count] = (uint32_t)len;
         datagram_count++;
     }
 }
@@ -70,10 +74,11 @@ static const struct tt_SubmessageHeader* submessage_of(int d) {
     return (const struct tt_SubmessageHeader*)(datagrams[d] + sizeof(struct tt_Header));
 }
 
+// Bytes on the wire, all captured datagrams together.
 static uint32_t total_captured_bytes(void) {
     uint32_t total = 0;
     for (int d = 0; d < datagram_count; d++) {
-        total += datagram_len[d];
+        total += wire_len[d];
     }
     return total;
 }
@@ -258,15 +263,20 @@ static void test_one_byte_more_is_two_fragments(void) {
 }
 
 static void test_p4_is_two_datagrams_of_the_predicted_size(void) {
-    // DATAFRAG_PLAN.md 6.3's arithmetic, checked against what is actually sent: 2931 B/sample on the
-    // wire at p4 is these 2847 bytes of UDP payload plus 2 x 42 of Ethernet, IPv4 and UDP.
+    // DATAFRAG_PLAN.md 6.3's arithmetic, checked against what is actually sent: 2919 B/sample on the
+    // wire at p4 is these 2835 bytes of UDP payload plus 2 x 42 of Ethernet, IPv4 and UDP. Until tt_VERSION
+    // 10 it was 2931 and 2847: FRAG_FIRST's DataHeader is 4 bytes shorter (W2) and each fragment goes in
+    // the single-submessage form, 4 bytes less framing each (W4). The classic-form lengths below keep the
+    // capacity arithmetic, which W4 does not change.
     init_pair(2800);
     publish_captured();
     EXPECT_EQ_INT(2, datagram_count);
     EXPECT_EQ_U32(tt_MAX_BUFFER_LENGTH, datagram_len[0]); // fragment 0 fills its datagram
-    EXPECT_EQ_U32(4 + 4 + 21 + 1443, datagram_len[0]);
-    EXPECT_EQ_U32(4 + 4 + 10 + (2800 - 1443), datagram_len[1]);
-    EXPECT_EQ_U32(2847, total_captured_bytes());
+    EXPECT_EQ_U32(4 + 4 + 17 + 1447, datagram_len[0]);
+    EXPECT_EQ_U32(4 + 4 + 10 + (2800 - 1447), datagram_len[1]);
+    EXPECT_EQ_U32(datagram_len[0] - 4, wire_len[0]); // single-submessage form
+    EXPECT_EQ_U32(datagram_len[1] - 4, wire_len[1]);
+    EXPECT_EQ_U32(2835, total_captured_bytes());
     deliver(0);
     deliver(1);
     expect_delivered_once(2800);
@@ -474,7 +484,7 @@ static void test_zero_copy_publish_fragments_too(void) {
     sender_topic.data_encode_inplace = sized_encode_inplace;
     publish_captured();
     EXPECT_EQ_INT(2, datagram_count);
-    EXPECT_EQ_U32(2847, total_captured_bytes()); // byte-for-byte what the staging path sends
+    EXPECT_EQ_U32(2835, total_captured_bytes()); // byte-for-byte what the staging path sends
     deliver(1);
     deliver(0);
     expect_delivered_once(2800);
@@ -566,7 +576,7 @@ static void make_reverse_endian(int d) {
         struct tt_DataHeader* data_header = &((struct tt_FragFirstHeader*)body)->data;
         data_header->endpoint_id = _tt_bswap_32(data_header->endpoint_id);
         data_header->seq_no = _tt_bswap_32(data_header->seq_no);
-        data_header->timestamp = _tt_bswap_64(data_header->timestamp);
+        data_header->timestamp = _tt_bswap_32(data_header->timestamp);
         data_header->entity_id = _tt_bswap_32(data_header->entity_id);
     } else {
         struct tt_FragContHeader* cont = (struct tt_FragContHeader*)body;
@@ -615,8 +625,8 @@ static const struct tt_Peer receiver_peer = {.ip = RECEIVER_IP, .port = PORT, .n
 static void test_sample_datagrams_matches_what_is_sent(void) {
     // tt_sample_datagrams() is what a caller sizes a cache in seq_no with (rmw_tickle does); it has to
     // agree with the publish path exactly, at every boundary.
-    static const uint32_t sizes[] = {1,    1440, 1444, 1445, 1446, 2800,
-                                     2897, 2898, 2900, 4000, 8000, tt_MAX_SAMPLE_LENGTH};
+    static const uint32_t sizes[] = {1,    1444, 1448, 1449, 1450, 2800,
+                                     2901, 2902, 2904, 4000, 8000, tt_MAX_SAMPLE_LENGTH};
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
         init_pair(sizes[i]);
         publish_captured();
@@ -628,8 +638,8 @@ static void test_sample_datagrams_matches_what_is_sent(void) {
 static void test_sample_cache_bytes_bounds_what_is_cached(void) {
     // tt_sample_cache_bytes() is what rmw_tickle sizes an arena in samples with: never less than what one
     // sample really takes, and not more than 4 bytes a datagram over it.
-    static const uint32_t sizes[] = {1,    1440, 1444, 1445, 1446, 2800,
-                                     2897, 2898, 2900, 4000, 8000, tt_MAX_SAMPLE_LENGTH};
+    static const uint32_t sizes[] = {1,    1444, 1448, 1449, 1450, 2800,
+                                     2901, 2902, 2904, 4000, 8000, tt_MAX_SAMPLE_LENGTH};
     for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
         init_pair(sizes[i]);
         make_reliable();
@@ -689,11 +699,11 @@ static void test_retransmission_resends_only_the_lost_datagram(void) {
 }
 
 static void test_original_and_retransmission_agree_on_fragment_count(void) {
-    // 2897 bytes fill exactly two fragments; the cached record is padded to 2900, which needs three.
+    // 2901 bytes fill exactly two fragments; the cached record is padded to 2904, which needs three.
     // The original is padded the same way, so the two agree - otherwise a retransmission could never
     // complete a slot the original had started, since every one of its fragments would disagree
     // about frag_count and be dropped.
-    init_pair(1443 + 1454);
+    init_pair(1447 + 1454);
     make_reliable();
     publish_captured();
     EXPECT_EQ_INT(3, datagram_count);
@@ -960,7 +970,7 @@ static void test_loss_costs_the_lost_datagram_not_the_sample(void) {
     static const uint32_t fragments[] = {1, 2, 4, 10};
     for (size_t f = 0; f < sizeof(fragments) / sizeof(fragments[0]); f++) {
         uint32_t k = fragments[f];
-        uint32_t size = k == 1 ? 1000 : 1443 + ((k - 1) * 1454) - 100; // k fragments, the last one short
+        uint32_t size = k == 1 ? 1000 : 1447 + ((k - 1) * 1454) - 100; // k fragments, the last one short
         sim_run(size, 50, 5 * tt_SECOND);
         double per_sample = (double)sim_sent[SENDER_ID] / SIM_SAMPLES;
         double per_datagram_model = (double)k / 0.95;

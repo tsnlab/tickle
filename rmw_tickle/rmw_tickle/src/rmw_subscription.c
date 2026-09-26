@@ -127,15 +127,12 @@ static void free_nothing(struct tt_Data* data) {
 // the subscription's decode_scratch. Returns false for a message that is not rmw_tickle's shape.
 static bool decode_with_psn(rmw_tickle_subscriber_t* sub_impl, const struct payload_view* view,
                             uint64_t* publication_sequence_number) {
-    if (view->length < RMW_TICKLE_PSN_BYTES) {
+    uint32_t header = rmw_tickle_psn_read(view->payload, view->length, view->is_native, publication_sequence_number);
+    if (0 == header) {
         return false;
     }
-    uint64_t psn = 0;
-    memcpy(&psn, view->payload, RMW_TICKLE_PSN_BYTES);
-    *publication_sequence_number = view->is_native ? psn : __builtin_bswap64(psn);
-    return sub_impl->callbacks->tickle_decode((struct tt_Data*)sub_impl->decode_scratch,
-                                              view->payload + RMW_TICKLE_PSN_BYTES, view->length - RMW_TICKLE_PSN_BYTES,
-                                              view->is_native) >= 0;
+    return sub_impl->callbacks->tickle_decode((struct tt_Data*)sub_impl->decode_scratch, view->payload + header,
+                                              view->length - header, view->is_native) >= 0;
 }
 
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {

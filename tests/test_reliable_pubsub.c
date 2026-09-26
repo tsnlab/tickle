@@ -2807,6 +2807,8 @@ static void test_keep_all_unblocks_when_last_subscriber_leaves(void) {
 // samples fill the VOLATILE arena, against a count bound of 2048. It now refuses instead, which is
 // what KEEP_ALL means.
 #define KEEP_ALL_BIG_PAYLOAD 512
+// One cached record of that payload - 536 bytes until tt_VERSION 10 cut the DataHeader to 16, 532 since.
+#define KEEP_ALL_BIG_RECORD tt_RELIABLE_RECORD_BYTES(KEEP_ALL_BIG_PAYLOAD)
 
 static int32_t big_data_encode_size(struct tt_Data* data) {
     (void)data;
@@ -2831,7 +2833,7 @@ static void test_keep_all_refuses_when_bytes_bind_before_count(void) {
     struct tt_Topic topic;
     struct tt_Publisher pub;
     // Arena sized for 64-byte payloads (9 x 88 = 792 B), depth 8 - so the count bound is 8 samples
-    // while only one 536-byte record fits. The same shape as a 1472-byte reservation meeting a
+    // while only one KEEP_ALL_BIG_RECORD-byte record fits. The same shape as a 1472-byte reservation meeting a
     // 65507-byte datagram, at a size a unit test can hold.
     TEST_RELIABLE_CACHE(cache, 8);
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16); // window 1024 >> depth 8, so depth binds
@@ -2913,10 +2915,10 @@ static void test_cache_grow_keeps_every_retained_sample(void) {
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
     topic.data_encode_size = big_data_encode_size;
     topic.data_encode = big_data_encode;
-    // An arena for two 536-byte records, a limit of six. The Publisher may hold 8 by count, so it
+    // An arena for two KEEP_ALL_BIG_RECORD-byte records, a limit of six. The Publisher may hold 8 by count, so it
     // is the bytes that bind - exactly the case growing exists for.
-    static uint8_t small_arena[2 * 536];
-    static uint8_t bigger_arena[6 * 536];
+    static uint8_t small_arena[2 * KEEP_ALL_BIG_RECORD];
+    static uint8_t bigger_arena[6 * KEEP_ALL_BIG_RECORD];
     cache.arena = small_arena;
     cache.arena_size = (uint32_t)sizeof(small_arena);
     cache.arena_limit = (uint32_t)sizeof(bigger_arena);
@@ -2955,8 +2957,8 @@ static void test_cache_grow_leaves_migrated_samples_answerable(void) {
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
     topic.data_encode_size = big_data_encode_size;
     topic.data_encode = big_data_encode;
-    static uint8_t first_arena[2 * 536];
-    static uint8_t second_arena[6 * 536];
+    static uint8_t first_arena[2 * KEEP_ALL_BIG_RECORD];
+    static uint8_t second_arena[6 * KEEP_ALL_BIG_RECORD];
     cache.arena = first_arena;
     cache.arena_size = (uint32_t)sizeof(first_arena);
     cache.arena_limit = (uint32_t)sizeof(second_arena);
@@ -2998,8 +3000,8 @@ static void test_cache_grow_from_a_wrapped_ring(void) {
     pub.keep_all = false; // KEEP_LAST: it evicts to make room, which is how the ring wraps
     topic.data_encode_size = big_data_encode_size;
     topic.data_encode = big_data_encode;
-    static uint8_t ring_arena[3 * 536];
-    static uint8_t grown_arena[8 * 536];
+    static uint8_t ring_arena[3 * KEEP_ALL_BIG_RECORD];
+    static uint8_t grown_arena[8 * KEEP_ALL_BIG_RECORD];
     cache.arena = ring_arena;
     cache.arena_size = (uint32_t)sizeof(ring_arena);
     cache.arena_limit = (uint32_t)sizeof(grown_arena);
@@ -3019,7 +3021,7 @@ static void test_cache_grow_from_a_wrapped_ring(void) {
     for (uint32_t seq_no = oldest; seq_no <= newest; seq_no++) {
         EXPECT_TRUE(record_intact(&cache, cache.depth, seq_no));
     }
-    EXPECT_TRUE(cache.tail == (newest - oldest + 1) * 536); // packed, with the wrap gap recovered
+    EXPECT_TRUE(cache.tail == (newest - oldest + 1) * KEEP_ALL_BIG_RECORD); // packed, with the wrap gap recovered
 
     // The invariant the ring itself relies on, asserted directly rather than hoped for: after a
     // repack the live records ascend from offset 0 in sequence order, so [head, tail) is one run and
@@ -3054,9 +3056,9 @@ static void test_cache_grow_refuses_past_the_limit_and_downward(void) {
     init_keep_all_publisher(&node, &topic, &pub, &cache, 16);
     topic.data_encode_size = big_data_encode_size;
     topic.data_encode = big_data_encode;
-    static uint8_t start_arena[2 * 536];
-    static uint8_t within_limit[3 * 536];
-    static uint8_t past_limit[9 * 536];
+    static uint8_t start_arena[2 * KEEP_ALL_BIG_RECORD];
+    static uint8_t within_limit[3 * KEEP_ALL_BIG_RECORD];
+    static uint8_t past_limit[9 * KEEP_ALL_BIG_RECORD];
     cache.arena = start_arena;
     cache.arena_size = (uint32_t)sizeof(start_arena);
     cache.arena_limit = (uint32_t)sizeof(within_limit);
@@ -3067,7 +3069,7 @@ static void test_cache_grow_refuses_past_the_limit_and_downward(void) {
     EXPECT_TRUE(cache.arena == start_arena); // refused, and nothing moved
     EXPECT_EQ_U32((uint32_t)sizeof(start_arena), cache.arena_size);
 
-    static uint8_t smaller[536];
+    static uint8_t smaller[KEEP_ALL_BIG_RECORD];
     EXPECT_EQ_INT((int)tt_RET_INVALID_ARGUMENT, (int)tt_ReliableCache_grow(&cache, smaller, (uint32_t)sizeof(smaller)));
     EXPECT_TRUE(cache.arena == start_arena);
 

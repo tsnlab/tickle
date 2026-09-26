@@ -294,6 +294,15 @@ number, `tt_VERSION`, which moves independently.
   do not interoperate. See DESIGN.md's "The periodic summary".
   An unanswered request is re-sent every `tt_DISCOVERY_REQUEST_RETRY` (10 ms), `tt_DISCOVERY_REQUEST_ATTEMPTS`
   (4) times in all, from a fixed `tt_Node.discovery_requests[tt_DISCOVERY_PENDING_REQUESTS]` table.
+- **Wire protocol `tt_VERSION` 9 -> 10: the first wire bundle** (`rmw_tickle/WIRE_PLAN.md` §6). Framing per
+  sample falls from 28 to 20 bytes in core and from 36 to 24 in `rmw_tickle`:
+  - `tt_DataHeader.timestamp` is the low 32 bits of the sender's microseconds, rebuilt by the receiver
+    within ±35.8 min of its own clock (W2). Callbacks still get nanoseconds. `tt_FRAG_DATA_HEADER_LENGTH`
+    is 16, and `tt_RELIABLE_RECORD_BYTES()` counts 16.
+  - `rmw_tickle`'s psn header is one 32-bit word below 2^31, two past it (W3).
+  - A datagram with exactly one submessage addressed to every node goes with the 4-byte
+    `tt_SingleHeader` instead of `tt_Header` + `tt_SubmessageHeader` (W4).
+  Nodes of version 9 and 10 do not interoperate.
 - **`rmw_tickle` honours `ROS_DOMAIN_ID`**: the well-known port is `_tt_NODE_PORT` + the domain id (0-232),
   so domains on one network no longer discover each other. Domain 0 keeps port 8282. Found when a PC's
   unit tests (domain 0) were heard by the rig's nodes (domain 73) over a shared management LAN.

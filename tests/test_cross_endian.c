@@ -172,7 +172,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
     struct tt_DataHeader* data_hdr = (struct tt_DataHeader*)(buf + off);
     data_hdr->endpoint_id = swap32(0xdeadbeef);
     data_hdr->seq_no = swap32(42);
-    data_hdr->timestamp = swap64(0x1122334455667788ULL);
+    data_hdr->timestamp = swap32(0x55667788U); // microseconds since tt_VERSION 10
     off += sizeof(struct tt_DataHeader);
 
     uint32_t payload_be = swap32(0xCAFEF00D);
@@ -182,7 +182,7 @@ static void test_reverse_endian_data_routes_and_unswaps(void) {
     EXPECT_TRUE(process_packet(&node, buf, 0, off, 0, 0));
     EXPECT_EQ_U32(1, (uint32_t)sub_calls);
     EXPECT_EQ_U32(42, (uint32_t)sub_seq);
-    EXPECT_TRUE(sub_time == 0x1122334455667788ULL);
+    EXPECT_TRUE(sub_time == 0x55667788ULL * tt_MICROSECOND); // swapped, then rebuilt to nanoseconds
     EXPECT_EQ_U32(0xCAFEF00D, sub_value);
 }
 

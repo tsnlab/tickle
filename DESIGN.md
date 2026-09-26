@@ -289,7 +289,7 @@ sequenceDiagram
 
 # Wire Protocol
 
-This chapter is the specification of what TickLE puts on the wire, as of `tt_VERSION` 9. The decision
+This chapter is the specification of what TickLE puts on the wire, as of `tt_VERSION` 10. The decision
 sections further down explain *why* each part looks as it does; this chapter says *what* it is, in one
 place. The structs named here are in `include/tickle/tickle.h`, and they are the authority if this text
 and the code ever disagree.
@@ -313,7 +313,9 @@ and the code ever disagree.
 
 ## Datagram layout
 
-A datagram is one `tt_Header` followed by one or more submessages, each a type-length-value record:
+A datagram is one `tt_Header` followed by one or more submessages, each a type-length-value record - or,
+since `tt_VERSION` 10, when it carries exactly one submessage addressed to every node, a single 4-byte
+`tt_SingleHeader` in place of both headers (`rmw_tickle/WIRE_PLAN.md` W4):
 
 ```
 +--------------------------------------------------------------+
@@ -325,7 +327,21 @@ A datagram is one `tt_Header` followed by one or more submessages, each a type-l
 +--------------------------------------------------------------+
 | next submessage ...                                          |
 +--------------------------------------------------------------+
+
+single-submessage form:
++--------------------------------------------------------------+
+| tt_SingleHeader (4 B): marker 'k' (LE) / 't' (BE) | version | source | type |
+| body: the one submessage's, to the end of the datagram       |
++--------------------------------------------------------------+
 ```
+
+- The single form is what most datagrams are: a sample to everyone or to its peers, a fragment, a
+  HEARTBEAT, the discovery summary. Its `receiver` is implicitly 0xff and its length is the datagram's; a
+  submessage for one node (ACKNACK, a call) and any batch of two or more use the classic headers. It is
+  four bytes, like each header it replaces, so the body stays 4-byte aligned. The sender writes it into
+  the classic headers' second four bytes and sends from there, so no bytes move.
+- `marker` is the first byte of the sender's classic magic in lower case, which tells the receiver the
+  sender's byte order as the magic does.
 
 - `magic` gives the sender's byte order. Senders write native order; receivers swap ("Byte order" below).
 - `version` is `tt_VERSION`. A datagram of another version is dropped, and the mismatch is logged once
@@ -340,13 +356,13 @@ A datagram is one `tt_Header` followed by one or more submessages, each a type-l
 | type | name | body header | size | purpose |
 |---:|---|---|---:|---|
 | 1 | *(retired: UPDATE)* | - | - | never reused |
-| 2 | `DATA` | `tt_DataHeader`: endpoint_id, seq_no, timestamp, entity_id | 20 B | one sample in one datagram |
+| 2 | `DATA` | `tt_DataHeader`: endpoint_id, seq_no, timestamp (u32 µs), entity_id | 16 B | one sample in one datagram |
 | 3 | `ACKNACK` | `tt_AckNackHeader`: endpoint_id, entity_id, sender_entity_id, seq_no, bitmap_words, bitmap[] | 20 + 8 × words B | a reader's cumulative ack plus a bitmap of what it is missing |
 | 4 | `CALLREQUEST` | `tt_CallRequestHeader`: endpoint_id, seq_no (16-bit), retry, reserved | 8 B | a service request |
 | 5 | `CALLRESPONSE` | `tt_CallResponseHeader`: endpoint_id, seq_no, retry, return_code | 8 B | its response |
 | 6 | `HEARTBEAT` | `tt_HeartbeatHeader`: endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags, pad | 20 B | a writer's range, soliciting ACKNACKs; with `tt_HEARTBEAT_FLAG_LIVELINESS` (flags bit 1) only a MANUAL_BY_TOPIC writer's liveliness assertion |
 | 7 | *(retired: UPDATE_PART)* | - | - | never reused |
-| 8 | `FRAG_FIRST` | `tt_FragFirstHeader`: a whole `tt_DataHeader` + frag_count | 21 B | first datagram of a fragmented sample |
+| 8 | `FRAG_FIRST` | `tt_FragFirstHeader`: a whole `tt_DataHeader` + frag_count | 17 B | first datagram of a fragmented sample |
 | 9 | `FRAG_CONT` | `tt_FragContHeader`: entity_id, seq_no, frag_index, frag_count | 10 B | every later datagram of it |
 
 `FRAG_FIRST` and `FRAG_CONT` are not padded, so a fragment's payload starts right after its header.
@@ -387,8 +403,14 @@ in the RTPS arrangement, rather than message types of its own:
 ## Payload
 
 - Sample payloads are TickLE CDR-4 ("Interface serialization" below), which caps alignment at 4.
-- `rmw_tickle` prefixes each sample with its own 8-byte publication sequence number: the ROS sample
-  number, distinct from the core's per-datagram `seq_no`.
+- A DATA's `timestamp` is the low 32 bits of the sender's clock in microseconds (since `tt_VERSION` 10,
+  W2; a 64-bit nanosecond count before). The receiver rebuilds the rest from its own clock, taking the
+  two to be within ±35.8 minutes of each other, and hands the application nanoseconds at microsecond
+  precision.
+- `rmw_tickle` prefixes each sample with its own publication sequence number: the ROS sample number,
+  distinct from the core's per-datagram `seq_no`. Since `tt_VERSION` 10 (W3) it is one 32-bit word for a
+  psn below 2^31 and two past it (the first word's top bit says which), where it was always 8 bytes; whole
+  words keep the CDR 4-byte aligned.
 
 ## Versioning rule
 
@@ -401,6 +423,8 @@ logged. Numbers of retired types are never reused. History:
 - 8: periodic summary and pulled list.
 - 9: `tt_HEARTBEAT_FLAG_LIVELINESS`, a MANUAL_BY_TOPIC writer's liveliness assertion
   (`rmw_tickle/LIVELINESS_PLAN.md`).
+- 10: the first wire bundle (`rmw_tickle/WIRE_PLAN.md` §6): a 32-bit microsecond timestamp (W2), the rmw
+  psn in one word (W3), the single-submessage header (W4).
 
 ## Per-datagram overhead, the baseline for wire optimisation
 
@@ -409,11 +433,10 @@ Framing bytes on the wire besides the payload, for one sample in one datagram:
 | layer | bytes |
 |---|---:|
 | Ethernet + IPv4 + UDP (outside TickLE's control) | 14 + 20 + 8 = 42 |
-| `tt_Header` | 4 |
-| `tt_SubmessageHeader` | 4 |
-| `tt_DataHeader` | 20 |
-| rmw_tickle's publication sequence number (rmw only) | 8 |
-| **TickLE framing, core / rmw** | **28 / 36** |
+| `tt_SingleHeader` (`tt_Header` + `tt_SubmessageHeader`, 8, until `tt_VERSION` 10) | 4 |
+| `tt_DataHeader` (20 until `tt_VERSION` 10) | 16 |
+| rmw_tickle's publication sequence number (rmw only; 8 until `tt_VERSION` 10) | 4 |
+| **TickLE framing, core / rmw** | **20 / 24** (28 / 36 in `tt_VERSION` 9) |
 
 `COMPARISON.md` row 41 measures the whole on-wire cost per sample against FastDDS and CycloneDDS. Any
 change to this chapter's formats follows `rmw_tickle/WIRE_PLAN.md`: a wire change must leave every test

@@ -525,7 +525,7 @@ static void test_process_data_dispatches_to_subscriber(void) {
 
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
-    EXPECT_EQ_U32(12345, (uint32_t)last_time);
+    EXPECT_TRUE(last_time == 12345ULL * tt_MICROSECOND); // the wire carries microseconds since tt_VERSION 10
     EXPECT_EQ_U32(42, (uint32_t)last_seq_no);
     EXPECT_EQ_U32(0xdeadbeef, last_value);
     EXPECT_EQ_U32(1, (uint32_t)data_free_call_count);
@@ -636,7 +636,7 @@ static void test_process_data_fans_out_to_every_matching_subscriber(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0, 0));
     EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count); // both subscribers got their own delivery
     EXPECT_EQ_U32(2, (uint32_t)data_free_call_count);      // each with its own independent decode+free
-    EXPECT_EQ_U32(12345, (uint32_t)last_time);
+    EXPECT_TRUE(last_time == 12345ULL * tt_MICROSECOND);   // the wire carries microseconds since tt_VERSION 10
     EXPECT_EQ_U32(42, (uint32_t)last_seq_no);
     EXPECT_EQ_U32(0xdeadbeef, last_value);
 }
@@ -832,7 +832,188 @@ static void test_best_effort_discards_out_of_order(void) {
     EXPECT_EQ_U32(2, sub.out_of_order_discarded);
 }
 
+// tt_VERSION 10 (WIRE_PLAN.md W2): a DATA carries the low 32 bits of the sender's microseconds, and the
+// receiver rebuilds the rest from its own clock - exactly, as long as the two clocks are within half the
+// 32-bit range (+-35.8 min) of each other, across the 32-bit wrap in either direction.
+static void test_wire_timestamp_rebuilds_across_skew_and_wrap(void) {
+    const uint64_t thirty_minutes = 30ULL * 60ULL * tt_SECOND;
+    // An arbitrary clock far from any wrap, and one 5 us before the 32-bit microsecond wrap.
+    const uint64_t far_from_wrap = 1790000000ULL * tt_SECOND;
+    const uint64_t wrap_us = ((far_from_wrap / tt_MICROSECOND) | 0xFFFFFFFFULL) + 1ULL; // next multiple of 2^32
+    const uint64_t just_before_wrap = (wrap_us - 5ULL) * tt_MICROSECOND;
+
+    test_mock_now = far_from_wrap;
+    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(far_from_wrap + thirty_minutes)) ==
+                far_from_wrap + thirty_minutes);
+    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(far_from_wrap - thirty_minutes)) ==
+                far_from_wrap - thirty_minutes);
+    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(far_from_wrap + 1234)) == far_from_wrap + 1000); // to us
+
+    // The receiver just before the wrap, the sender 10 us later - past it, its low bits small.
+    test_mock_now = just_before_wrap;
+    uint64_t sent = just_before_wrap + (10 * tt_MICROSECOND);
+    EXPECT_TRUE(timestamp_to_wire(sent) < 16U); // the sender's low bits did wrap
+    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(sent)) == sent);
+    // ... and the other way: the receiver past the wrap, the sender just before it.
+    test_mock_now = sent;
+    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(just_before_wrap)) == just_before_wrap);
+    // Thirty minutes of skew across the wrap still rebuilds.
+    EXPECT_TRUE(timestamp_from_wire(timestamp_to_wire(sent + thirty_minutes)) == sent + thirty_minutes);
+}
+
+// --- The single-submessage form (tt_VERSION 10, WIRE_PLAN.md W4) ---------------------------------------
+// A datagram carrying one submessage addressed to everyone goes with a 4-byte header in place of the classic
+// 8; anything else stays classic; the receiver reads either the same way.
+
+static uint8_t sent_raw[tt_MAX_BUFFER_LENGTH];
+static size_t sent_raw_len;
+
+static void keep_raw(const void* buf, size_t len) {
+    sent_raw_len = len < sizeof(sent_raw) ? len : sizeof(sent_raw);
+    memcpy(sent_raw, buf, sent_raw_len);
+}
+
+// A sender (node 2) with one Publisher, sends captured as they went on the wire.
+static void init_single_form_sender(struct tt_Node* sender, struct tt_Topic* topic, struct tt_Publisher* pub) {
+    test_mock_reset();
+    test_mock_send_hook = keep_raw;
+    sent_raw_len = 0;
+    init_node_and_topic(sender, topic);
+    sender->id = REMOTE_NODE_ID;
+    init_publisher(pub, sender, topic);
+}
+
+// What a receiver (node 1) with a matching Subscriber makes of the captured datagram.
+static bool deliver_raw(struct tt_Node* receiver, struct tt_Topic* topic, struct tt_Subscriber* sub) {
+    init_node_and_topic(receiver, topic);
+    init_subscriber_registered_on_node(sub, receiver, topic);
+    subscriber_callback_count = 0;
+    memcpy(receiver->rx_buffer, sent_raw, sent_raw_len);
+    return process_packet(receiver, receiver->rx_buffer, 0, (uint32_t)sent_raw_len, 0xc0a80a02U, 8282);
+}
+
+static void test_a_lone_broadcast_sample_goes_in_the_single_form(void) {
+    static struct tt_Node sender;
+    static struct tt_Node receiver;
+    struct tt_Topic topic;
+    struct tt_Topic receiver_topic;
+    struct tt_Publisher pub;
+    struct tt_Subscriber sub;
+    init_single_form_sender(&sender, &topic, &pub);
+    uint32_t value = 0x5eed1234;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+
+    EXPECT_EQ_U32(sizeof(struct tt_SingleHeader) + sizeof(struct tt_DataHeader) + sizeof(value),
+                  (uint32_t)sent_raw_len);
+    EXPECT_TRUE(sent_raw[0] == tt_SINGLE_MARKER_LE || sent_raw[0] == tt_SINGLE_MARKER_BE);
+    EXPECT_EQ_U32(tt_VERSION, sent_raw[1]);
+    EXPECT_EQ_U32(REMOTE_NODE_ID, sent_raw[2]);
+    EXPECT_EQ_U32(tt_SUBMESSAGE_TYPE_DATA, sent_raw[3]);
+
+    EXPECT_TRUE(deliver_raw(&receiver, &receiver_topic, &sub));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(value, last_value);
+    EXPECT_EQ_U32(1, (uint32_t)last_seq_no);
+    test_mock_send_hook = NULL;
+}
+
+// Two submessages in one datagram keep the classic headers: the second needs the first's length to be found.
+static void test_a_batch_of_two_stays_classic(void) {
+    static struct tt_Node sender;
+    static struct tt_Node receiver;
+    struct tt_Topic topic;
+    struct tt_Topic receiver_topic;
+    struct tt_Publisher pub;
+    struct tt_Subscriber sub;
+    init_single_form_sender(&sender, &topic, &pub);
+    pub.batch = true;
+    uint32_t value = 7;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
+    node_flush(&sender, 0, NULL);
+    EXPECT_EQ_U32(sizeof(struct tt_Header) +
+                      (2 * (sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) + 4)),
+                  (uint32_t)sent_raw_len);
+    EXPECT_TRUE(sent_raw[0] != tt_SINGLE_MARKER_LE && sent_raw[0] != tt_SINGLE_MARKER_BE);
+    EXPECT_TRUE(deliver_raw(&receiver, &receiver_topic, &sub));
+    EXPECT_EQ_U32(2, (uint32_t)subscriber_callback_count);
+    test_mock_send_hook = NULL;
+}
+
+// A submessage addressed to one node keeps the classic headers: the single form has no receiver field.
+static void test_an_addressed_submessage_stays_classic(void) {
+    static struct tt_Node sender;
+    struct tt_Topic topic;
+    struct tt_Publisher pub;
+    init_single_form_sender(&sender, &topic, &pub);
+    struct tt_SubmessageHeader* submessage = start_encode(&sender, tt_SUBMESSAGE_TYPE_HEARTBEAT, LOCAL_NODE_ID);
+    EXPECT_TRUE(submessage != NULL);
+    struct tt_HeartbeatHeader* heartbeat = encode(&sender, sizeof(struct tt_HeartbeatHeader));
+    EXPECT_TRUE(heartbeat != NULL);
+    memset(heartbeat, 0, sizeof(*heartbeat));
+    EXPECT_TRUE(end_encode(&sender, submessage, true, NULL, 0));
+    EXPECT_EQ_U32(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_HeartbeatHeader),
+                  (uint32_t)sent_raw_len);
+    EXPECT_TRUE(sent_raw[0] != tt_SINGLE_MARKER_LE && sent_raw[0] != tt_SINGLE_MARKER_BE);
+    test_mock_send_hook = NULL;
+}
+
+// A single-form datagram from a sender of the other byte order: the marker says so, and every field behind
+// it is read swapped, as behind a reversed tt_Header magic.
+static void test_a_single_form_datagram_from_the_other_byte_order_is_read(void) {
+    static struct tt_Node receiver;
+    struct tt_Topic receiver_topic;
+    struct tt_Subscriber sub;
+    uint16_t magic = NATIVE_MAGIC_VALUE;
+    uint8_t native_first = 0;
+    memcpy(&native_first, &magic, 1);
+    struct tt_SingleHeader single = {(uint8_t)((native_first == 'K' ? 'T' : 'K') | tt_SINGLE_MARKER_FLAG), tt_VERSION,
+                                     REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA};
+    struct tt_DataHeader data = {_tt_bswap_32(ENDPOINT_ID), _tt_bswap_32(42), _tt_bswap_32(12345), 0};
+    uint32_t value = 0xa5a5a5a5; // the same both ways round: the stub decoder does not swap
+    memcpy(sent_raw, &single, sizeof(single));
+    memcpy(sent_raw + sizeof(single), &data, sizeof(data));
+    memcpy(sent_raw + sizeof(single) + sizeof(data), &value, sizeof(value));
+    sent_raw_len = sizeof(single) + sizeof(data) + sizeof(value);
+    test_mock_reset();
+    EXPECT_TRUE(deliver_raw(&receiver, &receiver_topic, &sub));
+    EXPECT_EQ_U32(1, (uint32_t)subscriber_callback_count);
+    EXPECT_EQ_U32(42, (uint32_t)last_seq_no);
+}
+
+// A single-form header with nothing behind it, or another version, is refused without a delivery.
+static void test_a_short_or_foreign_single_form_datagram_is_refused(void) {
+    static struct tt_Node receiver;
+    struct tt_Topic receiver_topic;
+    struct tt_Subscriber sub;
+    uint16_t magic = NATIVE_MAGIC_VALUE;
+    uint8_t native_first = 0;
+    memcpy(&native_first, &magic, 1);
+    struct tt_SingleHeader single = {(uint8_t)(native_first | tt_SINGLE_MARKER_FLAG), tt_VERSION, REMOTE_NODE_ID,
+                                     tt_SUBMESSAGE_TYPE_DATA};
+    memcpy(sent_raw, &single, sizeof(single));
+    sent_raw_len = 2; // cut inside the header
+    test_mock_reset();
+    EXPECT_TRUE(!deliver_raw(&receiver, &receiver_topic, &sub));
+    sent_raw_len = sizeof(single); // a header and no DataHeader
+    (void)deliver_raw(&receiver, &receiver_topic, &sub);
+    EXPECT_EQ_U32(0, (uint32_t)subscriber_callback_count);
+    single.version = tt_VERSION - 1;
+    memcpy(sent_raw, &single, sizeof(single));
+    struct tt_DataHeader data = {ENDPOINT_ID, 1, 0, 0};
+    memcpy(sent_raw + sizeof(single), &data, sizeof(data));
+    sent_raw_len = sizeof(single) + sizeof(data) + 4;
+    EXPECT_TRUE(!deliver_raw(&receiver, &receiver_topic, &sub));
+    EXPECT_EQ_U32(0, (uint32_t)subscriber_callback_count);
+}
+
 int main(void) {
+    test_a_lone_broadcast_sample_goes_in_the_single_form();
+    test_a_batch_of_two_stays_classic();
+    test_an_addressed_submessage_stays_classic();
+    test_a_single_form_datagram_from_the_other_byte_order_is_read();
+    test_a_short_or_foreign_single_form_datagram_is_refused();
+    test_wire_timestamp_rebuilds_across_skew_and_wrap();
     test_publish_flushes_immediately_by_default();
     test_publish_batches_when_opted_in();
     test_publish_rolls_back_on_out_of_buffer();

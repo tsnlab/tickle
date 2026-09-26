@@ -120,6 +120,29 @@ static size_t truncate_consistently(uint8_t* buf, size_t len, size_t cut) {
     return len - cut;
 }
 
+static int write_seed(const char* dir, const char* name, const uint8_t* buf, size_t len);
+
+// A datagram as it was sent - since tt_VERSION 10 a lone submessage to everyone goes in the single-submessage
+// form (struct tt_SingleHeader) - and the same in the classic form, so both parsers are seeded; and each cut
+// `cut` bytes short, the classic one with its submessage length shortened to match (truncate_consistently()).
+static int write_both_forms(const char* dir, const char* base, const uint8_t* sent, size_t len, size_t cut) {
+    static uint8_t classic[((size_t)tt_MAX_BUFFER_LENGTH * 2) + sizeof(struct tt_Header)];
+    size_t classic_len = test_classic_form(sent, len, classic);
+    char name[96];
+    int fail = 0;
+    (void)snprintf(name, sizeof(name), "%s.bin", base);
+    fail |= write_seed(dir, name, sent, len);
+    (void)snprintf(name, sizeof(name), "%s_classic.bin", base);
+    fail |= write_seed(dir, name, classic, classic_len);
+    if (cut != 0) {
+        (void)snprintf(name, sizeof(name), "%s_truncated.bin", base);
+        fail |= write_seed(dir, name, sent, len - cut);
+        (void)snprintf(name, sizeof(name), "%s_classic_truncated.bin", base);
+        fail |= write_seed(dir, name, classic, truncate_consistently(classic, classic_len, cut));
+    }
+    return fail;
+}
+
 static int write_seed(const char* dir, const char* name, const uint8_t* buf, size_t len) {
     char path[512];
     (void)snprintf(path, sizeof(path), "%s/%s", dir, name);
@@ -150,9 +173,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "gen_fuzz_corpus: a 3-endpoint announce should be one datagram\n");
         return 1;
     }
-    fail |= write_seed(dir, "announce_single.bin", datagrams[0], datagram_len[0]);
-    fail |= write_seed(dir, "announce_single_truncated.bin", datagrams[0],
-                       truncate_consistently(datagrams[0], datagram_len[0], 8));
+    fail |= write_both_forms(dir, "announce_single", datagrams[0], datagram_len[0], 8);
 
     // An announce too large for one datagram: every fragment (FRAG_FIRST, then FRAG_CONT), and the first
     // cut off mid-entity.
@@ -164,11 +185,9 @@ int main(int argc, char** argv) {
     }
     for (int i = 0; i < parts; i++) {
         char name[64];
-        (void)snprintf(name, sizeof(name), "announce_frag_%d_of_%d.bin", i, parts);
-        fail |= write_seed(dir, name, datagrams[i], datagram_len[i]);
+        (void)snprintf(name, sizeof(name), "announce_frag_%d_of_%d", i, parts);
+        fail |= write_both_forms(dir, name, datagrams[i], datagram_len[i], i == 0 ? 8 : 0);
     }
-    fail |= write_seed(dir, "announce_frag_truncated.bin", datagrams[0],
-                       truncate_consistently(datagrams[0], datagram_len[0], 8));
 
     return fail;
 }

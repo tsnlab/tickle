@@ -65,9 +65,13 @@ uint32_t test_mock_send_to_ips[TEST_MOCK_MAX_SENDS] = {0};
 int test_mock_send_to_ip_count = 0;
 uint16_t test_mock_send_to_last_port = 0;
 // Copy of the most recent packet either send function was handed (truncated to the buffer size) -
-// for a test that needs to decode what was actually sent, not just count sends.
-uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
+// for a test that needs to decode what was actually sent, not just count sends. Always in the classic form
+// (tt_Header + tt_SubmessageHeader), which every decoder in the tests reads: a datagram sent in the
+// single-submessage form (struct tt_SingleHeader, tt_VERSION 10) is rewritten into it, 4 bytes longer, and
+// test_mock_send_last_wire_len says how long it really was on the wire.
+uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH + sizeof(struct tt_Header)];
 size_t test_mock_send_last_len = 0;
+size_t test_mock_send_last_wire_len = 0;
 // Optional: called with every packet either send function is handed, untruncated - for a test that
 // needs all of several datagrams, not just the last one. NULL (the default) = not called.
 void (*test_mock_send_hook)(const void* buf, size_t len) = NULL;
@@ -100,6 +104,7 @@ extern int test_mock_send_to_ip_count;
 extern uint16_t test_mock_send_to_last_port;
 extern uint8_t test_mock_send_last_buf[tt_MAX_BUFFER_LENGTH];
 extern void (*test_mock_send_hook)(const void* buf, size_t len);
+extern size_t test_mock_send_last_wire_len;
 extern size_t test_mock_send_last_len;
 extern int test_mock_wake_signal_call_count;
 extern int64_t test_mock_receive_last_timeout;
@@ -127,6 +132,7 @@ static inline void test_mock_reset(void) {
     test_mock_send_to_last_port = 0;
     test_mock_send_last_len = 0;
     test_mock_send_hook = NULL;
+    test_mock_send_last_wire_len = 0;
     test_mock_wake_signal_call_count = 0;
     test_mock_receive_last_timeout = 0;
     test_mock_receive_call_count = 0;
@@ -134,10 +140,42 @@ static inline void test_mock_reset(void) {
     test_mock_receive_limit = 0;
 }
 
+// A datagram as sent, in the classic form a test's decoder reads: one in the single-submessage form
+// (struct tt_SingleHeader, tt_VERSION 10) gets its tt_Header and tt_SubmessageHeader back, 4 bytes longer. `out`
+// holds at least len + sizeof(struct tt_Header) bytes. Returns the classic length.
+static inline size_t test_classic_form(const void* datagram, size_t len, uint8_t* out) {
+    const uint8_t* in = (const uint8_t*)datagram;
+    if (len < sizeof(struct tt_SingleHeader) || (in[0] != tt_SINGLE_MARKER_LE && in[0] != tt_SINGLE_MARKER_BE)) {
+        memcpy(out, in, len);
+        return len;
+    }
+    const struct tt_SingleHeader* single = (const struct tt_SingleHeader*)in;
+    struct tt_Header header;
+    uint16_t native = NATIVE_MAGIC_VALUE;
+    uint8_t native_first = 0;
+    memcpy(&native_first, &native, 1);
+    bool is_native = single->marker == (uint8_t)(native_first | tt_SINGLE_MARKER_FLAG);
+    header.magic_value = is_native ? NATIVE_MAGIC_VALUE : REVERSE_MAGIC_VALUE;
+    header.version = single->version;
+    header.source = single->source;
+    uint16_t length = (uint16_t)len; // the submessage: its own header, plus everything after the single header
+    struct tt_SubmessageHeader submessage = {single->type, tt_SUBMESSAGE_ID_ALL,
+                                             is_native ? length : (uint16_t)((length >> 8) | (length << 8))};
+    memcpy(out, &header, sizeof(header));
+    memcpy(out + sizeof(header), &submessage, sizeof(submessage));
+    memcpy(out + sizeof(header) + sizeof(submessage), in + sizeof(*single), len - sizeof(*single));
+    return len + sizeof(struct tt_Header);
+}
+
 #ifdef TEST_MOCK_DEFINE_STORAGE
 static void test_mock_capture_send(const void* buf, size_t len) {
-    test_mock_send_last_len = len < sizeof(test_mock_send_last_buf) ? len : sizeof(test_mock_send_last_buf);
-    memcpy(test_mock_send_last_buf, buf, test_mock_send_last_len);
+    uint8_t classic[tt_MAX_BUFFER_LENGTH * 2 + sizeof(struct tt_Header)];
+    size_t classic_len = len < tt_MAX_BUFFER_LENGTH * 2 ? test_classic_form(buf, len, classic) : len;
+    test_mock_send_last_wire_len = len;
+    test_mock_send_last_len =
+        classic_len < sizeof(test_mock_send_last_buf) ? classic_len : sizeof(test_mock_send_last_buf);
+    memcpy(test_mock_send_last_buf, len < tt_MAX_BUFFER_LENGTH * 2 ? classic : (const uint8_t*)buf,
+           test_mock_send_last_len);
     if (test_mock_send_hook != NULL) {
         test_mock_send_hook(buf, len);
     }

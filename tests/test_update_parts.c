@@ -50,9 +50,9 @@ static int datagram_count;
 
 static void capture(const void* buf, size_t len) {
     EXPECT_TRUE(datagram_count < MAX_DATAGRAMS);
-    if (datagram_count < MAX_DATAGRAMS && len <= sizeof(datagrams[0])) {
-        memcpy(datagrams[datagram_count], buf, len);
-        datagram_len[datagram_count] = (uint32_t)len;
+    if (datagram_count < MAX_DATAGRAMS && len + sizeof(struct tt_Header) <= sizeof(datagrams[0])) {
+        // The classic form (test_classic_form(), test_mock.h): what first_submessage() reads.
+        datagram_len[datagram_count] = (uint32_t)test_classic_form(buf, len, datagrams[datagram_count]);
         datagram_count++;
     }
 }
@@ -197,7 +197,7 @@ static void test_announce_that_fits_stays_a_single_update(void) {
     EXPECT_EQ_U32(tt_DISCOVERY_ENDPOINT_ID, data_header->endpoint_id);
     EXPECT_EQ_U32(tt_DISCOVERY_ENTITY_ID, data_header->entity_id);
     EXPECT_EQ_U32(100, data_header->seq_no);
-    EXPECT_EQ_U64(100, data_header->timestamp);
+    EXPECT_EQ_U32(timestamp_to_wire(100), data_header->timestamp); // last_modified, in wire microseconds
     EXPECT_EQ_INT(8, ((const struct tt_AnnounceHeader*)(data_header + 1))->entity_count);
 }
 

@@ -18,7 +18,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h> // strcmp() - rmw_tickle_identifier_matches(), below
+#include <string.h> // strcmp() - rmw_tickle_identifier_matches(); memcpy() - the psn codec, below
 
 #include <tickle/tickle.h>
 
@@ -445,11 +445,58 @@ typedef struct rmw_tickle_qos_incompatible_status_t {
 } rmw_tickle_qos_incompatible_status_t;
 
 // TickLE specific publisher data
-// rmw_tickle's per-message header: the publisher's publication sequence number, a uint64 in the sender's
-// byte order, ahead of the type's CDR in every message rmw_tickle sends (DATAFRAG_PLAN.md section 13.2).
-// Eight bytes keep the CDR at the alignment core gives it. A node that is not rmw_tickle - core on an
-// MCU, say - sees these bytes too, and must skip them to read an rmw_tickle message.
+// rmw_tickle's per-message header: the publisher's publication sequence number, ahead of the type's CDR in
+// every message rmw_tickle sends (DATAFRAG_PLAN.md section 13.2), in the sender's byte order. Since
+// tt_VERSION 10 (WIRE_PLAN.md W3) it is one 32-bit word for a psn below 2^31 - every realistic one - and two
+// past it, where it was always a uint64: the first word's top bit says which, and the long form carries the
+// psn's high 31 bits there and its low 32 in the second word. Whole words keep the CDR at the 4-byte
+// alignment core gives it and the generated code relies on, which is why this is not a varint. A node that
+// is not rmw_tickle - core on an MCU, say - sees these bytes too, and must skip them to read an rmw_tickle
+// message. RMW_TICKLE_PSN_BYTES is the most they take, which is what buffers are sized for.
 #define RMW_TICKLE_PSN_BYTES 8
+#define RMW_TICKLE_PSN_SHORT_BYTES 4
+#define RMW_TICKLE_PSN_LONG_FLAG 0x80000000U
+
+static inline uint32_t rmw_tickle_psn_bytes(uint64_t psn) {
+    return psn < RMW_TICKLE_PSN_LONG_FLAG ? RMW_TICKLE_PSN_SHORT_BYTES : RMW_TICKLE_PSN_BYTES;
+}
+
+// Writes `psn` (below 2^63) at `out`, which has room for rmw_tickle_psn_bytes(psn); returns the bytes written.
+static inline uint32_t rmw_tickle_psn_write(uint64_t psn, uint8_t* out) {
+    if (psn < RMW_TICKLE_PSN_LONG_FLAG) {
+        uint32_t word = (uint32_t)psn;
+        memcpy(out, &word, sizeof(word));
+        return RMW_TICKLE_PSN_SHORT_BYTES;
+    }
+    uint32_t high = RMW_TICKLE_PSN_LONG_FLAG | (uint32_t)(psn >> 32U);
+    uint32_t low = (uint32_t)psn;
+    memcpy(out, &high, sizeof(high));
+    memcpy(out + sizeof(high), &low, sizeof(low));
+    return RMW_TICKLE_PSN_BYTES;
+}
+
+// Reads a psn from the `length` bytes at `bytes`, written in the sender's byte order (`is_native`: ours).
+// Returns the bytes it took, or 0 if they are not a whole psn.
+static inline uint32_t rmw_tickle_psn_read(const uint8_t* bytes, uint32_t length, bool is_native, uint64_t* psn) {
+    uint32_t first = 0;
+    if (length < RMW_TICKLE_PSN_SHORT_BYTES) {
+        return 0;
+    }
+    memcpy(&first, bytes, sizeof(first));
+    first = is_native ? first : __builtin_bswap32(first);
+    if ((first & RMW_TICKLE_PSN_LONG_FLAG) == 0) {
+        *psn = first;
+        return RMW_TICKLE_PSN_SHORT_BYTES;
+    }
+    uint32_t low = 0;
+    if (length < RMW_TICKLE_PSN_BYTES) {
+        return 0;
+    }
+    memcpy(&low, bytes + sizeof(first), sizeof(low));
+    low = is_native ? low : __builtin_bswap32(low);
+    *psn = ((uint64_t)(first & ~RMW_TICKLE_PSN_LONG_FLAG) << 32U) | low;
+    return RMW_TICKLE_PSN_BYTES;
+}
 
 // What rmw_publish() hands core as the sample: the TickLE struct to encode, the type's callbacks to encode it
 // with, and the publication sequence number to put ahead of it. Core's codec functions take only the sample,

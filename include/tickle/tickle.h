@@ -97,7 +97,7 @@ struct tt_LockStats {
 #if tt_FRAG_ENABLED
 // Bytes of struct tt_DataHeader, which is defined further down with the rest of the wire format;
 // tickle.c checks the two agree.
-#define tt_FRAG_DATA_HEADER_LENGTH 20
+#define tt_FRAG_DATA_HEADER_LENGTH 16
 
 // One sample being put back together from its fragments (tt_SUBMESSAGE_TYPE_FRAG_FIRST/_CONT) - see
 // process_frag() in tickle.c. A node holds tt_FRAG_REASSEMBLY_SLOTS of these, shared by every sender
@@ -1937,7 +1937,7 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // Bumped 6 -> 7 for DATA_FRAG step 2 (rmw_tickle/DATAFRAG_PLAN.md section 6): the discovery announce
 // became a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID), and UPDATE/UPDATE_PART were
 // retired.
-#define tt_VERSION 9
+#define tt_VERSION 10
 
 struct tt_Header {
     union {
@@ -1949,6 +1949,22 @@ struct tt_Header {
 } __attribute__((packed));
 
 #define tt_SUBMESSAGE_ID_ALL 0xff
+
+// Since tt_VERSION 10 (rmw_tickle/WIRE_PLAN.md W4): a datagram that carries exactly one submessage, addressed to
+// everyone (receiver tt_SUBMESSAGE_ID_ALL) - a broadcast or unicast DATA, a fragment, a HEARTBEAT, the discovery
+// summary - goes with this 4-byte header in place of tt_Header + tt_SubmessageHeader (8 bytes). The
+// submessage's length is the rest of the datagram. `marker` is the first byte of the sender's tt_Header magic
+// in lower case - 'k' from a little-endian sender, 't' from a big-endian one - which also says how to read the
+// rest; everything else is as in the two headers it replaces. Four bytes, so what follows stays 4-aligned.
+struct tt_SingleHeader {
+    uint8_t marker;
+    uint8_t version;
+    uint8_t source;
+    uint8_t type;
+} __attribute__((packed));
+#define tt_SINGLE_MARKER_FLAG 0x20U // what turns the magic's first byte into the marker
+#define tt_SINGLE_MARKER_LE 'k'     // 'K' | tt_SINGLE_MARKER_FLAG
+#define tt_SINGLE_MARKER_BE 't'     // 'T' | tt_SINGLE_MARKER_FLAG
 
 // Type 1 was UPDATE and type 7 UPDATE_PART, the discovery announce, until tt_VERSION 7 made the
 // announce a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID below). Retired, not free:
@@ -2091,7 +2107,11 @@ struct tt_UpdateEntity {
 struct tt_DataHeader {
     uint32_t endpoint_id; // endpoint id for subscriber lookup
     uint32_t seq_no;
-    uint64_t timestamp;
+    // Since tt_VERSION 10 (rmw_tickle/WIRE_PLAN.md W2): the low 32 bits of the sender's clock in
+    // microseconds, 4 bytes where a 64-bit nanosecond count took 8. The receiver rebuilds the rest from its
+    // own clock (timestamp_from_wire(), tickle.c), taking the sender's to be within half the 32-bit range,
+    // +-35.8 min, of its own; callbacks still get nanoseconds, at microsecond precision.
+    uint32_t timestamp;
     // Milestone 47 - the *sending* Publisher's own struct tt_Endpoint.entity_id (see its own doc
     // comment), distinguishing this specific Publisher instance from any other one sharing
     // endpoint_id above. header->source (struct tt_Header, message-level) already narrows this to
