@@ -91,6 +91,7 @@ uint64_t test_mock_receive_data_advance_ns = 0; // a wait that ends with a datag
 int test_mock_try_receive_remaining = 0;        // tt_try_receive() hands back this many more datagrams ...
 int32_t test_mock_try_receive_len = 0;          // ... of this length, whatever the buffer holds ...
 uint64_t test_mock_try_receive_advance_ns = 0;  // ... each this much later than the one before
+int test_mock_try_receive_calls = 0;            // every tt_try_receive() call, datagram or not
 #else
 extern uint64_t test_mock_now;
 extern int32_t test_mock_node_id;
@@ -119,6 +120,7 @@ extern uint64_t test_mock_receive_data_advance_ns;
 extern int test_mock_try_receive_remaining;
 extern int32_t test_mock_try_receive_len;
 extern uint64_t test_mock_try_receive_advance_ns;
+extern int test_mock_try_receive_calls;
 #endif
 
 // Call at the start of each test case so one test's overrides can't leak into the next.
@@ -150,6 +152,7 @@ static inline void test_mock_reset(void) {
     test_mock_try_receive_remaining = 0;
     test_mock_try_receive_len = 0;
     test_mock_try_receive_advance_ns = 0;
+    test_mock_try_receive_calls = 0;
 }
 
 // A datagram as sent, in the classic form a test's decoder reads: one in the single-submessage form
@@ -356,6 +359,7 @@ int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip
     // By default the mock feeds at most the one datagram test_mock_receive_return describes, via tt_receive()
     // above - tt_Node_poll()'s drain loop then immediately sees "nothing more waiting" here and stops. A test
     // that needs a backlog sets test_mock_try_receive_remaining: that many more, the buffer left as it is.
+    test_mock_try_receive_calls++;
     if (test_mock_try_receive_remaining > 0) {
         test_mock_try_receive_remaining--;
         test_mock_now += test_mock_try_receive_advance_ns;

@@ -292,6 +292,48 @@ static void test_a_long_drain_keeps_its_stamps_fresh(void) {
     EXPECT_TRUE(node.traffic_last_seen[STAMP_SOURCE] >= last_arrived - (tt_RX_CLOCK_REFRESH * tt_MICROSECOND));
 }
 
+// RMW_PERF_PLAN.md 9, R2: a wakeup that brings one datagram is followed by a drain whose read finds nothing -
+// on the latency path, before the poll returns. After tt_RX_DRAIN_SKIP_AFTER such drains in a row it is skipped,
+// but every tt_RX_DRAIN_PROBE_EVERY-th wakeup still drains, and one that finds something ends the skipping.
+#define WAKEUPS 40
+static void test_empty_drains_are_skipped_after_a_run_of_them(void) {
+    struct tt_Node node;
+    setup(&node);
+    node.id = 1;
+    test_mock_now = tt_SECOND;
+    test_mock_receive_return = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
+    for (int i = 0; i < WAKEUPS; i++) {
+        (void)tt_Node_poll(&node, -1);
+    }
+    // Drains: the first tt_RX_DRAIN_SKIP_AFTER, then one probe per tt_RX_DRAIN_PROBE_EVERY wakeups.
+    int drains_at_most = tt_RX_DRAIN_SKIP_AFTER + (WAKEUPS / tt_RX_DRAIN_PROBE_EVERY) + 1;
+    EXPECT_TRUE(test_mock_try_receive_calls <= drains_at_most);
+    EXPECT_TRUE(test_mock_try_receive_calls >= tt_RX_DRAIN_SKIP_AFTER + 1); // it does still probe
+}
+
+static void test_a_probe_that_finds_a_backlog_ends_the_skipping(void) {
+    struct tt_Node node;
+    setup(&node);
+    node.id = 1;
+    test_mock_now = tt_SECOND;
+    int32_t len = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
+    test_mock_receive_return = len;
+    for (int i = 0; i < tt_RX_DRAIN_SKIP_AFTER + 1; i++) {
+        (void)tt_Node_poll(&node, -1); // now skipping
+    }
+    test_mock_try_receive_remaining = 5; // a burst queues behind a skipped drain
+    test_mock_try_receive_len = len;
+    int wakeups = 0;
+    while (test_mock_try_receive_remaining > 0 && wakeups < tt_RX_DRAIN_PROBE_EVERY + 1) {
+        (void)tt_Node_poll(&node, -1);
+        wakeups++;
+    }
+    EXPECT_EQ_INT(0, test_mock_try_receive_remaining); // a probe took it, within one probe period
+    int calls = test_mock_try_receive_calls;
+    (void)tt_Node_poll(&node, -1);
+    EXPECT_TRUE(test_mock_try_receive_calls > calls); // and the next wakeup drains again
+}
+
 int main(void) {
     test_negative_poll_waits_until_the_next_entry();
     test_negative_poll_with_nothing_scheduled_blocks_indefinitely();
@@ -305,6 +347,8 @@ int main(void) {
     test_flush_arms_once_and_does_not_tick_when_idle();
     test_a_datagram_after_a_long_wait_is_stamped_when_it_arrived();
     test_a_long_drain_keeps_its_stamps_fresh();
+    test_empty_drains_are_skipped_after_a_run_of_them();
+    test_a_probe_that_finds_a_backlog_ends_the_skipping();
 
     if (test_result() != 0) {
         return 1;

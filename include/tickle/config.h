@@ -270,6 +270,17 @@
 #ifndef tt_RX_CLOCK_REFRESH
 #define tt_RX_CLOCK_REFRESH 16
 #endif
+// The drain after a blocking wakeup (RMW_PERF_PLAN.md 9, R2): once this many in a row have found nothing, it is
+// skipped - a ping-pong's wakeup brings one datagram, and the drain's read then only returns EAGAIN, on the
+// latency path before the poll returns - except every tt_RX_DRAIN_PROBE_EVERY-th wakeup, which drains anyway.
+// Any drain that finds something ends the skipping at once. A datagram a skipped drain would have taken is
+// taken by the next poll, whose ppoll() returns at once for it.
+#ifndef tt_RX_DRAIN_SKIP_AFTER
+#define tt_RX_DRAIN_SKIP_AFTER 2
+#endif
+#ifndef tt_RX_DRAIN_PROBE_EVERY
+#define tt_RX_DRAIN_PROBE_EVERY 16
+#endif
 // A positive poll slice some callers pass explicitly (rmw_tickle's poll thread), and the most back-to-
 // back scheduler work a negative-timeout tt_Node_poll() runs before handing control back. It used to be
 // what a negative timeout waited, too; since 2026-09-25 that waits for the scheduler instead - see

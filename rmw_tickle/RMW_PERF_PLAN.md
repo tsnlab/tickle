@@ -611,3 +611,24 @@ judge):**
     instant before, and a later arrival is seen by the next poll.
   - Predicted: -0.3 to -0.6 us per wakeup.
 - **Not rmw's to change:** rclcpp's executor, ~2.4 us (p90 5-8 us). It is the same for every rmw.
+
+### 9.1 R2 measured (Dev, 2026-09-27, branch `r2-adaptive-drain`): the empty read goes, the latency does not move
+
+- **The measurement first.**
+  - strace -c on the pong, ~940 round trips at a 5 ms gap: 2087 `recvfrom()`, of which 1043 returned EAGAIN. That is
+    1.1 empty reads per round trip. Here the rmw build reads one datagram at a time (`tt_RX_BATCH` 1, its buffer
+    being larger than a control datagram).
+  - The empty read is the drain after the blocking wakeup, and it sits on the latency path, before the poll returns.
+- **The change.** The drain after a blocking wakeup is skipped once 2 in a row have found nothing, except every 16th
+  wakeup, and any drain that finds something ends the skipping (`tt_RX_DRAIN_SKIP_AFTER`,
+  `tt_RX_DRAIN_PROBE_EVERY`).
+  - Tests: skipping after a run, still probing, and a probe that finds a burst ends it.
+  - Mutants: never skip, never probe, never reset. Each fails.
+- **Result.**
+  - Empty reads: 1.1 -> 0.07 per round trip (strace, 956 round trips).
+  - The stamped segment that holds the read, callback -> release, is 0.28-0.29 us in both arms: 3 alternating runs
+    each of main and the branch, ~975 round trips each.
+  - RTT medians: 45.9-51.2 us on main and 46.4-56.9 us on the branch, within run-to-run noise.
+- **Verdict: FAIL on §9's rule.** The veth RTT is not better beyond 2 x SE, and the empty read costs no latency that
+  the stamps can resolve. It saves one syscall of CPU per wakeup, which is not what the candidate was for. It does
+  not go to the rig; the branch stays for the record.

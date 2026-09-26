@@ -1954,6 +1954,8 @@ static void node_init_locks(struct tt_Node* node) {
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_seq, 0, __ATOMIC_RELAXED);
     node->rx_clock_ns = 0;
+    node->rx_drain_misses = 0;
+    node->rx_drain_probe = 0;
     __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->responses_ready, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
@@ -9032,6 +9034,22 @@ static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
     return tt_RET_OK;
 }
 
+// The drain after a blocking wakeup, skipped while recent ones have found nothing (R2, tt_RX_DRAIN_SKIP_AFTER).
+static tt_ret_t drain_after_wakeup(struct tt_Node* node, tt_ret_t first_result) {
+    if (node->rx_drain_misses >= tt_RX_DRAIN_SKIP_AFTER && ++node->rx_drain_probe < tt_RX_DRAIN_PROBE_EVERY) {
+        return first_result; // what is still queued, the next poll takes: its ppoll() returns at once
+    }
+    node->rx_drain_probe = 0;
+    uint64_t before = node->rx_datagrams;
+    tt_ret_t result = drain_rx(node, first_result);
+    if (node->rx_datagrams != before) {
+        node->rx_drain_misses = 0;
+    } else if (node->rx_drain_misses < UINT8_MAX) {
+        node->rx_drain_misses++;
+    }
+    return result;
+}
+
 // Whether a scheduler entry is due at `now`.
 static bool scheduler_entry_due(struct tt_Node* node, uint64_t now) {
     uint64_t next = 0;
@@ -9169,7 +9187,9 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
     }
 
     if (handle_receive_result(node, len, ip, port, woke_for_scheduler, result)) {
-        *result = drain_rx(node, *result);
+        if (len >= 0) {
+            *result = drain_after_wakeup(node, *result);
+        }
         return true;
     }
     return false;

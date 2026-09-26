@@ -303,6 +303,10 @@ struct tt_Node {
     // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
     // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
     uint64_t rx_clock_ns;
+    // R2 (RMW_PERF_PLAN.md 9): drains after a blocking wakeup that found nothing, in a row (capped), and the
+    // wakeups since the last one drained regardless - see tt_RX_DRAIN_SKIP_AFTER. Only the poller touches them.
+    uint8_t rx_drain_misses;
+    uint8_t rx_drain_probe;
     // Responses tt_Server_send_response() has made READY since the poll last looked, from any thread: a poll
     // takes the state lock for flush_pending_responses() only when this is non-zero (OPTIMIZATION_PLAN.md 11,
     // D3). Accessed only through __atomic builtins.
