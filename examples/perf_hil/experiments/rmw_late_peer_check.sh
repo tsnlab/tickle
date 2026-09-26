@@ -21,7 +21,15 @@
 # flush tick and pulled the first samples into its broadcast - hence publishing now flushes a pending
 # broadcast first and unicasts from an empty buffer.
 #
-# Usage: rmw_late_peer_check.sh <reps>   Results: $OUT (default /tmp/rmw_late_peer_check.txt)
+# RE-USED 2026-09-26 for rmw_publisher_count_matched_subscriptions() (STASH_PATHS=rmw_graph.c): counting the
+# graph let the ping's wait for a match end before the core registered the peer, so its first sample went
+# by broadcast (Plan's M6 pcaps: the ping topic's endpoint, 5 of 24 rig pings). HOW TO READ IT, written
+# before running: after, ping_rx_self_sent_data is 0 in every rep; before shows it in some (the control -
+# if before is 0 in all 10 on this PC, the race does not reproduce here and the rig's M6 capture decides).
+# The pong's own first reply can still go by broadcast when it has not yet heard the ping's Subscription
+# (its announce after the ping's Publisher's); that is pong-side and not what this counts.
+#
+# Usage: STASH_PATHS="<paths>" rmw_late_peer_check.sh <reps>   Results: $OUT (default /tmp/rmw_late_peer_check.txt)
 # Rebuilds rmw_tickle in this checkout twice; nothing else may build in it meanwhile.
 set -u
 REPS=${1:?usage: rmw_late_peer_check.sh <reps>}
@@ -87,7 +95,8 @@ run_one() { # <arm>
 }
 
 : >"$OUT"
-git -C "$REPO" stash push -q -m rmw_late_peer_check -- src/tickle.c include/tickle/tickle.h || exit 1
+# shellcheck disable=SC2086 # STASH_PATHS is a list of paths on purpose
+git -C "$REPO" stash push -q -m rmw_late_peer_check -- ${STASH_PATHS:-src/tickle.c include/tickle/tickle.h} || exit 1
 build_rmw
 for _ in $(seq 1 "$REPS"); do run_one before; done
 git -C "$REPO" stash pop -q

@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <tickle/config.h> // tt_MAX_DISCOVERED_ENTITIES, tt_NODE_ID_INVALID
 #include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE
 
 #include "rcutils/allocator.h"
@@ -386,6 +387,43 @@ int main(void) {
     assert(RMW_QOS_POLICY_RELIABILITY == requested_qos_status.last_policy_kind);
 
     assert(RMW_RET_OK == rmw_destroy_subscription(node, requested_sub));
+
+    // rmw_publisher_count_matched_subscriptions() (2026-09-26): a discovered remote Subscription is matched
+    // only once the core has registered its node as this Publisher's peer - not as soon as the graph shows
+    // it, which let a caller waiting for a match send its first sample by broadcast. Control: the graph
+    // count sees the Subscription from the start.
+    rmw_qos_profile_t matched_qos = base_qos();
+    rmw_publisher_t* matched_pub =
+        rmw_create_publisher(node, type_support, "matched_count_topic", &matched_qos, &pub_opts);
+    assert(NULL != matched_pub);
+    rmw_tickle_publisher_t* matched_impl = (rmw_tickle_publisher_t*)matched_pub->data;
+    tt_Node_lock(&context_impl->tickle_node);
+    struct tt_DiscoveredEntity* remote_sub = &context_impl->discovery.entities[tt_MAX_DISCOVERED_ENTITIES - 1];
+    assert(tt_NODE_ID_INVALID == remote_sub->node_id);
+    remote_sub->node_id = FAKE_REMOTE_NODE_ID;
+    remote_sub->kind = tt_KIND_TOPIC_SUBSCRIBER;
+    remote_sub->qos = 0; // compatible with base_qos()
+    remote_sub->alive = true;
+    snprintf(remote_sub->type, sizeof(remote_sub->type), "test_events/msg/FakeMsg");
+    snprintf(remote_sub->name, sizeof(remote_sub->name), "matched_count_topic");
+    tt_Node_unlock(&context_impl->tickle_node);
+    tt_Node_lock(&context_impl->tickle_node);
+    size_t in_graph = rmw_tickle_count_matching_locked(context_impl, "matched_count_topic", tt_KIND_TOPIC_SUBSCRIBER);
+    tt_Node_unlock(&context_impl->tickle_node);
+    assert(1 == in_graph);     // control: the graph count, what matched used to be
+    size_t matched = SIZE_MAX; // overwritten by every call below
+    assert(RMW_RET_OK == rmw_publisher_count_matched_subscriptions(matched_pub, &matched));
+    assert(0 == matched); // discovered, not yet a peer
+    tt_Node_lock(&context_impl->tickle_node);
+    matched_impl->tickle_publisher.peers[0].node_id = FAKE_REMOTE_NODE_ID; // what peer registration does
+    tt_Node_unlock(&context_impl->tickle_node);
+    assert(RMW_RET_OK == rmw_publisher_count_matched_subscriptions(matched_pub, &matched));
+    assert(1 == matched);
+    tt_Node_lock(&context_impl->tickle_node);
+    matched_impl->tickle_publisher.peers[0].node_id = tt_NODE_ID_INVALID;
+    remote_sub->node_id = tt_NODE_ID_INVALID;
+    tt_Node_unlock(&context_impl->tickle_node);
+    assert(RMW_RET_OK == rmw_destroy_publisher(node, matched_pub));
 
     assert(RMW_RET_OK == rmw_destroy_wait_set(wait_set));
     assert(RMW_RET_OK == rmw_destroy_node(node));

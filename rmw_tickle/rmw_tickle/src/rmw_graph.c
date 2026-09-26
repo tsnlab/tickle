@@ -431,6 +431,44 @@ rmw_ret_t rmw_count_services(const rmw_node_t* node, const char* service_name, s
 // DiscoveredEntity.qos and comparing, QoS roadmap #1's own RxO matching machinery, Milestone 31),
 // matching rmw_count_publishers()/_subscribers()'s own pre-existing, unfiltered scope exactly
 // rather than introducing an inconsistency between two otherwise-identical counting functions.
+// The Subscriptions this Publisher is actually matched with: local ones on its topic, and remote ones whose
+// node the core has registered as this Publisher's peer - which is when its samples start going there by
+// unicast. Counting the whole graph instead (as until 2026-09-26) reported a remote Subscription as matched
+// as soon as it was discovered, before the peer was registered (the node's list is re-read on the peer's
+// next announce, reprocess_known_announces() in tickle.c), so a caller waiting for a match - the ping-pong's
+// ping - sent its first sample by broadcast (Plan's M6 capture: 5 of 24 pings). An incompatible Subscription
+// is never a peer, so it is not counted either, as DDS does not match it. With the peer table full the
+// core broadcasts to everyone, so every discovered Subscription counts.
+static size_t count_matched_subscriptions_locked(rmw_tickle_publisher_t* pub_impl, const char* topic_name) {
+    rmw_tickle_context_impl_t* context_impl = pub_impl->node->context_impl;
+    const struct tt_Publisher* pub = &pub_impl->tickle_publisher;
+    size_t matched = 0;
+    for (uint32_t i = 0; i < context_impl->tickle_node.endpoint_count; ++i) {
+        const struct tt_Endpoint* endpoint = context_impl->tickle_node.endpoints[i];
+        if (endpoint->kind == tt_KIND_TOPIC_SUBSCRIBER && strcmp(endpoint->name, topic_name) == 0) {
+            matched++;
+        }
+    }
+    size_t peers = 0;
+    for (int i = 0; i < tt_MAX_PEER_COUNT; ++i) {
+        peers += pub->peers[i].node_id != tt_NODE_ID_INVALID;
+    }
+    uint64_t now = tt_get_ns();
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        if (entity->node_id == tt_NODE_ID_INVALID || entity->kind != tt_KIND_TOPIC_SUBSCRIBER ||
+            strcmp(entity->name, topic_name) != 0 || !tt_Node_entity_alive(&context_impl->tickle_node, entity, now)) {
+            continue;
+        }
+        bool is_peer = peers >= tt_MAX_PEER_COUNT;
+        for (int peer = 0; peer < tt_MAX_PEER_COUNT && !is_peer; ++peer) {
+            is_peer = pub->peers[peer].node_id == entity->node_id;
+        }
+        matched += is_peer;
+    }
+    return matched;
+}
+
 rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publisher, size_t* subscription_count) {
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(publisher, RMW_RET_INVALID_ARGUMENT);
     RCUTILS_CHECK_ARGUMENT_FOR_NULL(subscription_count, RMW_RET_INVALID_ARGUMENT);
@@ -440,8 +478,9 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publi
     }
 
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
-    *subscription_count =
-        count_matching_via_context_impl(pub_impl->node->context_impl, publisher->topic_name, tt_KIND_TOPIC_SUBSCRIBER);
+    tt_Node_lock(&pub_impl->node->context_impl->tickle_node);
+    *subscription_count = count_matched_subscriptions_locked(pub_impl, publisher->topic_name);
+    tt_Node_unlock(&pub_impl->node->context_impl->tickle_node);
     return RMW_RET_OK;
 }
 
