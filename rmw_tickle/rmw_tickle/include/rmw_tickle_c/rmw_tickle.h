@@ -265,7 +265,7 @@ struct rmw_tickle_context_impl_t {
     pthread_t poll_thread; // NOLINT(misc-include-cleaner) - see this file's own <pthread.h> comment
     volatile bool poll_thread_running;
 
-    // Executor-driven receive (RMW_PERF_PLAN.md, 2026-09-26; RMW_TICKLE_EXECUTOR_POLL=1). A blocking
+    // Executor-driven receive (RMW_PERF_PLAN.md, 2026-09-26; on by default, RMW_TICKLE_EXECUTOR_POLL=0 off). A blocking
     // rmw_wait() polls the node itself instead of sleeping on wait_cond, so a message is received,
     // delivered and found ready on the thread that returns it - no poll thread -> executor wake on the
     // way. One rmw_wait() at a time holds the role (executor_polling); the others wait on wait_cond as

@@ -232,8 +232,10 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* const conte
         options->allocator.deallocate(impl, options->allocator.state);
         return RMW_RET_ERROR;
     }
+    // Executor-driven receive, on by default since its rig A/B passed (RMW_PERF_PLAN.md 8.4, 2026-09-27: block
+    // RTT -7 to -13 us, pong CPU not up); RMW_TICKLE_EXECUTOR_POLL=0 turns it off, for A/B runs.
     const char* executor_poll = getenv("RMW_TICKLE_EXECUTOR_POLL");
-    impl->executor_poll_enabled = NULL != executor_poll && '1' == executor_poll[0];
+    impl->executor_poll_enabled = NULL == executor_poll || '0' != executor_poll[0];
     if (pthread_mutex_init(&impl->registry_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize context registry_mutex");
         pthread_cond_destroy(&impl->handover_cond);
