@@ -52,16 +52,28 @@ LOCAL="$(mktemp -d /tmp/core_cost_pi.XXXXXX)"
 trap 'rm -rf "$LOCAL"' EXIT
 
 "${SSH[@]}" "rm -rf $REMOTE && mkdir -p $REMOTE/harness"
-tar -C "$REPO/examples/perf_hil" -cf - experiments/core_cost_bench.c tickle/common/p1 |
+# BENCH=socket: experiments/core_cost_socket.c instead - the same scheduler-driven RELIABLE loop through the real HAL
+# (hal_linux.c, real UDP sockets on the Pi's own interface, WIRE_PLAN.md 8.8). BENCH_BROADCAST is that interface's
+# broadcast address (default the rig link's); BENCH_ARGS does not apply.
+BENCH="${BENCH:-core}"
+BENCH_BROADCAST="${BENCH_BROADCAST:-192.168.10.255}"
+tar -C "$REPO/examples/perf_hil" -cf - experiments/core_cost_bench.c experiments/core_cost_socket.c tickle/common/p1 |
     "${SSH[@]}" "tar -C $REMOTE/harness -xf -"
 
 for ref in "$@"; do
     sha="$(git -C "$REPO" rev-parse --short=8 "$ref")"
     git -C "$REPO" archive "$sha" src include | "${SSH[@]}" "mkdir -p $REMOTE/$sha && tar -C $REMOTE/$sha -xf -"
     # Built there, the old binary removed first, and a failure is fatal here.
-    if ! "${SSH[@]}" "cd $REMOTE && rm -f bench_$sha && gcc -O2 -DNDEBUG -I$sha/include -Iharness/tickle/common/p1 \
+    if [ "$BENCH" = socket ]; then
+        build="gcc -O2 -DNDEBUG -I$sha/include -Iharness/tickle/common/p1 -o bench_$sha \
+            harness/experiments/core_cost_socket.c harness/tickle/common/p1/Bench.c $sha/src/tickle.c \
+            $sha/src/hal_linux.c $sha/src/encoding.c $sha/src/log.c -lm -lpthread"
+    else
+        build="gcc -O2 -DNDEBUG -I$sha/include -Iharness/tickle/common/p1 \
             -DTICKLE_C='\"$REMOTE/$sha/src/tickle.c\"' -o bench_$sha harness/experiments/core_cost_bench.c \
-            harness/tickle/common/p1/Bench.c $sha/src/encoding.c $sha/src/log.c -lm -lpthread && test -x bench_$sha"; then
+            harness/tickle/common/p1/Bench.c $sha/src/encoding.c $sha/src/log.c -lm -lpthread"
+    fi
+    if ! "${SSH[@]}" "cd $REMOTE && rm -f bench_$sha && $build && test -x bench_$sha" </dev/null; then
         echo "build of $ref ($sha) on $PI failed" >&2
         exit 1
     fi
@@ -69,12 +81,12 @@ for ref in "$@"; do
 done
 
 : >"$OUT"
-echo "core_cost_pi $(date -Is) pi=$PI rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} refs=$*" >>"$OUT"
+echo "core_cost_pi $(date -Is) pi=$PI bench=$BENCH rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} refs=$*" >>"$OUT"
 for round in $(seq "$ROUNDS"); do
     while read -r ref sha; do
         # </dev/null: ssh would otherwise read the rest of the refs file this loop is reading, and every round
         # would run the first ref only (2026-09-27, the first Pi run; PI=local cannot show it, bash -c reads nothing).
-        line="$("${SSH[@]}" "taskset -c $CPU $REMOTE/bench_$sha $SAMPLES ${BENCH_ARGS:-} 2>/dev/null" </dev/null |
+        line="$("${SSH[@]}" "BENCH_BROADCAST=$BENCH_BROADCAST taskset -c $CPU $REMOTE/bench_$sha $SAMPLES ${BENCH_ARGS:-} 2>/dev/null" </dev/null |
             grep -E '^(RESULT|PUBLISH):' | tr '\n' ' ' || true)"
         [ -n "$line" ] || line="RESULT: failed"
         echo "ref=$ref round=$round $line" >>"$OUT"
@@ -101,10 +113,21 @@ for ref in refs:
     v = statistics.median(float(x["recv_ns_per_sample"]) for x in runs)
     line = f"{ref}: n={len(runs)} send median {s:.1f} ns, recv median {v:.1f} ns"
     if ref != base:
-        for key, name in (("send_ns_per_sample", "send"), ("recv_ns_per_sample", "recv")):
+        keys = [("send_ns_per_sample", "send"), ("recv_ns_per_sample", "recv")]
+        if "send_utime_ns_per_sample" in runs[0]:
+            keys += [("send_utime_ns_per_sample", "send utime"), ("send_stime_ns_per_sample", "send stime"),
+                     ("recv_utime_ns_per_sample", "recv utime")]
+        for key, name in keys:
             d = [float(r[ref][key]) - float(r[base][key]) for r in rows.values() if ref in r and base in r]
             if len(d) > 1:
                 line += f"; {name} vs {base} {statistics.mean(d):+.2f} +- {statistics.stdev(d) / len(d) ** 0.5:.2f}"
+        if "send_utime_ns_per_sample" in runs[0]:
+            # The user/system split moves with the tick that happens to land (seen on the PC: a ref against itself
+            # +-140 ns at 2 rounds); their sum is the steadier figure.
+            cpu = lambda x: float(x["send_utime_ns_per_sample"]) + float(x["send_stime_ns_per_sample"])
+            d = [cpu(r[ref]) - cpu(r[base]) for r in rows.values() if ref in r and base in r]
+            if len(d) > 1:
+                line += f"; send user+sys vs {base} {statistics.mean(d):+.2f} +- {statistics.stdev(d) / len(d) ** 0.5:.2f}"
     print(line)
 EOF
 echo "PI_DONE"
