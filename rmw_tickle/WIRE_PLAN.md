@@ -258,3 +258,47 @@ with a benchmark of TickLE core alone: `experiments/core_cost_bench.c`, driven b
 For the ABBA campaign against `8f3811f4`: the build to use is this commit.
 
 The rmw half (block and the poll sweep, the rmw capture) follows in 8.2.
+
+## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
+
+**What it can save.**
+- The DATA header today is `endpoint_id`, `seq_no`, `timestamp` and `entity_id`, 16 B. A 2-byte writer handle in
+  place of the two ids gives 10 B.
+- The payload must start 4-aligned (the CDR-4 constraint of section 6.1), so the header rounds to 12 B, and the
+  saving is **4 B per DATA and FRAG_FIRST, not 6**:
+  - p1: 146 -> ~142 B per sample, about -2.7%;
+  - p2-p4: -0.1 to -0.3%.
+- On section 5's reading this moves no latency test and not p1 throughput (CPU-bound). At p4 (link-bound) it is
+  worth ~0.2% of rate.
+
+**Routing before the writer's list: a self-describing long form.**
+- A DATA may still carry today's two ids, plus the handle, for 20 B. A reader maps (source node, handle) -> (endpoint,
+  writer) from the first long form it sees, or from the writer's discovery list, which would carry each writer's
+  handle.
+- Once mapped, the short form routes with a direct table lookup, replacing today's hash probe on `endpoint_id` and
+  the linear writer-proxy search. That is a hypothesis for a small receive-CPU gain, to be measured with
+  `core_cost_bench.c` before anything is claimed.
+- When the writer sends the long form:
+  - **RELIABLE:** to a reader until that reader's first ACKNACK. The per-reader state exists already (`tt_PeerAck`).
+    A retransmission always goes long, so a reader that missed the mapping loses nothing: it NACKs and gets the
+    sample back in the long form.
+  - **BEST_EFFORT:** there are no acks. It uses the long form for a window after each new peer match, and on every
+    Nth sample thereafter (N = 16 costs 0.25 B per sample on average). A reader that lacks the mapping drops short
+    forms, counts them, and requests the writer's list. That request already exists (v8's discovery request).
+  - A writer broadcasting to readers it does not know is the hard case: a reader whose announce was lost. Today such
+    a reader matches from the first DATA. With W1 it waits up to N samples or one list round trip.
+- **Where it could regress:**
+  - the first-sample latency of a BEST_EFFORT late joiner;
+  - join tests under loss (M-type), where the announce that would flip the writer to the long form is lost;
+  - the receive path gains a second form and a mapping table, plus per-reader "mapped" state on the writer.
+
+**Recommendation.**
+- Under the user's literal condition ("every test better"), W1 does not qualify, for the same reason section 5
+  gives for all format candidates: it moves bytes, not the bound of any test. Its only plausible CPU gain is the
+  routing lookup, and that is a hypothesis.
+- Under Plan's reading (targets improve, nothing regresses), it is worth doing only if:
+  1. the core bench shows the direct lookup is at least as cheap as today's route, so no CPU regression can come
+     with it; and
+  2. the BEST_EFFORT join cases are measured with the Nth-sample long form against today, on the M-type join tests
+     at 0 and 5% loss.
+- Order if approved: the bench prototype of the lookup first (PC, an hour). Pre-register it here before code.
