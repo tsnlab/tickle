@@ -494,3 +494,42 @@ path handled another way. Deferred: ~1% of the round trip for a large change.
 Next for the rmw rows, in order:
 1. the ping-side executor lease (keep the role across a regular caller gap), guarded on idle CPU and timer latency;
 2. further wire versions (W5, W1) wait for the user's ruling on WIRE_PLAN's rule reading.
+
+### 8.6 A lease that follows the caller's cadence (pre-registered 2026-09-27, before code)
+
+**Why.** 8.4's rig gain was -7 to -13 us against the PC's -47 at the same 100 ms gap. The ping sleeps outside
+`rmw_wait()` for 100 ms, longer than the fixed 10 ms lease, so its poll thread takes the node back every
+round trip and the ping re-claims it after each publish: an interrupt, a wake and a park. Hypothesis: on the
+Pi that handover is slow enough that the reply is sometimes already there and is delivered by the poll thread,
+through the handoff executor-driven receive exists to remove. The pong never leaves `rmw_wait()` but for its
+callback, so it gains in full.
+
+**Change (Dev).**
+- The lease a release arms is 1.5 x how long the executor was last away (claim time - previous release),
+  clamped to 10-250 ms. A caller with a regular cadence up to ~160 ms keeps the role across its sleep; an
+  irregular one falls back towards 10 ms.
+- While the executor is away within its lease, the parked poll thread wakes only at core's next scheduler
+  deadline (new `tt_Node_next_due()`) and runs one non-blocking `tt_Node_poll(0)`: due entries on time, and
+  whatever arrived meanwhile drained. It never waits in `ppoll`, so the executor's re-claim finds the role
+  free and costs no thread switch.
+- Any `rmw_wait()` may still claim the role from an executor that is away (it is not polling), so a
+  MultiThreadedExecutor is never held up by another thread's lease.
+- Diagnostic: the shutdown line adds `delivered_by_executor=` and `delivered_by_poll_thread=`, which tests the
+  hypothesis above directly on the rig, in both arms.
+
+**How to read it** (rig, `rmw_crosshost_rtt.sh`, 100 ms gap, block and poll, Bench and Array1k, BE and REL,
+3 repetitions, this commit against its parent, both with executor-driven receive on):
+- **Pass:** block-mode RTT median falls beyond 2 x SE in every cell. Predicted: towards the PC's gain, i.e.
+  several us more than 8.4 in each cell. If the parent's ping shows a large `delivered_by_poll_thread` share
+  and this one shows ~0, the hypothesis is confirmed whatever the RTT does.
+- **Idle CPU:** an idle node (no traffic, 10 s, schedstat) must not rise beyond 2 x SE. An executor waiting in
+  `rmw_wait()` is unaffected by construction; the poll thread's scheduler wakes during an away period replace
+  its `ppoll` wakes one for one.
+- **Pong CPU and the poll control:** the pong's whole-run CPU and the poll-mode rows must not move beyond 2 x SE.
+- **Timer latency:** a unit test holds the role away for 100 ms within the lease; an entry scheduled 20 ms in
+  must fire within 1 ms of its time, on the poll thread. A test that a second thread's `rmw_wait()` claims
+  from an away executor at once.
+- **Known cost, stated in advance:** a datagram arriving while no `rmw_wait()` runs and no core entry falls
+  due waits until the executor returns, the next core entry (<= 1 s), or the lease's end (<= 250 ms). The
+  RELIABLE cells carry the ACK traffic that would show it; they are in the pass criterion.
+- Any criterion failing: the change is not merged and these numbers are recorded here.
