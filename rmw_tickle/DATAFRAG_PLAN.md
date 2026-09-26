@@ -443,3 +443,36 @@ every metric of the cell. Re-scored under it, step 1's c6 is TickLE against Cycl
 WIN or TIE except **server memory (LOSE)** and server wire bytes (DRAW, overlapping ranges). The
 baseline's c6, where TickLE delivered 98.8%, becomes all LOSE, which is the control showing that the
 rule bites TickLE too.
+
+## 11. p4 is won on every scored metric (reorder slots = window, 2026-09-26)
+
+`results/reorder_fix_2026-09-26.txt` and `_verdicts.txt`, build `e8be9fb3`, which is DATA_FRAG step 1
+without `sendmmsg`. Cells 4 and 6, 3 repetitions, scored under the section 10.1 rule. Every TickLE
+server row reported `window_samples=256 reorder_slots=256`, so the change was in effect. The sweep
+reported no VOID.
+
+**Totals: WIN 17, DRAW/TIE 3, LOSE 0.** FastDDS delivered 2,212 of 6,212 at c6 (64.4% missing), so it
+is excluded from c6 and listed as a DELIVERY FAILED.
+
+| pre-registered (section 10) | result |
+|---|---|
+| c6 server RSS about 2.45 MB, under CycloneDDS's 5,841 | **2,419 KB against CycloneDDS's 6,143: WIN** (was 13,061) |
+| packets per sample unchanged, or the slots are binding | **2.29-2.31**, unchanged; `drained=acked` in all 3 reps |
+| c4 server RSS unchanged (no loss, no slot touched) | 1,727 KB (was 1,731) |
+
+c6 throughput rose to 663 Mbps (653-673), against step 1's 558 (468-625). The ranges do not overlap,
+so the improvement is real, but it was not predicted and no mechanism has been checked. Retention
+under loss is now 70.5% (663 of 940), still short of section 5 item 2's 90.6%.
+
+The three non-wins:
+- `server.loss_pct` at c4 and c6: every framework reads 0. That is not a target.
+- **c4 `client.cpu_s_per_MB`: TIE at 0.005 against 0.005, which is a resolution artefact rather than
+  a tie.** The RESULT line prints this metric as `%.3f`, and at p4 the values are about 0.005, which
+  leaves one significant digit. The same quantity at usable resolution, `cpu_s_per_Msample`, is
+  12.6 against 14.1 with no overlap, and the two differ only by the fixed sample size. In step 1 the
+  same row read 0.004 against 0.005 and scored a WIN, so the verdict flips on rounding. The fix is
+  more digits in all three harnesses' RESULT lines. Until then this row's verdict carries no
+  information at p4.
+
+Next: the p4 build that goes into COMPARISON.MD is `sendmmsg` (`c3d7a955`) or later. It is expected to
+lower c4 client CPU toward the ipfrag build's 11.5 and leave bytes and packets unchanged.

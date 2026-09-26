@@ -1,0 +1,41 @@
+
+== c4 T p4 Q0 [none]
+   client.stime_s           tickle 2.28[2.26..2.29]       cyclon 2.05[2.03..2.08]  fastdd 3.94[3.91..3.96] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.372[0.36..0.391]     cyclon 0.671[0.643..0.693]  fastdd 1.7[1.68..1.73] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 1.36[1.36..1.37]       cyclon 2.31[2.28..2.33]  fastdd 2.09[2.04..2.15] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.424[0.418..0.433]    cyclon 1.45[1.42..1.49]  fastdd 2.04[1.98..2.08] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.005                  cyclon 0.005  fastdd 0.011                   TIE  (equal to cyclonedds)
+   client.cpu_s_per_Msample tickle 12.6[12.6..12.6]       cyclon 14.1[14.1..14.1]  fastdd 30.5[30.5..30.6] WIN
+   client.peak_rss_kb       tickle 2244[2236..2248]       cyclon 5529[5496..5548]  fastdd 28183[28144..28244] WIN
+   client.send_mbps         tickle 940[940..940]          cyclon 856[850..861]  fastdd 826[824..829]   WIN
+   client.wire_bytes_per_sample tickle 2933[2933..2933]       cyclon 2950  fastdd 3099                     WIN
+   server.cpu_s_per_MB      tickle 0.003                  cyclon 0.007  fastdd 0.008                   WIN
+   server.cpu_s_per_Msample tickle 8.52[8.47..8.55]       cyclon 19.4[19.4..19.5]  fastdd 22.4[22.1..22.8] WIN
+   server.loss_pct          tickle 0                      cyclon 0  fastdd 0                           TIE  (equal to cyclonedds, fastdds)
+   server.peak_rss_kb       tickle 1727[1724..1732]       cyclon 4892[4884..4900]  fastdd 14883[14880..14884] WIN
+   server.wire_bytes_per_sample tickle 2905                   cyclon 2914  fastdd 3046                     WIN
+
+== c6 T p4 Q0 [loss 5%]
+   DELIVERY FAILED: fastdds delivered 2212 of 6212 (64.4% missing)
+   -> fastdds excluded from this cell's verdicts: its per-sample
+      figures are over a truncated run. TickLE is scored against the vendors that
+      delivered everything (user decision 2026-09-26).
+   client.stime_s           tickle 2.02[2.01..2.05]       cyclon 0.0947[0.091..0.098]  fastdd 0.308[0.287..0.32] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.utime_s           tickle 0.357[0.349..0.37]     cyclon 0.0403[0.036..0.044]  fastdd 0.111[0.084..0.125] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.stime_s           tickle 1.28[1.27..1.28]       cyclon 0.102[0.091..0.114]  fastdd 0.053[0.048..0.058] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   server.utime_s           tickle 0.441[0.421..0.454]    cyclon 0.045[0.039..0.057]  fastdd 0.217[0.176..0.239] not-comparable  (absolute CPU over a fixed duration; see cpu_s_per_Msample)
+   client.cpu_s_per_MB      tickle 0.006                  cyclon 0.0147[0.014..0.015]                  WIN  (vs complete vendors only)
+   client.cpu_s_per_Msample tickle 16.1[16..16.2]         cyclon 40.5[39.7..41]                        WIN  (vs complete vendors only)
+   client.peak_rss_kb       tickle 2241[2236..2252]       cyclon 4899[4836..4976]                      WIN  (vs complete vendors only)
+   client.send_mbps         tickle 663[653..673]          cyclon 14.7[13.8..15.7]                      WIN  (vs complete vendors only)
+   client.wire_bytes_per_sample tickle 3195[3180..3210]       cyclon 3226[3217..3243]                      WIN  (vs complete vendors only)
+   server.cpu_s_per_MB      tickle 0.004                  cyclon 0.0157[0.015..0.016]                  WIN  (vs complete vendors only)
+   server.cpu_s_per_Msample tickle 11.6[11.5..11.7]       cyclon 43.9[42.7..44.6]                      WIN  (vs complete vendors only)
+   server.loss_pct          tickle 0                      cyclon 0                                     TIE  (equal to cyclonedds; vs complete vendors only)
+   server.peak_rss_kb       tickle 2419[2412..2424]       cyclon 6143[5756..6400]                      WIN  (vs complete vendors only)
+   server.wire_bytes_per_sample tickle 3165[3151..3180]       cyclon 3190[3181..3207]                      WIN  (vs complete vendors only)
+
+== totals over comparable metric-cells: WIN 17  DRAW/TIE 3  LOSE 0  VOID 0
+   plus 1 vendor delivery failure(s), each excluded from its cell's verdicts
+Every LOSE and every DRAW is an optimisation target and needs a named hypothesis before
+any code change (OPTIMIZATION_PLAN.md section 9).
