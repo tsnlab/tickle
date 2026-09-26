@@ -271,3 +271,66 @@ give ping_send, pong_turn, wire and ping_recv per rmw and mode, with wire as the
     ppoll+recvfrom against a blocking recvmsg, and socket options.
 - If no segment exceeds the best vendor by more than 5 us in block mode, the block-mode comparison has
   no path left to fix, and the work goes to poll mode's grid and to the broadcast race.
+
+### 8.1 Result, before the broadcast fix (`9a48b2be`, 2026-09-26)
+
+Bench, 2 repetitions × BEST_EFFORT/RELIABLE × poll/block × sysstamp off/on × 3 rmws: 48 rows, 0 void.
+The rows and split are in `results/rmw_sysstamp_2026-09-26/`; the pcaps and records stay in `/tmp`.
+Figures are means over the 4 rows of each cell, in us.
+
+**CONTROL 1 passes.** In block mode, the RTT on - off is 0.0 for rmw_tickle, +5.5 for CycloneDDS and +8.3
+for FastDDS, all within 10 us. pong_turn on - off is +0.8, +1.9 and +7.5. The first row's apparent
++16 us for rmw_tickle was a single poll-mode row, and poll mode cannot judge this.
+
+**CONTROL 2 as before.** The wire is 168 us for rmw_tickle and 172 for FastDDS. For CycloneDDS it is 160,
+and lower in RELIABLE (see section 8).
+
+**The poll-mode grid, confirmed on the rig** (`LOOP:`):
+
+| rmw | iterations per RTT | spin_some | real sleep |
+|---|---:|---:|---:|
+| rmw_tickle | 3.01 | 6.4 us | 156.8 us |
+| rmw_cyclonedds_cpp | 2.03 | 46.5 | 156.4 |
+| rmw_fastrtps_cpp | 2.03 | 64.8 | 158.2 |
+
+This is exactly the pre-registered 3 against 2. rmw_tickle's `spin_some()` is 7-10 times cheaper, so its
+cycle (~163 us) is shorter than a true round trip (~250 us) by less than the vendors' (~203 us). As a
+result its reply is caught a whole cycle later. Poll-mode RTT therefore depends on where each rmw's true
+RTT falls against a 100 us sleep chosen by the test program. A single sleep value is an arbitrary grid,
+not a property of the rmw.
+
+**The kernel-boundary split, block mode, sysstamp on:**
+
+| segment | rmw_tickle | CycloneDDS | FastDDS | kind |
+|---|---:|---:|---:|---|
+| ping app → send entry | **3.5** | 11.3 | 22.3 | user |
+| ping send entry → tap | **8.4** | 10.0 | 10.1 | kernel |
+| pong tap → ppoll return | 13.8 | - | - | kernel |
+| pong tap → recv return | 18.2 | **12.6** | 14.8 | kernel |
+| pong recv → send entry | **22.9** | 36.7 | 62.4 | user |
+| pong send entry → tap | **9.3** | 10.9 | 10.4 | kernel |
+| ping tap → ppoll return | 13.3 | - | - | kernel |
+| ping tap → recv return | 17.9 | 17.5 | **13.4** | kernel |
+| ping recv → app (mean) | **18.4** | 26.8 | 40.9 | user |
+
+Read against the pre-registration:
+- **rmw_tickle is fastest in every user segment**, ahead of the best vendor by 7.8-13.8 us.
+- **The only segment where it is more than 5 us behind the best vendor is the pong's kernel receive:**
+  18.2 against CycloneDDS's 12.6, so 5.6 us behind. That is a kernel segment, so it is socket usage.
+  - The vendors' data threads block in `recvmsg` and return with the datagram. rmw_tickle's poll thread
+    returns from `ppoll` (13.8 us after the tap, already slower than CycloneDDS's whole receive) and
+    then calls `recvfrom` (+4.4 us).
+  - On the ping side rmw_tickle equals CycloneDDS (17.9 against 17.5) and is 4.5 us behind FastDDS, which
+    is under the threshold.
+- The pong's receive thread and the thread that sends the reply are different threads in every sample,
+  for all three rmws. So the handoff to the executor is not a difference between them.
+
+**What this says to do next:**
+1. For rmw_tickle, the receive wake-up: `ppoll` over the well-known and data sockets, then a read.
+   CycloneDDS gives its data socket a thread of its own that blocks in `recvmsg`. That is a design
+   question for Dev, and bpftrace (installed under the rig lock) will show where inside the kernel the
+   extra time goes: IRQ, softirq, socket enqueue, or wake-up of a `ppoll` waiter against a `recvmsg` waiter.
+2. For the poll-mode test case, a sleep sweep instead of one arbitrary value: busy (0), 50, 100 and
+   200 us. That makes the result about the rmw rather than about one grid.
+3. The NIC's interrupt coalescing (`macb` rx-usecs/tx-usecs 49) is a candidate for much of the 168 us
+   wire. It affects all three alike and is a rig setting, so it is the user's call and is not changed here.
