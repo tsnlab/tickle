@@ -373,6 +373,22 @@ rows are `results/core_cost_pi_cR_2026-09-27.txt`. ns per sample against `8f3811
   the Pi of `8f3811f4` against `fd57b01d`, the same loop over UDP. If the head's alignment is the cause, building
   the single form so that the datagram's first byte stays 8-aligned is the fix. That is for the morning.
 
+### 8.7 The fix's rmw rows, A B B A: nothing confirmed WORSE (2026-09-27)
+
+`rmw_lease86_rig_chain.sh` with TAG=wire_v10fix_rmw, `8f3811f4` / `4dc7ad49` / `4dc7ad49` / `8f3811f4`. Each block has 3
+repetitions, IDLE_S=10, block mode and the poll control at 100 us, bench and array1k, both QoS. 48 + 48 ok rows, 0
+VOID. Raw rows are `results/wire_v10fix_rmw_{A_8f3811f4,B_4dc7ad49}_2026-09-27.txt`. Read by 8.3: 4 better, 49 held,
+3 WORSE.
+
+- **The round trip holds in every cell.** Block mode is -0.8 to +0.5% (t -1.5 to +1.1), and poll -0.2 to +0.3%. The
+  +1-2 us lean of 8.2's sequential run was the session, not the build.
+- **The WORSE rows are all chance candidates,** one cell each:
+  - the pong's peak RSS at bench BEST_EFFORT block (+7 KB);
+  - the pong's CPU at array1k RELIABLE block (+2.2%, t 2.3). The same metric holds in the other 7 cells.
+  - the ping's tick-counted CPU, which 8.3 rule 4 does not count.
+- **Result:** the rmw half of the rule is met at `4dc7ad49`. What still fails section 1 is the native reliable
+  client's CPU (8.4). Its cause lies outside the core loop (8.6).
+
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
 **What it can save.**
