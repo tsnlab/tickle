@@ -1,49 +1,48 @@
 #!/usr/bin/env bpftrace
-// The pong host's receive path, split inside the kernel, one line per ping (2026-09-26, RMW_PERF_PLAN.md
+// The pong host's receive path, split inside the kernel, one line per ping (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md
 // section 8.2). Run on the pong's Pi under sudo, while a row runs:
 //   bpftrace pong_rx_split.bt <pong tgid> <eth0 irq>
-// Every time is ns after the NIC's hard IRQ that starts a receive burst:
-//   napi   NAPI hands the frame to the stack (net:napi_gro_receive_entry)
-//   enq    UDP queues the datagram on a socket (__udp_enqueue_schedule_skb)
-//   rd     the socket's data_ready wakes its waiters (sock_def_readable)
-//   wk     the first of the pong's threads is woken (sched:sched_waking), wktid
-//   sw     that thread is switched in (sched:sched_switch)
-//   wait   a pong thread returns from ppoll/epoll_pwait (0: none; a thread blocked in recv* has no wait call)
-//          (aarch64 has no epoll_wait syscall - glibc implements it with epoll_pwait - so only these two exist
-//          there, and naming a missing tracepoint makes bpftrace refuse the whole script.)
-//   rx     a pong thread's recv* returns with data, rxtid
-//   wk2    after rx, the first other pong thread woken - the handoff to the executor, wk2tid
-//   sw2    that thread switched in
-//   send   a pong thread enters send*: the reply, sendtid
-// A burst is only printed when it ends in a send within 2 ms, so a discovery datagram (no reply) never
-// prints a line; a burst older than 2 ms is abandoned when the next IRQ arrives.
-BEGIN { @st = 0; printf("# pong_rx_split tgid %d irq %d\n", $1, $2); }
+// Every time is ns after NAPI hands a received frame to the stack (net:napi_gro_receive_entry), the start of a
+// burst. The eth0 IRQ also fires for transmit completions, so it cannot anchor a receive; irq2napi is the time
+// from the latest eth0 hard IRQ to that NAPI entry (interrupt coalescing and softirq scheduling).
+//   enq      UDP queues the datagram on a socket (__udp_enqueue_schedule_skb)
+//   rd       the socket's data_ready wakes its waiters (sock_def_readable)
+//   rx       a pong thread's recv* returns with data; rxtid is that thread
+//   wk_rx    when rxtid was woken (sched_waking) in this burst, sw_rx when it was switched in; 0 if it never
+//            slept (it was already running)
+//   wait     rxtid's return from ppoll/epoll_pwait (0 for a thread that blocks in recv* itself)
+//   wk_ex    when the main thread - the executor, which publishes the reply in all three rmws' pong - was woken
+//            in this burst, sw_ex when switched in (0 if the receiving thread is the executor, or it never slept)
+//   send     the main thread enters send*: the reply. The burst ends here.
+// A burst with no reply from the main thread within 2 ms (discovery, acks) is abandoned at the next NAPI entry.
+// aarch64 has no epoll_wait syscall (glibc implements it with epoll_pwait); naming a missing tracepoint makes
+// bpftrace refuse the whole script, so only ppoll and epoll_pwait are probed.
+BEGIN { @st = 0; printf("# pong_rx_split v2 tgid %d irq %d\n", $1, $2); }
 tracepoint:raw_syscalls:sys_enter /pid == $1/ { @tids[tid] = 1; }
-tracepoint:irq:irq_handler_entry /args->irq == $2/ {
+tracepoint:irq:irq_handler_entry /args->irq == $2/ { @tirq = nsecs; }
+tracepoint:net:napi_gro_receive_entry {
     if (@st == 0 || nsecs - @t0 > 2000000) {
-        @t0 = nsecs; @st = 1;
-        @napi = 0; @enq = 0; @rd = 0; @wk = 0; @wktid = 0; @sw = 0; @wait = 0;
-        @rx = 0; @rxtid = 0; @wk2 = 0; @wk2tid = 0; @sw2 = 0;
+        @t0 = nsecs; @st = 1; @irq2napi = nsecs - @tirq;
+        @enq = 0; @rd = 0; @rx = 0; @rxtid = 0; @wait = 0;
+        clear(@wk); clear(@sw);
     }
 }
-tracepoint:net:napi_gro_receive_entry /@st == 1 && @napi == 0/ { @napi = nsecs - @t0; }
 kprobe:__udp_enqueue_schedule_skb /@st == 1 && @enq == 0/ { @enq = nsecs - @t0; }
 kprobe:sock_def_readable /@st == 1 && @rd == 0/ { @rd = nsecs - @t0; }
-tracepoint:sched:sched_waking /@st == 1 && @wk == 0 && @tids[args->pid]/ { @wk = nsecs - @t0; @wktid = args->pid; }
-tracepoint:sched:sched_waking /@st == 1 && @rx != 0 && @wk2 == 0 && @tids[args->pid] && args->pid != @rxtid/ {
-    @wk2 = nsecs - @t0; @wk2tid = args->pid;
+tracepoint:sched:sched_waking /@st == 1 && @tids[args->pid] && @wk[args->pid] == 0/ { @wk[args->pid] = nsecs - @t0; }
+tracepoint:sched:sched_switch /@st == 1 && @tids[args->next_pid] && @wk[args->next_pid] != 0 && @sw[args->next_pid] == 0/ {
+    @sw[args->next_pid] = nsecs - @t0;
 }
-tracepoint:sched:sched_switch /@st == 1 && @wk != 0 && @sw == 0 && args->next_pid == @wktid/ { @sw = nsecs - @t0; }
-tracepoint:sched:sched_switch /@st == 1 && @wk2 != 0 && @sw2 == 0 && args->next_pid == @wk2tid/ { @sw2 = nsecs - @t0; }
 tracepoint:syscalls:sys_exit_ppoll,tracepoint:syscalls:sys_exit_epoll_pwait
-/pid == $1 && @st == 1 && @wait == 0 && args->ret > 0/ { @wait = nsecs - @t0; }
+/pid == $1 && @st == 1 && @rx == 0 && args->ret > 0/ { @waitt[tid] = nsecs - @t0; }
 tracepoint:syscalls:sys_exit_recvfrom,tracepoint:syscalls:sys_exit_recvmsg,tracepoint:syscalls:sys_exit_recvmmsg
-/pid == $1 && @st == 1 && @rx == 0 && args->ret > 0/ { @rx = nsecs - @t0; @rxtid = tid; }
+/pid == $1 && @st == 1 && @rx == 0 && args->ret > 0/ { @rx = nsecs - @t0; @rxtid = tid; @wait = @waitt[tid]; }
 tracepoint:syscalls:sys_enter_sendto,tracepoint:syscalls:sys_enter_sendmsg,tracepoint:syscalls:sys_enter_sendmmsg
-/pid == $1 && @st == 1 && @rx != 0/ {
-    printf("S napi=%d enq=%d rd=%d wk=%d wktid=%d sw=%d wait=%d rx=%d rxtid=%d wk2=%d wk2tid=%d sw2=%d send=%d sendtid=%d\n",
-           @napi, @enq, @rd, @wk, @wktid, @sw, @wait, @rx, @rxtid, @wk2, @wk2tid, @sw2, nsecs - @t0, tid);
+/pid == $1 && tid == $1 && @st == 1 && @rx != 0/ {
+    printf("S irq2napi=%d enq=%d rd=%d wk_rx=%d sw_rx=%d wait=%d rx=%d rxtid=%d wk_ex=%d sw_ex=%d send=%d\n",
+           @irq2napi, @enq, @rd, @wk[@rxtid], @sw[@rxtid], @wait, @rx, @rxtid, @wk[$1], @sw[$1], nsecs - @t0);
     @st = 0;
+    clear(@waitt);
 }
-END { clear(@tids); clear(@t0); clear(@st); clear(@napi); clear(@enq); clear(@rd); clear(@wk); clear(@wktid); clear(@sw);
-      clear(@wait); clear(@rx); clear(@rxtid); clear(@wk2); clear(@wk2tid); clear(@sw2); }
+END { clear(@tids); clear(@wk); clear(@sw); clear(@waitt); clear(@t0); clear(@st); clear(@tirq); clear(@irq2napi);
+      clear(@enq); clear(@rd); clear(@rx); clear(@rxtid); clear(@wait); }
