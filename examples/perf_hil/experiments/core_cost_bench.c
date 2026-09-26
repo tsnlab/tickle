@@ -271,7 +271,8 @@ struct options {
     bool micro;
     bool client; // publish from a self-rescheduling entry under tt_Node_poll(-1), as the throughput clients do
     bool concurrent_publisher; // -p: another thread publishes on the reader node through the receive phase
-    bool reliable;             // -R: RELIABLE KEEP_LAST 64, as the Q2 cell (c9); send and receive alternate in rounds
+    bool reliable; // -R: RELIABLE KEEP_LAST 64, as the Q2 cell (c9); send and receive alternate in rounds - or, with
+                   // -c, the clients' own loop (send_one rescheduling itself under tt_Node_poll(-1)) on that writer
 };
 
 static bool parse(int argc, char** argv, struct options* opt) {
@@ -624,7 +625,7 @@ int main(int argc, char** argv) {
     wire_count = 0;
     arena_used = 0;
     cursor[reader] = 0;
-    if (opt.reliable) {
+    if (opt.reliable && !opt.client) { // with -c: the clients' scheduler-driven send, on the reliable writer
         struct phase_totals totals = {0};
         received = 0;
         run_reliable(&opt, reader, &totals);
