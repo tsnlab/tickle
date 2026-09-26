@@ -9,17 +9,16 @@
  */
 
 // HIL 3-way QoS-matrix comparison, scenario "liveliness_loss_detection" (rmw_tickle/COMPARISON.md)
-// - TickLE core native subscriber role. Real peer-departure detection in TickLE is node-level, not
-// per-Publisher-entity (COMPARISON.md's own native-QoS table, corrected this same pass, read
-// directly from tickle.h): `tt_Node_set_discovery()` + `tt_DISCOVERY_CALLBACK` fires
-// `departed=true` on `check_liveliness()`'s own fixed timeout window
-// (`tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL`, config.h, ~3s) - independent of
-// whatever lease value `-T` announces on the wire (`sub.liveliness_lease_duration_ns` below is set
-// purely for RxO-matching parity with the DDS twins' own QoS, it does not change this detection
-// window at all). This is the real, expected, and worth-documenting difference from the DDS twins'
-// own per-entity, lease-configurable detection: TickLE's own number here should track its fixed
-// ~3s window regardless of `-T`, not the announced lease the way CycloneDDS/FastDDS's own results
-// do.
+// - TickLE core native subscriber role. `tt_Node_set_discovery()` + `tt_DISCOVERY_CALLBACK` fires
+// `departed=true` when the Publisher's announced lease (`-T`, client.c) runs out.
+//
+// Since tt_VERSION 9 (rmw_tickle/LIVELINESS_PLAN.md, 2026-09-26) that lease runs from the Publisher
+// node's last datagram - its last data sample, when it is killed mid-stream - and the verdict is a
+// timer at the expiry, so detect_latency_ms below measures what the DDS twins' figures measure and
+// should land within a scheduler tick of the lease, 4 s included. Before it the lease ran from the
+// last node announce with traffic only as a veto, a sweep once a second took the verdict, and any
+// lease above ~3 s was cut to the node-level limit: the bimodal ~500 ms spread and the 4 s -> ~3 s
+// figures in COMPARISON.md. The announce-anchored fields below are kept for comparing with those runs.
 //
 // Detection latency measured entirely from this process's own clock (last-received-sample
 // timestamp vs. departure-detected timestamp) - the same single-clock design principle the DDS
@@ -146,8 +145,8 @@ static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t e
         // of the function and update_last_seen from a later one further in. Every rep of the first
         // 60-rep run reported 18446744073709.551 ms - 2^64 ns - which is what that underflow looks
         // like once it reaches a double, and it destroys the magnitude the field exists to report.
-        // Anchored to the node UPDATE, which is the event that actually governs TickLE's lease.
-        // This is the field to quote against the CycloneDDS/FastDDS numbers: their harnesses
+        // Up to tt_VERSION 8 this - anchored to the node UPDATE - was the field to quote against the
+        // CycloneDDS/FastDDS numbers (since 9 detect_latency_ms is; see the head of this file): their harnesses
         // measure from the last received sample, and in DDS a sample is itself what refreshes the
         // lease, so their reference point and their expiry point are the same event and cancel -
         // which is why those figures land within ~1ms of the lease. TickLE refreshes the lease

@@ -1013,7 +1013,12 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // (qos_profile->liveliness == MANUAL_BY_TOPIC) is exactly what pub_impl->liveliness_lease_ns's
     // own "!= 0" sentinel already distinguishes.
     pub_impl->tickle_publisher.deadline_duration_ns = pub_impl->deadline_period_ns;
-    pub_impl->tickle_publisher.liveliness_lease_duration_ns = pub_impl->liveliness_lease_ns;
+    // The lease goes on the wire for AUTOMATIC too (2026-09-26): until then only a MANUAL_BY_TOPIC
+    // Publisher announced one, so a remote Subscription held an AUTOMATIC one to the core's node-level
+    // limit whatever lease it asked for. A MANUAL one keeps announcing the lease it enforces locally.
+    pub_impl->tickle_publisher.liveliness_lease_duration_ns =
+        pub_impl->liveliness_lease_ns != 0 ? pub_impl->liveliness_lease_ns
+                                           : rmw_tickle_wire_lease_ns(qos_profile->liveliness_lease_duration);
     pub_impl->tickle_publisher.liveliness_manual = RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness;
 
     // Armed last, and under the node mutex: tt_Publisher_set_heartbeat_period() schedules on the
@@ -1419,6 +1424,10 @@ rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
     rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)publisher->data;
     if (pub_impl->liveliness_lease_ns != 0) {
         atomic_store(&pub_impl->last_asserted_ns, tt_get_ns());
+        // ...and to the remote side too: a HEARTBEAT with the liveliness flag, which is what keeps this
+        // Publisher alive at the Subscriptions that watch it (LIVELINESS_PLAN.md amendment 4). The core
+        // sends nothing within a third of the lease of the last publish or assertion.
+        (void)tt_Publisher_assert_liveliness(&pub_impl->tickle_publisher);
     }
     return RMW_RET_OK;
 }

@@ -466,6 +466,13 @@
 // dead; too high a value delays noticing a real departure (a crash, a pulled cable - anything
 // that skips tt_Node_destroy()'s own farewell UPDATE). 3 matches the conventional heartbeat-miss
 // default other discovery protocols use for the same reason.
+// The longest a silent node is kept alive for the sake of a long liveliness lease one of its entities
+// announced (LIVELINESS_PLAN.md rule 3). DDS bounds a writer's lease by its participant's the same way:
+// CycloneDDS's participant lease is 10 s, Fast DDS's 20 s. Below tt_LIVELINESS_SILENCE_NS it has no effect.
+#ifndef tt_NODE_MAX_LEASE_NS
+#define tt_NODE_MAX_LEASE_NS (10 * tt_SECOND)
+#endif
+
 // A request for a peer's endpoint list (DISCOVERY_PLAN.md rule 3) that has not brought the list within
 // tt_DISCOVERY_REQUEST_RETRY is sent again, up to tt_DISCOVERY_REQUEST_ATTEMPTS times in all; after that the
 // peer's next summary starts over. A lost request or reply then costs a few ms, not the rest of a summary

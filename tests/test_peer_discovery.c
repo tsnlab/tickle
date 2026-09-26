@@ -526,6 +526,8 @@ static int duo_summaries[3];
 static int duo_requests[3];
 static int duo_lists_broadcast[3];
 static int duo_lists_unicast[3];
+// When each node's last datagram reached the other.
+static uint64_t duo_last_delivered[3];
 // Loses a datagram it returns true for, on the way to the other node. NULL loses nothing.
 static bool (*duo_drop)(const struct duo_datagram* datagram);
 
@@ -596,6 +598,7 @@ static void duo_deliver(struct tt_Node* one, struct tt_Node* two) {
         }
         struct tt_Node* to = datagram->from == one->id ? two : one;
         duo_acting = to->id;
+        duo_last_delivered[datagram->from] = test_mock_now;
         memcpy(to->rx_buffer, datagram->bytes, datagram->len);
         to->rx_via_data_port = datagram->unicast;
         EXPECT_TRUE(process_packet(to, to->rx_buffer, 0, datagram->len, 0x0a000000U + datagram->from, 8282));
@@ -1054,6 +1057,208 @@ static void test_two_lost_summaries_never_presume_a_node_dead(void) {
     EXPECT_EQ_INT(20, false_death_trials(3, 0, 0)); // control
 }
 
+// --- LIVELINESS between two nodes (rmw_tickle/LIVELINESS_PLAN.md, L1) ------------------------------------
+// Node 2 keeps a discovery table and watches up to two of node 1's Publishers.
+
+static struct tt_Discovery duo_discovery;
+static uint32_t watched_ids[2];
+static int watched_departures[2];
+static int watched_arrivals[2]; // appearances and revivals
+static uint64_t watched_departed_at[2];
+static uint64_t watched_arrived_at[2];
+static struct tt_Data duo_sample;
+
+static void liveliness_observer(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind,
+                                bool departed, void* param) {
+    (void)node;
+    (void)kind;
+    (void)param;
+    for (int k = 0; k < 2; k++) {
+        if (node_id != 1 || endpoint_id != watched_ids[k]) {
+            continue;
+        }
+        if (departed) {
+            watched_departures[k]++;
+            watched_departed_at[k] = test_mock_now;
+        } else {
+            watched_arrivals[k]++;
+            watched_arrived_at[k] = test_mock_now;
+        }
+    }
+}
+
+// Two nodes as duo_start() makes them, node 2 watching node 1's `first` (and `second`, if not NULL), which
+// must already be created on node 1 with their leases set; runs until both are known.
+static void liveliness_duo_start(struct tt_Node* one, struct tt_Node* two, struct tt_Publisher* first,
+                                 struct tt_Publisher* second) {
+    memset(&duo_discovery, 0, sizeof(duo_discovery));
+    memset(watched_departures, 0, sizeof(watched_departures));
+    memset(watched_arrivals, 0, sizeof(watched_arrivals));
+    memset(duo_last_delivered, 0, sizeof(duo_last_delivered));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_set_discovery(two, &duo_discovery, liveliness_observer, NULL));
+    watched_ids[0] = first->endpoint.id;
+    watched_ids[1] = second != NULL ? second->endpoint.id : 0;
+    duo_run_until(one, two, test_mock_now + (50 * tt_MILLISECOND));
+    EXPECT_EQ_INT(1, watched_arrivals[0]);
+}
+
+static struct tt_Topic live_topic_a = {.name = "live_a",
+                                       .data_size = 4,
+                                       .data_encode_size = fake_encode_size,
+                                       .data_encode = fake_encode};
+static struct tt_Topic live_topic_b = {.name = "live_b",
+                                       .data_size = 4,
+                                       .data_encode_size = fake_encode_size,
+                                       .data_encode = fake_encode};
+
+// Runs both nodes until `until`, node 1 publishing `pub` every `period` from now on. Returns when it
+// published last.
+static uint64_t duo_run_publishing(struct tt_Node* one, struct tt_Node* two, uint64_t until, struct tt_Publisher* pub,
+                                   uint64_t period) {
+    uint64_t next = test_mock_now;
+    uint64_t last = 0;
+    while (next <= until) {
+        duo_run_until(one, two, next);
+        duo_acting = one->id;
+        EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(pub, &duo_sample));
+        last = test_mock_now;
+        duo_deliver(one, two);
+        next += period;
+    }
+    duo_run_until(one, two, until);
+    return last;
+}
+
+static bool drop_everything_from_one(const struct duo_datagram* datagram) {
+    return datagram->from == 1;
+}
+
+// Rule 1 (AUTOMATIC) and rule 2: a Publisher whose node keeps sending DATA stays alive with every summary
+// lost - its lease runs from the data - and once the data stops too, it lapses one lease after the last
+// packet, to within a flush tick: the verdict is a timer at the expiry, not a once-a-second sweep.
+static void test_an_automatic_lease_runs_from_the_data_and_lapses_on_time(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    pub.liveliness_lease_duration_ns = tt_SECOND + (tt_SECOND / 2);
+    liveliness_duo_start(&one, &two, &pub, NULL);
+
+    duo_drop = drop_summaries;
+    (void)duo_run_publishing(&one, &two, test_mock_now + (5 * tt_SECOND), &pub, 100 * tt_MILLISECOND);
+    EXPECT_EQ_INT(0, watched_departures[0]);
+    EXPECT_TRUE(two.update_seen[1]);
+
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND));
+    EXPECT_EQ_INT(1, watched_departures[0]);
+    uint64_t expiry = duo_last_delivered[1] + pub.liveliness_lease_duration_ns;
+    EXPECT_TRUE(watched_departed_at[0] > expiry && watched_departed_at[0] <= expiry + tt_MILLISECOND);
+    duo_stop();
+}
+
+// Rule 1 (MANUAL_BY_TOPIC): a manual Publisher is kept alive only by its own DATA or assertion - not by
+// another Publisher's data from the same node. It lapses one lease after it was announced, while the other
+// streams; tt_Publisher_assert_liveliness() revives it at once, and a second call within a third of the
+// lease sends nothing.
+static void test_a_manual_lease_is_not_kept_by_other_topics_data(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher manual;
+    struct tt_Publisher automatic;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &manual, &live_topic_a, "live_ep"));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &automatic, &live_topic_b, "live_ep"));
+    manual.liveliness_manual = true;
+    manual.liveliness_lease_duration_ns = tt_SECOND;
+    liveliness_duo_start(&one, &two, &manual, &automatic);
+    uint64_t announced = watched_arrived_at[0];
+
+    (void)duo_run_publishing(&one, &two, test_mock_now + (3 * tt_SECOND), &automatic, 100 * tt_MILLISECOND);
+    EXPECT_EQ_INT(1, watched_departures[0]);
+    EXPECT_TRUE(watched_departed_at[0] > announced + tt_SECOND &&
+                watched_departed_at[0] <= announced + tt_SECOND + tt_MILLISECOND);
+    EXPECT_EQ_INT(0, watched_departures[1]); // the streaming one is fine
+
+    int sent_before = duo_sent[1];
+    duo_acting = 1;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_assert_liveliness(&manual));
+    EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_assert_liveliness(&manual)); // within lease/3: nothing more
+    duo_deliver(&one, &two);
+    EXPECT_EQ_INT(sent_before + 1, duo_sent[1]);
+    EXPECT_EQ_INT(2, watched_arrivals[0]); // revived
+    EXPECT_TRUE(watched_arrived_at[0] == test_mock_now);
+    duo_stop();
+}
+
+// Rule 3: a node silent past tt_LIVELINESS_SILENCE_NS is not presumed dead while one of its entities holds
+// a longer lease - a 4 s lease lapses at 4 s, not 3.5 s, and the node goes with it.
+static void test_a_lease_longer_than_the_node_limit_is_not_cut_short(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    pub.liveliness_lease_duration_ns = 4 * tt_SECOND;
+    liveliness_duo_start(&one, &two, &pub, NULL);
+    duo_run_until(&one, &two, test_mock_now + (2 * tt_SECOND));
+
+    duo_drop = drop_everything_from_one;
+    duo_run_until(&one, &two, test_mock_now + (6 * tt_SECOND));
+    EXPECT_EQ_INT(1, watched_departures[0]);
+    uint64_t expiry = duo_last_delivered[1] + pub.liveliness_lease_duration_ns;
+    EXPECT_TRUE(watched_departed_at[0] > expiry && watched_departed_at[0] <= expiry + tt_MILLISECOND);
+    EXPECT_TRUE(!two.update_seen[1]); // and then the node, with it
+    duo_stop();
+}
+
+// Rule 3's cap: a silent node is kept alive for its entities' leases, but no longer than tt_NODE_MAX_LEASE_NS,
+// as a DDS participant lease bounds its writers'. A 30 s lease on a node that goes silent: the node, and
+// the entity with it, is gone one cap after its last datagram.
+static void test_a_node_is_not_kept_alive_past_the_lease_cap(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    pub.liveliness_lease_duration_ns = 30 * tt_SECOND;
+    liveliness_duo_start(&one, &two, &pub, NULL);
+    duo_run_until(&one, &two, test_mock_now + tt_SECOND);
+
+    duo_drop = drop_everything_from_one;
+    duo_run_until(&one, &two, test_mock_now + tt_NODE_MAX_LEASE_NS + (2 * tt_SECOND));
+    EXPECT_TRUE(!two.update_seen[1]);
+    EXPECT_EQ_INT(1, watched_departures[0]);
+    uint64_t cap = duo_last_delivered[1] + tt_NODE_MAX_LEASE_NS;
+    EXPECT_TRUE(watched_departed_at[0] > cap && watched_departed_at[0] <= cap + tt_MILLISECOND);
+    duo_stop();
+}
+
+// LIVELINESS_PLAN.md amendment 1: an idle node's summary is its only sign of life, so it goes out at a third
+// of the shortest lease its endpoints announce. A 1 s lease on an idle node, one summary lost now and then,
+// schedulers running late as real ones do: no false lapse in 20 s. With the summary at a fixed second the
+// lease would lapse on the first late one.
+static void test_an_idle_short_lease_is_kept_by_faster_summaries(void) {
+    static struct tt_Node one;
+    static struct tt_Node two;
+    duo_start(&one, &two);
+    duo_late[1] = 100 * tt_MICROSECOND;
+    duo_late[2] = 170 * tt_MICROSECOND;
+    struct tt_Publisher pub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &live_topic_a, "live_ep"));
+    pub.liveliness_lease_duration_ns = tt_SECOND;
+    liveliness_duo_start(&one, &two, &pub, NULL);
+
+    for (int second = 0; second < 20; second++) {
+        datagrams_to_drop = second % 5 == 0 ? 1 : 0; // one summary lost every 5 s
+        duo_drop = drop_node_one_summaries_counted;
+        duo_run_until(&one, &two, test_mock_now + tt_SECOND);
+    }
+    EXPECT_EQ_INT(0, watched_departures[0]);
+    EXPECT_TRUE(duo_summaries[1] >= 50); // ~3 a second
+    duo_stop();
+}
+
 int main(void) {
     test_publisher_learns_subscriber_peer_from_update();
     test_client_learns_server_peer_from_update();
@@ -1076,6 +1281,11 @@ int main(void) {
     test_a_lost_answer_is_asked_for_again_at_once();
     test_a_summary_while_a_request_is_open_sends_nothing_more();
     test_two_lost_summaries_never_presume_a_node_dead();
+    test_an_automatic_lease_runs_from_the_data_and_lapses_on_time();
+    test_a_manual_lease_is_not_kept_by_other_topics_data();
+    test_a_lease_longer_than_the_node_limit_is_not_cut_short();
+    test_an_idle_short_lease_is_kept_by_faster_summaries();
+    test_a_node_is_not_kept_alive_past_the_lease_cap();
 
     if (test_result() != 0) {
         return 1;

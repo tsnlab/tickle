@@ -245,6 +245,18 @@ struct tt_Node {
     // entry, discovery_request_retry(), serves them all while any is open.
     struct tt_DiscoveryRequest discovery_requests[tt_DISCOVERY_PENDING_REQUESTS];
     bool discovery_retry_scheduled;
+    // LIVELINESS (rmw_tickle/LIVELINESS_PLAN.md). One scheduler entry, check_liveliness(), armed at the
+    // earliest expiry among the remote nodes and leased entities this node tracks (liveliness_check_ns),
+    // re-armed when it fires and moved earlier only for something new that expires sooner.
+    bool liveliness_check_scheduled;
+    uint64_t liveliness_check_ns;
+    // Per source node: what its traffic must be looked at for (tt_LIVELINESS_SOURCE_* in tickle.c) - a
+    // MANUAL_BY_TOPIC Publisher whose DATA asserts it, or an entity lapsed on its lease that traffic revives.
+    // Zero for every node with neither, so their traffic costs nothing extra.
+    uint8_t liveliness_flags[tt_MAX_ENDPOINT_COUNT];
+    // When node_update() next sends the summary; the interval shrinks to a third of the shortest lease any
+    // of this node's own endpoints announce (summary_interval()).
+    uint64_t next_summary_ns;
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;
@@ -456,6 +468,12 @@ struct tt_DiscoveredEntity {
     // incompatible()'s own doc comment (tickle.c) for the actual comparison these back.
     uint64_t deadline_duration_ns;
     uint64_t liveliness_lease_duration_ns;
+
+    // The last sign of life of a MANUAL_BY_TOPIC Publisher (qos has tt_UPDATE_QOS_LIVELINESS_MANUAL): its own
+    // DATA, or a HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS, found by (node_id, endpoint_id) - so two
+    // writers of one endpoint on one node share it. Set when the entity is (re)announced. Unused for any
+    // other entity, whose lease runs from the last datagram of its node (tt_Node.traffic_last_seen).
+    uint64_t last_asserted_ns;
 };
 
 // Fixed-capacity graph cache a caller opts a struct tt_Node into via tt_Node_set_discovery() -
@@ -1118,6 +1136,10 @@ struct tt_Publisher { // extends endpoint
     // layer still supports, Milestone 32's own finding) - see tt_UPDATE_QOS_LIVELINESS_MANUAL's
     // own doc comment (tickle.h) for the wire bit this becomes.
     bool liveliness_manual;
+    // When this Publisher last asserted its liveliness on the wire - a publish, or tt_Publisher_assert_
+    // liveliness() sending a HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS. That function sends nothing more
+    // within a third of the lease of this. 0: never.
+    uint64_t liveliness_asserted_ns;
 };
 
 // Arms (or re-arms, or disables with period_ns == 0) pub's own periodic Heartbeat announce - see
@@ -1176,6 +1198,13 @@ tt_ret_t tt_Publisher_set_heartbeat_period(struct tt_Publisher* pub, uint64_t pe
 // already skip, but reported back here rather than silently doing nothing, since unlike those two
 // this isn't on a schedule that will just try again next period).
 tt_ret_t tt_Publisher_request_ack(struct tt_Publisher* pub);
+
+// Asserts a MANUAL_BY_TOPIC Publisher's liveliness without publishing (rmw_tickle/LIVELINESS_PLAN.md): a
+// HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS, broadcast, which every receiver takes as this writer's sign of
+// life. A publish asserts it too, so nothing is sent within a third of liveliness_lease_duration_ns of the
+// last publish or assertion; nothing either for a Publisher with no lease. tt_RET_INVALID_ARGUMENT for a
+// NULL or unregistered Publisher.
+tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub);
 
 // True once every currently-matched peer (peers[]) has acknowledged seq_no - i.e. each one's own
 // tt_PeerAck.ack_seq_no is strictly greater than it ("every seq_no below this was received", struct
@@ -1906,7 +1935,7 @@ tt_ret_t tt_Node_destroy(struct tt_Node* node);
 // Bumped 6 -> 7 for DATA_FRAG step 2 (rmw_tickle/DATAFRAG_PLAN.md section 6): the discovery announce
 // became a DATA sample of a built-in endpoint (tt_DISCOVERY_ENDPOINT_ID), and UPDATE/UPDATE_PART were
 // retired.
-#define tt_VERSION 8
+#define tt_VERSION 9
 
 struct tt_Header {
     union {
@@ -2176,6 +2205,10 @@ struct tt_AckNackHeader {
 // (see maybe_arm_acknack_retry()'s own "a healthy stream needs no ACKNACK at all" doc comment,
 // tickle.c). This is the exact mechanism real RTPS's own wait_for_acknowledgments() relies on.
 #define tt_HEARTBEAT_FLAG_FINAL (1U << 0)
+// Since tt_VERSION 9: this HEARTBEAT asserts the writer's liveliness (tt_Publisher_assert_liveliness()) and
+// carries nothing else - receivers refresh the lease of the MANUAL_BY_TOPIC Publisher it names and stop
+// there, whatever the seq_no fields say. RTPS's liveliness flag, the same role.
+#define tt_HEARTBEAT_FLAG_LIVELINESS (1U << 1)
 
 // QoS roadmap #5 (RELIABILITY) follow-up - a RELIABLE Publisher's own periodic self-announce of
 // what it currently has retained, same role as RTPS's own HEARTBEAT submessage (firstSN/lastSN).

@@ -151,6 +151,12 @@ typedef enum rmw_tickle_entity_kind_t {
 // function did through Milestone 6.
 rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, rmw_tickle_entity_kind_t entity_kind);
 
+// The liveliness lease an endpoint announces on the wire (tt_Publisher/tt_Subscriber.
+// liveliness_lease_duration_ns), of either liveliness kind: 0 - no lease - for DEFAULT and INFINITE, the
+// requested duration otherwise. The core holds every leased entity to it and keeps a node that announced
+// one alive at least that long (LIVELINESS_PLAN.md), so INFINITE must not go out as a huge number.
+uint64_t rmw_tickle_wire_lease_ns(rmw_time_t lease);
+
 // DDS QoS policy coverage inventory gap 1 (rmw_tickle/PLAN.md, 2026-09-21): resolves every RMW_QOS_
 // POLICY_*_BEST_AVAILABLE value (reliability/durability/liveliness) and the two _BEST_AVAILABLE
 // duration sentinels (deadline/liveliness_lease_duration) in `requested` into a concrete value,
@@ -749,16 +755,13 @@ typedef struct rmw_tickle_subscriber_t {
     uint64_t last_activity_time;
     rmw_tickle_event_status_t deadline_missed;
 
-    // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED. liveliness_lease_ns == 0: no
-    // periodic check has been started yet - rmw_subscription_event_init() starts it lazily
-    // (idempotent) the first time this event type is actually requested, at either qos.liveliness_
-    // lease_duration (if finite) or tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL (rmw_
-    // qos.c's own accepted floor - rechecking faster than that can never usefully change the
-    // answer, since that's TickLE core's own fastest possible peer-death detection latency). See
-    // rmw_subscription.c's own handling for the full mechanism, and rmw_tickle_liveliness_
-    // changed_status_t's own doc comment (above) for what alive_count/not_alive_count can and
-    // can't honestly report.
-    uint64_t liveliness_lease_ns;
+    // QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED. false: nobody has asked for the
+    // event yet - rmw_subscription_event_init() turns it on the first time it is requested. From then
+    // on the core's discovery callback updates the counts whenever a matching Publisher appears,
+    // lapses on its lease, revives or departs (rmw_tickle_update_subscription_liveliness_locked()),
+    // so the event is as timely as the core's verdict. See rmw_tickle_liveliness_changed_status_t's own
+    // doc comment (above) for what alive_count/not_alive_count report.
+    bool liveliness_monitoring;
     rmw_tickle_liveliness_changed_status_t liveliness_changed;
 
     // Milestone 31/28(a) observability follow-on - RMW_EVENT_REQUESTED_QOS_INCOMPATIBLE. See
@@ -778,6 +781,10 @@ typedef struct rmw_tickle_subscriber_t {
     // Subscription can enforce its own age floor with no coordination needed.
     uint64_t lifespan_ns;
 } rmw_tickle_subscriber_t;
+
+// Recomputes a Subscription's RMW_EVENT_LIVELINESS_CHANGED counts, and wakes rmw_wait() if they changed.
+// Node lock held (rmw_subscription.c).
+void rmw_tickle_update_subscription_liveliness_locked(rmw_tickle_subscriber_t* sub_impl);
 
 // TickLE specific client data
 typedef struct rmw_tickle_client_t {

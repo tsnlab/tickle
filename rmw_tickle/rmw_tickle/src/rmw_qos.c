@@ -20,7 +20,7 @@
 #include <stdio.h>  // snprintf() - rmw_qos_profile_check_compatible()'s own `reason` buffer
 #include <string.h> // strcmp() - rmw_tickle_resolve_best_available()'s own topic-name matching
 
-#include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL - see Milestone
+#include <tickle/config.h> // tt_NODE_TX_INTERVAL - see Milestone
                            // 18's own note on why this needs a direct include, not just tickle.h
 #include <tickle/tickle.h> // tt_Discovery/tt_DiscoveredEntity, tt_KIND_TOPIC_*, tt_UPDATE_QOS_*,
                            // tt_NODE_ID_INVALID, tt_MAX_DISCOVERED_ENTITIES - rmw_tickle_resolve_
@@ -111,10 +111,12 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                           "rmw_tickle/PLAN.md's QoS roadmap #3 (LIVELINESS)");
         return RMW_RET_UNSUPPORTED;
     }
-    // A custom lease_duration is accepted, but only down to tt_LIVELINESS_MISS_THRESHOLD *
-    // tt_NODE_UPDATE_INTERVAL - TickLE core's own fastest possible peer-death detection latency
-    // (check_liveliness(), tickle.c). Rejected explicitly below that floor rather than silently
-    // rounding it up to what TickLE can actually honor - same "reject, don't silently downgrade"
+    // A custom lease_duration is accepted down to three tt_NODE_TX_INTERVALs. The core honours any lease
+    // above that (LIVELINESS_PLAN.md, 2026-09-26): it runs from the last sign of life, is checked by a
+    // timer at the expiry, and a node sends its summary at a third of its shortest lease, which cannot
+    // go below one tx tick. The floor used to be tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL
+    // (3 s), when the core checked once a second and cut every lease at its node-level limit. Rejected
+    // below the floor rather than silently rounded up - same "reject, don't silently downgrade"
     // philosophy as RELIABLE's/DURABLE's own depth-cap rejection. DEFAULT (unspecified, {0,0}) and
     // an explicit RMW_DURATION_INFINITE both mean "no constraint" - always accepted.
     // RMW_QOS_LIVELINESS_LEASE_DURATION_BEST_AVAILABLE ({9223372036, 854775806}, one ns short of
@@ -124,11 +126,10 @@ rmw_ret_t rmw_tickle_validate_qos_profile(const rmw_qos_profile_t* qos_profile, 
                         (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT) &&
         !rmw_time_equal(qos_profile->liveliness_lease_duration, (rmw_time_t)RMW_DURATION_INFINITE) &&
         rmw_time_total_nsec(qos_profile->liveliness_lease_duration) <
-            (rmw_duration_t)((uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL)) {
+            (rmw_duration_t)(3 * (uint64_t)tt_NODE_TX_INTERVAL)) {
         RMW_SET_ERROR_MSG("rmw_tickle's own liveliness_lease_duration floor is "
-                          "tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL (TickLE core's "
-                          "fastest possible peer-death detection) - see rmw_tickle/PLAN.md's QoS "
-                          "roadmap #3 (LIVELINESS)");
+                          "3 * tt_NODE_TX_INTERVAL (a node's summary goes out at a third of its "
+                          "shortest lease) - see rmw_tickle/LIVELINESS_PLAN.md");
         return RMW_RET_UNSUPPORTED;
     }
 
@@ -367,4 +368,13 @@ rmw_ret_t rmw_qos_profile_check_compatible(const rmw_qos_profile_t publisher_pro
     }
 
     return RMW_RET_OK;
+}
+
+uint64_t rmw_tickle_wire_lease_ns(rmw_time_t lease) {
+    if (rmw_time_equal(lease, (rmw_time_t)RMW_QOS_LIVELINESS_LEASE_DURATION_DEFAULT) ||
+        rmw_time_equal(lease, (rmw_time_t)RMW_DURATION_INFINITE)) {
+        return 0;
+    }
+    rmw_duration_t lease_ns = rmw_time_total_nsec(lease);
+    return lease_ns > 0 ? (uint64_t)lease_ns : 0;
 }

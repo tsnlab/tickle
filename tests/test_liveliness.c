@@ -159,13 +159,12 @@ static void test_acknack_refreshes_node_liveliness(void) {
     EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers));
 }
 
-// The half that must NOT change, and the reason the two clocks are kept apart: detection still
-// fires on the announce schedule, not on the traffic one. Using traffic as the single clock made
-// detection slide later by however stale the last announce was relative to the last packet -
-// measured at about +290ms on the HIL rig, enough to move a published figure. Here the node goes
-// quiet after one DATA packet and is declared dead three announce intervals after its last
-// ANNOUNCE, exactly as before any of this existed.
-static void test_traffic_does_not_move_the_detection_schedule(void) {
+// A node is presumed dead tt_LIVELINESS_SILENCE_NS after its last sign of life of any kind, not after its
+// last announce (rmw_tickle/LIVELINESS_PLAN.md rule 1, the user's decision of 2026-09-26). Until then the
+// announce clock governed and traffic was only a veto, so detection could not be read against the last
+// data sample the way DDS's is. Here the node goes quiet after one DATA packet an interval after its
+// announce, and the limit runs from that packet.
+static void test_node_limit_runs_from_the_last_packet(void) {
     struct tt_Node node;
     init_node(&node);
     struct tt_Publisher pub;
@@ -180,14 +179,14 @@ static void test_traffic_does_not_move_the_detection_schedule(void) {
         liveliness_write_packet(buf, REMOTE_NODE_ID, tt_SUBMESSAGE_TYPE_DATA, (uint16_t)sizeof(struct tt_DataHeader));
     EXPECT_TRUE(process_packet(&node, buf, 0, len, 0xc0a80a02, 8282));
 
-    // Just inside three intervals from the ANNOUNCE: alive, because the announce clock governs.
-    check_liveliness(&node, tt_LIVELINESS_SILENCE_NS - 1, NULL);
+    // Past the limit from the announce, but not from the DATA: alive.
+    check_liveliness(&node, tt_LIVELINESS_SILENCE_NS + 1, NULL);
+    EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
+    check_liveliness(&node, last_packet_at + tt_LIVELINESS_SILENCE_NS, NULL);
     EXPECT_TRUE(node.update_seen[REMOTE_NODE_ID]);
 
-    // Just past it: dead. The traffic veto has long since expired (its guard is one interval and
-    // the last packet was two intervals ago), so it cannot hold a genuinely silent node alive -
-    // and, being the smaller of the two windows, it can never delay this moment either.
-    check_liveliness(&node, tt_LIVELINESS_SILENCE_NS + 1, NULL);
+    // Just past it from the DATA: dead.
+    check_liveliness(&node, last_packet_at + tt_LIVELINESS_SILENCE_NS + 1, NULL);
     EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
     EXPECT_EQ_U32(0, (uint32_t)count_peers(pub.peers));
 }
@@ -341,15 +340,12 @@ static void test_entity_alive_with_lease_computed_fresh_at_boundary(void) {
     EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1501)); // one ns past it
 }
 
-// The per-entity half of the two-clock rule, which is the path scenario 8 actually measures:
-// tombstone_entities_past_own_lease() decides by calling this, so this is where the HIL detection
-// figures come from - not check_liveliness()'s own node-level sweep.
-//
-// The veto: an entity whose node is plainly still transmitting is alive even though its announces
-// stopped arriving. This is the rmw_tickle case - it sets liveliness_lease_duration_ns per
-// subscription and reads this from rmw_graph.c - and the lease can be far shorter than the 3s
-// sweep, so without this the false positive would fire sooner here than at node level.
-static void test_entity_alive_traffic_vetoes_stale_announces(void) {
+// An AUTOMATIC entity's lease runs from the last datagram of its node, whatever it was (LIVELINESS_PLAN.md
+// rule 1): an entity whose node is still sending DATA is alive although its announces stopped long ago,
+// and it expires exactly one lease after that last packet. Until 2026-09-26 the lease ran from the last
+// announce and traffic only held off the verdict for half a lease, so detection landed at either of two
+// points (the HIL's bimodal ~500 ms) and could not be compared with DDS, whose lease runs from the data.
+static void test_entity_lease_runs_from_the_last_packet(void) {
     struct tt_Node node;
     init_node(&node);
     node.update_seen[REMOTE_NODE_ID] = true;
@@ -361,14 +357,13 @@ static void test_entity_alive_traffic_vetoes_stale_announces(void) {
     entity.liveliness_lease_duration_ns = 500;
     entity.alive = true;
 
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9000)); // far past the announce lease
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9100)); // still inside the traffic guard (250)
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9000));  // far past the announce lease
+    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 9500));  // one lease after the last packet
+    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 9501)); // and not a nanosecond more
 }
 
-// And the veto must not delay a real expiry. With both clocks stopping together - which is what a
-// killed process does - detection lands exactly on the announce boundary, unchanged from before
-// the traffic clock existed. This is the property that keeps COMPARISON.md's scenario 8 figures
-// valid; using traffic as the single clock moved them about +290ms on real hardware.
+// With every clock stopping together - what a killed process does - detection lands exactly one lease
+// after that moment.
 static void test_entity_alive_traffic_does_not_delay_expiry(void) {
     struct tt_Node node;
     init_node(&node);
@@ -383,31 +378,6 @@ static void test_entity_alive_traffic_does_not_delay_expiry(void) {
 
     EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1500));  // at the lease boundary
     EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1501)); // one ns past it - not one ns later
-}
-
-// The residual, pinned deliberately rather than left to be discovered as a surprise: guard =
-// lease/2 BOUNDS the delay, it does not always eliminate it. When the last packet is more recent
-// than the last announce by more than half the lease, the traffic veto is still holding when the
-// announce lease expires, and expiry waits for it. The bound is (announce interval - lease/2).
-//
-// This is the honest claim for the constant. A guard equal to the lease would make the veto as
-// slow as the detection and bring the whole shift back; a fixed guard stops working once the lease
-// drops below it. If someone later "fixes" this test, they have changed that trade, not a bug.
-static void test_entity_alive_residual_delay_is_bounded_not_zero(void) {
-    struct tt_Node node;
-    init_node(&node);
-    node.update_seen[REMOTE_NODE_ID] = true;
-    node.update_last_seen[REMOTE_NODE_ID] = 1000;
-    node.traffic_last_seen[REMOTE_NODE_ID] = 1400; // a packet 400ns after the last announce
-
-    struct tt_DiscoveredEntity entity = {0};
-    entity.node_id = REMOTE_NODE_ID;
-    entity.liveliness_lease_duration_ns = 500; // guard = 250, and the gap (400) exceeds it
-    entity.alive = true;
-
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1501));  // announce lease expired...
-    EXPECT_TRUE(tt_Node_entity_alive(&node, &entity, 1650));  // ...but the veto still holds
-    EXPECT_TRUE(!tt_Node_entity_alive(&node, &entity, 1651)); // expires at traffic + guard
 }
 
 // The real point of this milestone: a short-lease entity whose lease has genuinely expired must
@@ -453,7 +423,7 @@ static void test_entity_alive_invalid_node_id_returns_false(void) {
 }
 
 // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - when a remote Subscriber's own announced
-// liveliness lease expires, tombstone_entities_past_own_lease() must also drop it from the matching
+// liveliness lease expires, check_liveliness() must also drop it from the matching
 // local Publisher's peer and ack sets, not just mark the discovery entry departed. Before this, a
 // crashed Subscriber kept its ack entry until check_liveliness()'s own node-level sweep (~3-3.6s,
 // and only if the whole node went quiet) - long enough to stall a Phase 3 KEEP_ALL writer waiting
@@ -487,13 +457,13 @@ static void test_lease_expiry_drops_subscriber_from_publisher_ack_set(void) {
     entities[0].alive = true;
 
     // Well within the lease: nothing changes.
-    tombstone_entities_past_own_lease(&node, 50);
+    check_liveliness(&node, 50, NULL);
     EXPECT_TRUE(entities[0].alive);
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id);
     EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) != NULL);
 
     // Past its own lease: departed, and out of both the peer set and the ack set.
-    tombstone_entities_past_own_lease(&node, 1000);
+    check_liveliness(&node, 1000, NULL);
     EXPECT_TRUE(!entities[0].alive);
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)pub.peers[0].node_id);
     EXPECT_TRUE(find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID) == NULL);
@@ -526,7 +496,7 @@ static void test_lease_expiry_leaves_unrelated_publisher_alone(void) {
     entities[0].liveliness_lease_duration_ns = 100;
     entities[0].alive = true;
 
-    tombstone_entities_past_own_lease(&node, 1000);
+    check_liveliness(&node, 1000, NULL);
     EXPECT_TRUE(!entities[0].alive);                               // still tombstoned
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)pub.peers[0].node_id); // but this Publisher is untouched
     const struct tt_PeerAck* ack = find_peer_ack(&pub, REMOTE_NODE_ID, REMOTE_SUB_ENTITY_ID);
@@ -579,10 +549,10 @@ static void test_lease_expiry_drops_writer_proxy_on_subscriber(void) {
     entities[0].liveliness_lease_duration_ns = 100;
     entities[0].alive = true;
 
-    tombstone_entities_past_own_lease(&node, 50); // still inside its lease
+    check_liveliness(&node, 50, NULL); // still inside its lease
     EXPECT_EQ_INT((int)REMOTE_NODE_ID, (int)proxy->node_id);
 
-    tombstone_entities_past_own_lease(&node, 1000);              // past it
+    check_liveliness(&node, 1000, NULL);                         // past it
     EXPECT_EQ_INT((int)tt_NODE_ID_INVALID, (int)proxy->node_id); // slot freed
     EXPECT_TRUE(!proxy->acknack_scheduled);                      // and its retry cancelled
     EXPECT_TRUE(find_writer_proxy(&sub, REMOTE_NODE_ID, 0) == NULL);
@@ -604,7 +574,7 @@ int main(void) {
     test_mock_reset();
     test_data_refreshes_node_liveliness();
     test_acknack_refreshes_node_liveliness();
-    test_traffic_does_not_move_the_detection_schedule();
+    test_node_limit_runs_from_the_last_packet();
     test_self_sent_packet_does_not_refresh();
     test_expires_peer_after_missed_intervals();
     test_mock_reset();
@@ -619,9 +589,8 @@ int main(void) {
     test_entity_alive_with_zero_lease_defers_to_alive_flag();
     test_mock_reset();
     test_entity_alive_with_lease_computed_fresh_at_boundary();
-    test_entity_alive_traffic_vetoes_stale_announces();
+    test_entity_lease_runs_from_the_last_packet();
     test_entity_alive_traffic_does_not_delay_expiry();
-    test_entity_alive_residual_delay_is_bounded_not_zero();
     test_mock_reset();
     test_entity_alive_with_lease_ignores_stale_true_alive_flag();
     test_mock_reset();

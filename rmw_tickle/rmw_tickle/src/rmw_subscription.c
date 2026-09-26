@@ -21,7 +21,7 @@
 #include <stdlib.h> // getenv()/strtoull() - resolve_reorder_slots()
 #include <string.h>
 
-#include <tickle/config.h> // tt_LIVELINESS_MISS_THRESHOLD, tt_NODE_UPDATE_INTERVAL
+#include <tickle/config.h> // tt_NODE_UPDATE_INTERVAL
 #include <tickle/hal.h>    // tt_ret_t/tt_RET_OK/tt_get_ns
 #include <tickle/tickle.h>
 #include <tickle/trace.h>
@@ -221,16 +221,13 @@ static void check_subscription_deadline(struct tt_Node* node, uint64_t time, voi
                            check_subscription_deadline, sub_impl);
 }
 
-// QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED's own periodic check, generalizing
-// check_liveliness()'s (tickle.c) existing per-node peer-death detection into "how many
-// Publishers on my topic are alive right now" (rmw_tickle_count_matching_locked(), rmw_graph.c).
-// Fires from inside tt_Node_poll() - poll_thread already holds the node lock (rmw_tickle_context_impl_t's
-// own doc comment) - so this calls the *_locked() variant directly, never count_matching()/
-// rmw_count_publishers() (which take that same mutex themselves and would self-deadlock here -
-// see rmw_tickle_count_matching_locked()'s own doc comment, rmw_tickle.h).
-static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, void* param) {
-    (void)node;
-    rmw_tickle_subscriber_t* sub_impl = (rmw_tickle_subscriber_t*)param;
+// QoS roadmap #3 (LIVELINESS) - RMW_EVENT_LIVELINESS_CHANGED: "how many Publishers on my topic are
+// alive right now" (rmw_tickle_count_matching_locked(), rmw_graph.c), turned into alive/not-alive
+// counts. Called with the node lock held, from the core's discovery callback whenever a Publisher appears,
+// lapses, revives or departs (rmw_node.c's discovery_callback(), LIVELINESS_PLAN.md amendment 3) - the
+// core's verdict is timed at the lease expiry, so the event is too. Until 2026-09-26 this re-scanned every
+// lease instead, which put a second lease of delay on top of the core's.
+void rmw_tickle_update_subscription_liveliness_locked(rmw_tickle_subscriber_t* sub_impl) {
     size_t current = rmw_tickle_count_matching_locked(sub_impl->node->context_impl,
                                                       sub_impl->rmw_subscription.topic_name, tt_KIND_TOPIC_PUBLISHER);
     // QoS roadmap #3 follow-up - the live not_alive_count snapshot (tombstoned Publishers on this
@@ -256,11 +253,6 @@ static void check_subscription_liveliness(struct tt_Node* node, uint64_t time, v
     atomic_store(&status->alive_count, (int)current);
     atomic_store(&status->not_alive_count, (int)current_not_alive);
     status->last_alive_count = (int)current;
-
-    // Liveliness monitoring simply stops here on a reschedule failure - same reasoning as check_
-    // subscription_deadline()'s own identical pattern just above.
-    (void)tt_Node_schedule(&sub_impl->node->context_impl->tickle_node, time + sub_impl->liveliness_lease_ns,
-                           check_subscription_liveliness, sub_impl);
 }
 
 // Milestone 31/28(a) observability follow-on - how often check_subscription_qos_incompatible()
@@ -642,10 +634,8 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->tickle_subscriber.deadline_duration_ns = sub_impl->deadline_period_ns;
     sub_impl->tickle_subscriber.liveliness_manual =
         RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC == qos_profile->liveliness;
-    rmw_duration_t requested_lease_ns = rmw_time_total_nsec(qos_profile->liveliness_lease_duration);
-    if (requested_lease_ns > 0) {
-        sub_impl->tickle_subscriber.liveliness_lease_duration_ns = (uint64_t)requested_lease_ns;
-    }
+    sub_impl->tickle_subscriber.liveliness_lease_duration_ns =
+        rmw_tickle_wire_lease_ns(qos_profile->liveliness_lease_duration);
 
     return &sub_impl->rmw_subscription;
 }
@@ -667,9 +657,6 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     // unschedule() just finds nothing matching).
     if (sub_impl->deadline_period_ns != 0) {
         tt_Node_unschedule(&sub_impl->node->context_impl->tickle_node, check_subscription_deadline, sub_impl);
-    }
-    if (sub_impl->liveliness_lease_ns != 0) {
-        tt_Node_unschedule(&sub_impl->node->context_impl->tickle_node, check_subscription_liveliness, sub_impl);
     }
     tt_Subscriber_destroy(&sub_impl->tickle_subscriber);
     tt_Node_unlock(&sub_impl->node->context_impl->tickle_node);
@@ -818,19 +805,13 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event, const rmw_subscrip
         rmw_event->implementation_identifier = RMW_TICKLE_IDENTIFIER;
         rmw_event->data = sub_impl;
         rmw_event->event_type = event_type;
-        // Lazy, idempotent start (see rmw_tickle_subscriber_t.liveliness_lease_ns's own doc
-        // comment) - only the first rmw_subscription_event_init() call for this event type
-        // actually arms the periodic check; a later one just rewires the same rmw_event_t.
-        if (sub_impl->liveliness_lease_ns == 0) {
-            rmw_duration_t lease_ns = rmw_time_total_nsec(sub_impl->qos.liveliness_lease_duration);
-            sub_impl->liveliness_lease_ns =
-                lease_ns > 0 ? (uint64_t)lease_ns : (uint64_t)tt_LIVELINESS_MISS_THRESHOLD * tt_NODE_UPDATE_INTERVAL;
+        // Lazy, idempotent start (see rmw_tickle_subscriber_t.liveliness_monitoring's own doc comment):
+        // the first call takes the current counts; from then on the core's discovery callback keeps
+        // them. A later call just rewires the same rmw_event_t.
+        if (!sub_impl->liveliness_monitoring) {
             tt_Node_lock(&sub_impl->node->context_impl->tickle_node);
-            // A failure here just leaves liveliness monitoring inactive for this
-            // Subscription - same reasoning as the deadline scheduling above.
-            (void)tt_Node_schedule(&sub_impl->node->context_impl->tickle_node,
-                                   tt_get_ns() + sub_impl->liveliness_lease_ns, check_subscription_liveliness,
-                                   sub_impl);
+            sub_impl->liveliness_monitoring = true;
+            rmw_tickle_update_subscription_liveliness_locked(sub_impl);
             tt_Node_unlock(&sub_impl->node->context_impl->tickle_node);
         }
         return RMW_RET_OK;

@@ -1133,6 +1133,15 @@ static void forget_peers_from_source(struct tt_Node* node, uint8_t node_id, bool
     }
 }
 
+// tt_Node.liveliness_flags bits - see its comment (tickle.h) and refresh_liveliness_flags().
+enum {
+    tt_LIVELINESS_SOURCE_MANUAL = 1U << 0, // announced a leased MANUAL_BY_TOPIC Publisher
+    tt_LIVELINESS_SOURCE_LAPSED = 1U << 1, // has a leased entity tombstoned while the node is still heard
+};
+static void refresh_liveliness_flags(struct tt_Node* node, uint8_t source);
+static void arm_liveliness_check(struct tt_Node* node, uint64_t due_ns);
+static void reschedule_summary_for_leases(struct tt_Node* node, uint64_t now);
+
 // Records one remote entity into node->discovery (tt_Node_set_discovery(), rmw_tickle/PLAN.md's
 // Milestone 0(c)), refreshing its existing slot or claiming the first empty one, then fires the
 // appear/refresh callback. No-op (not even the callback) if no discovery cache is attached -
@@ -1185,6 +1194,12 @@ static void upsert_discovered_entity(struct tt_Node* node, uint8_t node_id, uint
     slot->deadline_duration_ns = deadline_duration_ns;
     slot->liveliness_lease_duration_ns = liveliness_lease_duration_ns;
     slot->alive = true;
+    uint64_t now = tt_get_ns();
+    slot->last_asserted_ns = now; // being announced is a sign of life
+    refresh_liveliness_flags(node, node_id);
+    if (liveliness_lease_duration_ns != 0) {
+        arm_liveliness_check(node, now + liveliness_lease_duration_ns + 1);
+    }
     size_t type_len = _tt_strnlen(type, tt_MAX_NAME_LENGTH);
     _tt_memcpy(slot->type, type, type_len);
     slot->type[type_len] = '\0';
@@ -1224,6 +1239,7 @@ static void forget_discovered_entities_from_source(struct tt_Node* node, uint8_t
                                      node->discovery_callback_param);
         }
     }
+    refresh_liveliness_flags(node, node_id);
 }
 
 // check_liveliness()'s own counterpart to forget_discovered_entities_from_source() just above -
@@ -1281,6 +1297,7 @@ static void announce_soon(struct tt_Node* node, uint64_t time, void* param) {
     }
     node->announce_soon_scheduled = false;
     build_and_send_update(node, NULL, 0);
+    reschedule_summary_for_leases(node, time);
 }
 
 static void arm_announce_soon(struct tt_Node* node) {
@@ -1932,6 +1949,10 @@ static void reset_node_state(struct tt_Node* node) {
     node->discovery_reply_count = 0;
     memset(node->discovery_requests, 0, sizeof(node->discovery_requests));
     node->discovery_retry_scheduled = false;
+    node->liveliness_check_scheduled = false;
+    node->liveliness_check_ns = 0;
+    memset(node->liveliness_flags, 0, sizeof(node->liveliness_flags));
+    node->next_summary_ns = 0;
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
@@ -1952,12 +1973,14 @@ static tt_ret_t schedule_periodic_tasks(struct tt_Node* node) {
         tt_close(node);
         return tt_RET_OUT_OF_SCHEDULE;
     }
+    node->next_summary_ns = basetime;
 
     // node_flush() is not armed here: nothing is waiting to be sent yet, and it is armed on demand the
     // moment something is (ensure_flush_scheduled()).
 
-    if (!tt_Node_schedule(node, basetime + tt_NODE_UPDATE_INTERVAL, check_liveliness, NULL)) {
-        TT_LOG_ERROR("Cannot schedule check_liveliness");
+    node->liveliness_check_scheduled = false;
+    arm_liveliness_check(node, basetime + tt_NODE_UPDATE_INTERVAL);
+    if (!node->liveliness_check_scheduled) {
         tt_close(node);
         return tt_RET_OUT_OF_SCHEDULE;
     }
@@ -2249,6 +2272,7 @@ static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Pub
     pub->lifespan_duration_ns = 0;
     pub->deadline_duration_ns = 0;
     pub->liveliness_lease_duration_ns = 0;
+    pub->liveliness_asserted_ns = 0;
     pub->writable_callback = NULL;
     pub->writable_callback_param = NULL;
     pub->writable_pending = false;
@@ -3614,10 +3638,31 @@ tt_ret_t tt_Publisher_publish(struct tt_Publisher* pub, struct tt_Data* data) {
         state_lock(locked_node);
     }
     tt_ret_t result = publisher_publish_locked(pub, data);
+    if (result == tt_RET_OK && pub->liveliness_lease_duration_ns != 0) {
+        // The DATA asserts the writer's liveliness (tt_Publisher_assert_liveliness() rate-limits on this).
+        // Only for a leased Publisher: the clock read is not free on the publish path (veth A/B, 2026-09-26).
+        pub->liveliness_asserted_ns = tt_get_ns();
+    }
     if (locked_node != NULL) {
         state_unlock(locked_node);
     }
     return result;
+}
+
+tt_ret_t tt_Publisher_assert_liveliness(struct tt_Publisher* pub) {
+    if (pub == NULL || pub->node == NULL) {
+        return tt_RET_INVALID_ARGUMENT;
+    }
+    struct tt_Node* node = pub->node;
+    state_lock(node);
+    uint64_t now = tt_get_ns();
+    uint64_t lease = pub->liveliness_lease_duration_ns;
+    if (lease != 0 && (pub->liveliness_asserted_ns == 0 || now - pub->liveliness_asserted_ns >= lease / 3)) {
+        encode_and_send_heartbeat(node, pub, 0, NULL, 0, tt_HEARTBEAT_FLAG_FINAL | tt_HEARTBEAT_FLAG_LIVELINESS);
+        pub->liveliness_asserted_ns = now;
+    }
+    state_unlock(node);
+    return tt_RET_OK;
 }
 
 // Oldest still-retained seq_no in cache, or 0 if nothing is retained yet (seq_no 0 never occurs on
@@ -5390,12 +5435,42 @@ static void send_discovery_summary(struct tt_Node* node) {
     node->tx_has_pending_update = true; // broadcast-only, like the announce it replaces
 }
 
+// How often this node's summary goes out: every tt_NODE_UPDATE_INTERVAL, or a third of the shortest lease any
+// of its own endpoints announces if that is sooner (LIVELINESS_PLAN.md amendment 1) - an idle node's summary
+// is its only sign of life, so it must outpace the leases peers hold it to. At least tt_NODE_TX_INTERVAL.
+static uint64_t summary_interval(const struct tt_Node* node) {
+    uint64_t interval = tt_NODE_UPDATE_INTERVAL;
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        uint64_t lease = endpoint_liveliness_lease_duration_ns(node->endpoints[i]);
+        if (lease != 0 && lease / 3 < interval) {
+            interval = lease / 3;
+        }
+    }
+    return interval < tt_NODE_TX_INTERVAL ? tt_NODE_TX_INTERVAL : interval;
+}
+
 static void node_update(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
 
     send_discovery_summary(node);
 
-    if (!tt_Node_schedule(node, time + tt_NODE_UPDATE_INTERVAL, node_update, NULL)) {
+    node->next_summary_ns = time + summary_interval(node);
+    if (!tt_Node_schedule(node, node->next_summary_ns, node_update, NULL)) {
+        TT_LOG_ERROR("Cannot schedule node_update");
+    }
+}
+
+// Brings the next summary forward when an endpoint with a short lease has just appeared, so the first gap is
+// not a whole tt_NODE_UPDATE_INTERVAL.
+static void reschedule_summary_for_leases(struct tt_Node* node, uint64_t now) {
+    uint64_t due = now + summary_interval(node);
+    if (node->next_summary_ns == 0 || due >= node->next_summary_ns) {
+        return; // not running (a unit test's bare node), or already soon enough
+    }
+    (void)tt_Node_unschedule(node, node_update, NULL);
+    if (tt_Node_schedule(node, due, node_update, NULL)) {
+        node->next_summary_ns = due;
+    } else {
         TT_LOG_ERROR("Cannot schedule node_update");
     }
 }
@@ -5473,104 +5548,249 @@ static void forget_writer_proxies_for_endpoint(struct tt_Node* node, uint32_t en
     }
 }
 
-// Milestone 62 follow-up - tt_Node_entity_alive()'s own per-entity-lease freshness (tickle.h)
-// sharpens the discovery_callback(departed=true) signal for entities that requested a lease
-// shorter than the loop above's fixed ~3s node-wide wait: without this, a leased entity's
-// departure was only ever reported at that coarse node-level mark, same as an unleased one,
-// silently discarding the lease it asked for. Runs every tick (this function's own caller already
-// runs every tt_NODE_UPDATE_INTERVAL, ~1s) so a short-leased entity is tombstoned - and the
-// callback fires - within about one tick of its own lease boundary instead of always the ~3s one.
-// Entities with no lease (liveliness_lease_duration_ns == 0) are skipped here - tt_Node_entity_
-// alive() itself defers those to .alive, which only the loop above (or a real farewell) changes,
-// so behavior for them is unchanged. No-op if no discovery cache is attached.
-static void tombstone_entities_past_own_lease(struct tt_Node* node, uint64_t time) {
+// --- LIVELINESS (rmw_tickle/LIVELINESS_PLAN.md, 2026-09-26) --------------------------------------------
+//
+// Rule 1, the lease runs from the last sign of life: for a MANUAL_BY_TOPIC Publisher its own DATA or asserted
+// liveliness (tt_DiscoveredEntity.last_asserted_ns); for any other entity any datagram from its node.
+// Rule 2, one timer at the earliest expiry, not a once-a-second sweep: check_liveliness() below.
+// Rule 3, a node is presumed dead only once it has been silent for tt_LIVELINESS_SILENCE_NS and for the
+// longest lease any of its entities announced - a lease longer than the node-level limit is not cut short -
+// but never longer than tt_NODE_MAX_LEASE_NS, as a DDS participant lease bounds its writers'.
+
+static bool entity_asserts_manually(const struct tt_DiscoveredEntity* entity) {
+    return entity->kind == tt_KIND_TOPIC_PUBLISHER && (entity->qos & tt_UPDATE_QOS_LIVELINESS_MANUAL) != 0;
+}
+
+// The last datagram of any kind from `source`: its summaries and announces, and all its other traffic.
+static uint64_t source_last_heard(const struct tt_Node* node, uint8_t source) {
+    uint64_t update = node->update_last_seen[source];
+    uint64_t traffic = node->traffic_last_seen[source];
+    return update > traffic ? update : traffic;
+}
+
+static uint64_t entity_lease_anchor(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity) {
+    return entity_asserts_manually(entity) ? entity->last_asserted_ns : source_last_heard(node, entity->node_id);
+}
+
+// Whether a leased entity's lease still holds at `now`.
+static bool entity_within_lease(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {
+    uint64_t anchor = entity_lease_anchor(node, entity);
+    return now <= anchor || now - anchor <= entity->liveliness_lease_duration_ns;
+}
+
+// Recomputes tt_Node.liveliness_flags[source] from the discovery table. Called whenever an entity of
+// `source` is added, removed, lapses or revives - rare events - so the per-datagram checks are one byte.
+static void refresh_liveliness_flags(struct tt_Node* node, uint8_t source) {
+    uint8_t flags = 0;
+    if (node->discovery != NULL) {
+        const struct tt_DiscoveredEntity* entities = node->discovery->entities;
+        for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+            const struct tt_DiscoveredEntity* entity = &entities[i];
+            if (entity->node_id != source || entity->liveliness_lease_duration_ns == 0) {
+                continue;
+            }
+            if (entity_asserts_manually(entity)) {
+                flags |= tt_LIVELINESS_SOURCE_MANUAL;
+            }
+            if (!entity->alive && node->update_seen[source]) {
+                flags |= tt_LIVELINESS_SOURCE_LAPSED;
+            }
+        }
+    }
+    node->liveliness_flags[source] = flags;
+}
+
+// Makes sure check_liveliness() runs by `due_ns`: moves the one scheduled entry earlier if needed.
+static void arm_liveliness_check(struct tt_Node* node, uint64_t due_ns) {
+    if (node->liveliness_check_scheduled) {
+        if (due_ns >= node->liveliness_check_ns) {
+            return;
+        }
+        (void)tt_Node_unschedule(node, check_liveliness, NULL);
+        node->liveliness_check_scheduled = false;
+    }
+    if (tt_Node_schedule(node, due_ns, check_liveliness, NULL)) {
+        node->liveliness_check_scheduled = true;
+        node->liveliness_check_ns = due_ns;
+    } else {
+        TT_LOG_ERROR("Cannot schedule check_liveliness");
+    }
+}
+
+// A leased entity whose lease ran out while its node is still heard: tombstoned, and whatever this node
+// kept for it goes.
+static void lapse_entity(struct tt_Node* node, struct tt_DiscoveredEntity* entity) {
+    entity->alive = false;
+    // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - a remote Subscriber presumed dead by its
+    // own announced lease must also leave the matching local Publishers' peer/ack sets right
+    // here, or under KEEP_ALL blocking a writer waiting on exactly that ack would stall. Narrow on
+    // purpose: only the Publishers whose own endpoint id this entity matched, and only this node_id.
+    if (entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
+        forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->node_id);
+    } else if (entity->kind == tt_KIND_TOPIC_PUBLISHER) {
+        // Phase 3 - the mirror case: a remote *Publisher* past its own lease stops being
+        // something our Subscribers can still recover from, so its WriterProxy goes too.
+        forget_writer_proxies_for_endpoint(node, entity->endpoint_id, entity->node_id, /*entity_id=*/0,
+                                           /*match_any_entity=*/true);
+    }
+    if (node->discovery_callback != NULL) {
+        node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/true,
+                                 node->discovery_callback_param);
+    }
+}
+
+// A lapsed entity showing a sign of life again - liveliness regained, as DDS reports it. Its peers come
+// back with the next announce or data, as for any new match.
+static void revive_entity(struct tt_Node* node, struct tt_DiscoveredEntity* entity, uint64_t now) {
+    entity->alive = true;
+    if (node->discovery_callback != NULL) {
+        node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/false,
+                                 node->discovery_callback_param);
+    }
+    arm_liveliness_check(node, now + entity->liveliness_lease_duration_ns + 1);
+}
+
+// Traffic from `source` revives its AUTOMATIC entities that lapsed (tt_LIVELINESS_SOURCE_LAPSED). Only
+// called when that flag is set, so ordinary traffic pays one byte test.
+static void revive_lapsed_entities(struct tt_Node* node, uint8_t source, uint64_t now) {
+    if (node->discovery == NULL || !node->update_seen[source]) {
+        return;
+    }
+    struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        struct tt_DiscoveredEntity* entity = &entities[i];
+        if (entity->node_id == source && !entity->alive && entity->liveliness_lease_duration_ns != 0 &&
+            !entity_asserts_manually(entity)) {
+            revive_entity(node, entity, now);
+        }
+    }
+    refresh_liveliness_flags(node, source);
+}
+
+// A MANUAL_BY_TOPIC Publisher's sign of life: its DATA, or its HEARTBEAT with tt_HEARTBEAT_FLAG_LIVELINESS.
+// Found by (source, endpoint_id) - the discovery table has no entity_id. Only looked up when `source` has
+// such a Publisher (tt_LIVELINESS_SOURCE_MANUAL).
+static void note_manual_assertion(struct tt_Node* node, uint8_t source, uint32_t endpoint_id) {
+    if ((node->liveliness_flags[source] & tt_LIVELINESS_SOURCE_MANUAL) == 0 || node->discovery == NULL) {
+        return;
+    }
+    uint64_t now = tt_get_ns();
+    struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    bool revived = false;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        struct tt_DiscoveredEntity* entity = &entities[i];
+        if (entity->node_id != source || entity->endpoint_id != endpoint_id || !entity_asserts_manually(entity)) {
+            continue;
+        }
+        entity->last_asserted_ns = now;
+        if (!entity->alive && entity->liveliness_lease_duration_ns != 0 && node->update_seen[source]) {
+            revive_entity(node, entity, now);
+            revived = true;
+        }
+    }
+    if (revived) {
+        refresh_liveliness_flags(node, source);
+    }
+}
+
+// Longest lease among the entities `source` announced, 0 if none or no discovery table.
+static uint64_t longest_lease_from(const struct tt_Node* node, uint8_t source) {
+    uint64_t longest = 0;
+    if (node->discovery == NULL) {
+        return 0;
+    }
+    const struct tt_DiscoveredEntity* entities = node->discovery->entities;
+    for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
+        if (entities[i].node_id == source && entities[i].liveliness_lease_duration_ns > longest) {
+            longest = entities[i].liveliness_lease_duration_ns;
+        }
+    }
+    return longest;
+}
+
+// A remote node silent past its limit is presumed gone - same forget_peers_from_source() peer-table cleanup a
+// farewell announce would do, and the same update_seen[]/update_generation[] reset so a later summary or
+// announce from the same node id is treated as first contact again. Its discovery-cache cleanup tombstones
+// (tombstone_discovered_entities_from_source()) rather than forgets: a liveliness timeout is a *failure*,
+// not the normal deletion RMW_EVENT_LIVELINESS_CHANGED.not_alive_count must exclude. Doesn't distinguish
+// "crashed" from "partitioned" from "just slow" - none of those are observable from here, and DDS-style
+// liveliness has the same limitation.
+static void presume_node_dead(struct tt_Node* node, uint8_t source, uint64_t silent_ns) {
+    TT_LOG_WARNING("Node %d presumed dead (silent for %lu ms)", source, (unsigned long)(silent_ns / tt_MILLISECOND));
+    forget_peers_from_source(node, source, /*preserve_ack=*/false);
+    tombstone_discovered_entities_from_source(node, source);
+    node->update_seen[source] = false;
+    node->update_generation[source] = 0;
+    node->update_last_seen[source] = 0;
+    node->traffic_last_seen[source] = 0;
+    node->update_part_received[source] = 0;
+    node->liveliness_flags[source] = 0;
+}
+
+// The node-level half of check_liveliness(): presumes dead each remote node silent past its limit, and
+// lowers *next to the earliest limit still ahead.
+static void check_node_silence(struct tt_Node* node, uint64_t time, uint64_t* next) {
+    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
+        if (!node->update_seen[i] && node->update_part_received[i] == 0) {
+            continue; // never heard from this node id at all - nothing to expire
+        }
+        // A node heard only through fragments of an announce it never finished (update_seen still false)
+        // has entities recorded all the same, so it expires by the same clock as one that completed.
+        uint64_t last = source_last_heard(node, (uint8_t)i);
+        uint64_t limit = tt_LIVELINESS_SILENCE_NS;
+        if (time > last && time - last > limit) {
+            // Only for a node already that quiet. Capped as a DDS participant lease caps its writers': an
+            // entity's lease cannot keep a silent node alive past tt_NODE_MAX_LEASE_NS.
+            uint64_t longest = longest_lease_from(node, (uint8_t)i);
+            longest = longest < tt_NODE_MAX_LEASE_NS ? longest : tt_NODE_MAX_LEASE_NS;
+            limit = longest > limit ? longest : limit;
+        }
+        if (time > last && time - last > limit) {
+            presume_node_dead(node, (uint8_t)i, time - last);
+            continue;
+        }
+        *next = last + limit + 1 < *next ? last + limit + 1 : *next;
+    }
+}
+
+// The entity half: lapses each leased entity past its lease, and lowers *next to the earliest expiry ahead.
+static void check_entity_leases(struct tt_Node* node, uint64_t time, uint64_t* next) {
     if (node->discovery == NULL) {
         return;
     }
-
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
         struct tt_DiscoveredEntity* entity = &entities[i];
         if (entity->node_id == tt_NODE_ID_INVALID || !entity->alive || entity->liveliness_lease_duration_ns == 0) {
             continue;
         }
-        if (tt_Node_entity_alive(node, entity, time)) {
+        if (!entity_within_lease(node, entity, time)) {
+            lapse_entity(node, entity);
+            refresh_liveliness_flags(node, entity->node_id);
             continue;
         }
-        entity->alive = false;
-        // Phase 3 prerequisite (a), rmw_tickle/PLAN.md - a remote Subscriber presumed dead by its
-        // own announced lease must also leave the matching local Publishers' peer/ack sets right
-        // here. Before this, only check_liveliness()'s own node-level sweep (~3-3.6s, and only when
-        // the whole node goes quiet) did that, so a crashed Subscriber kept its ack entry for
-        // seconds after its lease expired - which under Phase 3's KEEP_ALL blocking would stall a
-        // writer that is waiting on exactly that ack. Narrow on purpose: only the Publishers whose
-        // own endpoint id this entity matched, and only this node_id, unlike the node-level sweep.
-        if (entity->kind == tt_KIND_TOPIC_SUBSCRIBER) {
-            forget_publisher_peers_for_endpoint(node, entity->endpoint_id, entity->node_id);
-        } else if (entity->kind == tt_KIND_TOPIC_PUBLISHER) {
-            // Phase 3 - the mirror case: a remote *Publisher* past its own lease stops being
-            // something our Subscribers can still recover from, so its WriterProxy goes too.
-            forget_writer_proxies_for_endpoint(node, entity->endpoint_id, entity->node_id, /*entity_id=*/0,
-                                               /*match_any_entity=*/true);
-        }
-        if (node->discovery_callback != NULL) {
-            node->discovery_callback(node, entity->node_id, entity->endpoint_id, entity->kind, /*departed=*/true,
-                                     node->discovery_callback_param);
-        }
+        uint64_t expiry = entity_lease_anchor(node, entity) + entity->liveliness_lease_duration_ns + 1;
+        *next = expiry < *next ? expiry : *next;
     }
 }
 
-// Runs once per tt_NODE_UPDATE_INTERVAL (schedule_periodic_tasks()'s own first-run comment
-// applies here too) - the timeout-based counterpart to process_announce()'s content-change
-// dedup: a remote node whose announce hasn't been *heard at all* (not just unchanged) for
-// tt_LIVELINESS_MISS_THRESHOLD consecutive intervals is presumed gone - same forget_peers_from_
-// source() peer-table cleanup a farewell announce would also do, and the same update_seen[]/
-// update_generation[] reset so a later announce from the same node id is treated as first
-// contact again (reply_with_own_announce() fires, matching a genuinely new node). Its own
-// discovery-cache cleanup (tombstone_discovered_entities_from_source(), unlike forget_discovered_
-// entities_from_source() a farewell/dropped-from-announce uses) deliberately differs from a real
-// farewell though - a liveliness timeout is a *failure*, not the normal deletion QoS roadmap #3's
-// own RMW_EVENT_LIVELINESS_CHANGED.not_alive_count needs to exclude (struct tt_DiscoveredEntity.
-// alive's own doc comment). Doesn't distinguish "crashed" from "network partitioned" from "just
-// slow" - none of those are observable from here, and DDS-style liveliness has the same
-// limitation. tombstone_entities_past_own_lease() (above) is this function's own per-entity-lease
-// counterpart - same failure concept, finer timing for entities that asked for it.
+// The liveliness timer (rule 2): runs at the earliest expiry among the remote nodes and leased entities this
+// node tracks, acts on whatever has expired, and re-arms at the next one. A refresh only moves an expiry
+// later, so nothing on the receive path re-arms it; when it fires early for that reason it finds nothing
+// expired and re-arms. It also runs at least every tt_NODE_UPDATE_INTERVAL, which picks up nodes heard for
+// the first time.
 static void check_liveliness(struct tt_Node* node, uint64_t time, void* param) {
     UNUSED(param);
-
-    for (int i = 0; i < tt_MAX_ENDPOINT_COUNT; i++) {
-        if (!node->update_seen[i] && node->update_part_received[i] == 0) {
-            continue; // never heard from this node id at all - nothing to expire
-        }
-        // A node heard only through parts of an announce it never finished (update_seen still
-        // false) has entities recorded all the same - each part is applied as it arrives - so it
-        // expires by the same clocks as one that completed.
-        // Both clocks must have gone quiet. The announce clock - tt_LIVELINESS_SILENCE_NS, that many
-        // summaries missed (see its comment for the half interval) - governs, and the traffic clock is a
-        // veto for a node still transmitting while its summaries are being lost.
-        //
-        // Guard of one announce interval against a main threshold of three: it can never be the
-        // condition that governs, so it cannot delay detection of a genuinely dead node, whose
-        // traffic stops at the same moment its announces do.
-        if (time - node->update_last_seen[i] > tt_LIVELINESS_SILENCE_NS &&
-            time - node->traffic_last_seen[i] > (uint64_t)tt_NODE_UPDATE_INTERVAL) {
-            TT_LOG_WARNING("Node %d presumed dead (no announce for %d consecutive intervals)", i,
-                           tt_LIVELINESS_MISS_THRESHOLD);
-            forget_peers_from_source(node, (uint8_t)i, /*preserve_ack=*/false);
-            tombstone_discovered_entities_from_source(node, (uint8_t)i);
-            node->update_seen[i] = false;
-            node->update_generation[i] = 0;
-            node->update_last_seen[i] = 0;
-            node->traffic_last_seen[i] = 0;
-            node->update_part_received[i] = 0;
-        }
+    if (node->liveliness_check_scheduled) {
+        // Run early, by a test or by a re-arm that lost a race with the entry itself: take the entry out,
+        // this run re-arms.
+        (void)tt_Node_unschedule(node, check_liveliness, NULL);
+        node->liveliness_check_scheduled = false;
     }
-
-    tombstone_entities_past_own_lease(node, time);
-
-    if (!tt_Node_schedule(node, time + tt_NODE_UPDATE_INTERVAL, check_liveliness, NULL)) {
-        TT_LOG_ERROR("Cannot schedule check_liveliness");
-    }
+    uint64_t next = time + tt_NODE_UPDATE_INTERVAL;
+    check_node_silence(node, time, &next);
+    check_entity_leases(node, time, &next);
+    arm_liveliness_check(node, next);
 }
 
 // This periodic tick only ever flushes batched pub/sub content - a DATA submessage from
@@ -6685,6 +6905,8 @@ static bool process_data_for(struct tt_Node* node, struct tt_Header* header, uin
     if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID && entity_id == tt_DISCOVERY_ENTITY_ID) {
         return process_announce(node, header, buffer, head, tail, sender_ip, sender_port, seq_no, 0, 1);
     }
+
+    note_manual_assertion(node, header->source, endpoint_id);
 
     TT_LOG_DEBUG("Data");
     TT_LOG_DEBUG("  endpoint_id: %08x", endpoint_id);
@@ -7860,6 +8082,10 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
     TT_LOG_DEBUG("  first_available_seq_no: %u", first_available_seq_no);
     TT_LOG_DEBUG("  last_seq_no: %u", last_seq_no);
 
+    if ((flags & tt_HEARTBEAT_FLAG_LIVELINESS) != 0) {
+        note_manual_assertion(node, header->source, endpoint_id);
+        return true; // an assertion only - see the flag's comment (tickle.h)
+    }
     if (endpoint_id == tt_DISCOVERY_ENDPOINT_ID) {
         return process_discovery_summary(node, header->source, last_seq_no, sender_ip, sender_port);
     }
@@ -8478,7 +8704,11 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     // transmitting. Keeping the schedule on the announce clock is what stops detection sliding
     // later, which using traffic as the single clock did measure at about +290ms.
     if (!self_sent) {
-        node->traffic_last_seen[header->source] = tt_get_ns();
+        uint64_t now = tt_get_ns();
+        node->traffic_last_seen[header->source] = now;
+        if ((node->liveliness_flags[header->source] & tt_LIVELINESS_SOURCE_LAPSED) != 0) {
+            revive_lapsed_entities(node, header->source, now);
+        }
     }
 
     while (true) {
@@ -8867,23 +9097,9 @@ static bool node_entity_alive_locked(const struct tt_Node* node, const struct tt
     if (!node->update_seen[entity->node_id]) {
         return false; // never heard from this node id at all
     }
-    // Same two-clock rule as check_liveliness(), with the guard scaled to this entity's own lease
-    // rather than to the announce interval, because a lease can be far shorter than one.
-    //
-    //   fires at  max(last_announce + lease, last_traffic + guard)
-    //   shift vs. the announce-only behaviour = max(0, gap - guard)
-    //   where     gap = last_traffic - last_announce, bounded by one announce interval
-    //
-    // With guard = lease/2 that is zero shift for any gap under half the lease, and at worst
-    // (tt_NODE_UPDATE_INTERVAL - lease/2) otherwise. So lease/2 *bounds* the residual rather than
-    // always eliminating it - at a high data rate with a lease near the announce interval some
-    // shift remains, and claiming otherwise would be wrong. It is still the better constant: a
-    // guard equal to the lease makes the veto as slow as the detection and brings the whole shift
-    // back, and a fixed guard stops working once the lease drops below it.
-    uint64_t lease = entity->liveliness_lease_duration_ns;
-    bool announce_stale = (now - node->update_last_seen[entity->node_id]) > lease;
-    bool traffic_stale = (now - node->traffic_last_seen[entity->node_id]) > lease / 2;
-    return !(announce_stale && traffic_stale);
+    // The lease runs from the entity's last sign of life (LIVELINESS_PLAN.md rule 1) - see
+    // entity_lease_anchor().
+    return entity_within_lease(node, entity, now);
 }
 
 bool tt_Node_entity_alive(const struct tt_Node* node, const struct tt_DiscoveredEntity* entity, uint64_t now) {

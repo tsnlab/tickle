@@ -72,18 +72,18 @@ int main(void) {
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));
 
     // QoS roadmap #3 (LIVELINESS) - done, every kind this rmw_qos_policy_liveliness_t still
-    // defines. A custom liveliness_lease_duration is accepted down to tt_LIVELINESS_MISS_THRESHOLD
-    // * tt_NODE_UPDATE_INTERVAL (TickLE core's own fastest possible peer-death detection latency,
-    // config.h) - 1 second is below that floor
-    // (3 seconds by default) and stays rejected; 5 seconds clears it and is accepted, for every
-    // entity kind (validation only - the actual RMW_EVENT_LIVELINESS_CHANGED monitoring this backs
-    // is Publisher/Subscription-only, rmw_subscription.c).
+    // defines. A custom liveliness_lease_duration is accepted down to 3 * tt_NODE_TX_INTERVAL (a
+    // node's summary goes out at a third of its shortest lease, LIVELINESS_PLAN.md) - 1 ms is below
+    // that floor and stays rejected; 1 second, rejected until the 3 s floor went on 2026-09-26, is
+    // accepted, for every entity kind (validation only - the actual RMW_EVENT_LIVELINESS_CHANGED
+    // monitoring this backs is Publisher/Subscription-only, rmw_subscription.c).
     qos = valid_profile();
-    qos.liveliness_lease_duration.sec = 1;
+    const unsigned int one_millisecond_ns = 1000U * 1000U;
+    qos.liveliness_lease_duration.nsec = one_millisecond_ns;
     assert(RMW_RET_UNSUPPORTED == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
 
     qos = valid_profile();
-    qos.liveliness_lease_duration.sec = 5;
+    qos.liveliness_lease_duration.sec = 1;
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_PUBLISHER));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SUBSCRIPTION));
     assert(RMW_RET_OK == rmw_tickle_validate_qos_profile(&qos, RMW_TICKLE_ENTITY_SERVICE_OR_CLIENT));

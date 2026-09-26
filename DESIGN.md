@@ -289,7 +289,7 @@ sequenceDiagram
 
 # Wire Protocol
 
-This chapter is the specification of what TickLE puts on the wire, as of `tt_VERSION` 8. The decision
+This chapter is the specification of what TickLE puts on the wire, as of `tt_VERSION` 9. The decision
 sections further down explain *why* each part looks as it does; this chapter says *what* it is, in one
 place. The structs named here are in `include/tickle/tickle.h`, and they are the authority if this text
 and the code ever disagree.
@@ -342,7 +342,7 @@ A datagram is one `tt_Header` followed by one or more submessages, each a type-l
 | 3 | `ACKNACK` | `tt_AckNackHeader`: endpoint_id, entity_id, sender_entity_id, seq_no, bitmap_words, bitmap[] | 20 + 8 × words B | a reader's cumulative ack plus a bitmap of what it is missing |
 | 4 | `CALLREQUEST` | `tt_CallRequestHeader`: endpoint_id, seq_no (16-bit), retry, reserved | 8 B | a service request |
 | 5 | `CALLRESPONSE` | `tt_CallResponseHeader`: endpoint_id, seq_no, retry, return_code | 8 B | its response |
-| 6 | `HEARTBEAT` | `tt_HeartbeatHeader`: endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags, pad | 20 B | a writer's range, soliciting ACKNACKs |
+| 6 | `HEARTBEAT` | `tt_HeartbeatHeader`: endpoint_id, first_available_seq_no, last_seq_no, entity_id, flags, pad | 20 B | a writer's range, soliciting ACKNACKs; with `tt_HEARTBEAT_FLAG_LIVELINESS` (flags bit 1) only a MANUAL_BY_TOPIC writer's liveliness assertion |
 | 7 | *(retired: UPDATE_PART)* | - | - | never reused |
 | 8 | `FRAG_FIRST` | `tt_FragFirstHeader`: a whole `tt_DataHeader` + frag_count | 21 B | first datagram of a fragmented sample |
 | 9 | `FRAG_CONT` | `tt_FragContHeader`: entity_id, seq_no, frag_index, frag_count | 10 B | every later datagram of it |
@@ -365,7 +365,7 @@ in the RTPS arrangement, rather than message types of its own:
 
 | role | submessage | addressed | contents |
 |---|---|---|---|
-| summary, every interval (1 s) | HEARTBEAT | broadcast | `first_available_seq_no = last_seq_no` = the node's generation (low 32 bits of `last_modified`) |
+| summary, every interval (1 s, or a third of the node's shortest own lease if sooner) | HEARTBEAT | broadcast | `first_available_seq_no = last_seq_no` = the node's generation (low 32 bits of `last_modified`) |
 | request for the list | ACKNACK | unicast to the summary's sender | `seq_no` = the generation wanted |
 | the list | DATA / FRAG_FIRST+FRAG_CONT | unicast to the requester | `tt_AnnounceHeader` + `tt_UpdateEntity` records |
 | a change (endpoint created or destroyed) | the list | broadcast, at once | the new generation |
@@ -375,9 +375,10 @@ in the RTPS arrangement, rather than message types of its own:
   `tt_DISCOVERY_REQUEST_ATTEMPTS` times.
 - A large list is fragmented **at entity boundaries**. Every fragment carries its own `tt_AnnounceHeader`
   and whole entities, so it is applied as it arrives, with no reassembly memory.
-- Every summary and list refreshes the sender's liveliness. A node is presumed gone after
-  `tt_LIVELINESS_SILENCE_NS` (3.5 intervals) of silence, or on its goodbye (its list broadcast at
-  destroy).
+- Every datagram refreshes the sender's liveliness. A node is presumed gone after
+  `tt_LIVELINESS_SILENCE_NS` (3.5 intervals) of silence - longer if one of its entities announced a
+  longer lease, up to `tt_NODE_MAX_LEASE_NS` (10 s) - or on its goodbye (its list broadcast at destroy).
+  See "Liveliness" below.
 - The detail and the reasons are in "Discovery announce: a DATA of a built-in endpoint" below and in
   `rmw_tickle/DISCOVERY_PLAN.md`.
 
@@ -396,7 +397,8 @@ logged. Numbers of retired types are never reused. History:
 - 6: a per-subscriber ack identity (ACKNACK `sender_entity_id`) and a wider window.
 - 7: discovery became a DATA of a built-in endpoint; UPDATE/UPDATE_PART retired.
 - 8: periodic summary and pulled list.
-- 9 is planned, for `tt_HEARTBEAT_FLAG_LIVELINESS` (`rmw_tickle/LIVELINESS_PLAN.md`).
+- 9: `tt_HEARTBEAT_FLAG_LIVELINESS`, a MANUAL_BY_TOPIC writer's liveliness assertion
+  (`rmw_tickle/LIVELINESS_PLAN.md`).
 
 ## Per-datagram overhead, the baseline for wire optimisation
 
@@ -592,6 +594,42 @@ on the discovery endpoint:
 
 `tests/test_peer_discovery.c` checks each rule on two simulated nodes, with the loss that exercises
 it, and each check was run against a code change that breaks its rule.
+
+## Liveliness: the lease runs from the last sign of life (`tt_VERSION` 9)
+
+Since 2026-09-26 (`rmw_tickle/LIVELINESS_PLAN.md`, the user's decision) liveliness follows DDS: a lease
+runs from the entity's last sign of life, and the verdict is taken when it runs out.
+
+- **What refreshes a lease.** For an AUTOMATIC entity, any datagram from its node: summary, announce,
+  DATA, HEARTBEAT, ACKNACK (`tt_Node.traffic_last_seen`). For a MANUAL_BY_TOPIC Publisher, only its own
+  DATA or a HEARTBEAT carrying `tt_HEARTBEAT_FLAG_LIVELINESS`, which `tt_Publisher_assert_liveliness()`
+  sends. The discovery table has no entity_id, so a manual writer is found by (node, endpoint_id), and two
+  writers of one endpoint on one node share that clock. The lookup runs only for a node that announced a
+  leased manual Publisher (`tt_Node.liveliness_flags`), so other traffic pays a one-byte test.
+- **When the verdict is taken.** One scheduler entry per node, `check_liveliness()`, runs at the earliest
+  expiry among the nodes and leased entities it tracks, acts on what has expired, and re-arms at the next
+  expiry. A refresh only moves an expiry later, so the receive path never touches the timer. It also runs
+  at least once per `tt_NODE_UPDATE_INTERVAL`, to pick up newly heard nodes.
+- **A lapsed entity** is tombstoned (`alive = false`, discovery callback with `departed`), and its peer, ack
+  and writer-proxy state goes. It revives - callback without `departed` - on its next sign of life.
+- **A node** is presumed dead once it has been silent for `tt_LIVELINESS_SILENCE_NS` (3.5 intervals) and for
+  the longest lease any of its entities announced, so a lease longer than the node-level limit is honoured
+  in full - up to `tt_NODE_MAX_LEASE_NS` (10 s, CycloneDDS's participant lease), as a DDS participant
+  lease bounds its writers'. Then its peers are forgotten and its entities tombstoned; it is re-learned from its next summary.
+- **An idle node's summary is its only sign of life**, so it goes out every `tt_NODE_UPDATE_INTERVAL` or
+  every third of the shortest lease its own endpoints announce, whichever is sooner (at least one
+  `tt_NODE_TX_INTERVAL`).
+
+Before this the lease ran from the last announce and traffic only held off the verdict for half a lease,
+and a sweep once a second took it. On the rig that gave a bimodal detection time (the two clocks' phase,
+0 or ~500 ms), up to a second late, and cut any lease above ~3 s to the node-level limit. It could not be
+compared with DDS, whose lease runs from the data sample the harness measures from.
+
+`tests/test_peer_discovery.c` checks each rule on two simulated nodes: an AUTOMATIC lease held by data
+alone with every summary lost, and its lapse within a flush tick of the expiry; a MANUAL lease not held
+by another topic's data, and revived by an assertion; a 4 s lease not cut at 3.5 s; a 1 s lease on an idle
+node with late schedulers and lost summaries. Each check was run against the code change that breaks its
+rule.
 
 ## Samples larger than a datagram (`FRAG_FIRST`/`FRAG_CONT`, types 8 and 9)
 

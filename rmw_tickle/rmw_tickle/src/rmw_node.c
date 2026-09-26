@@ -50,14 +50,33 @@
 // itself uses. `param` is context_impl directly now (Milestone 34) - tt_Node_set_discovery() is
 // called once per context, not once per logical node, so there's no specific rmw_tickle_node_t to
 // reach it through anymore (nor would one make sense: discovery was never actually scoped to one).
+//
+// A Publisher appearing, lapsing on its liveliness lease, reviving or departing also updates the
+// RMW_EVENT_LIVELINESS_CHANGED counts of every local Subscription that asked for them - here, at the core's
+// verdict, rather than on a timer of rmw's own (LIVELINESS_PLAN.md amendment 3).
+static void update_liveliness_of_subscriptions(struct tt_Node* node) {
+    for (uint32_t i = 0; i < node->endpoint_count; i++) {
+        struct tt_Endpoint* endpoint = node->endpoints[i];
+        if (endpoint->kind != tt_KIND_TOPIC_SUBSCRIBER) {
+            continue;
+        }
+        rmw_tickle_subscriber_t* sub_impl =
+            (rmw_tickle_subscriber_t*)((char*)endpoint - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
+        if (sub_impl->liveliness_monitoring) {
+            rmw_tickle_update_subscription_liveliness_locked(sub_impl);
+        }
+    }
+}
+
 static void discovery_callback(struct tt_Node* node, uint8_t node_id, uint32_t endpoint_id, uint8_t kind, bool departed,
                                void* param) {
-    (void)node;
     (void)node_id;
     (void)endpoint_id;
-    (void)kind;
     (void)departed;
     rmw_tickle_context_impl_t* context_impl = (rmw_tickle_context_impl_t*)param;
+    if (kind == tt_KIND_TOPIC_PUBLISHER) {
+        update_liveliness_of_subscriptions(node);
+    }
 
     atomic_store(&context_impl->graph_guard_condition.has_triggered, true);
     pthread_mutex_lock(&context_impl->wait_mutex);
