@@ -325,10 +325,6 @@ struct tt_Node {
     uint32_t wait_seq;
     uint32_t wait_until_hi;
     uint32_t wait_until_lo;
-    // Set by tt_Node_next_due(), cleared when a tt_Node_poll() starts: a caller waits outside tt_Node_poll()
-    // for the node's next due entry, so a scheduler insert from another thread signals the wake descriptor
-    // whatever its time - that caller cannot see the insert otherwise. Accessed only through __atomic builtins.
-    uint8_t idle_waiter;
 
     // Opt-in graph introspection (tt_Node_set_discovery(), rmw_tickle/PLAN.md's Milestone 0(c)) -
     // NULL (the default - see reset_node_state()) unless a caller attaches its own, externally-
@@ -1860,14 +1856,6 @@ tt_ret_t tt_Subscriber_destroy(struct tt_Subscriber* sub);
  *         error.
  */
 tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout);
-
-// When the node's earliest scheduled entry falls due (tt_get_ns() time), in *due_ns; false when nothing is
-// scheduled. For a caller that waits on something other than tt_Node_poll() and must still run the node's
-// timers on time - it then calls tt_Node_poll(node, 0) at that moment (rmw_tickle's parked poll thread,
-// RMW_PERF_PLAN.md 8.6). Until the next tt_Node_poll() starts, a tt_Node_schedule() from any other thread
-// also signals the node's wake descriptor (hal_linux.h's wake_fd), which that caller must wait on as well
-// but never read: the next tt_Node_poll() consumes it.
-bool tt_Node_next_due(struct tt_Node* node, uint64_t* due_ns);
 
 // The one exception to every other tt_Node_*/tt_Publisher_*/... call needing to come from the
 // same single thread (see this file's own "Concurrency" note, and DESIGN.md's) - this one is

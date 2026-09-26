@@ -1704,7 +1704,7 @@ static uint64_t wait_until_load(struct tt_Node* node) {
 // read the other's variable, all sequentially consistent, so at least one of them sees the other.
 static void wake_if_waiting_past(struct tt_Node* node, uint64_t time) {
     uint64_t until = wait_until_load(node);
-    if ((until != 0 && time < until) || __atomic_load_n(&node->idle_waiter, __ATOMIC_SEQ_CST) != 0) {
+    if (until != 0 && time < until) {
         tt_wake_signal(node);
     }
 }
@@ -1950,7 +1950,6 @@ static void node_init_locks(struct tt_Node* node) {
         __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELAXED);
     }
     __atomic_store_n(&node->sched_inbox_pending, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&node->idle_waiter, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->poller_active, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_seq, 0, __ATOMIC_RELAXED);
     node->rx_clock_ns = 0;
@@ -9187,7 +9186,6 @@ tt_ret_t tt_Node_poll(struct tt_Node* node, int64_t timeout) {
         return tt_RET_BUSY;
     }
     __atomic_store_n(&node->poller_thread, tt_thread_self(), __ATOMIC_RELAXED); // NOLINT(misc-include-cleaner)
-    __atomic_store_n(&node->idle_waiter, 0, __ATOMIC_RELAXED);                  // this poll sees every insert itself
     tt_ret_t result = node_poll(node, timeout);
     node->rx_clock_ns = 0; // outside a poll a receive reads the clock itself
     __atomic_store_n(&node->poller_thread, 0, __ATOMIC_RELAXED);
@@ -9284,26 +9282,6 @@ static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout) {
     }
 
     return tt_RET_TIMEOUT;
-}
-
-bool tt_Node_next_due(struct tt_Node* node, uint64_t* due_ns) {
-    if (node == NULL || due_ns == NULL) {
-        return false;
-    }
-    // Published before the inbox is drained, as poll_wait_io() publishes wait_until: an insert either lands
-    // in the drain below or sees the flag and signals.
-    __atomic_store_n(&node->idle_waiter, 1, __ATOMIC_SEQ_CST);
-    state_lock(node);
-    sched_drain_inbox(node);
-    bool has_next = sched_next_time(node, due_ns);
-    state_unlock(node);
-    // The drain's own read of the inbox is only acquire: re-read it sequentially consistent, as
-    // poll_wait_io() does. An entry still arriving is due for a look now.
-    if (__atomic_load_n(&node->sched_inbox_pending, __ATOMIC_SEQ_CST) != 0) {
-        *due_ns = 0;
-        return true;
-    }
-    return has_next;
 }
 
 tt_ret_t tt_Node_interrupt(struct tt_Node* node) {
@@ -9487,7 +9465,6 @@ static tt_ret_t node_destroy_locked(struct tt_Node* node) {
         __atomic_store_n(&node->sched_inbox_state[i], tt_SCHED_SLOT_EMPTY, __ATOMIC_RELAXED);
     }
     __atomic_store_n(&node->sched_inbox_pending, 0, __ATOMIC_RELAXED);
-    __atomic_store_n(&node->idle_waiter, 0, __ATOMIC_RELAXED);
 
     tt_close(node);
 

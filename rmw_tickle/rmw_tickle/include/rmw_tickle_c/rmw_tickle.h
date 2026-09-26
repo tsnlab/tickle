@@ -276,23 +276,19 @@ struct rmw_tickle_context_impl_t {
     // that stays away longer than the lease (a long callback, a caller sleeping outside rmw_wait()) gets the
     // poll thread back.
     bool executor_poll_enabled;
-// The lease a release arms (RMW_PERF_PLAN.md 8.6): 1.5 x how long the executor was last away, within these
-// bounds - so a caller that sleeps outside rmw_wait() on a regular cadence (the ping-pong's ping, 100 ms) keeps
-// the role across its sleep instead of handing it back and forth every round trip.
-#define RMW_TICKLE_EXECUTOR_POLL_LEASE_NS (10ULL * 1000ULL * 1000ULL)      // 10 ms, the least
-#define RMW_TICKLE_EXECUTOR_POLL_LEASE_MAX_NS (250ULL * 1000ULL * 1000ULL) // 250 ms, the most
+#define RMW_TICKLE_EXECUTOR_POLL_LEASE_NS (10ULL * 1000ULL * 1000ULL) // 10 ms
     atomic_bool executor_polling;
-    _Atomic uint64_t executor_left_ns;         // when the role was last released, 0: never held
-    _Atomic uint64_t executor_poll_waits;      // rmw_wait() calls that polled; printed at shutdown
-    _Atomic uint64_t executor_lease_ns;        // the lease the next release arms (8.6), 0 until one has been measured
-    _Atomic uint64_t executor_handovers;       // claims that found the poll thread inside its own poll
-    _Atomic uint64_t delivered_by_executor;    // samples delivered on a polling executor's thread
-    _Atomic uint64_t delivered_by_poll_thread; // ... and on the poll thread, through the handoff
-    _Atomic uint64_t park_wakes;               // the parked poll thread's returns from ppoll() (8.6)
-    atomic_bool poll_thread_parked;            // the poll thread is parked (announced on handover_cond)
-    pthread_cond_t handover_cond;              // NOLINT(misc-include-cleaner) - under wait_mutex
-    int park_timer_fd;                         // CLOCK_MONOTONIC timerfd: the lease, armed on release
-    int park_wake_fd;                          // eventfd: ends a park at shutdown
+    _Atomic uint64_t executor_left_ns;    // when the role was last released, 0: never held
+    _Atomic uint64_t executor_poll_waits; // rmw_wait() calls that polled; printed at shutdown
+    // Diagnostics kept from RMW_PERF_PLAN.md 8.6, whose behaviour was reverted (its rig A/B did not pass):
+    // claims that found the poll thread inside its own poll, and the parked poll thread's returns from poll().
+    // Each is counted once per event, not per sample.
+    _Atomic uint64_t executor_handovers;
+    _Atomic uint64_t park_wakes;
+    atomic_bool poll_thread_parked; // the poll thread is parked (announced on handover_cond)
+    pthread_cond_t handover_cond;   // NOLINT(misc-include-cleaner) - under wait_mutex
+    int park_timer_fd;              // CLOCK_MONOTONIC timerfd: the lease, armed on release
+    int park_wake_fd;               // eventfd: ends a park at shutdown
 
     // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 28(b)'s own
     // design, implemented in Milestone 30). A same-thread self-check from inside poll_thread can
@@ -866,13 +862,6 @@ typedef struct rmw_tickle_subscriber_t {
 // guard condition, an event, a queue fed outside the poll), wakes an rmw_wait() that is polling the node
 // itself. A no-op unless one is, and on the thread that is doing the polling (rmw_node.c).
 void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl);
-
-// The lease the executor's last release armed (RMW_PERF_PLAN.md 8.6), RMW_TICKLE_EXECUTOR_POLL_LEASE_NS before
-// one has been measured.
-static inline uint64_t rmw_tickle_executor_lease_ns(rmw_tickle_context_impl_t* context_impl) {
-    uint64_t lease = atomic_load(&context_impl->executor_lease_ns);
-    return 0 != lease ? lease : RMW_TICKLE_EXECUTOR_POLL_LEASE_NS;
-}
 
 // Recomputes a Subscription's RMW_EVENT_LIVELINESS_CHANGED counts, and wakes rmw_wait() if they changed.
 // Node lock held (rmw_subscription.c).

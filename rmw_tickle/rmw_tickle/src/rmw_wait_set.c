@@ -301,15 +301,6 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
     }
     atomic_fetch_add(&context_impl->executor_poll_waits, 1);
     set_park_timer(context_impl, 0); // taken back within the lease: the poll thread stays parked
-    // The next lease follows how long this executor was away (RMW_PERF_PLAN.md 8.6).
-    uint64_t left_at = atomic_load(&context_impl->executor_left_ns);
-    if (0 != left_at) {
-        uint64_t away = tt_get_ns() - left_at;
-        uint64_t lease = away + (away / 2);
-        lease = lease < RMW_TICKLE_EXECUTOR_POLL_LEASE_NS ? RMW_TICKLE_EXECUTOR_POLL_LEASE_NS : lease;
-        lease = lease > RMW_TICKLE_EXECUTOR_POLL_LEASE_MAX_NS ? RMW_TICKLE_EXECUTOR_POLL_LEASE_MAX_NS : lease;
-        atomic_store(&context_impl->executor_lease_ns, lease);
-    }
     bool interrupted = false;
     while (true) {
         uint64_t now = tt_get_ns();
@@ -340,13 +331,7 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
     uint64_t left = tt_get_ns();
     atomic_store(&context_impl->executor_left_ns, left);
     atomic_store(&context_impl->executor_polling, false);
-    // The parked poll thread wakes at the lease's end, or sooner for core's next due entry (8.6).
-    uint64_t park_in = rmw_tickle_executor_lease_ns(context_impl);
-    uint64_t due = 0;
-    if (tt_Node_next_due(&context_impl->tickle_node, &due) && (due <= left || due - left < park_in)) {
-        park_in = due > left ? due - left : 1; // 0 would disarm
-    }
-    set_park_timer(context_impl, park_in);
+    set_park_timer(context_impl, RMW_TICKLE_EXECUTOR_POLL_LEASE_NS);
     TT_TRACE(tt_TRACE_TIMER_SET);
     if (RMW_RET_OK == *result) {
         TT_TRACE(tt_TRACE_EXEC_WAKE);

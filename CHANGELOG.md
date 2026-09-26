@@ -24,11 +24,6 @@ number, `tt_VERSION`, which moves independently.
   is skipped when every known peer has had a datagram from the node since the last tick; the
   `tt_NODE_UPDATE_INTERVAL` summary always goes. Under traffic a lease then runs from the data, as with DDS.
   New counter `tt_Node.summaries_skipped`. No wire change.
-- **`tt_Node_next_due()`**: when the node's earliest scheduled entry falls due, for a caller that waits on
-  something other than `tt_Node_poll()` and must still run the node's timers on time (rmw_tickle's parked
-  poll thread, RMW_PERF_PLAN.md 8.6). Until the next `tt_Node_poll()` starts, a `tt_Node_schedule()` from
-  any other thread also signals the node's wake descriptor, whatever the entry's time, so that caller hears
-  of entries scheduled after it looked (`tt_Node.idle_waiter`).
 - **DATA_FRAG: samples larger than one datagram.** A new `tt_MAX_SAMPLE_LENGTH` bounds a sample's
   encoded size while `tt_MAX_BUFFER_LENGTH` keeps meaning one datagram. When it is larger,
   fragmentation is compiled in: a sample no `DATA` can carry is sent as `FRAG_FIRST` (type 8, the

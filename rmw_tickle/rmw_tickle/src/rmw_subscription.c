@@ -146,12 +146,6 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
         return; // not an rmw_tickle message, or its CDR does not decode: nothing to hand up
     }
     TT_TRACE(tt_TRACE_DECODED);
-    rmw_tickle_context_impl_t* delivering_context = sub_impl->node->context_impl;
-    atomic_fetch_add(pthread_equal(pthread_self(), delivering_context->poll_thread)
-                         ? // NOLINT(misc-include-cleaner)
-                         &delivering_context->delivered_by_poll_thread
-                         : &delivering_context->delivered_by_executor,
-                     1);
     struct tt_Data* tickle = (struct tt_Data*)sub_impl->decode_scratch;
 
     // Milestone 45 - reuse an already-zeroed shell from the pool instead of a fresh zero_allocate()
