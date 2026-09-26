@@ -135,3 +135,30 @@ that only held.
   condition only under Plan's reading (targets improve, nothing regresses), not the literal "every test
   better".
 - The report says so again. If the user rules for the literal reading, the bundle is reverted.
+
+### 6.1 Revised before measurement (2026-09-27): CDR alignment caps W3 and shapes W4
+
+Dev found the constraint while building W2. The generated CDR code reads fields through direct pointer casts
+and relies on the payload being 4-byte aligned in the datagram (`tools/typesupport` emit.py, and `tickle.c`'s
+static asserts). So every framing element in front of the CDR must remain a multiple of 4 bytes.
+
+- **W2 as built:** a 16-byte DataHeader and a 17-byte FRAG_FIRST. The largest single-DATA CDR grows from 1,444 to
+  1,448 B. The timestamp is rebuilt within ±35.8 min, and callbacks still get ns. Tested at ±30 min of skew,
+  across the 32-bit us wrap, and on us truncation; two mutants killed.
+- **W3 revised:** the psn prefix becomes a varint of ((first datagram seq_no - psn) mod 2³² << 1 | has_high),
+  followed by the high 32 bits only when psn ≥ 2³², zero-padded to 4. That is typically 4 B instead of 8, so
+  **-4 B per rmw sample, not the pre-registered -7**. The shortfall is alignment. A trailer after the CDR would
+  save ~5.5 B on average for more complexity. **Plan's decision: the prefix form.**
+- **W4 as designed:** a 4-byte combined header is used only for a datagram carrying exactly one submessage
+  addressed to all nodes: DATA, fragments, the summary and ordinary HEARTBEATs. Its first byte is a new
+  single-form marker ('k'/'t'), followed by version, source and type; the length is taken from the datagram.
+  Saves 4 B per such datagram.
+  - The cost is a weaker foreign-traffic check: one marker byte and the version instead of two magic bytes
+    and the version. A random datagram passes with ~3 × 10⁻⁵ probability, and must then also hit a local
+    32-bit endpoint hash, so this is accepted.
+  - Both parse paths go into the fuzz corpus.
+
+**Revised byte targets (still before measurement):**
+- p1: -8 B per sample (W2 4 + W4 4).
+- p2-p4: -8 B on the first fragment and -4 B on each later one.
+- rmw Bench: -12 B per sample (W2 4 + W3 4 + W4 4).
