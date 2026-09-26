@@ -30,7 +30,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#include <tickle/config.h> // tt_MAX_DISCOVERED_ENTITIES, tt_NODE_ID_INVALID
+#include <tickle/config.h> // tt_MAX_DISCOVERED_ENTITIES, tt_NODE_ID_INVALID, tt_MILLISECOND
+#include <tickle/hal.h>    // tt_get_ns()
 #include <tickle/tickle.h> // tt_DATA_ENCODE/_ENCODE_SIZE/_DECODE/_FREE
 
 #include "rcutils/allocator.h"
@@ -130,6 +131,36 @@ static const rosidl_message_type_support_t* fake_type_support(void) {
 // Arbitrary, != tt_NODE_ID_INVALID - see the injected struct tt_DiscoveredEntity.node_id's own
 // comment below for why the exact value is otherwise inconsequential.
 #define FAKE_REMOTE_NODE_ID 99
+
+// The two QoS-incompatible waits below failed intermittently on 2026-09-26 (23:41-23:45 on every run, again
+// twice at 00:10), with old and new rmw code alike, and did not reproduce under 16 busy cores or beside a
+// second TickLE process; the core's check ran 0.1-0.3 ms after it was due throughout. So a timeout here
+// reports what the wait was looking at before failing: how long it waited, the injected entity as rmw sees
+// it, and every occupied discovery slot - an entity overwritten or forgotten by traffic from another node
+// would show there. The wait itself is left at 2 s: nothing found so far says the margin is the problem.
+static rmw_ret_t wait_or_explain(rmw_events_t* events, rmw_wait_set_t* wait_set, const rmw_time_t* timeout,
+                                 rmw_tickle_context_impl_t* context_impl, const struct tt_DiscoveredEntity* slot,
+                                 const char* label) {
+    uint64_t start = tt_get_ns();
+    rmw_ret_t ret = rmw_wait(NULL, NULL, NULL, NULL, events, wait_set, timeout);
+    if (RMW_RET_OK == ret) {
+        return ret;
+    }
+    tt_Node_lock(&context_impl->tickle_node);
+    (void)fprintf(stderr,
+                  "%s: rmw_wait returned %d after %llu ms; injected slot node=%u alive=%d kind=%u qos=%u name=%s\n",
+                  label, (int)ret, (unsigned long long)((tt_get_ns() - start) / tt_MILLISECOND), slot->node_id,
+                  slot->alive ? 1 : 0, slot->kind, slot->qos, slot->name);
+    for (uint32_t i = 0; i < tt_MAX_DISCOVERED_ENTITIES; ++i) {
+        const struct tt_DiscoveredEntity* entity = &context_impl->discovery.entities[i];
+        if (entity->node_id != tt_NODE_ID_INVALID) {
+            (void)fprintf(stderr, "  slot %u: node=%u alive=%d kind=%u name=%s\n", i, entity->node_id,
+                          entity->alive ? 1 : 0, entity->kind, entity->name);
+        }
+    }
+    tt_Node_unlock(&context_impl->tickle_node);
+    return ret;
+}
 
 static rmw_qos_profile_t base_qos(void) {
     rmw_qos_profile_t qos;
@@ -298,7 +329,8 @@ int main(void) {
 
     events_storage[0] = &offered_qos_event;
     events.event_count = 1;
-    assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &qos_wait_timeout));
+    assert(RMW_RET_OK ==
+           wait_or_explain(&events, wait_set, &qos_wait_timeout, context_impl, sub_slot, "offered QoS incompatible"));
     assert(NULL != events.events[0]);
 
     rmw_offered_qos_incompatible_event_status_t offered_qos_status;
@@ -375,7 +407,8 @@ int main(void) {
 
     events_storage[0] = &requested_qos_event;
     events.event_count = 1;
-    assert(RMW_RET_OK == rmw_wait(NULL, NULL, NULL, NULL, &events, wait_set, &qos_wait_timeout));
+    assert(RMW_RET_OK ==
+           wait_or_explain(&events, wait_set, &qos_wait_timeout, context_impl, pub_slot, "requested QoS incompatible"));
     assert(NULL != events.events[0]);
 
     rmw_requested_qos_incompatible_event_status_t requested_qos_status;
