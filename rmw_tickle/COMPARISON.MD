@@ -1380,6 +1380,32 @@ alone. At p4, 187 samples come to slightly more than that watermark.
 - **c9 becomes a real comparison** and is expected to go to TickLE as c1 does.
 - Any LOSE that appears is a result, reported as such, and not something to tune away.
 
+**FastDDS tuned for a fair evaluation (the user's decision, 2026-09-26, translated: "let's adjust
+FastDDS's parameters too, with the aim of evaluating it fairly").** FastDDS's shipped UDPv4 transport
+default, `maxMessageSize` 65,500, makes it hand every p3/p4 sample to the kernel to IP-fragment (item 4
+above). At p4 under 5% loss that lost 427 reassemblies and delivered 38%. `fastdds_eth0_only_mms1472.xml`
+differs from the shipped profile in that one element, `maxMessageSize` 1472, so FastDDS fragments in
+RTPS the way CycloneDDS and TickLE do:
+- **Nothing else is tuned.** Heartbeat periods and every other FastDDS knob stay at their defaults,
+  and CycloneDDS and TickLE are not tuned by analogy.
+- **Both FastDDS configurations are reported.** The shipped one stays visible, and every FastDDS
+  reliable_throughput RESULT line says `transport_profile=`.
+- The change matters only where a sample exceeds one datagram, which is p3 and p4. At p1 and p2 the
+  two profiles send identical datagrams.
+
+Pre-registered before the tuned runs:
+- **Mechanism, p4 without loss:** the server's kernel reassembly requests per sample fall from 2.98 to
+  about 0, with every sample written and `drained=acked`. **If FastDDS instead refuses or fails the
+  writes, its default synchronous publish mode is not fragmenting.** The tuned arm is then invalid
+  as it stands. Making it work would need a second parameter (the publish mode), and that goes back
+  to the user rather than being changed here.
+- **p4 under 5% loss: FastDDS delivers everything** (`drained=acked`, received = sent), so that cell
+  becomes a scored three-way comparison.
+- **p3/p4 without loss:** FastDDS's bytes per sample rise slightly against the shipped profile, since
+  every RTPS fragment carries its own headers where an IP fragment carries 20 B, and its throughput
+  stays about the same.
+- **TickLE keeps every row.** Any row it loses is reported as lost.
+
 ### 4.5 The one thing the campaign predicted wrong, and what it cost
 
 The sweep's header pre-registered that TickLE should *lose* c6 - P4 under loss - "because a lost IP
