@@ -152,3 +152,64 @@ for CycloneDDS and FastDDS, and for the native TickLE harness. On the ping host,
 minus on-wire RTT is the ping side's overhead. Together they split the round trip into ping side, wire
 and pong side for all three `rmw` implementations and the native harness. Aligning the pong's pcap
 times with its `rx_wake` stamps then measures arrival → poll wake directly.
+
+## 7. The missing time was the ping's wait loop, and block mode reverses the ranking (2026-09-26)
+
+Dev found on veth (`087c52d6`, `experiments/rmw_ping_wait_mode.sh`) that the ping's default wait accounts
+for the missing time. The default wait, `--wait poll`, is `spin_some()` plus a 100 us sleep, with the
+RTT read after the loop. So every row included the sleep that followed the spin that took the reply,
+quantised to the loop's period. `--wait block` waits in `spin_once()` and reads the RTT in the callback,
+as the native client waits in `tt_Node_poll()`. The rig session (`rmw_crosshost_rtt.sh`
+`WAITS="poll block"`, build `92a27ffa`, Bench, 3 repetitions, 36 rows, 0 void) confirms it. Median
+mean RTT:
+
+| Bench | rmw_tickle | rmw_fastrtps_cpp | rmw_cyclonedds_cpp |
+|---|---:|---:|---:|
+| block, BEST_EFFORT | **0.253 ms** | 0.321 | 0.267 |
+| block, RELIABLE | **0.255** | 0.328 | 0.269 |
+| poll, BEST_EFFORT | 0.504 | 0.477 | **0.427** |
+| poll, RELIABLE | 0.514 | 0.483 | **0.431** |
+
+- **In block mode rmw_tickle has the lowest RTT of the three.** Its minimum is also the lowest: 0.232
+  against 0.252 and 0.297 ms.
+- **The poll loop costs rmw_tickle ~250 us and the vendors ~160 us.** So the old deficit came from how
+  each rmw interacts with a polling loop, not from the blocking receive path. Real `rclcpp`
+  applications spin, which is block's behaviour.
+- The packet split that would localise the poll-mode difference is queued. The first capture session
+  was void: a stale file had been copied into every row, which `7e15fc43` fixed. `f386f2e7` keeps
+  per-row logs.
+
+### 7.1 Source comparison with the vendors' rmw (user's direction, 2026-09-26)
+
+The versions compared are the ones installed on the rig: rmw_cyclonedds 2.2.3 over Cyclone DDS 0.10.5,
+rmw_fastrtps 8.4.4 over Fast DDS 2.14.6, and rclcpp 28.1.21. The question was what the vendors' rmw
+does that rmw_tickle does not. **Structurally, the three have the same shape**:
+
+| step | rmw_cyclonedds | rmw_fastrtps | rmw_tickle |
+|---|---|---|---|
+| publish | `dds_write_ts` inline in the caller (`rmw_node.cpp:1951`) | synchronous by default (`participant.cpp:278`) | encode and send inline in the caller (`rmw_publish`) |
+| receive thread | `recvUC` blocks in `recvmsg` on the data socket; discovery is on a separate `recv` thread (`q_init.c` `setup_and_start_recv_threads`, `q_receive.c` `recv_thread`) | transport listening thread | poll thread in `ppoll`, then `recvfrom` |
+| delivery | synchronous on the receive thread by default (`ddsi_proxy_endpoint.c:223`: latency_budget 0 <= bound inf, priority 0 >= 0) | on the receive thread into the history | synchronous on the poll thread (`subscriber_callback`) |
+| conversion | one deserialisation, in `dds_take` on the executor thread | one deserialisation at take | two on the poll thread (CDR → TickLE struct → ROS message), then a C++ move at take |
+| `rmw_wait(0)` | cached waitset; re-attaches only when the set changes (`rmw_node.cpp:4361`) | attach/detach every call unless something has already triggered (`rmw_wait.cpp:120`) | mutex plus flag checks, no syscall (`rmw_wait_set.c:245`) |
+
+There is one handoff between threads in every case: receive thread to executor. The differences found
+are small and are listed as measurable candidates, not as explanations:
+
+1. **Receive syscalls per wake: 2 against 1.** Cyclone's data thread is woken by `recvmsg` returning,
+   while rmw_tickle's is woken by `ppoll` and then reads. rx_wake → rx_datagram was 2.7 us in the pong
+   trace, so this bounds at a few microseconds per receive.
+2. **Two conversions before the wake, against one after it.** The serial path has the same total length,
+   and for Bench (76 B) it is about 1 us.
+3. **Graph guard condition on every announce** (`rmw_node.c` `discovery_callback`, via core's upsert at
+   `tickle.c:1195`). Core calls the discovery callback for every announced entity on every announce, 1 s
+   apart, changed or not, and each call broadcasts `wait_cond`. `rclcpp` only starts its graph listener
+   when a graph event is requested (`node_graph.cpp:607`), which ping/pong never do. So the cost here is a
+   spurious wake of a blocked `rmw_wait` about once a second per peer entity, not latency. It is still
+   worth fixing: fire only on a real change, as Cyclone does, where lease renewals produce no sample.
+4. **FastDDS's `rmw_wait` attach/detach churn** is the one clear inefficiency among the three. It is
+   consistent with FastDDS being slowest in block mode.
+
+**What the source does not explain is the poll-mode difference** (~250 against ~160 us), because
+`rmw_wait(0)` is cheap in both rmw_tickle and Cyclone. It is measured, not argued: the queued captures
+give ping_send, pong_turn, wire and ping_recv per rmw and mode, with wire as the cross-rmw control.
