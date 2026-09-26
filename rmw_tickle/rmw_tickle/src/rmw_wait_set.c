@@ -39,7 +39,6 @@
 #include <string.h>
 #include <time.h>
 
-#include <sys/timerfd.h>   // timerfd_settime() - executor-driven receive
 #include <tickle/config.h> // tt_SECOND, tt_MILLISECOND
 #include <tickle/hal.h>    // tt_get_ns()
 #include <tickle/tickle.h> // tt_Node_poll(), tt_Node_interrupt()
@@ -265,14 +264,6 @@ static rmw_ret_t check_once(rmw_tickle_context_impl_t* context_impl, rmw_subscri
     return expired ? RMW_RET_TIMEOUT : RMW_RET_ERROR;
 }
 
-// Executor-driven receive: arms the parked poll thread's lease timer to fire `in_ns` from now, or disarms it
-// with 0. Relative: tt_get_ns() is not the timerfd's clock.
-static void set_park_timer(rmw_tickle_context_impl_t* context_impl, uint64_t in_ns) {
-    // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h> above, via a glibc-private header
-    struct itimerspec timer = {{0, 0}, {(time_t)(in_ns / tt_SECOND), (long)(in_ns % tt_SECOND)}};
-    (void)timerfd_settime(context_impl->park_timer_fd, 0, &timer, NULL);
-}
-
 // Executor-driven receive: after interrupting the poll thread's own poll, waits for it to park - a millisecond
 // at most, then the caller simply tries again.
 static void wait_for_poll_thread_to_park(rmw_tickle_context_impl_t* context_impl) {
@@ -300,7 +291,8 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
         return false;
     }
     atomic_fetch_add(&context_impl->executor_poll_waits, 1);
-    set_park_timer(context_impl, 0); // taken back within the lease: the poll thread stays parked
+    // R1: the lease timer is left armed. If it fires while this executor polls, the parked thread wakes once and
+    // sees the role taken; the next release re-arms it.
     // The next lease follows how long this executor was away (RMW_PERF_PLAN.md 8.6).
     uint64_t left_at = atomic_load(&context_impl->executor_left_ns);
     if (0 != left_at) {
@@ -346,7 +338,12 @@ static bool wait_by_polling(rmw_tickle_context_impl_t* context_impl, rmw_subscri
     if (tt_Node_next_due(&context_impl->tickle_node, &due) && (due <= left || due - left < park_in)) {
         park_in = due > left ? due - left : 1; // 0 would disarm
     }
-    set_park_timer(context_impl, park_in);
+    // R1: no timer syscall here when one is armed to fire after now and no later than this lease's end - the
+    // parked thread wakes then and re-arms for the rest of the lease itself.
+    uint64_t armed = atomic_load(&context_impl->park_timer_at_ns);
+    if (armed <= left || armed > left + park_in) {
+        rmw_tickle_arm_park_timer(context_impl, left + park_in, left);
+    }
     TT_TRACE(tt_TRACE_TIMER_SET);
     if (RMW_RET_OK == *result) {
         TT_TRACE(tt_TRACE_EXEC_WAKE);

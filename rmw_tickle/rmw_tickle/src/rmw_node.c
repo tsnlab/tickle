@@ -275,6 +275,14 @@ static void* watchdog_thread_main(void* arg) {
 // waking the wait so it can run on time), tt_RET_TIMEOUT and tt_RET_OK all just mean "loop back and check
 // poll_thread_running again" - there is nothing this thread could usefully do differently for any
 // other tt_Node_poll() result either.
+void rmw_tickle_arm_park_timer(rmw_tickle_context_impl_t* context_impl, uint64_t at_ns, uint64_t now_ns) {
+    uint64_t in_ns = at_ns > now_ns ? at_ns - now_ns : 1; // 0 would disarm
+    // NOLINTNEXTLINE(misc-include-cleaner) - struct itimerspec: <sys/timerfd.h> above, via a glibc-private header
+    struct itimerspec timer = {{0, 0}, {(time_t)(in_ns / tt_SECOND), (long)(in_ns % tt_SECOND)}};
+    (void)timerfd_settime(context_impl->park_timer_fd, 0, &timer, NULL);
+    atomic_store(&context_impl->park_timer_at_ns, at_ns);
+}
+
 void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl) {
     if (atomic_load(&context_impl->executor_polling) &&
         __atomic_load_n(&context_impl->tickle_node.poller_thread, __ATOMIC_RELAXED) != tt_thread_self()) {
@@ -334,6 +342,15 @@ static bool park_for_polling_executor(rmw_tickle_context_impl_t* context_impl) {
         atomic_fetch_add(&context_impl->park_wakes, 1);
         drain_fd(context_impl->park_timer_fd);
         drain_fd(context_impl->park_wake_fd);
+        // R1: a timer that fired is armed no more. If it fired early - inside a lease a later release extended
+        // without re-arming it - it is set for the lease's end from here, off the executor's path.
+        if ((fds[0].revents & POLLIN) != 0) { // NOLINT(misc-include-cleaner) - <poll.h> above
+            atomic_store(&context_impl->park_timer_at_ns, 0);
+            uint64_t left = atomic_load(&context_impl->executor_left_ns);
+            if (!atomic_load(&context_impl->executor_polling) && executor_holds_poll(context_impl) && 0 != left) {
+                rmw_tickle_arm_park_timer(context_impl, left + rmw_tickle_executor_lease_ns(context_impl), tt_get_ns());
+            }
+        }
         if (context_impl->poll_thread_running && !atomic_load(&context_impl->executor_polling) &&
             executor_holds_poll(context_impl)) {
             // Core's signal was for this thread, and a non-blocking poll does not read it: left there, every

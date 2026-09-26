@@ -292,7 +292,11 @@ struct rmw_tickle_context_impl_t {
     atomic_bool poll_thread_parked;            // the poll thread is parked (announced on handover_cond)
     pthread_cond_t handover_cond;              // NOLINT(misc-include-cleaner) - under wait_mutex
     int park_timer_fd;                         // CLOCK_MONOTONIC timerfd: the lease, armed on release
-    int park_wake_fd;                          // eventfd: ends a park at shutdown
+    // R1 (RMW_PERF_PLAN.md 9): when park_timer_fd is armed to fire, in tt_get_ns() time, 0 when it is not. A
+    // release whose timer is already armed to fire before the new lease's end leaves it - the parked thread
+    // re-arms it itself if it wakes inside a lease - so a release makes no timer syscall on the executor's path.
+    _Atomic uint64_t park_timer_at_ns;
+    int park_wake_fd; // eventfd: ends a park at shutdown
 
     // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 28(b)'s own
     // design, implemented in Milestone 30). A same-thread self-check from inside poll_thread can
@@ -866,6 +870,9 @@ typedef struct rmw_tickle_subscriber_t {
 // guard condition, an event, a queue fed outside the poll), wakes an rmw_wait() that is polling the node
 // itself. A no-op unless one is, and on the thread that is doing the polling (rmw_node.c).
 void rmw_tickle_poke_polling_executor(rmw_tickle_context_impl_t* context_impl);
+// Arms the parked poll thread's lease timer to fire at `at_ns` (tt_get_ns() time; relative to `now_ns`, since
+// the timerfd's clock is not tt_get_ns()'s) and records it in park_timer_at_ns (R1, rmw_node.c).
+void rmw_tickle_arm_park_timer(rmw_tickle_context_impl_t* context_impl, uint64_t at_ns, uint64_t now_ns);
 
 // The lease the executor's last release armed (RMW_PERF_PLAN.md 8.6), RMW_TICKLE_EXECUTOR_POLL_LEASE_NS before
 // one has been measured.
