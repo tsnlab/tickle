@@ -345,6 +345,34 @@ samples. Raw rows are `results/core_cost_pi_{R,BE}_2026-09-27.txt`. ns per sampl
     the wire change on its own, which is why 8.4 kept D1 out of the arm.
   - A final `8f3811f4` against `main` A B B A is queued after the D-series run, so that either reading has its number.
 
+### 8.6 Commit by commit, the clients' own send loop on the Pi: v10 costs the core nothing (2026-09-27)
+
+`core_cost_pi.sh` with `BENCH_ARGS="-c -R"`, which runs the campaign clients' scheduler-driven send (`send_one()`
+rescheduling itself under `tt_Node_poll(-1)`) on a RELIABLE KEEP_LAST 64 writer. 10 paired rounds per ref. The
+ablation arm `73edfe5f` is `4dc7ad49` with every seq_cst atomic in tickle.c made relaxed; it is never merged. Raw
+rows are `results/core_cost_pi_cR_2026-09-27.txt`. ns per sample against `8f3811f4`, +- SE:
+
+| ref | what it adds | send | recv |
+|---|---|---:|---:|
+| `fd57b01d` | v10 | **-0.5 +- 0.8** | +26.2 +- 0.6 |
+| `22a8f2cb` | 8.6 | -0.6 +- 1.4 | +20.2 +- 0.4 |
+| `397d927c` | summary skip (atomic per send) | +13.1 +- 1.1 | +19.7 +- 0.5 |
+| `4dc7ad49` | receive-clock fix, skip gated | +5.8 +- 1.7 | -3.1 +- 0.3 |
+| `eef6f089` | D1, D3, 8.6 reverted | +4.3 +- 1.9 | -29.3 +- 0.6 |
+| `73edfe5f` | ablation: relaxed atomics | +4.5 +- 1.3 | -2.1 +- 0.6 |
+
+- **v10's wire format costs the core's send loop nothing on the Pi (-0.5 +- 0.8).** Its receive cost (+26) is the
+  clock read fixed in 8.1a.
+- **The ARM atomics are not the cost:** relaxing them moves send by -1.3 +- 2.2.
+- **A few ns of send cost arrived with the summary skip (+13, gated to +5.8 in `4dc7ad49`) and remain at `eef6f089`
+  (+4.3).** Dev follows this up; it is not a wire change.
+- **The campaign's +40-50 ns on the reliable client in 8.1/8.4 is therefore not in the core's code.** The bench runs
+  every line of the core except the HAL's socket calls, so what remains is the real send path. There v10 hands
+  `sendmsg()` a datagram whose single-form head starts 4 bytes into `tx_buffer`, a changed start and length. The
+  alternative is the tick-based utime/stime split misattributing kernel time. The next step is a real-socket A/B on
+  the Pi of `8f3811f4` against `fd57b01d`, the same loop over UDP. If the head's alignment is the cause, building
+  the single form so that the datagram's first byte stays 8-aligned is the fix. That is for the morning.
+
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
 **What it can save.**
