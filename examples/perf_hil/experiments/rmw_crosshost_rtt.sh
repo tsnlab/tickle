@@ -175,6 +175,30 @@ spin_off() {
 trap spin_off EXIT
 freqs() { echo "$(sh_ "$CLIENT" 'cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq') $(sh_ "$SERVER" 'cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq')"; }
 
+# CAPTURE=1 (2026-09-26, RMW_PERF_PLAN.md section 6): tcpdump on both Pis for every run, so a round trip can be
+# split into ping side, wire and pong side on one clock per host, for every rmw alike - no stamps needed. The
+# capture ends itself (-G/-W: no kill needed, and sudo here allows tcpdump but not kill). On the pong host the
+# CLOCK_REALTIME - CLOCK_MONOTONIC offset is sampled around the run, to align pcap times with rx_wake stamps.
+CAPTURE=${CAPTURE:-0}
+CAP_S=22
+cap_start() { # $1 tag
+    local h
+    for h in "$CLIENT" "$SERVER"; do
+        sh_ "$h" "rm -f /tmp/rmwx_cap.pcap; sudo -n tcpdump -i eth0 -n -s 128 --time-stamp-precision=nano -G $CAP_S -W 1 -w /tmp/rmwx_cap.pcap udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
+    done
+    sleep 1
+}
+cap_collect() { # $1 file stem
+    local h role
+    sleep $((CAP_S + 1))
+    mkdir -p "$OUT.pcaps"
+    for h in "$CLIENT" "$SERVER"; do
+        role=ping; [ "$h" = "$SERVER" ] && role=pong
+        scp -q -i "$K" -o BatchMode=yes "ci@$h:/tmp/rmwx_cap.pcap" "$OUT.pcaps/${1}_${role}.pcap" 2>/dev/null || say "  (no pcap from $role)"
+    done
+}
+clock_offset() { sh_ "$SERVER" "python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_REALTIME)-time.clock_gettime_ns(time.CLOCK_MONOTONIC))'"; }
+
 BIN=/home/ci/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong
 one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local rmw="$1" msg="$2" qos="$3" rep="$4" flag="" env pongpid maps res verdict=ok
@@ -182,6 +206,8 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     env=$(env_for "$rmw")
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
+    local off0=""
+    if [ "$CAPTURE" = 1 ]; then cap_start; off0=$(clock_offset); fi
     local dumpenv=""
     case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
     pongpid=$(sh_ "$SERVER" "$env; $dumpenv nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
@@ -203,6 +229,11 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
+    if [ "$CAPTURE" = 1 ]; then
+        local off1; off1=$(clock_offset)
+        say "  clock_offset_ns before=$off0 after=$off1 ($rmw $qos rep$rep)"
+        cap_collect "${rmw}_${msg}_${qos}_rep${rep}"
+    fi
     case "$rmw" in rmw_tickle*)
         sleep 1; mkdir -p "$OUT.dumps"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_dump.txt" "$OUT.dumps/${rmw}_${msg}_${qos}_rep${rep}.txt" 2>/dev/null \
