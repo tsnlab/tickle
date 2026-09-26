@@ -788,3 +788,17 @@ partly met.**
 - D5 stays on main: it is behaviour-neutral and not WORSE.
 - **Open, not urgent:** ~+4 ns of ARM send residual since `8f3811f4` remains unattributed. The PC shows none of it.
   It is apart from the campaign client's +40-50 ns, which is outside the core loop (WIRE_PLAN 8.6).
+
+### 11.6 D1 + D3 + D4 on the rig, A B B A: PASS, D4 merged (Plan, 2026-09-27)
+
+`campaign_ab_chain.sh`, `4dc7ad49` / `63e482f9` / `63e482f9` / `4dc7ad49`. The B arm is D1, D3, the rmw teardown fix and
+D4, on D4's measured branch. 3 repetitions per block, 72 + 72 ok rows, 0 VOID. Raw rows are
+`results/dseries_abba_{A_4dc7ad49,B_63e482f9}_2026-09-27.txt`. Read by WIRE_PLAN 8.3: 24 better, 83 held, 1 WORSE.
+
+- **The receiver gains, as predicted where drains run full:** server CPU per sample is better in 8 of the 9
+  throughput cells. c8 -2.1% (t -17), c1 -2.0% (t -10), c9 -1.7%, c5 -1.5%, c7 -1.2% (t -37), and c2/c3/c4 -0.5 to
+  -0.8%.
+- **The sender:** client CPU per sample is better in c6 (-0.7%) and c9 (-0.3%, with send rate +0.2%), and held elsewhere.
+- **The one WORSE row is a chance candidate:** c12's client wire bytes per sample, +1.0 B (+0.4%, t 2.2), in the
+  latency cell with 10 ms delay and jitter. One cell, and not CPU or latency.
+- **D4 merged** as `10999967` (Dev), whose code diff is identical to the measured `63e482f9`.
