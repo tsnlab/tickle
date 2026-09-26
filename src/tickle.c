@@ -388,10 +388,8 @@ struct tx_datagram {
 // also reaches that link's other peers; they are not counted, which only means a summary goes out anyway.
 static void send_summary_ahead(struct tt_Node* node);
 
-static void note_reached(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
-    if (!node->summary_skip_armed) {
-        return;
-    }
+// The record itself, out of line: only a node whose summaries run at the short-lease cadence gets here.
+static void note_reached_armed(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
     if (node->summary_rides != 0) {
         node->summary_rides = 0;
         send_summary_ahead(node); // its own datagram, just ahead of this one
@@ -403,6 +401,14 @@ static void note_reached(struct tt_Node* node, const struct tt_Peer* peers, uint
     for (uint8_t i = 0; i < peer_count; i++) {
         uint8_t id = peers[i].node_id;
         node->reached_nodes[id / 32U] |= 1U << (id % 32U);
+    }
+}
+
+// The gate, inline at every send (OPTIMIZATION_PLAN.md 11.5, D5): unarmed - every node without short leases - a send
+// pays one load and a branch, where an out-of-line call cost the Pi 4-6 ns a sample.
+static inline void note_reached(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count) {
+    if (node->summary_skip_armed) {
+        note_reached_armed(node, peers, peer_count);
     }
 }
 
@@ -573,10 +579,12 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
 
     uint32_t skip = to_single_form(node->tx_buffer, len, 0);
     struct tx_datagram dgram = {node->tx_buffer + skip, len - skip, NULL, 0};
-    if (len != node->tx_summary_alone_len) {
-        note_reached(node, peers, peer_count);
+    if (node->summary_skip_armed) {
+        if (len != node->tx_summary_alone_len) {
+            note_reached_armed(node, peers, peer_count);
+        }
+        node->tx_summary_alone_len = 0;
     }
-    node->tx_summary_alone_len = 0;
     if (!send_datagram(node, &dgram, peers, peer_count)) {
         TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
@@ -5571,7 +5579,7 @@ static void send_discovery_summary(struct tt_Node* node) {
     }
     node->tx_has_pending_update = true; // broadcast-only, like the announce it replaces
     bool alone = (uint32_t)((uint8_t*)submessage_header - node->tx_buffer) == sizeof(struct tt_Header);
-    node->tx_summary_alone_len = alone ? node->tx_tail : 0;
+    node->tx_summary_alone_len = alone && node->summary_skip_armed ? node->tx_tail : 0;
 }
 
 // How often this node's summary goes out: every tt_NODE_UPDATE_INTERVAL, or a tt_LIVELINESS_LEASE_DIVISOR-th of

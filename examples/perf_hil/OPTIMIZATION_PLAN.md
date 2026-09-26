@@ -745,3 +745,16 @@ front of the out-of-line body. `flush_tx()` compares and clears `tx_summary_alon
   ablation arm with the skip's send-side code removed entirely;
 - unit and tsan green, with the summary-skip tests and mutants (LIVELINESS_PLAN 10, 11.1) failing as before;
 - after the 08:00 report, the Pi `-c -R` bench against the parent.
+
+**D5 bench result (2026-09-27, against `19bde1fd`), PC criteria PASS.** `core_cost_ab.sh`, 15 paired rounds, 300,000
+samples, send ns per sample:
+
+| comparison | default | `-c -R` |
+|---|---:|---:|
+| D5 - parent | -1.0 +- 1.2 | -3.4 +- 1.2 |
+| D5 - ablation (the skip's send side removed) | -1.6 +- 1.0 | -1.3 +- 1.1 |
+
+- The unarmed skip now costs nothing measurable on the send: D5 is no slower than the ablation.
+- The summary-skip mutants still fail with D5 in place: an addressed send counted as everyone, a summary alone
+  counted as traffic, and no ride.
+- The Pi `-c -R` check follows the 08:00 report.
