@@ -654,3 +654,14 @@ publishing thread can wait, which is an rmw latency question. It gets its own en
 - A wakeup with one datagram (ping-pong, latency cells) reads the clock as often as before: once when the wait
   returns, instead of once in `process_packet()`. The gain is in drains, i.e. the throughput servers.
 - Next: Plan's rig ABBA against the parent.
+
+### 11.2 D3 result (bench, 2026-09-27): PASS
+
+`core_cost_ab.sh -r 30 -n 300000`, D3 against its parent `5f460ad2` (D1). Paired by round:
+- **send -9.0 +- 2.9 ns per sample** (193.5 -> 181.1 median). The send phase polls once per sample.
+- recv -0.1 +- 0.6 ns (one poll drains all, as expected).
+- An empty `tt_Node_poll(0)` costs 53.5 ns, against 66.
+- `tt_Server_send_response()` counts a READY response (`tt_Node.responses_ready`), and a poll takes the lock for
+  `flush_pending_responses()` only when the count is non-zero.
+- Test: a deferred response is sent by the next `tt_Node_poll()`. A mutant that never counts fails it: the
+  existing test called the flush directly, and passed.

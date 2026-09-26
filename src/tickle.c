@@ -1948,6 +1948,7 @@ static void node_init_locks(struct tt_Node* node) {
     __atomic_store_n(&node->wait_seq, 0, __ATOMIC_RELAXED);
     node->rx_clock_ns = 0;
     __atomic_store_n(&node->wait_until_hi, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&node->responses_ready, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&node->wait_until_lo, 0, __ATOMIC_RELAXED);
 }
 
@@ -7369,6 +7370,8 @@ tt_ret_t tt_Server_send_response(struct tt_Server* server, tt_RequestId request_
             return tt_RET_NOT_FOUND;
         }
 
+        // Counted after the slot is READY, so a poll that sees the count sees the slot (D3).
+        __atomic_fetch_add(&server->node->responses_ready, 1, __ATOMIC_RELEASE);
         // Wake the poll thread promptly instead of leaving this READY slot waiting out
         // tt_Node_poll()'s own normal receive timeout - same primitive and reasoning
         // tt_Node_interrupt() already exists for (Phase 0).
@@ -9157,9 +9160,14 @@ static tt_ret_t node_poll(struct tt_Node* node, int64_t timeout) {
     // last call, before doing anything else this call - same "drain what's ready first" spirit as
     // the scheduler/RX handling below, and importantly *before* this call might otherwise block in
     // tt_receive() for up to `timeout` with a real response already sitting there ready to go out.
-    state_lock(node);
-    flush_pending_responses(node);
-    state_unlock(node);
+    // Only when a response is waiting: taking the lock to find none cost every poll ~13 ns (D3). Taken to 0
+    // before the flush, so one made READY during it is counted again and flushed by the next poll at worst.
+    if (__atomic_load_n(&node->responses_ready, __ATOMIC_RELAXED) != 0 &&
+        __atomic_exchange_n(&node->responses_ready, 0, __ATOMIC_ACQUIRE) != 0) {
+        state_lock(node);
+        flush_pending_responses(node);
+        state_unlock(node);
+    }
 
     uint64_t time = tt_get_ns();
     const uint64_t poll_start = time;

@@ -298,6 +298,10 @@ struct tt_Node {
     // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
     // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
     uint64_t rx_clock_ns;
+    // Responses tt_Server_send_response() has made READY since the poll last looked, from any thread: a poll
+    // takes the state lock for flush_pending_responses() only when this is non-zero (OPTIMIZATION_PLAN.md 11,
+    // D3). Accessed only through __atomic builtins.
+    uint32_t responses_ready;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;
     // The scheduler inbox: tt_Node_schedule() from a thread that does not hold the state lock puts its entry

@@ -269,6 +269,41 @@ static void test_deferred_request_answered_later_is_sent(void) {
     EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]); // slot reclaimed after flush
 }
 
+// The same path through tt_Node_poll() itself: the poll flushes a READY response only when
+// tt_Server_send_response() has counted it (tt_Node.responses_ready, OPTIMIZATION_PLAN.md 11, D3) - and
+// a poll with nothing counted takes no lock for it.
+static void test_deferred_response_is_sent_by_the_next_poll(void) {
+    test_mock_reset();
+    callback_count = 0;
+    stub_return_code = tt_CALL_DEFERRED;
+
+    struct tt_Node node;
+    struct tt_Service service;
+    struct tt_Server server;
+    init_node_service_server(&node, &service, &server);
+
+    struct tt_Header header;
+    memset(&header, 0, sizeof(header));
+    header.magic_value = NATIVE_MAGIC_VALUE;
+    header.version = tt_VERSION;
+    header.source = REMOTE_NODE_ID;
+    uint32_t tail = write_callrequest(&node, 42, 0);
+    EXPECT_TRUE(process_callrequest(&node, &header, node.rx_buffer, 0, tail, 0, 0));
+
+    (void)tt_Node_poll(&node, 0);
+    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_call_count); // nothing ready, nothing sent
+
+    uint8_t response_byte = 0;
+    tt_RequestId request_id = {REMOTE_NODE_ID, 42};
+    EXPECT_TRUE(tt_RET_OK == tt_Server_send_response(&server, request_id, 0, (struct tt_Response*)&response_byte));
+    EXPECT_EQ_U32(1, __atomic_load_n(&node.responses_ready, __ATOMIC_RELAXED));
+
+    (void)tt_Node_poll(&node, 0);
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
+    EXPECT_EQ_U32((uint32_t)tt_SERVER_SLOT_EMPTY, (uint32_t)server.slot_state[0]);
+    EXPECT_EQ_U32(0, __atomic_load_n(&node.responses_ready, __ATOMIC_RELAXED));
+}
+
 // The flip side: nobody ever calls tt_Server_send_response() for a deferred request -
 // pending_response_timeout() (the tt_Node_schedule() callback, invoked directly here rather than
 // via a real elapsed wait - test_liveliness.c's own check_liveliness() tests already establish
@@ -343,6 +378,7 @@ int main(void) {
     test_fresh_request_response_is_unicast_to_sender();
     test_unknown_endpoint_is_ignored();
     test_deferred_request_answered_later_is_sent();
+    test_deferred_response_is_sent_by_the_next_poll();
     test_deferred_request_timeout_reclaims_slot();
     test_retry_while_deferred_does_not_recall_callback();
 

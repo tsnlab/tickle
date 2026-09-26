@@ -10,6 +10,9 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **A poll with no response pending takes no lock for it** (OPTIMIZATION_PLAN.md 11, D3):
+  `tt_Server_send_response()` counts what it makes READY (`tt_Node.responses_ready`), and `tt_Node_poll()`
+  flushes responses only when that count is non-zero - -13 ns per poll on the PC.
 - **A received datagram reads no clock** (OPTIMIZATION_PLAN.md 11, D1): a peer's last sign of life
   (`traffic_last_seen`) and a MANUAL writer's assertion are stamped with the poll's reading of the clock, taken
   when a wait returns and every `tt_RX_CLOCK_REFRESH` (16) datagrams of a drain, instead of a read per
