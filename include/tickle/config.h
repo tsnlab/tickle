@@ -351,20 +351,27 @@
 #endif
 
 // The largest sample - encoded CDR bytes, framing excluded - a Publisher may send and a Subscriber can
-// receive (DATA_FRAG, rmw_tickle/DATAFRAG_PLAN.md). tt_MAX_BUFFER_LENGTH keeps meaning one datagram; a
-// sample that does not fit one goes out as fragments of at most tt_CONTROL_MAX_LENGTH, each its own
-// datagram, and is put back together on the receiving side (tt_SUBMESSAGE_TYPE_FRAG_FIRST, tickle.h).
+// receive (DATA_FRAG, rmw_tickle/DATAFRAG_PLAN.md). tt_MAX_BUFFER_LENGTH keeps meaning the largest
+// datagram; a sample that does not fit a control datagram (tt_CONTROL_MAX_LENGTH) goes out as fragments of
+// at most that size, each its own datagram, and is put back together on the receiving side
+// (tt_SUBMESSAGE_TYPE_FRAG_FIRST, tickle.h).
 //
-// At the default the two are equal, which compiles fragmentation out altogether: no reassembly pool, no
-// larger tx_buffer, and a sample that does not fit one datagram is refused exactly as before. A node
-// that only ever sends small samples - an MCU, say - pays nothing for a feature it does not use.
+// Fragmentation is compiled in exactly when a sample can be larger than a control datagram. At core's
+// defaults the three are equal, which compiles it out altogether: no reassembly pool, no larger
+// tx_buffer, and a sample that does not fit one datagram is refused exactly as before - an MCU that only
+// sends small samples pays nothing for a feature it does not use. A build that raises
+// tt_MAX_BUFFER_LENGTH (rmw_tickle, to 65507) gets it too: its samples then fragment at the control
+// datagram, while service requests and responses, which do not fragment, keep the large datagram.
+// -Dtt_FRAG_ENABLED=0 keeps such a build on the OS's IP fragmentation instead - the benchmark's ipfrag arm.
 #ifndef tt_MAX_SAMPLE_LENGTH
 #define tt_MAX_SAMPLE_LENGTH tt_MAX_BUFFER_LENGTH
 #endif
-#if tt_MAX_SAMPLE_LENGTH > tt_MAX_BUFFER_LENGTH
+#ifndef tt_FRAG_ENABLED
+#if tt_MAX_SAMPLE_LENGTH > tt_CONTROL_MAX_LENGTH
 #define tt_FRAG_ENABLED 1
 #else
 #define tt_FRAG_ENABLED 0
+#endif
 #endif
 // Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
 // of another sample arrives, the reassembly started longest ago is abandoned and counted
@@ -589,8 +596,11 @@ static_assert(tt_CONTROL_MAX_LENGTH <= tt_MAX_BUFFER_LENGTH,
               "tt_CONTROL_MAX_LENGTH cannot exceed tt_MAX_BUFFER_LENGTH - nothing larger could be received");
 static_assert(tt_MAX_SAMPLE_LENGTH >= tt_MAX_BUFFER_LENGTH,
               "tt_MAX_SAMPLE_LENGTH below tt_MAX_BUFFER_LENGTH would refuse samples one datagram can carry");
-static_assert(!tt_FRAG_ENABLED || tt_MAX_SAMPLE_LENGTH <= UINT16_MAX - 32,
-              "a fragmented sample is cached and encoded as one submessage, whose length is a uint16");
+// SubmessageHeader + DataHeader (24) + the sample + up to 3 bytes of padding, in a uint16 length: 65507,
+// the largest UDP payload, just fits.
+#define tt_FRAG_SUBMESSAGE_OVERHEAD 27
+static_assert(!tt_FRAG_ENABLED || tt_MAX_SAMPLE_LENGTH + tt_FRAG_SUBMESSAGE_OVERHEAD <= UINT16_MAX,
+              "a fragmented sample is encoded as one submessage first, whose length is a uint16");
 static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one reassembly slot");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");

@@ -112,19 +112,83 @@ static void test_batched_samples_stay_within_the_control_limit(void) {
     EXPECT_EQ_U32(0, (uint32_t)node.tx_dropped_oversize);
 }
 
-static void test_one_large_sample_goes_alone_at_full_size(void) {
-    // A 5000-byte sample is large because its type is: it may use the larger buffer, on its own.
+static void test_a_large_sample_fragments_at_the_control_limit(void) {
+    // A 5000-byte sample fits the 8192 buffer, but since DATA_FRAG a build whose buffer outgrows the
+    // control datagram fragments its samples at the control datagram rather than handing the OS one
+    // IP-fragmented datagram (config.h, tt_FRAG_ENABLED) - rmw_tickle's configuration. It used to go
+    // alone at full size.
     init(1);
     sample_size = 5000;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pubs[0], (struct tt_Data*)sample));
     node_flush(&node, 0, NULL);
+    EXPECT_EQ_INT(4, datagram_count); // 1443 + 1454 + 1454 + the rest
+    for (int d = 0; d < datagram_count; d++) {
+        EXPECT_TRUE(datagram_len[d] <= tt_CONTROL_MAX_LENGTH);
+        EXPECT_EQ_INT(d == 0 ? tt_SUBMESSAGE_TYPE_FRAG_FIRST : tt_SUBMESSAGE_TYPE_FRAG_CONT, datagram_type[d]);
+    }
+}
+
+static int32_t request_size;
+
+static int32_t sized_request_encode_size(struct tt_Request* request) {
+    (void)request;
+    return request_size;
+}
+
+// NOLINTNEXTLINE(readability-non-const-parameter) - must match tt_REQUEST_ENCODE's fixed signature
+static int32_t sized_request_encode(struct tt_Request* request, uint8_t* payload, const uint32_t len) {
+    (void)request;
+    memset(payload, 0x5A, len);
+    return (int32_t)len;
+}
+
+static int32_t ignore_response(struct tt_Response* response, const uint8_t* payload, const uint32_t len,
+                               bool is_native_endian) {
+    (void)response;
+    (void)payload;
+    (void)len;
+    (void)is_native_endian;
+    return 0;
+}
+
+static void free_response(struct tt_Response* response) {
+    (void)response;
+}
+
+static void on_response(struct tt_Client* client, int8_t return_code, struct tt_Response* response) {
+    (void)client;
+    (void)return_code;
+    (void)response;
+}
+
+static void test_a_large_request_keeps_the_large_datagram(void) {
+    // Services do not fragment, so a request larger than the control datagram still goes whole in the
+    // larger buffer - which is why rmw_tickle keeps tt_MAX_BUFFER_LENGTH at 65507 while its samples
+    // fragment (rclcpp's parameter services alone carry requests past 1472). Control for the test above:
+    // the same size, the other path.
+    init(0);
+    static struct tt_Service service;
+    static struct tt_Client client;
+    memset(&service, 0, sizeof(service));
+    service.name = "big_service";
+    service.request_size = sizeof(sample);
+    service.response_size = sizeof(sample);
+    service.request_encode_size = sized_request_encode_size;
+    service.request_encode = sized_request_encode;
+    service.response_decode = ignore_response;
+    service.response_free = free_response;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_client(&node, &client, &service, "big_client", on_response));
+    request_size = 5000;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Client_call(&client, (struct tt_Request*)sample));
+    node_flush(&node, 0, NULL);
     EXPECT_EQ_INT(1, datagram_count);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_CALLREQUEST, datagram_type[0]);
     EXPECT_TRUE(datagram_len[0] > tt_CONTROL_MAX_LENGTH && datagram_len[0] <= tt_MAX_BUFFER_LENGTH);
 }
 
 static void test_large_sample_is_not_joined_by_batched_ones(void) {
-    // A batch pending when a large sample arrives goes first, on its own, and nothing is added to
-    // the large one's datagram: whatever shares a datagram stays within the control limit.
+    // A batch pending when a large sample arrives goes first, on its own, and nothing is added to the
+    // large one's datagrams, its fragments: whatever shares a datagram stays within the control limit.
     init(1);
     pubs[0].batch = true;
     sample_size = 200;
@@ -134,15 +198,15 @@ static void test_large_sample_is_not_joined_by_batched_ones(void) {
     sample_size = 200;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pubs[0], (struct tt_Data*)sample));
     node_flush(&node, 0, NULL);
-    EXPECT_EQ_INT(3, datagram_count);
-    int large = 0;
-    for (int d = 0; d < datagram_count; d++) {
-        if (datagram_len[d] > tt_CONTROL_MAX_LENGTH) {
-            large++;
-            EXPECT_TRUE(datagram_len[d] < 5000 + 64); // the large sample and its framing, nothing else
-        }
+    EXPECT_EQ_INT(6, datagram_count); // the first batch, the large sample's 4 fragments, the second batch
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA, datagram_type[0]);
+    for (int d = 1; d <= 4; d++) {
+        EXPECT_EQ_INT(d == 1 ? tt_SUBMESSAGE_TYPE_FRAG_FIRST : tt_SUBMESSAGE_TYPE_FRAG_CONT, datagram_type[d]);
     }
-    EXPECT_EQ_INT(1, large);
+    EXPECT_EQ_INT(tt_SUBMESSAGE_TYPE_DATA, datagram_type[5]);
+    for (int d = 0; d < datagram_count; d++) {
+        EXPECT_TRUE(datagram_len[d] <= tt_CONTROL_MAX_LENGTH);
+    }
 }
 
 static void test_announce_splits_at_the_control_limit(void) {
@@ -159,7 +223,8 @@ static void test_announce_splits_at_the_control_limit(void) {
 
 int main(void) {
     test_batched_samples_stay_within_the_control_limit();
-    test_one_large_sample_goes_alone_at_full_size();
+    test_a_large_sample_fragments_at_the_control_limit();
+    test_a_large_request_keeps_the_large_datagram();
     test_large_sample_is_not_joined_by_batched_ones();
     test_announce_splits_at_the_control_limit();
 

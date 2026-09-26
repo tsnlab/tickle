@@ -27,6 +27,11 @@ number, `tt_VERSION`, which moves independently.
   whole and acknowledged only once held. `tt_ReorderSlot` gained `frag_index`/`frag_count`, and reorder
   slots are now offset per writer.
   See DESIGN.md's "Samples larger than a datagram".
+- **`tt_ReliableCache.sample_depth`**: KEEP_LAST's bound in samples, now that `depth` counts
+  datagrams. When set, core evicts whole samples before holding more than that many
+  (`retained_samples` counts them). 0 leaves `depth` as the only bound, as before.
+  `tt_sample_datagrams()` and `tt_sample_cache_bytes()` (tickle.h) size a cache in samples: the seq_no
+  and the arena bytes one sample of a given CDR length takes.
 - **HAL: `tt_send_batch()`**, several datagrams in one call - `sendmmsg()` on Linux, one send each on
   FreeRTOS. **A HAL port must now provide it.** Core uses it for a sample's fragments and for one
   datagram to several destinations; a single datagram to a single destination still uses
@@ -232,6 +237,22 @@ number, `tt_VERSION`, which moves independently.
 
 ### Changed
 
+- **Fragmentation follows the control datagram, not `tt_MAX_BUFFER_LENGTH`.** `tt_FRAG_ENABLED` is on
+  whenever `tt_MAX_SAMPLE_LENGTH > tt_CONTROL_MAX_LENGTH` and can be overridden (`-Dtt_FRAG_ENABLED=0`),
+  and a sample goes as one `DATA` only if it fits `tt_CONTROL_MAX_LENGTH`. A build with a large datagram -
+  `rmw_tickle`, 65507 - now sends its large samples as `FRAG_FIRST`/`FRAG_CONT` instead of one datagram
+  the OS splits into IP fragments; service requests and responses keep the large datagram.
+- **`rmw_tickle`: every message carries an 8-byte publication sequence number ahead of its CDR**
+  (`RMW_TICKLE_PSN_BYTES`), the publisher's own count of messages, which the subscription reports as
+  `publication_sequence_number`. Core's seq_no counts datagrams once messages fragment, and ROS requires
+  the gap between two psns to be the messages sent in between. **rmw_tickle nodes built before and after
+  this do not interoperate**, and a core node reading an rmw_tickle topic must skip the 8 bytes.
+- **`rmw_tickle` publisher caches are sized for fragmented messages.** KEEP_LAST: the ring is depth x
+  the datagrams of the type's largest message (capped by what the arena can hold, and at 65535), with
+  `sample_depth` = depth; growth is asked for when fewer than depth messages are retained. A message's
+  record is `tt_sample_cache_bytes()` of its CDR plus the psn, and the first arena slice holds at least
+  one of the largest. KEEP_ALL's depth (2048 / 8192) now counts datagrams, as the reader's tracking window
+  it is paired with does. Reorder slots hold the psn too.
 - **Wire protocol `tt_VERSION` 6 -> 7.** The discovery announce is now a `DATA` sample of a built-in
   endpoint (`tt_DISCOVERY_ENDPOINT_ID`, `tt_DISCOVERY_ENTITY_ID`) whose `seq_no` is the announce
   generation (the low 32 bits of `last_modified`), with a `tt_AnnounceHeader` + entities payload. A
@@ -328,6 +349,9 @@ number, `tt_VERSION`, which moves independently.
 
 ### Fixed
 
+- `rmw_tickle`'s `publication_sequence_number` was core's 16-bit callback `seq_no`, so it wrapped to 0
+  every 65,536 messages, breaking ROS's contract that it increases (DATAFRAG_PLAN.md 13.5). It is now
+  the publisher's own 64-bit count, starting at 1 and advancing only for a message that was sent.
 - The logger formatted its timestamp with `localtime()`, whose one static `struct tm` is shared by
   every thread, so two nodes logging at once on two threads could print each other's time. Now
   `localtime_r()`. Found by `test_thread_safety` under ThreadSanitizer.

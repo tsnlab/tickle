@@ -88,10 +88,64 @@ static void shell_pool_push(rmw_tickle_subscriber_t* sub_impl, void* shell) {
     }
 }
 
+// What core hands subscriber_callback() as the sample: the payload itself, rmw_tickle's per-message header
+// (RMW_TICKLE_PSN_BYTES, rmw_tickle.h) and the type's CDR behind it. Core's in-place decode hook takes no
+// context, and the callback that reads this runs straight after it on the same thread, so one per thread
+// is enough.
+struct payload_view {
+    const uint8_t* payload;
+    uint32_t length;
+    bool is_native;
+};
+
+static _Thread_local struct payload_view current_payload;
+
+static struct tt_Data* view_payload(const uint8_t* payload, uint32_t length, bool is_native) {
+    current_payload.payload = payload;
+    current_payload.length = length;
+    current_payload.is_native = is_native;
+    return (struct tt_Data*)&current_payload;
+}
+
+// Core requires a copying decode as well; view_payload() never declines, so this is never reached.
+static int32_t refuse_copying_decode(struct tt_Data* data, const uint8_t* payload, const uint32_t len,
+                                     bool is_native_endian) {
+    (void)data;
+    (void)payload;
+    (void)len;
+    (void)is_native_endian;
+    return -1;
+}
+
+static void free_nothing(struct tt_Data* data) {
+    (void)data;
+}
+
+// Reads rmw_tickle's per-message header off the payload core delivered and decodes the CDR behind it into
+// the subscription's decode_scratch. Returns false for a message that is not rmw_tickle's shape.
+static bool decode_with_psn(rmw_tickle_subscriber_t* sub_impl, const struct payload_view* view,
+                            uint64_t* publication_sequence_number) {
+    if (view->length < RMW_TICKLE_PSN_BYTES) {
+        return false;
+    }
+    uint64_t psn = 0;
+    memcpy(&psn, view->payload, RMW_TICKLE_PSN_BYTES);
+    *publication_sequence_number = view->is_native ? psn : __builtin_bswap64(psn);
+    return sub_impl->callbacks->tickle_decode((struct tt_Data*)sub_impl->decode_scratch,
+                                              view->payload + RMW_TICKLE_PSN_BYTES, view->length - RMW_TICKLE_PSN_BYTES,
+                                              view->is_native) >= 0;
+}
+
 static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)seq_no; // core's: counts datagrams once messages fragment - the psn comes from rmw_tickle's own header
     rmw_tickle_subscriber_t* sub_impl =
         (rmw_tickle_subscriber_t*)((char*)tt_sub - offsetof(rmw_tickle_subscriber_t, tickle_subscriber));
     const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks = sub_impl->callbacks;
+    uint64_t publication_sequence_number = 0;
+    if (!decode_with_psn(sub_impl, (const struct payload_view*)data, &publication_sequence_number)) {
+        return; // not an rmw_tickle message, or its CDR does not decode: nothing to hand up
+    }
+    struct tt_Data* tickle = (struct tt_Data*)sub_impl->decode_scratch;
 
     // Milestone 45 - reuse an already-zeroed shell from the pool instead of a fresh zero_allocate()
     // when one's available (see shell_pool's own doc comment, rmw_tickle.h) - falls back to a real
@@ -103,10 +157,13 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     if (NULL == ros_message) {
         ros_message = rmw_tickle_ros_message_create(callbacks, &sub_impl->allocator);
         if (NULL == ros_message) {
+            callbacks->tickle_free(tickle);
             return; // Nothing more useful to do from inside a poll-thread callback - drop silently.
         }
     }
-    if (!callbacks->from_tickle(data, ros_message)) {
+    bool converted = callbacks->from_tickle(tickle, ros_message);
+    callbacks->tickle_free(tickle);
+    if (!converted) {
         pthread_mutex_lock(&sub_impl->queue_mutex);
         shell_pool_push(sub_impl, ros_message);
         pthread_mutex_unlock(&sub_impl->queue_mutex);
@@ -134,7 +191,7 @@ static void subscriber_callback(struct tt_Subscriber* tt_sub, uint64_t time, uin
     sub_impl->queue[tail_index].source_timestamp =
         time; // publisher's own wire timestamp - see tickle.c's process_data()
     sub_impl->queue[tail_index].received_timestamp = tt_get_ns();
-    sub_impl->queue[tail_index].publication_sequence_number = seq_no;
+    sub_impl->queue[tail_index].publication_sequence_number = publication_sequence_number;
     sub_impl->queue[tail_index].reception_sequence_number = sub_impl->reception_sequence_number++;
     sub_impl->queue_count++;
     pthread_mutex_unlock(&sub_impl->queue_mutex);
@@ -260,8 +317,13 @@ static uint16_t resolve_reorder_slot_bytes(const rmw_tickle_subscriber_t* sub_im
         ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != sub_impl->callbacks->tickle_max_encoded_size) {
         payload = (unsigned long long)sub_impl->callbacks->tickle_max_encoded_size;
     }
-    if (payload > (unsigned long long)tt_MAX_BUFFER_LENGTH) {
-        payload = (unsigned long long)tt_MAX_BUFFER_LENGTH;
+    payload += RMW_TICKLE_PSN_BYTES; // every message carries rmw_tickle's header ahead of its CDR
+    // Whatever the type, a slot never holds more than one control datagram's payload: a larger message
+    // is held fragment by fragment, one per slot (DATAFRAG_PLAN.md section 13), and a whole DATA is
+    // at most a control datagram. So a large type is held rather than re-requested, in slots of 1.5 KiB.
+    unsigned long long datagram_payload = (unsigned long long)tt_CONTROL_MAX_LENGTH;
+    if (payload > datagram_payload) {
+        payload = datagram_payload;
     }
     // tt_Subscriber.reorder_slot_bytes is 16 bits: the cap keeps a slot, header included, within it.
     unsigned long long cap =
@@ -388,8 +450,11 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     sub_impl->topic.data_size = (uint32_t)callbacks->tickle_struct_size;
     sub_impl->topic.data_encode_size = callbacks->tickle_encode_size;
     sub_impl->topic.data_encode = callbacks->tickle_encode;
-    sub_impl->topic.data_decode = callbacks->tickle_decode;
-    sub_impl->topic.data_free = callbacks->tickle_free;
+    // The payload is handed over as it is (view_payload()), and subscriber_callback() decodes it past
+    // rmw_tickle's per-message header into decode_scratch, then frees what the decode allocated.
+    sub_impl->topic.data_decode_inplace = view_payload;
+    sub_impl->topic.data_decode = refuse_copying_decode;
+    sub_impl->topic.data_free = free_nothing;
 
     // Milestone 7's QoS roadmap item #1 (HISTORY/DEPTH): qos_profile->depth sizes the queue for
     // real, rather than a fixed compile-time bound - RMW_QOS_POLICY_DEPTH_SYSTEM_DEFAULT (0, unset)
@@ -440,8 +505,11 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     // Milestone 45 - shell_pool's own doc comment (rmw_tickle.h). Sized queue_capacity, same as
     // queue[] itself - the most shells that can ever be genuinely in flight at once.
     sub_impl->shell_pool = (void**)allocator->zero_allocate(sub_impl->queue_capacity, sizeof(void*), allocator->state);
-    if (NULL == sub_impl->shell_pool) {
+    sub_impl->decode_scratch = allocator->zero_allocate(1, callbacks->tickle_struct_size, allocator->state);
+    if (NULL == sub_impl->shell_pool || NULL == sub_impl->decode_scratch) {
         RMW_SET_ERROR_MSG("failed to allocate subscriber shell_pool");
+        allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
         allocator->deallocate(sub_impl->queue, allocator->state);
         allocator->deallocate(sub_impl, allocator->state);
         return NULL;
@@ -450,6 +518,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
     if (pthread_mutex_init(&sub_impl->queue_mutex, NULL) != 0) {
         RMW_SET_ERROR_MSG("failed to initialize subscriber queue mutex");
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
         allocator->deallocate(sub_impl->reorder_storage, allocator->state);
         allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
@@ -467,6 +536,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         RMW_SET_ERROR_MSG("failed to allocate topic_name");
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
         allocator->deallocate(sub_impl->reorder_storage, allocator->state);
         allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
@@ -484,6 +554,7 @@ rmw_subscription_t* rmw_create_subscription(const rmw_node_t* node, const rosidl
         pthread_mutex_destroy(&sub_impl->queue_mutex);
         allocator->deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator->state);
         allocator->deallocate((void*)sub_impl->shell_pool, allocator->state);
+        allocator->deallocate(sub_impl->decode_scratch, allocator->state);
         allocator->deallocate(sub_impl->reorder_storage, allocator->state);
         allocator->deallocate(sub_impl->tracking_bitmaps, allocator->state); // Phase 2
         allocator->deallocate(sub_impl->queue, allocator->state);
@@ -623,7 +694,8 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     allocator.deallocate((char*)sub_impl->rmw_subscription.topic_name, allocator.state);
     allocator.deallocate(sub_impl->queue, allocator.state);
     allocator.deallocate((void*)sub_impl->shell_pool, allocator.state); // Milestone 45
-    allocator.deallocate(sub_impl->tracking_bitmaps, allocator.state);  // Phase 2 - the tracking window
+    allocator.deallocate(sub_impl->decode_scratch, allocator.state);
+    allocator.deallocate(sub_impl->tracking_bitmaps, allocator.state); // Phase 2 - the tracking window
     allocator.deallocate(sub_impl->owning_node_name, allocator.state);
     allocator.deallocate(sub_impl->owning_node_namespace, allocator.state);
     allocator.deallocate(sub_impl, allocator.state);

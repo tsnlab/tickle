@@ -418,6 +418,21 @@ typedef struct rmw_tickle_qos_incompatible_status_t {
 } rmw_tickle_qos_incompatible_status_t;
 
 // TickLE specific publisher data
+// rmw_tickle's per-message header: the publisher's publication sequence number, a uint64 in the sender's
+// byte order, ahead of the type's CDR in every message rmw_tickle sends (DATAFRAG_PLAN.md section 13.2).
+// Eight bytes keep the CDR at the alignment core gives it. A node that is not rmw_tickle - core on an
+// MCU, say - sees these bytes too, and must skip them to read an rmw_tickle message.
+#define RMW_TICKLE_PSN_BYTES 8
+
+// What rmw_publish() hands core as the sample: the TickLE struct to encode, the type's callbacks to encode it
+// with, and the publication sequence number to put ahead of it. Core's codec functions take only the sample,
+// so what they need travels in it; a publisher's topic.data_encode_size / data_encode expect this.
+typedef struct rmw_tickle_outgoing_message_t {
+    uint64_t publication_sequence_number;
+    const rosidl_typesupport_tickle_c_message_callbacks_t* callbacks;
+    void* tickle;
+} rmw_tickle_outgoing_message_t;
+
 typedef struct rmw_tickle_publisher_t {
     rmw_publisher_t rmw_publisher; // RMW publisher structure (must be first)
     struct tt_Publisher tickle_publisher;
@@ -531,6 +546,13 @@ typedef struct rmw_tickle_publisher_t {
     // to_tickle() conversion that happens before the node lock is ever taken.
     void* publish_scratch_buf;
     pthread_mutex_t publish_mutex;
+    // The next message's publication sequence number (ROS's, rmw/types.h): this Publisher's own count of
+    // messages, carried in the RMW_TICKLE_PSN_BYTES that rmw_tickle puts ahead of every message's CDR.
+    // Core's seq_no cannot serve: it counts datagrams once messages fragment (DATAFRAG_PLAN.md section 13),
+    // and ROS requires psn2 - psn1 - 1 to be the number of messages sent in between. 64 bits, where
+    // core's callback hands over 16 - the counter this replaced wrapped every 65536 messages. Starts at 1
+    // and advances only for a message core accepted; guarded by publish_mutex.
+    uint64_t next_publication_sequence_number;
 
     // Phase 3 step 3 (rmw_tickle/PLAN.md) - HISTORY.KEEP_ALL's own back-pressure. A KEEP_ALL
     // Publisher refuses a write (tt_RET_WOULD_BLOCK) rather than evicting an unacknowledged sample,
@@ -691,6 +713,11 @@ typedef struct rmw_tickle_subscriber_t {
     size_t queue_head;
     size_t queue_count;
     uint64_t reception_sequence_number;
+    // Where subscriber_callback() decodes a message's CDR into the TickLE struct, callbacks->tickle_struct_size
+    // bytes. Core hands the callback the payload itself (topic.data_decode_inplace), since rmw_tickle's
+    // per-message header - the publication sequence number - sits ahead of the CDR and only rmw_tickle
+    // knows to skip it. The callback runs on the poll thread under the node lock, so one buffer serves.
+    void* decode_scratch;
 
     // QoS roadmap follow-up (Milestone 45) - a small free-list of already-allocated, currently-
     // unused "shell" buffers (each callbacks->ros_struct_size bytes - the same buffer rmw_tickle_

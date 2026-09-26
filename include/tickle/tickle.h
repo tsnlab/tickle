@@ -790,9 +790,16 @@ struct tt_ReliableCache {
     // limit, or back-pressure would turn into unbounded growth (see tt_Publisher_publish()).
     uint32_t arena_limit;
     // Core-private bookkeeping (a caller sets only the six fields above; zero-init = empty).
-    uint32_t oldest_seq_no; // oldest retained sample, 0 = nothing retained (the arena is empty)
-    uint32_t newest_seq_no; // newest sample handed to cache_reliable_sample(), cached or not
-    uint32_t tail;          // arena offset just past the newest retained record
+    // KEEP_LAST's bound in SAMPLES, when depth - which counts seq_no, and so datagrams once samples
+    // fragment - is not the bound meant (DATAFRAG_PLAN.md section 13). 0: depth alone bounds the cache, as
+    // before. rmw_tickle sets depth to the history depth times the datagrams its largest message takes and
+    // this to the history depth, so smaller messages do not make it keep more of them than the QoS says.
+    // KEEP_LAST only: it evicts to honour the bound, which a KEEP_ALL publisher must never do.
+    uint16_t sample_depth;
+    uint16_t retained_samples; // core-owned: samples whose first record is retained now
+    uint32_t oldest_seq_no;    // oldest retained sample, 0 = nothing retained (the arena is empty)
+    uint32_t newest_seq_no;    // newest sample handed to cache_reliable_sample(), cached or not
+    uint32_t tail;             // arena offset just past the newest retained record
     // Only ever consulted when tt_Publisher.durable is set (register_subscriber_peer_on_
     // publisher(), tickle.c) - costs a best-effort or reliable-only Publisher nothing beyond the
     // unused array slots themselves, no extra allocation or opt-in flag needed. Same capacity as
@@ -2045,6 +2052,40 @@ struct tt_FragContHeader {
 
 // How much less CDR fragment 0 carries than a full continuation, for its longer header.
 #define tt_FRAG_FIRST_SHORTFALL (sizeof(struct tt_FragFirstHeader) - sizeof(struct tt_FragContHeader))
+
+// How many datagrams - and so seq_no - a sample of cdr_len encoded bytes takes: 1 when a DATA carries it
+// whole, else its fragment count (DATAFRAG_PLAN.md section 13). For sizing what counts seq_no - a reliable
+// cache's depth, a tracking window - in samples. Padded as a sample is sent. test_data_frag.c checks it
+// against what publishing actually sends.
+static inline uint32_t tt_sample_datagrams(uint32_t cdr_len) {
+#if tt_FRAG_ENABLED
+    const uint32_t framing = (uint32_t)(sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader));
+    const uint32_t padded = (cdr_len + 3U) & ~3U;
+    if (framing + (uint32_t)sizeof(struct tt_DataHeader) + padded <= (uint32_t)tt_CONTROL_MAX_LENGTH) {
+        return 1;
+    }
+    const uint32_t first = (uint32_t)tt_CONTROL_MAX_LENGTH - framing - (uint32_t)sizeof(struct tt_FragFirstHeader);
+    const uint32_t cont = (uint32_t)tt_CONTROL_MAX_LENGTH - framing - (uint32_t)sizeof(struct tt_FragContHeader);
+    return 1 + ((padded - first + cont - 1) / cont);
+#else
+    (void)cdr_len;
+    return 1;
+#endif
+}
+
+// An upper bound on the reliable-cache arena bytes one sample of cdr_len encoded bytes takes: its one
+// record, or one record per fragment, each 4-aligned. For sizing an arena in samples, as
+// tt_RELIABLE_RECORD_BYTES() did before samples fragmented. test_data_frag.c checks it against what
+// caching actually takes.
+static inline uint32_t tt_sample_cache_bytes(uint32_t cdr_len) {
+    const uint32_t datagrams = tt_sample_datagrams(cdr_len);
+    if (datagrams == 1) {
+        return tt_RELIABLE_RECORD_BYTES(cdr_len);
+    }
+    const uint32_t record_overhead =
+        (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader)) + 3U; // + alignment
+    return ((cdr_len + 3U) & ~3U) + (datagrams * record_overhead) + (uint32_t)tt_FRAG_FIRST_SHORTFALL;
+}
 
 struct tt_AckNackHeader {
     uint32_t endpoint_id; // target Publisher - same leading-field convention as tt_DataHeader/

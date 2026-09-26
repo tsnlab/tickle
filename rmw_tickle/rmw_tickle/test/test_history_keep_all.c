@@ -58,6 +58,12 @@
 // rather than a round number.
 #define BOUNDED_TYPE_MAX_ENCODED 76
 
+// What one message costs a publisher's cache: its CDR behind rmw_tickle's psn header, as core caches it -
+// one record, or one per fragment once it outgrows a datagram (clamp_record_bytes(), rmw_publisher.c).
+#define MESSAGE_RECORD(payload) ((unsigned long long)tt_sample_cache_bytes((uint32_t)(payload) + RMW_TICKLE_PSN_BYTES))
+// The largest message rmw_tickle can send, psn header aside.
+#define LARGEST_MESSAGE ((unsigned long long)tt_MAX_SAMPLE_LENGTH - RMW_TICKLE_PSN_BYTES)
+
 // Must match resolve_keep_all_record_bytes()'s default for a type with no bound (rmw_publisher.c):
 // the standard 1472-byte datagram, or tt_MAX_BUFFER_LENGTH if smaller - what it reserved before
 // rmw_tickle's buffer grew to 65507, deliberately kept (KEEP_ALL is not budgeted, and 65507 per
@@ -223,7 +229,9 @@ int main(void) {
     }
 
     // Contrast case: ordinary KEEP_LAST with an explicit depth must be completely unaffected by
-    // this change - still sized to ->depth, not EXPECTED_KEEP_ALL_DEPTH.
+    // this change - still bounded by ->depth, not EXPECTED_KEEP_ALL_DEPTH. Bounded in messages
+    // (sample_depth): the ring itself is in datagrams, so it is at least depth and larger for a type
+    // whose messages can fragment (DATAFRAG_PLAN.md section 13).
     {
         rmw_qos_profile_t qos = base_qos();
         qos.reliability = RMW_QOS_POLICY_RELIABILITY_RELIABLE;
@@ -233,7 +241,8 @@ int main(void) {
         assert(NULL != pub);
         rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(NULL != pub_impl->reliable_cache);
-        assert(10 == pub_impl->reliable_cache->capacity);
+        assert(10 == pub_impl->reliable_cache->sample_depth);
+        assert(10 <= pub_impl->reliable_cache->capacity);
         // KEEP_LAST is the "drop the oldest" policy by definition, so it must never refuse a write.
         assert(!pub_impl->tickle_publisher.keep_all);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
@@ -272,7 +281,7 @@ int main(void) {
         pub = rmw_create_publisher(node, type_support, "keep_all_arena_sized", &qos, &pub_opts);
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
-        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_RELIABLE_RECORD_BYTES(76)) ==
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, MESSAGE_RECORD(76)) ==
                pub_impl->reliable_cache->arena_limit);
         // ...and it is a real reduction, not a rounding difference.
         assert(pub_impl->reliable_cache->arena_limit <
@@ -295,13 +304,13 @@ int main(void) {
             assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         }
         // A value past one datagram is a valid request for the most there can be, not nonsense: it
-        // is clamped to tt_MAX_BUFFER_LENGTH. (At 1472 the two used to coincide, which is why this
-        // sat in the list above.)
+        // is clamped to the largest message there can be. (At 1472 the two used to coincide, which is
+        // why this sat in the list above.)
         setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "999999", 1);
         pub = rmw_create_publisher(node, type_support, "keep_all_arena_clamped", &qos, &pub_opts);
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
-        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, tt_MAX_BUFFER_LENGTH) ==
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, MESSAGE_RECORD(LARGEST_MESSAGE)) ==
                pub_impl->reliable_cache->arena_limit);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
@@ -315,9 +324,9 @@ int main(void) {
         pub = rmw_create_publisher(node, bounded_ts, "keep_all_generated_bound", &qos, &pub_opts);
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
-        assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE,
-                                             tt_RELIABLE_RECORD_BYTES(BOUNDED_TYPE_MAX_ENCODED)) ==
-               pub_impl->reliable_cache->arena_limit);
+        assert(
+            tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE, MESSAGE_RECORD(BOUNDED_TYPE_MAX_ENCODED)) ==
+            pub_impl->reliable_cache->arena_limit);
         assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->capacity); // B1 intact
         assert(EXPECTED_KEEP_ALL_DEPTH_VOLATILE == pub_impl->reliable_cache->depth);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
@@ -327,7 +336,7 @@ int main(void) {
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
         assert(tt_RELIABLE_CACHE_ARENA_BYTES(EXPECTED_KEEP_ALL_DEPTH_VOLATILE,
-                                             tt_RELIABLE_RECORD_BYTES(BOUNDED_TYPE_MAX_ENCODED)) ==
+                                             MESSAGE_RECORD(BOUNDED_TYPE_MAX_ENCODED)) ==
                pub_impl->reliable_cache->arena_limit); // the generated 76, not the environment's 512
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
 
@@ -338,7 +347,8 @@ int main(void) {
         pub = rmw_create_publisher(node, type_support, "keep_last_arena", &qos, &pub_opts);
         assert(NULL != pub);
         pub_impl = (rmw_tickle_publisher_t*)pub->data;
-        assert(tt_RELIABLE_CACHE_ARENA_BYTES(10, tt_MAX_BUFFER_LENGTH) == pub_impl->reliable_cache->arena_limit);
+        assert(tt_RELIABLE_CACHE_ARENA_BYTES(10, MESSAGE_RECORD(LARGEST_MESSAGE)) ==
+               pub_impl->reliable_cache->arena_limit);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
         unsetenv("RMW_TICKLE_KEEP_ALL_BYTES");

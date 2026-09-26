@@ -612,6 +612,35 @@ static void make_reliable(void) {
 
 static const struct tt_Peer receiver_peer = {.ip = RECEIVER_IP, .port = PORT, .node_id = RECEIVER_ID};
 
+static void test_sample_datagrams_matches_what_is_sent(void) {
+    // tt_sample_datagrams() is what a caller sizes a cache in seq_no with (rmw_tickle does); it has to
+    // agree with the publish path exactly, at every boundary.
+    static const uint32_t sizes[] = {1,    1440, 1444, 1445, 1446, 2800,
+                                     2897, 2898, 2900, 4000, 8000, tt_MAX_SAMPLE_LENGTH};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        init_pair(sizes[i]);
+        publish_captured();
+        EXPECT_EQ_INT(datagram_count, (int)tt_sample_datagrams(sizes[i]));
+        EXPECT_EQ_U32(pub.seq_no, tt_sample_datagrams(sizes[i]));
+    }
+}
+
+static void test_sample_cache_bytes_bounds_what_is_cached(void) {
+    // tt_sample_cache_bytes() is what rmw_tickle sizes an arena in samples with: never less than what one
+    // sample really takes, and not more than 4 bytes a datagram over it.
+    static const uint32_t sizes[] = {1,    1440, 1444, 1445, 1446, 2800,
+                                     2897, 2898, 2900, 4000, 8000, tt_MAX_SAMPLE_LENGTH};
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
+        init_pair(sizes[i]);
+        make_reliable();
+        publish_captured();
+        uint32_t cached = frag_cache.tail;
+        uint32_t bound = tt_sample_cache_bytes(sizes[i]);
+        EXPECT_TRUE(bound >= cached);
+        EXPECT_TRUE(bound <= cached + (4U * tt_sample_datagrams(sizes[i])));
+    }
+}
+
 static void test_every_datagram_takes_its_own_seq_no(void) {
     // DATAFRAG_PLAN.md section 13: DATA, FRAG_FIRST and each FRAG_CONT consume consecutive seq_no, and a
     // sample is named by its first datagram's.
@@ -1098,6 +1127,45 @@ static void test_keep_last_evicts_whole_samples(void) {
     EXPECT_TRUE(!reliable_cache_slot_live(&frag_cache, 5, 3)); // not a stranded continuation
 }
 
+static void test_sample_depth_bounds_keep_last_in_samples(void) {
+    // A ring sized in datagrams for the largest sample would keep more small samples than HISTORY.depth
+    // says; sample_depth holds it to that many whatever their size. Control first: without it, the ring
+    // alone bounds the cache and all five single-datagram samples stay.
+    init_pair(100);
+    make_reliable();
+    frag_cache.depth = 12;
+    for (int i = 0; i < 5; i++) {
+        publish_captured();
+    }
+    EXPECT_EQ_U32(1, frag_cache.oldest_seq_no);
+    EXPECT_EQ_U32(5, frag_cache.retained_samples);
+
+    init_pair(100);
+    make_reliable();
+    frag_cache.depth = 12;
+    frag_cache.sample_depth = 3;
+    for (int i = 0; i < 5; i++) {
+        publish_captured();
+    }
+    EXPECT_EQ_U32(3, frag_cache.oldest_seq_no);
+    EXPECT_EQ_U32(3, frag_cache.retained_samples);
+    EXPECT_TRUE(!reliable_cache_slot_live(&frag_cache, 12, 2));
+
+    // Fragmented samples count once each, and go whole: three 3-datagram samples under a bound of 2 keep
+    // the last two, seq_no 4..9, with the ring (12) never the thing that evicted.
+    init_pair(4000);
+    make_reliable();
+    frag_cache.depth = 12;
+    frag_cache.sample_depth = 2;
+    for (int i = 0; i < 3; i++) {
+        publish_captured();
+    }
+    EXPECT_EQ_U32(4, frag_cache.oldest_seq_no);
+    EXPECT_EQ_U32(2, frag_cache.retained_samples);
+    EXPECT_TRUE(reliable_cache_slot_live(&frag_cache, 12, 9));
+    EXPECT_TRUE(!reliable_cache_slot_live(&frag_cache, 12, 3));
+}
+
 static void test_keep_all_counts_every_datagram(void) {
     // KEEP_ALL refuses a sample whose datagrams would take the unacknowledged run past its bound, and
     // says why, so tt_Publisher_writable() answers about the sample the caller will retry.
@@ -1136,12 +1204,15 @@ int main(void) {
     test_batch_ahead_of_a_fragmented_sample_goes_first();
     test_zero_copy_publish_fragments_too();
     test_every_datagram_takes_its_own_seq_no();
+    test_sample_datagrams_matches_what_is_sent();
+    test_sample_cache_bytes_bounds_what_is_cached();
     test_reliable_fragments_reassemble_in_every_order();
     test_reliable_missing_fragment_is_tracked_as_its_own_gap();
     test_reliable_sample_given_up_on_is_never_delivered_torn();
     test_reliable_fragment_without_room_is_left_unrecorded();
     test_reliable_two_writers_interleaved();
     test_keep_last_evicts_whole_samples();
+    test_sample_depth_bounds_keep_last_in_samples();
     test_keep_all_counts_every_datagram();
     test_retransmission_resends_only_the_lost_datagram();
     test_original_and_retransmission_agree_on_fragment_count();

@@ -504,6 +504,11 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
 }
 
 #if tt_FRAG_ENABLED
+// The largest datagram a DATA goes as whole; a larger sample fragments. The control datagram rather than
+// tt_MAX_BUFFER_LENGTH, so that a build with a large datagram for its services (rmw_tickle) still fragments
+// its samples rather than leaving them to the OS's IP fragmentation (config.h, tt_FRAG_ENABLED).
+#define FRAG_WHOLE_DATA_LIMIT tt_CONTROL_MAX_LENGTH
+
 // CDR bytes in fragment 0 and in each full continuation. Fragments are cut to tt_CONTROL_MAX_LENGTH,
 // not tt_MAX_BUFFER_LENGTH, for the reason that constant exists: a node on core defaults has to be able
 // to receive them. The two are equal unless tt_MAX_BUFFER_LENGTH has been raised.
@@ -2557,7 +2562,7 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
 
     uint8_t peer_count = count_peers(pub->peers);
 #if tt_FRAG_ENABLED
-    if (sizeof(framing) + body_len > tt_MAX_BUFFER_LENGTH) {
+    if (sizeof(framing) + body_len > FRAG_WHOLE_DATA_LIMIT) {
         bool unicast = peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD;
         if (!send_fragments(node, data_header, body, body_len, unicast ? pub->peers : NULL, unicast ? peer_count : 0)) {
             return tt_RET_IO_ERROR;
@@ -2839,17 +2844,29 @@ static void reliable_cache_evict_oldest(struct tt_ReliableCache* cache, uint16_t
     }
 }
 
+// Whether the live record in this entry is the first of its sample - a whole DATA or a FRAG_FIRST - rather
+// than a continuation. What tt_ReliableCache.retained_samples counts.
+static bool reliable_cache_record_starts_sample(const struct tt_ReliableCache* cache,
+                                                const struct tt_ReliableCacheIndex* entry) {
+    return entry->len != 0 &&
+           ((const struct tt_SubmessageHeader*)(cache->arena + entry->offset))->type != tt_SUBMESSAGE_TYPE_FRAG_CONT;
+}
+
 static void reliable_cache_evict_one(struct tt_ReliableCache* cache, uint16_t depth) {
     if (cache->oldest_seq_no == 0) {
         return;
     }
     struct tt_ReliableCacheIndex* entry = reliable_cache_slot(cache, depth, cache->oldest_seq_no);
     if (entry->seq_no == cache->oldest_seq_no) {
+        if (reliable_cache_record_starts_sample(cache, entry) && cache->retained_samples > 0) {
+            cache->retained_samples--;
+        }
         entry->len = 0; // tombstone: the bytes are gone, the slot may still be named by an ACKNACK
     }
     if (cache->oldest_seq_no == cache->newest_seq_no) {
         cache->oldest_seq_no = 0; // nothing retained any more; newest_seq_no stays (it's "last
         cache->tail = 0;          // published", what first_resendable falls back to)
+        cache->retained_samples = 0;
         return;
     }
     cache->oldest_seq_no++;
@@ -2863,6 +2880,7 @@ static void reliable_cache_drop_leading_tombstones(struct tt_ReliableCache* cach
         if (cache->oldest_seq_no == cache->newest_seq_no) {
             cache->oldest_seq_no = 0;
             cache->tail = 0;
+            cache->retained_samples = 0;
             return;
         }
         cache->oldest_seq_no++;
@@ -3030,13 +3048,33 @@ static uint8_t* reliable_cache_reserve(struct tt_ReliableCache* cache, uint32_t 
     return cache->arena + offset;
 }
 
+// Makes room for one more sample under tt_ReliableCache.sample_depth, KEEP_LAST-evicting whole samples
+// oldest first. Called before a sample's first record is reserved; a no-op when sample_depth is 0.
+static void reliable_cache_admit_sample(struct tt_ReliableCache* cache) {
+    uint16_t depth = reliable_cache_depth(cache);
+    while (depth != 0 && cache->sample_depth != 0 && cache->oldest_seq_no != 0 &&
+           cache->retained_samples >= cache->sample_depth) {
+        RSTAT_INC(evicted_by_count);
+        reliable_cache_evict_oldest(cache, depth);
+    }
+}
+
+// Counts a sample whose first record reliable_cache_reserve() just placed.
+static void reliable_cache_count_sample(struct tt_ReliableCache* cache, const uint8_t* first_record) {
+    if (first_record != NULL) {
+        cache->retained_samples++;
+    }
+}
+
 static void cache_reliable_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
                                   struct tt_ReliableCache* cache, uint32_t seq_no) {
     uint32_t length = reliable_record_length(node, submessage_header);
+    reliable_cache_admit_sample(cache);
     uint8_t* record = reliable_cache_reserve(cache, seq_no, length);
     if (record != NULL) {
         _tt_memcpy(record, submessage_header, length);
     }
+    reliable_cache_count_sample(cache, record);
 }
 
 // QoS roadmap #6 (LIFESPAN) - see tt_Publisher.lifespan_duration_ns's own doc comment (tickle.h).
@@ -3119,7 +3157,7 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
 static uint32_t sample_datagram_count(const struct tt_Node* node, const struct tt_SubmessageHeader* submessage_header) {
 #if tt_FRAG_ENABLED
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
-    if (sizeof(struct tt_Header) + ROUNDUP(length) > tt_MAX_BUFFER_LENGTH) {
+    if (sizeof(struct tt_Header) + ROUNDUP(length) > FRAG_WHOLE_DATA_LIMIT) {
         return frag_count_for(sample_cdr_length(node, submessage_header));
     }
 #else
@@ -3224,6 +3262,7 @@ static void cache_sample_fragments(struct tt_Node* node, struct tt_ReliableCache
                        first_seq_no, count, depth, cache->arena_size);
         RSTAT_INC(not_cached_oversize);
     }
+    reliable_cache_admit_sample(cache);
     for (uint32_t index = 0; index < count; index++) {
         uint32_t payload_length = frag_payload_length(index, cdr_len);
         uint32_t header_length = frag_header_length(index);
@@ -3232,6 +3271,9 @@ static void cache_sample_fragments(struct tt_Node* node, struct tt_ReliableCache
         if (record != NULL) {
             frag_write_header(record, data_header, index, count, payload_length, tt_SUBMESSAGE_ID_ALL);
             _tt_memcpy(record + header_length, cdr + frag_payload_offset(index), payload_length);
+        }
+        if (index == 0) {
+            reliable_cache_count_sample(cache, record);
         }
     }
 }
@@ -3298,7 +3340,7 @@ static bool end_encode_sample(struct tt_Node* node, struct tt_SubmessageHeader* 
                               const struct tt_Peer* peers, uint8_t peer_count, uint32_t old_tx_tail) {
 #if tt_FRAG_ENABLED
     size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
-    if (sizeof(struct tt_Header) + ROUNDUP(length) > tt_MAX_BUFFER_LENGTH) {
+    if (sizeof(struct tt_Header) + ROUNDUP(length) > FRAG_WHOLE_DATA_LIMIT) {
         return send_tail_as_fragments(node, submessage_header, peers, peer_count);
     }
 #endif
@@ -3747,6 +3789,7 @@ tt_ret_t tt_ReliableCache_grow(struct tt_ReliableCache* cache, uint8_t* new_aren
     cache->tail = offset;
     if (offset == 0) {
         cache->oldest_seq_no = 0; // everything retained turned out to be a tombstone
+        cache->retained_samples = 0;
     }
     return tt_RET_OK;
 }

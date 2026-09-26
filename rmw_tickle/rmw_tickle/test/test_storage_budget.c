@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <tickle/config.h> // tt_RELIABLE_RECORD_BYTES
+#include <tickle/config.h> // tt_MAX_SAMPLE_LENGTH
 #include <tickle/tickle.h>
 
 #include "rcutils/allocator.h"
@@ -49,6 +49,12 @@
 #define REORDER_BUDGET \
     ((unsigned long long)RMW_TICKLE_REORDER_SLOTS * (sizeof(struct tt_ReorderSlot) + tt_ETHERNET_UDP_PAYLOAD))
 #define BOUNDED_PAYLOAD 76
+
+// What one message costs a publisher's cache: its CDR behind rmw_tickle's psn header, as core caches it -
+// one record, or one per fragment once it outgrows a datagram (clamp_record_bytes(), rmw_publisher.c).
+#define MESSAGE_RECORD(payload) ((unsigned long long)tt_sample_cache_bytes((uint32_t)(payload) + RMW_TICKLE_PSN_BYTES))
+// The largest message rmw_tickle can send, psn header aside.
+#define LARGEST_MESSAGE ((unsigned long long)tt_MAX_SAMPLE_LENGTH - RMW_TICKLE_PSN_BYTES)
 #define SMALL_BUDGET 5000                  // bytes: below /rosout-sized arenas, above one 1472-byte record
 #define KEEP_ALL_BUDGET (512ULL * 1024ULL) // RMW_TICKLE_KEEP_ALL_BYTES's default (rmw_typesupport.c)
 #define PAYLOAD_SAMPLE_BYTES 16384         // what an application claims its samples reach, through the payload
@@ -232,7 +238,7 @@ int main(void) {
     node = rmw_create_node(&context, "test_storage_budget", "/");
     assert(NULL != node);
 
-    const unsigned long long buf_len = (unsigned long long)tt_MAX_BUFFER_LENGTH;
+    const unsigned long long buf_len = MESSAGE_RECORD(LARGEST_MESSAGE); // an unbounded type's record
 
     // --- KEEP_LAST cache, unbounded type: records of one datagram, capped at 1 MiB ---------------
     callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
@@ -253,7 +259,7 @@ int main(void) {
 
     // --- KEEP_LAST cache, bounded type: records of the type's own size -----------------------------
     callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
-    assert(keep_last_arena(10) == 11ULL * tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD));
+    assert(keep_last_arena(10) == 11ULL * MESSAGE_RECORD(BOUNDED_PAYLOAD));
 
     // --- lazy reservation --------------------------------------------------------------------------
     // The budget decides the limit; only the first slice is allocated, and publish_blocking() grows
@@ -267,11 +273,16 @@ int main(void) {
         const struct tt_ReliableCache* cache = ((rmw_tickle_publisher_t*)pub->data)->reliable_cache;
         assert(cache->arena_limit == min_ull((ROSOUT_DEPTH + 1) * buf_len, MIB)); // the budget, unchanged
         assert(cache->arena_size < cache->arena_limit);                           // ...and not all of it yet
-        assert(cache->arena_size == LAZY_INITIAL_BYTES);
+        // The first slice, or one of the type's largest messages if that is more: an unbounded type's
+        // largest message - psn header, one record per fragment - is a little over 64 KiB.
+        const unsigned long long first_slice = (unsigned long long)LAZY_INITIAL_BYTES;
+        assert(cache->arena_size == (buf_len > first_slice ? buf_len : first_slice));
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     }
     {
-        // A budget smaller than that slice is allocated whole - there is nothing to defer.
+        // A budget smaller than that slice is allocated whole - there is nothing to defer. A bounded type,
+        // so that one record - the floor under any budget - is smaller than the slice too.
+        callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
         setenv("RMW_TICKLE_CACHE_BYTES", "5000", 1);
         rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, 10);
         rmw_publisher_options_t opts = rmw_get_default_publisher_options();
@@ -281,6 +292,7 @@ int main(void) {
         assert(cache->arena_size == cache->arena_limit);
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         unsetenv("RMW_TICKLE_CACHE_BYTES");
+        callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
     }
 
     // --- KEEP_LAST grows back to its depth -------------------------------------------------------
@@ -309,12 +321,42 @@ int main(void) {
         }
 
         assert(cache->arena_size > started_at); // it grew, without anyone asking
-        // ...and retention is what depth promises again: the last GROWTH_DEPTH samples are held.
-        assert(cache->newest_seq_no - cache->oldest_seq_no + 1 == GROWTH_DEPTH);
+        // ...and retention is what depth promises again: the last GROWTH_DEPTH samples are held. Counted
+        // in samples - a BIG_SAMPLE_BYTES sample is a dozen fragments, each its own seq_no.
+        assert(cache->retained_samples == GROWTH_DEPTH);
+        assert(cache->sample_depth == GROWTH_DEPTH);
+        // The publication sequence number counts messages, while core's seq_no counts their datagrams.
+        assert(pub_impl->next_publication_sequence_number == (uint64_t)(3 * GROWTH_DEPTH) + 1);
+        assert(pub_impl->tickle_publisher.seq_no > (uint32_t)(3 * GROWTH_DEPTH));
         assert(cache->arena_size <= cache->arena_limit); // never past the budget
         assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
         callbacks.tickle_encode_size = (tt_DATA_ENCODE_SIZE)&fake_encode_size;
         callbacks.tickle_encode = (tt_DATA_ENCODE)&fake_encode;
+    }
+
+    // --- ...and only when it is messages that fall short ---------------------------------------------
+    // The ring counts datagrams and is sized for this type's largest message, so small messages never
+    // fill it. Growth is asked for when fewer than depth MESSAGES are retained, and here all of them are:
+    // the arena stays at its first slice rather than being grown to the limit for nothing.
+    {
+        callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
+        rmw_qos_profile_t q = qos(RMW_QOS_POLICY_RELIABILITY_RELIABLE, GROWTH_DEPTH);
+        rmw_publisher_options_t opts = rmw_get_default_publisher_options();
+        rmw_publisher_t* pub = rmw_create_publisher(node, &handle, "/no_growth", &q, &opts);
+        assert(NULL != pub);
+        const struct tt_ReliableCache* cache = ((rmw_tickle_publisher_t*)pub->data)->reliable_cache;
+        const uint32_t started_at = cache->arena_size;
+        assert(started_at < cache->arena_limit); // it could grow; the point is that it does not
+        struct fake_msg message = {.value = 1};
+        // Past the ring's length too: a trigger that measured retention in seq_no would only speak up
+        // once there were more of them than the ring holds.
+        const int publishes = (int)cache->depth + (3 * GROWTH_DEPTH);
+        for (int i = 0; i < publishes; i++) {
+            assert(RMW_RET_OK == rmw_publish(pub, &message, NULL));
+        }
+        assert(cache->retained_samples == GROWTH_DEPTH);
+        assert(cache->arena_size == started_at);
+        assert(RMW_RET_OK == rmw_destroy_publisher(node, pub));
     }
 
     // --- KEEP_ALL byte budget (2026-09-25) ----------------------------------------------------------
@@ -390,23 +432,23 @@ int main(void) {
 
     // The KEEP_ALL reservation, the knob that decides when such a publisher starts blocking.
     setenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES", "2000", 1);
-    assert(keep_all_record_with(NULL) == tt_RELIABLE_RECORD_BYTES(2000)); // the process default
+    assert(keep_all_record_with(NULL) == MESSAGE_RECORD(2000)); // the process default
     rmw_tickle_publisher_payload_t big = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
     big.max_sample_bytes = PAYLOAD_SAMPLE_BYTES;
-    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(PAYLOAD_SAMPLE_BYTES)); // payload wins
+    assert(keep_all_record_with(&big) == MESSAGE_RECORD(PAYLOAD_SAMPLE_BYTES)); // payload wins
     unsetenv("RMW_TICKLE_KEEP_ALL_MAX_SAMPLE_BYTES");
-    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(PAYLOAD_SAMPLE_BYTES)); // ...with or without one
+    assert(keep_all_record_with(&big) == MESSAGE_RECORD(PAYLOAD_SAMPLE_BYTES)); // ...with or without one
 
     // A bounded type clamps the payload on the way up - reserving past an exact maximum is waste -
     // but takes it on the way down, which is the useful direction: the same ten samples for an
     // eighth of the memory when the application knows its images are smaller than the bound allows.
     callbacks.tickle_max_encoded_size = BOUNDED_PAYLOAD;
-    assert(keep_all_record_with(&big) == tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD)); // clamped up
+    assert(keep_all_record_with(&big) == MESSAGE_RECORD(BOUNDED_PAYLOAD)); // clamped up
     rmw_tickle_publisher_payload_t small = RMW_TICKLE_PUBLISHER_PAYLOAD_INIT;
     small.max_sample_bytes = BOUNDED_PAYLOAD / 2;
-    assert(keep_all_record_with(&small) == tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD / 2)); // lowered
+    assert(keep_all_record_with(&small) == MESSAGE_RECORD(BOUNDED_PAYLOAD / 2)); // lowered
     // ...and it lowers a KEEP_LAST publisher's arena the same way, keeping its whole depth.
-    assert(keep_last_arena_with(10, &small) == 11ULL * tt_RELIABLE_RECORD_BYTES(BOUNDED_PAYLOAD / 2));
+    assert(keep_last_arena_with(10, &small) == 11ULL * MESSAGE_RECORD(BOUNDED_PAYLOAD / 2));
     assert(keep_last_arena_with(10, &small) < keep_last_arena(10));
     // Left bounded on purpose: that is the state the reorder section below starts from, and this
     // block sits between it and the one that set it.
@@ -423,14 +465,14 @@ int main(void) {
     // Bounded and small: the full window, slots of the type's size.
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
     assert(has_storage);
-    assert(slot_bytes == header + BOUNDED_PAYLOAD);
+    assert(slot_bytes == header + BOUNDED_PAYLOAD + RMW_TICKLE_PSN_BYTES); // a message is its CDR and psn
     assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
 
-    // Unbounded: the slot payload is capped at 2 KiB (or the datagram, if smaller), and the budget
-    // decides how many - at N=1472 the whole window, exactly as before there was a budget.
+    // Unbounded: a slot holds one datagram's payload at most - a larger message is held a fragment a
+    // slot - and the budget decides how many: at N=1472 the whole window, as before there was a budget.
     callbacks.tickle_max_encoded_size = ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED;
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
-    assert(slot_bytes == header + min_ull(buf_len, 2048));
+    assert(slot_bytes == header + min_ull(tt_CONTROL_MAX_LENGTH, 2048));
     assert(slots == min_ull(RMW_TICKLE_REORDER_SLOTS, REORDER_BUDGET / slot_bytes));
     assert((unsigned long long)slots * slot_bytes <= REORDER_BUDGET);
     if (tt_MAX_BUFFER_LENGTH <= tt_ETHERNET_UDP_PAYLOAD) {
@@ -440,7 +482,7 @@ int main(void) {
     setenv("RMW_TICKLE_REORDER_SLOT_PAYLOAD", "512", 1);
     setenv("RMW_TICKLE_REORDER_BYTES", "65536", 1);
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);
-    assert(slot_bytes == header + min_ull(buf_len, 512));
+    assert(slot_bytes == header + min_ull(tt_CONTROL_MAX_LENGTH, 512));
     assert(slots == 65536 / slot_bytes);
     setenv("RMW_TICKLE_REORDER_BYTES", "1", 1); // smaller than one slot: still one slot, never zero
     reorder_shape(RMW_QOS_POLICY_RELIABILITY_RELIABLE, &slots, &slot_bytes, &has_storage);

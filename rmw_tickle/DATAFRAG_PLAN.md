@@ -665,6 +665,40 @@ The rig runs queue in order behind the 12-cell campaign: FastDDS's delayed count
 arm on `bceddf2a`, then cells 1-6 on `bceddf2a`, pinned. Those last are the p1-p4 figures the
 COMPARISON.MD table takes.
 
+### 13.7 The rmw side, as built (2026-09-26)
+
+**Publication sequence number (13.2, 13.5).** 8 bytes rather than 4, a uint64 in the sender's byte
+order ahead of the CDR (`RMW_TICKLE_PSN_BYTES`): the subscriber callback carries no writer identity, so
+the psn cannot be widened on receipt, and 32 bits would wrap in about 50 days at 1 kHz. Eight bytes also
+keep the CDR at the alignment core gives it. The publisher wraps the type's codec
+(`rmw_tickle_outgoing_message_t`); the subscription decodes in place (`topic.data_decode_inplace`) and
+skips the header. It starts at 1 and advances only when core accepted the message. Consequence: rmw_tickle
+nodes before and after do not interoperate, and a plain core node on an rmw_tickle topic sees the 8 bytes.
+
+**FRAG for rmw.** `tt_FRAG_ENABLED` now follows `tt_MAX_SAMPLE_LENGTH > tt_CONTROL_MAX_LENGTH`, and a
+DATA goes whole only up to `tt_CONTROL_MAX_LENGTH`, so rmw_tickle (`tt_MAX_BUFFER_LENGTH` 65507)
+fragments its samples at the control datagram while services keep large datagrams. The benchmark's ipfrag
+arm builds with `-Dtt_FRAG_ENABLED=0`. **This replaces OS IP fragmentation for rmw topics**, which the
+user kept on 2026-09-25 (COMPARISON.MD to-do 15); Plan relayed "go ahead with the rmw_tickle FRAG move".
+
+**Depth in messages (13.4 item 1, revisiting 13.6's first point).** Core gained
+`tt_ReliableCache.sample_depth` and `retained_samples`: KEEP_LAST evicts whole samples before holding
+more than `sample_depth`. It is an admission bound only - the ring modulus, lookups and backlog walks
+still use `depth` in datagrams, which was 13.6's objection to a sample bound - and 0 keeps 13.6's
+behaviour exactly. rmw needed it because a ring sized for its largest message would otherwise keep
+several times depth of its small ones. rmw_tickle's KEEP_LAST ring is
+depth x `tt_sample_datagrams()` of its largest message's record, capped at 2 x depth plus one continuation
+per fragment payload the arena can hold (an unbounded /rosout at depth 1000 would otherwise index 47
+datagrams a message), and `sample_depth` = depth. The arena counts a message as `tt_sample_cache_bytes()`
+of its CDR plus the psn, and its first slice holds at least one largest message (about 67 KB for an
+unbounded type, just over the 64 KiB slice). The growth trigger counts messages. KEEP_ALL's depth stays
+2048 / 8192, now in datagrams: a VOLATILE writer cannot have more unacknowledged datagrams than the
+reader's window, which counts seq_no too.
+
+Tests: core `test_sample_depth_bounds_keep_last_in_samples` and `test_sample_cache_bytes_bounds_what_is_cached`;
+rmw `test_publish_take_reuse` (psn past 65535 through both codecs, a failed publish takes no psn) and
+`test_storage_budget` (retention in messages, no growth for small messages). Each was mutation-checked.
+
 ## 14. Per-datagram seq_no on the rig: 13.3 read against its pre-registration (2026-09-26)
 
 `results/frag_count_before_2026-09-26.txt` (`3f564c7b`, whole-sample retransmission, core identical to

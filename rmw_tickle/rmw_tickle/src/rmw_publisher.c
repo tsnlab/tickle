@@ -259,22 +259,32 @@ static uint64_t resolve_max_blocking_ns(void) {
 // an unacknowledged sample; now tt_Publisher_publish() refuses instead (tt_RET_WOULD_BLOCK,
 // counted as publish_refused_bytes), which is what KEEP_ALL promises. So a number too small here
 // means this Publisher blocks sooner than its depth suggests - at arena_size / real record size.
+//
+// Since DATA_FRAG (DATAFRAG_PLAN.md section 13) the clamp is the largest message rmw_tickle can send -
+// tt_MAX_SAMPLE_LENGTH less its own psn header - and what one message costs is tt_sample_cache_bytes() of
+// it, psn included: a message larger than a datagram is cached as one record per fragment.
 static uint32_t clamp_record_bytes(unsigned long long payload) {
-    if (payload > (unsigned long long)tt_MAX_BUFFER_LENGTH) {
-        return (uint32_t)tt_MAX_BUFFER_LENGTH;
+    const unsigned long long largest = (unsigned long long)tt_MAX_SAMPLE_LENGTH - RMW_TICKLE_PSN_BYTES;
+    if (payload > largest) {
+        payload = largest;
     }
-    uint32_t record = tt_RELIABLE_RECORD_BYTES(payload);
-    return record > (uint32_t)tt_MAX_BUFFER_LENGTH ? (uint32_t)tt_MAX_BUFFER_LENGTH : record;
+    return tt_sample_cache_bytes((uint32_t)payload + RMW_TICKLE_PSN_BYTES);
 }
 
 // How much of the arena to allocate up front, out of the `limit` the budget worked out. Small
 // enough that a publisher which never fills it costs little, large enough that an ordinary one
 // never grows: 64 KiB holds 44 full-size datagrams, or hundreds of typical samples. Growth doubles
 // from here, so reaching a 12 MiB limit takes eight reallocations at most.
+//
+// Never less than one of this type's largest messages (`largest_record`), within the limit: a message
+// the arena cannot hold is sent without being retained, and KEEP_LAST only grows once `depth` messages
+// have gone out. An unbounded type's largest message used to be one 64 KiB record and fit; with the psn
+// header and one record per fragment it is about 67 KB and would not.
 #define RMW_TICKLE_INITIAL_ARENA_BYTES (64U * 1024U)
 
-static uint32_t initial_arena_bytes(uint32_t limit) {
-    return limit < RMW_TICKLE_INITIAL_ARENA_BYTES ? limit : RMW_TICKLE_INITIAL_ARENA_BYTES;
+static uint32_t initial_arena_bytes(uint32_t limit, uint32_t largest_record) {
+    uint32_t wanted = largest_record > RMW_TICKLE_INITIAL_ARENA_BYTES ? largest_record : RMW_TICKLE_INITIAL_ARENA_BYTES;
+    return limit < wanted ? limit : wanted;
 }
 
 // Doubles this publisher's arena toward its limit, keeping everything retained, and returns whether
@@ -312,16 +322,20 @@ static bool grow_reliable_cache(rmw_tickle_publisher_t* pub_impl) {
 // /rosout at depth 1000 would have retained about 290 logs where it retains 1000 today). The signal
 // instead is retention itself: enough samples published for the count bound to be the one binding,
 // and fewer than depth of them still held.
+//
+// Counted in messages (tt_ReliableCache.sample_depth and retained_samples), not seq_no: seq_no counts
+// datagrams once messages fragment, and depth is a promise about messages.
 static bool keep_last_wants_more_arena(const rmw_tickle_publisher_t* pub_impl) {
     const struct tt_ReliableCache* cache = pub_impl->reliable_cache;
     if (NULL == cache || pub_impl->tickle_publisher.keep_all || NULL == cache->arena ||
         cache->arena_size >= cache->arena_limit) {
         return false;
     }
-    if (0 == cache->depth || cache->newest_seq_no < cache->depth) {
+    uint64_t published = pub_impl->next_publication_sequence_number - 1;
+    if (0 == cache->sample_depth || published < cache->sample_depth) {
         return false; // not enough published yet for depth to be what limits retention
     }
-    return (cache->newest_seq_no - cache->oldest_seq_no + 1) < cache->depth;
+    return cache->retained_samples < cache->sample_depth;
 }
 
 // What to call this publisher's type in a diagnostic before anything has been created.
@@ -443,19 +457,19 @@ static uint32_t resolve_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
 // KEEP_ALL is budgeted too, but differently - see resolve_keep_all_arena_bytes() below: its promise is
 // that nothing unacknowledged is ever dropped, so its budget is reached by blocking the writer, not
 // by evicting.
+// The arena bytes one message of this type can need under KEEP_LAST: its generated bound when it has one,
+// the largest sample otherwise - and below either, the application's own max_sample_bytes when it gave
+// one, which is the only thing the payload changes here. Deliberately not resolve_record_bytes(): that
+// one falls back to KEEP_ALL's 1472-byte default for an unbounded type, because KEEP_ALL is not budgeted
+// and would otherwise reserve hundreds of megabytes. KEEP_LAST is budgeted, so it can afford the largest
+// sample per record and the cap in resolve_keep_last_arena_bytes() is what bounds it.
+static uint32_t keep_last_record_bytes(const rmw_tickle_publisher_t* pub_impl) {
+    uint32_t record = payload_record_bytes(pub_impl);
+    return 0 != record ? record : clamp_record_bytes(type_ceiling_bytes(pub_impl));
+}
+
 static uint32_t resolve_keep_last_arena_bytes(const rmw_tickle_publisher_t* pub_impl, size_t depth) {
-    // The largest record one sample of this type can need: its generated bound when it has one, the
-    // datagram otherwise (a submessage can be no larger).
-    // The type's bound when it has one, the datagram otherwise - and below either, the
-    // application's own max_sample_bytes when it gave one, which is the only thing the payload
-    // changes here. Deliberately not resolve_record_bytes(): that one falls back to KEEP_ALL's
-    // 1472-byte default for an unbounded type, because KEEP_ALL is not budgeted and would otherwise
-    // reserve hundreds of megabytes. KEEP_LAST is budgeted, so it can afford a whole datagram per
-    // record and the cap below is what bounds it.
-    unsigned long long record = payload_record_bytes(pub_impl);
-    if (0 == record) {
-        record = clamp_record_bytes(type_ceiling_bytes(pub_impl));
-    }
+    unsigned long long record = keep_last_record_bytes(pub_impl);
     unsigned long long full = ((unsigned long long)depth + 1ULL) * record;
 
     const rmw_tickle_publisher_payload_t* payload = publisher_payload(pub_impl, type_name_of(pub_impl));
@@ -600,6 +614,58 @@ static void arm_heartbeat_piggyback(rmw_tickle_publisher_t* pub_impl) {
     }
 }
 
+static int32_t encode_size_with_psn(struct tt_Data* data) {
+    const rmw_tickle_outgoing_message_t* message = (const rmw_tickle_outgoing_message_t*)data;
+    int32_t size = message->callbacks->tickle_encode_size((struct tt_Data*)message->tickle);
+    return size < 0 ? size : size + RMW_TICKLE_PSN_BYTES;
+}
+
+static int32_t encode_with_psn(struct tt_Data* data, uint8_t* payload, const uint32_t len) {
+    const rmw_tickle_outgoing_message_t* message = (const rmw_tickle_outgoing_message_t*)data;
+    if (len < RMW_TICKLE_PSN_BYTES) {
+        return -1;
+    }
+    memcpy(payload, &message->publication_sequence_number, RMW_TICKLE_PSN_BYTES);
+    int32_t encoded = message->callbacks->tickle_encode((struct tt_Data*)message->tickle,
+                                                        payload + RMW_TICKLE_PSN_BYTES, len - RMW_TICKLE_PSN_BYTES);
+    return encoded < 0 ? encoded : encoded + RMW_TICKLE_PSN_BYTES;
+}
+
+// Core's cache counts seq_no, and every datagram of a fragmented message takes its own
+// (DATAFRAG_PLAN.md section 13), so a KEEP_LAST ring of `depth` would hold depth / k messages of k
+// fragments. Its ring is sized in datagrams instead - depth times the datagrams one reserved message
+// takes (the record's bytes stand in for its CDR, which can overstate that by one datagram, never
+// understate it) - and HISTORY.depth is bounded in messages separately (sample_depth, setup_reliable_cache()). The ring
+// then only has to hold what that bound and the arena let in: per message its first record and a short
+// last one, plus one full continuation per fragment payload the arena can hold. Without that cap an
+// unbounded type - /rosout, depth 1000 - would index 47 datagrams a message it can never retain.
+//
+// KEEP_ALL's depth stays as it was, now counted in datagrams: it is a resource limit rather than a
+// promise about messages, and it blocks rather than evicts. A VOLATILE one can never have more
+// unacknowledged datagrams outstanding than a reader's tracking window, which counts seq_no too, so a
+// larger ring would be memory nothing reaches. Capped by the ring's uint16 width either way.
+static uint16_t resolve_ring_slots(const rmw_tickle_publisher_t* pub_impl, size_t depth, bool keep_all,
+                                   uint32_t arena_bytes) {
+    unsigned long long ring = (unsigned long long)depth;
+    if (!keep_all) {
+        const unsigned long long continuation =
+            (unsigned long long)tt_CONTROL_MAX_LENGTH -
+            (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader));
+        unsigned long long per_message =
+            (unsigned long long)depth * tt_sample_datagrams(keep_last_record_bytes(pub_impl));
+        unsigned long long most = (2ULL * depth) + (arena_bytes / continuation);
+        ring = per_message < most ? per_message : most;
+    }
+    if (ring > (unsigned long long)UINT16_MAX) {
+        RCUTILS_LOG_WARN_NAMED("rmw_tickle",
+                               "publisher of %s: a history depth of %zu messages needs %llu datagram slots, more than "
+                               "the %u a cache can index - it keeps fewer messages of its largest size",
+                               type_name_of(pub_impl), depth, ring, (unsigned)UINT16_MAX);
+        ring = UINT16_MAX;
+    }
+    return (uint16_t)ring;
+}
+
 // Split out of rmw_create_publisher() below purely to keep that function's own cognitive
 // complexity under clang-tidy's threshold - see rmw_tickle_publisher_t.reliable_cache's own doc
 // comment for the full "why" this exists at all. Returns false (with RMW_SET_ERROR_MSG already
@@ -636,20 +702,6 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
         return false;
     }
 
-    pub_impl->reliable_cache =
-        (struct tt_ReliableCache*)allocator->zero_allocate(1, sizeof(struct tt_ReliableCache), allocator->state);
-    if (NULL == pub_impl->reliable_cache) {
-        RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
-        return false;
-    }
-    pub_impl->reliable_cache->index = (struct tt_ReliableCacheIndex*)allocator->zero_allocate(
-        depth, sizeof(struct tt_ReliableCacheIndex), allocator->state);
-    if (NULL == pub_impl->reliable_cache->index) {
-        RMW_SET_ERROR_MSG("failed to allocate reliable_cache index");
-        allocator->deallocate(pub_impl->reliable_cache, allocator->state);
-        pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
-        return false;
-    }
     // B1 (rmw_tickle/PLAN.md) - the encoded bytes live in a separate byte arena rather than a
     // 1472-byte buffer embedded in every index slot, sized at the type's own maximum. That maximum
     // is now a real per-type number for any type the generator can bound (callbacks->tickle_max_
@@ -662,33 +714,44 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     // evict before the count bound, which is what `depth` promises.
     uint32_t arena_bytes = keep_all ? resolve_keep_all_arena_bytes(pub_impl, depth, durable)
                                     : resolve_keep_last_arena_bytes(pub_impl, depth);
+    // The ring counts datagrams (resolve_ring_slots() says how many and why).
+    uint16_t ring = resolve_ring_slots(pub_impl, depth, keep_all, arena_bytes);
 
+    pub_impl->reliable_cache =
+        (struct tt_ReliableCache*)allocator->zero_allocate(1, sizeof(struct tt_ReliableCache), allocator->state);
+    if (NULL == pub_impl->reliable_cache) {
+        RMW_SET_ERROR_MSG("failed to allocate reliable_cache");
+        return false;
+    }
+    pub_impl->reliable_cache->index = (struct tt_ReliableCacheIndex*)allocator->zero_allocate(
+        (size_t)ring, sizeof(struct tt_ReliableCacheIndex), allocator->state);
+    if (NULL == pub_impl->reliable_cache->index) {
+        RMW_SET_ERROR_MSG("failed to allocate reliable_cache index");
+        allocator->deallocate(pub_impl->reliable_cache, allocator->state);
+        pub_impl->reliable_cache = NULL; // so a future caller-side cleanup path can't double-free it
+        return false;
+    }
     // Said at attach, where it is decidable, rather than discovered on the first publish that hits
     // it (Plan's request, 2026-09-25): a sample too large for the whole arena is sent without being
     // cached at all (B1, tickle.c), so a reader that misses it can never recover it. Whether that
     // can happen is a question about this cache and this type, and both are known here. The arena
     // may legitimately be smaller than (depth + 1) full-size records - that only costs retention -
     // so the test is against ONE such record, which is where retention stops working entirely.
-    unsigned long long largest = (unsigned long long)tt_MAX_BUFFER_LENGTH;
-    if (NULL != pub_impl->callbacks &&
-        ROSIDL_TYPESUPPORT_TICKLE_C_ENCODED_SIZE_UNBOUNDED != pub_impl->callbacks->tickle_max_encoded_size) {
-        largest = (unsigned long long)pub_impl->callbacks->tickle_max_encoded_size;
-    }
-    if ((unsigned long long)arena_bytes < (unsigned long long)tt_RELIABLE_RECORD_BYTES(largest)) {
+    if ((unsigned long long)arena_bytes < (unsigned long long)clamp_record_bytes(type_ceiling_bytes(pub_impl))) {
         RCUTILS_LOG_WARN_NAMED("rmw_tickle",
                                "publisher of %s: its retained-sample cache is %u bytes, but one sample of this type "
                                "can need %u - such a sample is sent without being retained, so a reader that misses "
                                "it cannot ask for it again. Raise the budget (the payload's cache_bytes, or "
                                "RMW_TICKLE_CACHE_BYTES) to at least that.",
                                type_name_of(pub_impl), (unsigned)arena_bytes,
-                               (unsigned)tt_RELIABLE_RECORD_BYTES(largest));
+                               (unsigned)clamp_record_bytes(type_ceiling_bytes(pub_impl)));
     }
     // Reserved lazily: the limit is what the budget above worked out, but only the first slice of
     // it is allocated now, and publish_blocking() grows toward the limit if the traffic ever asks
     // (tt_ReliableCache_grow(), tickle.c). A KEEP_ALL publisher of an unbounded type would
     // otherwise take 3 MB at creation whether it retains anything or not. The limit itself never
     // moves, so back-pressure still arrives exactly where it did.
-    uint32_t initial_bytes = initial_arena_bytes(arena_bytes);
+    uint32_t initial_bytes = initial_arena_bytes(arena_bytes, clamp_record_bytes(type_ceiling_bytes(pub_impl)));
     pub_impl->reliable_cache->arena = (uint8_t*)allocator->allocate(initial_bytes, allocator->state);
     if (NULL == pub_impl->reliable_cache->arena) {
         RMW_SET_ERROR_MSG("failed to allocate reliable_cache arena");
@@ -699,8 +762,14 @@ static bool setup_reliable_cache(rmw_tickle_publisher_t* pub_impl, const rmw_qos
     }
     pub_impl->reliable_cache->arena_size = initial_bytes;
     pub_impl->reliable_cache->arena_limit = arena_bytes;
-    pub_impl->reliable_cache->capacity = (uint16_t)depth;
-    pub_impl->reliable_cache->depth = (uint16_t)depth;
+    pub_impl->reliable_cache->capacity = ring;
+    pub_impl->reliable_cache->depth = ring;
+    // The ring counts datagrams, so it would keep up to `ring` single-datagram messages: HISTORY.depth
+    // is a bound in messages, which core enforces separately when told it (tt_ReliableCache.sample_depth).
+    // KEEP_ALL has no such bound to enforce - its depth is a resource limit and it blocks, never evicts.
+    if (!keep_all) {
+        pub_impl->reliable_cache->sample_depth = (uint16_t)(depth < (size_t)UINT16_MAX ? depth : UINT16_MAX);
+    }
     pub_impl->tickle_publisher.reliable_cache = pub_impl->reliable_cache;
     pub_impl->tickle_publisher.reliable = RMW_QOS_POLICY_RELIABILITY_RELIABLE == qos_profile->reliability;
     pub_impl->tickle_publisher.durable = durable;
@@ -807,8 +876,8 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // doc comment.
     pub_impl->topic.name = callbacks->ros_type_name;
     pub_impl->topic.data_size = (uint32_t)callbacks->tickle_struct_size;
-    pub_impl->topic.data_encode_size = callbacks->tickle_encode_size;
-    pub_impl->topic.data_encode = callbacks->tickle_encode;
+    pub_impl->topic.data_encode_size = encode_size_with_psn;
+    pub_impl->topic.data_encode = encode_with_psn;
     pub_impl->topic.data_decode = callbacks->tickle_decode;
     pub_impl->topic.data_free = callbacks->tickle_free;
     // data_encode_inplace/data_decode_inplace stay NULL (zero_allocate) - no zero-copy support.
@@ -832,6 +901,7 @@ rmw_publisher_t* rmw_create_publisher(const rmw_node_t* node, const rosidl_messa
     // Milestone 45 - see rmw_tickle_publisher_t.publish_scratch_buf's own doc comment. Allocated
     // once here (callbacks->tickle_struct_size is fixed for this Publisher's whole lifetime),
     // reused by every rmw_publish() call from here on instead of a fresh allocate() each time.
+    pub_impl->next_publication_sequence_number = 1;
     pub_impl->publish_scratch_buf = allocator->allocate(callbacks->tickle_struct_size, allocator->state);
     if (NULL == pub_impl->publish_scratch_buf) {
         RMW_SET_ERROR_MSG("failed to allocate publish scratch buffer");
@@ -1179,6 +1249,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     // a second call's own to_tickle() would need to free first.
     pthread_mutex_lock(&pub_impl->publish_mutex);
     void* tickle_buf = pub_impl->publish_scratch_buf;
+    rmw_tickle_outgoing_message_t outgoing = {pub_impl->next_publication_sequence_number, callbacks, tickle_buf};
 
     if (!callbacks->to_tickle(ros_message, tickle_buf)) {
         // A bounds-check failure (a variable array/bounded string longer than TickLE's resolved
@@ -1191,7 +1262,10 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         return RMW_RET_ERROR;
     }
 
-    rmw_ret_t ret = publish_blocking(pub_impl, tickle_buf);
+    rmw_ret_t ret = publish_blocking(pub_impl, &outgoing);
+    if (RMW_RET_OK == ret) {
+        pub_impl->next_publication_sequence_number++;
+    }
 
     // The KEEP_LAST half of lazy reservation (keep_last_wants_more_arena() above). Two field reads
     // on the ordinary path; the lock and the allocation happen only when retention has actually

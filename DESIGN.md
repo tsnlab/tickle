@@ -430,11 +430,14 @@ one oversized datagram that the OS split into IP fragments. At 5% loss the kerne
 reassemble 97.4% of those (COMPARISON.MD to-do 15), so reliable recovery was retransmitting whole
 samples into a path that destroyed them again.
 
-**Configuration.** `tt_MAX_BUFFER_LENGTH` keeps meaning one datagram. `tt_MAX_SAMPLE_LENGTH` bounds a
-sample's CDR, and fragmentation is compiled in only when it exceeds `tt_MAX_BUFFER_LENGTH`. At the
-default the two are equal, so nothing changes: no reassembly memory, no larger `tx_buffer`, and an
-oversized sample is refused as before. Fragments are cut to `tt_CONTROL_MAX_LENGTH`, so a node on
-core defaults can receive them.
+**Configuration.** `tt_MAX_BUFFER_LENGTH` keeps meaning the largest datagram. `tt_MAX_SAMPLE_LENGTH`
+bounds a sample's CDR, and fragmentation is compiled in when it exceeds `tt_CONTROL_MAX_LENGTH`. At core's
+defaults all three are equal, so nothing changes: no reassembly memory, no larger `tx_buffer`, and an
+oversized sample is refused as before. A sample goes as one `DATA` only if that fits
+`tt_CONTROL_MAX_LENGTH`, and fragments are cut to the same size, so a node on core defaults can receive
+them. A build that raises `tt_MAX_BUFFER_LENGTH` for its services - `rmw_tickle`, to 65507 - therefore
+fragments its samples at the control datagram rather than leaving them to IP fragmentation, while service
+requests and responses keep the large datagram. `-Dtt_FRAG_ENABLED=0` opts such a build out.
 
 **Wire.** Fragments are always alone in their datagram, so neither header is padded, and nor is the
 fragment itself; `tt_SubmessageHeader.length` is exact.
@@ -464,6 +467,12 @@ What follows from it:
 - The reliable cache retains one record per datagram, so `tt_ReliableCache.depth` counts datagrams.
   KEEP_LAST evicts whole samples, never a sample's first datagram without the rest. KEEP_ALL counts
   every datagram of a sample against its bound before admitting it.
+- KEEP_LAST's depth in samples is `tt_ReliableCache.sample_depth`, when set: core then evicts whole
+  samples, oldest first, before admitting one more than that, and counts what it holds in
+  `retained_samples`. A ring sized in datagrams for the largest sample would otherwise keep more small
+  samples than HISTORY.depth allows. `rmw_tickle` sizes the ring as depth x the datagrams of its
+  largest message and sets `sample_depth` to the depth. `tt_sample_datagrams()` and
+  `tt_sample_cache_bytes()` give a sample's seq_no and arena cost, for sizing either in samples.
 - A tracking window of 256 bits covers 256 datagrams: 128 samples at p4.
 
 **Sender.**

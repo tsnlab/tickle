@@ -64,7 +64,9 @@ if [ "$SHAPE" = "p4" ]; then
         fi
         ;;
     ipfrag)
-        CORE_DEFINE="-Dtt_MAX_BUFFER_LENGTH=4096"
+        # tt_FRAG_ENABLED=0 explicitly: a buffer larger than the control datagram now compiles
+        # fragmentation in by itself (config.h), which is rmw_tickle's configuration and not this arm's.
+        CORE_DEFINE="-Dtt_MAX_BUFFER_LENGTH=4096 -Dtt_FRAG_ENABLED=0"
         INSTALL_PREFIX="$HOME/tickle_local_install_buf4096"
         SAMPLE_PATH=ipfrag
         DATAGRAM_BYTES=4096

@@ -50,6 +50,7 @@
 
 #include "rcutils/allocator.h"
 #include "rcutils/strdup.h"
+#include "rmw/error_handling.h"
 #include "rmw/init.h"
 #include "rmw/init_options.h"
 #include "rmw/publisher_options.h"
@@ -64,6 +65,7 @@
 #include "rosidl_typesupport_tickle_c/message_type_support.h"
 
 #define FAKE_TICKLE_TEXT_CAPACITY 32
+#define ROUND_TRIP_PSN 123456789012ULL // past 32 bits, so a narrowed psn would show
 
 struct fake_ros_msg {
     char* text; // heap-owned (strdup()/free()), NULL when empty - the hazard shell_pool guards
@@ -200,15 +202,26 @@ int main(void) {
         // subscriber() was given (tt_Subscriber.callback, a plain public tickle.h field), not a
         // private implementation detail - see this file's own module comment for why a real wire
         // round trip can't reach this Subscription from this same process's own Publisher.
-        struct fake_tickle_msg incoming_wire;
-        memcpy(incoming_wire.text, expected, strlen(expected) + 1);
-        sub_impl->tickle_subscriber.callback(&sub_impl->tickle_subscriber, /*time=*/0, (uint16_t)i,
-                                             (struct tt_Data*)&incoming_wire);
+        //
+        // What core hands the callback is the payload as it arrived - rmw_tickle's psn header, then the
+        // CDR - through the topic's in-place decode, so that is how it is handed here too. The psn is
+        // past 16 bits on purpose: core's own seq_no argument is 16 bits wide and counts datagrams, and
+        // the psn a reader sees must be the publisher's, not that.
+        uint8_t incoming_wire[RMW_TICKLE_PSN_BYTES + FAKE_TICKLE_TEXT_CAPACITY] = {0};
+        const uint64_t psn = 70000U + (uint64_t)i;
+        memcpy(incoming_wire, &psn, sizeof(psn));
+        memcpy(incoming_wire + RMW_TICKLE_PSN_BYTES, expected, strlen(expected) + 1);
+        struct tt_Data* delivered =
+            sub_impl->topic.data_decode_inplace(incoming_wire, (uint32_t)sizeof(incoming_wire), true);
+        assert(NULL != delivered);
+        sub_impl->tickle_subscriber.callback(&sub_impl->tickle_subscriber, /*time=*/0, (uint16_t)i, delivered);
 
         struct fake_ros_msg incoming = {.text = NULL};
         bool taken = false;
-        assert(RMW_RET_OK == rmw_take_with_info(sub, &incoming, &taken, NULL, NULL));
+        rmw_message_info_t info = rmw_get_zero_initialized_message_info();
+        assert(RMW_RET_OK == rmw_take_with_info(sub, &incoming, &taken, &info, NULL));
         assert(taken);
+        assert(psn == info.publication_sequence_number);
         assert(NULL != incoming.text);
         assert(strcmp(expected, incoming.text) == 0);
 
@@ -223,6 +236,44 @@ int main(void) {
         previous = incoming.text;
     }
     free(previous);
+
+    // The publication sequence number counts messages rmw_publish() got out: five above, so the next is 6,
+    // and one that fails to convert (too long for the type's capacity) takes none.
+    rmw_tickle_publisher_t* pub_impl = (rmw_tickle_publisher_t*)pub->data;
+    assert(6 == pub_impl->next_publication_sequence_number);
+    struct fake_ros_msg too_long = {.text = "this text is longer than the thirty-two bytes the type holds"};
+    assert(RMW_RET_OK != rmw_publish(pub, &too_long, NULL));
+    rmw_reset_error();
+    assert(6 == pub_impl->next_publication_sequence_number);
+
+    // The publisher's codec and the subscription's, end to end: what the publisher's topic encodes is
+    // what the subscription's topic decodes, psn and all - the same bytes core would carry between them.
+    {
+        struct fake_tickle_msg tickle_message;
+        memset(&tickle_message, 0, sizeof(tickle_message));
+        memcpy(tickle_message.text, "round-trip", sizeof("round-trip"));
+        rmw_tickle_outgoing_message_t outgoing = {.publication_sequence_number = ROUND_TRIP_PSN,
+                                                  .callbacks = &fake_callbacks,
+                                                  .tickle = &tickle_message};
+        int32_t size = pub_impl->topic.data_encode_size((struct tt_Data*)&outgoing);
+        assert(RMW_TICKLE_PSN_BYTES + FAKE_TICKLE_TEXT_CAPACITY == size);
+        uint8_t wire[RMW_TICKLE_PSN_BYTES + FAKE_TICKLE_TEXT_CAPACITY];
+        assert(size == pub_impl->topic.data_encode((struct tt_Data*)&outgoing, wire, (uint32_t)sizeof(wire)));
+        sub_impl->tickle_subscriber.callback(&sub_impl->tickle_subscriber, /*time=*/0, /*seq_no=*/1,
+                                             sub_impl->topic.data_decode_inplace(wire, (uint32_t)size, true));
+        struct fake_ros_msg incoming = {.text = NULL};
+        bool taken = false;
+        rmw_message_info_t info = rmw_get_zero_initialized_message_info();
+        assert(RMW_RET_OK == rmw_take_with_info(sub, &incoming, &taken, &info, NULL));
+        assert(taken);
+        assert(0 == strcmp("round-trip", incoming.text));
+        assert(ROUND_TRIP_PSN == info.publication_sequence_number);
+        free(incoming.text);
+
+        // A payload too short to carry the header is not an rmw_tickle message: nothing is queued.
+        sub_impl->tickle_subscriber.callback(&sub_impl->tickle_subscriber, 0, 2,
+                                             sub_impl->topic.data_decode_inplace(wire, RMW_TICKLE_PSN_BYTES - 1, true));
+    }
 
     // Every cycle above queued exactly one message and drained exactly that one - the queue must
     // be genuinely empty now, not left with something stuck.
