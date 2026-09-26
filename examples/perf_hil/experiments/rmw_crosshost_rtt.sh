@@ -68,6 +68,10 @@ for h in "$CLIENT" "$SERVER"; do
     # binding has measured the wrong thing in this repository before.
     sh_ "$h" "set -e
 cd ~/tickle && git fetch -q origin && git reset -q --hard $SHA && git clean -fdqx -e install -e build -e log
+# The TickLE typesupport generator's Python package, straight from this checkout rather than pip-installed:
+# the rig's system Python refuses pip (PEP 668), and an installed copy goes stale while the source moves
+# on - which has already made a regression check here test the wrong code.
+export PYTHONPATH=\$HOME/tickle/tools/typesupport\${PYTHONPATH:+:\$PYTHONPATH}
 set +u; source /opt/ros/jazzy/setup.bash; set -u
 colcon build --packages-select rosidl_typesupport_tickle_c rosidl_typesupport_tickle_cpp rmw_tickle \
   --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release > /tmp/rmwx_build1.log 2>&1 \
