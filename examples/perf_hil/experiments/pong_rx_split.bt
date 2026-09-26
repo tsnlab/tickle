@@ -9,6 +9,8 @@
 //   wk     the first of the pong's threads is woken (sched:sched_waking), wktid
 //   sw     that thread is switched in (sched:sched_switch)
 //   wait   a pong thread returns from ppoll/epoll_pwait (0: none; a thread blocked in recv* has no wait call)
+//          (aarch64 has no epoll_wait syscall - glibc implements it with epoll_pwait - so only these two exist
+//          there, and naming a missing tracepoint makes bpftrace refuse the whole script.)
 //   rx     a pong thread's recv* returns with data, rxtid
 //   wk2    after rx, the first other pong thread woken - the handoff to the executor, wk2tid
 //   sw2    that thread switched in
@@ -33,7 +35,7 @@ tracepoint:sched:sched_waking /@st == 1 && @rx != 0 && @wk2 == 0 && @tids[args->
 }
 tracepoint:sched:sched_switch /@st == 1 && @wk != 0 && @sw == 0 && args->next_pid == @wktid/ { @sw = nsecs - @t0; }
 tracepoint:sched:sched_switch /@st == 1 && @wk2 != 0 && @sw2 == 0 && args->next_pid == @wk2tid/ { @sw2 = nsecs - @t0; }
-tracepoint:syscalls:sys_exit_ppoll,tracepoint:syscalls:sys_exit_epoll_pwait,tracepoint:syscalls:sys_exit_epoll_wait
+tracepoint:syscalls:sys_exit_ppoll,tracepoint:syscalls:sys_exit_epoll_pwait
 /pid == $1 && @st == 1 && @wait == 0 && args->ret > 0/ { @wait = nsecs - @t0; }
 tracepoint:syscalls:sys_exit_recvfrom,tracepoint:syscalls:sys_exit_recvmsg,tracepoint:syscalls:sys_exit_recvmmsg
 /pid == $1 && @st == 1 && @rx == 0 && args->ret > 0/ { @rx = nsecs - @t0; @rxtid = tid; }
