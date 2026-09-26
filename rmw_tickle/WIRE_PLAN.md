@@ -56,3 +56,39 @@ Payload encoding (CDR-4) is out of scope: it is the interface contract, not fram
 3. Candidates in W0's order, **one per `tt_VERSION`**. Each is pre-registered here before code: its target
    metrics, and the full campaign before and after, run on one rig session per arm.
 4. A candidate that fails (b) is reverted and recorded here with its numbers, not retried silently.
+
+## 5. W0 result (2026-09-26, `22cc13f1`)
+
+`wire_inventory.sh`: campaign_sweep's 12 TickLE cells over veth on the PC, 12 ok. The byte shares are exact;
+the throughput cells' ack shares are indicative. `results/wire_inventory_W0_2026-09-26.txt`.
+
+| cells | bytes/sample | TickLE framing | HB + ACKNACK | W1 | W2 | W4 |
+|---|---:|---:|---:|---:|---:|---:|
+| p1 throughput and latency (76 B), all QoS/loss | 146-161 | ~19% | 0-0.9% | 3.7-4.1% | 2.5-2.7% | 2.4-2.5% |
+| p2-p4 (1.3-2.9 KB) | 1,363-2,945 | 1.7-2.1% | ≤ 0.1% | 0.2-0.4% | 0.1-0.3% | 0.2-0.3% |
+
+TickLE framing here is `tt_Header`, the submessage header and the DATA/FRAG header. Discovery is 3.9% of the
+p1 latency cells (10 s runs at 10 Hz) and ~0 elsewhere.
+
+**What this means for the plan:**
+- **The format candidates together remove ~9% of p1's bytes and under 1% of every larger shape's.**
+  HEARTBEAT/ACKNACK is already under 1% (piggybacked), so W6 has almost nothing to take.
+- **None of them can move a latency test** (~0.1 us of ~250 us). **Nor can they move p1 throughput**,
+  which is bound by per-sample CPU and syscalls, not the link: 116 Mbit/s on a 1 Gbit/s link. At p4,
+  which is link-bound, they are worth 0.2-0.5% of rate.
+- So under the user's literal condition ("every test better"), **no format candidate qualifies**. Under
+  Plan's reading (targets improve, nothing regresses), they qualify on bytes/sample alone. This is
+  stated here plainly for the user's morning review. The work proceeds under Plan's reading, and each
+  report lists which tests moved and which only held.
+
+**Decision (Plan, overnight):**
+- The format candidates go out as one bundle, one `tt_VERSION` after LIVELINESS: W2, W3 (rmw), W4, and W1
+  only if its before-discovery routing is solved without a regression.
+- Each candidate's bytes are measured exactly and separately with `wire_inventory` on the PC.
+- The full rig campaign runs once, bundle against baseline, for the no-regression check. This keeps rig
+  time for the one comparison that needs it.
+- W6 is dropped. W5 moves the discovery M3 join bytes only, and waits.
+
+The larger remaining gains found today are not wire formats: the pong's receive wake (~6 us, ppoll against a
+blocking recv, `RMW_PERF_PLAN.md` 8.2) and the ~21 us poll-thread → executor handoff. Both stay first in
+line for Dev after LIVELINESS.
