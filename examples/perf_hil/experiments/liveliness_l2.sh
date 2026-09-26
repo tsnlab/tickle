@@ -29,7 +29,8 @@ BEFORE=$(git -C "$REPO" rev-parse "$BEFORE"); AFTER=$(git -C "$REPO" rev-parse "
 say "=== liveliness L2, $(date -Is), before ${BEFORE:0:8}, after ${AFTER:0:8}, $REPS reps ==="
 
 # Builds: TickLE at BEFORE, kept aside in ~/l2_tickle_before; then everything at AFTER (the DDS harnesses are the
-# same at both), TickLE's kept aside in ~/l2_tickle_after.
+# same at both), every binary kept aside in ~/l2_* so that another session's reset of ~/tickle cannot remove them
+# mid-run.
 pids=()
 for h in "$CLIENT" "$SERVER"; do
     sh_ "$h" "set -e
@@ -40,25 +41,34 @@ build tickle
 rm -rf ~/l2_tickle_before && cp -r examples/perf_hil/tickle/liveliness_loss_detection_p1 ~/l2_tickle_before
 git reset -q --hard $AFTER && git clean -fdqx -e install -e build -e log
 build tickle; build cyclonedds; build fastdds
-rm -rf ~/l2_tickle_after && cp -r examples/perf_hil/tickle/liveliness_loss_detection_p1 ~/l2_tickle_after
+rm -rf ~/l2_tickle_after ~/l2_cyclonedds ~/l2_fastdds
+cp -r examples/perf_hil/tickle/liveliness_loss_detection_p1 ~/l2_tickle_after
+cp -r examples/perf_hil/cyclonedds/liveliness_loss_detection_p1 ~/l2_cyclonedds
+cp -r examples/perf_hil/fastdds/liveliness_loss_detection_p1 ~/l2_fastdds
 echo \"built on \$(hostname)\"" 2>&1 | tee -a "$OUT" &
     pids+=($!)
 done
 bad=0; for p in "${pids[@]}"; do wait "$p" || bad=1; done
 [ "$bad" = 0 ] || { say "BUILD FAILED - not running"; exit 1; }
 
-dir_for() { case "$1" in
-    tickle_before) echo "\$HOME/l2_tickle_before" ;;
-    tickle_after) echo "\$HOME/l2_tickle_after" ;;
-    *) echo "\$HOME/tickle/examples/perf_hil/$1/liveliness_loss_detection_p1" ;;
+dir_for() { echo "\$HOME/l2_$1"; }
+# The vendors' runtime environment, exactly as their run_scenario.sh sets it: the ROS 2 Jazzy libraries, the eth0-only
+# FastDDS profile, and CycloneDDS on eth0 with a 1 s SPDP interval.
+CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
+env_for() { case "$1" in
+    fastdds) echo "export LD_LIBRARY_PATH=/opt/ros/jazzy/lib; export FASTRTPS_DEFAULT_PROFILES_FILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml;" ;;
+    cyclonedds) echo "export LD_LIBRARY_PATH=/opt/ros/jazzy/lib/aarch64-linux-gnu; export CYCLONEDDS_URI='$CDDS_URI';" ;;
+    *) echo "" ;;
     esac; }
 lease_flag() { case "$1" in tickle_*) echo "-T $2" ;; *) echo "-L $2" ;; esac; }
 
 one() { # $1 arm, $2 lease, $3 rep
-    local arm=$1 lease=$2 rep=$3 d fl spid cpid res verdict=ok
-    d=$(dir_for "$arm"); fl=$(lease_flag "$arm" "$lease")
-    spid=$(sh_ "$SERVER" "cd $d && rm -f /tmp/l2_server.log && nohup taskset -c 1-3 ./server $fl > /tmp/l2_server.log 2>&1 < /dev/null & echo \$!")
-    cpid=$(sh_ "$CLIENT" "cd $d && nohup taskset -c 1-3 ./client $fl > /tmp/l2_client.log 2>&1 < /dev/null & echo \$!")
+    local arm=$1 lease=$2 rep=$3 d fl ev spid cpid res verdict=ok
+    d=$(dir_for "$arm"); fl=$(lease_flag "$arm" "$lease"); ev=$(env_for "$arm")
+    # "cd ... || exit; nohup ... & echo \$!" - with "cd ... && nohup ... &" the whole list is backgrounded as a
+    # subshell and \$! names that bash, not the binary (the first L2 run of 2026-09-26 died of exactly that).
+    spid=$(sh_ "$SERVER" "$ev cd $d || exit 1; rm -f /tmp/l2_server.log; nohup taskset -c 1-3 ./server $fl > /tmp/l2_server.log 2>&1 < /dev/null & echo \$!")
+    cpid=$(sh_ "$CLIENT" "$ev cd $d || exit 1; nohup taskset -c 1-3 ./client $fl > /tmp/l2_client.log 2>&1 < /dev/null & echo \$!")
     sleep 6
     sh_ "$CLIENT" "[ \"\$(readlink /proc/$cpid/exe)\" = \"\$(readlink -f $d/client)\" ] && kill -9 $cpid" || verdict="VOID(client not found to kill)"
     local waited=0 limit
