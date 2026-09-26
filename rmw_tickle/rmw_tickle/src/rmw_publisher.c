@@ -1068,6 +1068,10 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     if (pub_impl->deadline_period_ns != 0) {
         tt_Node_unschedule(&pub_impl->node->context_impl->tickle_node, check_publisher_deadline, pub_impl);
     }
+    // As rmw_destroy_subscription(): the self-rescheduling QoS-incompatible check, once armed, goes too.
+    if (pub_impl->offered_qos_incompatible_monitoring_started) {
+        tt_Node_unschedule(&pub_impl->node->context_impl->tickle_node, check_publisher_qos_incompatible, pub_impl);
+    }
     tt_Publisher_destroy(&pub_impl->tickle_publisher);
     tt_Node_unlock(&pub_impl->node->context_impl->tickle_node);
 

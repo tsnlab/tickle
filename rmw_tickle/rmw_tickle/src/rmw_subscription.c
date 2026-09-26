@@ -662,6 +662,11 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     if (sub_impl->deadline_period_ns != 0) {
         tt_Node_unschedule(&sub_impl->node->context_impl->tickle_node, check_subscription_deadline, sub_impl);
     }
+    // The QoS-incompatible check reschedules itself every period once its event is initialised; left armed,
+    // it ran on this freed subscription - a SIGSEGV in test_events one run in twenty (test_event_teardown.c).
+    if (sub_impl->requested_qos_incompatible_monitoring_started) {
+        tt_Node_unschedule(&sub_impl->node->context_impl->tickle_node, check_subscription_qos_incompatible, sub_impl);
+    }
     tt_Subscriber_destroy(&sub_impl->tickle_subscriber);
     tt_Node_unlock(&sub_impl->node->context_impl->tickle_node);
 
