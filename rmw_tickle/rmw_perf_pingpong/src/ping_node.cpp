@@ -125,6 +125,24 @@ namespace {
         }
     };
 
+    // Round-trip statistics over the replies that came back. Split out of run_ping() to keep it under
+    // clang-tidy's cognitive-complexity threshold.
+    struct rtt_stats {
+        uint64_t received = 0;
+        double min_ms = -1.0;
+        double max_ms = 0.0;
+        double sum_ms = 0.0;
+    };
+
+    auto add_rtt(rtt_stats& stats, double rtt_ms) -> void {
+        stats.received++;
+        if (stats.min_ms < 0.0 || rtt_ms < stats.min_ms) {
+            stats.min_ms = rtt_ms;
+        }
+        stats.max_ms = std::max(rtt_ms, stats.max_ms);
+        stats.sum_ms += rtt_ms;
+    }
+
     // Spins until the reply has arrived or the deadline passes.
     //
     // poll (the default, and every row before 2026-09-26): spin_some() and a 100 us sleep, with the round
@@ -189,10 +207,7 @@ namespace {
         }
 
         uint64_t transmitted = 0;
-        uint64_t received = 0;
-        double rtt_min_ms = -1.0;
-        double rtt_max_ms = 0.0;
-        double rtt_sum_ms = 0.0;
+        rtt_stats rtt;
 
         uint64_t seq = 0;
         const uint64_t start = now_ns();
@@ -211,14 +226,7 @@ namespace {
             wait_for_reply(executor, got_reply, wait_deadline, blocking);
             if (got_reply && Traits::seq(reply_msg) == seq) {
                 const uint64_t end_ns = blocking ? reply_ns : now_ns();
-                const double rtt_ms =
-                    static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms);
-                received++;
-                if (rtt_min_ms < 0.0 || rtt_ms < rtt_min_ms) {
-                    rtt_min_ms = rtt_ms;
-                }
-                rtt_max_ms = std::max(rtt_ms, rtt_max_ms);
-                rtt_sum_ms += rtt_ms;
+                add_rtt(rtt, static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms));
             }
 
             const struct timespec sleep_ts = {.tv_sec = static_cast<time_t>(interval_ns / ns_per_s),
@@ -226,10 +234,13 @@ namespace {
             nanosleep(&sleep_ts, nullptr); // NOLINT(misc-include-cleaner) - see now_ns()'s own <ctime> comment
         }
 
+        const uint64_t received = rtt.received;
+        const double rtt_min_ms = rtt.min_ms;
+        const double rtt_max_ms = rtt.max_ms;
         const uint64_t lost = transmitted - received;
         const double loss_pct =
             transmitted > 0 ? (100.0 * static_cast<double>(lost) / static_cast<double>(transmitted)) : 0.0;
-        const double avg = received > 0 ? rtt_sum_ms / static_cast<double>(received) : 0.0;
+        const double avg = received > 0 ? rtt.sum_ms / static_cast<double>(received) : 0.0;
 
         const char* rmw_impl = std::getenv("RMW_IMPLEMENTATION");
         if (rmw_impl == nullptr) {
