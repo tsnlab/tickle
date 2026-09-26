@@ -59,6 +59,12 @@ POLL_SLEEPS=${POLL_SLEEPS:-}
 # receive syscall's return, and the handoff to the thread that sends the reply. Collected into $OUT.bpf/<stem>.txt.
 # "off" rows are the control for bpftrace's own cost (on - off RTT, block mode).
 BPF_ARMS=${BPF_ARMS:-off}
+# EXEC_POLL_ARMS="off on" (2026-09-26, Dev's d2c1e36f): rmw_tickle's executor-driven receive, switched by
+# RMW_TICKLE_EXECUTOR_POLL=0|1 on both ping and pong (the same binaries in both arms). Each rmw_tickle row asserts
+# the ping's own shutdown line "rmw_tickle: executor_poll=<0|1>" matches its arm; the vendors run in the off arm
+# only. RMW_LIST replaces the three rmws, e.g. RMW_LIST=rmw_tickle for an rmw_tickle-only A/B.
+EXEC_POLL_ARMS=${EXEC_POLL_ARMS:--}
+RMW_LIST=${RMW_LIST:-rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp}
 DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
@@ -89,7 +95,7 @@ test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
 done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS ==="
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE, waits: $WAITS, poll sleeps: ${POLL_SLEEPS:-default}, sysstamp arms: $SYSSTAMP_ARMS, bpf arms: $BPF_ARMS, executor-poll arms: $EXEC_POLL_ARMS, rmws: $RMW_LIST ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -265,9 +271,13 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local rmw="$1" msg="$2" qos="$3" rep="$4" flag="" env pongpid maps res verdict=ok
     [ "$qos" = reliable ] && flag="--reliable"
     env=$(env_for "$rmw")
+    case "$EP:$rmw" in
+    on:rmw_tickle*) env="$env; export RMW_TICKLE_EXECUTOR_POLL=1" ;;
+    off:rmw_tickle*) env="$env; export RMW_TICKLE_EXECUTOR_POLL=0" ;;
+    esac
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}" sstenv="" stampflag=""
+    local off0="" stem="${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}${PSLEEP:+_ps$PSLEEP}${SSTSTEM}${BPFSTEM}${EPSTEM}" sstenv="" stampflag=""
     local stamprm=""
     # removed before each start too, so an interrupted row's file can never be collected as this row's
     [ "$STAMPS" = 1 ] && stampflag="--stamps /tmp/rmwx_stamps.txt" && stamprm="rm -f /tmp/rmwx_stamps.txt;"
@@ -368,7 +378,12 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
         case "$res" in *"LOOP: poll_sleep_us=$PSLEEP "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(ping did not sleep $PSLEEP us)" ;; esac
     fi
     case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
-    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
+    case "$EP:$rmw" in
+    on:rmw_tickle* | off:rmw_tickle*)
+        grep -q "rmw_tickle: executor_poll=$([ "$EP" = on ] && echo 1 || echo 0) " "$OUT.logs/${stem}_ping.log" 2>/dev/null \
+            || { [ "$verdict" = ok ] && verdict="VOID(executor_poll=$EP not confirmed by the ping)"; } ;;
+    esac
+    say "$rmw $msg $qos rep$rep${WAITSTEM:+ wait=$WAIT}${PSLEEP:+ poll_sleep_us=$PSLEEP}${SSTSTEM:+ sst=on}${BPFSTEM:+ bpf=on}${EPSTEM:+ execpoll=$EP}${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
@@ -388,7 +403,7 @@ for rep in $(seq 1 "$REPS"); do
     for msg in $MSGS; do
         qoses="best_effort reliable"; [ "$TRACE" = 1 ] && qoses=best_effort
         for qos in $qoses; do
-            RMWS="rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp"
+            RMWS="$RMW_LIST"
             if [ -n "$TICKLE_VARIANTS" ]; then
                 RMWS=""; for v in $TICKLE_VARIANTS; do RMWS="$RMWS rmw_tickle@$v"; done
                 RMWS="$RMWS rmw_fastrtps_cpp rmw_cyclonedds_cpp"
@@ -402,8 +417,12 @@ for rep in $(seq 1 "$REPS"); do
                   SSTSTEM=""; [ "$SST" = on ] && SSTSTEM="_sst"
                   for BPF in $BPF_ARMS; do
                     BPFSTEM=""; [ "$BPF" = on ] && BPFSTEM="_bpf"
-                    for rmw in $RMWS; do
-                      one "$rmw" "$msg" "$qos" "$rep"
+                    for EP in $EXEC_POLL_ARMS; do
+                      EPSTEM=""; [ "$EP" != - ] && EPSTEM="_ep$EP"
+                      for rmw in $RMWS; do
+                        case "$EP:$rmw" in on:rmw_tickle*) ;; on:*) continue ;; esac
+                        one "$rmw" "$msg" "$qos" "$rep"
+                      done
                     done
                   done
                 done

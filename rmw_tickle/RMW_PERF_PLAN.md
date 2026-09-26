@@ -395,3 +395,29 @@ RTT in ms, rmw_tickle / FastDDS / CycloneDDS:
   50 us the counts are closer: 3.15-4.00 against 2.14-3.01.
 - Check on a disturbance: at 21:24 a one-second `bpftrace -l` ran on the pong Pi mid-sweep (rep 1, Bench
   RELIABLE, sleeps 0-50). Those rows agree with reps 2 and 3 within their spread.
+
+### 8.4 Executor-driven receive on the rig (pre-registered 2026-09-26, before the run)
+
+Dev's v3 (`d2c1e36f`, default off, `RMW_TICKLE_EXECUTOR_POLL=1`). While an executor waits in `rmw_wait()` it
+takes the poller role and calls `tt_Node_poll()` itself. The receive → executor handoff (~21 us of the pong's
+path, 8.2) then disappears in the steady state. The poll thread parks on a timerfd lease (10 ms), which is
+armed on release and disarmed on re-claim, so there are no per-message thread switches and no extra idle wakes.
+
+PC veth A/B, 5 reps, in Dev's `rmw_executor_poll_ab.sh`:
+- At a 100 ms ping gap, RTT 216 → 169 us (-3.6 SE) and pong whole-run CPU 28.7 → 27.4 ms.
+- At a 5 ms gap, RTT 100 → 66 us and pong CPU -19%.
+- The poll-mode control did not move.
+- v1 had failed its own CPU criterion and was not merged.
+
+**Rig A/B:** `rmw_crosshost_rtt.sh` with `EXEC_POLL_ARMS="off on" RMW_LIST=rmw_tickle WAITS="poll block"`, Bench and
+Array1k, BEST_EFFORT and RELIABLE, 3 repetitions, the same binaries in both arms. Each row asserts the ping's own
+`rmw_tickle: executor_poll=<0|1>` line.
+
+**How to read it:**
+- **Pass (default on):** in block mode, the RTT median falls by at least 5 us beyond 2 × SE in every
+  message/QoS cell.
+- **CPU:** the pong's whole-run CPU (COMPARISON rows 70-71's metric) must not rise beyond 2 × SE in any cell.
+- **Control:** the poll-mode rows must not move beyond 2 × SE, since executor polling is not on the
+  `spin_some()` path.
+- If the pass fails, or the CPU criterion or the control fails, the feature stays off, and the numbers are
+  recorded here.
