@@ -36,6 +36,12 @@ _Static_assert((TT_FRAMING_HDR + sizeof(struct tt_CallResponseHeader)) % 4 == 0,
 _Static_assert(offsetof(struct tt_Node, tx_buffer) % 4 == 0, "tx_buffer not 4-aligned in tt_Node");
 _Static_assert(offsetof(struct tt_Node, rx_buffer) % 4 == 0, "rx_buffer not 4-aligned in tt_Node");
 #undef TT_FRAMING_HDR
+#if tt_FRAG_ENABLED
+_Static_assert(sizeof(struct tt_DataHeader) == tt_FRAG_DATA_HEADER_LENGTH, "tt_FRAG_DATA_HEADER_LENGTH is stale");
+_Static_assert(sizeof(struct tt_FragFirstHeader) == sizeof(struct tt_DataHeader) + 1 &&
+                   sizeof(struct tt_FragContHeader) == (2 * sizeof(uint32_t)) + 2,
+               "fragment headers are unpadded by design - see DATAFRAG_PLAN.md section 6.3");
+#endif
 // The default Publisher cache depth must fit the Subscriber's tt_RELIABLE_BITMAP_BITS-wide
 // tracking window (struct tt_WriterProxy.received_bitmap): a gap further back than the window can
 // never be named in an ACKNACK, so retaining more than that by default buys no recovery (Phase 1-c
@@ -304,6 +310,29 @@ static uint8_t link_of_ip(uint32_t ip) {
     return fallback;
 }
 
+// Every send below takes the datagram as a struct tx_datagram: a head, and optionally a body sent from
+// wherever it already lies. A flush of tx_buffer is all head. A fragment is a few bytes of framing built
+// on the stack and a body read straight out of tx_buffer, the reliable cache or the caller's sample, so
+// a large sample is never copied again just to be cut up.
+struct tx_datagram {
+    const uint8_t* head;
+    uint32_t head_len;
+    const uint8_t* body;
+    uint32_t body_len;
+};
+
+// One datagram to one address; ip 0 is the HAL's own broadcast address, as for tt_send_iov().
+static bool send_datagram_to(struct tt_Node* node, const struct tx_datagram* dgram, uint32_t ip, uint16_t port) {
+    node->tx_datagrams++;
+    if (dgram->body_len != 0) {
+        return tt_send_iov(node, dgram->head, dgram->head_len, dgram->body, dgram->body_len, ip, port) >= 0;
+    }
+    if (ip == 0) {
+        return tt_send(node, dgram->head, dgram->head_len) >= 0;
+    }
+    return tt_send_to(node, dgram->head, dgram->head_len, ip, port) >= 0;
+}
+
 // Broadcast, when there is no addressable peer set: either nobody is known yet, or the caller has
 // batched submessages for different peers into one buffer and cannot aim it. Goes out on every
 // link, because this is how a node is discovered at all and its peers may be on any of them.
@@ -312,15 +341,12 @@ static uint8_t link_of_ip(uint32_t ip) {
 // optimisation: it keeps the single-link case - every deployment that has not configured links[],
 // which is all of them today - on exactly the path it used before per-link existed, rather than on
 // a new one that happens to be equivalent.
-static bool broadcast_all_links(struct tt_Node* node, uint32_t len) {
+static bool broadcast_all_links(struct tt_Node* node, const struct tx_datagram* dgram) {
     if (link_count() <= 1) {
-        node->tx_datagrams++;
-        return tt_send(node, node->tx_buffer, len) >= 0;
+        return send_datagram_to(node, dgram, 0, 0);
     }
     for (uint8_t i = 0; i < link_count(); i++) {
-        node->tx_datagrams++;
-        if (tt_send_to(node, node->tx_buffer, len, _tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port) <
-            0) {
+        if (!send_datagram_to(node, dgram, _tt_CONFIG.links[i].resolved_broadcast, (uint16_t)_tt_CONFIG.port)) {
             return false;
         }
     }
@@ -332,8 +358,8 @@ static bool broadcast_all_links(struct tt_Node* node, uint32_t len) {
 // the right answer differs by medium - five subscribers on a 10Base-T1S segment and one on
 // Ethernet want opposite answers, and a single count across both loses on whichever it is not
 // sized for.
-static bool send_to_link(struct tt_Node* node, uint32_t len, const struct tt_Peer* peers, uint8_t peer_count,
-                         uint8_t link_index) {
+static bool send_to_link(struct tt_Node* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
+                         uint8_t peer_count, uint8_t link_index) {
     uint8_t on_link = 0;
     for (uint8_t i = 0; i < peer_count; i++) {
         if (link_of_ip(peers[i].ip) == link_index) {
@@ -345,20 +371,33 @@ static bool send_to_link(struct tt_Node* node, uint32_t len, const struct tt_Pee
     }
 
     if (on_link > _tt_CONFIG.links[link_index].unicast_threshold) {
-        node->tx_datagrams++;
         if (link_count() <= 1) {
-            return tt_send(node, node->tx_buffer, len) >= 0;
+            return send_datagram_to(node, dgram, 0, 0);
         }
-        return tt_send_to(node, node->tx_buffer, len, _tt_CONFIG.links[link_index].resolved_broadcast,
-                          (uint16_t)_tt_CONFIG.port) >= 0;
+        return send_datagram_to(node, dgram, _tt_CONFIG.links[link_index].resolved_broadcast,
+                                (uint16_t)_tt_CONFIG.port);
     }
 
     for (uint8_t i = 0; i < peer_count; i++) {
         if (link_of_ip(peers[i].ip) != link_index) {
             continue;
         }
-        node->tx_datagrams++;
-        if (tt_send_to(node, node->tx_buffer, len, peers[i].ip, peers[i].port) < 0) {
+        if (!send_datagram_to(node, dgram, peers[i].ip, peers[i].port)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// One datagram to the peers a flush would send it to: broadcast when peer_count is 0, otherwise each
+// link's share of them (send_to_link()).
+static bool send_datagram(struct tt_Node* node, const struct tx_datagram* dgram, const struct tt_Peer* peers,
+                          uint8_t peer_count) {
+    if (peer_count == 0) {
+        return broadcast_all_links(node, dgram);
+    }
+    for (uint8_t i = 0; i < link_count(); i++) {
+        if (!send_to_link(node, dgram, peers, peer_count, i)) {
             return false;
         }
     }
@@ -392,17 +431,8 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
     header->version = tt_VERSION;
     header->source = node->id;
 
-    bool sent_ok;
-    if (peer_count == 0) {
-        sent_ok = broadcast_all_links(node, len);
-    } else {
-        sent_ok = true;
-        for (uint8_t i = 0; i < link_count() && sent_ok; i++) {
-            sent_ok = send_to_link(node, len, peers, peer_count, i);
-        }
-    }
-
-    if (!sent_ok) {
+    struct tx_datagram dgram = {node->tx_buffer, len, NULL, 0};
+    if (!send_datagram(node, &dgram, peers, peer_count)) {
         TT_LOG_ERROR("Cannot send packet: %s", strerror(errno));
         return false;
     }
@@ -443,6 +473,113 @@ static bool flush_tx(struct tt_Node* node, uint32_t len, const struct tt_Peer* p
 
     return true;
 }
+
+#if tt_FRAG_ENABLED
+// CDR bytes in fragment 0 and in each full continuation. Fragments are cut to tt_CONTROL_MAX_LENGTH,
+// not tt_MAX_BUFFER_LENGTH, for the reason that constant exists: a node on core defaults has to be able
+// to receive them. The two are equal unless tt_MAX_BUFFER_LENGTH has been raised.
+#define FRAG_FRAMING_LENGTH (sizeof(struct tt_Header) + sizeof(struct tt_SubmessageHeader))
+#define FRAG_FIRST_PAYLOAD (tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragFirstHeader))
+#define FRAG_CONT_PAYLOAD (tt_CONTROL_MAX_LENGTH - FRAG_FRAMING_LENGTH - sizeof(struct tt_FragContHeader))
+// The largest CDR a fragmented sample carries: tt_MAX_SAMPLE_LENGTH, plus the padding a DATA record is
+// rounded up by (reliable_record_length()), since a retransmission is cut from the cached record.
+#define FRAG_MAX_CDR (tt_MAX_SAMPLE_LENGTH + 3)
+_Static_assert(1 + ((FRAG_MAX_CDR - FRAG_FIRST_PAYLOAD + FRAG_CONT_PAYLOAD - 1) / FRAG_CONT_PAYLOAD) <=
+                   tt_FRAG_MAX_COUNT,
+               "tt_MAX_SAMPLE_LENGTH needs more than tt_FRAG_MAX_COUNT fragments at tt_CONTROL_MAX_LENGTH");
+_Static_assert(FRAG_FIRST_PAYLOAD + tt_FRAG_FIRST_SHORTFALL == FRAG_CONT_PAYLOAD,
+               "fragment 0 must carry exactly tt_FRAG_FIRST_SHORTFALL fewer bytes - the receiver relies on it");
+
+// Sends one sample as fragments, each its own datagram, to the peers a flush would use (send_datagram()).
+// The CDR is read from where it lies - tx_buffer, the reliable cache or the caller's own memory - and
+// only the framing is built here. receiver goes into every fragment's submessage header, as a DATA's
+// would carry it. Only for a sample that no DATA could carry, so there are always at least two.
+static bool send_fragments(struct tt_Node* node, const struct tt_DataHeader* data_header, const uint8_t* cdr,
+                           uint32_t cdr_len, uint8_t receiver, const struct tt_Peer* peers, uint8_t peer_count) {
+    if (cdr_len <= FRAG_FIRST_PAYLOAD || cdr_len > FRAG_MAX_CDR) {
+        TT_LOG_ERROR("Sample of %u bytes cannot be sent as fragments", cdr_len);
+        node->tx_dropped_oversize++;
+        return false;
+    }
+    uint32_t count = 1 + ((cdr_len - FRAG_FIRST_PAYLOAD + FRAG_CONT_PAYLOAD - 1) / FRAG_CONT_PAYLOAD);
+
+    tt_ALIGNAS(4) uint8_t framing[FRAG_FRAMING_LENGTH + sizeof(struct tt_FragFirstHeader)];
+    struct tt_Header* header = (struct tt_Header*)framing;
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = node->id;
+    struct tt_SubmessageHeader* submessage_header = (struct tt_SubmessageHeader*)(framing + sizeof(struct tt_Header));
+    submessage_header->receiver = receiver;
+
+    submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_FIRST;
+    submessage_header->length =
+        (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragFirstHeader) + FRAG_FIRST_PAYLOAD);
+    struct tt_FragFirstHeader* first = (struct tt_FragFirstHeader*)(framing + FRAG_FRAMING_LENGTH);
+    _tt_memcpy(&first->data, data_header, sizeof(struct tt_DataHeader));
+    first->frag_count = (uint8_t)count;
+    struct tx_datagram dgram = {framing, FRAG_FRAMING_LENGTH + sizeof(struct tt_FragFirstHeader), cdr,
+                                FRAG_FIRST_PAYLOAD};
+    if (!send_datagram(node, &dgram, peers, peer_count)) {
+        return false;
+    }
+
+    uint32_t entity_id = data_header->entity_id;
+    uint32_t seq_no = data_header->seq_no;
+    struct tt_FragContHeader* cont = (struct tt_FragContHeader*)(framing + FRAG_FRAMING_LENGTH);
+    submessage_header->type = tt_SUBMESSAGE_TYPE_FRAG_CONT;
+    uint32_t offset = FRAG_FIRST_PAYLOAD;
+    for (uint32_t index = 1; index < count; index++) {
+        uint32_t length = cdr_len - offset < FRAG_CONT_PAYLOAD ? cdr_len - offset : FRAG_CONT_PAYLOAD;
+        submessage_header->length =
+            (uint16_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_FragContHeader) + length);
+        cont->entity_id = entity_id;
+        cont->seq_no = seq_no;
+        cont->frag_index = (uint8_t)index;
+        cont->frag_count = (uint8_t)count;
+        dgram.head_len = FRAG_FRAMING_LENGTH + sizeof(struct tt_FragContHeader);
+        dgram.body = cdr + offset;
+        dgram.body_len = length;
+        if (!send_datagram(node, &dgram, peers, peer_count)) {
+            return false;
+        }
+        offset += length;
+    }
+    return true;
+}
+
+// Sends the DATA submessage at submessage_header - the last thing in tx_buffer, and too large for one
+// datagram - as fragments, after whatever was batched ahead of it, and takes it out of tx_buffer.
+// Leaves tx_tail consistent whether or not it succeeds, so the caller must not roll back afterwards:
+// once the batch ahead has been flushed, the tail it would roll back to no longer exists.
+//
+// Padded as end_encode() would pad it, so that the fragments of the original and of a retransmission
+// cut from the cached record (which is padded) always agree on the sample's length, and so on how many
+// fragments it has.
+static bool send_tail_as_fragments(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header,
+                                   const struct tt_Peer* peers, uint8_t peer_count) {
+    uint32_t base = (uint32_t)((uint8_t*)submessage_header - node->tx_buffer);
+    uint32_t length = node->tx_tail - base;
+    memset(node->tx_buffer + node->tx_tail, 0, ROUNDUP(length) - length);
+    length = ROUNDUP(length);
+    node->tx_tail = base + length;
+    if (base > sizeof(struct tt_Header)) {
+        // What was batched ahead goes first, as it would have ahead of a DATA. flush_tx() moves the
+        // sample down behind the header, which is where it is read from below.
+        if (!flush_tx(node, base, NULL, 0)) {
+            node->tx_tail = base;
+            return false;
+        }
+        base = sizeof(struct tt_Header);
+    }
+    const uint8_t* record = node->tx_buffer + base;
+    bool sent = send_fragments(node, (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader)),
+                               record + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader),
+                               length - (uint32_t)(sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader)),
+                               ((const struct tt_SubmessageHeader*)record)->receiver, peers, peer_count);
+    node->tx_tail = base;
+    return sent;
+}
+#endif
 
 // Whether the submessage being encoded at submessage_header (everything from it to tx_tail, padded)
 // could fit one datagram on its own. False means it never can, however the buffer around it is
@@ -1622,10 +1759,19 @@ static void reset_node_state(struct tt_Node* node) {
     node->rx_via_data_port = false;
     node->rx_via_data_datagrams = 0;
     node->rx_via_well_known_datagrams = 0;
+#if tt_FRAG_ENABLED
+    for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
+        node->frag_slots[i].received = 0;
+    }
+    node->frag_clock = 0;
+    node->frag_reassembled = 0;
+    node->frag_abandoned = 0;
+    node->frag_dropped = 0;
+#endif
 
-    memset(node->tx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
+    memset(node->tx_buffer, 0, sizeof(node->tx_buffer));
     node->tx_tail = sizeof(struct tt_Header);
-    node->tx_size = tt_MAX_BUFFER_LENGTH * 2;
+    node->tx_size = sizeof(node->tx_buffer);
     node->tx_has_pending_update = false;
     node->flush_scheduled = false;
 
@@ -1708,6 +1854,13 @@ tt_ret_t tt_Node_create(struct tt_Node* node) {
 // instead of overflowing a task stack on the first message received.
 static bool valid_msg_size(uint32_t size) {
     return size > 0 && size <= tt_MAX_BUFFER_LENGTH;
+}
+
+// The same for a topic's sample, which fragmentation lets go up to tt_MAX_SAMPLE_LENGTH (config.h) - equal
+// to the datagram bound unless fragmentation is compiled in. Services do not fragment and keep the
+// datagram bound above.
+static bool valid_sample_size(uint32_t size) {
+    return size > 0 && size <= tt_MAX_SAMPLE_LENGTH;
 }
 
 static tt_ret_t node_create_client_locked(struct tt_Node* node, struct tt_Client* client, struct tt_Service* service,
@@ -1887,7 +2040,7 @@ tt_ret_t tt_Client_set_storage(struct tt_Client* client, uint8_t* cache_storage,
 static tt_ret_t node_create_publisher_locked(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Topic* topic,
                                              const char* endpoint_name) {
     if (node == NULL || pub == NULL || topic == NULL || endpoint_name == NULL || topic->name == NULL ||
-        !valid_msg_size(topic->data_size) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
+        !valid_sample_size(topic->data_size) || topic->data_encode_size == NULL || topic->data_encode == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
 
@@ -1958,7 +2111,7 @@ tt_ret_t tt_Node_create_publisher(struct tt_Node* node, struct tt_Publisher* pub
 static tt_ret_t node_create_subscriber_locked(struct tt_Node* node, struct tt_Subscriber* sub, struct tt_Topic* topic,
                                               const char* endpoint_name, tt_SUBSCRIBER_CALLBACK callback) {
     if (node == NULL || sub == NULL || topic == NULL || endpoint_name == NULL || callback == NULL ||
-        topic->name == NULL || !valid_msg_size(topic->data_size) || topic->data_decode == NULL ||
+        topic->name == NULL || !valid_sample_size(topic->data_size) || topic->data_decode == NULL ||
         topic->data_free == NULL) {
         return tt_RET_INVALID_ARGUMENT;
     }
@@ -2323,6 +2476,17 @@ static tt_ret_t publish_zerocopy(struct tt_Publisher* pub, const uint8_t* body, 
     data_header->entity_id = endpoint->entity_id; // Milestone 47 - this Publisher's own identity
 
     uint8_t peer_count = count_peers(pub->peers);
+#if tt_FRAG_ENABLED
+    if (sizeof(framing) + body_len > tt_MAX_BUFFER_LENGTH) {
+        bool unicast = peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD;
+        if (!send_fragments(node, data_header, body, body_len, tt_SUBMESSAGE_ID_ALL, unicast ? pub->peers : NULL,
+                            unicast ? peer_count : 0)) {
+            return tt_RET_IO_ERROR;
+        }
+        pub->seq_no++;
+        return tt_RET_OK;
+    }
+#endif
     if (peer_count >= 1 && peer_count <= tt_UNICAST_PEER_THRESHOLD) {
         for (uint8_t i = 0; i < peer_count; i++) {
             if (tt_send_iov(node, framing, sizeof(framing), body, body_len, pub->peers[i].ip, pub->peers[i].port) < 0) {
@@ -2814,7 +2978,8 @@ static bool try_publish_zerocopy(struct tt_Publisher* pub, struct tt_Data* data,
                               sizeof(struct tt_DataHeader) + (body_len >= 0 ? (uint32_t)body_len : 0);
     bool fills_packet =
         standalone_len + sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader) > tt_MAX_BUFFER_LENGTH;
-    if (body_len >= 0 && (body_len % 4) == 0 && fills_packet) {
+    if (body_len >= 0 && (body_len % 4) == 0 && fills_packet &&
+        (!tt_FRAG_ENABLED || body_len <= tt_MAX_SAMPLE_LENGTH)) {
         *result = publish_zerocopy(pub, body, (uint32_t)body_len);
         return true;
     }
@@ -2851,7 +3016,9 @@ static uint32_t keep_all_refused_record_bytes(const struct tt_Publisher* pub, co
 // cognitive complexity under clang-tidy's threshold.
 static bool check_and_cache_sample(struct tt_Node* node, struct tt_Publisher* pub,
                                    struct tt_SubmessageHeader* submessage_header) {
-    if (!submessage_fits_datagram(node, submessage_header)) {
+    // With fragmentation every sample within tt_MAX_SAMPLE_LENGTH can be sent, and the caller has
+    // already refused anything larger.
+    if (!tt_FRAG_ENABLED && !submessage_fits_datagram(node, submessage_header)) {
         return false;
     }
     // QoS roadmap #5 (RELIABILITY) / #4 (DURABILITY) - see cache_reliable_sample()'s own doc
@@ -2884,6 +3051,24 @@ static bool append_piggybacked_heartbeat(struct tt_Node* node, struct tt_Publish
                               tt_HEARTBEAT_FLAG_FINAL);
     if (node->tx_tail != sizeof(struct tt_Header)) {
         return flush_tx(node, node->tx_tail, peers, peer_count);
+    }
+    return true;
+}
+
+// end_encode() for the DATA submessage at submessage_header, or - when no datagram can carry it and
+// fragmentation is compiled in - its fragments, sent at once whatever is_flush says, since a fragment
+// never shares a datagram. Rolls back to old_tx_tail on failure where that is still meaningful.
+static bool end_encode_sample(struct tt_Node* node, struct tt_SubmessageHeader* submessage_header, bool is_flush,
+                              const struct tt_Peer* peers, uint8_t peer_count, uint32_t old_tx_tail) {
+#if tt_FRAG_ENABLED
+    size_t length = (uintptr_t)node->tx_buffer + node->tx_tail - (uintptr_t)submessage_header;
+    if (sizeof(struct tt_Header) + ROUNDUP(length) > tt_MAX_BUFFER_LENGTH) {
+        return send_tail_as_fragments(node, submessage_header, peers, peer_count);
+    }
+#endif
+    if (!end_encode(node, submessage_header, is_flush, peers, peer_count)) {
+        rollback(node, old_tx_tail);
+        return false;
     }
     return true;
 }
@@ -2949,7 +3134,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     // DataBody
     int32_t cdr_len = pub->topic->data_encode_size(data);
-    if (cdr_len < 0 || cdr_len > tt_MAX_BUFFER_LENGTH) {
+    if (cdr_len < 0 || cdr_len > tt_MAX_SAMPLE_LENGTH) {
         TT_LOG_ERROR("data_encode_size returned %d (out of range)", cdr_len);
         rollback(node, old_tx_tail);
         return tt_RET_PROTOCOL_ERROR;
@@ -3010,8 +3195,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
     // Heartbeat buried in a batch arrives no sooner than the batch does.
     bool piggyback = piggyback_due(pub, is_flush);
 
-    if (!end_encode(node, submessage_header, is_flush && !piggyback, peers, peer_count)) {
-        rollback(node, old_tx_tail);
+    if (!end_encode_sample(node, submessage_header, is_flush && !piggyback, peers, peer_count, old_tx_tail)) {
         return tt_RET_IO_ERROR;
     }
 
@@ -4990,6 +5174,38 @@ static void node_flush(struct tt_Node* node, uint64_t time, void* param) {
 // pub->reliable_cache is non-NULL (nothing to deliver from otherwise) - matches process_acknack()'s
 // own retransmit loop exactly, just unicasting to a fixed target instead of reacting to a NACK
 // bitmap, and reading from the same shared cache (struct tt_ReliableCache's own doc comment).
+// Sends one cached DATA record to target alone: copied into tx_buffer and flushed, as before, when it
+// fits a datagram; as fragments read straight out of the cache when it does not. addressed stamps the
+// target's id into the submessage header in place of the cached tt_SUBMESSAGE_ID_ALL - see
+// retransmit_one_sample() for why a retransmission is addressed. The one path by which the reliable
+// cache is ever sent, for a retransmission and for a durability backlog alike.
+static bool send_cached_record(struct tt_Node* node, const uint8_t* record, uint16_t len, bool addressed,
+                               const struct tt_Peer* target) {
+#if tt_FRAG_ENABLED
+    if (sizeof(struct tt_Header) + len > tt_MAX_BUFFER_LENGTH) {
+        const uint32_t framing = sizeof(struct tt_SubmessageHeader) + sizeof(struct tt_DataHeader);
+        uint8_t receiver = addressed ? target->node_id : ((const struct tt_SubmessageHeader*)record)->receiver;
+        return send_fragments(node, (const struct tt_DataHeader*)(record + sizeof(struct tt_SubmessageHeader)),
+                              record + framing, len - framing, receiver, target, 1);
+    }
+#endif
+    uint32_t old_tx_tail = node->tx_tail;
+    void* buf = encode(node, len);
+    if (buf == NULL) {
+        rollback(node, old_tx_tail);
+        return false;
+    }
+    _tt_memcpy(buf, record, len);
+    if (addressed) {
+        ((struct tt_SubmessageHeader*)buf)->receiver = target->node_id;
+    }
+    if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
+        rollback(node, old_tx_tail);
+        return false;
+    }
+    return true;
+}
+
 static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher* pub, struct tt_Peer* target) {
     if (!pub->durable || pub->reliable_cache == NULL) {
         return;
@@ -5015,16 +5231,8 @@ static void deliver_durability_backlog(struct tt_Node* node, struct tt_Publisher
         if (reliable_cache_entry_expired(cache_entry, pub->lifespan_duration_ns)) {
             continue;
         }
-        uint32_t old_tx_tail = node->tx_tail;
-        void* buf = encode(node, cache_entry->len);
-        if (buf == NULL) {
-            TT_LOG_WARNING("Lack of tx buffer, cannot deliver durability backlog seq_no %u", cache_entry->seq_no);
-            rollback(node, old_tx_tail);
-            continue;
-        }
-        _tt_memcpy(buf, cache->arena + cache_entry->offset, cache_entry->len);
-        if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
-            rollback(node, old_tx_tail);
+        if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, false, target)) {
+            TT_LOG_WARNING("Cannot deliver durability backlog seq_no %u", cache_entry->seq_no);
         }
     }
 }
@@ -6575,24 +6783,14 @@ static bool retransmit_one_sample(struct tt_Node* node, struct tt_Publisher* pub
         return gone;
     }
 
-    uint32_t old_tx_tail = node->tx_tail;
-    void* buf = encode(node, cache_entry->len);
-    if (buf == NULL) {
-        TT_LOG_WARNING("Lack of tx buffer, cannot retransmit seq_no %u now", missing_seq_no);
-        RSTAT_INC(retransmit_tx_fail);
-        rollback(node, old_tx_tail);
-        return false;
-    }
-    _tt_memcpy(buf, cache->arena + cache_entry->offset, cache_entry->len);
     // Addressed to the node that asked, where the cached original is addressed to everyone. It goes to
-    // that node alone anyway (unicast, below), so nothing else changes - but it is what lets that node
-    // tell this copy from the original that was only late, which its retry-interval estimate depends on
+    // that node alone anyway (unicast), so nothing else changes - but it is what lets that node tell
+    // this copy from the original that was only late, which its retry-interval estimate depends on
     // (tt_Node.rx_targeted). No wire change: a node of an older build sees a submessage addressed to
     // itself and processes it exactly as before.
-    ((struct tt_SubmessageHeader*)buf)->receiver = target->node_id;
-    if (!end_encode(node, (struct tt_SubmessageHeader*)buf, true, target, 1)) {
+    if (!send_cached_record(node, cache->arena + cache_entry->offset, cache_entry->len, true, target)) {
+        TT_LOG_WARNING("Cannot retransmit seq_no %u now", missing_seq_no);
         RSTAT_INC(retransmit_tx_fail);
-        rollback(node, old_tx_tail);
     } else {
         RSTAT_INC(retransmitted);
         pub->retransmitted++;
@@ -6950,6 +7148,172 @@ static bool process_heartbeat(struct tt_Node* node, struct tt_Header* header, ui
     return true;
 }
 
+#if tt_FRAG_ENABLED
+// CDR bytes a reassembly slot can hold.
+#define FRAG_SLOT_CAPACITY (sizeof(((struct tt_FragSlot*)0)->bytes) - tt_FRAG_DATA_HEADER_LENGTH)
+_Static_assert(FRAG_SLOT_CAPACITY >= FRAG_MAX_CDR, "a reassembly slot must hold the largest fragmented sample");
+
+// Where fragment `index` starts within the sample's CDR, given the payload of a full continuation.
+static uint32_t frag_offset(uint32_t index, uint32_t cont_length) {
+    return index == 0 ? 0 : (cont_length - (uint32_t)tt_FRAG_FIRST_SHORTFALL) + ((index - 1) * cont_length);
+}
+
+static uint64_t frag_all_received(uint32_t count) {
+    return count >= tt_FRAG_MAX_COUNT ? UINT64_MAX : (1ULL << count) - 1; // tt_FRAG_MAX_COUNT is the bitmap width
+}
+
+// The slot already collecting this sample, or a newly claimed one - a free one if there is any, else
+// the one claimed longest ago, whose reassembly is abandoned and counted. A claimed slot stays free
+// (received == 0) until a fragment has actually been placed in it.
+static struct tt_FragSlot* frag_slot_for(struct tt_Node* node, uint8_t source, uint32_t entity_id, uint32_t seq_no,
+                                         uint8_t frag_count) {
+    struct tt_FragSlot* free_slot = NULL;
+    struct tt_FragSlot* oldest = NULL;
+    for (int i = 0; i < tt_FRAG_REASSEMBLY_SLOTS; i++) {
+        struct tt_FragSlot* slot = &node->frag_slots[i];
+        if (slot->received == 0) {
+            free_slot = free_slot != NULL ? free_slot : slot;
+            continue;
+        }
+        if (slot->source == source && slot->entity_id == entity_id && slot->seq_no == seq_no) {
+            return slot;
+        }
+        if (oldest == NULL || (int32_t)(slot->claimed - oldest->claimed) < 0) {
+            oldest = slot;
+        }
+    }
+    struct tt_FragSlot* slot = free_slot;
+    if (slot == NULL) {
+        slot = oldest;
+        node->frag_abandoned++;
+        TT_LOG_WARNING("Abandoning reassembly of seq_no %u from node %u for a newer sample", slot->seq_no,
+                       slot->source);
+    }
+    slot->received = 0;
+    slot->source = source;
+    slot->entity_id = entity_id;
+    slot->seq_no = seq_no;
+    slot->frag_count = frag_count;
+    slot->cont_length = 0;
+    slot->last_length = 0;
+    slot->claimed = node->frag_clock++;
+    return slot;
+}
+
+// Records the continuation payload size, learned from a non-last fragment, and moves a last fragment
+// parked while it was unknown to where it belongs. False if the sizes cannot belong to one sample.
+static bool frag_learn_cont_length(struct tt_FragSlot* slot, uint32_t cont_length) {
+    if (slot->cont_length != 0) {
+        return slot->cont_length == cont_length;
+    }
+    uint32_t last = (uint32_t)slot->frag_count - 1;
+    if (cont_length <= tt_FRAG_FIRST_SHORTFALL || frag_offset(last, cont_length) >= FRAG_SLOT_CAPACITY) {
+        return false;
+    }
+    uint8_t* cdr = slot->bytes + tt_FRAG_DATA_HEADER_LENGTH;
+    if ((slot->received & (1ULL << last)) != 0) {
+        uint32_t offset = frag_offset(last, cont_length);
+        if (slot->last_length > cont_length || offset + slot->last_length > FRAG_SLOT_CAPACITY) {
+            return false;
+        }
+        memmove(cdr + offset, cdr + FRAG_SLOT_CAPACITY - slot->last_length, slot->last_length);
+    }
+    slot->cont_length = (uint16_t)cont_length;
+    return true;
+}
+
+// Copies one fragment's payload into its slot. False when it contradicts what the slot already knows.
+static bool frag_place(struct tt_FragSlot* slot, uint32_t index, const uint8_t* payload, uint32_t length) {
+    uint32_t last = (uint32_t)slot->frag_count - 1;
+    if ((slot->received & (1ULL << index)) != 0) {
+        return true; // a duplicate adds nothing
+    }
+    if (index != last && !frag_learn_cont_length(slot, index == 0 ? length + tt_FRAG_FIRST_SHORTFALL : length)) {
+        return false;
+    }
+    uint8_t* cdr = slot->bytes + tt_FRAG_DATA_HEADER_LENGTH;
+    uint32_t offset;
+    if (index != last) {
+        offset = frag_offset(index, slot->cont_length);
+    } else if (slot->cont_length == 0) {
+        offset = FRAG_SLOT_CAPACITY - length; // parked until the continuation size is known
+    } else if (length <= slot->cont_length) {
+        offset = frag_offset(last, slot->cont_length);
+    } else {
+        return false;
+    }
+    if (length > FRAG_SLOT_CAPACITY || offset > FRAG_SLOT_CAPACITY - length) {
+        return false;
+    }
+    _tt_memcpy(cdr + offset, payload, length);
+    if (index == last) {
+        slot->last_length = (uint16_t)length;
+    }
+    slot->received |= 1ULL << index;
+    return true;
+}
+
+// One fragment, FRAG_FIRST or FRAG_CONT, of a sample from header->source. Once every fragment has
+// arrived, the sample is handed to process_data() exactly as a DATA carrying it would have been.
+static bool process_frag(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head, uint32_t tail,
+                         uint8_t type, uint32_t sender_ip, uint16_t sender_port) {
+    const struct tt_DataHeader* data_header = NULL;
+    uint32_t entity_id;
+    uint32_t seq_no;
+    uint32_t index;
+    uint32_t count;
+    if (type == tt_SUBMESSAGE_TYPE_FRAG_FIRST) {
+        struct tt_FragFirstHeader* first = decode(node, buffer, &head, tail, sizeof(struct tt_FragFirstHeader));
+        if (first == NULL) {
+            node->frag_dropped++;
+            return false;
+        }
+        data_header = &first->data;
+        entity_id = rd32(header, first->data.entity_id);
+        seq_no = rd32(header, first->data.seq_no);
+        index = 0;
+        count = first->frag_count;
+    } else {
+        struct tt_FragContHeader* cont = decode(node, buffer, &head, tail, sizeof(struct tt_FragContHeader));
+        if (cont == NULL) {
+            node->frag_dropped++;
+            return false;
+        }
+        entity_id = rd32(header, cont->entity_id);
+        seq_no = rd32(header, cont->seq_no);
+        index = cont->frag_index;
+        count = cont->frag_count;
+    }
+    uint32_t length = tail - head;
+    if (count < 2 || count > tt_FRAG_MAX_COUNT || index >= count || length == 0) {
+        TT_LOG_ERROR("Illegal fragment %u of %u (%u bytes)", index, count, length);
+        node->frag_dropped++;
+        return false;
+    }
+
+    struct tt_FragSlot* slot = frag_slot_for(node, header->source, entity_id, seq_no, (uint8_t)count);
+    if (slot->frag_count != count || !frag_place(slot, index, buffer + head, length)) {
+        TT_LOG_WARNING("Fragment %u of seq_no %u from node %u is inconsistent with its sample - dropped", index, seq_no,
+                       header->source);
+        node->frag_dropped++;
+        return false;
+    }
+    if (data_header != NULL) {
+        _tt_memcpy(slot->bytes, data_header, sizeof(struct tt_DataHeader));
+    }
+    if (slot->received != frag_all_received(count)) {
+        return true;
+    }
+
+    uint32_t cdr_len = frag_offset(count - 1, slot->cont_length) + slot->last_length;
+    node->frag_reassembled++;
+    bool processed =
+        process_data(node, header, slot->bytes, 0, tt_FRAG_DATA_HEADER_LENGTH + cdr_len, sender_ip, sender_port);
+    slot->received = 0;
+    return processed;
+}
+#endif
+
 static bool process_submessage(struct tt_Node* node, struct tt_Header* header, uint8_t* buffer, uint32_t head,
                                uint32_t body_tail, const struct tt_SubmessageHeader* submessage_header,
                                uint32_t sender_ip, uint16_t sender_port, bool self_sent) {
@@ -7005,6 +7369,18 @@ static bool process_submessage(struct tt_Node* node, struct tt_Header* header, u
         return true;
     case tt_SUBMESSAGE_TYPE_CALLRESPONSE:
         process_callresponse(node, header, buffer, head, body_tail);
+        return true;
+    case tt_SUBMESSAGE_TYPE_FRAG_FIRST:
+    case tt_SUBMESSAGE_TYPE_FRAG_CONT:
+#if tt_FRAG_ENABLED
+        if (!self_sent) {
+            process_frag(node, header, buffer, head, body_tail, submessage_header->type, sender_ip, sender_port);
+        }
+#else
+        // A sample larger than this build accepts (tt_MAX_SAMPLE_LENGTH): it could not be delivered
+        // whole anyway, so its fragments are passed over without the unknown-type warning below.
+        TT_LOG_DEBUG("Fragment skipped: built without fragmentation");
+#endif
         return true;
     default:
         // An unknown type is most likely a submessage from a newer protocol revision (see

@@ -239,14 +239,24 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
 int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const void* body, size_t body_len,
                     uint32_t ip, uint16_t port) {
     (void)node;
-    (void)hdr;
-    (void)body;
+
+    // Captured as the one datagram the two pieces make, like the other send functions' buffers. Static:
+    // a fragment's pieces are small, but a zero-copy body may be a whole datagram of 64 KB.
+    static uint8_t joined[65536];
+    if (hdr_len + body_len <= sizeof(joined)) {
+        memcpy(joined, hdr, hdr_len);
+        memcpy(joined + hdr_len, body, body_len);
+        test_mock_capture_send(joined, hdr_len + body_len);
+    }
 
     test_mock_send_call_count++;
     if (ip != 0) {
         test_mock_send_to_call_count++;
         test_mock_send_to_last_ip = ip;
         test_mock_send_to_last_port = port;
+        if (test_mock_send_to_ip_count < TEST_MOCK_MAX_SENDS) {
+            test_mock_send_to_ips[test_mock_send_to_ip_count++] = ip;
+        }
     }
 
     if (test_mock_send_return_override) {

@@ -350,6 +350,40 @@
 #endif
 #endif
 
+// The largest sample - encoded CDR bytes, framing excluded - a Publisher may send and a Subscriber can
+// receive (DATA_FRAG, rmw_tickle/DATAFRAG_PLAN.md). tt_MAX_BUFFER_LENGTH keeps meaning one datagram; a
+// sample that does not fit one goes out as fragments of at most tt_CONTROL_MAX_LENGTH, each its own
+// datagram, and is put back together on the receiving side (tt_SUBMESSAGE_TYPE_FRAG_FIRST, tickle.h).
+//
+// At the default the two are equal, which compiles fragmentation out altogether: no reassembly pool, no
+// larger tx_buffer, and a sample that does not fit one datagram is refused exactly as before. A node
+// that only ever sends small samples - an MCU, say - pays nothing for a feature it does not use.
+#ifndef tt_MAX_SAMPLE_LENGTH
+#define tt_MAX_SAMPLE_LENGTH tt_MAX_BUFFER_LENGTH
+#endif
+#if tt_MAX_SAMPLE_LENGTH > tt_MAX_BUFFER_LENGTH
+#define tt_FRAG_ENABLED 1
+#else
+#define tt_FRAG_ENABLED 0
+#endif
+// Samples a node can be reassembling at once, from any mix of senders. When all are busy and a fragment
+// of another sample arrives, the reassembly started longest ago is abandoned and counted
+// (tt_Node.frag_abandoned) - never dropped silently, since a silent drop here looks exactly like loss.
+// Each slot holds one whole sample (tt_MAX_SAMPLE_LENGTH plus a DataHeader); nothing is allocated.
+#ifndef tt_FRAG_REASSEMBLY_SLOTS
+#define tt_FRAG_REASSEMBLY_SLOTS 8
+#endif
+// Fragments one sample may be split into: the width of a reassembly slot's bitmap.
+#define tt_FRAG_MAX_COUNT 64
+// tx_buffer: room for a full batch plus one submessage overshooting it, which is what end_encode()'s
+// deferral needs - and, with fragmentation, room for a whole sample behind a batch that is still pending,
+// because the sample is encoded in one piece and only split as it is sent.
+#if tt_FRAG_ENABLED
+#define tt_TX_BUFFER_LENGTH (tt_MAX_BUFFER_LENGTH + tt_MAX_SAMPLE_LENGTH + 64)
+#else
+#define tt_TX_BUFFER_LENGTH (tt_MAX_BUFFER_LENGTH * 2)
+#endif
+
 // Node ID values are the last byte of the IPv4 address on the local network.
 // Valid node IDs are 1..254, because 0 is reserved for invalid/unassigned and
 // 255 is reserved for the broadcast address.
@@ -553,6 +587,11 @@ static_assert(tt_MAX_BUFFER_LENGTH <= tt_IPV4_UDP_MAX_PAYLOAD,
               "the protocol's uint16 lengths could not describe it either");
 static_assert(tt_CONTROL_MAX_LENGTH <= tt_MAX_BUFFER_LENGTH,
               "tt_CONTROL_MAX_LENGTH cannot exceed tt_MAX_BUFFER_LENGTH - nothing larger could be received");
+static_assert(tt_MAX_SAMPLE_LENGTH >= tt_MAX_BUFFER_LENGTH,
+              "tt_MAX_SAMPLE_LENGTH below tt_MAX_BUFFER_LENGTH would refuse samples one datagram can carry");
+static_assert(!tt_FRAG_ENABLED || tt_MAX_SAMPLE_LENGTH <= UINT16_MAX - 32,
+              "a fragmented sample is cached and encoded as one submessage, whose length is a uint16");
+static_assert(tt_FRAG_REASSEMBLY_SLOTS >= 1, "fragmentation needs at least one reassembly slot");
 static_assert((tt_ENDPOINT_INDEX_SIZE & (tt_ENDPOINT_INDEX_SIZE - 1)) == 0,
               "tt_ENDPOINT_INDEX_SIZE must be a power of two - for_each_endpoint() masks with it");
 static_assert(tt_MAX_ENDPOINT_COUNT <= (UINT8_MAX + 1), "node ids and endpoint slots are indexed by uint8_t");

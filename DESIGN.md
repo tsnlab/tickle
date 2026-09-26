@@ -401,6 +401,66 @@ Reusing `UPDATE` would have been worse: every part shares one `last_modified`, s
 would take the first part as the complete list and deduplicate the rest away, leaving a stable,
 silently partial view. No `tt_VERSION` bump was needed, and small nodes are unaffected.
 
+## Samples larger than a datagram (`FRAG_FIRST`/`FRAG_CONT`, types 8 and 9)
+
+A sample that no single `DATA` can carry is sent as fragments, each in a datagram of its own, and put
+back together by the receiver: DATA_FRAG, added 2026-09-26 (`rmw_tickle/DATAFRAG_PLAN.md`). Before
+it such a sample was refused, unless `tt_MAX_BUFFER_LENGTH` was raised, in which case it went out as
+one oversized datagram that the OS split into IP fragments. At 5% loss the kernel failed to
+reassemble 97.4% of those (COMPARISON.MD to-do 15), so reliable recovery was retransmitting whole
+samples into a path that destroyed them again.
+
+**Configuration.** `tt_MAX_BUFFER_LENGTH` keeps meaning one datagram. `tt_MAX_SAMPLE_LENGTH` bounds a
+sample's CDR, and fragmentation is compiled in only when it exceeds `tt_MAX_BUFFER_LENGTH`. At the
+default the two are equal, so nothing changes: no reassembly memory, no larger `tx_buffer`, and an
+oversized sample is refused as before. Fragments are cut to `tt_CONTROL_MAX_LENGTH`, so a node on
+core defaults can receive them.
+
+**Wire.** Fragments are always alone in their datagram, so neither header is padded, and nor is the
+fragment itself; `tt_SubmessageHeader.length` is exact.
+- `FRAG_FIRST` carries the sample's whole `tt_DataHeader` (20 B), then `frag_count` (u8), then the
+  first CDR bytes.
+- `FRAG_CONT` carries `entity_id` (u32), `seq_no` (u32), `frag_index` (u8) and `frag_count` (u8),
+  10 B, then its CDR bytes. `entity_id` is unique within a node and the node is `tt_Header.source`,
+  so `(source, entity_id, seq_no)` names the sample and only the first fragment needs `endpoint_id`
+  and `timestamp`.
+
+This is the whole of the p4 bandwidth argument: a 2800 B sample is 2847 B of UDP payload in two
+datagrams, 2931 B on the wire against CycloneDDS's 2950. A full `tt_DataHeader` in every fragment
+would have left 6 B of margin, inside the noise.
+
+**Sender.**
+- Every fragment but the last is full, and fragment 0 carries exactly 11 B less CDR than a
+  continuation (`tt_FRAG_FIRST_SHORTFALL`, the difference between the two headers). A fragment's
+  position therefore follows from its index and the continuation size, and no offset field is
+  needed.
+- A sample is encoded, cached and retained as one ordinary `DATA` record. It is split only as it is
+  sent, by one routine used by publish, retransmission and durability backlog alike, and each
+  fragment's CDR is sent straight from where the record lies through the HAL's scatter-gather send.
+  Nothing is copied to be split.
+- The original is padded to 4 as the cached record is, so an original and its retransmission always
+  agree on the fragment count. Otherwise a retransmission could never complete a slot the original
+  had started.
+- Anything batched ahead of a fragmented sample is flushed first, so it is not overtaken.
+
+**Receiver.**
+- A node holds `tt_FRAG_REASSEMBLY_SLOTS` (8) slots shared by every sender. Each holds one whole
+  sample laid out as a `DATA` body would be, and a completed sample goes to the ordinary
+  `process_data()`: reliability, ordering and delivery see no difference.
+- The continuation size is learned from the first non-last fragment to arrive. A last fragment
+  arriving before that is parked at the end of the slot and moved into place once it is known.
+- When every slot is busy, the reassembly claimed longest ago is abandoned (`frag_abandoned`).
+  Fragments that contradict their sample are refused (`frag_dropped`). Both are counted, because a
+  silent drop here looks exactly like network loss.
+
+**Loss.** A lost fragment loses its sample, which the ordinary sample-granular ACKNACK recovers by
+resending every fragment of it. Simulated at c6's condition, 5% loss both ways with KEEP_ALL, that
+costs 2.23 datagrams a sample (`test_data_frag.c` asserts under 3). Fragment-granular
+retransmission is the optimisation to measure next, not a precondition.
+
+**Interop.** New types rather than a version bump. A node built without fragmentation skips types 8
+and 9 quietly: it could not deliver a sample over its own limit anyway.
+
 ## Discovery-learned peers: unicast to a few, broadcast to the rest
 
 A server's `CallResponse` was the first thing taught to unicast straight back to its request's own

@@ -25,15 +25,36 @@ REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 SHAPE_DIR="$HERE/common/$SHAPE"
 INSTALL_PREFIX="$HOME/tickle_local_install"
 
-# P4 is 2800 bytes, so its datagram is 2828 and does not fit the 1472-byte default. That flag
-# sizes libtickle.a's own tx/rx buffers as well as the example's, so the P4 build cannot share a
-# prefix with its siblings - same reasoning as TICKLE_RELIABLE_STATS below, and the same remedy.
-# Its node buffers are therefore ~10 KB larger than the other shapes', which is immaterial against
-# a peak RSS in the megabytes but is why the P4 memory figure is not strictly comparable to P1-P3's.
+# P4 is 2800 bytes, so its sample does not fit the 1472-byte default datagram. Two ways to carry it,
+# chosen by TICKLE_P4_PATH, and printed on the RESULT line as sample_path= so rows from the two are
+# never compared as if they were one:
+#   frag   (the default) - DATA_FRAG: tt_MAX_SAMPLE_LENGTH=4096 with the 1472-byte datagram kept, so
+#          core sends two fragments of its own (rmw_tickle/DATAFRAG_PLAN.md).
+#   ipfrag - the build before DATA_FRAG: tt_MAX_BUFFER_LENGTH=4096, one 2828-byte datagram that the
+#          OS splits into IP fragments. Kept so the change can be measured against what it replaced.
+# Either flag sizes libtickle.a's own buffers as well as the example's, so each gets its own prefix -
+# same reasoning as TICKLE_RELIABLE_STATS below, and the same remedy. Their node buffers are larger
+# than the other shapes' (~10 KB for ipfrag, ~36 KB of reassembly slots for frag), immaterial against
+# a peak RSS in the megabytes but the reason the P4 memory figure is not strictly comparable to P1-P3's.
 CORE_DEFINE=""
+SAMPLE_PATH=datagram
 if [ "$SHAPE" = "p4" ]; then
-    CORE_DEFINE="-Dtt_MAX_BUFFER_LENGTH=4096"
-    INSTALL_PREFIX="$HOME/tickle_local_install_buf4096"
+    case "${TICKLE_P4_PATH:-frag}" in
+    frag)
+        CORE_DEFINE="-Dtt_MAX_SAMPLE_LENGTH=4096"
+        INSTALL_PREFIX="$HOME/tickle_local_install_sample4096"
+        SAMPLE_PATH=frag
+        ;;
+    ipfrag)
+        CORE_DEFINE="-Dtt_MAX_BUFFER_LENGTH=4096"
+        INSTALL_PREFIX="$HOME/tickle_local_install_buf4096"
+        SAMPLE_PATH=ipfrag
+        ;;
+    *)
+        echo "TICKLE_P4_PATH must be frag (the default, DATA_FRAG) or ipfrag (one datagram, split by the OS)" >&2
+        exit 1
+        ;;
+    esac
 fi
 
 # TICKLE_RELIABLE_STATS=1: build libtickle.a *and* the example with -Dtt_RELIABLE_STATS
@@ -166,18 +187,24 @@ TICKLE_LIBS="$(PKG_CONFIG_PATH="$PKG_CONFIG_PATH" pkg-config --libs tickle)"
 # The payload shape comes first on the include path, and the four shapes all declare the same
 # `struct BenchData` / `BenchTopic`, so every scenario's own client.c and server.c compiles
 # unchanged at each size - the size is chosen here and nowhere else.
-CFLAGS="-O2 -DBENCH_CORE_BUILD=$CORE_BUILD_TYPE $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
+CFLAGS="-O2 -DBENCH_CORE_BUILD=$CORE_BUILD_TYPE -DBENCH_SAMPLE_PATH=$SAMPLE_PATH $CORE_DEFINE $STATS_DEFINE -DBENCH_SAMPLE_BYTES=$BENCH_SAMPLE_BYTES -I$SHAPE_DIR -I$HERE/common $TICKLE_CFLAGS"
 
-# Compile-time proof that this shape fits the datagram *this* build's libtickle.a was compiled
-# for. The generator emits BenchData_FITS_ONE_DATAGRAM as (sample_bytes <= tt_MAX_BUFFER_LENGTH),
-# and tt_MAX_BUFFER_LENGTH comes from the installed prefix's own tickle/config.h - so building p4
-# against the default prefix fails here instead of producing a silently wrong measurement, which
-# is the one failure mode of having two prefixes. Checked as its own translation unit so the
-# message names the shape.
+# Compile-time proof that this shape can be sent by the build *this* libtickle.a was compiled as, and
+# by the path sample_path= will claim. The generator emits BenchData_FITS_ONE_DATAGRAM as
+# (sample_bytes <= tt_MAX_BUFFER_LENGTH), and both limits come from the installed prefix's own
+# tickle/config.h - so building p4 against the wrong prefix fails here instead of producing a silently
+# wrong measurement, which is the one failure mode of having several prefixes. frag must really
+# fragment (not fit one datagram) and must fit tt_MAX_SAMPLE_LENGTH; every other path must fit one
+# datagram. Checked as its own translation unit so the message names the shape.
+if [ "$SAMPLE_PATH" = "frag" ]; then
+    FIT_CHECK='_Static_assert(tt_FRAG_ENABLED && !BenchData_FITS_ONE_DATAGRAM && BENCH_SAMPLE_BYTES <= tt_MAX_SAMPLE_LENGTH, "sample_path=frag but this build would not fragment this shape");'
+else
+    FIT_CHECK='_Static_assert(BenchData_FITS_ONE_DATAGRAM, "payload shape does not fit this build tt_MAX_BUFFER_LENGTH");'
+fi
 # shellcheck disable=SC2086
-printf '#include "Bench.h"\n_Static_assert(BenchData_FITS_ONE_DATAGRAM, "payload shape does not fit this build tt_MAX_BUFFER_LENGTH");\n_Static_assert(BENCH_SAMPLE_BYTES == sizeof(struct BenchData), "BENCH_SAMPLE_BYTES disagrees with the generated struct");\n' |
+printf '#include "Bench.h"\n%s\n_Static_assert(BENCH_SAMPLE_BYTES == sizeof(struct BenchData), "BENCH_SAMPLE_BYTES disagrees with the generated struct");\n' "$FIT_CHECK" |
     $CC $CFLAGS -fsyntax-only -x c - || {
-    echo "Payload shape $SHAPE does not fit tt_MAX_BUFFER_LENGTH in $INSTALL_PREFIX" >&2
+    echo "Payload shape $SHAPE cannot be sent as sample_path=$SAMPLE_PATH by $INSTALL_PREFIX" >&2
     exit 1
 }
 

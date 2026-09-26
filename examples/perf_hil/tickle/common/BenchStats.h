@@ -172,11 +172,15 @@ static inline uint64_t bench_stats_delta(uint64_t begin, uint64_t end) {
 // vendors' release packages - so the field is simply absent from their lines.
 // build.sh passes the build type as a bare token (release or debug) - a quoted string would need shell
 // quoting inside a word-split variable - so it is turned into a string here.
+//
+// sample_path= says how a sample too large for one datagram was carried (build.sh, TICKLE_P4_PATH):
+// frag (TickLE's own fragments), ipfrag (one datagram the OS split) or datagram (no sample needed
+// either). Printed for the same reason: p4 rows from two paths must not be read as one series.
 #ifdef BENCH_CORE_BUILD
 #define BENCH_STRINGIFY_(x) #x
 #define BENCH_STRINGIFY(x) BENCH_STRINGIFY_(x)
 #define BENCH_CORE_BUILD_FIELD " core_build="
-#define BENCH_CORE_BUILD_VALUE BENCH_STRINGIFY(BENCH_CORE_BUILD)
+#define BENCH_CORE_BUILD_VALUE BENCH_STRINGIFY(BENCH_CORE_BUILD) " sample_path=" BENCH_STRINGIFY(BENCH_SAMPLE_PATH)
 #else
 #define BENCH_CORE_BUILD_FIELD ""
 #define BENCH_CORE_BUILD_VALUE ""

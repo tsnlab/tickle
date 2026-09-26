@@ -90,6 +90,39 @@ struct tt_LockStats {
 #define tt_SCHED_SLOT_WRITING 1
 #define tt_SCHED_SLOT_READY 2
 
+#if tt_FRAG_ENABLED
+// Bytes of struct tt_DataHeader, which is defined further down with the rest of the wire format;
+// tickle.c checks the two agree.
+#define tt_FRAG_DATA_HEADER_LENGTH 20
+
+// One sample being put back together from its fragments (tt_SUBMESSAGE_TYPE_FRAG_FIRST/_CONT) - see
+// process_frag() in tickle.c. A node holds tt_FRAG_REASSEMBLY_SLOTS of these, shared by every sender
+// and every Subscriber, rather than one set per Subscriber or per remote writer: which samples are in
+// flight at once is a property of the traffic, not of how many endpoints happen to exist.
+//
+// bytes[] holds the sample exactly as a DATA submessage body would - DataHeader, then CDR - so a
+// completed slot is handed to process_data() as if it had arrived whole. 8-aligned, which puts the CDR
+// at 4 mod 8 as rx_buffer does and keeps generated codecs' aligned reads valid.
+//
+// Where a fragment goes follows from its index and the continuation payload size, which every
+// fragment but the last shares (fragment 0 carries 11 bytes fewer, for its longer header). That size
+// is learned from the first non-last fragment to arrive. The last fragment's length alone says
+// nothing about its position, so when it arrives first it is parked at the very end of bytes[] and
+// moved once the size is known.
+struct tt_FragSlot {
+    uint64_t received;  // bit i: fragment i has landed. 0: the slot is free
+    uint32_t entity_id; // with source and seq_no, which sample this is
+    uint32_t seq_no;
+    uint32_t claimed;     // tt_Node.frag_clock when claimed; the lowest is abandoned first
+    uint16_t cont_length; // payload bytes in each non-last FRAG_CONT, 0 until known
+    uint16_t last_length; // payload bytes in the last fragment, 0 until it lands
+    uint8_t source;
+    uint8_t frag_count;
+    // + 4: a retransmission is cut from the cached record, which is padded to a multiple of 4
+    tt_ALIGNAS(8) uint8_t bytes[tt_FRAG_DATA_HEADER_LENGTH + tt_MAX_SAMPLE_LENGTH + 4];
+};
+#endif
+
 struct tt_Node {
     uint8_t id;
     uint32_t endpoint_count;
@@ -162,7 +195,7 @@ struct tt_Node {
     // offset past the framing headers) is itself 4-aligned - see "Interface serialization
     // (TickLE CDR-4)" in DESIGN.md. tt_Node already has >= 8-byte alignment (it holds uint64_t
     // members); _Alignas keeps that true for these buffers regardless of member reordering.
-    tt_ALIGNAS(4) uint8_t tx_buffer[tt_MAX_BUFFER_LENGTH * 2];
+    tt_ALIGNAS(4) uint8_t tx_buffer[tt_TX_BUFFER_LENGTH];
     uint32_t tx_tail;
     uint32_t tx_size;
     // Set whenever node_update()'s always-broadcast UPDATE announce is sitting batched,
@@ -279,6 +312,19 @@ struct tt_Node {
     // reported as evidence of anything.
     uint64_t rx_via_data_datagrams;
     uint64_t rx_via_well_known_datagrams;
+
+#if tt_FRAG_ENABLED
+    // DATA_FRAG reassembly - struct tt_FragSlot above.
+    struct tt_FragSlot frag_slots[tt_FRAG_REASSEMBLY_SLOTS];
+    uint32_t frag_clock; // counts claims, so the oldest slot can be found without a clock read
+    // Samples put back together and handed on; reassemblies given up to make room for a newer sample (a
+    // fragment lost, or a sender outrunning tt_FRAG_REASSEMBLY_SLOTS); and fragments refused as
+    // malformed or inconsistent with the rest of their sample. The last two are losses, counted so that
+    // they cannot pass for network loss.
+    uint64_t frag_reassembled;
+    uint64_t frag_abandoned;
+    uint64_t frag_dropped;
+#endif
 };
 
 struct tt_Endpoint {
@@ -1806,6 +1852,12 @@ struct tt_Header {
 // A discovery announce too large for one datagram, sent as numbered parts - struct
 // tt_UpdatePartHeader below. Only ever sent when the single UPDATE would not fit.
 #define tt_SUBMESSAGE_TYPE_UPDATE_PART 7
+// A sample too large for one datagram, sent as fragments (DATA_FRAG, rmw_tickle/DATAFRAG_PLAN.md
+// section 6). The first carries the sample's whole DataHeader (struct tt_FragFirstHeader); the rest
+// carry only what identifies the sample (struct tt_FragContHeader), since entity_id is unique within a
+// node and the node is tt_Header.source. Only ever sent when a DATA would not fit.
+#define tt_SUBMESSAGE_TYPE_FRAG_FIRST 8
+#define tt_SUBMESSAGE_TYPE_FRAG_CONT 9
 
 struct tt_SubmessageHeader {
     uint8_t type;     // tt_SUBMESSAGE_TYPE_* above
@@ -1936,6 +1988,28 @@ struct tt_DataHeader {
     // type + name
     // CDR
 } __attribute__((packed));
+
+// Fragments are always alone in their datagram, so neither header below is padded and neither is the
+// fragment itself: tt_SubmessageHeader.length is exact, and the receiver takes the payload length from
+// it. Every fragment but the last is full, so a fragment's position follows from its index and the
+// payload size of a full continuation - see struct tt_FragSlot.
+
+// Fragment 0: the sample's own DataHeader, then the first CDR bytes.
+struct tt_FragFirstHeader {
+    struct tt_DataHeader data;
+    uint8_t frag_count; // 2 .. tt_FRAG_MAX_COUNT
+} __attribute__((packed));
+
+// Fragments 1 .. frag_count - 1.
+struct tt_FragContHeader {
+    uint32_t entity_id; // tt_DataHeader.entity_id of the sample
+    uint32_t seq_no;    // tt_DataHeader.seq_no of the sample
+    uint8_t frag_index; // 1 .. frag_count - 1
+    uint8_t frag_count; // the same in every fragment of a sample
+} __attribute__((packed));
+
+// How much less CDR fragment 0 carries than a full continuation, for its longer header.
+#define tt_FRAG_FIRST_SHORTFALL (sizeof(struct tt_FragFirstHeader) - sizeof(struct tt_FragContHeader))
 
 struct tt_AckNackHeader {
     uint32_t endpoint_id; // target Publisher - same leading-field convention as tt_DataHeader/

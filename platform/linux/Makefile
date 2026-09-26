@@ -404,6 +404,12 @@ lint:
 	     `# worse trade than a few noisy lines. Verified --quiet still reports real findings.` \
 	     | xargs $(CLANG_TIDY) --quiet --warnings-as-errors='*' \
 	         $(patsubst -I%,--extra-arg=-I%,$(CPPFLAGS)) $(LINT_TIDY_ARGS)
+	@# tickle.c once more with fragmentation compiled in (tt_MAX_SAMPLE_LENGTH above the datagram, as
+	@# the p4 benchmark builds it). At the default configuration every line of DATA_FRAG sits inside a
+	@# false #if, so the pass above never parses it - and it was only by running this by hand that its
+	@# first findings were caught (2026-09-26).
+	$(CLANG_TIDY) --quiet --warnings-as-errors='*' $(patsubst -I%,--extra-arg=-I%,$(CPPFLAGS)) \
+	    --extra-arg=-Dtt_MAX_SAMPLE_LENGTH=4096 $(SRC)/tickle.c
 
 include netns.mk
 
