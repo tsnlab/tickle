@@ -29,6 +29,7 @@ CycloneDDS's, and ~240 us of each round trip is outside rmw_tickle's stamps (RMW
     stamped, and the pong-side hypotheses (H1-H3) were refuted for that reason.
   - If it spreads with no segment above ~30 us, no single fix is indicated; report the split as is.
 """
+import hashlib
 import re
 import statistics
 import struct
@@ -68,10 +69,16 @@ def packets(path):
             yield sec * 10**9 + frac * scale, ip[12:16], ip[16:20], ip[ihl + 8:]
 
 
+def first_time(pcap):
+    return next((t for t, _, _, _ in packets(pcap)), None)
+
+
 def ping_keys(pcap, offset_ns):
-    """Finds the ping samples on the ping host: returns ({key: P}, client_ip, server_ip)."""
+    """Finds the ping samples on the ping host: returns ({key: (P, send_ns)}, client_ip). The ping's
+    destination is not the server's address when the rmw broadcasts (rmw_tickle does, before it has
+    unicast peers), so the server is found from the echoes instead (server_ip)."""
     found = {}
-    ends = None
+    client = None
     for t, src, dst, pay in packets(pcap):
         mono = t - offset_ns
         for k in range(0, len(pay) - 7):
@@ -80,9 +87,26 @@ def ping_keys(pcap, offset_ns):
                 key = pay[k:k + 8]
                 if key not in found:
                     found[key] = (t, v)
-                ends = ends or (src, dst)
+                client = client or src
                 break
-    return found, ends
+    return found, client
+
+
+def server_ip(pcap, keys, client):
+    """The source of the first packet that carries a ping's key and is not from the client."""
+    for _, src, _, pay in packets(pcap):
+        if src != client and any(key in pay for key in keys):
+            return src
+    return None
+
+
+def dest_kinds(pcap, keys, src_ip):
+    """How the packets from src_ip that carry a key were addressed: {'broadcast': n, 'unicast': n}."""
+    kinds = {"broadcast": 0, "unicast": 0}
+    for _, src, dst, pay in packets(pcap):
+        if src == src_ip and any(key in pay for key in keys):
+            kinds["broadcast" if dst[3] == 255 else "unicast"] += 1
+    return kinds
 
 
 def first_by_key(pcap, keys, src_ip):
@@ -112,6 +136,12 @@ def main():
                          r"after: client=(-?\d+) server=(-?\d+)", text):
         c0, s0, c1, s1 = (int(x) for x in m.groups()[1:])
         offsets[m.group(1)] = ((c0 + c1) // 2, abs(c1 - c0), abs(s1 - s0))
+    # Freshness (2026-09-26): the first CAPTURE session copied one stale file into every row, and matching
+    # by key could not tell, because REALTIME - MONOTONIC barely moves between runs. So each capture has to
+    # start within seconds of its own run's recorded t0, and no two rows may share a pcap.
+    t0 = {(m.group(1), m.group(2)): int(m.group(3))
+          for m in re.finditer(r"capture stem=(\S+) role=(\S+) t0_ns=(\d+)", text)}
+    seen = {}
     rtts = {}
     # A row is "<rmw> <msg> <qos> rep<N>[ wait=<mode>][ other tags] | <verdict> | ...", and its pcaps' stem
     # is <rmw>_<msg>_<qos>_rep<N>[_<mode>] (rmw_crosshost_rtt.sh WAITS).
@@ -128,11 +158,30 @@ def main():
         if not ping.exists() or not pong.exists():
             print("   VOID: pcap missing")
             continue
-        sent, ends = ping_keys(ping, coff)
+        stale = []
+        for role, pcap in (("ping", ping), ("pong", pong)):
+            digest = hashlib.md5(pcap.read_bytes()).hexdigest()
+            if digest in seen:
+                stale.append(f"{role} pcap identical to {seen[digest]}'s")
+            seen[digest] = stem
+            start, first = t0.get((stem, role)), first_time(pcap)
+            if start is None:
+                stale.append(f"no capture t0 for {role}")
+            elif first is None or not start - 2 * 10**9 <= first <= start + 5 * 10**9:
+                stale.append(f"{role} pcap does not start at this run's t0")
+        if stale:
+            print(f"   VOID: {'; '.join(stale)}")
+            continue
+        sent, cli = ping_keys(ping, coff)
         if not sent:
             print("   VOID: no ping sample found in the ping host's capture")
             continue
-        cli, srv = ends
+        srv = server_ip(ping, sent, cli)
+        if srv is None:
+            print("   VOID: no echo found in the ping host's capture")
+            continue
+        print(f"   ping packets {dest_kinds(ping, sent, cli)}, echo packets {dest_kinds(ping, sent, srv)} "
+              f"(every copy, retransmissions included)")
         back = first_by_key(ping, sent, srv)
         arr = first_by_key(pong, sent, cli)
         dep = first_by_key(pong, sent, srv)

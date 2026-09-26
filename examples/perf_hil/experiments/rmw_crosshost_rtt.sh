@@ -191,10 +191,17 @@ freqs() { echo "$(sh_ "$CLIENT" 'cat /sys/devices/system/cpu/cpufreq/policy0/sca
 # CAP_S covers 1 s lead, the pong's 4 s, discovery and the ping's 10 s, with room to spare.
 CAPTURE=${CAPTURE:-0}
 CAP_S=30
-cap_start() { # $1 tag
-    local h
+cap_start() { # $1 file stem. Each run writes its own file, owned by ci (-Z ci), and removes it once copied.
+    # 2026-09-26: with one shared name and tcpdump's default drop to user tcpdump, ci could neither remove the
+    # file nor, under fs.protected_regular=2, let the next capture reopen it ("Permission denied"). Every run
+    # after the first then copied the same stale file. The start time on each host goes into $OUT so that
+    # rmw_pcap_split.py can refuse a capture that began before its own run.
+    local h role
+    CAP_FILE=/tmp/rmwx_cap_$1_$(date +%s).pcap
     for h in "$CLIENT" "$SERVER"; do
-        sh_ "$h" "rm -f /tmp/rmwx_cap.pcap; sudo -n tcpdump -i eth0 -n -s 256 --time-stamp-precision=nano -G $CAP_S -W 1 -w /tmp/rmwx_cap.pcap udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
+        role=ping; [ "$h" = "$SERVER" ] && role=pong
+        say "  capture stem=$1 role=$role t0_ns=$(sh_ "$h" "date +%s%N")"
+        sh_ "$h" "sudo -n tcpdump -Z ci -i eth0 -n -s 256 --time-stamp-precision=nano -G $CAP_S -W 1 -w $CAP_FILE udp > /tmp/rmwx_tcpdump.log 2>&1 < /dev/null &"
     done
     sleep 1
 }
@@ -204,7 +211,8 @@ cap_collect() { # $1 file stem
     mkdir -p "$OUT.pcaps"
     for h in "$CLIENT" "$SERVER"; do
         role=ping; [ "$h" = "$SERVER" ] && role=pong
-        scp -q -i "$K" -o BatchMode=yes "ci@$h:/tmp/rmwx_cap.pcap" "$OUT.pcaps/${1}_${role}.pcap" 2>/dev/null || say "  (no pcap from $role)"
+        scp -q -i "$K" -o BatchMode=yes "ci@$h:$CAP_FILE" "$OUT.pcaps/${1}_${role}.pcap" 2>/dev/null || say "  (no pcap from $role)"
+        sh_ "$h" "rm -f $CAP_FILE" || true
     done
 }
 clock_offset() { # prints client=<ns> server=<ns>, REALTIME - MONOTONIC on each host
@@ -223,7 +231,7 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
     local off0=""
-    if [ "$CAPTURE" = 1 ]; then cap_start; off0=$(clock_offset); fi
+    if [ "$CAPTURE" = 1 ]; then cap_start "${rmw}_${msg}_${qos}_rep${rep}${WAITSTEM}"; off0=$(clock_offset); fi
     local dumpenv=""
     case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
     pongpid=$(sh_ "$SERVER" "$env; $dumpenv nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
