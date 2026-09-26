@@ -30,6 +30,7 @@
 #define ARG_COUNT 5
 #define ARG_COUNT_JOIN 6
 #define MS_PER_NS 1000000.0
+#define SETTLE_NS (2 * NS_PER_SEC)
 #define DECIMAL 10
 
 static struct tt_Node node;
@@ -44,6 +45,7 @@ struct join_state {
     int64_t last_change_ns;
     uint32_t dips; // times the count fell below expected after reaching it
     int complete;
+    int complete_before_exit; // sampled SETTLE_NS before the run ends, before any peer's goodbye can arrive
 };
 static struct join_state join;
 
@@ -115,16 +117,24 @@ int main(int argc, char** argv) {
         }
     }
     int64_t end = now_ns() + (seconds * NS_PER_SEC);
+    int sampled = 0;
     while (now_ns() < end) {
         (void)tt_Node_poll(&node, POLL_NS);
+        if (!sampled && now_ns() >= end - SETTLE_NS) {
+            tt_Node_lock(&node); // the callback updates join.complete under the node's lock
+            join.complete_before_exit = join.complete;
+            tt_Node_unlock(&node);
+            sampled = 1;
+        }
     }
     (void)printf("RESULT: node=%ld endpoints=%ld seconds=%ld", node_id, endpoints, seconds);
     if (argc == ARG_COUNT_JOIN) {
         // -1: never reached. Times are ms after this process started, before tt_Node_create().
-        (void)printf(" expected=%u reached_ms=%.1f dips=%u last_change_ms=%.1f complete_at_exit=%d", join.expected,
-                     join.reached_ns ? (double)(join.reached_ns - join.start_ns) / MS_PER_NS : -1.0, join.dips,
-                     join.last_change_ns ? (double)(join.last_change_ns - join.start_ns) / MS_PER_NS : -1.0,
-                     join.complete);
+        (void)printf(
+            " expected=%u reached_ms=%.1f dips=%u last_change_ms=%.1f complete_at_exit=%d complete_2s_before_exit=%d",
+            join.expected, join.reached_ns ? (double)(join.reached_ns - join.start_ns) / MS_PER_NS : -1.0, join.dips,
+            join.last_change_ns ? (double)(join.last_change_ns - join.start_ns) / MS_PER_NS : -1.0, join.complete,
+            join.complete_before_exit);
     }
     (void)printf("\n");
     tt_Node_destroy(&node);
