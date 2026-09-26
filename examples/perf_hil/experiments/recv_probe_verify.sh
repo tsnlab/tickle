@@ -32,7 +32,7 @@ kill_srv() { sh_ "$SERVER" "pkill -INT -x server" >/dev/null 2>&1 || true; sleep
 trap kill_srv EXIT
 : >"$OUT"; say() { echo "$*" | tee -a "$OUT"; }
 say "=== receive-probe verification, $(date -Is) ==="
-say "before=$BEFORE   after=$AFTER (blind two-socket probe removed)"
+say "before=$BEFORE   after=$AFTER (${LABEL:-blind two-socket probe removed})"
 
 build() {
     local sha="$1" pids=() bad=0
@@ -47,7 +47,10 @@ TICKLE_CORE_BUILD=release ./build.sh reliable_throughput p1 >/tmp/rpv_build.log 
     done
     for p in "${pids[@]}"; do wait "$p" || bad=1; done
     [ "$bad" = 0 ] || { say "BUILD FAILED - stopping"; exit 1; }
-    local head; head=$(sh_ "$CLIENT" 'git -C ~/tickle rev-parse --short HEAD')
+    # Full SHAs on both sides (2026-09-26): comparing the rig's --short HEAD against a full SHA passed in
+    # by the caller refused a correct build as an identity failure.
+    local head; head=$(sh_ "$CLIENT" "git -C ~/tickle rev-parse HEAD")
+    sha=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse "$sha")
     say "  identity: HEAD=$head (wanted $sha)"
     [ "$head" = "$sha" ] || { say "  IDENTITY FAIL - stopping"; exit 1; }
 }
