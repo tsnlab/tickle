@@ -37,7 +37,9 @@ DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
 : >"$OUT"; say() { echo "$*" | tee -a "$OUT"; }
-say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS ==="
+TRACE=${TRACE:-0}
+if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
+say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE ==="
 
 CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"/></Interfaces></General><Discovery><SPDPInterval>1s</SPDPInterval></Discovery></Domain></CycloneDDS>'
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
@@ -61,8 +63,6 @@ lib_for() {
 # the traces copied to $OUT.traces/. For decomposing where each rmw spends a round trip, not for timing:
 # strace slows every syscall, so its RTTs are never reported as figures. SKIP_BUILD=1 reuses the rig's
 # build only if both Pis are at exactly $SHA and the binaries exist.
-TRACE=${TRACE:-0}
-if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
 if [ "${SKIP_BUILD:-0}" = 1 ]; then
     for h in "$CLIENT" "$SERVER"; do
         at=$(sh_ "$h" "git -C \$HOME/tickle rev-parse HEAD; test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/pong_node && echo bin-ok")
@@ -109,6 +109,36 @@ done
 [ "$bad" = 0 ] || { say "BUILD FAILED - not running"; exit 1; }
 fi
 
+# SPIN_ARMS="off on" (2026-09-26): repeat every repetition with and without a nice-19 spinner on core 0 of
+# both Pis, which holds the one cpufreq policy (cores 0-3) at its maximum while cores 1-3 stay idle
+# between pings - the method of rtt_spinner_arm.sh. Asks whether rmw_tickle's ~0.08 ms deficit to
+# CycloneDDS is DVFS: rmw_tickle's pong runs 4 threads and CycloneDDS's 8, so they may hold the clock
+# differently under the ondemand governor. Pre-registered, before running:
+#   - with the spinner, both Pis must read their maximum scaling_cur_freq, or the "on" arm is VOID;
+#   - gap = median(rmw_tickle) - median(rmw_cyclonedds). gap_on <= gap_off / 2: DVFS is most of it,
+#     a platform property rather than something in rmw_tickle's code. |gap_on - gap_off| <= 0.020 ms:
+#     not DVFS, and the next step is in-process timestamps through rmw_tickle's receive path.
+# Spinners are started with their PIDs captured at launch and stopped by those PIDs.
+SPIN_ARMS=${SPIN_ARMS:-off}
+declare -A SPIN_PID=()
+spin_on() {
+    local h
+    for h in "$CLIENT" "$SERVER"; do
+        SPIN_PID[$h]=$(sh_ "$h" "setsid nohup nice -n 19 taskset -c 0 sh -c 'while :; do :; done' >/dev/null 2>&1 < /dev/null & echo \$!")
+    done
+    sleep 2
+}
+spin_off() {
+    local h
+    for h in "${!SPIN_PID[@]}"; do
+        sh_ "$h" "[ -d /proc/${SPIN_PID[$h]} ] && tr '\\0' ' ' < /proc/${SPIN_PID[$h]}/cmdline | grep -q 'while :; do :; done' && kill ${SPIN_PID[$h]}" >/dev/null 2>&1 || true
+        unset "SPIN_PID[$h]"
+    done
+    sleep 1
+}
+trap spin_off EXIT
+freqs() { echo "$(sh_ "$CLIENT" 'cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq') $(sh_ "$SERVER" 'cat /sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq')"; }
+
 BIN=/home/ci/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong
 one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     local rmw="$1" msg="$2" qos="$3" rep="$4" flag="" env pongpid maps res verdict=ok
@@ -129,13 +159,24 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     case "$maps" in *"$(lib_for "$rmw")"*) ;; *) verdict="VOID(pong loaded: ${maps:-nothing})" ;; esac
     case "$res" in *"framework=$rmw "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
-    say "$rmw $msg $qos rep$rep | $verdict | ${res#RESULT: }"
+    case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
+    say "$rmw $msg $qos rep$rep${ARM_TAG:-} | $verdict | ${res#RESULT: }"
     if [ "$TRACE" = 1 ]; then
         sleep 1; mkdir -p "$OUT.traces"
         scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_trace_$rmw.txt" "$OUT.traces/$rmw.txt" || say "  (trace copy failed for $rmw)"
     fi
 }
 for rep in $(seq 1 "$REPS"); do
+  for spin in $SPIN_ARMS; do
+    if [ "$spin" = on ]; then spin_on; else spin_off; fi
+    ARM_TAG=""
+    if [ "$SPIN_ARMS" != off ]; then
+        f=$(freqs); ARM_TAG=" spin=$spin freq_khz=${f// /,}"
+        if [ "$spin" = on ]; then
+            maxf=$(sh_ "$CLIENT" 'cat /sys/devices/system/cpu/cpufreq/policy0/cpuinfo_max_freq')
+            case "$f" in "$maxf $maxf") ;; *) ARM_TAG="$ARM_TAG VOID-freq" ;; esac
+        fi
+    fi
     for msg in $MSGS; do
         qoses="best_effort reliable"; [ "$TRACE" = 1 ] && qoses=best_effort
         for qos in $qoses; do
@@ -144,5 +185,6 @@ for rep in $(seq 1 "$REPS"); do
             done
         done
     done
+  done
 done
 say ""; say "=== done ==="
