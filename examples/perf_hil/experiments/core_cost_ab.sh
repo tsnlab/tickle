@@ -5,7 +5,8 @@
 # clock reads each makes. PC-only, so it needs no rig lock.
 #
 # Usage: core_cost_ab.sh [-r ROUNDS] [-n SAMPLES] [-c CPU] REF... ; results to OUT (default
-# /tmp/core_cost_ab.txt), one RESULT line per run prefixed with the ref and round.
+# /tmp/core_cost_ab.txt), one RESULT line per run prefixed with the ref and round. BENCH_ARGS passes the
+# bench's own flags to every run: -c (the clients' scheduler-driven send), -w N writers, -D, -e N.
 #
 # Reading it: per ref, the median of send_ns_per_sample and recv_ns_per_sample over the rounds, and the
 # clock reads per sample (exact, not timed). A difference is real when it exceeds the rounds' spread
@@ -61,10 +62,11 @@ for ref in "$@"; do
 done
 
 : >"$OUT"
-echo "core_cost_ab $(date -Is) rounds=$ROUNDS samples=$SAMPLES cpu=$CPU refs=$*" >>"$OUT"
+echo "core_cost_ab $(date -Is) rounds=$ROUNDS samples=$SAMPLES cpu=$CPU bench_args=${BENCH_ARGS:-} refs=$*" >>"$OUT"
 for round in $(seq "$ROUNDS"); do
     for ref in "$@"; do
-        line="$(taskset -c "$CPU" "${BIN[$ref]}" "$SAMPLES" 2>/dev/null | grep '^RESULT' || echo "RESULT: failed")"
+        # shellcheck disable=SC2086 # BENCH_ARGS is a list of the bench's own flags
+        line="$(taskset -c "$CPU" "${BIN[$ref]}" "$SAMPLES" ${BENCH_ARGS:-} 2>/dev/null | grep '^RESULT' || echo "RESULT: failed")"
         echo "ref=$ref round=$round $line" >>"$OUT"
     done
 done

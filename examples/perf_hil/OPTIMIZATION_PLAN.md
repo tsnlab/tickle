@@ -568,3 +568,73 @@ ones. **Disproof:** if c4's memory advantage at depth 1024 comes with any increa
 7. **Optimise, then re-run the affected cells and the unaffected ones as the control**, because a
    change that helps one cell and quietly costs another is the failure mode this document exists to
    avoid.
+
+## 11. Per-datagram CPU in core's receive path (pre-registered 2026-09-27, before code)
+
+**Why now.** WIRE_PLAN 8 found the rig's p1 cells CPU-bound, with per-sample CPU as the measure to beat. Plan asked
+for the p1 receive and send costs broken down by stage (no wire change, so the user's rule does not bar it). The tool
+is `experiments/core_cost_bench.c`: core alone, two or more nodes in one process, receives through `tt_Node_poll()`,
+and the real clock with its calls counted.
+
+**Method.** Two ways, because `perf` is not available on the PC:
+- *Isolation:* each stage called alone in a loop (`-m`). It ranks the stages and bounds them from below.
+- *Brackets:* `rdtsc` at six points on the receive path, in a scratch copy of `tickle.c` (not committed), with the
+  bracket's own cost taken off. It measured ~11.5 ns per point: 165 ns per sample instrumented against 85 ns plain.
+
+**Receive, per datagram, PC, p1, BEST_EFFORT** (brackets, overhead removed):
+
+| stage | ns |
+|---|---:|
+| state lock | ~16 |
+| packet header, including **`tt_get_ns()` for `traffic_last_seen`** (LIVELINESS rule 1) | ~23 |
+| DATA header, timestamp rebuild, manual-assertion check | ~16 |
+| endpoint lookup, RxO check, writer proxy: 1 writer / discovery on / 8 writers + discovery | ~8 / ~11 / ~15 |
+| decode, delivery order, callback | ~11 |
+| unlock | ~2 |
+
+The isolation loops say:
+- A clock read costs ~27 ns on this PC.
+- A state lock pair costs ~13 ns.
+- A poll with nothing to do costs ~66 ns, of which ~15 is `flush_pending_responses()` taking the lock whether or not
+  a response is pending.
+- The RxO check scans the discovery table (16 entries): 1.5 ns without discovery, 3 ns with 1 writer, 8 ns with 8
+  writers and 6 more entries.
+- The writer-proxy search is 1 ns at 1 writer and 5 ns at 8.
+
+**D1 - one clock read per wakeup, not per datagram.**
+- **Change:**
+  - `process_packet()` stamps `traffic_last_seen` (and revives lapsed entities) with `tt_Node.rx_clock_ns`, not a
+    clock read of its own.
+  - That time is refreshed when a wait returns with data, and after every `tt_RX_CLOCK_REFRESH` (16) datagrams of
+    one drain. A stamp is then at most 16 datagrams' processing old, microseconds. Liveliness needs milliseconds
+    (L2's bar is 20 ms).
+  - Outside a poll it reads the clock as today.
+- **Predicted:**
+  - Neutral for a wakeup with one datagram: the read moves, it does not go away. That is the ping-pong and latency
+    cells.
+  - A drain of n datagrams saves n - 1 - n/16 reads. That is the throughput server, whose recvmmsg batch is up to 32.
+  - Bench (one drain of all samples): recv -20 to -27 ns per sample.
+  - On the Pi's throughput servers: the clock read's cost per sample times the batch fill, i.e. most of it.
+- **PASS:**
+  - bench paired A B rounds: recv better beyond 2 x SE, send not WORSE;
+  - unit, tsan and the liveliness tests unchanged;
+  - then Plan's rig ABBA, like `4dc7ad49`.
+
+**D3 - a poll with no response pending takes no lock for it.**
+- **Change:** `flush_pending_responses()` is entered only when an atomic count of queued responses is non-zero.
+  `tt_Server_send_response()` already hands its response over through a slot state.
+- **Predicted:** about -13 ns per `tt_Node_poll()` call. That is per sample where a poll is per sample: every
+  `rmw_wait()`, and the latency cells.
+- **PASS:** as D1, measured with the bench's `-c` client mode and an empty-poll loop, plus the service tests.
+
+**D2 - the RxO verdict and writer proxy remembered per stream.**
+- **Change:** the Subscriber keeps its last (source, entity) -> writer proxy, with the RxO verdict and the
+  discovery generation it was computed at. A sample from the same writer skips the table scan and the proxy search.
+- **Predicted:** 0 to -2 ns with one writer and no discovery; -5 to -10 ns with discovery on (every rmw
+  Subscriber) or 8 writers.
+- **PASS:** as D1, at 1 and 8 writers with and without discovery (`-w`, `-D`, `-e`). Nothing WORSE at 1 writer.
+
+**Not now:** the per-datagram state lock (~16 ns). Holding it across a drain would cut it, but it changes how long a
+publishing thread can wait, which is an rmw latency question. It gets its own entry if D1-D3 land.
+
+**Order:** D1, then D3, then D2, one commit each, each benched against its parent before the next.
