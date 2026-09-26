@@ -421,3 +421,39 @@ Array1k, BEST_EFFORT and RELIABLE, 3 repetitions, the same binaries in both arms
   `spin_some()` path.
 - If the pass fails, or the CPU criterion or the control fails, the feature stays off, and the numbers are
   recorded here.
+
+### 8.5 The pong's kernel receive, split with bpftrace (`763125c9`, 2026-09-27)
+
+`pong_rx_split.bt` v2 on the pong Pi. Block mode, Bench, 2 repetitions, bpftrace off/on, 24 rows, 0 void, 200
+pings per cell. Rows and raw lines are in `results/rmw_bpf3_2026-09-26/`.
+
+**Caveats first:**
+- With bpftrace on, every rmw's RTT rises ~30 us (rmw_tickle 248 → 278, CycloneDDS 270 → 300, FastDDS
+  316 → 358). The probes' cost is common to all three, so the segments compare across rmws, but their
+  absolute sizes are inflated.
+- The receiving thread's own wake was caught in only 4 of 200 bursts. Those fields are not read.
+
+Median us after NAPI handed the frame to the stack, BEST_EFFORT / RELIABLE:
+
+| point | rmw_tickle | CycloneDDS | FastDDS |
+|---|---:|---:|---:|
+| socket data_ready (`rd`) | 17.9 / 15.0 | 12.9 / 15.7 | 12.6 / 15.6 |
+| ppoll returns | 30.0 / 28.6 | - | - |
+| receive syscall returns | 35.5 / 34.4 | **24.9 / 26.4** | 25.6 / 28.4 |
+| executor switched in | 47.4 / 48.9 | 46.2 / 44.1 | 51.2 / 50.6 |
+| reply's send entered | **61.1 / 61.0** | 69.0 / 70.2 | 93.1 / 100.5 |
+
+**Reading:**
+- **The wake itself costs the same in all three.** From data_ready to the woken thread's syscall
+  returning takes ~12 us: ppoll for rmw_tickle, the blocking receive for the vendors.
+- **rmw_tickle's receive lag is the second syscall.** The recvfrom after ppoll adds ~5.5 us. In BEST_EFFORT
+  its enqueue is also ~4 us later, which is not explained yet (socket lookup with two sockets on one port is
+  a candidate). A persistent epoll set would keep two syscalls, so it is not expected to close the gap. The Pi
+  run of `recv_wake_cost.c`'s epoll3 arm tests exactly that.
+- **rmw_tickle still sends the reply first:** 61 us after NAPI, against CycloneDDS's 69-70 and FastDDS's
+  93-101. Its executor-to-send path (take, callback, publish) is the shortest by ~10-30 us. That is where
+  its overall lead comes from.
+- **The two remaining levers, with sizes:**
+  - the handoff from receive to executor, recv return → executor switched in: ~12-14 us. Executor-driven
+    receive removes it; the rig A/B is queued (8.4).
+  - the extra receive syscall, ~5.5 us, which only a blocking receive on the data socket removes.

@@ -1,0 +1,117 @@
+Attaching 17 probes...
+# pong_rx_split v2 tgid 2990661 irq 108
+S irq2napi=6037 enq=16907 rd=17815 wk_rx=0 sw_rx=0 wait=0 rx=32833 rxtid=2990670 wk_ex=0 sw_ex=0 send=298295
+S irq2napi=6296 enq=20334 rd=21352 wk_rx=0 sw_rx=0 wait=0 rx=32519 rxtid=2990670 wk_ex=58444 sw_ex=0 send=133370
+S irq2napi=6630 enq=20018 rd=21018 wk_rx=0 sw_rx=0 wait=0 rx=37703 rxtid=2990670 wk_ex=52351 sw_ex=0 send=122073
+S irq2napi=6352 enq=17000 rd=18111 wk_rx=0 sw_rx=0 wait=0 rx=30797 rxtid=2990670 wk_ex=43185 sw_ex=0 send=99981
+S irq2napi=8204 enq=23352 rd=24408 wk_rx=0 sw_rx=0 wait=0 rx=42556 rxtid=2990670 wk_ex=71204 sw_ex=79426 send=138722
+S irq2napi=7389 enq=20018 rd=21370 wk_rx=0 sw_rx=0 wait=0 rx=35259 rxtid=2990670 wk_ex=63796 sw_ex=0 send=130129
+S irq2napi=6574 enq=18444 rd=19814 wk_rx=0 sw_rx=0 wait=0 rx=31629 rxtid=2990670 wk_ex=0 sw_ex=0 send=108629
+S irq2napi=6296 enq=17945 rd=19148 wk_rx=0 sw_rx=0 wait=0 rx=36611 rxtid=2990670 wk_ex=62000 sw_ex=70556 send=123352
+S irq2napi=6537 enq=18129 rd=19203 wk_rx=0 sw_rx=0 wait=0 rx=32240 rxtid=2990670 wk_ex=0 sw_ex=0 send=109073
+S irq2napi=6204 enq=17315 rd=18259 wk_rx=0 sw_rx=0 wait=0 rx=30796 rxtid=2990670 wk_ex=53870 sw_ex=0 send=111185
+S irq2napi=6222 enq=17796 rd=18944 wk_rx=0 sw_rx=0 wait=0 rx=31444 rxtid=2990670 wk_ex=0 sw_ex=0 send=98240
+S irq2napi=7130 enq=21778 rd=23111 wk_rx=0 sw_rx=0 wait=0 rx=36241 rxtid=2990670 wk_ex=50500 sw_ex=0 send=107481
+S irq2napi=6463 enq=18204 rd=19352 wk_rx=0 sw_rx=0 wait=0 rx=45871 rxtid=2990670 wk_ex=59482 sw_ex=0 send=123833
+S irq2napi=6759 enq=16703 rd=17889 wk_rx=0 sw_rx=0 wait=0 rx=30351 rxtid=2990670 wk_ex=0 sw_ex=0 send=100166
+S irq2napi=6519 enq=16555 rd=17666 wk_rx=0 sw_rx=0 wait=0 rx=29573 rxtid=2990670 wk_ex=45277 sw_ex=0 send=99425
+S irq2napi=6389 enq=15593 rd=16630 wk_rx=0 sw_rx=0 wait=0 rx=29685 rxtid=2990670 wk_ex=0 sw_ex=0 send=100481
+S irq2napi=6870 enq=17351 rd=18796 wk_rx=0 sw_rx=0 wait=0 rx=31481 rxtid=2990670 wk_ex=46462 sw_ex=0 send=104592
+S irq2napi=6834 enq=17833 rd=19018 wk_rx=0 sw_rx=0 wait=0 rx=31703 rxtid=2990670 wk_ex=45814 sw_ex=0 send=123203
+S irq2napi=6352 enq=16333 rd=17352 wk_rx=0 sw_rx=0 wait=0 rx=29000 rxtid=2990670 wk_ex=0 sw_ex=0 send=98944
+S irq2napi=8685 enq=17037 rd=18055 wk_rx=0 sw_rx=0 wait=0 rx=30240 rxtid=2990670 wk_ex=45425 sw_ex=0 send=101610
+S irq2napi=5963 enq=20259 rd=21277 wk_rx=0 sw_rx=0 wait=0 rx=33722 rxtid=2990670 wk_ex=0 sw_ex=0 send=100814
+S irq2napi=6370 enq=15648 rd=16666 wk_rx=0 sw_rx=0 wait=0 rx=28111 rxtid=2990670 wk_ex=40777 sw_ex=0 send=92536
+S irq2napi=6222 enq=16796 rd=17870 wk_rx=0 sw_rx=0 wait=0 rx=29648 rxtid=2990670 wk_ex=0 sw_ex=0 send=103110
+S irq2napi=6000 enq=15241 rd=16223 wk_rx=0 sw_rx=0 wait=0 rx=29315 rxtid=2990670 wk_ex=45278 sw_ex=0 send=99278
+S irq2napi=6222 enq=15870 rd=17000 wk_rx=0 sw_rx=0 wait=0 rx=29722 rxtid=2990670 wk_ex=0 sw_ex=0 send=98481
+S irq2napi=6389 enq=16463 rd=17445 wk_rx=0 sw_rx=0 wait=0 rx=30408 rxtid=2990670 wk_ex=44463 sw_ex=0 send=98759
+S irq2napi=6352 enq=21518 rd=22573 wk_rx=0 sw_rx=0 wait=0 rx=35425 rxtid=2990670 wk_ex=0 sw_ex=0 send=105999
+S irq2napi=6351 enq=15240 rd=16370 wk_rx=0 sw_rx=0 wait=0 rx=40814 rxtid=2990670 wk_ex=55888 sw_ex=64370 send=110888
+S irq2napi=6111 enq=16889 rd=17908 wk_rx=0 sw_rx=0 wait=0 rx=31167 rxtid=2990670 wk_ex=0 sw_ex=0 send=99555
+S irq2napi=6500 enq=17408 rd=18593 wk_rx=0 sw_rx=0 wait=0 rx=30315 rxtid=2990670 wk_ex=43426 sw_ex=0 send=102389
+S irq2napi=6278 enq=15944 rd=16963 wk_rx=0 sw_rx=0 wait=0 rx=28315 rxtid=2990670 wk_ex=43796 sw_ex=0 send=105425
+S irq2napi=6185 enq=16092 rd=17129 wk_rx=0 sw_rx=0 wait=0 rx=29185 rxtid=2990670 wk_ex=0 sw_ex=0 send=102277
+S irq2napi=6518 enq=15648 rd=16685 wk_rx=0 sw_rx=0 wait=0 rx=28462 rxtid=2990670 wk_ex=41536 sw_ex=0 send=95240
+S irq2napi=11407 enq=16760 rd=17852 wk_rx=0 sw_rx=0 wait=0 rx=31037 rxtid=2990670 wk_ex=0 sw_ex=0 send=94944
+S irq2napi=5759 enq=10796 rd=11703 wk_rx=0 sw_rx=0 wait=0 rx=22259 rxtid=2990670 wk_ex=35148 sw_ex=0 send=93851
+S irq2napi=6019 enq=12296 rd=13241 wk_rx=0 sw_rx=0 wait=0 rx=25055 rxtid=2990670 wk_ex=40333 sw_ex=0 send=94814
+S irq2napi=6074 enq=11889 rd=12926 wk_rx=0 sw_rx=0 wait=0 rx=23926 rxtid=2990670 wk_ex=38259 sw_ex=0 send=89722
+S irq2napi=7129 enq=20000 rd=21074 wk_rx=0 sw_rx=0 wait=0 rx=36463 rxtid=2990670 wk_ex=63426 sw_ex=71130 send=127111
+S irq2napi=5686 enq=11315 rd=12185 wk_rx=0 sw_rx=0 wait=0 rx=23722 rxtid=2990670 wk_ex=39333 sw_ex=0 send=99074
+S irq2napi=5463 enq=10574 rd=11407 wk_rx=0 sw_rx=0 wait=0 rx=23648 rxtid=2990670 wk_ex=38222 sw_ex=0 send=90110
+S irq2napi=5648 enq=10297 rd=11148 wk_rx=0 sw_rx=0 wait=0 rx=28722 rxtid=2990670 wk_ex=44130 sw_ex=0 send=95092
+S irq2napi=6204 enq=14426 rd=15352 wk_rx=0 sw_rx=0 wait=0 rx=27129 rxtid=2990670 wk_ex=42426 sw_ex=50833 send=94851
+S irq2napi=5852 enq=11945 rd=13019 wk_rx=0 sw_rx=0 wait=0 rx=25093 rxtid=2990670 wk_ex=40130 sw_ex=0 send=92833
+S irq2napi=5741 enq=10871 rd=11908 wk_rx=0 sw_rx=0 wait=0 rx=23685 rxtid=2990670 wk_ex=37019 sw_ex=0 send=88500
+S irq2napi=5407 enq=10685 rd=11537 wk_rx=0 sw_rx=0 wait=0 rx=23870 rxtid=2990670 wk_ex=37333 sw_ex=0 send=89110
+S irq2napi=5907 enq=11759 rd=12704 wk_rx=0 sw_rx=0 wait=0 rx=24685 rxtid=2990670 wk_ex=38740 sw_ex=0 send=93036
+S irq2napi=5963 enq=12334 rd=13167 wk_rx=0 sw_rx=0 wait=0 rx=23537 rxtid=2990670 wk_ex=38333 sw_ex=46167 send=93500
+S irq2napi=4481 enq=7685 rd=8296 wk_rx=0 sw_rx=0 wait=0 rx=19555 rxtid=2990670 wk_ex=37333 sw_ex=43037 send=82629
+S irq2napi=6055 enq=12537 rd=13537 wk_rx=0 sw_rx=0 wait=0 rx=26426 rxtid=2990670 wk_ex=49074 sw_ex=0 send=104555
+S irq2napi=5722 enq=11260 rd=12185 wk_rx=0 sw_rx=0 wait=0 rx=24222 rxtid=2990670 wk_ex=39000 sw_ex=0 send=91963
+S irq2napi=5648 enq=10611 rd=11463 wk_rx=0 sw_rx=0 wait=0 rx=23000 rxtid=2990670 wk_ex=36426 sw_ex=0 send=88092
+S irq2napi=5574 enq=10482 rd=11445 wk_rx=0 sw_rx=0 wait=0 rx=22611 rxtid=2990670 wk_ex=35556 sw_ex=0 send=86759
+S irq2napi=5389 enq=10333 rd=11278 wk_rx=0 sw_rx=0 wait=0 rx=22963 rxtid=2990670 wk_ex=35592 sw_ex=0 send=87777
+S irq2napi=5703 enq=11315 rd=12204 wk_rx=0 sw_rx=0 wait=0 rx=23963 rxtid=2990670 wk_ex=37259 sw_ex=0 send=90426
+S irq2napi=5648 enq=10481 rd=11333 wk_rx=0 sw_rx=0 wait=0 rx=23963 rxtid=2990670 wk_ex=37592 sw_ex=44444 send=90944
+S irq2napi=5963 enq=13111 rd=14074 wk_rx=0 sw_rx=0 wait=0 rx=26148 rxtid=2990670 wk_ex=42408 sw_ex=0 send=97241
+S irq2napi=7037 enq=15871 rd=17260 wk_rx=0 sw_rx=0 wait=0 rx=30204 rxtid=2990670 wk_ex=45833 sw_ex=53611 send=101055
+S irq2napi=5722 enq=12278 rd=13334 wk_rx=0 sw_rx=0 wait=0 rx=25926 rxtid=2990670 wk_ex=40556 sw_ex=0 send=93981
+S irq2napi=5703 enq=11111 rd=12111 wk_rx=0 sw_rx=0 wait=0 rx=23500 rxtid=2990670 wk_ex=42130 sw_ex=0 send=94278
+S irq2napi=5445 enq=11314 rd=12259 wk_rx=0 sw_rx=0 wait=0 rx=24092 rxtid=2990670 wk_ex=39073 sw_ex=0 send=98332
+S irq2napi=5630 enq=9648 rd=10462 wk_rx=0 sw_rx=0 wait=0 rx=21333 rxtid=2990670 wk_ex=34499 sw_ex=41888 send=89907
+S irq2napi=6277 enq=12259 rd=13240 wk_rx=0 sw_rx=0 wait=0 rx=25314 rxtid=2990670 wk_ex=42777 sw_ex=0 send=96240
+S irq2napi=6037 enq=12112 rd=13019 wk_rx=0 sw_rx=0 wait=0 rx=24611 rxtid=2990670 wk_ex=38852 sw_ex=0 send=91926
+S irq2napi=5648 enq=11537 rd=12407 wk_rx=0 sw_rx=0 wait=0 rx=24592 rxtid=2990670 wk_ex=38481 sw_ex=0 send=91481
+S irq2napi=5778 enq=10592 rd=11629 wk_rx=0 sw_rx=0 wait=0 rx=23296 rxtid=2990670 wk_ex=37870 sw_ex=44814 send=93647
+S irq2napi=5852 enq=12167 rd=13223 wk_rx=0 sw_rx=0 wait=0 rx=25019 rxtid=2990670 wk_ex=39389 sw_ex=0 send=94704
+S irq2napi=5963 enq=14925 rd=15796 wk_rx=0 sw_rx=0 wait=0 rx=27388 rxtid=2990670 wk_ex=41259 sw_ex=0 send=104277
+S irq2napi=6037 enq=15556 rd=16852 wk_rx=0 sw_rx=0 wait=0 rx=33537 rxtid=2990670 wk_ex=53315 sw_ex=61018 send=119888
+S irq2napi=6222 enq=13537 rd=14555 wk_rx=0 sw_rx=0 wait=0 rx=26222 rxtid=2990670 wk_ex=45259 sw_ex=54092 send=105259
+S irq2napi=5685 enq=12093 rd=13093 wk_rx=0 sw_rx=0 wait=0 rx=24870 rxtid=2990670 wk_ex=40481 sw_ex=0 send=93926
+S irq2napi=5833 enq=11537 rd=12389 wk_rx=0 sw_rx=0 wait=0 rx=24741 rxtid=2990670 wk_ex=38630 sw_ex=0 send=92093
+S irq2napi=5741 enq=12056 rd=13037 wk_rx=0 sw_rx=0 wait=0 rx=25260 rxtid=2990670 wk_ex=42685 sw_ex=0 send=101222
+S irq2napi=5982 enq=11574 rd=12389 wk_rx=0 sw_rx=0 wait=0 rx=25500 rxtid=2990670 wk_ex=39648 sw_ex=0 send=91999
+S irq2napi=5722 enq=11019 rd=11889 wk_rx=0 sw_rx=0 wait=0 rx=23537 rxtid=2990670 wk_ex=37463 sw_ex=0 send=90352
+S irq2napi=5889 enq=11222 rd=12148 wk_rx=0 sw_rx=0 wait=0 rx=23833 rxtid=2990670 wk_ex=37703 sw_ex=0 send=91647
+S irq2napi=6000 enq=14000 rd=14852 wk_rx=0 sw_rx=0 wait=0 rx=27129 rxtid=2990670 wk_ex=41926 sw_ex=0 send=100833
+S irq2napi=6037 enq=11537 rd=12389 wk_rx=0 sw_rx=0 wait=0 rx=23260 rxtid=2990670 wk_ex=38852 sw_ex=46315 send=97852
+S irq2napi=5981 enq=11556 rd=12723 wk_rx=0 sw_rx=0 wait=0 rx=24704 rxtid=2990670 wk_ex=38926 sw_ex=0 send=92463
+S irq2napi=5500 enq=11000 rd=11963 wk_rx=0 sw_rx=0 wait=0 rx=23055 rxtid=2990670 wk_ex=38092 sw_ex=0 send=89629
+S irq2napi=5500 enq=10444 rd=11314 wk_rx=0 sw_rx=0 wait=0 rx=22518 rxtid=2990670 wk_ex=35888 sw_ex=0 send=86629
+S irq2napi=5389 enq=10296 rd=11037 wk_rx=0 sw_rx=0 wait=0 rx=21944 rxtid=2990670 wk_ex=35666 sw_ex=0 send=86518
+S irq2napi=5926 enq=12481 rd=13296 wk_rx=0 sw_rx=0 wait=0 rx=24648 rxtid=2990670 wk_ex=37296 sw_ex=0 send=88703
+S irq2napi=5723 enq=10740 rd=11574 wk_rx=0 sw_rx=0 wait=0 rx=24518 rxtid=2990670 wk_ex=37277 sw_ex=0 send=88499
+S irq2napi=5759 enq=10389 rd=11259 wk_rx=0 sw_rx=0 wait=0 rx=23407 rxtid=2990670 wk_ex=36333 sw_ex=0 send=89999
+S irq2napi=5685 enq=9685 rd=10499 wk_rx=0 sw_rx=0 wait=0 rx=21148 rxtid=2990670 wk_ex=35573 sw_ex=43907 send=88147
+S irq2napi=5852 enq=12203 rd=13074 wk_rx=0 sw_rx=0 wait=0 rx=26277 rxtid=2990670 wk_ex=40092 sw_ex=0 send=96814
+S irq2napi=6111 enq=11371 rd=12315 wk_rx=0 sw_rx=0 wait=0 rx=25926 rxtid=2990670 wk_ex=39778 sw_ex=0 send=94574
+S irq2napi=5796 enq=10741 rd=11797 wk_rx=0 sw_rx=0 wait=0 rx=29797 rxtid=2990670 wk_ex=52333 sw_ex=61222 send=108129
+S irq2napi=5778 enq=12371 rd=13223 wk_rx=0 sw_rx=0 wait=0 rx=25704 rxtid=2990670 wk_ex=46982 sw_ex=0 send=101352
+S irq2napi=5778 enq=10963 rd=11888 wk_rx=0 sw_rx=0 wait=0 rx=23388 rxtid=2990670 wk_ex=37740 sw_ex=0 send=88425
+S irq2napi=5500 enq=9778 rd=10592 wk_rx=0 sw_rx=0 wait=0 rx=21166 rxtid=2990670 wk_ex=33463 sw_ex=0 send=86462
+S irq2napi=5352 enq=10611 rd=11388 wk_rx=0 sw_rx=0 wait=0 rx=23185 rxtid=2990670 wk_ex=36666 sw_ex=0 send=88277
+S irq2napi=5648 enq=10425 rd=11240 wk_rx=0 sw_rx=0 wait=0 rx=24018 rxtid=2990670 wk_ex=37185 sw_ex=0 send=88425
+S irq2napi=5833 enq=11296 rd=12296 wk_rx=0 sw_rx=0 wait=0 rx=24111 rxtid=2990670 wk_ex=37018 sw_ex=0 send=90018
+S irq2napi=5759 enq=10148 rd=11148 wk_rx=0 sw_rx=0 wait=0 rx=22611 rxtid=2990670 wk_ex=35815 sw_ex=42703 send=88759
+S irq2napi=5648 enq=11926 rd=12815 wk_rx=0 sw_rx=0 wait=0 rx=26259 rxtid=2990670 wk_ex=39555 sw_ex=0 send=92240
+S irq2napi=6056 enq=11852 rd=12926 wk_rx=0 sw_rx=0 wait=0 rx=24944 rxtid=2990670 wk_ex=38722 sw_ex=0 send=93518
+S irq2napi=6871 enq=20667 rd=22111 wk_rx=24019 sw_rx=0 wait=0 rx=40834 rxtid=2990670 wk_ex=69519 sw_ex=79352 send=166777
+S irq2napi=6074 enq=10963 rd=11815 wk_rx=0 sw_rx=0 wait=0 rx=23722 rxtid=2990670 wk_ex=40982 sw_ex=48148 send=103926
+S irq2napi=5685 enq=12444 rd=13314 wk_rx=0 sw_rx=0 wait=0 rx=24962 rxtid=2990670 wk_ex=39444 sw_ex=0 send=98407
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
