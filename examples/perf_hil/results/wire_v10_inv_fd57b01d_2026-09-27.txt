@@ -1,0 +1,162 @@
+=== wire inventory (WIRE_PLAN W0), 2026-09-27T01:13:47+09:00, core fd57b01dabbfa9b5906f71ad17e2d817efbfc4d1, -d 5, capture cap 200000 packets ===
+reliable_throughput_p1_Q0_N0 | ok | args: -d 5 -Q -N 2048 -B 100 | netem: none | framework=tickle scenario=reliable_throughput role=client sent=1206724 write_fail=0 elapsed_s=5.000 send_mbps=146.738 max_blocking_ms=100.000 keep_all=1 durable=0 reliable_depth=2048 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=8 cpu_main_share=1.00 cpu_migrations=0 retransmitted=0 arena_bytes=196704 keepall_samples=2048 keepall_bound_samples=2048 sample_bytes=76 utime_s=0.754 stime_s=4.248 cpu_s_per_Msample=4.145 cpu_s_per_MB=0.054535 peak_rss_kb=2556 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p1_Q0_N0.pcap: 200000 datagrams, 199605 samples, 27572636 bytes on the wire (138.1 per sample)
+       l2l3l4             8400000 B   30.5%     42.08 B/sample
+       tt_header           800000 B    2.9%      4.01 B/sample
+       sub_header             796 B    0.0%      0.00 B/sample
+       data_header        3193680 B   11.6%     16.00 B/sample
+       data_payload      15169980 B   55.0%     76.00 B/sample
+       hb                    3880 B    0.0%      0.02 B/sample
+       acknack               3880 B    0.0%      0.02 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       candidate W1: -1197630 B = 4.34% of bytes, 6.00 B/sample
+       candidate W2: -798420 B = 2.90% of bytes, 4.00 B/sample
+       candidate W4: -699993 B = 2.54% of bytes, 3.51 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 199803, 'single_sub_datagrams': 199998, 'samples': 199605, 'data_or_first': 199605, 'hb': 194, 'acknack': 194}
+reliable_throughput_p2_Q0_N0 | ok | args: -d 5 -Q -N 405 -B 100 | netem: none | framework=tickle scenario=reliable_throughput role=client sent=1046566 write_fail=0 elapsed_s=5.000 send_mbps=2163.461 max_blocking_ms=100.000 keep_all=1 durable=0 reliable_depth=405 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=0 cpu_main_share=1.00 cpu_migrations=0 retransmitted=0 arena_bytes=532672 keepall_samples=405 keepall_bound_samples=405 sample_bytes=1292 utime_s=0.784 stime_s=4.219 cpu_s_per_Msample=4.780 cpu_s_per_MB=0.003700 peak_rss_kb=2852 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p2_Q0_N0.pcap: 200000 datagrams, 198111 samples, 268371032 bytes on the wire (1354.6 per sample)
+       l2l3l4             8400000 B    3.1%     42.40 B/sample
+       tt_header           800000 B    0.3%      4.04 B/sample
+       sub_header            3784 B    0.0%      0.02 B/sample
+       data_header        3169776 B    1.2%     16.00 B/sample
+       data_payload     255959412 B   95.4%   1292.00 B/sample
+       hb                   18820 B    0.0%      0.09 B/sample
+       acknack              18820 B    0.0%      0.09 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       candidate W1: -1188666 B = 0.44% of bytes, 6.00 B/sample
+       candidate W2: -792444 B = 0.30% of bytes, 4.00 B/sample
+       candidate W4: -699993 B = 0.26% of bytes, 3.53 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 199056, 'single_sub_datagrams': 199998, 'samples': 198111, 'data_or_first': 198111, 'hb': 941, 'acknack': 941}
+reliable_throughput_p3_Q0_N0 | ok | args: -d 5 -Q -N 368 -B 100 | netem: none | framework=tickle scenario=reliable_throughput role=client sent=1143416 write_fail=0 elapsed_s=5.000 send_mbps=2605.159 max_blocking_ms=100.000 keep_all=1 durable=0 reliable_depth=368 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=5 cpu_main_share=1.00 cpu_migrations=0 retransmitted=0 arena_bytes=532836 keepall_samples=368 keepall_bound_samples=368 sample_bytes=1424 utime_s=0.824 stime_s=4.178 cpu_s_per_Msample=4.375 cpu_s_per_MB=0.003072 peak_rss_kb=2852 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p3_Q0_N0.pcap: 200000 datagrams, 198113 samples, 294524520 bytes on the wire (1486.6 per sample)
+       l2l3l4             8400000 B    2.9%     42.40 B/sample
+       tt_header           800000 B    0.3%      4.04 B/sample
+       sub_header            3780 B    0.0%      0.02 B/sample
+       data_header        3169808 B    1.1%     16.00 B/sample
+       data_payload     282112912 B   95.8%   1424.00 B/sample
+       hb                   18800 B    0.0%      0.09 B/sample
+       acknack              18800 B    0.0%      0.09 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       candidate W1: -1188678 B = 0.40% of bytes, 6.00 B/sample
+       candidate W2: -792452 B = 0.27% of bytes, 4.00 B/sample
+       candidate W4: -699993 B = 0.24% of bytes, 3.53 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 199057, 'single_sub_datagrams': 199998, 'samples': 198113, 'data_or_first': 198113, 'hb': 940, 'acknack': 940}
+reliable_throughput_p4_Q0_N0 | ok | args: -d 5 -Q -N 187 -B 100 | netem: none | framework=tickle scenario=reliable_throughput role=client sent=632349 write_fail=0 elapsed_s=5.000 send_mbps=2832.924 max_blocking_ms=100.000 keep_all=1 durable=0 reliable_depth=374 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=10 cpu_main_share=0.64 cpu_migrations=1 retransmitted=0 arena_bytes=534108 keepall_samples=187 keepall_bound_samples=187 sample_bytes=2800 utime_s=0.615 stime_s=4.386 cpu_s_per_Msample=7.908 cpu_s_per_MB=0.002824 peak_rss_kb=2908 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=frag datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p4_Q0_N0.pcap: 200000 datagrams, 99098 samples, 289388679 bytes on the wire (2920.2 per sample)
+       l2l3l4             8400000 B    2.9%     84.76 B/sample
+       tt_header           800000 B    0.3%      8.07 B/sample
+       sub_header            3616 B    0.0%      0.04 B/sample
+       data_header        2675636 B    0.9%     27.00 B/sample
+       data_payload     277473047 B   95.9%   2799.99 B/sample
+       hb                   17980 B    0.0%      0.18 B/sample
+       acknack              17980 B    0.0%      0.18 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       candidate W1: -594588 B = 0.21% of bytes, 6.00 B/sample
+       candidate W2: -396392 B = 0.14% of bytes, 4.00 B/sample
+       candidate W4: -699993 B = 0.24% of bytes, 7.06 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 199098, 'single_sub_datagrams': 199998, 'samples': 99098, 'data_or_first': 99098, 'frag_cont': 99097, 'hb': 899, 'acknack': 899}
+reliable_throughput_p1_Q0_N1 | ok | args: -d 5 -Q -N 2048 -B 100 | netem: loss 5% | framework=tickle scenario=reliable_throughput role=client sent=1016869 write_fail=0 elapsed_s=5.000 send_mbps=123.651 max_blocking_ms=100.000 keep_all=1 durable=0 reliable_depth=2048 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=15 cpu_main_share=0.44 cpu_migrations=5 retransmitted=56639 arena_bytes=196704 keepall_samples=2048 keepall_bound_samples=2048 sample_bytes=76 utime_s=0.732 stime_s=3.556 cpu_s_per_Msample=4.217 cpu_s_per_MB=0.055482 peak_rss_kb=2556 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p1_Q0_N1.pcap: 200000 datagrams, 190461 samples, 27077124 bytes on the wire (142.2 per sample)
+       l2l3l4             8400000 B   31.0%     44.10 B/sample
+       tt_header           800000 B    3.0%      4.20 B/sample
+       sub_header           75764 B    0.3%      0.40 B/sample
+       data_header        3049904 B   11.3%     16.01 B/sample
+       data_payload      14487044 B   53.5%     76.06 B/sample
+       acknack             263992 B    1.0%      1.39 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       retx_data            14536 B    0.1%      0.08 B/sample
+       candidate W1: -1143714 B = 4.22% of bytes, 6.00 B/sample
+       candidate W2: -762476 B = 2.82% of bytes, 4.00 B/sample
+       candidate W4: -699993 B = 2.59% of bytes, 3.68 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 181061, 'single_sub_datagrams': 199998, 'samples': 190461, 'data_or_first': 190619, 'acknack': 9374, 'retx': 158}
+reliable_throughput_p4_Q0_N1 | ok | args: -d 5 -Q -N 187 -B 100 | netem: loss 5% | framework=tickle scenario=reliable_throughput role=client sent=520192 write_fail=0 elapsed_s=5.000 send_mbps=2330.460 max_blocking_ms=100.000 keep_all=1 durable=0 reliable_depth=374 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=6 cpu_main_share=0.36 cpu_migrations=16 retransmitted=57517 arena_bytes=534108 keepall_samples=187 keepall_bound_samples=187 sample_bytes=2800 utime_s=0.521 stime_s=3.835 cpu_s_per_Msample=8.374 cpu_s_per_MB=0.002991 peak_rss_kb=2904 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=frag datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p4_Q0_N1.pcap: 200000 datagrams, 95013 samples, 278773908 bytes on the wire (2934.1 per sample)
+       l2l3l4             8400000 B    3.0%     88.41 B/sample
+       tt_header           800000 B    0.3%      8.42 B/sample
+       sub_header           77060 B    0.0%      0.81 B/sample
+       data_header        2571207 B    0.9%     27.06 B/sample
+       data_payload     266642741 B   95.6%   2806.38 B/sample
+       hb                    2320 B    0.0%      0.02 B/sample
+       acknack             280160 B    0.1%      2.95 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       retx_data           319152 B    0.1%      3.36 B/sample
+       candidate W1: -571386 B = 0.20% of bytes, 6.01 B/sample
+       candidate W2: -380924 B = 0.14% of bytes, 4.01 B/sample
+       candidate W4: -699993 B = 0.25% of bytes, 7.37 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 180737, 'single_sub_datagrams': 199998, 'samples': 95013, 'data_or_first': 95231, 'frag_cont': 95228, 'acknack': 9418, 'hb': 116, 'retx': 218}
+reliable_throughput_p1_Q0_N3 | ok | args: -d 5 -Q -N 2048 -B 100 | netem: delay 1ms reorder 5% 50% | framework=tickle scenario=reliable_throughput role=client sent=1288713 write_fail=0 elapsed_s=5.000 send_mbps=156.708 max_blocking_ms=100.000 keep_all=1 durable=0 reliable_depth=2048 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=0 cpu_main_share=0.88 cpu_migrations=1 retransmitted=4377 arena_bytes=196704 keepall_samples=2048 keepall_bound_samples=2048 sample_bytes=76 utime_s=0.781 stime_s=4.202 cpu_s_per_Msample=3.866 cpu_s_per_MB=0.050869 peak_rss_kb=2564 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p1_Q0_N3.pcap: 200000 datagrams, 197991 samples, 27555980 bytes on the wire (139.2 per sample)
+       l2l3l4             8400000 B   30.5%     42.43 B/sample
+       tt_header           800000 B    2.9%      4.04 B/sample
+       sub_header            6628 B    0.0%      0.03 B/sample
+       data_header        3188640 B   11.6%     16.10 B/sample
+       data_payload      15146040 B   55.0%     76.50 B/sample
+       hb                    7000 B    0.0%      0.04 B/sample
+       acknack               7252 B    0.0%      0.04 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       retx_data           119508 B    0.4%      0.60 B/sample
+       candidate W1: -1195740 B = 4.34% of bytes, 6.04 B/sample
+       candidate W2: -797160 B = 2.89% of bytes, 4.03 B/sample
+       candidate W4: -699993 B = 2.54% of bytes, 3.54 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 198345, 'single_sub_datagrams': 199998, 'samples': 197991, 'data_or_first': 199290, 'hb': 350, 'acknack': 353, 'retx': 1299}
+best_effort_throughput_p1_Q1_N0 | ok | args: -d 5   | netem: none | framework=tickle scenario=best_effort_throughput role=client sent=1260934 elapsed_s=5.000 send_mbps=153.330 sample_bytes=76 utime_s=0.599 stime_s=4.403 cpu_s_per_Msample=3.967 cpu_s_per_MB=0.052192 peak_rss_kb=2308 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/best_effort_throughput_p1_Q1_N0.pcap: 200000 datagrams, 199989 samples, 27599508 bytes on the wire (138.0 per sample)
+       l2l3l4             8400000 B   30.4%     42.00 B/sample
+       tt_header           800000 B    2.9%      4.00 B/sample
+       sub_header              20 B    0.0%      0.00 B/sample
+       data_header        3199824 B   11.6%     16.00 B/sample
+       data_payload      15199164 B   55.1%     76.00 B/sample
+       discovery              500 B    0.0%      0.00 B/sample
+       candidate W1: -1199934 B = 4.35% of bytes, 6.00 B/sample
+       candidate W2: -799956 B = 2.90% of bytes, 4.00 B/sample
+       candidate W4: -699993 B = 2.54% of bytes, 3.50 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 13, 'single_form_datagrams': 199997, 'single_sub_datagrams': 199998, 'samples': 199989, 'data_or_first': 199989}
+reliable_throughput_p1_Q2_N0 | ok | args: -d 5  -K 64 -B 100 | netem: none | framework=tickle scenario=reliable_throughput role=client sent=1268395 write_fail=0 elapsed_s=5.000 send_mbps=154.237 max_blocking_ms=100.000 keep_all=0 durable=0 reliable_depth=64 throttle_lag=0 ack_solicit_us=0 ack_watermark_pct=0 drained=acked drain_cap_s=3.0 peer_acks_end=1 peer_acks_min=1 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_samples=0 cpu_main=8 cpu_main_share=1.00 cpu_migrations=0 retransmitted=0 arena_bytes=6240 keepall_samples=0 keepall_bound_samples=0 sample_bytes=76 utime_s=0.724 stime_s=4.279 cpu_s_per_Msample=3.944 cpu_s_per_MB=0.051894 peak_rss_kb=2324 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_throughput_p1_Q2_N0.pcap: 200000 datagrams, 199993 samples, 27599796 bytes on the wire (138.0 per sample)
+       l2l3l4             8400000 B   30.4%     42.00 B/sample
+       tt_header           800000 B    2.9%      4.00 B/sample
+       sub_header              20 B    0.0%      0.00 B/sample
+       data_header        3199888 B   11.6%     16.00 B/sample
+       data_payload      15199468 B   55.1%     76.00 B/sample
+       discovery              420 B    0.0%      0.00 B/sample
+       candidate W1: -1199958 B = 4.35% of bytes, 6.00 B/sample
+       candidate W2: -799972 B = 2.90% of bytes, 4.00 B/sample
+       candidate W4: -699993 B = 2.54% of bytes, 3.50 B/sample
+       counts: {'datagrams': 200000, 'discovery_sub': 9, 'single_form_datagrams': 199997, 'single_sub_datagrams': 199998, 'samples': 199993, 'data_or_first': 199993}
+reliable_latency_p1_Q0_N0 | ok | args: -i 0.1 -d 10   | netem: none | framework=tickle scenario=reliable_latency sent=100 recv=100 loss_pct=0 rtt_min_ms=0.043 rtt_avg_ms=0.119 rtt_max_ms=0.357 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_mhz_at_rtt_max=-1.0 retransmitted=0 gap_abandoned=0 sample_bytes=76 utime_s=0.002 stime_s=0.009 cpu_s_per_Msample=104.920 cpu_s_per_MB=1.380526 peak_rss_kb=2316 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_latency_p1_Q0_N0.pcap: 235 datagrams, 200 samples, 30466 bytes on the wire (152.3 per sample)
+       l2l3l4                9870 B   32.4%     49.35 B/sample
+       tt_header              940 B    3.1%      4.70 B/sample
+       sub_header              36 B    0.1%      0.18 B/sample
+       data_header           3200 B   10.5%     16.00 B/sample
+       data_payload         15200 B   49.9%     76.00 B/sample
+       discovery             1220 B    4.0%      6.10 B/sample
+       candidate W1: -1200 B = 3.94% of bytes, 6.00 B/sample
+       candidate W2: -800 B = 2.63% of bytes, 4.00 B/sample
+       candidate W4: -816 B = 2.68% of bytes, 4.08 B/sample
+       counts: {'datagrams': 235, 'discovery_sub': 37, 'single_form_datagrams': 228, 'single_sub_datagrams': 233, 'samples': 200, 'data_or_first': 200}
+reliable_latency_p2_Q0_N0 | ok | args: -i 0.1 -d 10   | netem: none | framework=tickle scenario=reliable_latency sent=100 recv=100 loss_pct=0 rtt_min_ms=0.047 rtt_avg_ms=0.119 rtt_max_ms=0.285 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_mhz_at_rtt_max=-1.0 retransmitted=0 gap_abandoned=0 sample_bytes=1292 utime_s=0.002 stime_s=0.010 cpu_s_per_Msample=121.070 cpu_s_per_MB=0.093707 peak_rss_kb=2324 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_latency_p2_Q0_N0.pcap: 235 datagrams, 200 samples, 273666 bytes on the wire (1368.3 per sample)
+       l2l3l4                9870 B    3.6%     49.35 B/sample
+       tt_header              940 B    0.3%      4.70 B/sample
+       sub_header              36 B    0.0%      0.18 B/sample
+       data_header           3200 B    1.2%     16.00 B/sample
+       data_payload        258400 B   94.4%   1292.00 B/sample
+       discovery             1220 B    0.4%      6.10 B/sample
+       candidate W1: -1200 B = 0.44% of bytes, 6.00 B/sample
+       candidate W2: -800 B = 0.29% of bytes, 4.00 B/sample
+       candidate W4: -816 B = 0.30% of bytes, 4.08 B/sample
+       counts: {'datagrams': 235, 'discovery_sub': 37, 'single_form_datagrams': 228, 'single_sub_datagrams': 233, 'samples': 200, 'data_or_first': 200}
+reliable_latency_p1_Q0_N2 | ok | args: -i 0.1 -d 10   | netem: delay 10ms 2ms | framework=tickle scenario=reliable_latency sent=100 recv=100 loss_pct=0 rtt_min_ms=8.155 rtt_avg_ms=10.057 rtt_max_ms=12.189 cpu_mhz_mean=-1.0 cpu_mhz_min=-1.0 cpu_mhz_max=-1.0 cpu_mhz_at_rtt_max=-1.0 retransmitted=0 gap_abandoned=0 sample_bytes=76 utime_s=0.001 stime_s=0.010 cpu_s_per_Msample=107.530 cpu_s_per_MB=1.414868 peak_rss_kb=2312 wire_rx_bytes=0 wire_rx_packets=0 wire_tx_bytes=0 wire_tx_packets=0 wire_bytes_total=0 wire_packets_total=0 wire_bytes_per_sample=0.0 wire_packets_per_sample=0.000 wire_role_packets_per_sample=0.000 iface=eth0 instrument=fail:net core_build=release sample_path=datagram datagram_bytes=1472
+    == /tmp/wire_v10_inv_fd57b01d.txt.pcaps/reliable_latency_p1_Q0_N2.pcap: 235 datagrams, 200 samples, 30466 bytes on the wire (152.3 per sample)
+       l2l3l4                9870 B   32.4%     49.35 B/sample
+       tt_header              940 B    3.1%      4.70 B/sample
+       sub_header              36 B    0.1%      0.18 B/sample
+       data_header           3200 B   10.5%     16.00 B/sample
+       data_payload         15200 B   49.9%     76.00 B/sample
+       discovery             1220 B    4.0%      6.10 B/sample
+       candidate W1: -1200 B = 3.94% of bytes, 6.00 B/sample
+       candidate W2: -800 B = 2.63% of bytes, 4.00 B/sample
+       candidate W4: -816 B = 2.68% of bytes, 4.08 B/sample
+       counts: {'datagrams': 235, 'discovery_sub': 37, 'single_form_datagrams': 228, 'single_sub_datagrams': 233, 'samples': 200, 'data_or_first': 200}
+=== done ===

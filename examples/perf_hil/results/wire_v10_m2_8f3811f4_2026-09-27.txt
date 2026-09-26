@@ -1,0 +1,11 @@
+=== discovery scaling, 2026-09-27T01:16:13+09:00, core 8f3811f4, warm-up 5s, window 30s ===
+N=2 E=0 rep1 | ok | rx_bytes_per_node_s=119 rx_pkts_per_node_s=1 tx_bytes_per_node_s=71 tx_pkts_per_node_s=1
+N=2 E=4 rep1 | ok | rx_bytes_per_node_s=119 rx_pkts_per_node_s=1 tx_bytes_per_node_s=70 tx_pkts_per_node_s=1
+N=2 E=32 rep1 | ok | rx_bytes_per_node_s=122 rx_pkts_per_node_s=1 tx_bytes_per_node_s=71 tx_pkts_per_node_s=1
+N=8 E=0 rep1 | ok | rx_bytes_per_node_s=538 rx_pkts_per_node_s=7 tx_bytes_per_node_s=78 tx_pkts_per_node_s=1
+N=8 E=4 rep1 | ok | rx_bytes_per_node_s=534 rx_pkts_per_node_s=7 tx_bytes_per_node_s=76 tx_pkts_per_node_s=1
+N=8 E=32 rep1 | ok | rx_bytes_per_node_s=537 rx_pkts_per_node_s=7 tx_bytes_per_node_s=78 tx_pkts_per_node_s=1
+N=16 E=0 rep1 | ok | rx_bytes_per_node_s=1100 rx_pkts_per_node_s=15 tx_bytes_per_node_s=88 tx_pkts_per_node_s=1
+N=16 E=4 rep1 | ok | rx_bytes_per_node_s=1099 rx_pkts_per_node_s=15 tx_bytes_per_node_s=83 tx_pkts_per_node_s=1
+N=16 E=32 rep1 | ok | rx_bytes_per_node_s=1101 rx_pkts_per_node_s=15 tx_bytes_per_node_s=89 tx_pkts_per_node_s=1
+=== done ===

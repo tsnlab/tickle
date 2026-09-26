@@ -162,3 +162,26 @@ static asserts). So every framing element in front of the CDR must remain a mult
 - p1: -8 B per sample (W2 4 + W4 4).
 - p2-p4: -8 B on the first fragment and -4 B on each later one.
 - rmw Bench: -12 B per sample (W2 4 + W3 4 + W4 4).
+
+## 7. v10 (`fd57b01d`) against its parent (`8f3811f4`): bytes (2026-09-27)
+
+`wire_inventory.sh` with SHA pinned, the 12 TickLE cells on PC veth, 12 + 12 ok, and the discovery M2 grid, 9 + 9 ok.
+Raw rows are `results/wire_v10_{inv,m2}_*_2026-09-27.txt`. Bytes on the wire per sample:
+
+| cells | parent | v10 | difference | target (6.1) |
+|---|---:|---:|---:|---:|
+| p1 throughput, every QoS | 146.0-146.1 | 138.0-138.1 | **-8.0** | -8 |
+| p2 / p3 throughput | 1,362.7 / 1,494.7 | 1,354.6 / 1,486.6 | **-8.1** | -8 |
+| p4 throughput | 2,932.3 | 2,920.2 | **-12.1** | -12 (-8 on the first fragment, -4 on the second) |
+| p1 / p2 latency | 161.0 / 1,377.0 | 152.3 / 1,368.3 | **-8.7** | -8, plus the smaller summaries |
+| p4 throughput, 5% loss | 2,943.4 | 2,934.1 | -9.3 | -12 |
+| p1 throughput, reorder | 146.6 | 139.2 | -7.4 | -8 |
+
+- **Every target is met within 1 B except the p4 loss cell.** Its framing fell as designed: headers -7.6 and DataHeader
+  -4.0, so -11.6 B. That run's retransmitted payload was 2.2 B per sample higher than the parent's, so random loss
+  masks the difference. The format is not the cause.
+- **Discovery M2 steady state falls 3-6% in every cell**, since the summary lost 4 B to W4. At N = 16, E = 32 it went from
+  1,101 to 1,046 B/s received per node.
+
+The no-regression part, the rig campaign of bundle against parent (native cells, rmw block and poll sweep, and the rmw
+capture), is running and follows in section 8.
