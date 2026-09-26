@@ -132,3 +132,18 @@ summaries (0 of 20 under drift; the old-limit mutant gives 6 of 20).
 **Rule 6 therefore reads:** node-level death = silent for max(`tt_LIVELINESS_SILENCE_NS`, the longest
 lease among its entities), or its goodbye. Under the 1 s sweep, node-level detection moves from 3-4 s to
 3.5-4.5 s. Rule 2's timer removes that sweep artefact, making it 3.5 s after the last sign of life.
+
+## 7. A node's lease is capped, as a DDS participant's is (2026-09-26, Plan's decision overnight)
+
+Dev asked whether rule 3 should be capped: as written, a node stays alive for the longest lease any of its
+entities announced, so a core user announcing 1 h would keep a dead node for an hour. In DDS the
+participant lease governs the participant whatever its writers' leases are, and a writer with a longer
+lease still disappears when its participant expires. TickLE follows that:
+
+node limit = max(`tt_LIVELINESS_SILENCE_NS`, min(longest announced lease, `tt_NODE_MAX_LEASE_NS`)),
+where `tt_NODE_MAX_LEASE_NS` is a `config.h` default of 10 s (CycloneDDS's participant lease; Fast DDS uses
+20 s), which a build can override.
+
+rmw maps `RMW_DURATION_INFINITE` to no lease (Dev, in implementation), so ROS users are unaffected. **L1
+gains a test:** entity lease 30 s, node silent → gone at 10 s plus a tick. The mutant without the cap
+keeps it 30 s.
