@@ -200,3 +200,26 @@ v7's 6 dips all sit at ~40,005 ms, the shutdown, and are excluded as the tool ch
 M2, M3 and M5 now pass. M4 (change propagation, including a dropped broadcast) is covered by Dev's
 unit tests with mutants (test 2 of the summary change: known within 1 s + 5 ms via the pull, exactly one
 request). M6, the rig rmw rows, follows with the next scored session on a v8+ build.
+
+## 9. M6 on the rig: passes (2026-09-26, `ec82de1f`)
+
+`rmw_crosshost_rtt.sh` CAPTURE=1, Bench, block, 1 repetition, 6 rows, 0 void; `results/rmw_m6_2026-09-26.txt`. Non-data
+traffic on the pong host per second (discovery, reliability control, ROS graph), against the v7 capture session:
+
+| | rmw_tickle v7 | rmw_tickle v8 | FastDDS | CycloneDDS |
+|---|---:|---:|---:|---:|
+| BEST_EFFORT bytes/s | ~393 | **223** | 818 | 787 |
+| RELIABLE bytes/s | ~390 | **216** | 1,064 | 1,442 |
+| packets/s | 2.2 | 2.8-3.0 | 4.7-6.7 | 5.2-15.6 |
+
+- Bytes fall 43%. The RTT rows did not move: the v8 scored session is unchanged against v7 in every cell
+  (COMPARISON `V` rows). **M6 passes.**
+- Packets per second rise slightly. Each summary is a datagram of its own, and the 18 s window includes the
+  start-up exchange (summary → request → list). That is stated rather than hidden.
+
+**Found on the way: the peer-registration race is not fully closed.** The same captures show user DATA
+broadcast by the rmw_tickle nodes in the BEST_EFFORT run: one sample on the ping topic's endpoint
+(1216370877) from the ping node, and one on the pong topic's (831582339) from the pong node, both
+Bench-sized (112 B). So a real first sample can still be published before its peer is registered. It is not
+rclcpp's own `/parameter_events` or `/rosout`, which was the hypothesis. It matches the `rx_self_sent_data=1`
+seen in 5 of 24 ping logs. Handed to Dev.
