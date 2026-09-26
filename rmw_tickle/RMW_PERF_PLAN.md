@@ -373,3 +373,25 @@ rmw_tickle's own user-space pieces (sysstamp on, which passes control 1 for rmw_
 2. The ppoll wake: ~6 us against a blocking recvmsg. bpftrace is now installed on both Pis, and its
    split (IRQ → NAPI → UDP enqueue → socket wake → sched_waking → switch-in → syscall return) is the
    next measurement.
+
+### 8.3 The poll-mode sleep sweep (`099374d2`, 2026-09-26)
+
+`POLL_SLEEPS="0 50 100 200"`, Bench and Array1k, BEST_EFFORT and RELIABLE, 3 repetitions: 144 rows,
+0 void. Every row's `LOOP:` line confirmed its sleep. `results/rmw_pollsweep_2026-09-26.txt`. Median
+RTT in ms, rmw_tickle / FastDDS / CycloneDDS:
+
+| sleep | Bench BE | Bench REL | Array1k BE | Array1k REL |
+|---|---|---|---|---|
+| 0 (busy) | **0.242** / 0.317 / 0.270 | **0.245** / 0.328 / 0.270 | **0.269** / 0.339 / 0.292 | **0.268** / 0.355 / 0.286 |
+| 50 us | **0.367** / 0.445 / 0.399 | **0.382** / 0.507 / 0.390 | **0.462** / 0.535 / 0.486 | 0.463 / 0.538 / **0.416** |
+| 100 us | 0.505 / 0.471 / **0.431** | 0.507 / 0.490 / **0.436** | 0.516 / 0.503 / **0.450** | 0.510 / 0.528 / **0.442** |
+| 200 us | **0.546** / 0.651 / 0.617 | **0.548** / 0.668 / 0.633 | **0.552** / 0.657 / 0.621 | **0.550** / 0.668 / 0.634 |
+
+- **rmw_tickle has the lowest RTT in 11 of 16 cells**, CycloneDDS in 5: all of 100 us, and Array1k
+  RELIABLE at 50 us.
+- At busy polling (0) the cheapest `spin_some()` wins outright. At 200 us every rmw needs two iterations
+  (2.00-2.03), and rmw_tickle's shorter cycle then wins.
+- 100 us is the one sleep where rmw_tickle's reply is caught an iteration later (3.02 against 2.01). At
+  50 us the counts are closer: 3.15-4.00 against 2.14-3.01.
+- Check on a disturbance: at 21:24 a one-second `bpftrace -l` ran on the pong Pi mid-sweep (rep 1, Bench
+  RELIABLE, sleeps 0-50). Those rows agree with reps 2 and 3 within their spread.
