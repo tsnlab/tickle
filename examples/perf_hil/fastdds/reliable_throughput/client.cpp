@@ -38,9 +38,9 @@ using namespace eprosima::fastdds::dds;
 namespace {
 
     constexpr double default_duration_s = 10.0;
-    constexpr double default_drain_s = 3.0; // cap on the teardown wait-for-acknowledgements below
+    constexpr double default_drain_s = 3.0;           // cap on the teardown wait-for-acknowledgements below
     constexpr int32_t default_keepall_samples = 4000; // resource_limits - see the QoS comment in main(), and -N
-    constexpr time_t discovery_wait_s = 2;  // see the latency scenarios' own identical comment
+    constexpr time_t discovery_wait_s = 2;            // see the latency scenarios' own identical comment
     constexpr double ms_per_s = 1000.0;
     constexpr uint64_t cpu_place_period_ns = 100ULL * 1000ULL * 1000ULL; // 100ms
 

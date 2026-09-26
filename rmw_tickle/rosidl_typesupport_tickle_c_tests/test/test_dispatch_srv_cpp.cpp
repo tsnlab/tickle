@@ -35,8 +35,8 @@ int main() {
     // The exact handle a real rclcpp::Client<SimpleService>()/Service<SimpleService>() call
     // resolves internally, before ever reaching rmw_create_client()/rmw_create_service() - see
     // rosidl_typesupport_cpp/service_type_support.hpp's own declaration.
-    const rosidl_service_type_support_t* top =
-        rosidl_typesupport_cpp::get_service_type_support_handle<rosidl_typesupport_tickle_c_tests::srv::SimpleService>();
+    const rosidl_service_type_support_t* top = rosidl_typesupport_cpp::get_service_type_support_handle<
+        rosidl_typesupport_tickle_c_tests::srv::SimpleService>();
     assert(top != nullptr);
     assert(strcmp(top->typesupport_identifier, "rosidl_typesupport_cpp") == 0);
 
@@ -56,8 +56,7 @@ int main() {
 
     // .data here is rosidl_typesupport_tickle_c's own real service callbacks struct (borrowed
     // directly, not a second copy) - see resource/srv__type_support.cpp.in's own doc comment.
-    const auto* service_callbacks =
-        static_cast<const rosidl_typesupport_tickle_c_service_callbacks_t*>(ours->data);
+    const auto* service_callbacks = static_cast<const rosidl_typesupport_tickle_c_service_callbacks_t*>(ours->data);
     assert(service_callbacks != nullptr);
     assert(strcmp(service_callbacks->ros_type_name, "rosidl_typesupport_tickle_c_tests/srv/SimpleService") == 0);
 

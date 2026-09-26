@@ -277,6 +277,10 @@ sanitize:
 # `make -C platform/freertos lint`, see CONTRIBUTING.md - and clang-tidy cannot parse them without
 # that target's own flags. third_party/ isn't ours.
 LINT_EXCLUDE_RE = ^(third_party|platform|examples/freertos)/|hal_freertos\.
+# Tracked C++ sources (.cpp/.hpp/.cc) get the clang-format half of lint only (2026-09-26): CI's
+# cpp-linter formats every changed .cpp too, and a FastDDS harness edit went red there after passing
+# here, because lint listed .c/.h alone. clang-tidy stays C-only - the C++ files need vendor headers
+# (FastDDS, rclcpp) that this Makefile has no include paths for.
 
 # clang-tidy additionally skips two trees that clang-format still covers. Neither compiles without
 # include paths this Makefile cannot describe, so clang-tidy stops at 'file not found' before
@@ -407,6 +411,9 @@ lint:
 	 done; \
 	 if [ -z "$$existing" ]; then echo "lint: every tracked source is missing from the tree" >&2; exit 1; fi; \
 	 printf '%s\n' $$existing | xargs $(CLANG_FORMAT) --dry-run --Werror; \
+	 cxx=$$(git -C $(REPO_ROOT) ls-files '*.cpp' '*.hpp' '*.cc' | grep -Ev '$(LINT_EXCLUDE_RE)' || true); \
+	 for f in $$cxx; do [ -f "$(REPO_ROOT)/$$f" ] && printf '%s\n' "$(REPO_ROOT)/$$f"; done | \
+	     xargs --no-run-if-empty $(CLANG_FORMAT) --dry-run --Werror; \
 	 printf '%s\n' $$existing | grep -Ev '$(REPO_ROOT)/($(LINT_TIDY_EXCLUDE_PATHS))' \
 	     `# clang-tidy prints "Error while trying to load a compilation database" here and carries` \
 	     `# on: there is no compile_commands.json for the core library, so it falls back to the` \
