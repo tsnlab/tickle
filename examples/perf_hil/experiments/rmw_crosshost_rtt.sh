@@ -37,6 +37,30 @@ DOMAIN=${DOMAIN:-73}
 OUT=${OUT:-/tmp/rmw_crosshost_rtt_$(date +%Y%m%d-%H%M%S).txt}
 sh_() { ssh -i "$K" -o BatchMode=yes -o ConnectTimeout=8 "ci@$1" "${@:2}"; }
 : >"$OUT"; say() { echo "$*" | tee -a "$OUT"; }
+# TICKLE_VARIANTS (2026-09-26, rmw_tickle/RMW_PERF_PLAN.md H1-H3): extra rmw_tickle builds measured in the same
+# session, interleaved with the other rmw implementations, e.g. "default trace trace_rxb8". Each non-default
+# variant is built into ~/rmw_variants/<name>/ - outside ~/tickle, where `git clean` cannot reach it - and
+# overlays only librmw_tickle.so; the typesupport and ping/pong are the default build's. Every rmw_tickle pong
+# writes RMW_TICKLE_TRACE_FILE at shutdown: the node lock counters in any build (H1), the latency stamps in
+# a trace build (H2), copied to $OUT.dumps/.
+TICKLE_VARIANTS=${TICKLE_VARIANTS:-}
+variant_args() {
+    case "$1" in
+        trace) echo "-DRMW_TICKLE_TRACE=ON" ;;
+        trace_rxb8) echo "-DRMW_TICKLE_TRACE=ON -DRMW_TICKLE_RX_BATCH=8" ;;
+        rxb8) echo "-DRMW_TICKLE_RX_BATCH=8" ;;
+        *) echo "" ;;
+    esac
+}
+VBUILD=""
+for v in $TICKLE_VARIANTS; do
+    [ "$v" = default ] && continue
+    VBUILD="$VBUILD
+colcon build --base-paths \$HOME/tickle --build-base \$HOME/rmw_variants/$v/build --install-base \$HOME/rmw_variants/$v/install \
+  --packages-select rmw_tickle --cmake-args -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release $(variant_args "$v") > /tmp/rmwx_build_$v.log 2>&1 \
+  || { echo \"VARIANT $v BUILD FAILED on \$(hostname)\"; tail -20 /tmp/rmwx_build_$v.log; exit 1; }
+test -f \$HOME/rmw_variants/$v/install/rmw_tickle/lib/librmw_tickle.so"
+done
 TRACE=${TRACE:-0}
 if [ "$TRACE" = 1 ]; then REPS=1; MSGS=bench; fi
 say "=== rmw cross-host RTT, $(date -Is), SHA $SHA, $REPS reps, msgs: $MSGS, spin arms: ${SPIN_ARMS:-off}, trace: $TRACE ==="
@@ -45,13 +69,23 @@ CDDS_URI='<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="eth0"
 FDDS_PROFILE=/home/ci/tickle/examples/perf_hil/fastdds/fastdds_eth0_only.xml
 ENV_BASE="set +u; source /opt/ros/jazzy/setup.bash; [ -f \$HOME/rmw_perf_ws/install/setup.bash ] && source \$HOME/rmw_perf_ws/install/setup.bash; source \$HOME/tickle/install/setup.bash; set -u; export ROS_DOMAIN_ID=$DOMAIN"
 env_for() {
-    case "$1" in
+    local base="${1%@*}" v="default"
+    case "$1" in *@*) v="${1#*@}" ;; esac
+    if [ "$base" = rmw_tickle ] && [ "$v" != default ]; then
+        echo "$(env_for rmw_tickle); set +u; source \$HOME/rmw_variants/$v/install/setup.bash; set -u"
+        return
+    fi
+    case "$base" in
         rmw_tickle) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_tickle TICKLE_BROADCAST_ADDR=192.168.10.255" ;;
         rmw_fastrtps_cpp) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_fastrtps_cpp FASTRTPS_DEFAULT_PROFILES_FILE=$FDDS_PROFILE" ;;
         rmw_cyclonedds_cpp) echo "$ENV_BASE; export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CYCLONEDDS_URI='$CDDS_URI'" ;;
     esac
 }
 lib_for() {
+    case "$1" in
+        rmw_tickle@default) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so"; return ;;
+        rmw_tickle@*) echo "/home/ci/rmw_variants/${1#*@}/install/rmw_tickle/lib/librmw_tickle.so"; return ;;
+    esac
     case "$1" in
         rmw_tickle) echo "/home/ci/tickle/install/rmw_tickle/lib/librmw_tickle.so" ;;
         rmw_fastrtps_cpp) echo "/librmw_fastrtps_cpp.so" ;;
@@ -99,6 +133,8 @@ colcon build --packages-select rmw_perf_pingpong --cmake-args -DCMAKE_BUILD_TYPE
 test -f \$HOME/tickle/install/rmw_tickle/lib/librmw_tickle.so
 test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/ping_node
 test -x \$HOME/tickle/install/rmw_perf_pingpong/lib/rmw_perf_pingpong/pong_node
+rm -rf \$HOME/rmw_variants
+$VBUILD
 echo \"built on \$(hostname) at \$(git rev-parse --short HEAD)\"" 2>&1 | tee -a "$OUT" &
     pids+=($!)
 done
@@ -146,7 +182,9 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     env=$(env_for "$rmw")
     local pre=""
     [ "$TRACE" = 1 ] && pre="strace -f -tt -T -o /tmp/rmwx_trace_$rmw.txt"
-    pongpid=$(sh_ "$SERVER" "$env; nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
+    local dumpenv=""
+    case "$rmw" in rmw_tickle*) dumpenv="export RMW_TICKLE_TRACE_FILE=/tmp/rmwx_dump.txt; rm -f /tmp/rmwx_dump.txt;" ;; esac
+    pongpid=$(sh_ "$SERVER" "$env; $dumpenv nohup taskset -c 1-3 $pre $BIN/pong_node $flag -m $msg > /tmp/rmwx_pong.log 2>&1 < /dev/null & echo \$!")
     sleep 4
     if [ "$TRACE" = 1 ]; then
         # $! is strace; the pong is its child, found by parentage and verified by /proc/PID/exe, not by name
@@ -165,8 +203,13 @@ one() { # $1 rmw, $2 msg, $3 qos (best_effort|reliable), $4 rep
     res="$res $pongcpu"
     sh_ "$SERVER" "[ -d /proc/$pongpid ] && [ \"\$(readlink /proc/$pongpid/exe)\" = $BIN/pong_node ] && kill -INT $pongpid" >/dev/null 2>&1 || true
     sleep 1
+    case "$rmw" in rmw_tickle*)
+        sleep 1; mkdir -p "$OUT.dumps"
+        scp -q -i "$K" -o BatchMode=yes "ci@$SERVER:/tmp/rmwx_dump.txt" "$OUT.dumps/${rmw}_${msg}_${qos}_rep${rep}.txt" 2>/dev/null \
+            || say "  (no dump from $rmw rep$rep)" ;;
+    esac
     case "$maps" in *"$(lib_for "$rmw")"*) ;; *) verdict="VOID(pong loaded: ${maps:-nothing})" ;; esac
-    case "$res" in *"framework=$rmw "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
+    case "$res" in *"framework=${rmw%@*} "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(no RESULT for $rmw)" ;; esac
     case "$res" in *"loss_pct=0 "*) ;; *) [ "$verdict" = ok ] && verdict="VOID(loss)" ;; esac
     case "${ARM_TAG:-}" in *VOID-freq*) [ "$verdict" = ok ] && verdict="VOID(spinner did not lift the clock)" ;; esac
     say "$rmw $msg $qos rep$rep${ARM_TAG:-} | $verdict | ${res#RESULT: }"
@@ -189,7 +232,12 @@ for rep in $(seq 1 "$REPS"); do
     for msg in $MSGS; do
         qoses="best_effort reliable"; [ "$TRACE" = 1 ] && qoses=best_effort
         for qos in $qoses; do
-            for rmw in rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp; do
+            RMWS="rmw_tickle rmw_fastrtps_cpp rmw_cyclonedds_cpp"
+            if [ -n "$TICKLE_VARIANTS" ]; then
+                RMWS=""; for v in $TICKLE_VARIANTS; do RMWS="$RMWS rmw_tickle@$v"; done
+                RMWS="$RMWS rmw_fastrtps_cpp rmw_cyclonedds_cpp"
+            fi
+            for rmw in $RMWS; do
                 one "$rmw" "$msg" "$qos" "$rep"
             done
         done

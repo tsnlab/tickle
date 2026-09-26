@@ -78,3 +78,27 @@ syscall, so none of its times are figures. What it shows is the shape of the pat
 
 The instrumentation for H1/H2 is in `rmw_tickle` and core, so it is Dev's to build. The measurement is
 Plan's, with the rows above as its baseline and with rows re-run on each change.
+
+## 5. The H1-H3 session, pre-registered before it runs
+
+Dev's instrumentation (`67829a5a`): `-DRMW_TICKLE_TRACE=ON` builds eight latency stamps into the receive-to-reply
+path, and the node lock counters are split into poll-thread and other-thread waits in every build. The pong
+writes both at shutdown when `RMW_TICKLE_TRACE_FILE` is set. `rmw_crosshost_rtt.sh TICKLE_VARIANTS="default trace
+trace_rxb8"` measures three rmw_tickle builds in one session, interleaved with CycloneDDS and FastDDS: default,
+trace, and trace with `tt_RX_BATCH=8`. Bench, both QoS, 3 repetitions. Each variant pong's `/proc/PID/maps` must
+show that variant's `librmw_tickle.so`, or the row is VOID.
+
+How each reading will be taken:
+- **The stamps' own cost:** trace against default RTT. Under 10 us is expected. More than that means every
+  H2 segment is inflated by it, and has to be read with it subtracted.
+- **H1 (the executor waits on the poll thread's lock):** `contended - poller_contended` and its `wait_ns`,
+  per round trip. **Confirmed** at about one contended acquisition per round trip with a wait that is a
+  real share of ~40 us. **Refuted** at about zero. On x86 veth Dev measured 0 of 1,673, so the rig has to
+  show it or it is gone.
+- **H2 (where the time goes):** segment medians from `rmw_trace_segments.py` on the rig. On x86 veth the
+  largest was signaled → exec_wake, the executor's condvar wake, at 17 us of 50. The question is which
+  segment carries the rig's extra ~40 us per direction against CycloneDDS. CycloneDDS cannot be stamped
+  the same way, so the reading is by elimination: a segment that is large and has no counterpart in
+  CycloneDDS's path (section 3) is the candidate.
+- **H3 (the extra receive per drain):** trace_rxb8 against trace RTT. A drop of more than 10 us means it
+  matters. Within 10 us means it does not.
