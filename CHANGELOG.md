@@ -10,6 +10,10 @@ number, `tt_VERSION`, which moves independently.
 
 ### Added
 
+- **A received datagram reads no clock** (OPTIMIZATION_PLAN.md 11, D1): a peer's last sign of life
+  (`traffic_last_seen`) and a MANUAL writer's assertion are stamped with the poll's reading of the clock, taken
+  when a wait returns and every `tt_RX_CLOCK_REFRESH` (16) datagrams of a drain, instead of a read per
+  datagram - -24 ns of an 83 ns received sample on the PC.
 - **A received sample reads no clock** (WIRE_PLAN.md 8.1a): the tt_VERSION 10 timestamp is rebuilt against the
   time the running `tt_Node_poll()` already read (`tt_Node.rx_clock_ns`), not a clock read per sample - which
   had cost v10's receivers 19-70 ns of user time per sample on the Pi.

@@ -291,11 +291,12 @@ struct tt_Node {
     tt_lock_t state_lock;    // NOLINT(misc-include-cleaner) - from the platform header hal.h selects, like hal
     uintptr_t state_owner;   // tt_thread_self() of the holder, 0 when free; accessed through __atomic builtins
     uintptr_t poller_thread; // tt_thread_self() of the thread inside tt_Node_poll(), 0 when none; __atomic
-    // The time the running tt_Node_poll() last read (tt_get_ns()), 0 outside one: what a received DATA's 32-bit
-    // timestamp is rebuilt against (timestamp_from_wire()), so receiving a sample reads no clock of its own.
-    // Any time within minutes of now will do - the rebuild's window is +-35.8 min - and it is refreshed after
-    // every wait. Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a division per
-    // poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
+    // The time the running tt_Node_poll() last read (tt_get_ns()), 0 outside one: the receive path's "now" - a
+    // received DATA's 32-bit timestamp is rebuilt against it (timestamp_from_wire()), a peer's last sign of
+    // life is stamped with it (traffic_last_seen) - so receiving a datagram reads no clock of its own. Read
+    // again when a wait returns with data and every tt_RX_CLOCK_REFRESH datagrams of a drain
+    // (OPTIMIZATION_PLAN.md 11, D1). Raw nanoseconds, beside poller_thread: the poll writes that line anyway, and a
+    // division per poll cost a sender polling once a sample ~3 ns (WIRE_PLAN.md 8). Only the poller touches it.
     uint64_t rx_clock_ns;
     uint32_t state_depth; // how many times the owner has taken it; only the owner reads or writes it
     struct tt_LockStats state_lock_stats;

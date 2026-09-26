@@ -2749,8 +2749,14 @@ static uint32_t timestamp_to_wire(uint64_t time_ns) {
 // within half the 32-bit range (+-35.8 min) of it either way. 0 if that would fall before the clock's epoch.
 // The receiver's clock is the one the running poll already read (tt_Node.rx_clock_ns): a clock read per
 // received sample cost the v10 campaign 19-70 ns of user time per sample on the Pi (WIRE_PLAN.md 8).
+// The receive path's "now": the running poll's reading (tt_Node.rx_clock_ns), which the poll refreshes when
+// a wait returns and every tt_RX_CLOCK_REFRESH datagrams of a drain, or the clock itself outside a poll.
+static uint64_t rx_now(const struct tt_Node* node) {
+    return node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns();
+}
+
 static uint64_t timestamp_from_wire(const struct tt_Node* node, uint32_t sent_us) {
-    int64_t now_us = (int64_t)((node->rx_clock_ns != 0 ? node->rx_clock_ns : tt_get_ns()) / tt_MICROSECOND);
+    int64_t now_us = (int64_t)(rx_now(node) / tt_MICROSECOND);
     int64_t rebuilt_us = now_us + (int32_t)(sent_us - (uint32_t)now_us);
     return rebuilt_us < 0 ? 0 : (uint64_t)rebuilt_us * tt_MICROSECOND;
 }
@@ -5811,7 +5817,7 @@ static void note_manual_assertion(struct tt_Node* node, uint8_t source, uint32_t
     if ((node->liveliness_flags[source] & tt_LIVELINESS_SOURCE_MANUAL) == 0 || node->discovery == NULL) {
         return;
     }
-    uint64_t now = tt_get_ns();
+    uint64_t now = rx_now(node);
     struct tt_DiscoveredEntity* entities = node->discovery->entities;
     bool revived = false;
     for (int i = 0; i < tt_MAX_DISCOVERED_ENTITIES; i++) {
@@ -8885,7 +8891,7 @@ static bool process_packet(struct tt_Node* node, uint8_t* buffer, uint32_t head,
     // transmitting. Keeping the schedule on the announce clock is what stops detection sliding
     // later, which using traffic as the single clock did measure at about +290ms.
     if (!self_sent) {
-        uint64_t now = tt_get_ns();
+        uint64_t now = rx_now(node); // the poll's reading, not a clock read per datagram (D1)
         node->traffic_last_seen[header->source] = now;
         if ((node->liveliness_flags[header->source] & tt_LIVELINESS_SOURCE_LAPSED) != 0) {
             revive_lapsed_entities(node, header->source, now);
@@ -8954,12 +8960,17 @@ static tt_ret_t drain_rx(struct tt_Node* node, tt_ret_t first_result) {
         return first_result;
     }
 
+    uint32_t since_clock = 1; // the first datagram was stamped with the reading its caller took
     while (true) {
         uint32_t ip = 0;
         uint16_t port = 0;
         int32_t len = tt_try_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port);
         if (len < 0) {
             break; // -1 nothing waiting, -2 I/O error - either way, done draining
+        }
+        if (++since_clock > tt_RX_CLOCK_REFRESH) {
+            node->rx_clock_ns = tt_get_ns(); // a long drain keeps its stamps within microseconds (D1)
+            since_clock = 1;
         }
 
         tt_ret_t result = process_datagram(node, len, ip, port);
@@ -9095,6 +9106,9 @@ static bool poll_wait_io(struct tt_Node* node, bool has_next, uint64_t next, uin
     int32_t len = tt_receive(node, node->rx_buffer, tt_MAX_BUFFER_LENGTH, &ip, &port, rest);
 
     wait_until_store(node, 0); // not waiting: an insert now is seen by the loop
+    if (len >= 0) {
+        node->rx_clock_ns = tt_get_ns(); // the wait may have been long: what arrived is stamped from here
+    }
 
     // A wait that ended with nothing received BEFORE the entry it was waiting for fell due was cut short
     // by a signal (the HALs report EINTR as a timeout). Hand control back rather than wait again: under

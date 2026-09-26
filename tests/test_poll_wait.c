@@ -240,6 +240,58 @@ static void test_flush_arms_once_and_does_not_tick_when_idle(void) {
     EXPECT_EQ_INT(0, node.scheduler_tail); // and nothing re-armed with the buffer empty
 }
 
+// OPTIMIZATION_PLAN.md 11, D1: a received datagram is stamped (traffic_last_seen, a peer's last sign of life)
+// with the poll's reading of the clock, not a read of its own. Taken when the wait returns, so a long wait
+// does not make the stamp old, and again every tt_RX_CLOCK_REFRESH datagrams of a drain.
+#define STAMP_SOURCE 2
+static int32_t write_datagram_from(uint8_t* buffer, uint8_t source) {
+    struct tt_Header* header = (struct tt_Header*)buffer;
+    header->magic_value = NATIVE_MAGIC_VALUE;
+    header->version = tt_VERSION;
+    header->source = source;
+    struct tt_SubmessageHeader* submessage = (struct tt_SubmessageHeader*)(buffer + sizeof(*header));
+    submessage->type = tt_SUBMESSAGE_TYPE_DATA;
+    submessage->receiver = tt_SUBMESSAGE_ID_ALL;
+    submessage->length = (uint16_t)(sizeof(*submessage) + sizeof(struct tt_DataHeader));
+    struct tt_DataHeader* data = (struct tt_DataHeader*)(buffer + sizeof(*header) + sizeof(*submessage));
+    memset(data, 0, sizeof(*data));
+    data->endpoint_id = 0x1234; // nobody here subscribes: stamped, then dropped
+    return (int32_t)(sizeof(*header) + sizeof(*submessage) + sizeof(*data));
+}
+
+static void test_a_datagram_after_a_long_wait_is_stamped_when_it_arrived(void) {
+    struct tt_Node node;
+    setup(&node);
+    node.id = 1;
+    test_mock_now = tt_SECOND;
+    test_mock_receive_return = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
+    test_mock_receive_data_advance_ns = 500 * tt_MILLISECOND; // it arrives half a second into the wait
+
+    (void)tt_Node_poll(&node, -1);
+
+    EXPECT_EQ_U64(tt_SECOND + (500 * tt_MILLISECOND), node.traffic_last_seen[STAMP_SOURCE]);
+    EXPECT_EQ_U64(0, node.rx_clock_ns); // and outside a poll the clock is read again
+}
+
+static void test_a_long_drain_keeps_its_stamps_fresh(void) {
+    struct tt_Node node;
+    setup(&node);
+    node.id = 1;
+    test_mock_now = tt_SECOND;
+    int32_t len = write_datagram_from(node.rx_buffer, STAMP_SOURCE);
+    test_mock_receive_return = len;
+    test_mock_try_receive_remaining = 40; // a backlog behind the first, each a microsecond later
+    test_mock_try_receive_len = len;
+    test_mock_try_receive_advance_ns = tt_MICROSECOND;
+
+    (void)tt_Node_poll(&node, -1);
+
+    EXPECT_EQ_INT(0, test_mock_try_receive_remaining);
+    uint64_t last_arrived = tt_SECOND + (40 * tt_MICROSECOND);
+    EXPECT_TRUE(node.traffic_last_seen[STAMP_SOURCE] <= last_arrived);
+    EXPECT_TRUE(node.traffic_last_seen[STAMP_SOURCE] >= last_arrived - (tt_RX_CLOCK_REFRESH * tt_MICROSECOND));
+}
+
 int main(void) {
     test_negative_poll_waits_until_the_next_entry();
     test_negative_poll_with_nothing_scheduled_blocks_indefinitely();
@@ -251,6 +303,8 @@ int main(void) {
     test_positive_poll_is_unchanged();
     test_flush_is_armed_on_the_old_grid();
     test_flush_arms_once_and_does_not_tick_when_idle();
+    test_a_datagram_after_a_long_wait_is_stamped_when_it_arrived();
+    test_a_long_drain_keeps_its_stamps_fresh();
 
     if (test_result() != 0) {
         return 1;

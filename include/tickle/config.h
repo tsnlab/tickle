@@ -262,6 +262,14 @@
 #ifndef tt_SERVER_DEFERRED_RESPONSE_TIMEOUT
 #define tt_SERVER_DEFERRED_RESPONSE_TIMEOUT (5 * tt_SECOND)
 #endif
+// How many datagrams of one drain are stamped with the same reading of the clock (OPTIMIZATION_PLAN.md 11,
+// D1). The receive path takes "now" - a peer's last sign of life (traffic_last_seen), a timestamp's rebuild -
+// from the time the poll read when its wait returned, and reads it again every this many datagrams, instead
+// of once per datagram: a clock read was ~27 ns of a ~85 ns received sample on the PC. A stamp is then at most
+// this many datagrams' processing old, microseconds, against liveliness's milliseconds.
+#ifndef tt_RX_CLOCK_REFRESH
+#define tt_RX_CLOCK_REFRESH 16
+#endif
 // A positive poll slice some callers pass explicitly (rmw_tickle's poll thread), and the most back-to-
 // back scheduler work a negative-timeout tt_Node_poll() runs before handing control back. It used to be
 // what a negative timeout waited, too; since 2026-09-25 that waits for the scheduler instead - see

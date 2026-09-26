@@ -638,3 +638,19 @@ The isolation loops say:
 publishing thread can wait, which is an rmw latency question. It gets its own entry if D1-D3 land.
 
 **Order:** D1, then D3, then D2, one commit each, each benched against its parent before the next.
+
+### 11.1 D1 result (bench, 2026-09-27): PASS
+
+`core_cost_ab.sh -r 30 -n 300000`, D1 against its parent `874f482b`, paired by round:
+- **recv -23.8 +- 0.6 ns per sample** (83.3 -> 59.3 ns median, -29%). Clock reads per received sample fall from 1.0 to
+  0.062, one per 16.
+- **send -3.2 +- 0.7 ns** (not WORSE).
+- Unit tests:
+  - `test_poll_wait.c` pins that a datagram arriving half a second into a wait is stamped when it arrived, not when
+    the wait began.
+  - It also pins that a 40-datagram drain's stamps stay within 16 datagrams of the last.
+  - Mutants without either refresh fail. The mock gained a data-carrying wait that lets time pass, and a
+    `tt_try_receive()` backlog.
+- A wakeup with one datagram (ping-pong, latency cells) reads the clock as often as before: once when the wait
+  returns, instead of once in `process_packet()`. The gain is in drains, i.e. the throughput servers.
+- Next: Plan's rig ABBA against the parent.
