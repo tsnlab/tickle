@@ -48,8 +48,8 @@ namespace {
     constexpr uint64_t ns_per_ms = 1000000ULL;
 
     constexpr int discovery_poll_ms = 20;
-    constexpr uint64_t reply_wait_ms = 500; // matching the native client's own reply timeout
-    constexpr int spin_poll_us = 100;
+    constexpr uint64_t reply_wait_ms = 500;    // matching the native client's own reply timeout
+    constexpr int default_poll_sleep_us = 100; // --poll-sleep-us overrides it
     constexpr double default_duration_s = 10.0;
 
     // Every rclcpp::Node on ROS 2 Jazzy unconditionally subscribes to /parameter_events (its own
@@ -91,6 +91,14 @@ namespace {
     // decides the rest. Printed per round trip on a LOOP: line after RESULT.
     constexpr double ns_per_us = 1000.0;
 
+    // How the ping waits for each reply (--wait, --poll-sleep-us): blocking in spin_once(), or polling with
+    // spin_some() and a sleep of poll_sleep_us between spins. The user's decision (2026-09-26): both modes
+    // are test cases, and poll is swept over its sleep rather than measured at one arbitrary grid.
+    struct wait_mode {
+        bool blocking = false;
+        int poll_sleep_us = default_poll_sleep_us;
+    };
+
     struct loop_stats {
         uint64_t iterations = 0;
         uint64_t spin_ns = 0;
@@ -99,12 +107,12 @@ namespace {
 
     // A line of its own after RESULT, so RESULT's fields stay as every parser knows them: iterations of the
     // wait loop per round trip, and in poll mode the mean spin_some() and the mean real sleep, in us.
-    auto print_loop_stats(const loop_stats& loop, uint64_t transmitted) -> void {
+    auto print_loop_stats(const loop_stats& loop, uint64_t transmitted, const wait_mode& wait) -> void {
         const double per_rtt =
             transmitted > 0 ? static_cast<double>(loop.iterations) / static_cast<double>(transmitted) : 0.0;
         const double iterations = loop.iterations > 0 ? static_cast<double>(loop.iterations) : 1.0;
-        std::printf("LOOP: iterations_per_rtt=%.2f spin_some_us=%.1f sleep_us=%.1f\n", per_rtt,
-                    static_cast<double>(loop.spin_ns) / iterations / ns_per_us,
+        std::printf("LOOP: poll_sleep_us=%d iterations_per_rtt=%.2f spin_some_us=%.1f sleep_us=%.1f\n",
+                    wait.poll_sleep_us, per_rtt, static_cast<double>(loop.spin_ns) / iterations / ns_per_us,
                     static_cast<double>(loop.sleep_ns) / iterations / ns_per_us);
     }
 
@@ -118,16 +126,16 @@ namespace {
     // reply wakes the executor, as the native client waits in tt_Node_poll(); the caller then reads the
     // round trip at the callback.
     auto wait_for_reply(rclcpp::executors::SingleThreadedExecutor& executor, const std::atomic<bool>& got_reply,
-                        uint64_t wait_deadline, bool blocking, loop_stats& loop) -> void {
+                        uint64_t wait_deadline, const wait_mode& wait, loop_stats& loop) -> void {
         while (rclcpp::ok() && !got_reply && now_ns() < wait_deadline) {
             loop.iterations++;
-            if (blocking) {
+            if (wait.blocking) {
                 executor.spin_once(std::chrono::nanoseconds(wait_deadline - now_ns()));
             } else {
                 const uint64_t spin_start = now_ns();
                 executor.spin_some();
                 const uint64_t sleep_start = now_ns();
-                std::this_thread::sleep_for(std::chrono::microseconds(spin_poll_us));
+                std::this_thread::sleep_for(std::chrono::microseconds(wait.poll_sleep_us));
                 loop.spin_ns += sleep_start - spin_start;
                 loop.sleep_ns += now_ns() - sleep_start;
             }
@@ -136,7 +144,7 @@ namespace {
 
     template <typename T>
     auto run_ping(const rclcpp::Node::SharedPtr& node, double interval_s, double duration_s, bool reliable,
-                  bool blocking, pingpong::stamp_log& stamps) -> int {
+                  const wait_mode& wait, pingpong::stamp_log& stamps) -> int {
         using Traits = BenchTraits<T>;
 
         rclcpp::executors::SingleThreadedExecutor executor;
@@ -195,10 +203,10 @@ namespace {
             transmitted++;
 
             const uint64_t wait_deadline = now_ns() + (reply_wait_ms * ns_per_ms); // 500ms, matching the native client
-            wait_for_reply(executor, got_reply, wait_deadline, blocking, loop);
+            wait_for_reply(executor, got_reply, wait_deadline, wait, loop);
             if (got_reply && Traits::seq(reply_msg) == seq) {
                 pingpong::stamp_log_add(stamps, seq, sent_at, reply_ns); // --stamps, whichever the wait mode
-                const uint64_t end_ns = blocking ? reply_ns : now_ns();
+                const uint64_t end_ns = wait.blocking ? reply_ns : now_ns();
                 add_rtt(rtt, static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms));
             }
 
@@ -228,10 +236,10 @@ namespace {
         }
         std::printf("RESULT: framework=%s scenario=pingpong qos=%s wait=%s sent=%lu recv=%lu loss_pct=%.0f "
                     "rtt_min_ms=%.3f rtt_avg_ms=%.3f rtt_max_ms=%.3f\n",
-                    rmw_impl, reliable ? "reliable" : "best_effort", blocking ? "block" : "poll",
+                    rmw_impl, reliable ? "reliable" : "best_effort", wait.blocking ? "block" : "poll",
                     static_cast<unsigned long>(transmitted), static_cast<unsigned long>(received), loss_pct, rtt_min_ms,
                     avg, rtt_max_ms);
-        print_loop_stats(loop, transmitted);
+        print_loop_stats(loop, transmitted, wait);
 
         return 0;
     }
@@ -242,12 +250,14 @@ auto main(int argc, char** argv) -> int {
     double interval_s = 1.0;
     double duration_s = default_duration_s;
     bool reliable = false;
-    bool blocking = false;             // --wait block|poll, see run_ping()
+    wait_mode wait;                    // --wait block|poll, --poll-sleep-us N
     const char* stamps_path = nullptr; // --stamps <file>, see pingpong::stamp_log
     const char* message = "bench";
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
-            blocking = std::strcmp(argv[++i], "block") == 0;
+            wait.blocking = std::strcmp(argv[++i], "block") == 0;
+        } else if (std::strcmp(argv[i], "--poll-sleep-us") == 0 && i + 1 < argc) {
+            wait.poll_sleep_us = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--stamps") == 0 && i + 1 < argc) {
             stamps_path = argv[++i];
         } else if (std::strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
@@ -276,11 +286,11 @@ auto main(int argc, char** argv) -> int {
                                  "ping: seq send_ns reply_ns (CLOCK_MONOTONIC ns; replied samples only)");
         int ret;
         if (std::strcmp(message, "bench") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable, blocking, stamps);
+            ret = run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable, wait, stamps);
         } else if (std::strcmp(message, "array1k") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable, blocking, stamps);
+            ret = run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable, wait, stamps);
         } else if (std::strcmp(message, "struct16") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable, blocking, stamps);
+            ret = run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable, wait, stamps);
         } else {
             std::fprintf(stderr, "unknown -m '%s' (expected bench|array1k|struct16)\n", message);
             ret = 1;
