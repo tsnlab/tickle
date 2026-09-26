@@ -92,3 +92,46 @@ p1 latency cells (10 s runs at 10 Hz) and ~0 elsewhere.
 The larger remaining gains found today are not wire formats: the pong's receive wake (~6 us, ppoll against a
 blocking recv, `RMW_PERF_PLAN.md` 8.2) and the ~21 us poll-thread → executor handoff. Both stay first in
 line for Dev after LIVELINESS.
+
+## 6. First bundle, `tt_VERSION` 10: W2 + W3 + W4 (pre-registered 2026-09-26, before any code)
+
+W1 is held until DATA that arrives before its writer's list can still be routed without a regression.
+
+**The changes:**
+- **W2:** the DATA/FRAG_FIRST timestamp becomes 32-bit microseconds. Its high bits are rebuilt on receive from
+  the receiver's clock, which assumes the two clocks are within ±35 min of each other. Saves 4 B per sample.
+- **W3:** rmw_tickle's 8-byte publication sequence number is sent as a varint delta from the core `seq_no`. The
+  difference is the fragments so far, usually 0, so this is ~1 B instead of 8 and saves ~7 B per rmw sample.
+- **W4:** a datagram carrying exactly one submessage uses one combined header. Saves ~3.5 B per such datagram.
+
+**Targets, exact (`wire_inventory.sh`, the 12 TickLE cells on PC veth; bytes are deterministic, so no SE):**
+
+| cells | today (W0) | expected | how |
+|---|---:|---:|---|
+| p1 (76 B), per sample | 146-161 B | -7.5 to -8 B (about -5%) | W2 4 + W4 ~3.5-4 |
+| p2-p4, per sample | 1,363-2,945 B | the same absolute -7.5 to -8 B, < 0.6% | as above |
+| rmw Bench, per sample (rig capture) | ~204 B | about -15 B | W2 4 + W4 ~4 + W3 ~7 |
+
+A candidate whose measured saving falls short of its expectation by more than 1 B per sample is investigated
+before the campaign.
+
+**No-regression (the rule, 2 × SE):** one rig campaign, bundle against its parent. It covers:
+- the native aligned cells (A/T rows);
+- the rmw scored session (V rows);
+- the poll sweep (P rows);
+- the discovery M2/M3 grid.
+Nothing may move beyond 2 × SE in the wrong direction. The report lists every row that moved, and every row
+that only held.
+
+**Correctness, before the campaign (unit tests, each killed by its mutant):**
+- **W2:** a timestamp at the wrap boundary and at ±30 min of skew rebuilds exactly; the LIFESPAN and DEADLINE
+  tests are unchanged.
+- **W3:** the psn across fragment counts 1-32, across a writer restart, and across the uint16 psn wrap that
+  43d49fa8 fixed.
+- **W4:** both parse paths, with mixed single- and multi-submessage datagrams in the fuzz corpus.
+
+**As stated in section 5:**
+- These savings cannot move a latency test or p1 throughput. The bundle can therefore meet the user's
+  condition only under Plan's reading (targets improve, nothing regresses), not the literal "every test
+  better".
+- The report says so again. If the user rules for the literal reading, the bundle is reverted.
