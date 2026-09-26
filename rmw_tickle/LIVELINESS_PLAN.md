@@ -239,3 +239,34 @@ one peer asserts nothing at another, whose lease would then run on the 1 s summa
   send counted as reaching everyone.
 - **Residual, stated in advance:** the 1 s summary still goes under traffic, so once a second the last datagram
   before a kill can be a summary up to one data period after the last sample.
+
+## 11. L2 on the summary skip: passes as written, but 2 s is two modes (2026-09-27, `4dc7ad49` against `ccbacb36`)
+
+`liveliness_l2.sh`, 20 repetitions, the four arms interleaved in every rep. All 240 rows are ok, and no row
+names a foreign node. The after arm is `4dc7ad49`: the summary skip of section 10 (`397d927c`), plus
+WIRE_PLAN 8.1a's receive fix, which changes no summary behaviour. Raw rows are
+`results/liveliness_l2d_2026-09-27.txt`. Residual = detect - lease, in ms:
+
+| arm | lease 1 s: median, max \|rep - median\| | 2 s | 4 s |
+|---|---|---|---|
+| TickLE after | **+0.1, 0.1** | **+15.6, 18.1** | **+0.1, 0.1** |
+| TickLE before (control) | +302.4, 125.4 | +182.6, 393.3 | -709.0, 472.4 |
+| CycloneDDS | +0.1, 93.9 (one rep +94) | +0.1, 0.0 | +0.1, 0.0 |
+| FastDDS | -0.9, 78.4 (one rep +77) | -0.9, 0.0 | -0.9, 0.0 |
+
+- **The control reproduces today's figures:** bimodal at 1 and 2 s, and 4 s cut to ~3.3 s. So the after arm is read.
+- **By section 4's criteria the after arm passes at every lease:**
+  - the median is within 20 ms and no rep is more than 50 ms from it;
+  - 4 s is not cut.
+  - 1 s and 4 s are now as tight as CycloneDDS: every rep within 0.2 ms of the lease.
+- **2 s passes only through the median.** Its 20 reps are two modes of 10 each, +0.1..0.2 and +31.0..33.7. The median
+  falls between them. This is the residual stated in advance in section 10:
+  - the 1 s summary still goes under traffic;
+  - in half the reps the last datagram before the kill was that summary, ~32 ms after the last sample;
+  - the lease then ran from the summary, not from the sample.
+  It is not scored as a pass in COMPARISON.md: against both vendors' +0.1 / -0.9 ms, a mode at +32 ms is a loss.
+- **Next (Plan's decision):** Dev's prepared change lets the 1 s summary ride in the node's next data datagram under
+  traffic, rather than go alone. Then the last datagram before a kill is always data. L2 is re-run with the same
+  criteria plus one more, fixed now, before that run:
+  - no mode: every rep within 5 ms of the median at every lease.
+  L3's data1 case is re-run with it.
