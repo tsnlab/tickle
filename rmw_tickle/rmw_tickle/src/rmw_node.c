@@ -332,6 +332,9 @@ static bool park_for_polling_executor(rmw_tickle_context_impl_t* context_impl) {
         }
         (void)ppoll(fds, 3, timeout, NULL); // NOLINT(misc-include-cleaner) - <poll.h> above
         atomic_fetch_add(&context_impl->park_wakes, 1);
+        if ((fds[0].revents & POLLIN) != 0) {                 // NOLINT(misc-include-cleaner) - <poll.h> above
+            atomic_store(&context_impl->park_timer_at_ns, 0); // a one-shot timer that fired is armed no more (R1d)
+        }
         drain_fd(context_impl->park_timer_fd);
         drain_fd(context_impl->park_wake_fd);
         if (context_impl->poll_thread_running && !atomic_load(&context_impl->executor_polling) &&

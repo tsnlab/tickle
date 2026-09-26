@@ -292,7 +292,14 @@ struct rmw_tickle_context_impl_t {
     atomic_bool poll_thread_parked;            // the poll thread is parked (announced on handover_cond)
     pthread_cond_t handover_cond;              // NOLINT(misc-include-cleaner) - under wait_mutex
     int park_timer_fd;                         // CLOCK_MONOTONIC timerfd: the lease, armed on release
-    int park_wake_fd;                          // eventfd: ends a park at shutdown
+    // R1d (RMW_PERF_PLAN.md 9.3): when park_timer_fd is armed to fire (tt_get_ns() time, 0 when not), when the
+    // executor last claimed the poll role, and how long it held it last time. A claim disarms the timer only if
+    // it would fire within 1.5 x that hold; otherwise the next release's re-arm pushes it on, with no syscall
+    // at the claim. A timer that fires during a hold wakes the parked thread once, and it sleeps untimed after.
+    _Atomic uint64_t park_timer_at_ns;
+    _Atomic uint64_t executor_claimed_ns;
+    _Atomic uint64_t executor_last_hold_ns;
+    int park_wake_fd; // eventfd: ends a park at shutdown
 
     // QoS roadmap #3 (LIVELINESS) follow-up - RMW_EVENT_LIVELINESS_LOST (Milestone 28(b)'s own
     // design, implemented in Milestone 30). A same-thread self-check from inside poll_thread can
