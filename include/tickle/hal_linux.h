@@ -129,4 +129,8 @@ struct tt_hal {
     // ACKNACKs and retransmit requests answering it arrive as unicast on the data socket, so the
     // starved path would be RELIABLE recovery. Alternating bounds the wait at one datagram.
     bool rx_prefer_data;
+    // Sockets known to have nothing waiting until the next wait (TT_RX_IDLE_* bits, hal_linux.c): the
+    // ones ppoll() did not report ready, and any a non-blocking read has since found empty. drain_rx()
+    // then reads only what is there - see tt_try_receive().
+    uint8_t rx_idle;
 };

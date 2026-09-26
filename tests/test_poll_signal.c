@@ -162,7 +162,85 @@ static void test_signal_ends_an_indefinite_wait(void) {
     close_node();
 }
 
+// ---- tt_try_receive() reads only sockets that can have data (2026-09-26). Two Unix-domain datagram
+// socketpairs stand in for the well-known and data sockets: the HAL reads them with the same recvfrom()
+// calls, and they need no network.
+
+static int pair_wk[2];
+static int pair_data[2];
+
+static void open_pair_node(void) {
+    memset(&node, 0, sizeof(node));
+    EXPECT_TRUE(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair_wk) == 0);
+    EXPECT_TRUE(socketpair(AF_UNIX, SOCK_DGRAM, 0, pair_data) == 0);
+    node.hal.sock = pair_wk[0];
+    node.hal.data_sock = pair_data[0];
+    node.hal.wake_fd = eventfd(0, EFD_NONBLOCK);
+}
+
+static void close_pair_node(void) {
+    close(pair_wk[0]);
+    close(pair_wk[1]);
+    close(pair_data[0]);
+    close(pair_data[1]);
+    close(node.hal.wake_fd);
+}
+
+static int32_t try_one(uint8_t* tag) {
+    uint8_t buf[16] = {0};
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    int32_t len = tt_try_receive(&node, buf, sizeof(buf), &ip, &port);
+    *tag = buf[0];
+    return len;
+}
+
+// Once a socket has come up empty in a drain it is not asked again until the drain ends - so data that
+// lands on it meanwhile waits for the next session - and it is not lost: the next session reads it.
+static void test_drain_skips_a_socket_found_empty(void) {
+    open_pair_node();
+    uint8_t tag = 0;
+    EXPECT_EQ_INT(1, (int)send(pair_data[1], "a", 1, 0));
+    EXPECT_EQ_INT(1, (int)send(pair_data[1], "b", 1, 0));
+
+    EXPECT_EQ_INT(1, try_one(&tag)); // well-known asked first, empty: marked idle; data read
+    EXPECT_EQ_INT('a', tag);
+    EXPECT_EQ_INT(1, try_one(&tag));
+    EXPECT_EQ_INT('b', tag);
+
+    EXPECT_EQ_INT(1, (int)send(pair_wk[1], "w", 1, 0)); // lands on the socket already found empty
+    EXPECT_EQ_INT(-1, try_one(&tag));                   // skipped: the drain ends on the data socket's own empty read
+    EXPECT_EQ_INT(1, try_one(&tag));                    // the next session asks both again
+    EXPECT_EQ_INT('w', tag);
+    close_pair_node();
+}
+
+// After a wait, a socket ppoll() did not report ready is not asked at all by the drain that follows.
+static void test_drain_after_a_wait_reads_only_ready_sockets(void) {
+    open_pair_node();
+    uint8_t buf[16] = {0};
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    EXPECT_EQ_INT(1, (int)send(pair_data[1], "a", 1, 0));
+    EXPECT_EQ_INT(1, (int)send(pair_data[1], "b", 1, 0));
+
+    EXPECT_EQ_INT(1, tt_receive(&node, buf, sizeof(buf), &ip, &port, (int64_t)SHORT_WAIT_NS)); // reads 'a'
+    EXPECT_EQ_INT('a', buf[0]);
+    EXPECT_EQ_INT(TT_RX_IDLE_WELL_KNOWN, node.hal.rx_idle); // ppoll saw nothing on the well-known socket
+
+    EXPECT_EQ_INT(1, (int)send(pair_wk[1], "w", 1, 0));
+    uint8_t tag = 0;
+    EXPECT_EQ_INT(1, try_one(&tag)); // the data socket, whatever the alternation says
+    EXPECT_EQ_INT('b', tag);
+    EXPECT_EQ_INT(-1, try_one(&tag)); // drained - the well-known socket was never asked
+    EXPECT_EQ_INT(1, try_one(&tag));  // and the next session finds 'w'
+    EXPECT_EQ_INT('w', tag);
+    close_pair_node();
+}
+
 int main(void) {
+    test_drain_skips_a_socket_found_empty();
+    test_drain_after_a_wait_reads_only_ready_sockets();
     test_timed_wait_times_out();
     test_wake_signal_ends_an_indefinite_wait();
     test_signal_ends_an_indefinite_wait();

@@ -254,6 +254,7 @@ tt_ret_t tt_bind(struct tt_Node* node) {
     node->hal.wake_fd = -1;
     node->hal.data_sock = -1;
     node->hal.rx_prefer_data = false;
+    node->hal.rx_idle = 0;
 
     node->hal.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (node->hal.sock < 0) {
@@ -428,7 +429,12 @@ int32_t tt_send_iov(struct tt_Node* node, const void* hdr, size_t hdr_len, const
     return (int32_t)sendmsg(node->hal.data_sock, &msg, 0);
 }
 
+// Bits of struct tt_hal.rx_idle - see tt_try_receive().
+#define TT_RX_IDLE_WELL_KNOWN 1U
+#define TT_RX_IDLE_DATA 2U
+
 int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port, int64_t timeout) {
+    node->hal.rx_idle = 0; // a timeout or an interrupt leaves no readiness to go on
     // Wait for readability with ppoll() instead of arming SO_RCVTIMEO via setsockopt() before
     // every recvfrom(): the timeout here changes on nearly every call (it tracks whatever
     // scheduled event is due next), and re-arming a socket option that often is pure overhead -
@@ -496,6 +502,9 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
         // broadcasting its data. Alternating bounds the wait at one datagram either way.
         bool well_known_ready = (pfd[0].revents & POLLIN) != 0; // NOLINT(misc-include-cleaner)
         bool data_ready = (pfd[2].revents & POLLIN) != 0;       // NOLINT(misc-include-cleaner)
+        // What the drain after this read may skip: a socket ppoll() did not report ready (tt_try_receive()).
+        node->hal.rx_idle =
+            (uint8_t)((well_known_ready ? 0U : TT_RX_IDLE_WELL_KNOWN) | (data_ready ? 0U : TT_RX_IDLE_DATA));
 #if TT_RX_FIXED_PREFERENCE
         // EXPERIMENT ARM, not a proposed behaviour. See the note at tt_RX_FIXED_PREFERENCE below.
         if (data_ready && !well_known_ready) {
@@ -540,44 +549,56 @@ int32_t tt_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, ui
     return ret;
 }
 
+// Reads one datagram if one is waiting, without blocking - drain_rx() calls it until it says nothing is.
+//
+// Only sockets that can have something are asked (2026-09-26). This used to probe both sockets blindly,
+// alternating which went first: with traffic on one socket, every other call spent a recvfrom() on the
+// empty one, and the call that ended each drain spent two. Measured on the rig's server, 1.58 receive
+// syscalls per delivered sample against CycloneDDS's 0.74, and 34% of them returned nothing - 95% of the
+// server's syscall time was receiving. Now a socket ppoll() did not report ready, or one a read here has
+// found empty, is skipped until the next wait (struct tt_hal.rx_idle). A datagram that lands on a skipped
+// socket in the meantime is not lost or delayed past the next poll: readiness is level-triggered, so the
+// very next ppoll() reports it. When every socket is idle this answers without a syscall, and clears the
+// bits so the next drain - one not preceded by a wait, like a non-blocking poll - asks both again.
 int32_t tt_try_receive(struct tt_Node* node, void* buf, size_t len, uint32_t* ip, uint16_t* port) {
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(struct sockaddr_in);
     // MSG_DONTWAIT makes just this call non-blocking regardless of the socket's own mode - no
-    // poll() first, no socket-option re-arm.
-    // Both sockets, because either can have something waiting: broadcasts land on the well-known
-    // one and unicast on this node's own data socket. Draining only one of them would leave the
-    // other's backlog to the next poll(), which is exactly the per-packet round trip drain_rx()
-    // exists to avoid - and a fixed order here would starve the second socket outright while the
-    // first has a sustained stream on it, so the same alternation tt_receive() uses applies.
+    // poll() first, no socket-option re-arm. Both sockets are candidates, because broadcasts land on
+    // the well-known one and unicast on this node's own data socket, and the same alternation
+    // tt_receive() uses decides which goes first, so a sustained stream on one cannot starve the other.
 #if TT_RX_FIXED_PREFERENCE
-    int first = node->hal.sock;
-    int second = node->hal.data_sock;
+    int order[2] = {node->hal.sock, node->hal.data_sock};
 #else
-    int first = node->hal.rx_prefer_data ? node->hal.data_sock : node->hal.sock;
-    int second = node->hal.rx_prefer_data ? node->hal.sock : node->hal.data_sock;
+    int order[2] = {node->hal.rx_prefer_data ? node->hal.data_sock : node->hal.sock,
+                    node->hal.rx_prefer_data ? node->hal.sock : node->hal.data_sock};
     node->hal.rx_prefer_data = !node->hal.rx_prefer_data;
 #endif
 
-    node->rx_via_data_port = (first == node->hal.data_sock);
-    int32_t ret = (int32_t)recvfrom(first, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
-    if (ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { // NOLINT(misc-include-cleaner)
+    int32_t ret = -1;
+    for (int i = 0; i < 2 && ret < 0; i++) {
+        uint8_t bit = order[i] == node->hal.data_sock ? TT_RX_IDLE_DATA : TT_RX_IDLE_WELL_KNOWN;
+        if ((node->hal.rx_idle & bit) != 0) {
+            continue;
+        }
         addr_len = sizeof(struct sockaddr_in);
-        node->rx_via_data_port = (second == node->hal.data_sock);
-        ret = (int32_t)recvfrom(second, buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+        node->rx_via_data_port = (order[i] == node->hal.data_sock);
+        ret = (int32_t)recvfrom(order[i], buf, len, MSG_DONTWAIT, (struct sockaddr*)&addr, &addr_len);
+        if (ret < 0) {
+            // NOLINTNEXTLINE(misc-include-cleaner) - EAGAIN/EWOULDBLOCK: glibc-private headers, see above
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                return -2; // I/O error
+            }
+            node->hal.rx_idle |= bit;
+        }
+    }
+    if (ret < 0) {
+        node->hal.rx_idle = 0; // drained: the next drain session asks every socket again
+        return -1;             // Nothing waiting
     }
 
     *ip = ntohl(addr.sin_addr.s_addr);
     *port = ntohs(addr.sin_port);
-
-    if (ret < 0) {
-        // NOLINTNEXTLINE(misc-include-cleaner)
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return -1; // Nothing waiting
-        }
-        return -2; // I/O error
-    }
-
     return ret;
 }
 
