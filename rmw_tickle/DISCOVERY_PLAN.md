@@ -173,3 +173,30 @@ interface, 3 repetitions (24 nodes each):
   the next summary, which restores a one-interval bound under loss;
 - find the cause of the two-observer dip.
 M5 is re-run after both.
+
+## 8. M5 re-run: passes on `b90a047d` (2026-09-26)
+
+Dev found the dip was a liveliness boundary: a limit of exactly 3 intervals, and drifting schedulers,
+turned two lost summaries into a coin toss per observer. It now takes 3.5 intervals (`LIVELINESS_PLAN.md`
+§6), and an unanswered request is re-asked every 10 ms, 4 times. The re-run used the corrected tool
+(completeness sampled 2 s before exit), N = 8, E = 32, 5% loss, and 5 repetitions of 8 nodes for each of
+v7, the first v8 and the fixed v8. Raw rows: `results/discovery_M5r_*`.
+
+| | v7 `41fa005f` | first v8 `d732139b` | fixed v8 `b90a047d` |
+|---|---|---|---|
+| nodes | 40 ok | 40 ok | 40 ok |
+| median time to converge | 1.6 ms | 1.7 ms | 1.9 ms |
+| slowest node | 3.1 ms | 1,001.8 ms | 999.9 ms |
+| dips during the run | 0 | **1** (25.0 s) | **0** |
+| complete 2 s before exit | 40/40 | 40/40 | 40/40 |
+
+v7's 6 dips all sit at ~40,005 ms, the shutdown, and are excluded as the tool change intended.
+
+**Pre-registered (before the run): no dips, and every node complete by ~1.0 s plus a few × 10 ms. Passed.**
+- The first v8 reproduced the dip once more, so the fix is what removed it.
+- The fixed v8's one ~1 s node lost its peers' creation broadcast and waited for the next summary. v7
+  showed ~1 s stragglers in the first M5 run too (999.2 ms at four nodes).
+
+M2, M3 and M5 now pass. M4 (change propagation, including a dropped broadcast) is covered by Dev's
+unit tests with mutants (test 2 of the summary change: known within 1 s + 5 ms via the pull, exactly one
+request). M6, the rig rmw rows, follows with the next scored session on a v8+ build.
