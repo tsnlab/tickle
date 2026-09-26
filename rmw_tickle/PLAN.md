@@ -2941,6 +2941,13 @@ The periodic announce shrinks to a small summary (node ID and generation), and a
 unknown generation pulls the full list. The design, risks and pre-registered measurements are in
 [`DISCOVERY_PLAN.md`](DISCOVERY_PLAN.md).
 
+### LIVELINESS detection parity (2026-09-26, the user's decision)
+
+The lease runs from the last sign of life (AUTOMATIC: any datagram from the node; MANUAL_BY_TOPIC: that
+writer's own DATA), is checked by a timer at its expiry instead of a 1 s sweep, and a longer lease is no
+longer cut at 3 s. The design and pre-registered measurements are in
+[`LIVELINESS_PLAN.md`](LIVELINESS_PLAN.md).
+
 ## Build order
 
 0 and 1 in parallel → 2 → 3 and 4 (parallel) and 5 (parallel, only needs 2) → 6 (only needs 0) →
