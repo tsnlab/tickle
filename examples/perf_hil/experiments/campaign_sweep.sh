@@ -258,10 +258,18 @@ cell() {
     # reorder_slots= (2026-09-26): the TickLE server hands core as many reorder slots as its tracking
     # window, mirroring rmw_tickle. A row whose slots differ from its window measured the old 4096-slot
     # ring, whose resident size under loss is the ring and not the product.
-    if [ "$fw" = tickle ] && [ -n "$res" ] && [ "$verdict" = ok ]; then
-        ws=$(grep -oE 'window_samples=[0-9]+' <<<"$res" | head -1 | cut -d= -f2)
-        rs=$(grep -oE 'reorder_slots=[0-9]+' <<<"$res" | head -1 | cut -d= -f2)
-        [ -n "$rs" ] && [ "$rs" = "$ws" ] || verdict="VOID(reorder_slots ${rs:-absent} != window ${ws:-absent})"
+    #
+    # Only reliable_throughput's server has a reorder buffer, so only its rows are checked. The first
+    # version ran this on every TickLE row, and under `set -euo pipefail` a grep that finds nothing
+    # inside $(...) exits the whole sweep without a word: the 2026-09-26 12-cell campaign died that
+    # way at c8 (best_effort_throughput, which has no window_samples=), and three runs queued behind
+    # it waited for a "=== done" that never came. Every grep here is `|| true` for that reason.
+    if [ "$fw" = tickle ] && [ "$scenario" = reliable_throughput ] && [ -n "$res" ] && [ "$verdict" = ok ]; then
+        ws=$(grep -oE 'window_samples=[0-9]+' <<<"$res" | head -1 | cut -d= -f2 || true)
+        rs=$(grep -oE 'reorder_slots=[0-9]+' <<<"$res" | head -1 | cut -d= -f2 || true)
+        if [ -z "$rs" ] || [ "$rs" != "$ws" ]; then
+            verdict="VOID(reorder_slots ${rs:-absent} != window ${ws:-absent})"
+        fi
     fi
     case "$res" in *instrument=ok*) ;; *instrument=fail*) verdict="VOID($(grep -oE 'instrument=fail:[a-z,]+' <<<"$res" | head -1))" ;;
         *) [ -n "$res" ] && verdict="VOID(no instrument= field)" ;; esac
