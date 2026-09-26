@@ -321,6 +321,30 @@ Raw rows are `results/wire_v10fix_abba_{A_8f3811f4,B_4dc7ad49}_2026-09-27.txt`. 
   user's ruling at 08:00 unless a fix is measured by then. Reverting it would mean untangling it from the liveliness
   work committed after it.
 
+### 8.5 The core alone on the Pi: v10's sender cost is +3 ns, not +40 (2026-09-27)
+
+`core_cost_pi.sh` (Dev, fixed by Plan for a stdin defect that made the first run measure one ref only). It is
+TickLE core's own send and receive per sample, built natively on the client Pi (10.1.1.214) at each commit and run
+alternately on one pinned CPU. It uses an in-memory HAL, so it measures no socket calls. 15 paired rounds x 200k
+samples. Raw rows are `results/core_cost_pi_{R,BE}_2026-09-27.txt`. ns per sample against `8f3811f4`, +- SE:
+
+| mode | `4dc7ad49` (v10 + fix) send | recv | `fd23de40` (+ D1 + D3) send | recv |
+|---|---:|---:|---:|---:|
+| RELIABLE, KEEP_LAST 64 | **+3.2 +- 0.7** | +1.8 +- 0.3 | -26.5 +- 0.8 | -31.0 +- 0.3 |
+| BEST_EFFORT | +1.7 +- 1.1 | -6.8 +- 0.8 | -33.6 +- 1.5 | -39.3 +- 0.8 |
+
+- **In the core, v10 with its fix costs the reliable sender 3 ns per sample.** That is real (t 4.4) but a tenth of
+  what 8.4's campaign client showed (+39 to +53 ns of user time). The rest is outside the core loop the bench runs.
+  The bench leaves out the HAL's socket calls, the client harness and the ACKNACK arrivals as the rig times them.
+  Neither the HAL nor the harness changed between the two commits.
+- **D1 + D3 more than cover it:** -26 to -34 ns on send and -31 to -39 ns on receive, on the Pi.
+- **What this means for section 1:**
+  - As v10 stands on its own, the rule is still broken by the campaign's +0.5-1.1% on reliable client CPU.
+  - `main` also carries D1, D3 and (after its rig verdict) D4. Measured against `8f3811f4` as a whole, it is very
+    likely better on every CPU row. Whether that counts is the user's reading of the rule. Plan's reading judges
+    the wire change on its own, which is why 8.4 kept D1 out of the arm.
+  - A final `8f3811f4` against `main` A B B A is queued after the D-series run, so that either reading has its number.
+
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
 **What it can save.**
