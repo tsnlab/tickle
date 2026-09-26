@@ -297,6 +297,30 @@ From here on, and before any A B B A result is read:
 The v10 fix (`4dc7ad49`, 8.1a) is judged this way on the native cells (`campaign_ab_chain.sh`) and on the rmw rows
 (`rmw_lease86_rig_chain.sh` with TAG=wire_v10fix_rmw), both queued on the rig.
 
+### 8.4 The fix (`4dc7ad49`) against the parent, A B B A: the receiver is fixed, the sender is not (2026-09-27)
+
+`campaign_ab_chain.sh`, `8f3811f4` / `4dc7ad49` / `4dc7ad49` / `8f3811f4`, 3 repetitions per block, 72 + 72 ok rows.
+Raw rows are `results/wire_v10fix_abba_{A_8f3811f4,B_4dc7ad49}_2026-09-27.txt`. Read by 8.3: 40 better, 48 held, 20 WORSE.
+
+- **Bytes:** better in every cell, as in 8.1.
+- **Receiver: fixed.** Server CPU per sample is now better in c2, c3, c4, c8 and c9 (-0.4 to -1.1%). It is WORSE only
+  in c5 (+0.3%, t 3.9): one cell of nine, so a chance candidate under 8.3. Server utime still rises 13-43 ns, but its
+  stime falls 20-45 ns, so the total falls.
+- **Sender: confirmed WORSE.** Client CPU per sample is WORSE in 6 of the 9 throughput cells, which meets 8.3's "at
+  least half" rule:
+  - p1 RELIABLE: c1, c5, c7, c9, +0.7 to +0.9%;
+  - p4: c4 +0.5% and c6 +1.1%.
+
+  The one BEST_EFFORT cell, c8, is 1.4% *better*. The rise is user time, +39 to +53 ns per sample in the reliable
+  cells against +2 in c8, with stime flat. So on the Pi v10 costs the reliable sender ~40-50 ns per sample.
+  - The client's peak RSS is WORSE in c8 and c9 (+5 and +11 KB), 2 cells of 12: chance candidates.
+- **Why the PC bench missed it:** its sender is BEST_EFFORT, and the cost is on the Pi. Dev is now repeating the bench
+  in RELIABLE, and reading v10's reliable send path. The candidates: the cache record's layout, and the payload's
+  alignment after the 16 B DataHeader. A Pi run of the bench follows on the rig.
+- **Status: v10 on `main` fails section 1's rule on the reliable sender's CPU, +0.5 to 1.1%.** It stays for the
+  user's ruling at 08:00 unless a fix is measured by then. Reverting it would mean untangling it from the liveliness
+  work committed after it.
+
 ## 9. W1 on paper (Dev, 2026-09-27; no code until the user's ruling on section 1)
 
 **What it can save.**
