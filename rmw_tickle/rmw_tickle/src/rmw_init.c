@@ -10,6 +10,7 @@
 
 #include <pthread.h> // NOLINT(misc-include-cleaner) - see rmw_tickle.h's own <pthread.h> comment
 #include <stdatomic.h>
+#include <stdint.h> // uint32_t - the trace dump below, with -DRMW_TICKLE_TRACE=ON
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

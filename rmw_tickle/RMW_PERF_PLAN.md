@@ -611,3 +611,56 @@ judge):**
     instant before, and a later arrival is seen by the next poll.
   - Predicted: -0.3 to -0.6 us per wakeup.
 - **Not rmw's to change:** rclcpp's executor, ~2.4 us (p90 5-8 us). It is the same for every rmw.
+
+### 9.1 R2 measured (Dev, 2026-09-27, branch `r2-adaptive-drain`): the empty read goes, the latency does not move
+
+- **The measurement first.**
+  - strace -c on the pong, ~940 round trips at a 5 ms gap: 2087 `recvfrom()`, of which 1043 returned EAGAIN. That is
+    1.1 empty reads per round trip. Here the rmw build reads one datagram at a time (`tt_RX_BATCH` 1, its buffer
+    being larger than a control datagram).
+  - The empty read is the drain after the blocking wakeup, and it sits on the latency path, before the poll returns.
+- **The change.** The drain after a blocking wakeup is skipped once 2 in a row have found nothing, except every 16th
+  wakeup, and any drain that finds something ends the skipping (`tt_RX_DRAIN_SKIP_AFTER`,
+  `tt_RX_DRAIN_PROBE_EVERY`).
+  - Tests: skipping after a run, still probing, and a probe that finds a burst ends it.
+  - Mutants: never skip, never probe, never reset. Each fails.
+- **Result.**
+  - Empty reads: 1.1 -> 0.07 per round trip (strace, 956 round trips).
+  - The stamped segment that holds the read, callback -> release, is 0.28-0.29 us in both arms: 3 alternating runs
+    each of main and the branch, ~975 round trips each.
+  - RTT medians: 45.9-51.2 us on main and 46.4-56.9 us on the branch, within run-to-run noise.
+- **Verdict: FAIL on §9's rule.** The veth RTT is not better beyond 2 x SE, and the empty read costs no latency that
+  the stamps can resolve. It saves one syscall of CPU per wakeup, which is not what the candidate was for. It does
+  not go to the rig; the branch stays for the record.
+
+### 9.2 R1 measured (Dev, 2026-09-27, branch `r1-release-no-timer-syscall`): RTT -4.6 us, but pong CPU +12% - FAIL
+
+**The change.**
+- A claim no longer disarms the park timer.
+- A release re-arms it only when none is armed to fire after now and within the new lease; otherwise the parked
+  thread, woken early inside a lease, re-arms it itself (`park_timer_at_ns`, `rmw_tickle_arm_park_timer()`).
+- 8.6's timer-latency tests stay green. The mutant "never re-arm at release" fails them: a timer scheduled before
+  the wait is late.
+
+**Result.** veth, BEST_EFFORT bench, 5 ms gap, 5 s, 3 alternating runs each, non-traced builds; pong CPU is the
+whole run's schedstat (4 s idle + 5 s traffic):
+
+| | main | R1 |
+|---|---:|---:|
+| RTT median, us | 44.8 / 45.1 / 46.1 | 41.4 / 40.3 / 40.4 (**-4.6**) |
+| pong CPU, ms | 39.6 / 41.6 / 40.3 | 45.1 / 45.7 / 45.4 (**+4.9, +12%**) |
+| pong `park_wakes`, the run | 4 / 2 / 2 | 494 / 495 / 494 |
+| pong `park_wakes`, 10 s idle alone | 2 / 2 / 2 | 3 / 3 / 3 |
+
+**Reading.**
+- The stamped release -> timer-set segment is 0.62-0.69 us in both arms. So the timer syscall there was not what it
+  cost, and the RTT gain comes from elsewhere: plausibly from no longer disarming at every claim. Which kernel cost
+  that avoids is not measured.
+- The CPU rise is the timer left armed through each hold. It fires once a lease (10 ms) while the executor polls,
+  and wakes the parked thread for nothing: ~55 wakes/s at ~10 us each.
+
+**Verdict: FAIL on §9's rule** (pong CPU WORSE, `park_wakes` WORSE). Not for the rig as it stands.
+
+**Worth knowing for a next variant.** The RTT gain is real and large, -4.6 us of ~45, beyond run-to-run noise. A
+version that keeps it must stop the spurious wakes without a syscall per claim - for example, a claim that disarms
+only when the armed deadline falls within the expected hold. That is not designed here.
