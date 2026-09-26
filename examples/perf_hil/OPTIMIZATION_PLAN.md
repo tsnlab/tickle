@@ -665,3 +665,37 @@ publishing thread can wait, which is an rmw latency question. It gets its own en
   `flush_pending_responses()` only when the count is non-zero.
 - Test: a deferred response is sent by the next `tt_Node_poll()`. A mutant that never counts fails it: the
   existing test called the flush directly, and passed.
+
+### 11.3 D2 result (bench, 2026-09-27): FAIL, reverted
+
+**What was built.**
+- A direct-mapped writer cache per Subscriber: node id modulo `tt_MAX_PEER_COUNT` -> `writers[]` index.
+- A discovery-slot hint per writer proxy for the RxO check.
+- Both are verified before use. Tests pinned that a stale hint or cache entry is never trusted, and mutants
+  without the checks failed.
+
+**Result.** 20 paired rounds against its parent `92128fab`, ns per received sample:
+
+| case | parent | D2 |
+|---|---:|---:|
+| 1 writer | 58.6 | **+2.35 +- 0.19** |
+| 1 writer, discovery on | 61.4 | +5.0 +- 4.0 |
+| 8 writers | 61.7 | -2.3 +- 2.2 |
+| 8 writers, discovery on | 66.1 | -2.05 +- 0.30 |
+
+**Why it fails.**
+- It is WORSE at 1 writer, the case the pass criterion protects: the cache lookup costs more than the scan it
+  replaces when the writer is in the first slot.
+- It gains only 2 ns where the scan is long.
+- The discovery table's cost with one writer (+2.8 ns, 58.6 -> 61.4) is too small for any cache to win back
+  reliably.
+- Reverted, as section 4 of WIRE_PLAN prescribes for a failed candidate.
+
+**A measurement error found on the way, fixed.**
+- The first D2 run showed no difference at all, because `core_cost_ab.sh` had measured D3's binary in D2's place.
+  The bench failed to compile against D2's changed signature, and `build()`, running in a command substitution
+  where `set -e` does not reach, went on to use the binary left from the last good build.
+- The script now deletes the binary before each build and stops on a failed one. That was checked with a tree
+  broken on purpose: exit 1, no results written.
+- The D1 and D3 figures stand: each was taken with a binary built for it. The bench builds by then compiled, and
+  the clock-read counts and empty-poll times moved as each change predicts.

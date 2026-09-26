@@ -51,14 +51,22 @@ build() { # ref -> binary path
     fi
     # The bench and the p1 codec come from this checkout, so every arm runs the same harness; only
     # tickle.c and its headers differ.
-    gcc -O2 -DNDEBUG -I"$tree/include" -I"$SHAPE" -DTICKLE_C="\"$tree/src/tickle.c\"" \
-        -o "$bin" "$HERE/core_cost_bench.c" "$SHAPE/Bench.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm
+    # The old binary goes first: a failed build must not leave the last good one to be measured in its
+    # place. That happened on 2026-09-27 - build() runs in a command substitution, where set -e does not
+    # reach, and a compile error left D3's binary standing in for D2's.
+    rm -f "$bin"
+    if ! gcc -O2 -DNDEBUG -I"$tree/include" -I"$SHAPE" -DTICKLE_C="\"$tree/src/tickle.c\"" \
+        -o "$bin" "$HERE/core_cost_bench.c" "$SHAPE/Bench.c" "$tree/src/encoding.c" "$tree/src/log.c" -lm >&2; then
+        echo "build of $ref failed" >&2
+        return 1
+    fi
     echo "$bin"
 }
 
 declare -A BIN
 for ref in "$@"; do
-    BIN[$ref]="$(build "$ref")"
+    BIN[$ref]="$(build "$ref")" || exit 1
+    [ -x "${BIN[$ref]}" ] || exit 1
 done
 
 : >"$OUT"
