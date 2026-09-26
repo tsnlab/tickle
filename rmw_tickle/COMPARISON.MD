@@ -42,9 +42,14 @@ same session, so a row is always comparable. Across rows of different letters it
   row's pong process was checked to have mapped the expected `librmw_*.so`. 36 rows, 0 void. Memory is
   measured from outside every process alike: the ping through `/usr/bin/time`, the pong through
   `/proc/PID/status` VmHWM. Most of the ~11 MB is the `rclcpp`/ROS baseline all three share, so the
-  differences between implementations are a few MB. **CPU is not scored in the `rmw` rows yet.** At
-  the kernel's 10 ms accounting granularity TickLE and CycloneDDS differ by one or two ticks over a run
-  (FastDDS is clearly higher). A nanosecond measurement is in the harness for the next `rmw` session.
+  differences between implementations are a few MB. CPU is not taken from these rows: at the
+  kernel's 10 ms accounting granularity TickLE and CycloneDDS differ by one or two ticks over a run.
+- **`H` rows** are the `rmw` CPU rows, from the H1-H3 session of 2026-09-26 (`9e989307`,
+  `results/rmw_h123_2026-09-26/rows.txt`, 30 rows, 0 void), with the same setup as the `M` rows. The
+  pong's CPU is the run time of all its threads summed from `/proc/PID/task/*/schedstat` in
+  nanoseconds, over its whole life: 4 s idle and then 100 round trips. It is a per-process total, so it
+  compares implementations run alike and is not a cost per message. Median of 3. The spread within
+  each triple is 1.4 ms or less, well inside the gaps between implementations.
 - **`S` rows** are the 2026-09-24/25 QoS-mechanics sweep. Neither campaign covered them.
 
 Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` and
@@ -112,6 +117,8 @@ Raw rows and verdicts: `examples/perf_hil/results/campaign_aligned_2026-09-26*` 
 | 51 | RTT mean, RELIABLE | Array1k | 0.508 | ❌ 0.522 | ✅ **0.442** | M |
 | 52 | peak RSS, ping process (KB) | Bench, BEST_EFFORT | ✅ **11,264** | ❌ 23,892 | 14,720 | M |
 | 53 | peak RSS, pong process (KB) | Bench, BEST_EFFORT | ✅ **11,696** | ❌ 23,624 | 14,532 | M |
+| 54 | pong CPU, whole run (ms) | Bench, BEST_EFFORT | ✅ **34.4** | ❌ 56.0 | 42.8 | H |
+| 55 | pong CPU, whole run (ms) | Bench, RELIABLE | ✅ **34.3** | ❌ 59.5 | 47.4 | H |
 
 **FastDDS as shipped (`maxMessageSize` 65,500), at the same cells, for reference.** Aligned campaign,
 same QoS:
@@ -676,12 +683,18 @@ Scenarios 3-4's own "recv Mbps" is computed uniformly for all three from `recv_c
 
 ### 2.7 The rmw layer
 
-Table rows 48-53. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
+Table rows 48-55. `rmw_tickle` vs. `rmw_fastrtps_cpp` vs. `rmw_cyclonedds_cpp`.
 
 **Current status (2026-09-26):** these are the only rows where TickLE is not first. The re-measurement on
 the current build, what has been ruled out (CPU frequency, by a pre-registered test), what the traces
 show, and the hypotheses being tested are in [`RMW_PERF_PLAN.md`](RMW_PERF_PLAN.md). The text below is the
 history of how the `rmw` comparison was set up, and its figures predate that plan.
+
+**Rows 54-55, CPU:** `rmw_tickle`'s pong uses the least CPU of the three, in both reliability modes, while
+being the slowest on RTT. So the RTT gap is not explained by more computation in the pong: over the
+run it does less work than CycloneDDS's pong and still answers later. The figure is a whole-run total,
+so it cannot say where in a round trip the time goes. `RMW_PERF_PLAN.md` section 6 has the numbers,
+and the packet-capture split planned there asks the "where".
 
 Two separate measurement passes, both reached through the real ROS 2 `rmw` layer
 (`RMW_IMPLEMENTATION` + `rclcpp`), not either framework's own native API:
