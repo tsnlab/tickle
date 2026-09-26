@@ -32,11 +32,15 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "pingpong_common.hpp"
 #include "rmw_perf_pingpong/msg/array1k.hpp"
 #include "rmw_perf_pingpong/msg/bench.hpp"
 #include "rmw_perf_pingpong/msg/struct16.hpp"
 
 namespace {
+
+    using pingpong::BenchTraits;
+    using pingpong::now_ns;
 
     // Same conversion hal_linux.c's own now_ns() uses (its SEC_NS) - kept as two named constants
     // here (seconds and milliseconds) rather than one, since this file needs both.
@@ -47,16 +51,6 @@ namespace {
     constexpr uint64_t reply_wait_ms = 500; // matching the native client's own reply timeout
     constexpr int spin_poll_us = 100;
     constexpr double default_duration_s = 10.0;
-
-    auto now_ns() -> uint64_t {
-        struct timespec ts;
-        // clock_gettime()/CLOCK_MONOTONIC are declared through a private glibc header reached
-        // transitively via <ctime> (misc-include-cleaner attributes them there instead of to
-        // <ctime> itself) - same class of system-header quirk as rmw_tickle.h's own pthread.h
-        // NOLINT.
-        clock_gettime(CLOCK_MONOTONIC, &ts); // NOLINT(misc-include-cleaner)
-        return (static_cast<uint64_t>(ts.tv_sec) * ns_per_s) + static_cast<uint64_t>(ts.tv_nsec);
-    }
 
     // Every rclcpp::Node on ROS 2 Jazzy unconditionally subscribes to /parameter_events (its own
     // internal NodeTimeSource, for use_sim_time monitoring - no NodeOptions flag disables it) and
@@ -73,57 +67,6 @@ namespace {
             .enable_rosout(false)
             .parameter_overrides({rclcpp::Parameter("start_type_description_service", false)});
     }
-
-    // Per-message-type field access: Bench's own (seq, send_ns) versus Array1k's/Struct16's own
-    // (id, time) - same role, different names/types (performance_test's own convention, matched
-    // verbatim - see msg/Array1k.msg's own header comment), unified here so run_ping() below is
-    // written once against BenchTraits<T> instead of three times against three field names.
-    template <typename T> struct BenchTraits;
-
-    template <> struct BenchTraits<rmw_perf_pingpong::msg::Bench> {
-        static auto set_seq(rmw_perf_pingpong::msg::Bench& msg, uint64_t val) -> void {
-            msg.seq = static_cast<uint32_t>(val);
-        }
-        static auto seq(const rmw_perf_pingpong::msg::Bench& msg) -> uint64_t {
-            return msg.seq;
-        }
-        static auto set_send_ns(rmw_perf_pingpong::msg::Bench& msg, uint64_t val) -> void {
-            msg.send_ns = val;
-        }
-        static auto send_ns(const rmw_perf_pingpong::msg::Bench& msg) -> uint64_t {
-            return msg.send_ns;
-        }
-    };
-
-    template <> struct BenchTraits<rmw_perf_pingpong::msg::Array1k> {
-        static auto set_seq(rmw_perf_pingpong::msg::Array1k& msg, uint64_t val) -> void {
-            msg.id = val;
-        }
-        static auto seq(const rmw_perf_pingpong::msg::Array1k& msg) -> uint64_t {
-            return msg.id;
-        }
-        static auto set_send_ns(rmw_perf_pingpong::msg::Array1k& msg, uint64_t val) -> void {
-            msg.time = static_cast<int64_t>(val);
-        }
-        static auto send_ns(const rmw_perf_pingpong::msg::Array1k& msg) -> uint64_t {
-            return static_cast<uint64_t>(msg.time);
-        }
-    };
-
-    template <> struct BenchTraits<rmw_perf_pingpong::msg::Struct16> {
-        static auto set_seq(rmw_perf_pingpong::msg::Struct16& msg, uint64_t val) -> void {
-            msg.id = val;
-        }
-        static auto seq(const rmw_perf_pingpong::msg::Struct16& msg) -> uint64_t {
-            return msg.id;
-        }
-        static auto set_send_ns(rmw_perf_pingpong::msg::Struct16& msg, uint64_t val) -> void {
-            msg.time = static_cast<int64_t>(val);
-        }
-        static auto send_ns(const rmw_perf_pingpong::msg::Struct16& msg) -> uint64_t {
-            return static_cast<uint64_t>(msg.time);
-        }
-    };
 
     // Round-trip statistics over the replies that came back. Split out of run_ping() to keep it under
     // clang-tidy's cognitive-complexity threshold.
@@ -193,7 +136,7 @@ namespace {
 
     template <typename T>
     auto run_ping(const rclcpp::Node::SharedPtr& node, double interval_s, double duration_s, bool reliable,
-                  bool blocking) -> int {
+                  bool blocking, pingpong::stamp_log& stamps) -> int {
         using Traits = BenchTraits<T>;
 
         rclcpp::executors::SingleThreadedExecutor executor;
@@ -245,7 +188,8 @@ namespace {
         while (rclcpp::ok() && now_ns() < deadline) {
             T req;
             Traits::set_seq(req, ++seq);
-            Traits::set_send_ns(req, now_ns());
+            const uint64_t sent_at = now_ns();
+            Traits::set_send_ns(req, sent_at);
             got_reply = false;
             pub->publish(req);
             transmitted++;
@@ -253,6 +197,7 @@ namespace {
             const uint64_t wait_deadline = now_ns() + (reply_wait_ms * ns_per_ms); // 500ms, matching the native client
             wait_for_reply(executor, got_reply, wait_deadline, blocking, loop);
             if (got_reply && Traits::seq(reply_msg) == seq) {
+                pingpong::stamp_log_add(stamps, seq, sent_at, reply_ns); // --stamps, whichever the wait mode
                 const uint64_t end_ns = blocking ? reply_ns : now_ns();
                 add_rtt(rtt, static_cast<double>(end_ns - Traits::send_ns(reply_msg)) / static_cast<double>(ns_per_ms));
             }
@@ -297,11 +242,14 @@ auto main(int argc, char** argv) -> int {
     double interval_s = 1.0;
     double duration_s = default_duration_s;
     bool reliable = false;
-    bool blocking = false; // --wait block|poll, see run_ping()
+    bool blocking = false;             // --wait block|poll, see run_ping()
+    const char* stamps_path = nullptr; // --stamps <file>, see pingpong::stamp_log
     const char* message = "bench";
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--wait") == 0 && i + 1 < argc) {
             blocking = std::strcmp(argv[++i], "block") == 0;
+        } else if (std::strcmp(argv[i], "--stamps") == 0 && i + 1 < argc) {
+            stamps_path = argv[++i];
         } else if (std::strcmp(argv[i], "-i") == 0 && i + 1 < argc) {
             interval_s = std::atof(argv[++i]);
         } else if (std::strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
@@ -323,18 +271,25 @@ auto main(int argc, char** argv) -> int {
         rclcpp::init(argc, argv);
         auto node = std::make_shared<rclcpp::Node>("ping_node", default_node_options());
 
+        pingpong::stamp_log stamps;
+        pingpong::stamp_log_open(stamps, stamps_path,
+                                 "ping: seq send_ns reply_ns (CLOCK_MONOTONIC ns; replied samples only)");
         int ret;
         if (std::strcmp(message, "bench") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable, blocking);
+            ret = run_ping<rmw_perf_pingpong::msg::Bench>(node, interval_s, duration_s, reliable, blocking, stamps);
         } else if (std::strcmp(message, "array1k") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable, blocking);
+            ret = run_ping<rmw_perf_pingpong::msg::Array1k>(node, interval_s, duration_s, reliable, blocking, stamps);
         } else if (std::strcmp(message, "struct16") == 0) {
-            ret = run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable, blocking);
+            ret = run_ping<rmw_perf_pingpong::msg::Struct16>(node, interval_s, duration_s, reliable, blocking, stamps);
         } else {
             std::fprintf(stderr, "unknown -m '%s' (expected bench|array1k|struct16)\n", message);
             ret = 1;
         }
 
+        if (!pingpong::stamp_log_write(stamps)) {
+            std::fprintf(stderr, "cannot write --stamps file %s\n", stamps_path);
+            ret = 1;
+        }
         rclcpp::shutdown();
         return ret;
     } catch (const std::exception& e) {
