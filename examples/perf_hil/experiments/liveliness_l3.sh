@@ -16,6 +16,7 @@
 # install prefixes cannot collide, with this checkout's harness files overlaid (the -i flag is newer than
 # the before commit). Processes are stopped by netns membership (ip netns pids), never by name.
 #
+# CASES="idle" runs only that case (default "data idle").
 # Usage: BEFORE=<sha> AFTER=<sha> liveliness_l3.sh [reps] [seconds]   Output: $OUT (default /tmp/liveliness_l3.txt)
 set -u
 REPS=${1:-2}
@@ -75,7 +76,7 @@ run() { # $1 arm, $2 dir, $3 case, $4 rep
     say "$arm $kind lease=$lease rep$rep | $verdict | ${res#RESULT: }"
 }
 for rep in $(seq 1 "$REPS"); do
-    for kind in data idle; do
+    for kind in ${CASES:-data idle}; do
         run before "$DB" "$kind" "$rep"
         run after "$DA" "$kind" "$rep"
     done
