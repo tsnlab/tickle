@@ -1042,6 +1042,7 @@ static void test_heartbeat_discovery_sends_immediate_heartbeat_to_new_peer(void)
     }
 
     node.update_seen[REMOTE_NODE_ID] = true; // see test_durability_pubsub.c's own comment on why
+    node.rx_via_data_port = true;            // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0;        // only count the initial Heartbeat below
 
     struct tt_Header header;
@@ -1072,6 +1073,7 @@ static void test_heartbeat_discovery_skipped_for_besteffort_publisher(void) {
     init_publisher_registered_on_node(&pub, &node, &topic);
 
     node.update_seen[REMOTE_NODE_ID] = true;
+    node.rx_via_data_port = true; // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0;
 
     struct tt_Header header;
@@ -1103,6 +1105,7 @@ static void test_heartbeat_discovery_no_redelivery_on_unchanged_update(void) {
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
 
     node.update_seen[REMOTE_NODE_ID] = true;
+    node.rx_via_data_port = true; // and unicast, so not answered as a changed broadcast would be
     struct tt_Header header;
     init_header(&header);
 
@@ -1141,6 +1144,7 @@ static void test_heartbeat_discovery_sends_both_durability_backlog_and_heartbeat
     }
 
     node.update_seen[REMOTE_NODE_ID] = true;
+    node.rx_via_data_port = true;     // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0; // only count this discovery's own effect below
 
     struct tt_Header header;

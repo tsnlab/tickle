@@ -212,13 +212,11 @@ static void test_publish_broadcasts_when_peer_count_exceeds_threshold(void) {
     EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
 }
 
-// The shared-tx_buffer guard: an immediate flush must not unicast (even with an otherwise
-// eligible peer count) when something else - a real, still-batched UPDATE announce from
-// node_update(), not just the tx_has_pending_update flag alone - is already sitting unflushed
-// ahead of this DATA submessage, since unicasting would only reach these peers, not the whole
-// segment that pending content needs. Mirrors tt_Client_call()'s own identical guard
-// (old_tx_tail == sizeof(struct tt_Header)).
-static void test_publish_falls_back_to_broadcast_when_buffer_not_empty(void) {
+// The shared-tx_buffer guard, as it stands since 2026-09-26: a still-batched UPDATE announce from
+// node_update() must still reach the whole segment, so it goes out first, as its own broadcast, and the DATA
+// then goes unicast to its known peers - instead of joining the UPDATE's broadcast, as it used to. That
+// used to broadcast every sample published within a flush tick of an announce.
+static void test_publish_flushes_a_pending_broadcast_then_unicasts(void) {
     test_mock_reset();
 
     struct tt_Node node;
@@ -237,13 +235,9 @@ static void test_publish_falls_back_to_broadcast_when_buffer_not_empty(void) {
     uint32_t value = 0x1234abcd;
     EXPECT_EQ_INT(tt_RET_OK, tt_Publisher_publish(&pub, (struct tt_Data*)&value));
 
-    // publish() itself still flushes immediately here (pub->batch is still false) - it just must
-    // broadcast the combined buffer (UPDATE + DATA) rather than unicasting only to its own peers,
-    // which would have reached pub's Subscribers but not the rest of the segment the UPDATE needs.
-    // A trailing node_flush() call would be a no-op (nothing left to flush) - not needed to
-    // observe the result.
-    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_call_count);
-    EXPECT_EQ_U32(0, (uint32_t)test_mock_send_to_call_count);
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_call_count);    // the UPDATE, then the DATA
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // ...the DATA to its one peer
+    EXPECT_EQ_U32(0xc0a80a02, test_mock_send_to_last_ip);
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail);
 }
 
@@ -844,7 +838,7 @@ int main(void) {
     test_publish_rolls_back_on_out_of_buffer();
     test_publish_unicasts_to_known_peers_at_or_under_threshold();
     test_publish_broadcasts_when_peer_count_exceeds_threshold();
-    test_publish_falls_back_to_broadcast_when_buffer_not_empty();
+    test_publish_flushes_a_pending_broadcast_then_unicasts();
     test_node_flush_broadcasts_with_no_known_peers();
     test_node_flush_unicasts_to_known_publisher_peers_at_or_under_threshold();
     test_node_flush_broadcasts_when_peer_count_exceeds_threshold();

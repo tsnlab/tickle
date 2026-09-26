@@ -1263,6 +1263,35 @@ static void tombstone_discovered_entities_from_source(struct tt_Node* node, uint
 // for_each_endpoint()'s own doc comments for how lookups now handle more than one match). Still
 // guards against the one thing that IS always a real bug: registering the exact same struct
 // pointer twice (a double-create without an intervening destroy).
+static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count);
+
+// struct tt_Node.announce_soon_scheduled: the announce a new endpoint is owed, sent once the burst it came
+// in has gone quiet for tt_NODE_TX_INTERVAL. Rescheduling itself rather than unscheduling on every creation
+// keeps creation to a clock read and a store. The periodic node_update() is untouched - this is one extra
+// announce per burst of changes, not a faster cadence.
+static void announce_soon(struct tt_Node* node, uint64_t time, void* param) {
+    UNUSED(param);
+    uint64_t quiet_at = node->endpoints_changed_ns + tt_NODE_TX_INTERVAL;
+    if (time < quiet_at) {
+        if (tt_Node_schedule(node, quiet_at, announce_soon, NULL)) {
+            return;
+        }
+        TT_LOG_ERROR("Cannot reschedule announce_soon"); // the periodic announce still covers it
+    }
+    node->announce_soon_scheduled = false;
+    build_and_send_update(node, NULL, 0);
+}
+
+static void arm_announce_soon(struct tt_Node* node) {
+    node->endpoints_changed_ns = tt_get_ns();
+    if (node->announce_soon_scheduled) {
+        return;
+    }
+    if (tt_Node_schedule(node, node->endpoints_changed_ns + tt_NODE_TX_INTERVAL, announce_soon, NULL)) {
+        node->announce_soon_scheduled = true;
+    }
+}
+
 static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* endpoint) {
     if (node->endpoint_count >= tt_MAX_ENDPOINT_COUNT) {
         uint32_t endpoint_count = node->endpoint_count;
@@ -1290,6 +1319,7 @@ static tt_ret_t add_endpoint_to_node(struct tt_Node* node, struct tt_Endpoint* e
 
     node->endpoints[node->endpoint_count++] = endpoint;
     node->endpoint_index_valid = false;
+    arm_announce_soon(node);
 
     return tt_RET_OK;
 }
@@ -1776,7 +1806,6 @@ static bool run_due_entry(struct tt_Node* node, uint64_t now, bool* has_next, ui
 }
 
 static void node_update(struct tt_Node* node, uint64_t time, void* param);
-static bool build_and_send_update(struct tt_Node* node, const struct tt_Peer* peers, uint8_t peer_count);
 // Milestone 47 "goodbye" - see its own definition's doc comment.
 static void broadcast_goodbye(struct tt_Node* node);
 static void check_liveliness(struct tt_Node* node, uint64_t time, void* param);
@@ -1896,6 +1925,8 @@ static void reset_node_state(struct tt_Node* node) {
     node->tx_size = sizeof(node->tx_buffer);
     node->tx_has_pending_update = false;
     node->flush_scheduled = false;
+    node->announce_soon_scheduled = false;
+    node->endpoints_changed_ns = 0;
 
     memset(node->rx_buffer, 0, (long)tt_MAX_BUFFER_LENGTH * 2);
     node->rx_tail = 0;
@@ -3410,6 +3441,22 @@ static bool end_encode_sample(struct tt_Node* node, struct tt_SubmessageHeader* 
     return true;
 }
 
+// A publish that will go unicast (immediate, 1..tt_UNICAST_PEER_THRESHOLD known peers) is sent from an empty
+// tx_buffer: whatever is batched there - an announce waiting for node_flush()'s tick, typically - goes out
+// first, as the broadcast it was going to be. It used to decide the other way: anything pending made the DATA
+// join it and go by broadcast, so a sample published within ~1 ms of an announce was broadcast although its
+// peers were known - about one sample a run in a 10 ms ping-pong, and more once endpoints announce as soon as
+// they are created (2026-09-26). The pending datagram only leaves up to one tt_NODE_TX_INTERVAL early.
+static void flush_pending_before_unicast(struct tt_Node* node, const struct tt_Publisher* pub) {
+    if (pub->batch || node->tx_tail == sizeof(struct tt_Header)) {
+        return;
+    }
+    uint8_t count = count_peers(pub->peers);
+    if (count >= 1 && count <= tt_UNICAST_PEER_THRESHOLD) {
+        (void)flush_tx(node, node->tx_tail, NULL, 0); // a failure logs; the DATA then broadcasts as before
+    }
+}
+
 static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Data* data) {
     if (pub == NULL || data == NULL || pub->node == NULL || pub->topic == NULL ||
         pub->topic->data_encode_size == NULL || pub->topic->data_encode == NULL) {
@@ -3418,6 +3465,7 @@ static tt_ret_t publisher_publish_locked(struct tt_Publisher* pub, struct tt_Dat
 
     struct tt_Endpoint* endpoint = (struct tt_Endpoint*)pub;
     struct tt_Node* node = pub->node;
+    flush_pending_before_unicast(node, pub);
     uint32_t old_tx_tail = node->tx_tail;
 
     // Phase 3 (rmw_tickle/PLAN.md) - KEEP_ALL flow control: refuse rather than evict a sample
@@ -5922,7 +5970,12 @@ static bool process_announce(struct tt_Node* node, struct tt_Header* header, uin
     bool is_first_contact_from_sender = !node->update_seen[source];
     node->update_generation[source] = generation;
     node->update_seen[source] = true;
-    if (is_first_contact_from_sender) {
+    // A changed announce that came by broadcast is answered too (2026-09-26): the node that changed may
+    // have just created an endpoint that matches one of ours, and until it hears our announce it cannot
+    // match it - a Publisher of its would broadcast every sample for up to tt_NODE_UPDATE_INTERVAL. Only a
+    // broadcast is answered: a reply arrives unicast, on the data socket, so replies are never answered
+    // and two nodes cannot trade announces back and forth. At most one reply per peer per change.
+    if (is_first_contact_from_sender || !node->rx_via_data_port) {
         reply_with_own_announce(node, source, sender_ip, sender_port);
     }
     return true;

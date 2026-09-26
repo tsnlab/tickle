@@ -219,6 +219,12 @@ struct tt_Node {
     // armed only when a submessage is left batched in tx_buffer, and on the same grid it always ran
     // on, so a batched datagram leaves at exactly the instant it would have before.
     bool flush_scheduled;
+    // An announce owed for endpoints created since the last one (2026-09-26): armed by the first creation,
+    // sent once no endpoint has been created for tt_NODE_TX_INTERVAL, so a burst - rclcpp creates several
+    // at node start - costs one announce. Without it a new endpoint waited for node_update()'s next
+    // periodic tick, up to tt_NODE_UPDATE_INTERVAL, before any remote node heard of it.
+    bool announce_soon_scheduled;
+    uint64_t endpoints_changed_ns;
 
     tt_ALIGNAS(4) uint8_t rx_buffer[tt_MAX_BUFFER_LENGTH * 2];
     uint32_t rx_tail;

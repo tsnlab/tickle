@@ -286,11 +286,10 @@ static void test_first_contact_triggers_unicast_reply_with_own_announce(void) {
     EXPECT_EQ_U32(sizeof(struct tt_Header), node.tx_tail); // flushed immediately, drained back down
 }
 
-// A second announce from a node we already know (even one that legitimately changed - different
-// last_modified, not the dedup-early-return case) must not trigger a second reply - only the
-// very first contact does, which is what keeps this from replying forever (see
-// reply_with_own_announce()'s own comment).
-static void test_repeat_contact_does_not_trigger_reply(void) {
+// A second, changed announce from a node we already know is answered once more when it came by broadcast -
+// the node may have just created an endpoint matching one of ours (2026-09-26) - but never when it came
+// unicast: a unicast announce is itself a reply, and answering replies is what would never stop.
+static void test_repeat_contact_is_answered_only_when_broadcast(void) {
     test_mock_reset();
 
     struct tt_Node node;
@@ -305,9 +304,18 @@ static void test_repeat_contact_does_not_trigger_reply(void) {
     EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count);
 
     tail = write_update_one_entity(node.rx_buffer, 200, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    node.rx_via_data_port = true; // unicast: a reply
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // not answered
 
-    EXPECT_EQ_U32(1, (uint32_t)test_mock_send_to_call_count); // still just the one reply
+    tail = write_update_one_entity(node.rx_buffer, 300, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    node.rx_via_data_port = false; // broadcast: a change
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // answered once
+
+    tail = write_update_one_entity(node.rx_buffer, 300, PUB_ENDPOINT_ID, tt_KIND_TOPIC_SUBSCRIBER, "topic", "sub");
+    EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, 0xc0a80a02, 8282));
+    EXPECT_EQ_U32(2, (uint32_t)test_mock_send_to_call_count); // its periodic resend is not
 }
 
 // If tx_buffer already has something else pending, replying would risk redirecting that
@@ -494,6 +502,144 @@ static void test_client_created_after_the_announce_learns_the_peer_from_its_rese
     EXPECT_EQ_U32(1, (uint32_t)count_peers(client.peers));
 }
 
+// --- Two nodes exchanging announces for real (2026-09-26) -----------------------------------------------
+// Every datagram either node sends is delivered to the other: broadcast on the well-known socket, unicast on
+// the data socket (rx_via_data_port), as hal_linux.c reports them.
+#define DUO_QUEUE 64
+struct duo_datagram {
+    uint8_t from;
+    bool unicast;
+    uint32_t len;
+    uint8_t bytes[tt_MAX_BUFFER_LENGTH];
+};
+static struct duo_datagram duo_queue[DUO_QUEUE];
+static int duo_count;
+static uint8_t duo_acting;
+static int duo_seen_send_to;
+static int duo_sent[3];
+
+static void duo_capture(const void* buf, size_t len) {
+    EXPECT_TRUE(duo_count < DUO_QUEUE && len <= tt_MAX_BUFFER_LENGTH);
+    struct duo_datagram* datagram = &duo_queue[duo_count++];
+    datagram->from = duo_acting;
+    datagram->unicast = test_mock_send_to_call_count != duo_seen_send_to; // tt_send_to() counted it first
+    duo_seen_send_to = test_mock_send_to_call_count;
+    datagram->len = (uint32_t)len;
+    memcpy(datagram->bytes, buf, len);
+    duo_sent[duo_acting]++;
+}
+
+static void duo_run_due(struct tt_Node* node) {
+    bool has_next = false;
+    uint64_t next = 0;
+    duo_acting = node->id;
+    while (run_due_entry(node, test_mock_now, &has_next, &next)) {
+    }
+}
+
+static void duo_deliver(struct tt_Node* one, struct tt_Node* two) {
+    for (int i = 0; i < duo_count; i++) { // grows while delivering: a reply is delivered in the same pass
+        struct duo_datagram* datagram = &duo_queue[i];
+        struct tt_Node* to = datagram->from == one->id ? two : one;
+        duo_acting = to->id;
+        memcpy(to->rx_buffer, datagram->bytes, datagram->len);
+        to->rx_via_data_port = datagram->unicast;
+        EXPECT_TRUE(process_packet(to, to->rx_buffer, 0, datagram->len, 0x0a000000U + datagram->from, 8282));
+    }
+    duo_count = 0;
+}
+
+// Runs both nodes until `until`, a scheduler entry at a time.
+static void duo_run_until(struct tt_Node* one, struct tt_Node* two, uint64_t until) {
+    while (true) {
+        uint64_t next_one = UINT64_MAX;
+        uint64_t next_two = UINT64_MAX;
+        (void)sched_next_time(one, &next_one);
+        (void)sched_next_time(two, &next_two);
+        uint64_t next = next_one < next_two ? next_one : next_two;
+        if (next > until) {
+            test_mock_now = until;
+            return;
+        }
+        if (next > test_mock_now) {
+            test_mock_now = next;
+        }
+        duo_run_due(one);
+        duo_run_due(two);
+        duo_deliver(one, two);
+    }
+}
+
+static void duo_on_data(struct tt_Subscriber* sub, uint64_t time, uint16_t seq_no, struct tt_Data* data) {
+    (void)sub;
+    (void)time;
+    (void)seq_no;
+    (void)data;
+}
+
+static int32_t duo_decode(struct tt_Data* data, const uint8_t* payload, const uint32_t len, bool is_native) {
+    (void)data;
+    (void)payload;
+    (void)is_native;
+    return (int32_t)len;
+}
+
+static void duo_free(struct tt_Data* data) {
+    (void)data;
+}
+
+// A Publisher created on a node that already knows the matching Subscriber's node learns it within a few
+// milliseconds: its node announces the change at once, and the other node answers a changed broadcast.
+// Until 2026-09-26 it waited for the peer's next periodic announce, up to tt_NODE_UPDATE_INTERVAL, sending by
+// broadcast meanwhile. And the exchange ends there: over the following seconds the two nodes send exactly two
+// announces more than their periodic ones - the early announce and one reply - so they cannot trade replies.
+static void test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_ends(void) {
+    test_mock_reset();
+    test_mock_now = tt_SECOND;
+    test_mock_send_hook = duo_capture;
+    duo_count = 0;
+    duo_seen_send_to = 0;
+    memset(duo_sent, 0, sizeof(duo_sent));
+
+    static struct tt_Node one;
+    static struct tt_Node two;
+    init_node(&one);
+    init_node(&two);
+    one.id = 1;
+    two.id = 2;
+    EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&one));
+    EXPECT_EQ_INT(tt_RET_OK, schedule_periodic_tasks(&two));
+
+    struct tt_Topic sub_topic = {.name = "duo", .data_size = 4, .data_decode = duo_decode, .data_free = duo_free};
+    struct tt_Subscriber sub;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_subscriber(&two, &sub, &sub_topic, "duo_ep", duo_on_data));
+    duo_run_until(&one, &two, tt_SECOND + (uint64_t)(3.5 * tt_SECOND)); // both know each other, steady state
+
+    int periodic_one = duo_sent[1];
+    int periodic_two = duo_sent[2];
+    duo_run_until(&one, &two, test_mock_now + (3 * tt_SECOND));
+    periodic_one = duo_sent[1] - periodic_one;
+    periodic_two = duo_sent[2] - periodic_two;
+    EXPECT_TRUE(periodic_one >= 2 && periodic_two >= 2); // control: both really announce, ~1 a second
+
+    int before_one = duo_sent[1];
+    int before_two = duo_sent[2];
+    struct tt_Topic pub_topic = {.name = "duo",
+                                 .data_size = 4,
+                                 .data_encode_size = fake_encode_size,
+                                 .data_encode = fake_encode};
+    struct tt_Publisher pub;
+    uint64_t created = test_mock_now;
+    EXPECT_EQ_INT(tt_RET_OK, tt_Node_create_publisher(&one, &pub, &pub_topic, "duo_ep"));
+    duo_run_until(&one, &two, created + (5 * tt_MILLISECOND));
+    EXPECT_EQ_U32(1, (uint32_t)count_peers(pub.peers)); // within 5 ms, where it used to take up to a second
+
+    duo_run_until(&one, &two, created + (3 * tt_SECOND));
+    EXPECT_EQ_INT(periodic_one + 1, duo_sent[1] - before_one); // its periodic announces, plus the early one
+    EXPECT_EQ_INT(periodic_two + 1, duo_sent[2] - before_two); // its periodic announces, plus one reply
+    test_mock_send_hook = NULL;
+}
+
 int main(void) {
     test_publisher_learns_subscriber_peer_from_update();
     test_client_learns_server_peer_from_update();
@@ -502,12 +648,13 @@ int main(void) {
     test_update_skipped_when_last_modified_unchanged_does_not_rerun_matching();
     test_peer_table_full_drops_new_peer_silently();
     test_first_contact_triggers_unicast_reply_with_own_announce();
-    test_repeat_contact_does_not_trigger_reply();
+    test_repeat_contact_is_answered_only_when_broadcast();
     test_reply_skipped_when_tx_buffer_has_pending_content();
     test_source_dropping_endpoint_forgets_its_peer();
     test_farewell_from_one_source_leaves_other_peers_intact();
     test_publisher_created_after_the_announce_learns_the_peer_from_its_resend();
     test_client_created_after_the_announce_learns_the_peer_from_its_resend();
+    test_a_new_publisher_learns_a_known_peer_at_once_and_the_exchange_ends();
 
     if (test_result() != 0) {
         return 1;

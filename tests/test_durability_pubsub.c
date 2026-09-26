@@ -244,6 +244,7 @@ static void test_durability_delivers_backlog_to_newly_discovered_subscriber(void
     // confound this test's own send_to count - this test cares about durability's own delivery
     // count specifically, not discovery's own reply mechanics.
     node.update_seen[REMOTE_NODE_ID] = true;
+    node.rx_via_data_port = true;     // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0; // only count the backlog delivery below
 
     struct tt_Header header;
@@ -287,6 +288,7 @@ static void test_durability_skips_expired_backlog_entries(void) {
 
     test_mock_now = 1000; // exactly at the lifespan boundary - already expired (>=, not >)
     node.update_seen[REMOTE_NODE_ID] = true;
+    node.rx_via_data_port = true; // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0;
 
     struct tt_Header header;
@@ -337,6 +339,7 @@ static void test_durability_no_redelivery_on_unchanged_update(void) {
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value)); // seq_no 1
 
     node.update_seen[REMOTE_NODE_ID] = true; // see the previous test's own comment on why
+    node.rx_via_data_port = true;            // and unicast, so not answered as a changed broadcast would be
     struct tt_Header header;
     init_header(&header);
 
@@ -380,6 +383,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     }
 
     node.update_seen[REMOTE_NODE_ID] = true; // see write_update_one_subscriber() callers' own comment on why
+    node.rx_via_data_port = true;            // and unicast, so not answered as a changed broadcast would be
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
@@ -399,6 +403,7 @@ static void test_durability_no_redelivery_after_liveliness_false_positive(void) 
     // short-circuit and decode_update_entities() still runs) doesn't confound this test's own
     // send_to count, same reasoning as this file's other tests.
     node.update_seen[REMOTE_NODE_ID] = true;
+    node.rx_via_data_port = true;     // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0; // only count the recovering peer's own re-announce below
 
     // Same last_modified as before (the exact same continuous instance, nothing about its own
@@ -434,6 +439,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     }
 
     node.update_seen[REMOTE_NODE_ID] = true; // see write_update_one_subscriber() callers' own comment on why
+    node.rx_via_data_port = true;            // and unicast, so not answered as a changed broadcast would be
     struct tt_Header header;
     init_header(&header);
     uint32_t tail = write_update_one_subscriber(&node, 100, ENDPOINT_ID);
@@ -445,6 +451,7 @@ static void test_durability_redelivers_after_genuine_restart(void) {
     EXPECT_TRUE(!node.update_seen[REMOTE_NODE_ID]);
 
     node.update_seen[REMOTE_NODE_ID] = true; // suppress reply_with_own_announce()'s own unrelated send, see above
+    node.rx_via_data_port = true;            // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0;
 
     // A different last_modified - a genuine restart, its own subscription state was wiped too, it
@@ -470,6 +477,7 @@ static void test_durability_ignored_for_volatile_publisher(void) {
     EXPECT_EQ_INT((int)tt_RET_OK, (int)tt_Publisher_publish(&pub, (struct tt_Data*)&value));
 
     node.update_seen[REMOTE_NODE_ID] = true; // see the earlier test's own comment on why
+    node.rx_via_data_port = true;            // and unicast, so not answered as a changed broadcast would be
     test_mock_send_to_call_count = 0;
 
     struct tt_Header header;
