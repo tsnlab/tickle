@@ -457,3 +457,25 @@ Median us after NAPI handed the frame to the stack, BEST_EFFORT / RELIABLE:
   - the handoff from receive to executor, recv return → executor switched in: ~12-14 us. Executor-driven
     receive removes it; the rig A/B is queued (8.4).
   - the extra receive syscall, ~5.5 us, which only a blocking receive on the data socket removes.
+
+**8.4 result (2026-09-27): passes; the default goes on.** `results/rmw_execpoll2_2026-09-27.txt`: build `5b4fdc84`, 48
+rows, 0 void, and no 10.1.1.x peer in any log. The first attempt was set aside: in one row the rig's ping had
+registered a PC test node that reached the Pis over the management LAN (`DISCOVERY_PLAN.md` / memory rule), and
+the whole session was re-run rather than cherry-picked. Mean difference on - off, 3 reps per arm:
+
+| cell | block RTT (2 SE) | pong CPU, ms (2 SE) | poll RTT, the control (2 SE) |
+|---|---|---|---|
+| Bench BEST_EFFORT | **-8.3 us** (4.4) | -0.65 (0.81) | -1.0 (3.7) |
+| Bench RELIABLE | **-11.0 us** (4.0) | +0.83 (1.20) | -0.3 (3.0) |
+| Array1k BEST_EFFORT | **-13.0 us** (2.2) | -1.03 (1.37) | -1.7 (2.7) |
+| Array1k RELIABLE | **-7.3 us** (2.5) | -0.08 (1.32) | +0.3 (3.9) |
+
+- Every block cell drops by at least 5 us beyond 2 SE.
+- No pong CPU rises beyond 2 SE.
+- The poll control does not move.
+- **Pass, so the default goes on.**
+
+The prediction ("at least as large in us on the Pi as the PC's -47") **did not hold**. The rig gains -7 to -13 us.
+The likely reason is the ping side: at a 100 ms gap it sleeps outside `rmw_wait()` far longer than the 10 ms
+lease, so it takes the role back every round trip and only the pong gains fully. That was a prediction, not
+a criterion, and it is recorded as missed.
