@@ -48,6 +48,16 @@ static char g_bench_fields[BENCH_STATS_FIELDS_MAX];
 // core then addressed with a 120-byte stride - so the last slots of the array were past its end.
 #define BENCH_REORDER_SLOT_BYTES tt_REORDER_SLOT_SIZE(sizeof(struct BenchData) + 16)
 
+// The tracking window a Subscriber actually uses, in samples, as reorder slots - core's own width
+// rule (subscriber_tracking_words(), tickle.c): the caller's tracking_words when it supplied
+// bitmaps, otherwise the built-in tt_RELIABLE_BITMAP_WORDS. Capped at the array's capacity.
+static uint16_t reorder_slots_for_window(const struct tt_Subscriber* sub) {
+    const uint32_t words =
+        (sub->tracking_bitmaps != NULL && sub->tracking_words > 0) ? sub->tracking_words : tt_RELIABLE_BITMAP_WORDS;
+    const uint32_t slots = words * tt_RELIABLE_BITMAP_WORD_BITS;
+    return (uint16_t)(slots < BENCH_REORDER_SLOTS ? slots : BENCH_REORDER_SLOTS);
+}
+
 static volatile sig_atomic_t g_interrupted = 0;
 static void handle_sigint(int sig) {
     (void)sig;
@@ -243,13 +253,11 @@ int main(int argc, char** argv) {
     // oldest missing sample this Subscriber is allowed to get, so it is also the most it can ever
     // need to hold at once.
     //
-    // That window is 4096 samples, so this scales with the payload shape exactly as the client's
-    // arena does (2026-09-25): 480 KB at p1, 5344 at p2, 5856 at p3, 11,360 at p4. The same
-    // caveat applies to reading a memory figure off it - it is a property of the window size and
-    // the shape, not of libtickle.
+    // The ARRAY is sized for the widest window this build allows (-w up to 4096), so any -w runs.
+    // The SLOT COUNT handed to core is set below, after the tracking window is known, to that
+    // window - see the comment there.
     static uint64_t reorder[BENCH_REORDER_SLOTS * BENCH_REORDER_SLOT_BYTES / sizeof(uint64_t)];
     sub.reorder_storage = reorder;
-    sub.reorder_slots = BENCH_REORDER_SLOTS;
     sub.reorder_slot_bytes = BENCH_REORDER_SLOT_BYTES;
     // -D: request TRANSIENT_LOCAL, matching the client's own -D. The RxO fix (PLAN.md Milestone 60)
     // keys the first-contact baseline on sub->durable: a durable Subscriber syncs to the
@@ -269,6 +277,19 @@ int main(int argc, char** argv) {
             sub.tracking_words = (uint16_t)words;
         }
     }
+    // Reorder slots = the tracking window this Subscriber actually uses (2026-09-26), mirroring
+    // rmw_tickle's own default (RMW_TICKLE_REORDER_SLOTS, "defaulting to the window bound",
+    // rmw_subscription.c) so the memory figure is what a user of the product gets.
+    //
+    // This used to hand core all BENCH_REORDER_SLOTS (4096) regardless of the window, which is 256
+    // in every campaign run. Core picks a slot as seq % reorder_slots, so under loss the
+    // out-of-order samples land all round a 4096-slot ring as seq climbs, until every page of it
+    // is resident: c6's server read 13,061 KB against c4's 1,731, the difference being the ~11.4 MB
+    // ring, while CycloneDDS read 5,841. Slots beyond the window can never be legitimately needed:
+    // the Subscriber cannot hold a sample further than one window ahead of its oldest gap.
+    // Fewer slots than the window is what storms (COMPARISON.MD to-do 17); exactly the window is
+    // the floor that does not. The width below is core's own rule, subscriber_tracking_words().
+    sub.reorder_slots = reorder_slots_for_window(&sub);
 
     BenchCpuFreq_init(&g_cpu_freq);
     BenchCpuPlace_init(&g_cpu_place);
@@ -329,14 +350,15 @@ int main(int argc, char** argv) {
     // from "given up on", which recv against the client's sent cannot.
     printf("RESULT: framework=tickle scenario=reliable_throughput role=server recv=%lu lost=%lu loss_pct=%.1f "
            "post_match_lost=%lu post_match_loss_pct=%.1f prematch_window=%u first_seq=%u window_samples=%u "
+           "reorder_slots=%u "
            "cpu_mhz_mean=%.1f cpu_mhz_min=%.1f cpu_mhz_max=%.1f cpu_samples=%u cpu_main=%d cpu_main_share=%.2f "
            "cpu_migrations=%u gap_abandoned=%u gap_evicted=%u retry_interval_cfg_ns=%llu recovery_srtt_ns=%u "
            "recovery_rttvar_ns=%u %s\n",
            (unsigned long)received, (unsigned long)lost, loss_pct, (unsigned long)post_match_lost, post_match_loss_pct,
            prematch_window, first_seq_seen, window_samples > 0 ? window_samples : (uint32_t)tt_RELIABLE_BITMAP_BITS,
-           BenchCpuFreq_mean_mhz(&g_cpu_freq), BenchCpuFreq_min_mhz(&g_cpu_freq), BenchCpuFreq_max_mhz(&g_cpu_freq),
-           g_cpu_freq.samples, BenchCpuPlace_main_cpu(&g_cpu_place), BenchCpuPlace_main_share(&g_cpu_place),
-           g_cpu_place.migrations, sub.gap_abandoned, sub.gap_evicted,
+           (unsigned)sub.reorder_slots, BenchCpuFreq_mean_mhz(&g_cpu_freq), BenchCpuFreq_min_mhz(&g_cpu_freq),
+           BenchCpuFreq_max_mhz(&g_cpu_freq), g_cpu_freq.samples, BenchCpuPlace_main_cpu(&g_cpu_place),
+           BenchCpuPlace_main_share(&g_cpu_place), g_cpu_place.migrations, sub.gap_abandoned, sub.gap_evicted,
            (unsigned long long)tt_reliable_retry_interval_configured(), first_writer->recovery_srtt_ns,
            first_writer->recovery_rttvar_ns,
            bench_stats_fields(&g_bench_stats, BENCH_ROLE_RECEIVER, received, BENCH_SAMPLE_BYTES, g_bench_fields,

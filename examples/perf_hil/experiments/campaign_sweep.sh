@@ -254,6 +254,14 @@ cell() {
         [ "$payload" = p4 ] && want="${TICKLE_P4_PATH:-frag}"
         case "$res" in *"sample_path=$want"*) ;; *) verdict="VOID(sample_path not $want)" ;; esac
     fi
+    # reorder_slots= (2026-09-26): the TickLE server hands core as many reorder slots as its tracking
+    # window, mirroring rmw_tickle. A row whose slots differ from its window measured the old 4096-slot
+    # ring, whose resident size under loss is the ring and not the product.
+    if [ "$fw" = tickle ] && [ -n "$res" ] && [ "$verdict" = ok ]; then
+        ws=$(grep -oE 'window_samples=[0-9]+' <<<"$res" | head -1 | cut -d= -f2)
+        rs=$(grep -oE 'reorder_slots=[0-9]+' <<<"$res" | head -1 | cut -d= -f2)
+        [ -n "$rs" ] && [ "$rs" = "$ws" ] || verdict="VOID(reorder_slots ${rs:-absent} != window ${ws:-absent})"
+    fi
     case "$res" in *instrument=ok*) ;; *instrument=fail*) verdict="VOID($(grep -oE 'instrument=fail:[a-z,]+' <<<"$res" | head -1))" ;;
         *) [ -n "$res" ] && verdict="VOID(no instrument= field)" ;; esac
     say "$(printf 'c%-2s %s %-2s %-2s %-22s %-10s rep%s | %s | %s' \

@@ -1624,7 +1624,7 @@ static void test_recovery_probe_ignores_a_late_original(void) {
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(2, proxy->probe_seq_no);
 
-    test_mock_now = 1 * tt_MILLISECOND + 12600; // 12.6 us later the original arrives, addressed to all
+    test_mock_now = (1 * tt_MILLISECOND) + 12600; // 12.6 us later the original arrives, addressed to all
     tail = write_data(&node, 2, 200, 2);
     EXPECT_TRUE(process_data(&node, &header, node.rx_buffer, 0, tail, TEST_SENDER_IP, TEST_SENDER_PORT));
     EXPECT_EQ_U32(0, proxy->recovery_srtt_ns); // not a recovery: nothing learned
