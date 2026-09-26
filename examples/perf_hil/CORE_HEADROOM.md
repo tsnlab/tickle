@@ -82,3 +82,35 @@ How to read the outcome, pre-registered: item 1 should reduce the server's `recv
 count per sample toward CycloneDDS's 0.74 and reduce server `stime_s` roughly in proportion. If
 `stime_s` does **not** fall when the syscall count does, then per-syscall entry cost was not what
 the kernel time was, and item 2 should be dropped rather than attempted on the same reasoning.
+
+
+## Result of item 1, measured against the pre-registration above (2026-09-26)
+
+Dev's `1af57e3e` stops `tt_try_receive()` probing a socket already known to be empty.
+`results/recv_probe_verify_2026-09-26.txt`, release build, same session, 3 clean repetitions per
+arm plus one straced repetition for exact counts.
+
+| | before (`23465a68`) | after (`1af57e3e`) |
+|---|---:|---:|
+| receive syscalls / sample | 1.650 | **1.066** |
+| EAGAIN receives | 45,948 | **736** |
+| server `stime_s`, median of 3 | 2.278 | **1.972** |
+| server `cpu_s_per_Msample` | 3.350 | **2.932** |
+
+The three repetitions' `stime_s` ranges are [2.275, 2.380] and [1.970, 2.004] - no overlap.
+
+**The pre-registration's fail case did not occur, and that is the load-bearing part.** It said: if
+the syscall count falls and `stime_s` does not, the kernel time was per-byte rather than per-entry
+and `sendmmsg` should be dropped on the same reasoning. `stime_s` fell 13.4% while the syscall
+count fell 35%, so per-syscall entry cost is a real component of the kernel time and item 2 keeps
+its justification. Had it gone the other way this measurement would have cancelled the next piece
+of work rather than endorsing it, which is why it was worth running before that work started.
+
+Server CPU per Msample is now 2.93 against CycloneDDS's 10.85.
+
+Two caveats on the numbers, so they are not over-read. The straced repetitions delivered different
+sample counts between arms (81,848 and 135,084), because strace perturbs throughput; only the
+*ratio* per sample is comparable there, and the CPU figures come from the unstraced runs. And
+1.066 receives per sample is close to the floor Dev names for this change - n+1 per drain cannot
+go below one per sample - so reaching CycloneDDS's 0.74 needs `recvmmsg`, which is the next step
+rather than a shortfall in this one.

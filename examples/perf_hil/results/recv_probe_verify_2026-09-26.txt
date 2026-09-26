@@ -1,0 +1,18 @@
+=== receive-probe verification, 2026-09-26T10:56:12+09:00 ===
+before=23465a68   after=1af57e3e (blind two-socket probe removed)
+
+--- building 23465a68 ---
+  identity: HEAD=23465a68 (wanted 23465a68)
+  BEFORE rep1 CLEAN   recv=944482 utime_s=0.791 stime_s=2.380 cpu_s_per_Msample=3.357 peak_rss_kb=1784 
+  BEFORE rep2 CLEAN   recv=951342 utime_s=0.906 stime_s=2.275 cpu_s_per_Msample=3.344 peak_rss_kb=1780 
+  BEFORE rep3 CLEAN   recv=946680 utime_s=0.894 stime_s=2.278 cpu_s_per_Msample=3.350 peak_rss_kb=1788 
+  BEFORE STRACE  recv=81848  recv_syscalls=135027  eagain=45948  per_sample=1.650
+
+--- building 1af57e3e ---
+  identity: HEAD=1af57e3e (wanted 1af57e3e)
+  AFTER rep1 CLEAN   recv=946026 utime_s=0.802 stime_s=1.972 cpu_s_per_Msample=2.932 peak_rss_kb=1788 
+  AFTER rep2 CLEAN   recv=951549 utime_s=0.790 stime_s=2.004 cpu_s_per_Msample=2.936 peak_rss_kb=1780 
+  AFTER rep3 CLEAN   recv=946526 utime_s=0.806 stime_s=1.970 cpu_s_per_Msample=2.932 peak_rss_kb=1788 
+  AFTER STRACE  recv=135084  recv_syscalls=144059  eagain=736  per_sample=1.066
+
+=== done ===
